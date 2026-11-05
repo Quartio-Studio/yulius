@@ -2735,14 +2735,25 @@ impl App {
         let open_step = steps
             .iter()
             .find(|s| !StepStatus::parse(&s.status).is_some_and(StepStatus::is_resolved));
-        if (steps.is_empty() && !self.branch_changed(&task).await?)
-            || store
-                .delivery(&task.id)
-                .await?
-                .is_some_and(|r| !matches!(r.stage, DeliveryStage::None | DeliveryStage::PrOpen))
-        {
+        if steps.is_empty() && !self.branch_changed(&task).await? {
             return Ok(AutoDelivery::Unchanged);
         }
+        // Past its pull request's merge a task delivers again only work committed since
+        // (SPEC-425 FUP-001); a later stage with nothing new stays as it is (FUP-002).
+        let merged = store
+            .delivery(&task.id)
+            .await?
+            .filter(|r| !matches!(r.stage, DeliveryStage::None | DeliveryStage::PrOpen));
+        let follow_up = match &merged {
+            Some(record) => match self
+                .work_after_merge(&task, Path::new(&worktree), record)
+                .await
+            {
+                Some(number) => Some((record, number)),
+                None => return Ok(AutoDelivery::Unchanged),
+            },
+            None => None,
+        };
         if let Some(step) = open_step {
             let reason = format!(
                 "step \"{}\" is {}: finish it, or resolve it with `step_update` and a note",
@@ -2750,6 +2761,29 @@ impl App {
             );
             self.note_undelivered(&task, &worktree, &reason).await;
             return Ok(AutoDelivery::Blocked(reason));
+        }
+        if let Some((record, number)) = follow_up {
+            let fresh = DeliveryRecord {
+                updated_at: self.now(),
+                ..DeliveryRecord::initial(&task.id)
+            };
+            if !self
+                .dlv_transition(&task.sandbox_id, &record.stage, &fresh)
+                .await?
+            {
+                return Ok(AutoDelivery::Unchanged);
+            }
+            let sandbox = self.dlv_sandbox_of(&task).await?;
+            self.dlv_audit(
+                "yulius",
+                "delivery.follow_up",
+                &format!("{}#{}", sandbox.slug, task.number),
+                &format!(
+                    "{} -> none: commits after pull request #{number} merged are delivered anew",
+                    record.stage
+                ),
+            )
+            .await;
         }
         let sandbox = self.dlv_sandbox_of(&task).await?;
         let profile = delivery_profile(&sandbox);
@@ -2881,6 +2915,50 @@ impl App {
                 Err(AutoDeliveryError { error, note })
             }
         }
+    }
+
+    /// The merged pull request of `record` when the task's worktree head carries work it did
+    /// not (SPEC-425 FUP-001): its head is an ancestor of the worktree head, which is more than
+    /// it plus Git's own clean merges of the integration branch. `None` keeps the task merged
+    /// (FUP-002): the same head, one behind it or only clean merges since, a rewritten branch,
+    /// or anything Yulius cannot read (GitHub, the commits).
+    async fn work_after_merge(
+        &self,
+        task: &TaskRecord,
+        worktree: &Path,
+        record: &DeliveryRecord,
+    ) -> Option<u64> {
+        let number = record.pr_number?;
+        let head = self
+            .deps
+            .git
+            .log(worktree, "HEAD", 1)
+            .await
+            .ok()?
+            .into_iter()
+            .next()?
+            .sha;
+        let sandbox = self.dlv_sandbox_of(task).await.ok()?;
+        let token = self.task_github_token(task, &sandbox).await.ok()?;
+        let merged = self
+            .deps
+            .github
+            .get_pull(&token, &sandbox.repo_owner, &sandbox.repo_name, number)
+            .await
+            .ok()?
+            .head_sha;
+        if merged == head
+            || !self
+                .deps
+                .git
+                .is_ancestor(worktree, &merged, &head)
+                .await
+                .unwrap_or(false)
+            || self.review_covers(task, worktree, &merged, &head).await
+        {
+            return None;
+        }
+        Some(number)
     }
 
     /// The part of [`App::task_is_done`] that needs no GitHub call: the turn ended, no background

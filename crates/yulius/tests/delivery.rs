@@ -305,6 +305,12 @@ impl GitPort for RealGit {
             .await
     }
 
+    async fn is_ancestor(&self, repo: &Path, ancestor: &str, descendant: &str) -> AppResult<bool> {
+        yulius::wiring::git::GitAdapter::new("git")
+            .is_ancestor(repo, ancestor, descendant)
+            .await
+    }
+
     async fn set_merge_attributes(&self, repo: &Path, lines: &[String]) -> AppResult<bool> {
         yulius::wiring::git::GitAdapter::new("git")
             .set_merge_attributes(repo, lines)
@@ -4276,7 +4282,10 @@ async fn work_committed_after_the_merge_opens_a_new_pull_request() -> TestResult
     f.h.app.merge_armed(&SandboxId::parse("s1")?).await;
     assert_eq!(f.delivery("t1").await?["stage"], "merged_integration");
     assert!(
-        f.h.github.writes().iter().any(|w| w.starts_with("merge_pull #2")),
+        f.h.github
+            .writes()
+            .iter()
+            .any(|w| w.starts_with("merge_pull #2")),
         "{:?}",
         f.h.github.writes()
     );

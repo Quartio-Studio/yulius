@@ -246,6 +246,30 @@ impl App {
             AutoDelivery::Delivered(done) => self.runtime(&ctx.task.id).hub.notice(done),
             AutoDelivery::Unchanged => {}
         }
+        // Merged already and nothing new since (work after the merge reopened the delivery
+        // above): there is no pull request whose checks could ever arm a merge (SPEC-425 FUP-003).
+        if let Some(record) = self
+            .deps
+            .store
+            .delivery(&ctx.task.id)
+            .await?
+            .filter(|r| crate::delivery::past_merge(&r.stage))
+        {
+            self.clear_armed(&ctx.task);
+            let pull = record.pr_number.map_or_else(
+                || "this task's pull request".to_owned(),
+                |n| format!("pull request #{n}"),
+            );
+            return Ok(json!({
+                "merged": true,
+                "armed": false,
+                "next": format!(
+                    "{pull} is already merged and this head adds nothing to it: there is nothing \
+                     to deliver. Commit new work on this branch and Yulius opens a new pull request \
+                     for it."
+                ),
+            }));
+        }
         let before = self.task_delivery(&auth, &task_id).await?;
         let checks = before.pr.as_ref().map_or("none", |p| p.checks.as_str());
         let sandbox = self
