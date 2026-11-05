@@ -176,11 +176,15 @@ function createApp(root, transport) {
     setChildren(root, page.el);
     if (!recheck) return;
     // GitHub may have been connected since the page loaded (another tab, another admin): the
-    // setup status says it now, and the page shows or hides GitHub sign-in in place.
+    // setup status says it now, and the page shows or hides GitHub sign-in in place. An answer
+    // for a page no longer shown (signed in and out meanwhile) changes nothing.
+    let shown = githubConfigured;
     api.get('/api/setup/status', { allow401: true }).then((setup) => {
+      if (root.firstChild !== page.el) return;
       const configured = !(setup && setup.github_configured === false);
-      if (configured === githubConfigured) return;
       githubConfigured = configured;
+      if (configured === shown) return;
+      shown = configured;
       page.setGithub(configured);
     }).catch(() => { /* the page drawn from what was known stays */ });
   }

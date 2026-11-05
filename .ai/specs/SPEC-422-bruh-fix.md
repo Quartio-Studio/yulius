@@ -49,8 +49,9 @@ link opened anyway lands on the sign-in page with that sentence, never on a JSON
   the superadmin password disclosure. The `github_unconfigured` reason says the same sentence,
   once; with GitHub connected that reason is stale and not shown.
 - GSU-004. The page follows GitHub being connected after it loaded: at sign-out or an expired
-  session it uses what the session knew, and it reads the setup status again and redraws when
-  that changed, in place: a typed password, the open form and focus stay (review rounds 1-2).
+  session it uses what the session knew, then reads the setup status again and shows or hides
+  GitHub sign-in in place when that changed: a typed password, the open form and focus stay;
+  an answer for a sign-in page no longer shown changes nothing (review rounds 1-3).
 
 ## Plan
 
@@ -81,6 +82,12 @@ link opened anyway lands on the sign-in page with that sentence, never on a JSON
   (checked to fail with the `failed` branch mutated back to the JSON error); e2e, GitHub connected
   while signed in (`finishGithubApp`) is offered after Sign out, and `error=github_unconfigured`
   with GitHub connected shows no reason.
+- Review rounds 2-3 (e2e, `/api/setup/status` held through `__yuliusMock.holdPath`/`held`, each
+  hold proven by `heldWaiting`): a password typed while the read is held survives GitHub showing
+  in place; GitHub connected in this session is offered at sign-out while the read is held
+  (fails with the teardown capture removed); a late answer for an earlier sign-in page leaves the
+  current page right. Positive checks assert the GitHub button, the other-account link and the
+  divider are visible (fail when `setGithub(true)` leaves them hidden).
 
 ## Decisions
 
@@ -109,3 +116,12 @@ Round 2 (fresh-session reviewer, head a9bf2353): request changes.
 | 1 | The re-read redrew the page, dropping a typed password, the open form, focus or a password error | own code | Fixed test-first: the page shows or hides GitHub in place (`setGithub`) |
 | 2 | No test failed without the teardown capture | own code | Test with the status read held after connecting GitHub in the session; checked to fail with the capture removed |
 | 3 | e2e README row missed the new tests | own code | Updated |
+
+Round 3 (fresh-session reviewer, head c2a1bc37): request changes.
+
+| # | Finding | Kind | Answer |
+| --- | --- | --- | --- |
+| 1 | Positive checks passed on a hidden GitHub button | own code | `githubOffered` asserts visibility of the button, the link and the divider; checked to fail when `setGithub(true)` keeps them hidden |
+| 2 | A late status answer for a replaced sign-in page could leave the current page stale | own code | Fixed test-first: answers for a page no longer shown are ignored; each page compares with what it shows |
+| 3 | The sign-out test did not prove its hold took effect | own code | Polls `heldWaiting` before judging the page |
+| 4 | Test plan and GSU-004 out of date | own code | Updated |
