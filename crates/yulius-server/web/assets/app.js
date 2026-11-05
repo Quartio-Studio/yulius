@@ -172,17 +172,16 @@ function createApp(root, transport) {
     const reason = loc.path === '/signin' ? loc.query.get('error') : null;
     const problem = reason ? signInProblem(reason, loc.query.get('login')) : null;
     navigate(`/signin?next=${encodeURIComponent(next)}`, { replace: true });
-    const mount = () => mountSignIn(ctx, { next, problem, githubConfigured, onDone: (me, target) => signedIn(me, target) }).el;
-    const page = mount();
-    setChildren(root, page);
+    const page = mountSignIn(ctx, { next, problem, githubConfigured, onDone: (me, target) => signedIn(me, target) });
+    setChildren(root, page.el);
     if (!recheck) return;
     // GitHub may have been connected since the page loaded (another tab, another admin): the
-    // setup status says it now, and the page is drawn again only when that changed.
+    // setup status says it now, and the page shows or hides GitHub sign-in in place.
     api.get('/api/setup/status', { allow401: true }).then((setup) => {
       const configured = !(setup && setup.github_configured === false);
-      if (configured === githubConfigured || !page.isConnected) return;
+      if (configured === githubConfigured) return;
       githubConfigured = configured;
-      setChildren(root, mount());
+      page.setGithub(configured);
     }).catch(() => { /* the page drawn from what was known stays */ });
   }
 

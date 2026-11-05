@@ -315,7 +315,6 @@ export function mountSignIn(ctx, { next, onDone, problem, githubConfigured = tru
   const submit = h('button', { type: 'submit', class: 'btn' }, 'Sign in');
   // "GitHub isn't set up" is the page's own sentence when so, and stale when GitHub is set up
   // (connected since): never repeated or shown as an error.
-  const github = githubConfigured;
   const shownProblem = problem && problem.github !== false ? problem : null;
   const errorBox = h('div', { class: 'field-error', role: 'alert' }, shownProblem ? shownProblem.text : '');
   const username = h('input', { type: 'text', name: 'username', autocomplete: 'username', value: 'superadmin', hidden: true, readOnly: true, tabindex: '-1', 'aria-hidden': 'true' });
@@ -342,10 +341,8 @@ export function mountSignIn(ctx, { next, onDone, problem, githubConfigured = tru
     }
   });
   const pickFirst = Boolean(problem && problem.otherAccount);
-  const githubButton = github
-    ? h('a', { class: 'btn btn-primary btn-github', href: pickFirst ? pickerHref : githubHref }, pickFirst ? 'Sign in with another GitHub account' : 'Sign in with GitHub')
-    : null;
-  const otherAccount = github && !pickFirst ? h('a', { class: 'btn-link small auth-alt', href: pickerHref }, 'Use a different GitHub account') : null;
+  const githubButton = h('a', { class: 'btn btn-primary btn-github', href: pickFirst ? pickerHref : githubHref }, pickFirst ? 'Sign in with another GitHub account' : 'Sign in with GitHub');
+  const otherAccount = pickFirst ? null : h('a', { class: 'btn-link small auth-alt', href: pickerHref }, 'Use a different GitHub account');
   if (ctx.mock) {
     for (const link of [githubButton, otherAccount].filter(Boolean)) {
       link.addEventListener('click', async (event) => {
@@ -356,16 +353,26 @@ export function mountSignIn(ctx, { next, onDone, problem, githubConfigured = tru
     }
   }
   const forgot = h('button', { type: 'button', class: 'btn-link small', onClick: () => showRecovery() }, 'Forgot password?');
-  const details = h('details', github ? null : { open: true }, h('summary', { class: 'muted small' }, 'Superadmin password'), h('div', { class: 'stack-sm space-top' }, form, forgot));
+  const details = h('details', null, h('summary', { class: 'muted small' }, 'Superadmin password'), h('div', { class: 'stack-sm space-top' }, form, forgot));
+  const intro = h('p', { class: 'text-2' });
+  const divider = h('div', { class: 'divider' }, 'or');
   const card = h('div', { class: 'auth-card' },
     brandLockup(),
     h('h1', { class: 'auth-title' }, 'Sign in'),
-    h('p', { class: 'text-2' }, github ? 'Members sign in with GitHub. Sandbox access mirrors your GitHub repository permissions.' : GITHUB_UNCONFIGURED),
+    intro,
     githubButton,
     errorBox,
     otherAccount,
-    github ? h('div', { class: 'divider' }, 'or') : null,
+    divider,
     details);
+  // Shows or hides GitHub sign-in on this page, in place: what is typed, open or focused stays
+  // when the page learns GitHub was connected meanwhile (review round 2).
+  function setGithub(configured) {
+    for (const part of [githubButton, otherAccount, divider]) if (part) part.hidden = !configured;
+    intro.textContent = configured ? 'Members sign in with GitHub. Sandbox access mirrors your GitHub repository permissions.' : GITHUB_UNCONFIGURED;
+    if (!configured) details.open = true;
+  }
+  setGithub(githubConfigured);
   const root = h('main', { class: 'auth' }, card);
   function showRecovery() {
     setChildren(root, recoveryForm(ctx, {
@@ -385,8 +392,8 @@ export function mountSignIn(ctx, { next, onDone, problem, githubConfigured = tru
     }));
   }
   // The password is the only way in: it gets the keyboard once the page is shown.
-  if (!github) queueMicrotask(() => { if (password.isConnected) password.focus(); });
-  return { el: root };
+  if (!githubConfigured) queueMicrotask(() => { if (password.isConnected) password.focus(); });
+  return { el: root, setGithub };
 }
 
 /**

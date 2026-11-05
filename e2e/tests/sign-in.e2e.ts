@@ -37,8 +37,8 @@ test('without a GitHub App the page offers the password, not GitHub', async ({ a
   await app.open(mock('/', '&signedout=1&github=0'));
   await expect(browser).toHaveURL(/#\/signin/);
   await expect(screen.getByText(NO_GITHUB)).toBeVisible();
-  await expect(browser.locator('a.btn-github')).toHaveCount(0);
-  await expect(browser.locator('a.auth-alt')).toHaveCount(0);
+  await expect(browser.locator('a.btn-github:visible')).toHaveCount(0);
+  await expect(browser.locator('a.auth-alt:visible')).toHaveCount(0);
   await expect(browser.locator('details[open]')).toHaveCount(1);
   expect(await axeViolations(browser)).toEqual([]);
   const password = screen.getByLabel('Superadmin password');
@@ -53,7 +53,7 @@ test('a GitHub sign-in started without an App says why on the sign-in page', asy
   // the sentence once, not again as an error under it.
   await app.open(mock('/signin?error=github_unconfigured&next=/', '&signedout=1&github=0'));
   await expect(browser.locator('.auth-card >> text=/isn’t set up on this instance yet/')).toHaveCount(1);
-  await expect(browser.locator('a.btn-github')).toHaveCount(0);
+  await expect(browser.locator('a.btn-github:visible')).toHaveCount(0);
   await expect(browser).toHaveURL(/#\/signin\?next=/);
 });
 
