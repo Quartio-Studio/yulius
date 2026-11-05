@@ -39,22 +39,28 @@ link opened anyway lands on the sign-in page with that sentence, never on a JSON
 
 - GSU-001. `GET /api/auth/github/start` on an instance without a GitHub App answers 303 to
   `/signin?error=github_unconfigured[&next=<next>]` (the `next` kept only when it is a local
-  path), with no JSON body; any other failure to start answers 303 to `/signin?error=failed`
-  and is logged.
+  path), with no JSON body; any other failure to start answers 303 to
+  `/signin?error=failed[&next=<next>]` and is logged.
 - GSU-002. `GET /api/setup/status` (public) also says `github_configured: bool`: whether the
   instance has a GitHub App. No other instance detail is exposed.
 - GSU-003. The sign-in page, when `github_configured` is false, shows no GitHub button and no
   "Use a different GitHub account"; it says "GitHub sign-in isn't set up on this instance yet. The
   superadmin signs in with the password below and connects GitHub under Administration." and opens
-  the superadmin password disclosure. The `github_unconfigured` reason says the same sentence.
+  the superadmin password disclosure. The `github_unconfigured` reason says the same sentence,
+  once; with GitHub connected that reason is stale and not shown.
+- GSU-004. The page follows GitHub being connected after it loaded: at sign-out or an expired
+  session it uses what the session knew, and it reads the setup status again and redraws when
+  that changed (review round 1).
 
 ## Plan
 
 - [x] Reproduce the defect and find its root cause
-- [ ] GitHub sign-in start redirects to the sign-in page instead of a JSON error
-- [ ] Setup status says whether GitHub is configured
-- [ ] Sign-in page hides GitHub sign-in until the App is connected
+- [x] GitHub sign-in start redirects to the sign-in page instead of a JSON error
+- [x] Setup status says whether GitHub is configured
+- [x] Sign-in page hides GitHub sign-in until the App is connected
 - [ ] Independent review answered and docs current
+- [ ] Sign-in page follows GitHub being connected after load (review round 1)
+- [ ] Gates green and delivered
 
 ## Acceptance criteria
 
@@ -71,6 +77,10 @@ link opened anyway lands on the sign-in page with that sentence, never on a JSON
 - e2e (`e2e/tests/sign-in.e2e.ts`): mock `signedout=1&github=0` shows no GitHub button, the
   sentence, an open password form that signs in; `/signin?error=github_unconfigured` says it.
 - `signInProblem('github_unconfigured')` covered by the e2e above.
+- Review round 1: Rust, a stored App that cannot be read → `/signin?error=failed&next=…`
+  (checked to fail with the `failed` branch mutated back to the JSON error); e2e, GitHub connected
+  while signed in (`finishGithubApp`) is offered after Sign out, and `error=github_unconfigured`
+  with GitHub connected shows no reason.
 
 ## Decisions
 
@@ -78,3 +88,16 @@ link opened anyway lands on the sign-in page with that sentence, never on a JSON
   alone leaves raw JSON for old links, bookmarks and Home's banner. Small and reversible: no ADR.
 - `github_configured` on the public setup status rather than a new endpoint: the page already
   reads it at boot (one round trip, PERF-11) and the fact is already observable by clicking.
+
+## Review
+
+Round 1 (fresh-session reviewer, head 7fc9ab35): request changes.
+
+| # | Finding | Kind | Answer |
+| --- | --- | --- | --- |
+| 1 | The page kept the GitHub state read at load; after connecting GitHub and signing out it still hid GitHub sign-in | own code | Fixed test-first (GSU-004) |
+| 2 | The `error=failed` branch had no test | own code | Test added, proven by mutation |
+| 3 | Docs said `failed` drops `next` | own code | Docs and GSU-001 say `[&next=…]` |
+| 4 | Plan boxes unticked | own code | Ticked as steps finish |
+| 5 | A stale `github_unconfigured` reason showed beside a working GitHub button | own code | Fixed test-first |
+| 6 | A malformed query (`next=%FF`) on start/callback answers axum's plain 400 | pre-existing | Outside this change (present on dev before it): #1070 |
