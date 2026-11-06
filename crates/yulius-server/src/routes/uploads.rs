@@ -124,6 +124,24 @@ pub async fn draft_attachment(
     ))
 }
 
+/// `POST /api/superagent/attachments?name`: an image pasted into the caller's Global Superagent,
+/// kept in its own folder (SPEC-433).
+pub async fn global_superagent_attachment(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Query(q): Query<AttachmentQuery>,
+    headers: HeaderMap,
+    body: Body,
+) -> ApiResult<(StatusCode, Json<UploadedFile>)> {
+    let upload = app
+        .begin_global_superagent_attachment(&ctx, &q.name, declared_length(&headers))
+        .await?;
+    Ok((
+        StatusCode::CREATED,
+        Json(receive(&app, upload, body).await?),
+    ))
+}
+
 /// `POST /api/sandboxes/{sid}/shells/{id}/attachments?name`.
 pub async fn shell_attachment(
     State(app): State<AppState>,

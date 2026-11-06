@@ -140,7 +140,7 @@ impl App {
     }
 
     /// The person's running Global Superagent.
-    fn running_global_superagent(&self, user: &UserId) -> Option<Arc<ShellRuntime>> {
+    pub(crate) fn running_global_superagent(&self, user: &UserId) -> Option<Arc<ShellRuntime>> {
         self.live_cockpits()
             .into_iter()
             .find(|shell| shell.global && shell.creator() == user)
