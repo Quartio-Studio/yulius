@@ -114,6 +114,8 @@ test('outside a sandbox the keys skip the disabled This sandbox', async ({ app, 
   await app.open(mock('/superagent'));
   const all = tabs(screen).getByRole('tab', 'All sandboxes');
   await expect(all).toHaveAttribute('aria-selected', 'true');
+  // Its terminal takes the keyboard once it shows, as This sandbox's does (SPEC-430).
+  await expect(browser.locator(`${shownAgent} .xterm-helper-textarea`)).toBeFocused();
   await all.focus();
   await browser.keyboard.press('ArrowLeft');
   await expect(all).toHaveAttribute('aria-selected', 'true');
