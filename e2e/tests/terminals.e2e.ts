@@ -217,7 +217,21 @@ test('terminal tabs move by drag, keyboard and menu and stay so', async ({ app, 
   await tab('Terminal 2').focus();
   await browser.keyboard.press('F2');
   await screen.getByRole('textbox', 'Rename Terminal 2').fill('dev server');
-  await dragTab(browser, tab('Terminal 1'), browser.locator('#term-tab-sh_sb_studio_seed2'));
+  // Pressed and moved: the rename ends (the press takes the focus), yet the strip is not drawn
+  // again under the pointer (#477) until the tab is let go.
+  const from = await tab('Terminal 1').boundingBox();
+  const to = await browser.locator('#term-tab-sh_sb_studio_seed2').boundingBox();
+  if (!from || !to) throw new Error('tabs not laid out');
+  const y = from.y + from.height / 2;
+  await browser.mouse.move(from.x + 12, y);
+  await browser.mouse.down();
+  await browser.mouse.move(from.x + 40, y);
+  expect(await browser.evaluate((selector) => {
+    const held = document.querySelector<HTMLElement>(`${selector} .term-tab.dragging`);
+    return held ? { id: held.dataset.id, connected: held.isConnected } : null;
+  }, termStrip)).toEqual({ id: 'sh_sb_studio_seed1', connected: true });
+  await browser.mouse.move(to.x + to.width - 4 - (from.width / 2 - 12), y);
+  await browser.mouse.up();
   await expect.poll(() => tabNames(browser, termStrip)).toEqual(['Terminal 3', 'dev server', 'Terminal 1']);
   await expect.poll(() => tabsInPlace(browser, termStrip)).toBe(true);
 

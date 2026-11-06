@@ -138,6 +138,11 @@ test('browser tabs move by drag, keyboard and menu and stay so', async ({ app, b
     session.tabs.find((tab) => tab.id === 'tab-aws')!.title = 'Console Home';
     session.sendTabs();
   });
+  // Still pressed: the strip is not drawn again under the pointer (#477), the old title stays.
+  await expect.poll(() => browser.evaluate((selector) => {
+    const held = document.querySelector<HTMLElement>(`${selector} .bp-tab.dragging`);
+    return held ? { id: held.dataset.tabId, others: [...document.querySelectorAll(`${selector} .bp-tab-title`)].map((t) => t.textContent) } : null;
+  }, bpStrip)).toEqual({ id: 'tab-app', others: [expect.stringMatching(/^Amazon/), expect.stringMatching(/^Checkout/)] });
   await browser.mouse.move(to.x + 4 - (from.width / 2 - 12), from.y + from.height / 2);
   await browser.mouse.up();
   await expect.poll(names).toEqual(['Checkout', 'Console']);
