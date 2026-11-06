@@ -2420,6 +2420,29 @@ that failed early in a long job stays diagnosable
 ([SPEC-145](../.ai/specs/SPEC-145-fix-460-485-ci-keeps-a-failed-test-s-out.md),
 [decision 0119](decisions/0119-ci-keeps-failing-tests-output-from-the-whole-job.md)).
 
+## CI job waits and time limits
+
+A job waits before it starts, in `App::ci_job` (`crates/yulius-app/src/ci/exec.rs`): an
+`exclusive` job first for its turn (one run of it per sandbox at a time, a process-local
+`tokio::sync::Mutex` per `<sandbox>/<job name>` in `CiState`, taken in the order the runs asked),
+then every job for a job slot and its CPU and memory budget. Both waits are the job's `wait` stage;
+a cancellation ends them. The job records how long it waited (`ci_jobs.waited_ms`) with its start.
+Its time limit, its own `timeout_minutes` or else `YULIUS_CI_JOB_TIMEOUT_MIN`, starts when its
+process starts (`ci_watch`), so no wait counts; a job that runs out of it is killed and errors
+"timed out: ran 2 h 0 min, its time limit; it waited 39 min 12 s before it started"
+([SPEC-435](../.ai/specs/SPEC-435-ci-a-job-s-time-limit-counts-only-its-ow.md),
+[decision 0279](decisions/0279-a-ci-job-s-limit-is-its-own-and-yulius-holds-its-one-at-a-time-lock.md)).
+
+```mermaid
+flowchart LR
+  Q["job queued (run started)"] -->|"exclusive"| T["its turn: the earlier run of it ended"]
+  Q -->|"not exclusive"| S
+  T --> S["a job slot and its budget"]
+  S -->|"waited_ms recorded"| R["process starts: the limit starts"]
+  R -->|"ends within timeout_minutes or the instance's"| E["its exit decides its state"]
+  R -->|"runs out of it"| X["killed: error, says ran and waited"]
+```
+
 ## CI job states
 
 A job's exit decides its state in `App::ci_job` (`crates/yulius-app/src/ci/exec.rs`):
