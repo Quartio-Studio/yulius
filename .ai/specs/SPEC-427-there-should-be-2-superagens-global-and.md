@@ -180,7 +180,8 @@ as the person's own agent does over the remote MCP.
 
 ## Evidence
 
-At `c8534735` (the branch before its last merge of `origin/dev`, rerun after it below), on 2026-11-06:
+At `c8534735` (the branch before it merged `origin/dev`), on 2026-11-06; after the merge, `scripts/dev ci` at
+`589bf036` exited 0 again with 3164 tests passed, 16 skipped:
 
 - `scripts/dev ci`: exit 0. Repository contracts, format, clippy, docs, macOS targets and deps
   pass; `cargo nextest run --workspace --profile ci` ran 3155 tests, 3155 passed, 16 skipped.
