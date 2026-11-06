@@ -79,8 +79,7 @@ which does not freeze the tasks.
 - **MCR-005 `yulius tool` calls a Yulius tool from the shell.** `yulius tool <name> [<json
   arguments>]` sends `tools/call` to the session's `POST /mcp` with its task token and prints the
   tool's text. Exit 0 on success, 1 when the tool answers an error, 2 for a usage or environment
-  error, 3 when Yulius cannot be reached. The briefing's "Yulius tools" section and the bridge's
-  "could not be reached" answer name it.
+  error, 3 when Yulius cannot be reached. The briefing's "Yulius tools" section names it.
 - **RST-001 The helper restarts.** A helper request `restart` of commit C stops the service, starts
   it and waits until it reports C. It is refused when the helper installed another commit. It
   reports `done` (`restarted`) or `failed`; it backs up, installs and rolls back nothing.
@@ -157,5 +156,11 @@ which does not freeze the tasks.
 - **The root helper restarts, not the server exiting under `Restart=on-failure`**: the helper
   already reports each step and checks that the server came back, and a server that exits on
   purpose would count against systemd's start limit.
+- **The briefing names `yulius tool` in one short sentence** (" Unavailable? Run `yulius tool
+  <name> '<json>'`."). The briefing has no spare bytes: the long-goal tests' reference budget
+  moves from 1 700 to 1 650 bytes under the default, the sentence's size, so they still check that
+  every section fits at a budget with nothing to spare. A hook that tells the agent only while its
+  MCP is silent was the alternative; Claude Code's `PreToolUse` context is not a documented
+  surface Yulius relies on yet.
 - Both changes ship in one pull request because the person asked for them together; each is a
   separate commit series.
