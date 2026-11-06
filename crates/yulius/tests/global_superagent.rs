@@ -789,7 +789,12 @@ async fn its_person_types_into_the_global_superagent() -> TestResult {
             &f.alice,
         )
         .await?;
-        assert_eq!(gone.status, StatusCode::NOT_FOUND, "{path}: {:?}", gone.body);
+        assert_eq!(
+            gone.status,
+            StatusCode::NOT_FOUND,
+            "{path}: {:?}",
+            gone.body
+        );
     }
     f.h.app.end_all_shells().await;
     Ok(())
