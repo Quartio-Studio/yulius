@@ -36,7 +36,7 @@ use crate::shells::{GLOBAL_TOKEN_PREFIX, ShellInfo, ShellRuntime};
 /// Bump when a Global Superagent's launch changes in a way a running one must get: running ones
 /// then start again once idle (SPEC-186 SAV-006). Its instructions and tools are in the digest by
 /// themselves.
-pub(crate) const GLOBAL_LAUNCH_REVISION: u32 = 1;
+pub(crate) const GLOBAL_LAUNCH_REVISION: u32 = 2;
 
 /// What a person without a sandbox to host it is told (GSA-001).
 const NO_HOST: &str = "the Global Superagent needs a sandbox you can work in (write access)";

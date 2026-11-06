@@ -808,6 +808,12 @@ pub fn plan_cockpit(request: &CockpitRequest) -> Result<LaunchPlan, LaunchError>
     if request.only_yulius.is_some() {
         settings.insert("disableAllHooks".into(), json!(true));
         settings.insert("outputStyle".into(), json!("Concise"));
+        // Claude Code keeps the accepted Bypass Permissions warning in the user settings file,
+        // which it does not read here, so the warning would wait at every start (SPEC-430
+        // GKY-004); flag settings are read whatever the setting sources (2.1.311).
+        if request.bypass_permissions {
+            settings.insert("skipDangerousModePermissionPrompt".into(), json!(true));
+        }
     }
     if !settings.is_empty() {
         argv.extend(["--settings".into(), Value::Object(settings).to_string()]);
