@@ -1250,6 +1250,52 @@ sequenceDiagram
   end
 ```
 
+### The Global Superagent
+
+Beside the sandbox Superagents every person has one **Global Superagent**, which sees every
+sandbox they can see and keeps them in sync
+([SPEC-427](../.ai/specs/SPEC-427-there-should-be-2-superagens-global-and.md),
+[decision 0271](decisions/0271-a-global-superagent-acts-in-every-sandbox-of-its-person-through-yulius-tools-only.md),
+`global_superagent.rs`). It is a Cockpit marked `global` in its shell record, so it shares the
+start lock, usage-limit moves, update refreshes, adoption and the terminal protocol; its seat is
+`Seat::Global` instead of `Seat::Sandbox(id)`. A sandbox its person can work in hosts it (its shell
+is registered there: private terminal, idle end, removal); the process runs elsewhere. Claude Code
+starts with `--strict-mcp-config --tools ""`: no built-in tool, no MCP server but Yulius, no hook,
+no agent secret and no egress proxy. It reads no settings file (`--setting-sources ""`,
+`disableAllHooks`), and `CLAUDE_CODE_SHELL_PREFIX`/`SHELL` name a read-only `no-shell` script in its
+run directory that refuses every command Claude Code would run (`!`, hooks, status lines). Its
+folder and config are `users/<id>/superagent` (working folder `work/`), which no run binds, and on
+a contained server it runs in a bubblewrap namespace whose only writable root is that folder,
+without a sandbox holder, the host's `/etc/shadow` and `/etc/gshadow` covered
+(`App::global_containment`); its bearer never crosses a sandbox's network.
+Its `gs_` bearer makes `App::mcp_handle` hand the call to the remote MCP (`remote_mcp_handle`) with
+a `RemoteCaller` for its person as an operate token, its `superagent` set: the remote tools but
+`WITHHELD_TOOLS` (the vault and variables, `cd_deploy`, `project_import`, `onboarding_*`), every
+project tool checked against the person's access at the call, the actor `superagent:<login>` on
+the Superagent channel, changes audited `remote.tool` with `via: global-superagent`, at most 120
+requests a minute. A removed host ends it, and the next `POST /api/superagent` leaves a host where
+its person lost write access; it then starts under the oldest sandbox the person can work in,
+resuming the conversation kept in its folder. Its `shell.json` is version 2, which older releases
+end and remove. No key of the person reaches it (`ShellAttach::takes_keys`, `can_write` false):
+`POST /api/superagent/message` types each message as one bracketed paste and Enter, after the
+label `Message from your person:` (`global_paste`; the four commands alone), so Claude Code never reads
+the input as a command or exit word even when it held back text it stripped (`global_message`: control characters removed, `@` as `＠`, `!` lines and commands but `/clear`,
+`/compact`, `/context` and `/cost` refused, as are characters nobody sees but an emoji's, exit words,
+image paths Claude Code would attach and the `ultraplan` keyword), and `POST /api/superagent/interrupt` sends Esc (one per 2 s), so
+neither its editor (`EDITOR`/`VISUAL` refuse too), its `!` mode nor its menus are reachable. It is
+not served `change_merge`. The web UI opens it from the tools rail
+outside a sandbox, where the rail shows only the Superagent.
+
+```mermaid
+flowchart LR
+  P["Person: rail on All sandboxes"] -->|"POST /api/superagent"| Y["Yulius"]
+  Y -->|"spawn, bwrap root users/ID/superagent"| G["Global Superagent: claude --tools '' --strict-mcp-config"]
+  G -->|"/mcp, gs_ bearer"| R["remote MCP tools minus WITHHELD_TOOLS (person's access per call)"]
+  R --> A["sandbox A: tasks, CI, files, pull requests"]
+  R --> B["sandbox B: tasks, CI, files, pull requests"]
+  H["host sandbox (oldest the person can work in)"] -.->|"registers the shell"| G
+```
+
 A repository's `.mcp.json` would make Claude Code ask about each of its servers when the
 Superagent starts. Before every task run and Superagent start, `App::import_project_mcp` adds
 the file's servers that the sandbox lacks to its MCP servers, so task runs get them like any

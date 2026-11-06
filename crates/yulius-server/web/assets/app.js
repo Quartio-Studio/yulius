@@ -593,6 +593,7 @@ function createApp(root, transport) {
     if (!route.slug) {
       leaveSandbox(route, { home: route.name === 'home' });
       showOutside(route);
+      if (route.panel) shell.panels.open(route.panel, { persistRail: false });
       updateTitle();
       return;
     }

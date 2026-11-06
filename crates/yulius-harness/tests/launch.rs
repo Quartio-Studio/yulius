@@ -519,6 +519,7 @@ fn a_cockpit_is_plain_claude_code_with_the_token_only_in_its_environment() -> Te
         mcp_servers: Vec::new(),
         redaction_exe: None,
         bypass_permissions: false,
+        only_yulius: None,
     };
     let plan = plan_cockpit(&request)?;
     // No Yulius settings (hooks, status line), MCP or prompt (SPEC-021 CKP-002), and uncontained
@@ -638,6 +639,7 @@ fn a_contained_cockpit_bypasses_approvals_as_root_of_its_sandbox() -> TestResult
         mcp_servers: Vec::new(),
         redaction_exe: None,
         bypass_permissions: true,
+        only_yulius: None,
     };
     let plan = plan_cockpit(&request)?;
     // SPEC-208 BYP-001: bypass-permissions mode, not Claude Code's auto mode; it runs as uid 0 of
@@ -659,6 +661,7 @@ fn a_contained_cockpit_bypasses_approvals_as_root_of_its_sandbox() -> TestResult
     // BYP-004: uncontained, neither.
     let plain = plan_cockpit(&CockpitRequest {
         bypass_permissions: false,
+        only_yulius: None,
         ..request
     })?;
     assert!(
@@ -687,6 +690,7 @@ fn a_cockpit_reaches_the_yulius_tools_with_its_token_only_in_its_environment() -
         mcp_servers: Vec::new(),
         redaction_exe: None,
         bypass_permissions: false,
+        only_yulius: None,
     };
     let plan = plan_cockpit(&request)?;
     // SPEC-037 MGT-004: the Yulius MCP server inline, its bearer read from the environment; the
@@ -764,6 +768,7 @@ fn a_cockpit_rejects_the_repository_mcp_servers_instead_of_asking() -> TestResul
         mcp_servers: Vec::new(),
         redaction_exe: None,
         bypass_permissions: false,
+        only_yulius: None,
     };
     let plan = plan_cockpit(&request)?;
     let at = plan
@@ -806,6 +811,7 @@ fn a_cockpit_gets_the_sandbox_mcp_servers_and_the_redaction_hook() -> TestResult
         mcp_servers: servers(),
         redaction_exe: Some(PathBuf::from("/opt/yulius it's/yulius")),
         bypass_permissions: false,
+        only_yulius: None,
     };
     let plan = plan_cockpit(&request)?;
     let value_of = |flag: &str| -> Result<Value, Box<dyn std::error::Error>> {
@@ -921,5 +927,73 @@ fn a_cockpit_gets_the_sandbox_mcp_servers_and_the_redaction_hook() -> TestResult
             Err(error)
         );
     }
+    Ok(())
+}
+
+/// SPEC-427 GSA-002: the Global Superagent reads and changes nothing but through Yulius: no
+/// built-in tools, no MCP server but Yulius, no redaction hook, and only its read tools pre-allowed.
+#[test]
+fn the_global_superagent_runs_with_only_the_yulius_mcp() -> TestResult {
+    let plan = plan_cockpit(&CockpitRequest {
+        cwd: PathBuf::from("/data/users/u1/superagent/work"),
+        config_dir: PathBuf::from("/data/users/u1/superagent/.claude"),
+        resume: None,
+        continue_interrupted: false,
+        credential: Credential::ClaudeOauthToken(Secret::new(CLAUDE_TOKEN.into())),
+        yulius: Some(CockpitYulius {
+            url: "http://127.0.0.1:8081".into(),
+            token: Secret::new("gs_synthetic".into()),
+        }),
+        project_mcp_servers: Vec::new(),
+        mcp_servers: Vec::new(),
+        redaction_exe: None,
+        bypass_permissions: true,
+        only_yulius: Some(vec!["projects_list".into(), "tasks_list".into()]),
+    })?;
+    let argv = &plan.argv;
+    assert!(
+        argv.windows(3)
+            .any(|w| w == ["--strict-mcp-config", "--tools", ""]),
+        "{argv:?}"
+    );
+    let allowed = argv
+        .windows(2)
+        .find(|w| w[0] == "--allowedTools")
+        .map(|w| w[1].clone())
+        .ok_or("no allowed tools")?;
+    assert_eq!(
+        allowed,
+        "mcp__yulius__projects_list,mcp__yulius__tasks_list"
+    );
+    // No hook, status line or settings file a person could add runs (review round 1).
+    assert!(
+        argv.windows(2).any(|w| w == ["--setting-sources", ""]),
+        "{argv:?}"
+    );
+    let settings = argv
+        .windows(2)
+        .find(|w| w[0] == "--settings")
+        .map(|w| w[1].clone())
+        .ok_or("no settings")?;
+    let settings: serde_json::Value = serde_json::from_str(&settings)?;
+    assert_eq!(
+        settings,
+        json!({"disableAllHooks": true, "outputStyle": "Concise"})
+    );
+    let config = argv
+        .windows(2)
+        .find(|w| w[0] == "--mcp-config")
+        .map(|w| w[1].clone())
+        .ok_or("no MCP config")?;
+    let config: serde_json::Value = serde_json::from_str(&config)?;
+    assert_eq!(
+        config["mcpServers"].as_object().map(|m| m.len()),
+        Some(1),
+        "{config}"
+    );
+    assert_eq!(
+        argv.last().map(String::as_str),
+        Some("--dangerously-skip-permissions")
+    );
     Ok(())
 }

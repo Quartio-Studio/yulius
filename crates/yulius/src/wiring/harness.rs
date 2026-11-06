@@ -191,8 +191,11 @@ impl HarnessPort for HarnessAdapter {
             }),
             project_mcp_servers: l.project_mcp_servers.clone(),
             mcp_servers,
-            redaction_exe: Some(self.yulius_exe.clone()),
+            // Without Bash, hooks or other servers there is nothing to redact: the Yulius tools
+            // redact their own results (SPEC-427).
+            redaction_exe: l.only_yulius.is_none().then(|| self.yulius_exe.clone()),
             bypass_permissions: l.contained,
+            only_yulius: l.only_yulius.clone(),
         })
         .map_err(|e| AppError::Invalid(e.to_string()))?;
         // Contained, it bypasses approvals as a task run does, its warning accepted (SPEC-208).
@@ -596,6 +599,7 @@ mod tests {
             project_mcp_servers: Vec::new(),
             mcp: Vec::new(),
             contained: false,
+            only_yulius: None,
         })?;
         assert_eq!(style(&config)?, "Concise");
         Ok(())

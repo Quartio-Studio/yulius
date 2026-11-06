@@ -3420,7 +3420,7 @@ route('POST', `/api/sandboxes/${ID}/cockpit`, async ({ db, p }) => {
     db.cockpitGone = true;
     return { id: `ck_${p[0]}_gone`, name: 'Cockpit', task_id: null, folder: `/srv/yulius/sandboxes/studio/repo`, created_at: new Date().toISOString() };
   }
-  let shell = [...db.shells.values()].find((s) => s.sandbox_id === p[0] && s.cockpit);
+  let shell = [...db.shells.values()].find((s) => s.sandbox_id === p[0] && s.cockpit && !s.global);
   if (!shell) {
     db.nextId += 1;
     db.cockpitStarts = (db.cockpitStarts || 0) + 1;
@@ -3429,6 +3429,40 @@ route('POST', `/api/sandboxes/${ID}/cockpit`, async ({ db, p }) => {
     db.shells.set(shell.id, shell);
   }
   return shellDto(shell);
+});
+// The person's Global Superagent (SPEC-427): one per person outside every sandbox, hosted by a
+// sandbox they can work in; without one it is refused, as the server refuses it.
+route('POST', '/api/superagent', async ({ db }) => {
+  const host = db.sandboxes.find((s) => (RANK[s.access] || 0) >= RANK.write);
+  if (!host) fail(409, 'conflict', 'the Global Superagent needs a sandbox you can work in (write access)');
+  needClaude(db);
+  let shell = [...db.shells.values()].find((s) => s.global);
+  if (!shell) {
+    db.nextId += 1;
+    shell = { id: `gs_${db.nextId}`, sandbox_id: host.id, name: 'Cockpit', task_id: null, created_at: new Date().toISOString(), session: null, cockpit: true, global: true, folder: '/srv/yulius/users/you/superagent/work' };
+    db.shells.set(shell.id, shell);
+  }
+  return shellDto(shell);
+});
+// A message for the Global Superagent (SPEC-427 GSA-007): Yulius types it, as the server does;
+// `!` lines and commands but a few are refused.
+route('POST', '/api/superagent/message', async ({ db, body }) => {
+  const shell = [...db.shells.values()].find((s) => s.global);
+  if (!shell) fail(404, 'not_found', 'not found');
+  const text = String((body || {}).text || '').trim();
+  if (!text) fail(422, 'invalid', 'the message is empty');
+  if (text.startsWith('!')) fail(422, 'invalid', 'the Global Superagent runs no commands: code work belongs in a task in its sandbox');
+  if (text.startsWith('/') && !['/clear', '/compact', '/context', '/cost'].includes(text)) fail(422, 'invalid', 'the Global Superagent takes only these commands: /clear, /compact, /context, /cost');
+  if (shell.session) {
+    shell.session.input = text.replaceAll('@', '＠');
+    shell.session.out(shell.session.input);
+    shell.session.run();
+  }
+  return json(204);
+});
+route('POST', '/api/superagent/interrupt', async ({ db }) => {
+  if (![...db.shells.values()].some((s) => s.global)) fail(404, 'not_found', 'not found');
+  return json(204);
 });
 // The Superagent's link to Yulius (SPEC-355): a test sets it with
 // `__yuliusMock.setCockpitLink('sb_studio', 'lost' | 'recovered' | 'ok', lostAt)`; a restart
@@ -3441,7 +3475,7 @@ route('POST', `/api/sandboxes/${ID}/cockpit/restart`, async ({ db, p }) => {
   need(sandboxOf(db, p[0]), 'write');
   needClaude(db);
   if (db.cockpitRestartFails) fail(409, 'conflict', 'The Superagent could not restart: its process could not be ended, so it keeps running.');
-  const old = [...db.shells.values()].find((s) => s.sandbox_id === p[0] && s.cockpit);
+  const old = [...db.shells.values()].find((s) => s.sandbox_id === p[0] && s.cockpit && !s.global);
   db.nextId += 1;
   db.cockpitStarts = (db.cockpitStarts || 0) + 1;
   const shell = { id: `ck_${p[0]}_${db.nextId}`, sandbox_id: p[0], name: 'Cockpit', task_id: null, created_at: new Date().toISOString(), session: null, cockpit: true, resumed: true };
@@ -5380,11 +5414,12 @@ class ShellSession {
       if (hold && !this.released) { hold.then(() => { this.released = true; this.receive(ws, data); }); return; }
       this.viewers.add(ws);
       if (msg.cols && msg.rows) { this.cols = msg.cols; this.rows = msg.rows; this.sized = true; }
-      ws.push(JSON.stringify({ type: 'state', attempt_seq: null, harness: null, cols: this.cols, rows: this.rows, can_write: true, controller: true, status: 'running' }));
+      // The Global Superagent takes messages, not keys (SPEC-427 GSA-007).
+      ws.push(JSON.stringify({ type: 'state', attempt_seq: null, harness: null, cols: this.cols, rows: this.rows, can_write: !this.shell.global, controller: true, status: 'running' }));
       ws.push(terminalFrame(2, this.seq, `${E}2J${E}H${this.screen}`));
     } else if (msg.type === 'resize') {
       if (msg.cols && msg.rows) { this.cols = msg.cols; this.rows = msg.rows; this.sized = true; }
-    } else if (msg.type === 'input') {
+    } else if (msg.type === 'input' && !this.shell.global) {
       for (const ch of String(msg.data || '')) {
         if (ch === '\r') this.run();
         else if (ch === '\x7f') { if (this.input) { this.input = this.input.slice(0, -1); this.out('\b \b'); } }

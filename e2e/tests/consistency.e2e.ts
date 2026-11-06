@@ -202,9 +202,12 @@ test('pages outside a sandbox show no sandbox navigation, as Home does', async (
     await expect(screen.getByRole('heading', { level: 1 })).toHaveText(heading);
     await expect(screen.getByRole('navigation', 'Sandbox')).toBeHidden();
     await expect(screen.getByText('Open a sandbox to see its tasks.')).toBeVisible();
-    // No sandbox tab is current, and the tools belong to a sandbox.
+    // No sandbox tab is current, and the tools belong to a sandbox but the Global Superagent
+    // (SPEC-427 GSA-006), the rail's only tool here.
     expect(await browser.evaluate(() => document.querySelectorAll('.tabrow-tabs .tab.active:not(.tab-home)').length)).toBe(0);
-    await expect(browser.locator('.tools-toggle')).toBeHidden();
+    expect(await browser.evaluate(() => [...document.querySelectorAll('nav.rail button')]
+      .filter((b) => getComputedStyle(b).display !== 'none')
+      .map((b) => b.getAttribute('aria-label')))).toEqual(['Superagent']);
   }
   // New task still starts in the sandbox used last.
   await screen.getByRole('link', /^New task/).click();
