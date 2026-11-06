@@ -26,7 +26,9 @@ test('each group says what its time measures, in words (unit, in the page)', asy
       working: time({ status: 'running', activity: 'working', state_since: before(MIN), working_since: before(2 * HOUR + 14 * MIN) }),
       // Idle with a background shell: still Working, the same stretch.
       shell: time({ status: 'running', activity: 'waiting', state_since: before(5 * MIN), working_since: before(3 * HOUR), background_shells: 1, background_shells_since: before(5 * MIN) }),
-      waiting: time({ status: 'running', activity: 'waiting', state_since: before(12 * MIN) }),
+      // Stopped with steps open: waiting for you; with nothing open it answered (SPEC-429).
+      waiting: time({ status: 'running', activity: 'waiting', state_since: before(12 * MIN), steps: { done: 1, total: 3 } }),
+      answered: time({ status: 'running', activity: 'waiting', state_since: before(12 * MIN) }),
       asks: time({ status: 'running', activity: 'needs_attention', state_since: before(90 * 1000) }),
       done: time({ status: 'running', activity: 'done', state_since: before(3 * HOUR + 40 * MIN) }),
       queued: time({ status: 'queued', state_since: before(7 * HOUR) }),
@@ -40,7 +42,7 @@ test('each group says what its time measures, in words (unit, in the page)', asy
       closed: time({ status: 'closed', state_since: before(5 * HOUR) }),
       failed: time({ status: 'failed_spawn_error', state_since: before(20 * MIN) }),
       // An older server without the state's time: its last change.
-      older: time({ status: 'running', activity: 'waiting' }),
+      older: time({ status: 'running', activity: 'waiting', steps: { done: 1, total: 3 } }),
       spans: [0, 59_999, MIN, 59 * MIN, HOUR, 80 * MIN, 24 * HOUR, 27 * HOUR, 15 * 24 * HOUR].map(span),
       agos: [10_000, 5 * MIN, 3 * HOUR + 59 * MIN, 50 * HOUR].map(ago),
     };
@@ -49,6 +51,7 @@ test('each group says what its time measures, in words (unit, in the page)', asy
     working: 'working 2h 14m',
     shell: 'working 3h',
     waiting: 'waiting 12m',
+    answered: 'answered 12m ago',
     asks: 'waiting 1m',
     done: 'done 3h ago',
     queued: 'queued 7h',

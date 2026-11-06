@@ -112,6 +112,13 @@ export function goesOn(task) {
 
 const DONE = { glyph: '✓', icon: 'check', tone: 'done', label: 'Done', group: 'done' };
 
+/**
+ * An idle agent that stopped with nothing open (no step left, no unfinished goal) and nothing
+ * asked answered: nobody has to act, so it is with the Done tasks, but its activity stays
+ * `waiting` and a prompt makes it Working again (SPEC-429, ADR-0273).
+ */
+const ANSWERED = { glyph: '✓', icon: 'check', tone: 'done', label: 'Answered', group: 'done', answered: true };
+
 /** Whether the task's plan has steps not done or skipped yet (STP-001, STP-005). */
 export function planOpen(task) {
   const steps = task.steps || {};
@@ -132,9 +139,10 @@ export function statusInfo(task) {
   if ((status === 'running' || status === 'switching') && task.pause) return { glyph: '⏸', icon: 'st-paused', tone: 'queued', label: 'Paused', group: 'working', paused: task.pause };
   if (status === 'running') {
     // needs_attention: blocked mid-turn (a permission prompt, a browser request, failing gates);
-    // waiting: the agent finished its turn and the next move is the user's — unless its
-    // background shells still run (it wakes by itself when they report, TSK-014) or it waits in
-    // `yulius wait` (Yulius wakes it, SPEC-085);
+    // waiting: the agent finished its turn — unless its background shells still run (it wakes by
+    // itself when they report, TSK-014) or it waits in `yulius wait` (Yulius wakes it, SPEC-085).
+    // Stopped with work left (steps open, or a goal set, not met or failed) the next move is the
+    // user's; with nothing open it answered (SPEC-429);
     // done: the goal is achieved and the turn ended — Done once no background shell is left.
     if (activity === 'needs_attention') return { glyph: '!', icon: 'st-attention', tone: 'attention', label: 'Needs your action', group: 'needs' };
     if (activity === 'done') {
@@ -147,6 +155,7 @@ export function statusInfo(task) {
       const shells = backgroundShells(task);
       if (shells) return stillWorking(shells, task.background_shells_since);
       if (task.yulius_wait === true) return { ...WAITING_ON_YULIUS };
+      if (!planOpen(task) && task.goal_unfinished !== true) return { ...ANSWERED };
       return { glyph: '○', icon: 'st-input', tone: 'waiting', label: 'Your turn', group: 'needs' };
     }
     if (activity === 'working') return { glyph: '●', icon: 'st-working', tone: 'working', label: 'Working', group: 'working' };

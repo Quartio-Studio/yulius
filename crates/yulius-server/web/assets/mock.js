@@ -464,6 +464,8 @@ function summary(task) {
     background_shells_since: task.status === 'running' && task.background_shells ? task.background_shells_since ?? null : null,
     // The idle agent waits in `yulius wait` (SPEC-085 STT-002).
     yulius_wait: task.status === 'running' && (task.activity === 'waiting' || task.activity === 'done') && task.yulius_wait === true,
+    // Claude Code last recorded the goal as set, not met or failed (SPEC-429).
+    goal_unfinished: task.status === 'running' && (task.activity === 'waiting' || task.activity === 'done') && task.goal_unfinished === true,
     // A resting task that never ran, and the onboarding task a `pending` sandbox waits for (SPEC-153).
     not_started: task.status === 'closed' && task.neverRan === true,
     awaits_start_onboarding: task.status === 'closed' && task.neverRan === true && task.awaitsStart === true,
