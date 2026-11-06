@@ -1,11 +1,11 @@
 ---
 yulius-task: 77eb0740-3b1f-475b-8cf3-8b00a09feb33
-status: in-progress
+status: done
 ---
 
 # SPEC-426: A code edit waits for the task's spec and its Plan
 
-Status: in-progress
+Status: done
 Date: 2026-11-05
 Owner: Yulius task #408
 Scope authorization: task #408 (`/goal`), with a screenshot of task #2 of a project in a free
@@ -84,8 +84,8 @@ discovered at the end of a turn.
 - [x] ADR, architecture and docs describe the edit gate
 - [x] Independent review in a fresh session, findings fixed test-first
 - [x] Review round 2 approves the fixed head
-- [ ] The edit gate holds every edit until the Plan exists, reviewed in round 4
-- [ ] Every gate green, Evidence and the changes log updated
+- [x] The edit gate holds every edit until the Plan exists, reviewed in round 4
+- [x] Every gate green, Evidence and the changes log updated
 
 ## Acceptance criteria
 
@@ -127,4 +127,55 @@ discovered at the end of a turn.
 
 ## Evidence
 
-(filled in at the end)
+- **Root cause, checked against the report.** The GitHub plan is not the cause. `spec_gate`,
+  `spec_required`, `branch_changed`, the briefing and the spec sync read only the store, the
+  worktree's Git and the spec file, and none of them calls GitHub. Yulius's notices (Needs you,
+  attention, the sidebar) are its own. The gate ran only at `Stop`, and the only `PreToolUse` hook
+  was the local Bash check (`guard_client`). The reporter's repository (Perfect-Data, another
+  owner) and its task's transcript could not be read from here (`reference_repo` refused it), so
+  the screenshot's state was matched from the code: a goal task in the middle of its turn, with no
+  spec and so no steps. Filed as #1081.
+- **Tests seen failing before each fix.**
+  - `a_code_edit_waits_for_the_spec_plan` (committed alone in 14eacbb6): before the fix the route
+    answered `PreToolUse` with nothing ("a code edit without a spec is denied").
+  - The harness launch snapshot and the client dispatch test (1bb9cb50) failed before c77635ee.
+  - The review-round tests (f104b9ea, 574b1e0d, 84e53617, 5dbb70e8, 719bcc33) each failed before
+    their fix: `cwd` placement, links, a 202 held, per-call counting, a give-up after streamed
+    edits, a linked spec, an unreadable workflow (also shown by a mutation run, restored), and an
+    oversized spec.
+- **Full gate.**
+  - `scripts/dev ci` at 0a271ef0: exit 0, 3142 tests passed, 16 skipped.
+  - At 9cc2ac5a (the reviewed head): 3146 passed and 1 failed, 16 skipped. The failure was
+    `pool_supervision::personal_mcp_servers_reach_only_their_holders_runs`, NotFound after 1.4 s.
+    That test reads the run's `mcp.json` and `launch.json`, which this change does not touch. It
+    passed in the full gate at 0a271ef0, which already had the launch change, and 5 of 5 isolated
+    runs. Filed as #1084 rather than retried; Yulius CI runs the whole gate on the pull request
+    head.
+  - Gate runs at 14d4ff9d, 912173dc and a5541051 were stopped when review findings replaced those
+    heads.
+  - Afterwards: `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^agent_hooks::/)'`
+    28 passed; `-p yulius-harness` 142 passed; clippy (`-D warnings`) and
+    `scripts/check_repository.py` pass.
+- **Security scan.** `yulius security-scan`: "Security scan disabled: Vidoc is turned off in
+  Yulius". That is unrun, not passed.
+- **No web UI change**, so the e2e suite was not run.
+- **Independent review in fresh sessions.**
+  - Round 1 approved 0a271ef0 with 4 minors and 5 nits, fixed test-first in f104b9ea and 14d4ff9d.
+  - Round 2 requested changes: denials counted per call (major). Fixed in 574b1e0d and 912173dc.
+  - Round 3 requested changes: Claude Code 2.1.311 runs each tool's hook as its block finishes
+    streaming, so a time window cannot group one response either (major). The give-up was removed
+    in 84e53617 and a5541051.
+  - Round 4 approved a5541051 with minors (an unreadable spec or workflow held edits for good;
+    docs), fixed in 5dbb70e8, cdb91f1f and a5d5c73d.
+  - Round 5 approved a5d5c73d with two minors (a duplicated policy; specs over 256 KiB), fixed in
+    719bcc33 and 9cc2ac5a.
+  - Round 6 approved 9cc2ac5a. Its remaining nits (an exact 256 KiB boundary, an untested
+    sub-millisecond race, a grow-during-read race; all of them only deny) and the pre-existing
+    256 KiB cut of the Stop gate are #1083.
+  - Pre-existing and outside the change: #1082 (the Stop gate calls a linked spec missing).
+- **Not tested.**
+  - A real Claude Code session in a sandbox. The hook shape (`permissionDecision: deny`) is
+    Claude Code's documented one, and the review read the installed 2.1.311 binary.
+  - The reporter's free-organisation repository.
+  - Sessions started before this change: they keep their old settings until they restart.
+  - Bash edits are not held by design; the Stop gate catches them.
