@@ -11,6 +11,9 @@ sandboxes and can synchronise them"). Adds a second Superagent beside the one of
 sandbox Superagent's approved cross-sandbox requests) as it is, and reuses the tools of
 [0188](0188-remote-control-uses-scoped-personal-api-tokens.md) (the remote MCP).
 
+Its message-only input is superseded by
+[0274](0274-the-global-superagent-takes-its-persons-keys.md): the person types into its terminal.
+
 ## Context
 
 Each person has a Superagent per sandbox: Claude Code in that sandbox's repository, contained in
@@ -137,6 +140,8 @@ their task runs.
   word `ultraplan` can start a command of its own (2.1.311, behind a feature flag); a message
   holding it anywhere is refused, more than Claude Code would act on.
 - Every one of its tools is pre-allowed, on an uncontained server too: no key reaches it, so no
-  question Claude Code asked about a tool could be answered.
+  question Claude Code asked about a tool could be answered. (Since
+  [0274](0274-the-global-superagent-takes-its-persons-keys.md) keys reach it; the pre-allowing
+  stays, for the reason given there.)
 - A person who can work in no sandbox (read-only access, a guest without one) has no Global
   Superagent.

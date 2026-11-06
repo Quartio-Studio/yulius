@@ -164,8 +164,6 @@ pub struct ShellRuntime {
     pub(crate) refresh: AtomicU8,
     /// A Cockpit that is its person's Global Superagent (SPEC-427): `sandbox` only hosts it.
     pub(crate) global: bool,
-    /// When Yulius last sent a Global Superagent an interrupt (ms; 0: never).
-    pub(crate) interrupted_ms: AtomicI64,
     sandbox: SandboxId,
     creator: UserId,
     task: Option<TaskId>,
@@ -181,7 +179,7 @@ pub struct ShellRuntime {
     hub: Hub,
     /// A Cockpit's screen is redacted of agent secrets, as a task's (SPEC-147 SAM-004).
     scrub: crate::vault::TerminalScrub,
-    pub(crate) writer: tokio::sync::Mutex<Option<Box<dyn RunWriter>>>,
+    writer: tokio::sync::Mutex<Option<Box<dyn RunWriter>>>,
     ended: AtomicBool,
     /// Its owner closed it: hidden and refused while it ends.
     closing: AtomicBool,
@@ -368,13 +366,6 @@ pub struct ShellAttach {
 }
 
 impl ShellAttach {
-    /// Whether its viewers type into it: a Global Superagent takes messages instead (SPEC-427
-    /// GSA-007), so its terminal is read-only.
-    #[must_use]
-    pub fn takes_keys(&self) -> bool {
-        !self.runtime.is_global_superagent()
-    }
-
     /// PTY size (cols, rows).
     #[must_use]
     pub fn size(&self) -> (u16, u16) {
@@ -877,7 +868,6 @@ impl App {
             launch: OnceLock::new(),
             refresh: AtomicU8::new(crate::cockpit::REFRESH_NONE),
             global,
-            interrupted_ms: AtomicI64::new(0),
             sandbox: sandbox.clone(),
             creator: creator.clone(),
             task,
@@ -1298,12 +1288,6 @@ impl App {
         if data.len() > MAX_SHELL_INPUT_BYTES {
             return Err(AppError::Invalid("input frame too large".into()));
         }
-        // A key could open an editor, a shell or a menu outside every sandbox (SPEC-427 GSA-007).
-        if !attach.takes_keys() {
-            return Err(AppError::Forbidden(
-                "the Global Superagent takes messages, not keys: use its message box".into(),
-            ));
-        }
         if !self.shell_may_write(ctx, attach).await {
             return Err(AppError::Forbidden("write access is required".into()));
         }
@@ -1513,7 +1497,6 @@ impl App {
             launch,
             refresh: AtomicU8::new(refresh),
             global,
-            interrupted_ms: AtomicI64::new(0),
             sandbox,
             creator,
             task,

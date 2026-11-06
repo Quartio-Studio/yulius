@@ -934,7 +934,7 @@ fn a_cockpit_gets_the_sandbox_mcp_servers_and_the_redaction_hook() -> TestResult
 /// built-in tools, no MCP server but Yulius, no redaction hook, and only its read tools pre-allowed.
 #[test]
 fn the_global_superagent_runs_with_only_the_yulius_mcp() -> TestResult {
-    let plan = plan_cockpit(&CockpitRequest {
+    let global = |bypass_permissions| CockpitRequest {
         cwd: PathBuf::from("/data/users/u1/superagent/work"),
         config_dir: PathBuf::from("/data/users/u1/superagent/.claude"),
         resume: None,
@@ -947,9 +947,18 @@ fn the_global_superagent_runs_with_only_the_yulius_mcp() -> TestResult {
         project_mcp_servers: Vec::new(),
         mcp_servers: Vec::new(),
         redaction_exe: None,
-        bypass_permissions: true,
+        bypass_permissions,
         only_yulius: Some(vec!["projects_list".into(), "tasks_list".into()]),
-    })?;
+    };
+    let settings_of = |argv: &[String]| -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+        let settings = argv
+            .windows(2)
+            .find(|w| w[0] == "--settings")
+            .map(|w| w[1].clone())
+            .ok_or("no settings")?;
+        Ok(serde_json::from_str(&settings)?)
+    };
+    let plan = plan_cockpit(&global(true))?;
     let argv = &plan.argv;
     assert!(
         argv.windows(3)
@@ -970,14 +979,15 @@ fn the_global_superagent_runs_with_only_the_yulius_mcp() -> TestResult {
         argv.windows(2).any(|w| w == ["--setting-sources", ""]),
         "{argv:?}"
     );
-    let settings = argv
-        .windows(2)
-        .find(|w| w[0] == "--settings")
-        .map(|w| w[1].clone())
-        .ok_or("no settings")?;
-    let settings: serde_json::Value = serde_json::from_str(&settings)?;
+    // Its bypass consent is a flag setting: it reads no settings file, where Claude Code keeps the
+    // accepted warning, so the warning would wait for an answer (SPEC-430 GKY-004).
     assert_eq!(
-        settings,
+        settings_of(argv)?,
+        json!({"disableAllHooks": true, "outputStyle": "Concise", "skipDangerousModePermissionPrompt": true})
+    );
+    // Without the bypass (an uncontained server) there is nothing to consent to.
+    assert_eq!(
+        settings_of(&plan_cockpit(&global(false))?.argv)?,
         json!({"disableAllHooks": true, "outputStyle": "Concise"})
     );
     let config = argv

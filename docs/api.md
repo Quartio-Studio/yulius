@@ -1391,20 +1391,8 @@ resolves to nothing, the run gets the server without that variable or token.
     pre-allowed, on an uncontained server too. It is hosted by the oldest live sandbox the caller can work in:
     409 when there is none (read-only access everywhere), else as `POST …/cockpit` (409 without a
     Claude subscription, 429 while none has capacity). Its terminal is
-    `WS /api/shells/{id}/terminal`, read-only (`can_write` false; an `input` frame answers an
-    `error`); it is never in a sandbox's `GET …/shells`. `change_merge` is withheld too.
-  - `POST /api/superagent/message` `{"text"}` → 204: types the message into the caller's Global
-    Superagent as one bracketed paste and Enter, after the label `Message from your person:` (the
-    four commands go alone). Control characters but LF and tab are removed and `@` is typed as
-    `＠`); 422 for an empty message, one over 64 KiB, one that starts with `!`, or with `/` but is
-    not `/clear`, `/compact`, `/context` or `/cost`, one holding a character nobody sees (but in a
-    conservative set of emoji: a selector after a pictograph or in a keycap, a joiner between
-    pictographs, a subdivision flag's tags),
-    an exit word (`exit`, `quit`, `:q`…), one naming an image file Claude Code would attach, or
-    one holding `ultraplan`; 404 when none runs (SPEC-427 GSA-007). The
-    terminal's `resize` frames are still applied.
-  - `POST /api/superagent/interrupt` → 204: Esc into it, which interrupts its turn; a second one
-    within 2 s is dropped (204); 404 when none runs.
+    `WS /api/shells/{id}/terminal`, written by the caller alone (SPEC-430); it is never in a
+    sandbox's `GET …/shells`. `change_merge` is withheld too.
 - Notes ([SPEC-041](../.ai/specs/SPEC-041-here-we-want-auto-saved-notes-sandbox-wi.md),
   [SPEC-103](../.ai/specs/SPEC-103-add-me-after-team-that-is-for-user-and-n.md)): one notepad per
   sandbox, one for the team and one per person, saved by the web UI as people type.
