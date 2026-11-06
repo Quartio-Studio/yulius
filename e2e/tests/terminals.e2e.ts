@@ -1,6 +1,6 @@
 import { test, type Browser, type Screen } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { failOnPageErrors, mock, terminalShown } from './support.ts';
+import { axeViolations, DRAG_GRIP, DRAG_HINT, dragTab, failOnPageErrors, firstShown, mock, tabGrips, tabMenu, tabNames, terminalShown } from './support.ts';
 
 failOnPageErrors();
 
@@ -150,4 +150,78 @@ test('the Shell of a sandbox first visited with it open leaves the keyboard on t
   // The Shell focused as its terminal was shown: the timers queued before this one ran.
   await browser.evaluate(() => new Promise((resolve) => { setTimeout(() => resolve(true), 0); }));
   expect(await browser.evaluate(() => Boolean(document.activeElement?.closest('.term-views')))).toBe(false);
+});
+
+// SPEC-434 MTB-002/004: the terminal tabs move as the sandbox and Notes tabs do, and keep their order.
+const termStrip = '[role="tablist"][aria-label="Terminals"]';
+
+/** Three terminals the server already has, named Terminal 1 to 3 (seeded again after a reload). */
+async function seedThreeShells(browser: Browser): Promise<void> {
+  await browser.evaluate(() => {
+    const db = (window as unknown as { __yuliusMock: { shells: Map<string, object> } }).__yuliusMock;
+    for (const n of [1, 2, 3]) {
+      const id = `sh_sb_studio_seed${n}`;
+      db.shells.set(id, { id, sandbox_id: 'sb_studio', name: `Terminal ${n}`, task_id: null, created_at: new Date().toISOString(), session: null, folder: '/srv/yulius/sandboxes/studio/repo' });
+    }
+  });
+}
+
+test('terminal tabs move by drag, keyboard and menu and stay so', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12', '&ambient=0'));
+  await seedThreeShells(browser);
+  await openShellPanel(screen);
+  const tabs = screen.getByRole('tablist', 'Terminals');
+  const tab = (name: string) => tabs.getByRole('tab', name);
+  await expect(tab('Terminal 3')).toHaveAttribute('aria-selected', 'true');
+  expect(await tabNames(browser, termStrip)).toEqual(['Terminal 1', 'Terminal 2', 'Terminal 3']);
+  const grips = await tabGrips(browser, termStrip);
+  expect(grips.map((g) => g.grip)).toEqual([DRAG_GRIP, DRAG_GRIP, DRAG_GRIP]);
+  for (const g of grips) expect(g.title.endsWith(`\n${DRAG_HINT}`)).toBe(true);
+  await expect(tab('Terminal 1')).toHaveAttribute('aria-keyshortcuts', 'F2 Delete Backspace Alt+ArrowLeft Alt+ArrowRight');
+
+  // A drag moves Terminal 1 last and chooses nothing.
+  await dragTab(browser, tab('Terminal 1'), tab('Terminal 3'));
+  await expect.poll(() => tabNames(browser, termStrip)).toEqual(['Terminal 2', 'Terminal 3', 'Terminal 1']);
+  await expect(tab('Terminal 3')).toHaveAttribute('aria-selected', 'true');
+
+  // Alt+←/→ moves the focused tab and keeps the keyboard on it.
+  await tab('Terminal 1').focus();
+  await browser.keyboard.press('Alt+ArrowLeft');
+  expect(await tabNames(browser, termStrip)).toEqual(['Terminal 2', 'Terminal 1', 'Terminal 3']);
+  await expect(tab('Terminal 1')).toBeFocused();
+  await expect(tab('Terminal 3')).toHaveAttribute('aria-selected', 'true');
+
+  // The menu moves it without dragging (WCAG 2.5.7), next to Rename and Close.
+  await tabMenu(browser, '#term-tab-sh_sb_studio_seed2');
+  await expect(screen.getByRole('menuitem', 'Move left')).toHaveAttribute('aria-disabled', 'true');
+  await expect(screen.getByRole('menuitem', 'Rename')).toBeVisible();
+  await expect(screen.getByRole('menuitem', 'Close')).toBeVisible();
+  await screen.getByRole('menuitem', 'Move right').click();
+  expect(await tabNames(browser, termStrip)).toEqual(['Terminal 1', 'Terminal 2', 'Terminal 3']);
+  await tabMenu(browser, '#term-tab-sh_sb_studio_seed3');
+  await expect(screen.getByRole('menuitem', 'Move right')).toHaveAttribute('aria-disabled', 'true');
+  await screen.getByRole('menuitem', 'Move left').click();
+  expect(await tabNames(browser, termStrip)).toEqual(['Terminal 1', 'Terminal 3', 'Terminal 2']);
+  expect(await axeViolations(browser)).toEqual([]);
+
+  // A press on × closes the tab and moves nothing.
+  const close = browser.locator('#term-tab-sh_sb_studio_seed1 .term-tab-close');
+  await close.click();
+  await expect(tab('Terminal 1')).toBeHidden();
+  expect(await tabNames(browser, termStrip)).toEqual(['Terminal 3', 'Terminal 2']);
+
+  // Kept after a reload (the panel closed first, so the terminals are read once seeded); a new
+  // terminal comes last.
+  await screen.getByRole('navigation', 'Tools').getByRole('button', 'Shell').click();
+  await expect(tabs).toBeHidden();
+  await browser.reload();
+  await firstShown(screen.getByRole('heading', { level: 1 }), '#12 Checkout API');
+  await seedThreeShells(browser);
+  if (await browser.locator('.rail:not([hidden])').count() === 0) await screen.getByRole('button', /^Show tools/).click();
+  await screen.getByRole('navigation', 'Tools').getByRole('button', 'Shell').click();
+  await expect(tab('Terminal 3')).toBeVisible();
+  expect(await tabNames(browser, termStrip)).toEqual(['Terminal 3', 'Terminal 2', 'Terminal 1']);
+  await screen.getByRole('button', 'New terminal').click();
+  await expect(tab('Terminal 4')).toHaveAttribute('aria-selected', 'true');
+  expect(await tabNames(browser, termStrip)).toEqual(['Terminal 3', 'Terminal 2', 'Terminal 1', 'Terminal 4']);
 });
