@@ -41,7 +41,9 @@
 //!   removed after a week; a deleted task's folder stays while another task's request names it and
 //!   otherwise waits a week in the trash (crate::attachment_trash, SPEC-396), a shell's goes when the shell ends and
 //!   at start-up for shells that are gone. A draft or a shell's folder that a task's request or
-//!   an automation's prompt names stays (SPEC-413, ADR-0259);
+//!   an automation's prompt names stays (SPEC-413, ADR-0259). An image pasted into a person's
+//!   Global Superagent is kept in its own folder, `users/<id>/superagent/attachments/`, inside its
+//!   root (images only; those older than a week go at the next upload; SPEC-433, ADR-0277);
 //! - every upload is audited (`file.uploaded`, `attachment.uploaded`).
 
 use std::ffi::OsStr;

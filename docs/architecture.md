@@ -1282,7 +1282,12 @@ end and remove. Its person types into its terminal as into the sandbox Superagen
 `VISUAL` name the refusing script too, and on a contained server the login shell Claude Code runs
 that script through finds its home's startup files as empty read-only binds, so neither its `!`
 mode nor its editor runs anything, and its `--settings` carry `skipDangerousModePermissionPrompt` with the approval bypass, since it reads no
-settings file where Claude Code keeps the accepted warning. It is not served `change_merge`. The web UI shows it as the All sandboxes tab of the Superagent panel,
+settings file where Claude Code keeps the accepted warning. It is not served `change_merge`. An
+image pasted into (or dropped on) its terminal is uploaded by `POST /api/superagent/attachments`
+into `users/<id>/superagent/attachments/`, inside its root at the same path, and its path pasted,
+which Claude Code turns into an image (images only, as it has no file tools; the week-old ones go
+at the next upload; [SPEC-433](../.ai/specs/SPEC-433-i-can-t-paste-to-the-global-superagent-f.md),
+[decision 0277](decisions/0277-the-global-superagent-keeps-pasted-images-in-its-own-folder.md)). The web UI shows it as the All sandboxes tab of the Superagent panel,
 beside This sandbox ([SPEC-428](../.ai/specs/SPEC-428-this-2-superagents-thingy-should-be-some.md),
 [decision 0272](decisions/0272-the-two-superagents-are-tabs-of-one-panel.md)): `panels.js` holds
 one Global view per page (`sharedGlobal`), which `createSuperagentPanel` moves into the panel
@@ -1291,6 +1296,8 @@ showing that tab, so the session is attached once; outside a sandbox only that t
 ```mermaid
 flowchart LR
   P["Person: Superagent panel, All sandboxes tab"] -->|"POST /api/superagent"| Y["Yulius"]
+  P -->|"pasted image: POST /api/superagent/attachments"| F["users/ID/superagent/attachments"]
+  F -.->|"path pasted, read as an image"| G
   Y -->|"spawn, bwrap root users/ID/superagent"| G["Global Superagent: claude --tools '' --strict-mcp-config"]
   G -->|"/mcp, gs_ bearer"| R["remote MCP tools minus WITHHELD_TOOLS (person's access per call)"]
   R --> A["sandbox A: tasks, CI, files, pull requests"]

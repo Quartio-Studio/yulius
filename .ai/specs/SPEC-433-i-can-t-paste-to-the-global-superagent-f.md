@@ -63,7 +63,7 @@ terminal. Text pastes keep working as they do.
 - [x] Read the product context and related work, then write and validate the spec
 - [x] An image pasted or dropped for the Global Superagent is stored in its own folder
 - [x] The All sandboxes terminal uploads pasted and dropped images and types their paths
-- [ ] ADR, architecture, API and product docs describe the Global Superagent's images
+- [x] ADR, architecture, API and product docs describe the Global Superagent's images
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 

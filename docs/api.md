@@ -1393,6 +1393,13 @@ resolves to nothing, the run gets the server without that variable or token.
     Claude subscription, 429 while none has capacity). Its terminal is
     `WS /api/shells/{id}/terminal`, written by the caller alone (SPEC-430); it is never in a
     sandbox's `GET …/shells`. `change_merge` is withheld too.
+  - `POST /api/superagent/attachments?name` (signed in), raw body → 201 `UploadedFile`: an image
+    pasted into (or dropped on) the caller's running Global Superagent (SPEC-433, ADR-0277), stored
+    as other attachments (streamed, the upload limit, a free safe name) in its own folder,
+    `users/<id>/superagent/attachments/`, whose absolute path is the same inside its root; 422 for
+    a name that is not `.png`, `.jpg`, `.jpeg`, `.gif` or `.webp` (it has no file tools), before
+    the body is read; 404 while the caller's Global Superagent is not running; at most 500 files,
+    those older than a week removed at the next upload.
 - Notes ([SPEC-041](../.ai/specs/SPEC-041-here-we-want-auto-saved-notes-sandbox-wi.md),
   [SPEC-103](../.ai/specs/SPEC-103-add-me-after-team-that-is-for-user-and-n.md)): one notepad per
   sandbox, one for the team and one per person, saved by the web UI as people type.
