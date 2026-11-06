@@ -935,6 +935,8 @@ fn personal_mcp_servers_reach_only_their_holders_runs() -> TestResult {
             })
             .await?
             .id;
+        // Its launch files, not only its attempt: the attempt is recorded before the spawn writes
+        // them (#1084).
         wait_for("the automation's run", Duration::from_secs(30), || {
             let app = app.clone();
             let id = automated.clone();
@@ -945,7 +947,7 @@ fn personal_mcp_servers_reach_only_their_holders_runs() -> TestResult {
                     .await
                     .ok()
                     .flatten()
-                    .is_some()
+                    .is_some_and(|run| run_servers(&run.run_dir).is_ok())
             }
         })
         .await?;
