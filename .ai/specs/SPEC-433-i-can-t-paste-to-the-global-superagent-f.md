@@ -64,6 +64,7 @@ terminal. Text pastes keep working as they do.
 - [x] An image pasted or dropped for the Global Superagent is stored in its own folder
 - [x] The All sandboxes terminal uploads pasted and dropped images and types their paths
 - [x] ADR, architecture, API and product docs describe the Global Superagent's images
+- [ ] Review round 1 fixed: links, old folders and disabled accounts tested, images checked in the browser
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 
