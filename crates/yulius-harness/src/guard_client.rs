@@ -1,5 +1,7 @@
-//! `yulius hook claude PreToolUse` (Bash only), inside the sandbox: refuses a command that can
-//! never work as meant, before it runs (F 2026-10-12, complaint 1: dead monitors and shells).
+//! `yulius hook claude PreToolUse`, inside the sandbox: refuses a Bash command that can never
+//! work as meant, before it runs (F 2026-10-12, complaint 1: dead monitors and shells). The edit
+//! tools' calls ([`EDIT_TOOLS`]) are not judged here: the hook client sends them to Yulius's
+//! edit gate (SPEC-426).
 //!
 //! Claude Code runs a Bash command as `bash -c '<command>'`, so `pgrep -f P` and `pkill -f P` in
 //! it see their own shell, whose command line contains `P`: a wait on `pgrep -f` never ends (the
@@ -10,9 +12,34 @@
 use std::io::{Read, Write};
 
 use serde_json::Value;
+pub use yulius_contracts::hooks::EDIT_TOOLS;
+use yulius_contracts::hooks::edited_file_field;
 
 /// Largest hook input read.
 const MAX_INPUT_BYTES: u64 = 1024 * 1024;
+
+/// The request Yulius's edit gate gets for the `PreToolUse` input `body` of an edit tool
+/// ([`EDIT_TOOLS`]): only the event, the tool, the agent's folder and the edited path, never the
+/// file's content (SPEC-426 EDG-001). `None` for any other tool or input.
+#[must_use]
+pub fn edit_request(body: &[u8]) -> Option<Vec<u8>> {
+    let event = serde_json::from_slice::<Value>(body).ok()?;
+    let tool = event["tool_name"].as_str()?;
+    let field = edited_file_field(tool)?;
+    let mut request = serde_json::Map::new();
+    for key in ["hook_event_name", "tool_name", "cwd"] {
+        if let Some(value) = event.get(key).filter(|v| v.is_string()) {
+            request.insert(key.to_owned(), value.clone());
+        }
+    }
+    if let Some(path) = event["tool_input"].get(field).filter(|v| v.is_string()) {
+        request.insert(
+            "tool_input".to_owned(),
+            serde_json::json!({ field: path.clone() }),
+        );
+    }
+    serde_json::to_vec(&Value::Object(request)).ok()
+}
 
 /// Why `command` would match itself: the first `pgrep -f`/`pkill -f` pattern that its own
 /// `bash -c` command line contains, or `None`.

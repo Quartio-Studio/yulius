@@ -169,6 +169,23 @@ fn claude_new_session_argv_snapshot_and_files() -> TestResult {
             }] }])
         );
     }
+    // Before a tool runs: Bash is checked in the sandbox, the edit tools by Yulius's edit gate
+    // (SPEC-426 EDG-001); both through the same client, never held.
+    assert_eq!(
+        settings["hooks"]["PreToolUse"],
+        json!([
+            { "matcher": "Bash", "hooks": [{
+                "type": "command",
+                "command": "'/opt/yulius/bin/yulius' hook claude PreToolUse",
+                "timeout": 60
+            }] },
+            { "matcher": "Edit|MultiEdit|Write|NotebookEdit", "hooks": [{
+                "type": "command",
+                "command": "'/opt/yulius/bin/yulius' hook claude PreToolUse",
+                "timeout": 60
+            }] }
+        ])
+    );
     // The status line runs the same client: it prints the task's line and forwards the plan
     // usage Claude Code read from its own responses (ADR-17).
     assert_eq!(

@@ -276,6 +276,7 @@ impl App {
             )),
             events::USER_PROMPT_SUBMIT => self.hook_prompt_submit(ctx, input, sent).await,
             events::STOP => self.hook_stop(ctx, input).await,
+            events::PRE_TOOL_USE => Ok(HookReply::Output(self.hook_pre_tool_use(ctx, input).await)),
             events::NOTIFICATION => {
                 // Only a notice that asks a person to act needs one: Claude Code's reminder that
                 // it waits for input ("idle", about a minute after a turn ended) keeps a finished
@@ -938,6 +939,161 @@ impl App {
     }
 }
 
+/// `file` (absolute, or relative to `base`) with `.` and `..` resolved lexically.
+fn lexical_path(base: &Path, file: &str) -> PathBuf {
+    use std::path::Component;
+    let mut normal = PathBuf::new();
+    for part in base.join(file).components() {
+        match part {
+            Component::ParentDir => {
+                normal.pop();
+            }
+            Component::CurDir => {}
+            other => normal.push(other),
+        }
+    }
+    normal
+}
+
+/// `path` relative to `root`; `None` outside it or for `root` itself.
+fn relative_to(root: &Path, path: &Path) -> Option<String> {
+    let rel = path.strip_prefix(root).ok()?.to_str()?;
+    (!rel.is_empty()).then(|| rel.to_owned())
+}
+
+/// `file` (absolute, or relative to `base`) as a path relative to `worktree`, with `.` and
+/// `..` resolved lexically; `None` outside it or for the worktree itself.
+fn worktree_relative(worktree: &Path, base: &Path, file: &str) -> Option<String> {
+    relative_to(worktree, &lexical_path(base, file))
+}
+
+/// `path` with its longest existing ancestor resolved through links (the rest kept as written),
+/// so a file not yet created is placed by its folder.
+fn resolved_through_links(path: &Path) -> Option<PathBuf> {
+    let mut rest = Vec::new();
+    let mut probe = path;
+    loop {
+        if let Ok(real) = std::fs::canonicalize(probe) {
+            return Some(rest.iter().rev().fold(real, |acc, part| acc.join(part)));
+        }
+        rest.push(probe.file_name()?.to_owned());
+        probe = probe.parent()?;
+    }
+}
+
+impl App {
+    /// `PreToolUse`: the edit gate's answer. It never gives up (SPEC-426 EDG-005): the spec is
+    /// documentation, so the way through stays open, and an agent that loops meets the Stop
+    /// gate. A failure to decide lets the edit go ahead (the Stop gate still checks).
+    async fn hook_pre_tool_use(&self, ctx: &AgentContext, input: &HookInput) -> HookOutput {
+        match self.edit_gate(&ctx.task, input).await {
+            Ok(Some(reason)) => HookOutput::deny_tool(reason),
+            Ok(None) => HookOutput::default(),
+            Err(err) => {
+                tracing::warn!(error = %err, task = %ctx.task.id, "edit gate unavailable");
+                HookOutput::default()
+            }
+        }
+    }
+
+    /// The discipline gate before a code edit (SPEC-426 EDG-002): `Some(reason)` when an edit
+    /// tool is about to change a file of the task's worktree that is not documentation, the task
+    /// needs a spec for such a change, and its spec does not exist or has no Plan item yet.
+    async fn edit_gate(&self, task: &TaskRecord, input: &HookInput) -> AppResult<Option<String>> {
+        let Some(field) = input
+            .tool_name
+            .as_deref()
+            .and_then(yulius_contracts::hooks::edited_file_field)
+        else {
+            return Ok(None);
+        };
+        let Some(file) = input
+            .tool_input
+            .as_ref()
+            .and_then(|tool_input| tool_input.get(field))
+            .and_then(serde_json::Value::as_str)
+        else {
+            return Ok(None);
+        };
+        let Some(worktree) = task.worktree_path.as_deref().map(PathBuf::from) else {
+            return Ok(None);
+        };
+        // A relative path is the agent's folder's (`cwd`); a path through a link to the
+        // worktree is placed by what it resolves to.
+        let base = input
+            .cwd
+            .as_deref()
+            .map(PathBuf::from)
+            .filter(|cwd| cwd.is_absolute())
+            .unwrap_or_else(|| worktree.clone());
+        let rel = match worktree_relative(&worktree, &base, file) {
+            Some(rel) => rel,
+            None => {
+                let (root, path) = (worktree.clone(), lexical_path(&base, file));
+                let resolved = tokio::task::spawn_blocking(move || {
+                    let root = std::fs::canonicalize(&root).ok()?;
+                    relative_to(&root, &resolved_through_links(&path)?)
+                })
+                .await
+                .map_err(AppError::internal)?;
+                let Some(rel) = resolved else { return Ok(None) };
+                rel
+            }
+        };
+        if yulius_domain::spec_format::is_documentation_path(&rel) {
+            return Ok(None);
+        }
+        // A workflow the store cannot read is a failure to decide, which passes, not the
+        // spec-by-change default of the Stop gate.
+        if !self
+            .try_spec_policy(task)
+            .await?
+            .requires_spec([rel.as_str()], true)
+        {
+            return Ok(None);
+        }
+        let place = match self.task_spec_path(task, &worktree).await {
+            Ok(spec_path) => {
+                let (root, expected) = (worktree.clone(), task.id.clone());
+                let path = spec_path.clone();
+                // A spec that exists but cannot be judged (a link, not UTF-8, larger than the part
+                // read) passes; one gone since it was found is missing.
+                let planned = tokio::task::spawn_blocking(move || {
+                    match std::fs::symlink_metadata(root.join(&path)) {
+                        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return false,
+                        Ok(meta) if meta.len() >= MAX_DOC_BYTES => return true,
+                        _ => {}
+                    }
+                    read_repo_doc(&root, &path).is_none_or(|text| {
+                        validate_spec_for(&text, &expected)
+                            .plan
+                            .iter()
+                            .any(|item| item.depth == 0 && !item.text.trim().is_empty())
+                    })
+                })
+                .await
+                .map_err(AppError::internal)?;
+                if planned {
+                    return Ok(None);
+                }
+                format!("at `{spec_path}`")
+            }
+            Err(dir) => task
+                .spec_path
+                .as_deref()
+                .map_or_else(|| format!("under `{dir}`"), |path| format!("at `{path}`")),
+        };
+        Ok(Some(format!(
+            "Yulius: `{rel}` is code, and this task needs its spec with a Plan before its code \
+             changes. Write the spec {place} in the Yulius format first (`yulius-task: {}` in its \
+             frontmatter, a Plan checklist of similar-effort steps; spec_check validates it), \
+             then make this edit again. Documentation edits are not held. Decide the spec's \
+             content yourself from the request and the code; do not ask anyone.",
+            task.id
+        )))
+    }
+}
+
 impl App {
     /// Keeps the task's steps in sync with the Plan checklist of its spec (STP-004): the
     /// top-level plan items (at most [`crate::coordination::MAX_STEPS`]) become the steps in
@@ -1367,7 +1523,7 @@ mod tests {
     use super::{
         RepoDocs, colour, doc_present, foundations, notice_answered_by_work,
         notification_needs_a_person, read_repo_doc, repo_doc_exists, repo_path, resolved_in_repo,
-        workflow_count,
+        resolved_through_links, workflow_count, worktree_relative,
     };
     use std::path::Path;
     use yulius_contracts::hooks::HookInput;
@@ -1649,5 +1805,46 @@ mod tests {
         assert_eq!(repo_path(root, "../x"), None);
         assert_eq!(repo_path(root, "/etc/passwd"), None);
         assert_eq!(repo_path(root, "a/../../x"), None);
+    }
+
+    #[test]
+    fn edited_files_are_placed_in_the_worktree_lexically() {
+        let wt = Path::new("/w/t1");
+        let rel = |file: &str| worktree_relative(wt, wt, file);
+        assert_eq!(rel("/w/t1/src/a.rs").as_deref(), Some("src/a.rs"));
+        assert_eq!(rel("src/./a.rs").as_deref(), Some("src/a.rs"));
+        assert_eq!(rel("/w/t1/docs/../a.rs").as_deref(), Some("a.rs"));
+        assert_eq!(rel("/w/t10/a.rs"), None, "a sibling worktree is outside");
+        assert_eq!(rel("/w/t1/../t2/a.rs"), None);
+        assert_eq!(rel("../../etc/passwd"), None);
+        assert_eq!(rel("/w/t1"), None);
+        let docs = Path::new("/w/t1/docs");
+        assert_eq!(
+            worktree_relative(wt, docs, "x.svg").as_deref(),
+            Some("docs/x.svg"),
+            "a relative path is the agent's folder's"
+        );
+        assert_eq!(worktree_relative(wt, docs, "../../t2/a.rs"), None);
+    }
+
+    #[test]
+    fn links_are_followed_by_the_longest_existing_folder() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let dir = tempfile::tempdir()?;
+        let root = std::fs::canonicalize(dir.path())?;
+        std::fs::create_dir_all(root.join("wt/src"))?;
+        std::os::unix::fs::symlink(root.join("wt"), root.join("link"))?;
+        std::os::unix::fs::symlink(root.join("loop"), root.join("loop"))?;
+        assert_eq!(
+            resolved_through_links(&root.join("link/src/new/deep/a.rs")),
+            Some(root.join("wt/src/new/deep/a.rs")),
+            "a file not created yet is placed by its folder"
+        );
+        assert_eq!(
+            resolved_through_links(&root.join("loop/a.rs")),
+            Some(root.join("loop/a.rs")),
+            "a link loop ends at its folder, never spins"
+        );
+        Ok(())
     }
 }

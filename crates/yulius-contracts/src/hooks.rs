@@ -19,9 +19,29 @@ pub mod events {
     pub const NOTIFICATION: &str = "Notification";
     /// The session ends (`/exit`, Ctrl+C twice, `/clear`, a signal); `reason` says why.
     pub const SESSION_END: &str = "SessionEnd";
+    /// A tool is about to run; output may deny it with a reason (the edit gate, SPEC-426).
+    pub const PRE_TOOL_USE: &str = "PreToolUse";
     /// Not a hook: Claude Code's `statusLine` command, run by the same client. Its input is a
     /// [`super::StatusLineInput`]; the answer is the status line's text.
     pub const STATUS_LINE: &str = "StatusLine";
+}
+
+/// Claude Code's tools that write a file, with the `tool_input` field naming it: their
+/// `PreToolUse` goes to Yulius's edit gate (SPEC-426 EDG-001).
+pub const EDIT_TOOLS: [(&str, &str); 4] = [
+    ("Edit", "file_path"),
+    ("MultiEdit", "file_path"),
+    ("Write", "file_path"),
+    ("NotebookEdit", "notebook_path"),
+];
+
+/// The `tool_input` field naming the file an edit tool writes (see [`EDIT_TOOLS`]).
+#[must_use]
+pub fn edited_file_field(tool: &str) -> Option<&'static str> {
+    EDIT_TOOLS
+        .iter()
+        .find(|(name, _)| *name == tool)
+        .map(|(_, field)| *field)
 }
 
 /// The request header in which `yulius hook` says when it sent the hook (Unix ms): a hook Yulius
@@ -148,6 +168,12 @@ pub struct HookSpecificOutput {
     /// Text added to the agent's context (`additionalContext`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub additional_context: Option<String>,
+    /// `PreToolUse`: `deny` keeps the tool from running (`permissionDecision`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub permission_decision: Option<String>,
+    /// `PreToolUse`: why, shown to the agent (`permissionDecisionReason`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub permission_decision_reason: Option<String>,
 }
 
 /// The JSON a hook command prints back to the CLI. Unset fields are omitted.
@@ -179,6 +205,8 @@ pub struct HookOutput {
 
 /// Decision value that blocks the action.
 pub const DECISION_BLOCK: &str = "block";
+/// `PreToolUse` permission decision that keeps the tool from running.
+pub const PERMISSION_DENY: &str = "deny";
 
 impl HookOutput {
     /// Output that blocks with `reason` (for `Stop`, the agent continues with the reason).
@@ -198,6 +226,21 @@ impl HookOutput {
             hook_specific_output: Some(HookSpecificOutput {
                 hook_event_name: event.into(),
                 additional_context: Some(context.into()),
+                ..HookSpecificOutput::default()
+            }),
+            ..Self::default()
+        }
+    }
+
+    /// `PreToolUse` output that keeps the tool from running, telling the agent `reason`.
+    #[must_use]
+    pub fn deny_tool(reason: impl Into<String>) -> Self {
+        Self {
+            hook_specific_output: Some(HookSpecificOutput {
+                hook_event_name: events::PRE_TOOL_USE.into(),
+                permission_decision: Some(PERMISSION_DENY.into()),
+                permission_decision_reason: Some(reason.into()),
+                ..HookSpecificOutput::default()
             }),
             ..Self::default()
         }
@@ -311,6 +354,7 @@ mod tests {
             hook_specific_output: Some(HookSpecificOutput {
                 hook_event_name: events::SESSION_START.into(),
                 additional_context: Some("briefing".into()),
+                ..HookSpecificOutput::default()
             }),
             system_message: Some("note".into()),
             continue_: Some(true),
@@ -346,6 +390,14 @@ mod tests {
                 "2 messages"
             ))?,
             json!({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": "2 messages"}})
+        );
+        assert_eq!(
+            serde_json::to_value(HookOutput::deny_tool("write the Plan"))?,
+            json!({"hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": "write the Plan"
+            }})
         );
         assert_eq!(serde_json::to_string(&HookOutput::default())?, "{}");
         assert!(HookOutput::default().is_empty());

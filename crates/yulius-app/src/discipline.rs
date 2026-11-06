@@ -116,18 +116,28 @@ impl App {
     /// The task's spec policy from its workflow (DSC-013): `Required` or `NotRequired` by the
     /// workflow's spec gate, `ByChange` without a workflow (or when it cannot be read).
     pub async fn spec_policy(&self, task: &TaskRecord) -> SpecPolicy {
-        // The preparation task changes documentation, configuration and CI only (DSC-010): a
-        // chore that needs no spec, so Yulius opens its pull request once its plan is done.
-        if task.origin == crate::model::TaskOrigin::Onboarding {
-            return SpecPolicy::NotRequired;
-        }
-        match self.task_workflow(task).await {
-            Ok(workflow) => SpecPolicy::from_workflow(workflow.map(|w| w.require_spec)),
+        match self.try_spec_policy(task).await {
+            Ok(policy) => policy,
             Err(err) => {
                 tracing::warn!(error = %err, task = %task.id, "workflow unreadable; spec policy by change");
                 SpecPolicy::ByChange
             }
         }
+    }
+
+    /// [`Self::spec_policy`] without its fallback: a workflow the store cannot read is an error
+    /// (the edit gate passes then, SPEC-426 EDG-002).
+    ///
+    /// # Errors
+    /// Store failures.
+    pub(crate) async fn try_spec_policy(&self, task: &TaskRecord) -> AppResult<SpecPolicy> {
+        // The preparation task changes documentation, configuration and CI only (DSC-010): a
+        // chore that needs no spec, so Yulius opens its pull request once its plan is done.
+        if task.origin == crate::model::TaskOrigin::Onboarding {
+            return Ok(SpecPolicy::NotRequired);
+        }
+        let workflow = self.task_workflow(task).await?;
+        Ok(SpecPolicy::from_workflow(workflow.map(|w| w.require_spec)))
     }
 
     fn integration_base(&self, sandbox: &crate::model::SandboxRecord) -> String {
