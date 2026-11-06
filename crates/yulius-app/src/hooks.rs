@@ -1040,20 +1040,26 @@ impl App {
                 rel
             }
         };
-        if yulius_domain::spec_format::is_documentation_path(&rel)
-            || !self
-                .spec_policy(task)
-                .await
-                .requires_spec([rel.as_str()], true)
-        {
+        if yulius_domain::spec_format::is_documentation_path(&rel) {
+            return Ok(None);
+        }
+        // The workflow as the store has it: one it cannot read is a failure to decide, which
+        // passes, not the spec-by-change default of the Stop gate.
+        let policy = if task.origin == crate::model::TaskOrigin::Onboarding {
+            SpecPolicy::NotRequired
+        } else {
+            SpecPolicy::from_workflow(self.task_workflow(task).await?.map(|w| w.require_spec))
+        };
+        if !policy.requires_spec([rel.as_str()], true) {
             return Ok(None);
         }
         let place = match self.task_spec_path(task, &worktree).await {
             Ok(spec_path) => {
                 let (root, expected) = (worktree.clone(), task.id.clone());
                 let path = spec_path.clone();
+                // A spec that exists but cannot be read (a link, not UTF-8) is not judged.
                 let planned = tokio::task::spawn_blocking(move || {
-                    read_repo_doc(&root, &path).is_some_and(|text| {
+                    read_repo_doc(&root, &path).is_none_or(|text| {
                         validate_spec_for(&text, &expected)
                             .plan
                             .iter()
