@@ -58,8 +58,8 @@ which does not freeze the tasks.
 
 ## Requirements
 
-- **MCR-001 The bridge says it is alive.** `yulius mcp` sends a `ping` to `POST /mcp` once at start
-  and then every 60 s, whatever Claude Code sends. Its answer is never written to stdout. A ping
+- **MCR-001 The bridge says it is alive.** `yulius mcp` sends a `ping` to `POST /mcp` every 60 s,
+  whatever Claude Code sends (Claude Code's own `initialize` reaches Yulius at the start). Its answer is never written to stdout. A ping
   that fails is dropped (the next one tries again).
 - **MCR-002 Yulius records each task's last bridge contact.** Every agent request with an id that
   reaches `POST /mcp` with a task token sets the task's runtime `mcp_seen_ms`.
@@ -106,7 +106,7 @@ which does not freeze the tasks.
 
 ## Acceptance criteria
 
-- A bridge's pings reach `POST /mcp` at start and on its interval, and its stdout carries only
+- A bridge's pings reach `POST /mcp` on its interval, and its stdout carries only
   the answers to Claude Code's own messages.
 - A live, idle, Running task whose bridge has been silent for 3 minutes (server and session up
   for 3 minutes) gets `/mcp reconnect yulius` typed once; a busy, paused, update-held, recently
@@ -126,7 +126,7 @@ which does not freeze the tasks.
 
 ## Test plan
 
-- Unit (`yulius::mcp_bridge`): pings at start and on a short test interval reach a fake Yulius;
+- Unit (`yulius::mcp_bridge`): pings on a short test interval reach a fake Yulius;
   their answers never reach stdout; a failed ping does not end the bridge.
 - Unit (`yulius-app::mcp_watch`, the pure rule): each condition of MCR-003 and MCR-004 on its
   own, the 10-minute spacing and the cap of 3.

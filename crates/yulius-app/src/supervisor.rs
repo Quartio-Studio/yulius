@@ -251,6 +251,11 @@ pub struct TaskRuntime {
     pub(crate) turn_moved_ms: AtomicI64,
     /// The server start (ms) after whose outage this task was woken, once (SPEC-358 MSB-007).
     pub(crate) woken_after_outage_ms: AtomicI64,
+    /// When the task's agent last reached `POST /mcp` on this server (ms, 0 = never): its
+    /// bridge pings every minute (SPEC-432 MCR-002).
+    pub(crate) mcp_seen_ms: AtomicI64,
+    /// The `/mcp reconnect yulius` typed since its Yulius MCP was last heard (MCR-003).
+    pub(crate) mcp_reconnects: Mutex<crate::mcp_watch::Reconnects>,
     /// Background work the transcript says the session started and no notification ended yet:
     /// Monitor streams and background agents by Claude Code's task id (SPEC-079 BGW-002).
     pub(crate) launches: Mutex<std::collections::BTreeMap<String, crate::finish::Launch>>,
@@ -393,6 +398,8 @@ impl TaskRuntime {
             turn_closed_ms: AtomicI64::new(0),
             turn_moved_ms: AtomicI64::new(0),
             woken_after_outage_ms: AtomicI64::new(0),
+            mcp_seen_ms: AtomicI64::new(0),
+            mcp_reconnects: Mutex::new(crate::mcp_watch::Reconnects::default()),
             background_shells: AtomicI64::new(-1),
             limits_at_start: Mutex::new(None),
             background_waits: AtomicI64::new(-1),

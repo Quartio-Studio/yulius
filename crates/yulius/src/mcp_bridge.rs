@@ -10,7 +10,9 @@
 //!   (`initialize`, `ping`, `tools/list`, a notification); a `tools/call` answers that it may have
 //!   taken effect (MSB-003);
 //! - a held request Claude Code cancels is never sent; at most [`MAX_IN_FLIGHT`] messages are in
-//!   flight; lines and answers are bounded; each answer is one line (MSB-004).
+//!   flight; lines and answers are bounded; each answer is one line (MSB-004);
+//! - it pings Yulius every [`Settings::alive_every`], keeping the answers to itself,
+//!   so Yulius knows the session still has its Yulius MCP (SPEC-432 MCR-001).
 
 use std::collections::HashMap;
 use std::io::{BufRead, Write};
@@ -31,6 +33,10 @@ const MAX_LINE: usize = 4 * 1024 * 1024;
 const MAX_ANSWER: usize = 32 * 1024 * 1024;
 /// Methods that change nothing, sent again even when Yulius may have read them.
 const SAFE_TO_RESEND: [&str; 3] = ["initialize", "ping", "tools/list"];
+/// The id of the bridge's own pings: never one of Claude Code's.
+pub const ALIVE_ID: &str = "yulius-bridge-alive";
+/// The longest one ping may take.
+const PING_BOUND: Duration = Duration::from_secs(30);
 /// How long the calls in flight may finish once Claude Code closed stdin.
 const DRAIN: Duration = Duration::from_secs(10);
 
@@ -41,6 +47,8 @@ pub struct Settings {
     pub outage_wait: Duration,
     /// Longest pause between two tries.
     pub backoff_cap: Duration,
+    /// How often the bridge tells Yulius it is alive.
+    pub alive_every: Duration,
     /// The bounds of one try.
     pub limits: CallLimits,
 }
@@ -50,6 +58,7 @@ impl Default for Settings {
         Self {
             outage_wait: Duration::from_secs(10 * 60),
             backoff_cap: Duration::from_secs(5),
+            alive_every: Duration::from_secs(60),
             limits: CallLimits {
                 connect: Duration::from_secs(5),
                 continue_wait: Duration::from_secs(10),
@@ -73,6 +82,9 @@ struct Shared {
     ended: Condvar,
     /// Whether the last try found Yulius unreachable, so the log says so once per outage.
     down: AtomicBool,
+    /// Set when the bridge ends, and its signal to the pings.
+    stopped: Mutex<bool>,
+    stop: Condvar,
     settings: Settings,
 }
 
@@ -90,8 +102,24 @@ pub fn run(
         in_flight: Mutex::new(0),
         ended: Condvar::new(),
         down: AtomicBool::new(false),
+        stopped: Mutex::new(false),
+        stop: Condvar::new(),
         settings,
     });
+    {
+        let shared = Arc::clone(&shared);
+        std::thread::spawn(move || shared.ping_while_running());
+    }
+    let code = serve(&shared, input);
+    // Not joined: a ping in flight ends within its own bound.
+    if let Ok(mut stopped) = shared.stopped.lock() {
+        *stopped = true;
+    }
+    shared.stop.notify_all();
+    code
+}
+
+fn serve(shared: &Arc<Shared>, input: &mut dyn BufRead) -> i32 {
     loop {
         match read_line(input) {
             Ok(Line::End) => {
@@ -103,7 +131,7 @@ pub fn run(
                 -32600,
                 &format!("message longer than {MAX_LINE} bytes"),
             ),
-            Ok(Line::Text(line)) => dispatch(&shared, line),
+            Ok(Line::Text(line)) => dispatch(shared, line),
             Err(err) => {
                 eprintln!("yulius mcp: stdin: {err}");
                 return 1;
@@ -289,6 +317,34 @@ fn resendable(method: &str, id: Option<&Value>) -> bool {
 }
 
 impl Shared {
+    /// Pings Yulius every [`Settings::alive_every`] until the bridge ends (Claude Code's own
+    /// `initialize` reaches it at the start). A ping that fails is dropped: the next one tries
+    /// again.
+    fn ping_while_running(&self) {
+        let ping = json!({"jsonrpc": "2.0", "id": ALIVE_ID, "method": "ping"}).to_string();
+        let limits = CallLimits {
+            total: self.settings.limits.total.min(PING_BOUND),
+            ..self.settings.limits
+        };
+        loop {
+            let Ok(stopped) = self.stopped.lock() else {
+                return;
+            };
+            match self
+                .stop
+                .wait_timeout_while(stopped, self.settings.alive_every, |stopped| !*stopped)
+            {
+                Ok((stopped, _)) if !*stopped => {}
+                _ => return,
+            }
+            if let Err(CallError::Environment(_)) =
+                agent_call(PATH, ping.as_bytes(), self.env.as_ref(), limits)
+            {
+                return;
+            }
+        }
+    }
+
     /// Counts a message in flight; `false` past [`MAX_IN_FLIGHT`].
     fn enter(&self) -> bool {
         let Ok(mut count) = self.in_flight.lock() else {
@@ -404,6 +460,8 @@ mod tests {
         Settings {
             outage_wait: outage,
             backoff_cap: Duration::from_millis(50),
+            // Long enough that no ping reaches the tests of other behavior.
+            alive_every: Duration::from_secs(3600),
             limits: CallLimits {
                 connect: Duration::from_secs(1),
                 continue_wait: Duration::from_secs(2),
@@ -431,6 +489,10 @@ mod tests {
     }
 
     fn read_request(stream: &mut TcpStream) -> std::io::Result<()> {
+        read_body(stream).map(drop)
+    }
+
+    fn read_body(stream: &mut TcpStream) -> std::io::Result<Vec<u8>> {
         let mut reader = BufReader::new(stream.try_clone()?);
         let mut length = 0;
         loop {
@@ -447,7 +509,7 @@ mod tests {
         stream.write_all(b"HTTP/1.1 100 Continue\r\n\r\n")?;
         let mut body = vec![0; length];
         reader.read_exact(&mut body)?;
-        Ok(())
+        Ok(body)
     }
 
     fn respond(stream: &mut TcpStream, body: &str) -> std::io::Result<()> {
@@ -724,6 +786,47 @@ mod tests {
             rx.recv_timeout(Duration::from_secs(2)).is_err(),
             "a cancelled call was answered"
         );
+        Ok(())
+    }
+
+    /// SPEC-432 MCR-001: the bridge pings Yulius on its interval, with nothing from
+    /// Claude Code, and the answers never reach Claude Code.
+    #[test]
+    fn the_bridge_pings_yulius_and_keeps_the_answers_to_itself()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let port = listener.local_addr()?.port();
+        let (tx, rx) = mpsc::channel();
+        let (lines_tx, lines_rx) = mpsc::channel::<Vec<u8>>();
+        std::thread::spawn(move || {
+            let mut input = BufReader::new(ChannelReader(lines_rx, Vec::new()));
+            run(
+                &mut input,
+                Box::new(Lines(tx)),
+                env(port),
+                Settings {
+                    alive_every: Duration::from_millis(200),
+                    ..settings(Duration::from_secs(30))
+                },
+            );
+        });
+        for n in 0..2 {
+            let (mut stream, _) = listener.accept()?;
+            let body: Value = serde_json::from_slice(&read_body(&mut stream)?)?;
+            assert_eq!(body["method"], json!("ping"), "ping {n}: {body}");
+            assert_eq!(body["id"], json!(ALIVE_ID), "ping {n}: {body}");
+            respond(
+                &mut stream,
+                &format!("{{\"jsonrpc\":\"2.0\",\"id\":\"{ALIVE_ID}\",\"result\":{{}}}}"),
+            )?;
+        }
+        // A ping that fails does not end the bridge: the next one comes.
+        let (stream, _) = listener.accept()?;
+        drop(stream);
+        let (mut stream, _) = listener.accept()?;
+        read_request(&mut stream)?;
+        drop(lines_tx);
+        assert!(rx.try_recv().is_err(), "a ping's answer reached Claude Code");
         Ok(())
     }
 
