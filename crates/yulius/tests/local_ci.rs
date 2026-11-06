@@ -2426,6 +2426,15 @@ fn job_state<'a>(jobs: &'a [Value], name: &str) -> &'a str {
         .unwrap_or("?")
 }
 
+/// One run's `site` runs and the other's waits for its turn, and, with `linted`, every `lint`
+/// passed (it reached the turn: a run starts its jobs together).
+fn one_runs_one_waits(runs: &[(String, Vec<Value>)], linted: bool) -> bool {
+    let mut sites: Vec<&str> = runs.iter().map(|(_, j)| job_state(j, "site")).collect();
+    sites.sort_unstable();
+    sites == ["queued", "running"]
+        && (!linted || runs.iter().all(|(_, j)| job_state(j, "lint") == "passed"))
+}
+
 /// An `exclusive` job that blocks until `<data>/go` exists, and a quick `lint`.
 fn turn_toml(data: &Path) -> String {
     format!(
@@ -2443,19 +2452,9 @@ fn turn_toml(data: &Path) -> String {
 async fn a_job_waiting_for_its_turn_holds_no_slot() -> TestResult {
     let f = fixture_tuned(false, turn_toml, None, |config| config.ci.max_jobs = 2).await?;
     f.h.app.ci_sync_sandbox(&f.sandbox).await?;
-    let runs = until_runs(&f, |runs| {
-        runs.len() == 2
-            && runs
-                .iter()
-                .all(|(_, jobs)| job_state(jobs, "lint") == "passed")
-    })
-    .await?;
-    let mut sites: Vec<&str> = runs
-        .iter()
-        .map(|(_, jobs)| job_state(jobs, "site"))
-        .collect();
-    sites.sort_unstable();
-    assert_eq!(sites, ["queued", "running"], "{runs:?}");
+    // Both lints passed while one site runs and the other waits for its turn; before the go, a
+    // running site never ends, so this is reached only if the lints got slots meanwhile.
+    until_runs(&f, |runs| runs.len() == 2 && one_runs_one_waits(runs, true)).await?;
     std::fs::write(f.data.join("go"), "")?;
     f.settle().await?;
     let overview = f.get("/api/sandboxes/s1/ci").await?;
@@ -2471,12 +2470,8 @@ async fn a_job_waiting_for_its_turn_holds_no_slot() -> TestResult {
 async fn a_job_cancelled_while_waiting_for_its_turn_never_starts() -> TestResult {
     let f = fixture_with(false, turn_toml).await?;
     f.h.app.ci_sync_sandbox(&f.sandbox).await?;
-    let runs = until_runs(&f, |runs| {
-        let mut sites: Vec<&str> = runs.iter().map(|(_, j)| job_state(j, "site")).collect();
-        sites.sort_unstable();
-        sites == ["queued", "running"]
-    })
-    .await?;
+    // The lints passed: the waiting run's site is past its checkout, waiting for its turn.
+    let runs = until_runs(&f, |runs| one_runs_one_waits(runs, true)).await?;
     let (waiting, _) = runs
         .iter()
         .find(|(_, jobs)| job_state(jobs, "site") == "queued")
@@ -2497,14 +2492,27 @@ async fn a_job_cancelled_while_waiting_for_its_turn_never_starts() -> TestResult
         .ok_or("the cancelled site")?;
     assert!(site["waited_ms"].is_null(), "never started: {site}");
     assert!(site["duration_ms"].is_null(), "never started: {site}");
-    std::fs::write(f.data.join("go"), "")?;
-    f.settle().await?;
-    // A later run of the job gets the turn.
+    // A later run of the job, queued while the first still holds the turn, waits for it and gets
+    // it once the first ends: the cancelled waiter left nothing behind.
     let again = f
         .post(&format!("/api/sandboxes/s1/ci/runs/{waiting}/rerun"), None)
         .await?;
     assert_eq!(again.status, StatusCode::OK, "{}", again.body);
     let again = again.body["id"].as_str().ok_or("id")?.to_owned();
+    until_runs(&f, |runs| {
+        runs.iter()
+            .any(|(id, jobs)| *id == again && job_state(jobs, "lint") == "passed")
+            && one_runs_one_waits(
+                &runs
+                    .iter()
+                    .filter(|(id, _)| id != waiting)
+                    .cloned()
+                    .collect::<Vec<_>>(),
+                false,
+            )
+    })
+    .await?;
+    std::fs::write(f.data.join("go"), "")?;
     f.settle().await?;
     let detail = f.get(&format!("/api/sandboxes/s1/ci/runs/{again}")).await?;
     assert_eq!(detail["state"], "passed", "{detail}");
