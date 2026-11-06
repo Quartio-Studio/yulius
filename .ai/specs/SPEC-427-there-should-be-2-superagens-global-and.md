@@ -118,7 +118,7 @@ as the person's own agent does over the remote MCP.
 - [x] ADR, architecture, product and API docs describe the two Superagents
 - [x] Review round 1 fixed: no shell, hooks or settings files, a recorded contained plan, bounds
 - [x] Review round 2 fixed: messages instead of keys, no editor, no merges
-- [ ] Review round 3 fixed: hidden characters, exit words and paths refused, resizes, one interrupt
+- [x] Review round 3 fixed: hidden characters, exit words and paths refused, resizes, one interrupt
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 
