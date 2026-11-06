@@ -95,36 +95,6 @@ pub async fn global_superagent(
     Ok(Json(dto(app.global_superagent_open(&ctx).await?)))
 }
 
-/// A message for the Global Superagent.
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct GlobalMessage {
-    text: String,
-}
-
-/// `POST /api/superagent/message` `{"text"}`: Yulius types the caller's message into their
-/// Global Superagent (SPEC-427 GSA-007) → 204.
-pub async fn global_superagent_message(
-    State(app): State<AppState>,
-    Auth(ctx): Auth,
-    body: Bytes,
-) -> ApiResult<StatusCode> {
-    let message: GlobalMessage = serde_json::from_slice(&body)
-        .map_err(|err| AppError::Invalid(format!("invalid request body: {err}")))?;
-    app.global_superagent_message(&ctx, &message.text).await?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
-/// `POST /api/superagent/interrupt`: Esc into the caller's Global Superagent, which interrupts
-/// its turn (SPEC-427 GSA-007) → 204.
-pub async fn global_superagent_interrupt(
-    State(app): State<AppState>,
-    Auth(ctx): Auth,
-) -> ApiResult<StatusCode> {
-    app.global_superagent_interrupt(&ctx).await?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
 /// `GET /api/sandboxes/{sid}/cockpit/link`: `{"state": "ok"|"lost"|"recovered"|"unknown",
 /// "lost_at": ms | null}`, the caller's Superagent's link to Yulius (SPEC-355 SLR-006).
 pub async fn cockpit_link(
@@ -240,7 +210,7 @@ async fn send_state(socket: &mut WebSocket, attach: &ShellAttach) -> bool {
             harness: None,
             cols,
             rows,
-            can_write: attach.takes_keys(),
+            can_write: true,
             controller: true,
             status: status.into(),
         },

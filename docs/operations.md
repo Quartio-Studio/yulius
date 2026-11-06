@@ -337,7 +337,9 @@ files under `/etc` are unreadable to the service user and skipped when the sandb
 Without containment (`YULIUS_CONTAINED=false`) agents run as the service user and could read
 Yulius's copy, like `master.key`. Task runs and the Superagent then also keep Claude Code's
 approvals (no `--dangerously-skip-permissions`), so a person answers each prompt
-([decision 0165](decisions/0165-the-superagent-bypasses-approvals-on-contained-servers.md)). Keep Caddy's admin API unreachable from runs without
+([decision 0165](decisions/0165-the-superagent-bypasses-approvals-on-contained-servers.md)); the
+Global Superagent has only Yulius's tools, each checked at the call, and they stay pre-allowed
+([decision 0274](decisions/0274-the-global-superagent-takes-its-persons-keys.md)). Keep Caddy's admin API unreachable from runs without
 isolation: it can rewrite the proxy.
 
 ### Optional: live previews (wildcard DNS and TLS)
