@@ -1310,6 +1310,11 @@ async fn an_answered_stop_is_kept_in_the_run_directory() -> TestResult {
     Ok(())
 }
 
+/// `rel` in `f`'s worktree, as the agent names it.
+fn file_of(f: &Fixture, rel: &str) -> String {
+    f.worktree.join(rel).to_string_lossy().into_owned()
+}
+
 /// What `PreToolUse` answered for `tool` on `input`: the deny reason, or `None` when it passed.
 async fn pre_tool_use(
     f: &Fixture,
@@ -1535,6 +1540,25 @@ async fn an_edit_the_gate_cannot_judge_passes() -> TestResult {
         pre_tool_use(&f, "Edit", json!({"file_path": file})).await?,
         None,
         "a linked spec cannot be read: not judged"
+    );
+
+    // A spec that is not UTF-8, or larger than Yulius reads (its Plan maybe past the cut), is
+    // not judged either.
+    std::fs::remove_file(f.worktree.join("docs/specs/checkout.md"))?;
+    std::fs::write(f.worktree.join("docs/specs/checkout.md"), b"# Draft \xff\n")?;
+    assert_eq!(
+        pre_tool_use(&f, "Edit", json!({"file_path": file_of(&f, "api.rs")})).await?,
+        None,
+        "not UTF-8"
+    );
+    let mut big = "# Big\n\n".to_owned();
+    big.push_str(&"filler line\n".repeat(30_000));
+    big.push_str("\n## Plan\n\n- [ ] Pay\n");
+    std::fs::write(f.worktree.join("docs/specs/checkout.md"), big)?;
+    assert_eq!(
+        pre_tool_use(&f, "Edit", json!({"file_path": file_of(&f, "api.rs")})).await?,
+        None,
+        "too large to judge"
     );
 
     // A feature (its workflow requires a spec) is held; once its workflow cannot be read, not.
