@@ -38,6 +38,10 @@
 //! secrets = "VIDOC_API_KEY"              # agent secrets it uses through the egress proxy
 //!                                        # (SPEC-142; the integration branch's list counts,
 //!                                        # for its name and command, SPEC-264)
+//! timeout_minutes = 120                  # its own time limit (1-360), counted from its start;
+//!                                        # default: the instance's (SPEC-435)
+//! exclusive = true                       # one run of it at a time in the sandbox; a later
+//!                                        # run's job waits, outside its limit (SPEC-435)
 //!
 //! [resources.env]                       # the budget in this repository's tools' terms
 //! CARGO_BUILD_JOBS = "{cpus}"            # also {memory_mb}, {memory_gb}; with YULIUS_CPUS and
@@ -86,7 +90,9 @@ use crate::delivery::{
 use crate::rollback::{MAX_PARTS, valid_part};
 
 use super::{Commands, DecisionsLocation, DocsLayout, ProjectConfig};
-use crate::ci::{CiConfigError, JobDef, parse_matrix, parse_secrets, project_jobs};
+use crate::ci::{
+    CiConfigError, JobDef, MAX_JOB_TIMEOUT_MINUTES, parse_matrix, parse_secrets, project_jobs,
+};
 use crate::resources::{
     EnvTemplate, EnvTemplateError, MAX_DECLARED_CPUS, MAX_DECLARED_MEMORY_GB, MAX_ENV_ENTRIES,
     Need, check_env_template,
@@ -296,7 +302,8 @@ const DISK_KEYS: &str = "caches";
 const BRANCH_POLICY_KEYS: &str = "preset, types";
 const POLICY_TYPES: &str = "1-20 space-separated types of 1-20 lowercase letters including feat (Yulius's task branches), like \"feat fix docs\"";
 const ENVIRONMENT_KEYS: &str = "name, after, command, verify";
-const CI_JOB_KEYS: &str = "name, command, matrix, cpus, memory_gb, secrets";
+const CI_JOB_KEYS: &str =
+    "name, command, matrix, cpus, memory_gb, secrets, timeout_minutes, exclusive";
 const CD_DEV_KEYS: &str =
     "stage, deploy, verify, secrets, states, variables, about, rollback, migrations, parts";
 const CD_PROD_KEYS: &str = "stage, deploy, verify, secrets, states, variables, about, promote, \
@@ -761,6 +768,7 @@ fn environment(table: &Table) -> Result<Environment, FormatError> {
 fn ci_job(table: &Table) -> Result<JobDef, FormatError> {
     let (mut name, mut command_text, mut matrix) = (None, None, Vec::new());
     let (mut need, mut secrets) = (Need::default(), Vec::new());
+    let (mut timeout_minutes, mut exclusive) = (None, false);
     for entry in &table.entries {
         match entry.key.as_str() {
             "name" => name = Some(string_value(entry)?.to_owned()),
@@ -782,6 +790,11 @@ fn ci_job(table: &Table) -> Result<JobDef, FormatError> {
                 secrets = parse_secrets(job, string_value(entry)?)
                     .map_err(|e| err(entry.line, ConfigProblem::Ci(e)))?;
             }
+            "timeout_minutes" => {
+                let minutes = number_value(entry, MAX_JOB_TIMEOUT_MINUTES)?;
+                timeout_minutes = Some(u32::try_from(minutes).unwrap_or(u32::MAX));
+            }
+            "exclusive" => exclusive = bool_value(entry)?,
             _ => return Err(unknown("[ci.jobs]", entry, CI_JOB_KEYS)),
         }
     }
@@ -792,6 +805,8 @@ fn ci_job(table: &Table) -> Result<JobDef, FormatError> {
         matrix,
         need,
         secrets,
+        timeout_minutes,
+        exclusive,
     })
 }
 
@@ -1375,6 +1390,12 @@ pub fn render_yulius_toml(config: &ProjectConfig) -> String {
         }
         if !job.secrets.is_empty() {
             out.push_str(&format!("secrets = {}\n", quote(&job.secrets.join(" "))));
+        }
+        if let Some(minutes) = job.timeout_minutes {
+            out.push_str(&format!("timeout_minutes = {minutes}\n"));
+        }
+        if job.exclusive {
+            out.push_str("exclusive = true\n");
         }
     }
     let profile = &config.delivery;
@@ -2059,6 +2080,8 @@ mod tests {
                         matrix: Vec::new(),
                         need: Need::default(),
                         secrets: Vec::new(),
+                        timeout_minutes: None,
+                        exclusive: false,
                     },
                     JobDef {
                         name: "test".to_owned(),
@@ -2069,6 +2092,8 @@ mod tests {
                             memory_mb: Some(12 * 1024),
                         },
                         secrets: vec!["VIDOC_API_KEY".to_owned()],
+                        timeout_minutes: Some(120),
+                        exclusive: true,
                     },
                 ],
                 ..ProjectConfig::default()
@@ -2122,6 +2147,54 @@ mod tests {
             problem("[[ci.jobs]]\nname = \"X\"\ncommand = \"y\"\n"),
             Some((1, ConfigProblem::Ci(CiConfigError::InvalidJobName(_))))
         ));
+        Ok(())
+    }
+
+    /// SPEC-435 JTL-001/003: a job sets its own time limit (1-360 minutes) and `exclusive`; its
+    /// matrix jobs inherit both, and a job without them keeps the instance's limit, not exclusive.
+    #[test]
+    fn ci_jobs_set_their_own_time_limit_and_exclusive() -> TestResult {
+        let config = parse_yulius_toml(
+            "[[ci.jobs]]\nname = \"websites\"\ncommand = \"scripts/gate websites\"\n\
+             timeout_minutes = 120\nexclusive = true\nmatrix = \"a b\"\n\n\
+             [[ci.jobs]]\nname = \"lint\"\ncommand = \"make lint\"\n",
+        )?;
+        let jobs = crate::ci::project_jobs(None, &config.ci)?;
+        let set: Vec<(&str, Option<u32>, bool)> = jobs
+            .iter()
+            .map(|j| (j.name.as_str(), j.timeout_minutes, j.exclusive))
+            .collect();
+        assert_eq!(
+            set,
+            [
+                ("websites (a)", Some(120), true),
+                ("websites (b)", Some(120), true),
+                ("lint", None, false),
+            ]
+        );
+        let job = |extra: &str| format!("[[ci.jobs]]\nname = \"x\"\ncommand = \"y\"\n{extra}\n");
+        for (extra, key) in [
+            ("timeout_minutes = 0", "timeout_minutes"),
+            ("timeout_minutes = 361", "timeout_minutes"),
+            ("timeout_minutes = \"2\"", "timeout_minutes"),
+        ] {
+            assert_eq!(
+                problem(&job(extra)),
+                Some((
+                    4,
+                    ConfigProblem::ExpectedNumber {
+                        key: key.to_owned(),
+                        max: 360
+                    }
+                )),
+                "{extra}"
+            );
+        }
+        assert_eq!(
+            problem(&job("exclusive = \"yes\"")),
+            Some((4, ConfigProblem::ExpectedBool("exclusive".to_owned())))
+        );
+        assert!(parse_yulius_toml(&job("timeout_minutes = 360\nexclusive = false")).is_ok());
         Ok(())
     }
 

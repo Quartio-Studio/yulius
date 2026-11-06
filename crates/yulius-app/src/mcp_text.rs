@@ -399,7 +399,12 @@ fn job_name(job: &Value) -> String {
     }
 }
 
-/// One job: `quality failed (exit 1) in 6m 30s: reason`; the run's own reason is not repeated.
+/// A job that waited at least this long before it started says so in a run's list (SPEC-435).
+const WAIT_SHOWN_MS: i64 = 60_000;
+
+/// One job: `quality failed (exit 1) in 6m 30s: reason`, or `websites passed, waited 39m 0s, ran
+/// 44m 2s` when it waited a second or more before it started (SPEC-435 JTL-004); the run's own
+/// reason is not repeated.
 fn job_state(job: &Value, run_reason: Option<&str>) -> String {
     let state = text(job, "state").unwrap_or("?");
     let mut out = format!("{} {state}", job_name(job));
@@ -410,12 +415,19 @@ fn job_state(job: &Value, run_reason: Option<&str>) -> String {
     {
         out.push_str(&format!(" (exit {code})"));
     }
-    if let Some(ms) = job
+    let ran = job
         .get("duration_ms")
         .and_then(Value::as_i64)
-        .filter(|ms| *ms > 0)
-    {
-        out.push_str(&format!(" in {}", duration(ms)));
+        .filter(|ms| *ms > 0);
+    match (waited(job).filter(|ms| *ms >= 1000), ran) {
+        (Some(waited), Some(ran)) => out.push_str(&format!(
+            ", waited {}, ran {}",
+            duration(waited),
+            duration(ran)
+        )),
+        (Some(waited), None) => out.push_str(&format!(", waited {}", duration(waited))),
+        (None, Some(ran)) => out.push_str(&format!(" in {}", duration(ran))),
+        (None, None) => {}
     }
     if let Some(reason) = text(job, "reason").filter(|r| Some(*r) != run_reason) {
         out.push_str(&format!(": {}", one_line(reason)));
@@ -423,7 +435,12 @@ fn job_state(job: &Value, run_reason: Option<&str>) -> String {
     out
 }
 
-/// The run's jobs on one line; nothing when they all ended like the run.
+fn waited(job: &Value) -> Option<i64> {
+    job.get("waited_ms").and_then(Value::as_i64)
+}
+
+/// The run's jobs on one line; nothing when they all ended like the run and none waited a
+/// minute or more before it started.
 fn jobs_line(run: &Value) -> Option<String> {
     let jobs = run.get("jobs")?.as_array()?;
     if jobs.is_empty() {
@@ -435,12 +452,30 @@ fn jobs_line(run: &Value) -> Option<String> {
         text(job, "state") == state
             && job.get("exit_code").and_then(Value::as_i64).unwrap_or(0) == 0
             && text(job, "reason").is_none_or(|r| Some(r) == reason)
+            && waited(job).is_none_or(|ms| ms < WAIT_SHOWN_MS)
     });
     if plain {
         return None;
     }
     let parts: Vec<String> = jobs.iter().map(|job| job_state(job, reason)).collect();
     Some(format!("  {}\n", parts.join(" · ")))
+}
+
+/// What a job in force sets beyond its command (SPEC-435 JTL-006): ` (limit 120 min, one run at
+/// a time)`, or nothing.
+fn job_rules(job: &Value) -> String {
+    let mut rules = Vec::new();
+    if let Some(minutes) = job.get("timeout_minutes").and_then(Value::as_u64) {
+        rules.push(format!("limit {minutes} min"));
+    }
+    if job.get("exclusive").and_then(Value::as_bool) == Some(true) {
+        rules.push("one run at a time".to_owned());
+    }
+    if rules.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", rules.join(", "))
+    }
 }
 
 /// `ci_status` without `run_id`: the jobs in force, the task's pull request and the recent runs,
@@ -468,9 +503,10 @@ fn ci_status(value: &Value) -> Option<String> {
                 push_line(
                     &mut out,
                     &format!(
-                        "- {}: {}",
+                        "- {}: {}{}",
                         job_name(job),
-                        clip(text(job, "command").unwrap_or(""), COMMAND_CHARS)
+                        clip(text(job, "command").unwrap_or(""), COMMAND_CHARS),
+                        job_rules(job)
                     ),
                 );
             }
@@ -992,6 +1028,7 @@ mod tests {
             reason: reason.map(str::to_owned),
             exit_code: exit,
             duration_ms: Some(390_638),
+            waited_ms: None,
             output: Some(output.into()),
             failures: None,
         }
@@ -1150,6 +1187,51 @@ mod tests {
         );
         let text = render("ci_status", &json!({"run_id": "r3", "job": "two"}), &value);
         assert!(text.contains("FAIL [ 1.0s] two"), "{text}");
+        Ok(())
+    }
+
+    /// SPEC-435 JTL-004/006: a job that waited says how long it waited and ran, in the run and in
+    /// the list (from a minute of waiting); the jobs in force show their own limit and exclusive.
+    #[test]
+    fn a_job_says_how_long_it_waited_and_ran() -> TestResult {
+        let mut websites = job("websites", "passed", Some(0), None, "");
+        websites.waited_ms = Some(39 * 60_000);
+        websites.duration_ms = Some(44 * 60_000 + 2_000);
+        let mut quality = job("quality", "passed", Some(0), None, "");
+        quality.waited_ms = Some(400);
+        let mut run_value =
+            serde_json::to_value(run("r5", "PR #688", "passed", vec![websites, quality]))?;
+        let text = render("ci_status", &json!({"run_id": "r5"}), &run_value);
+        assert!(
+            text.contains("- websites passed, waited 39m 0s, ran 44m 2s\n"),
+            "{text}"
+        );
+        assert!(text.ends_with("- quality passed in 6m 30s"), "{text}");
+        run_value["this_task"] = json!(true);
+        let value = json!({
+            "ci": {"source": "yulius_toml", "jobs": [
+                {"name": "websites", "command": "scripts/gate websites", "matrix": null,
+                 "timeout_minutes": 120, "exclusive": true},
+                {"name": "quality", "command": "scripts/gate quality", "matrix": null,
+                 "timeout_minutes": null, "exclusive": false}
+            ]},
+            "pull_request": 688,
+            "runs": [run_value],
+        });
+        let text = render("ci_status", &json!({}), &value);
+        assert!(
+            text.contains(
+                "- websites: scripts/gate websites (limit 120 min, one run at a time)\n\
+                 - quality: scripts/gate quality\n"
+            ),
+            "{text}"
+        );
+        assert!(
+            text.ends_with(
+                "  websites passed, waited 39m 0s, ran 44m 2s · quality passed in 6m 30s"
+            ),
+            "{text}"
+        );
         Ok(())
     }
 

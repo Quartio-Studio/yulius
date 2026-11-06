@@ -32,7 +32,7 @@ const TOOL_RUNS: u32 = 10;
 /// only CI; no GitHub Actions).
 pub const CI_SETUP_STEPS: &[&str] = &[
     "Read every workflow below (and the files themselves) and list what each job checks: its run steps, matrix and the tools its `uses:` steps install.",
-    "Write the checks as `[[ci.jobs]]` entries in yulius.toml (name, command, optional matrix = \"a b c\" passed as $YULIUS_CI_MATRIX, optional cpus = N and memory_gb = N when a job needs more or less than an equal share of the machine); one job per independent check so they run in parallel; prefer the repository's own scripts. A single command may instead be `[commands] gate`.",
+    "Write the checks as `[[ci.jobs]]` entries in yulius.toml (name, command, optional matrix = \"a b c\" passed as $YULIUS_CI_MATRIX, optional cpus = N and memory_gb = N when a job needs more or less than an equal share of the machine, optional timeout_minutes = N (1-360) for a job that runs longer than the instance's limit, optional exclusive = true for a job two runs must not run at once); one job per independent check so they run in parallel; prefer the repository's own scripts. A single command may instead be `[commands] gate`.",
     "Size builds and test runners to the budget Yulius gives each job and agent session, not to the machine: they read $YULIUS_CPUS and $YULIUS_MEMORY_MB, and `[resources.env]` in yulius.toml sets the tools' own variables from them (for example CARGO_BUILD_JOBS = \"{cpus}\", PYTEST_XDIST_AUTO_NUM_WORKERS = \"{cpus}\", MAKEFLAGS = \"-j{cpus}\").",
     "Make each command work on the Yulius machine: no GitHub expressions (${{ }}) or services from Actions; a secret becomes an agent secret the job names with `secrets = \"NAME\"` (it gets a placeholder through the egress proxy, never the value, and only once the integration branch has the line; SPEC-142); tools a `uses:` step installed must be installed by the command or be on the machine; downloads go under $HOME (shared by the sandbox's concurrent CI runs) and build outputs in the checkout (a Cargo target directory: Yulius sweeps its unused build units) or under $YULIUS_CI_CACHE (the job's own, never shared with a job running at the same time, pruned whole when the disk runs low), which persist between runs.",
     "Delete .github/workflows/ entirely (git rm -r .github/workflows) in the same commit, so no GitHub Actions run any more; commit it and let Yulius push it at the end of your turn (your own token may not change workflow files, ADR-0114).",
@@ -99,7 +99,7 @@ impl App {
         Ok(json!({
             "ci": view.gate.as_ref().map(|gate| json!({
                 "source": gate.source.as_str(),
-                "jobs": gate.jobs.iter().map(|j| json!({"name": j.name, "command": j.command, "matrix": j.matrix})).collect::<Vec<_>>(),
+                "jobs": gate.jobs.iter().map(|j| json!({"name": j.name, "command": j.command, "matrix": j.matrix, "timeout_minutes": j.timeout_minutes, "exclusive": j.exclusive})).collect::<Vec<_>>(),
             })),
             "problem": view.problem,
             "github_actions_workflows": view.workflows,

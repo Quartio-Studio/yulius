@@ -126,6 +126,16 @@ async fn fixture_hosted(
     toml: impl Fn(&Path) -> String,
     host: Option<Arc<dyn yulius_app::ports::session::SessionHost>>,
 ) -> BoxResult<Fixture> {
+    fixture_tuned(contained, toml, host, |_| {}).await
+}
+
+/// [`fixture_hosted`] with `tune` applied to the configuration after the fixture's own settings.
+async fn fixture_tuned(
+    contained: bool,
+    toml: impl Fn(&Path) -> String,
+    host: Option<Arc<dyn yulius_app::ports::session::SessionHost>>,
+    tune: impl FnOnce(&mut yulius_app::context::AppConfig) + 'static,
+) -> BoxResult<Fixture> {
     // A short base: job sockets live at <data>/runs/ci-<uuid>/pty.sock (Unix path limit).
     let dir = tempfile::Builder::new().prefix("yci").tempdir_in("/tmp")?;
     let root = dir.path().canonicalize()?;
@@ -144,6 +154,7 @@ async fn fixture_hosted(
             config.ci.max_jobs = 3;
             config.contained = contained;
             config.yulius_exe = yulius_exe;
+            tune(config);
         })),
         ..HarnessOptions::default()
     })?;
@@ -2323,6 +2334,101 @@ async fn running_ci_jobs_weigh_on_their_sandbox_until_they_end() -> TestResult {
         assert_eq!(n.abs_diff(previous), 1, "{history:?}");
         previous = *n;
     }
+    Ok(())
+}
+
+/// The jobs of `run`, from its detail, in order.
+async fn run_jobs(f: &Fixture, run: &Value) -> BoxResult<Vec<Value>> {
+    let id = run["id"].as_str().ok_or("id")?;
+    let detail = f.get(&format!("/api/sandboxes/s1/ci/runs/{id}")).await?;
+    Ok(detail["jobs"].as_array().ok_or("jobs")?.clone())
+}
+
+/// SPEC-435 JTL-001/002/004: three runs of an `exclusive` job run one at a time (a job that finds
+/// another inside exits 7), and the last one, which waited longer than the 4 s limit for its turn,
+/// still passes: the wait is outside its limit, and its record says how long it waited.
+#[tokio::test]
+async fn an_exclusive_job_waits_its_turn_outside_its_time_limit() -> TestResult {
+    let f = fixture_tuned(
+        false,
+        |data| {
+            format!(
+                "[[ci.jobs]]\nname = \"site\"\ncpus = 1\nexclusive = true\ncommand = 'b=\"{dir}/busy\"; \
+                 if [ -e \"$b\" ]; then echo overlap; exit 7; fi; touch \"$b\"; sleep 2.5; rm \"$b\"'\n",
+                dir = data.display()
+            )
+        },
+        None,
+        |config| {
+            config.ci.job_timeout = Duration::from_secs(4);
+            config.ci.lanes = 3;
+        },
+    )
+    .await?;
+    // main, dev and the pull request: three runs, each in its own lane.
+    f.push_dev("other.txt", Some("dev\n"))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let overview = f.get("/api/sandboxes/s1/ci").await?;
+    let jobs = overview["gate"]["jobs"].as_array().ok_or("gate jobs")?;
+    assert_eq!(jobs[0]["exclusive"], true, "{overview}");
+    let runs = overview["runs"].as_array().ok_or("runs")?;
+    assert_eq!(runs.len(), 3, "{overview}");
+    let mut waits = Vec::new();
+    for run in runs {
+        let jobs = run_jobs(&f, run).await?;
+        assert_eq!(run["state"], "passed", "{jobs:?}");
+        waits.push(
+            jobs[0]["waited_ms"]
+                .as_i64()
+                .ok_or(format!("waited_ms: {jobs:?}"))?,
+        );
+    }
+    waits.sort_unstable();
+    assert!(
+        waits[2] > 4_000,
+        "the last job waited longer than its limit: {waits:?}"
+    );
+    Ok(())
+}
+
+/// SPEC-435 JTL-003/005: a job's `timeout_minutes` replaces the instance's limit (2 s here): the
+/// job given a minute passes after 3 s; the other one is killed at 2 s and says how long it ran.
+#[tokio::test]
+async fn a_jobs_own_time_limit_replaces_the_instance_one() -> TestResult {
+    let f = fixture_tuned(
+        false,
+        |_| {
+            "[[ci.jobs]]\nname = \"long\"\ntimeout_minutes = 1\ncommand = 'sleep 3'\n\n\
+             [[ci.jobs]]\nname = \"short\"\ncommand = 'sleep 30'\n"
+                .to_owned()
+        },
+        None,
+        |config| config.ci.job_timeout = Duration::from_secs(2),
+    )
+    .await?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let overview = f.get("/api/sandboxes/s1/ci").await?;
+    let gate = overview["gate"]["jobs"].as_array().ok_or("gate jobs")?;
+    assert_eq!(gate[0]["timeout_minutes"], 1, "{overview}");
+    assert!(gate[1]["timeout_minutes"].is_null(), "{overview}");
+    let run = overview["runs"]
+        .as_array()
+        .ok_or("runs")?
+        .iter()
+        .find(|r| r["reference"] == "pr/1")
+        .cloned()
+        .ok_or("pr/1 run")?;
+    let jobs = run_jobs(&f, &run).await?;
+    assert_eq!(jobs[0]["name"], "long");
+    assert_eq!(jobs[0]["state"], "passed", "{jobs:?}");
+    assert_eq!(jobs[1]["state"], "error", "{jobs:?}");
+    let reason = jobs[1]["reason"].as_str().unwrap_or_default();
+    assert!(
+        reason.starts_with("timed out: ran 2 s, its time limit"),
+        "{reason}"
+    );
     Ok(())
 }
 
