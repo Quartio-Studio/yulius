@@ -212,6 +212,13 @@ commits.
 - `scripts/dev ci` exit 0 on `ac0d69ad` (3182 tests passed) and on `bf0d50c5` (3187 passed). The
   last commits (one rule line, one unit test, docs) are covered by the targeted runs above and by
   Yulius CI on the pull request head.
+- Yulius CI on the first pull request head (`49a951bd`) failed on the known flaky
+  `pool_supervision::personal_mcp_servers_reach_only_their_holders_runs` (#1084, not caused by
+  this change, which it blocked). Fixed here in its own commit: the attempt is recorded before
+  the spawn writes `mcp.json` and `launch.json`, and the test read them after waiting only for the
+  attempt. A 300 ms probe delay before the `launch.json` write reproduced the NotFound every time;
+  waiting for the launch files passes with the probe, and 20 consecutive runs of
+  `pool_supervision::` passed without it.
 - Security scan: Vidoc is turned off for this project in Yulius (`yulius security-scan` reports
   it disabled); not run, not passed.
 - Not tested: an actual production restart through systemd and the root helper (the helper's
