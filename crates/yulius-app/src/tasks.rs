@@ -251,6 +251,9 @@ impl App {
             yulius_wait: task.status == TaskStatus::Running
                 && task.activity.is_some_and(Activity::is_idle)
                 && self.agent_waits_on_yulius(&task.id),
+            goal_unfinished: task.status == TaskStatus::Running
+                && task.activity.is_some_and(Activity::is_idle)
+                && self.goal_unfinished(&task.id),
             not_started,
             awaits_start_onboarding,
             pause: self.pause_view(task).await,

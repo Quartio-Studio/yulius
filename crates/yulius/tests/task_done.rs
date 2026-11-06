@@ -479,7 +479,9 @@ fn data_dir() -> Result<(tempfile::TempDir, PathBuf), BoxError> {
 
 /// TSK-014: the goal turn ends cleanly (Stop hook), Claude Code records the goal as achieved and
 /// no shell is left: the task is Done. Typing again makes it Working; after that turn it waits
-/// for the user (the achieved goal no longer counts).
+/// for the user (the achieved goal no longer counts), but it answered with nothing open: nobody
+/// has to act, and it is not counted in Needs you (SPEC-429; task #17 of another project read
+/// Your turn after "you don't need anything from me?" was answered).
 #[test]
 fn an_achieved_goal_with_no_shell_left_makes_the_task_done() -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
@@ -548,6 +550,22 @@ fn an_achieved_goal_with_no_shell_left_makes_the_task_done() -> TestResult {
             Some(Activity::Waiting),
             "a late read of the prompt does not reopen the finished turn"
         );
+        let summary = app.task_summary(&task(&app, &id).await?).await?;
+        assert!(!summary.goal_unfinished, "its goal was met");
+        let ctx = yulius_app::auth::AuthContext {
+            user: app.deps.store.user(&user).await?.ok_or("user")?,
+            csrf_token: None,
+            session_hash: None,
+            token: None,
+        };
+        let counts = app
+            .list_sandboxes(&ctx)
+            .await?
+            .into_iter()
+            .find(|s| s.id == sandbox.as_str())
+            .ok_or("sandbox")?
+            .counts;
+        assert_eq!(counts.needs_attention, 0, "answered: nobody has to act");
         stop(&app, &id).await
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
@@ -805,6 +823,18 @@ fn an_agent_waiting_for_yulius_does_not_need_a_person() -> TestResult {
         };
         wait_for("Your turn", Duration::from_secs(90), || async {
             view().await.ok() == Some((Some("waiting".into()), Some(0), false))
+        })
+        .await?;
+        // Its goal failed: the work is unfinished, so it is the person's turn (SPEC-429 ANS-002).
+        // The fake's turn is shorter than a transcript read, so the record may come after it.
+        wait_for("the failed goal", Duration::from_secs(20), || async {
+            match task(&app, &id).await {
+                Ok(record) => app
+                    .task_summary(&record)
+                    .await
+                    .is_ok_and(|summary| summary.goal_unfinished),
+                Err(_) => false,
+            }
         })
         .await?;
         assert_eq!(needs_you().await, Some(1), "Your turn needs the person");
