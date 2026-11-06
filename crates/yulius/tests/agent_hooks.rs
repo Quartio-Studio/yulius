@@ -1520,3 +1520,38 @@ async fn the_edit_gate_holds_every_edit_until_the_plan_exists() -> TestResult {
     );
     Ok(())
 }
+
+/// SPEC-426 EDG-002 (review round 4): what the gate cannot decide passes: a spec that exists but
+/// cannot be read (a link) and a workflow the store cannot read never hold an edit, which would
+/// otherwise stay held for good.
+#[tokio::test]
+async fn an_edit_the_gate_cannot_judge_passes() -> TestResult {
+    let f = fixture().await?;
+    std::fs::create_dir_all(f.worktree.join("docs/specs"))?;
+    std::fs::write(f.worktree.join("docs/specs/real.md"), "# Draft\n")?;
+    std::os::unix::fs::symlink("real.md", f.worktree.join("docs/specs/checkout.md"))?;
+    let file = f.worktree.join("api.rs").to_string_lossy().into_owned();
+    assert_eq!(
+        pre_tool_use(&f, "Edit", json!({"file_path": file})).await?,
+        None,
+        "a linked spec cannot be read: not judged"
+    );
+
+    let research = fixture_with_workflow(Some(("wf-research-test", false))).await?;
+    research
+        .h
+        .store
+        .execute_for_tests("DROP TABLE workflows")
+        .await?;
+    let file = research
+        .worktree
+        .join("probe.rs")
+        .to_string_lossy()
+        .into_owned();
+    assert_eq!(
+        pre_tool_use(&research, "Write", json!({"file_path": file})).await?,
+        None,
+        "an unreadable workflow is not taken as one that needs a spec"
+    );
+    Ok(())
+}
