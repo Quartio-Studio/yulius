@@ -22,7 +22,8 @@ export function createAgentView(ctx, sandbox) {
   const global = !sandbox;
   const write = global || allows(sandbox.access, 'write');
   const name = global ? 'Global Superagent' : 'Superagent';
-  const openPath = global ? '/api/superagent' : `/api/sandboxes/${enc(sandbox.id)}/cockpit`;
+  // Opens (or starts) the session: the person's Global one, or this sandbox's.
+  const openShell = () => (global ? ctx.api.post('/api/superagent') : ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/cockpit`));
   // On phones the panel covers the page: it closes so the composer shows.
   const closeOnPhone = () => { if (isPhone() && ctx.closePanel) ctx.closePanel(); };
   const newTask = !global && write ? h('a', { href: href(`/s/${encodeURIComponent(sandbox.slug)}`), dataset: { route: `/s/${encodeURIComponent(sandbox.slug)}` }, onClick: closeOnPhone }, 'New task') : null;
@@ -71,7 +72,7 @@ export function createAgentView(ctx, sandbox) {
     setChildren(body, skeleton(`Starting your ${name}…`, 3, { block: true }));
     let shell;
     try {
-      shell = await ctx.api.post(openPath);
+      shell = await openShell();
     } catch (err) {
       opening = false;
       if (alive) setChildren(body, h('div', { class: 'agent-msg' }, loadError(`Couldn’t start the ${name}: ${err.message}`, () => open())));
@@ -90,7 +91,7 @@ export function createAgentView(ctx, sandbox) {
     if (recovering || opening || !alive || !current) return;
     recovering = true;
     try {
-      const shell = await ctx.api.post(openPath);
+      const shell = await openShell();
       // The keyboard stays where it is: in the Superagent if it was there (a refused session's terminal
       // takes it when shown, before it is refused), or was going there when the connection dropped
       // before the first screen; else with the page beside it.
