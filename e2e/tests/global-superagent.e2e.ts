@@ -307,5 +307,7 @@ test('an image pasted into the Global Superagent reaches it by path; text stays 
   }, shownAgent);
   await expect(browser.locator(`${shownAgent} .upload-errors`)).toHaveText(/notes\.pdf: .*images only/);
   await expect(terminal).not.toHaveText(/notes\.pdf/);
+  // Refused in the page, before any byte is sent (review round 1): only the image reached it.
+  expect(await browser.evaluate(() => (window as unknown as { __yuliusMock: { globalUploads?: number } }).__yuliusMock.globalUploads)).toBe(1);
   expect(await axeViolations(browser)).toEqual([]);
 });

@@ -2804,6 +2804,8 @@ route('POST', `/api/sandboxes/${ID}/shells/${ID}/attachments`, ({ db, p, query, 
 });
 // SPEC-433: an image pasted into the running Global Superagent, kept in its own folder.
 route('POST', '/api/superagent/attachments', ({ db, query, body }) => {
+  // How many reached the server: the page sends images only (review round 1).
+  db.globalUploads = (db.globalUploads || 0) + 1;
   if (![...db.shells.values()].some((s) => s.global)) fail(404, 'not_found', 'not found');
   if (!/\.(png|jpe?g|gif|webp)$/i.test(mockAttachmentName(query.get('name')))) fail(422, 'invalid', 'the Global Superagent takes images only (PNG, JPEG, GIF or WebP): it has no file tools to open other files');
   return storeAttachment(db, null, 'superagent', query, body, '/srv/yulius/users/you/superagent/attachments');
