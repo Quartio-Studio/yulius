@@ -1537,21 +1537,28 @@ async fn an_edit_the_gate_cannot_judge_passes() -> TestResult {
         "a linked spec cannot be read: not judged"
     );
 
-    let research = fixture_with_workflow(Some(("wf-research-test", false))).await?;
-    research
-        .h
-        .store
-        .execute_for_tests("DROP TABLE workflows")
-        .await?;
-    let file = research
+    // A feature (its workflow requires a spec) is held; once its workflow cannot be read, not.
+    let feature = fixture_with_workflow(Some(("wf-feature-test", true))).await?;
+    let file = feature
         .worktree
         .join("probe.rs")
         .to_string_lossy()
         .into_owned();
+    assert!(
+        pre_tool_use(&feature, "Write", json!({"file_path": file}))
+            .await?
+            .is_some(),
+        "a feature's code edit waits for its Plan"
+    );
+    feature
+        .h
+        .store
+        .execute_for_tests("DROP TABLE workflows")
+        .await?;
     assert_eq!(
-        pre_tool_use(&research, "Write", json!({"file_path": file})).await?,
+        pre_tool_use(&feature, "Write", json!({"file_path": file})).await?,
         None,
-        "an unreadable workflow is not taken as one that needs a spec"
+        "an unreadable workflow is a failure to decide"
     );
     Ok(())
 }

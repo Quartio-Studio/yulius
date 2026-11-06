@@ -32,9 +32,11 @@ local check on Bash commands.
   where to write the spec and what it needs. Everything else passes, and so does any failure to
   decide.
 - Unlike the Stop gate, it never gives up. The agent can always get through: the spec is
-  documentation, which is never held. A person who wants no spec chooses a workflow without the
-  spec gate (Research, Docs, Chore). An agent that loops on denials meets the Stop gate, which asks
-  a person after three blocks.
+  documentation, which is never held, and a person can write it in the editor too. Work that needs
+  no spec is started with a workflow without the spec gate (Research, Docs, Chore); a running
+  task's workflow does not change. An agent that loops on denials meets the Stop gate at its turn's
+  end once its branch changed, which asks a person after three blocks. What the gate cannot judge
+  (a spec that exists but cannot be read, a workflow the store cannot read) passes.
 - The edit gate asks only for a Plan. Full validity is still the `Stop` gate's job, so a draft spec
   does not hold the work.
 
@@ -65,7 +67,8 @@ local check on Bash commands.
   looks for it under the specs directory (`yulius.toml` and up to 500 candidate files), as the Stop
   gate does.
 - A worktree nested inside the repository (Claude Code's `.claude/worktrees/<name>/`) is judged
-  from the task's root: a non-Markdown file under its `docs/` counts as code.
+  from the task's root: a non-Markdown file under its `docs/` counts as code, and a spec a
+  subagent writes inside such a worktree does not count until it is in the task's root.
 - `..` is resolved by the text, before links: `<worktree>/linkdir/../api.rs` with `linkdir`
   pointing outside is judged as `api.rs`. Only a path built that way on purpose differs.
 - Sessions launched before this change keep their settings until they restart. An older hook

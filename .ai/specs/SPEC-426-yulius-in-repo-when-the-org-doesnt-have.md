@@ -52,7 +52,7 @@ discovered at the end of a turn.
   every hook, and never held: a `202` fails open at once); `Bash` keeps its local check and is not
   sent. Only the event, the tool, the agent's folder (`cwd`) and the edited path leave the sandbox,
   never the file's content; the client reads up to 16 MiB of the input so a large `Write` is still
-  judged.
+  judged (a larger input is not judged and passes).
 - **EDG-002 A code edit waits for the Plan.** Yulius denies such an edit
   (`permissionDecision: deny` with a reason) when all hold: the edited file (`file_path`, or
   `notebook_path`, a relative one from the agent's `cwd`) is inside the task's worktree, after
@@ -65,14 +65,15 @@ discovered at the end of a turn.
   when the task has no path), the `yulius-task` frontmatter, the Plan checklist and `spec_check`,
   says that documentation edits are not held, and tells the agent to make the edit again once the
   Plan is there.
+- **EDG-004 The rest of the gate is unchanged.** The `Stop` gate still requires a valid spec;
+  the edit gate asks only for a Plan, so a draft spec being written does not hold the work.
 - **EDG-005 It never gives up.** Every such edit is denied until the Plan exists. The way through
   is always open (the spec is documentation; a workflow without the spec gate for work that needs
-  none), and an agent that loops meets the Stop gate, which asks a person after three blocks.
+  none, chosen when the task starts), and an agent that loops meets the Stop gate at its turn's
+  end, which asks a person after three blocks.
   Counting denials does not work: Claude Code runs each edit's hook as that tool's block finishes
   streaming, so one response's edits can be tens of seconds apart and any count lets code through
   before the agent saw a denial (review rounds 2 and 3).
-- **EDG-004 The rest of the gate is unchanged.** The `Stop` gate still requires a valid spec;
-  the edit gate asks only for a Plan, so a draft spec being written does not hold the work.
 
 ## Plan
 
@@ -89,10 +90,14 @@ discovered at the end of a turn.
 ## Acceptance criteria
 
 - AC1: a task without a workflow and without a spec: `PreToolUse` `Edit` of `<worktree>/api.rs`
-  is denied with a reason naming the spec path; `Write` of the spec itself and of `README.md` pass;
+  is denied with a reason naming the spec path; a `Write` of the spec itself and an `Edit` of
+  `README.md` pass;
   a `Read` and a file outside the worktree pass; `<worktree>/docs/../api.rs` is denied.
 - AC2: a spec without a Plan item keeps the edit denied; once the Plan has an item, the edit
   passes.
+- AC3b: a task whose workflow requires a spec (feature) is held like one without a workflow; a spec
+  that exists but cannot be read and a workflow the store cannot read pass
+  (`an_edit_the_gate_cannot_judge_passes`).
 - AC3: a task whose workflow has no spec gate (research) edits code freely (an onboarding task
   has the same policy, `SpecPolicy::NotRequired`).
 - AC4: the launched Claude Code settings register `PreToolUse` for the edit tools with the

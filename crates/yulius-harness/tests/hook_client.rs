@@ -625,7 +625,7 @@ fn an_edit_check_fails_open_and_is_never_held() -> TestResult {
         b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n".to_vec(),
         b"HTTP/1.1 202 Accepted\r\nRetry-After: 1\r\nContent-Length: 0\r\n\r\n".to_vec(),
     ] {
-        let (url, server) = serve_once(response)?;
+        let (url, server) = serve_once_within(response, Duration::from_secs(10))?;
         let mut output = Vec::new();
         let started = Instant::now();
         let code = run_hook(

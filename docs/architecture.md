@@ -650,8 +650,9 @@ in the task's worktree while the task needs a spec and its spec has no Plan item
 sends only the event, the tool, the agent's folder and the path, and the hook is never held.
 Unlike the Stop gate it never gives up. Claude Code runs each edit's hook as that tool's block
 finishes streaming, so no count or time window tells one response from the next. The way through
-stays open (the spec is documentation), and an agent that loops meets the Stop gate, which asks a
-person after three blocks. A goal task's long turn therefore cannot change code with the edit
+stays open (the spec is documentation, which the agent or a person in the editor can write); an
+agent that loops meets the Stop gate at its turn's end, which asks a person after three blocks;
+what the gate cannot judge (an unreadable spec or workflow) passes. A goal task's long turn therefore cannot change code with the edit
 tools before its plan exists; Bash edits are left to the Stop gate
 ([SPEC-426](../.ai/specs/SPEC-426-yulius-in-repo-when-the-org-doesnt-have.md),
 [decision 0270](decisions/0270-a-code-edit-waits-for-the-tasks-spec-plan.md)). Bash calls are
