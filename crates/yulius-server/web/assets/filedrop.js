@@ -453,6 +453,14 @@ export function shellAttachments(ctx, sandboxId, shellId) {
   return (file, options) => ctx.api.post(`/api/sandboxes/${enc(sandboxId)}/shells/${enc(shellId)}/attachments?name=${encodeURIComponent(file.name)}`, file, options);
 }
 
+/**
+ * Uploads an image pasted into the person's Global Superagent, kept in its own folder (SPEC-433):
+ * the server takes images only, as it has no file tools to open anything else.
+ */
+export function globalSuperagentAttachments(ctx) {
+  return (file, options) => ctx.api.post(`/api/superagent/attachments?name=${encodeURIComponent(file.name)}`, file, options);
+}
+
 /** `pasted-20261010-153012.png` for a clipboard image (always named `image.png`). */
 function pastedName(file) {
   const now = new Date();

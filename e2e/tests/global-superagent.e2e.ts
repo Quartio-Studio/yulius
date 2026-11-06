@@ -271,3 +271,41 @@ test('the tab keys with a modifier do not switch the Superagent tabs', async ({ 
   await browser.keyboard.press('Control+End');
   await expect(here).toHaveAttribute('aria-selected', 'true');
 });
+
+test('an image pasted into the Global Superagent reaches it by path; text stays text; other files are not sent', async ({ app, browser }) => {
+  // SPEC-433: "I can't paste to the global superadmin". Kept in its own folder, inside its root.
+  await app.open(mock('/superagent'));
+  const terminal = browser.locator(`${shownAgent} .xterm-rows`);
+  await expect(terminal).toHaveText(/Welcome to Claude Code/);
+  const paste = (item: { image?: string; text?: string }) => browser.evaluate(([sel, it]) => {
+    const data = new DataTransfer();
+    if (it.image) data.items.add(new File(['img'], it.image, { type: 'image/png' }));
+    if (it.text) data.setData('text/plain', it.text);
+    document.querySelector(`${sel} .xterm-helper-textarea`)!.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
+  }, [shownAgent, item] as const);
+
+  // The panel is narrow: the path wraps where the row ends.
+  const typed = () => browser.evaluate((sel) => (document.querySelector(`${sel} .xterm-rows`)!.textContent || '').replace(/\s+/g, ''), shownAgent);
+  await paste({ image: 'image.png' });
+  await expect.poll(typed).toMatch(/\/srv\/yulius\/users\/you\/superagent\/attachments\/pasted-\d{8}-\d{6}\.png/);
+  await expect(browser.locator(`${shownAgent} .upload-text`)).toHaveText(/^Added pasted-\d{8}-\d{6}\.png$/);
+  await paste({ text: 'plain words' });
+  await expect(terminal).toHaveText(/plain words/);
+
+  // It has no file tools: a PDF dropped on it is not sent, and the status says why.
+  await browser.evaluate((sel) => {
+    const data = new DataTransfer();
+    data.items.add(new File(['%PDF'], 'notes.pdf', { type: 'application/pdf' }));
+    const target = document.querySelector(`${sel} .term`)!;
+    for (const type of ['dragenter', 'dragover']) target.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, composed: true, dataTransfer: data }));
+  }, shownAgent);
+  await expect(browser.locator(`${shownAgent} .drop-overlay`)).toHaveText('Drop an image to send to Claude');
+  await browser.evaluate((sel) => {
+    const data = new DataTransfer();
+    data.items.add(new File(['%PDF'], 'notes.pdf', { type: 'application/pdf' }));
+    document.querySelector(`${sel} .term`)!.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, composed: true, dataTransfer: data }));
+  }, shownAgent);
+  await expect(browser.locator(`${shownAgent} .upload-errors`)).toHaveText(/notes\.pdf: .*images only/);
+  await expect(terminal).not.toHaveText(/notes\.pdf/);
+  expect(await axeViolations(browser)).toEqual([]);
+});
