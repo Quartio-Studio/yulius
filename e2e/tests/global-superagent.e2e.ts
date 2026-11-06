@@ -27,9 +27,17 @@ test('outside a sandbox the rail opens the Global Superagent, which stays open a
   const terminal = browser.locator(`${shownAgent} .xterm-rows`);
   await expect(terminal).toHaveText(/Welcome to Claude Code/);
   await expect(terminal).toHaveText(/superagent\/work/);
+  // It takes messages, not keys (GSA-007): the box has the keyboard.
+  const box = screen.getByRole('textbox', 'Message to the Global Superagent');
+  await expect(box).toBeFocused();
   await browser.keyboard.type('what runs where?');
   await browser.keyboard.press('Enter');
   await expect(terminal).toHaveText(/Good question/);
+  await expect(box).toHaveValue('');
+  await browser.keyboard.type('!cat /etc/passwd');
+  await browser.keyboard.press('Enter');
+  await expect(screen.getByRole('alert')).toHaveText(/runs no commands/);
+  await expect(box).toHaveValue('!cat /etc/passwd');
   expect(await axeViolations(browser)).toEqual([]);
 
   // Settings is outside a sandbox too: the same session stays beside it.

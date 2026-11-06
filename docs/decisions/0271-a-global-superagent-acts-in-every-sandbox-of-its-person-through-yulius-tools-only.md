@@ -39,15 +39,27 @@ their task runs.
   folder that refuses every command: Claude Code runs `'<prefix>' '<command>'`, so a command
   (quotes, `;`, `$(…)` included) is only ever that script's argument. With nothing to print a
   secret there is no redaction hook.
+- **The person talks to it by message, not keys.** Claude Code's keys reach more than its shell:
+  Ctrl+G and `/memory` start an external editor (`vi` from the host) without any shell prefix,
+  `/plugin` installs code, and `@path` attaches a file read as the server. So its terminal is
+  read-only, and `POST /api/superagent/message` types each message as one bracketed paste and
+  Enter: control characters removed (no ESC ends the paste), `@` typed as `＠`, `!` lines and every
+  command but `/clear`, `/compact`, `/context` and `/cost` refused; `POST …/interrupt` sends Esc.
+  `EDITOR` and `VISUAL` name the refusing script as well.
 - **Its tools are the remote MCP's for its person, minus the person's decisions.** Its `gs_`
   bearer resolves to a caller acting as an operate token of its person would, with the actor
   `superagent:<login>`, the Superagent channel ("through their Superagent") and `remote.tool`
   audits marked `global-superagent`. It is not served the vault and variable tools, `cd_deploy`,
-  `project_import`, `onboarding_start` or `onboarding_skip`. A `ck_` bearer never reaches these
+  `project_import`, `onboarding_start`, `onboarding_skip` or `change_merge` (text it reads in
+  one sandbox must not merge code into another; a person or the task's delivery merges what it
+  opens). A `ck_` bearer never reaches these
   tools, and a `gs_` bearer never the sandbox Superagent's.
-- **No approval per action.** The person asked for an agent with access to all their sandboxes;
-  its reach is exactly theirs, checked per call, and what it changes goes through tasks, pull
-  requests Yulius CI tests, or task messages.
+- **No approval per action.** The person asked for an agent with access to all their sandboxes
+  that keeps them in sync, unlike the per-request approval they asked of the sandbox Superagent
+  (ADR-0227); its reach is exactly theirs, checked per call, and what it changes goes through
+  tasks, pull requests a person or a task merges, automations and task messages, each visible in
+  its sandbox and audited. Its instructions treat what it reads as data, never as instructions to
+  act elsewhere.
 - **Hosted by a sandbox, contained in its own root.** Shells are registered per sandbox (private
   terminal, idle end, removal). The Global Superagent is registered under the oldest live sandbox
   its person can work in; the process itself runs in its own folder `users/<id>/superagent` (its
@@ -94,8 +106,13 @@ their task runs.
   the vault tools a task agent has). Every change is audited under the person's name.
 - Its containment is a root of its own folder in the server's network and as the server's user,
   without a user namespace: what keeps that safe is that nothing runs in it but Claude Code (no
-  tools, hooks, settings files or shell). A Claude Code release that ran code another way would
-  need a holder of its own for it, which is the next step if that happens.
+  tools, hooks, settings files, shell or editor) and that no key of the person reaches Claude
+  Code. A Claude Code release that ran code from a model's answer or a pasted message would need
+  a holder of its own for it, which is the next step if that happens.
+- It runs the host's Claude Code, which may lag the copy isolated runs bind (ADR-0266); what it
+  relies on (`--tools`, `--strict-mcp-config`, `--setting-sources`, `disableAllHooks`,
+  `CLAUDE_CODE_SHELL_PREFIX`) was measured on 2.1.311, and the message-only input does not depend
+  on the version.
 - Contained without a holder, it runs the host's Claude Code installation, not the newer one
   isolated runs bind (ADR-0266), until the host's is updated.
 - A person who can work in no sandbox (read-only access, a guest without one) has no Global

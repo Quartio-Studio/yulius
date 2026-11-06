@@ -66,7 +66,7 @@ as the person's own agent does over the remote MCP.
   per call against the person's access to that project as an `operate` token is, except the tools
   that change the vault or variables, deploy, or add, onboard or skip projects (`secret_update`,
   `secret_hosts_answer`, `secret_delete`, `variables_set`, `variable_delete`, `cd_deploy`,
-  `project_import`, `onboarding_start`, `onboarding_skip`): those are not listed and refused when
+  `project_import`, `onboarding_start`, `onboarding_skip`, and `change_merge` (GSA-007)): those are not listed and refused when
   called. Like an operate token it is bounded to 120 requests a minute. A `ck_` bearer is never served these tools and a `gs_` bearer never the sandbox
   Superagent's. It acts as `superagent:<login>` on the Superagent channel ("Message from alice
   (through their Superagent)"); its changes are audited `remote.tool` with `via:
@@ -85,12 +85,24 @@ as the person's own agent does over the remote MCP.
   a subscription with capacity, and an update that changes what it is served restarts it once
   idle, as the sandbox Superagent (SPEC-074, SPEC-186 SAV-006).
 - GSA-006: the web UI: outside a sandbox (All sandboxes, Settings) the rail's Superagent button
-  is enabled and opens the Global Superagent, titled "Global Superagent", with a note: "Sees all
+  is enabled and opens the Global Superagent, titled "Global Superagent", its read-only terminal
+  above a message box (Enter sends, Shift+Enter a new line, Interrupt; a refusal shows above the
+  box with the message kept), with a note: "Sees all
   your sandboxes and keeps them in sync: what runs where, the same change across repositories.
   Code work still belongs in a task in its sandbox." Inside a sandbox it opens that sandbox's
   Superagent, whose note now also says the Global Superagent works across sandboxes, from All
   sandboxes. `/superagent` opens All sandboxes with the Global Superagent. A sandbox entered while
   the Global Superagent is open closes the panel instead of starting that sandbox's Superagent.
+
+- GSA-007: the person talks to it by message only, because Claude Code's own keys reach an
+  external editor, `!` commands, plugin installs and file mentions that would run or read as the
+  server: its terminal is read-only (`can_write` false; a typed key is refused), and
+  `POST /api/superagent/message {text}` types one bracketed paste and Enter, with control
+  characters but line breaks and tabs removed and `@` as `＠`; a message that starts with `!`, or
+  with `/` but is not `/clear`, `/compact`, `/context` or `/cost`, is refused (422).
+  `POST /api/superagent/interrupt` sends Esc. Both answer 404 to anyone without a running one.
+  `EDITOR` and `VISUAL` name the refusing script too. It is not served `change_merge`: text it
+  reads in one sandbox must not merge code into another.
 
 ## Plan
 
@@ -101,6 +113,7 @@ as the person's own agent does over the remote MCP.
 - [x] The rail opens the Global Superagent outside a sandbox
 - [x] ADR, architecture, product and API docs describe the two Superagents
 - [x] Review round 1 fixed: no shell, hooks or settings files, a recorded contained plan, bounds
+- [ ] Review round 2 fixed: messages instead of keys, no editor, no merges
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 

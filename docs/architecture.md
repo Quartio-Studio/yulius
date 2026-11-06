@@ -1239,7 +1239,12 @@ the Superagent channel, changes audited `remote.tool` with `via: global-superage
 requests a minute. A removed host ends it, and the next `POST /api/superagent` leaves a host where
 its person lost write access; it then starts under the oldest sandbox the person can work in,
 resuming the conversation kept in its folder. Its `shell.json` is version 2, which older releases
-end and remove. The web UI opens it from the tools rail
+end and remove. No key of the person reaches it (`ShellAttach::takes_keys`, `can_write` false):
+`POST /api/superagent/message` types each message as one bracketed paste and Enter
+(`global_message`: control characters removed, `@` as `＠`, `!` lines and commands but `/clear`,
+`/compact`, `/context` and `/cost` refused), and `POST /api/superagent/interrupt` sends Esc, so
+neither its editor (`EDITOR`/`VISUAL` refuse too), its `!` mode nor its menus are reachable. It is
+not served `change_merge`. The web UI opens it from the tools rail
 outside a sandbox, where the rail shows only the Superagent.
 
 ```mermaid

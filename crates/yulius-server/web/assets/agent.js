@@ -41,7 +41,9 @@ export function createAgentView(ctx, sandbox) {
   const body = h('div', { class: 'agent-term' });
   const requests = global ? null : createRequests(ctx, sandbox);
   const link = global ? null : createLink(ctx, sandbox, () => restart());
-  const el = h('div', { class: 'agent' }, notice, link && link.el, requests && requests.el, body);
+  // GSA-007: the Global Superagent takes messages, not keys; its terminal only shows it.
+  const compose = global ? createCompose(ctx) : null;
+  const el = h('div', { class: 'agent' }, notice, link && link.el, requests && requests.el, body, compose && compose.el);
   let terminal = null;
   let alive = true;
   let opening = false;
@@ -130,7 +132,9 @@ export function createAgentView(ctx, sandbox) {
 
   function focus() {
     // On phones a focused terminal raises the soft keyboard over the page (as in the task view).
-    if (terminal && shown && !isPhone()) terminal.focus();
+    if (!shown || isPhone()) return;
+    if (compose) compose.focus();
+    else if (terminal) terminal.focus();
   }
 
   function mount(shell, { focus: wantFocus = true, from = null } = {}) {
@@ -199,6 +203,42 @@ export function createAgentView(ctx, sandbox) {
       drop();
     },
   };
+}
+
+/**
+ * SPEC-427 GSA-007: the Global Superagent's message box. Enter sends (Shift+Enter is a new line):
+ * Yulius types the message into the session, refusing `!` lines and commands but /clear,
+ * /compact, /context and /cost; Interrupt sends Esc.
+ */
+function createCompose(ctx) {
+  const input = h('textarea', { class: 'input agent-compose-input', rows: 2, 'aria-label': 'Message to the Global Superagent', placeholder: 'Ask about your sandboxes, or tell it what to keep in sync…' });
+  const error = h('p', { class: 'agent-compose-error small', role: 'alert', hidden: true });
+  let sending = false;
+  async function send() {
+    const text = input.value.trim();
+    if (!text || sending) return;
+    sending = true;
+    error.hidden = true;
+    try {
+      await ctx.api.post('/api/superagent/message', { text });
+      input.value = '';
+    } catch (err) {
+      error.textContent = err.message;
+      error.hidden = false;
+    } finally {
+      sending = false;
+    }
+  }
+  input.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
+      event.preventDefault();
+      send();
+    }
+  });
+  const sendButton = h('button', { type: 'button', class: 'btn btn-primary btn-sm', onClick: () => send() }, 'Send');
+  const stop = h('button', { type: 'button', class: 'btn btn-sm', title: 'Interrupt its turn (Esc)', onClick: () => ctx.api.post('/api/superagent/interrupt').catch((err) => errorToast(err)) }, 'Interrupt');
+  const el = h('div', { class: 'agent-compose' }, error, h('div', { class: 'agent-compose-row' }, input, h('div', { class: 'agent-compose-actions' }, sendButton, stop)));
+  return { el, focus: () => input.focus() };
 }
 
 /**

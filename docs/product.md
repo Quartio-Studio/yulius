@@ -138,9 +138,11 @@ watching, steering and unblocking.
   note. It sees every sandbox the person can see and keeps them in sync: "which of my sandboxes
   have failing CI?", "the API changed in acme/api, make its clients follow" or "tell every running
   task to merge dev" become tasks, pull requests and task messages in each sandbox, as the person,
-  without asking per action. It has no shell or file tools: it works only through Yulius's tools
+  without asking per action. The person writes to it in a message box under its terminal (Enter sends, Interrupt stops its
+  turn); its terminal only shows it, and it takes no `!` commands and no Claude Code commands but
+  `/clear`, `/compact`, `/context` and `/cost`. It has no shell or file tools: it works only through Yulius's tools
   (the remote MCP's, SPEC-247), and deploying, agent secrets, variables and adding or onboarding
-  projects stay the person's. Its conversation is kept in a folder of its own, so it continues
+  projects stay the person's, and the pull requests it opens are merged by a person or a task. Its conversation is kept in a folder of its own, so it continues
   when it starts again under another sandbox; a person with only read access has none (SPEC-427).
 - **MCP servers**: configured once on the MCP page with two settings, Available in (every sandbox
   or this one) and For (the whole team or only me), and attached on every subscription. A team
