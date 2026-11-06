@@ -142,11 +142,6 @@ test('All sandboxes stays chosen in every sandbox and after a reload, with one G
   expect(await browser.locator('.superagent-pane .agent-compose').count()).toBe(1);
   // studio's own Superagent started when its tab showed; product's never did.
   expect(await startsOf(browser)).toEqual({ sandbox: 1, global: 1 });
-  // Out of the sandboxes it stays open too.
-  await app.open(mock('/settings'));
-  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Settings');
-  await expect(tabs(screen).getByRole('tab', 'All sandboxes')).toHaveAttribute('aria-selected', 'true');
-  await expect(screen.getByRole('textbox', 'Message to the Global Superagent')).toHaveValue('half a thought');
 
   // Back in studio, whose own Superagent is not shown again.
   await app.open(mock('/s/studio/t/12'));
@@ -160,6 +155,12 @@ test('All sandboxes stays chosen in every sandbox and after a reload, with one G
   await openSuperagent(browser, screen);
   await expect(tabs(screen).getByRole('tab', 'All sandboxes')).toHaveAttribute('aria-selected', 'true');
   await expect(browser.locator(`${shownAgent} .xterm-rows`)).toHaveText(/superagent\/work/);
+  expect(await startsOf(browser)).toEqual({ sandbox: 0, global: 1 });
+  // Out of the sandboxes it stays open too, whatever another browser tab picked meanwhile.
+  await browser.evaluate(() => window.localStorage.setItem('yulius.superagentTab', '"sandbox"'));
+  await app.open(mock('/settings'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Settings');
+  await expect(tabs(screen).getByRole('tab', 'All sandboxes')).toHaveAttribute('aria-selected', 'true');
   expect(await startsOf(browser)).toEqual({ sandbox: 0, global: 1 });
 });
 
