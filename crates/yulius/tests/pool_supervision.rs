@@ -126,6 +126,24 @@ fn build_with_github(
     build_served(data, fake, usage, agent, github, "http://127.0.0.1:9")
 }
 
+/// [`build_with`] whose configuration `tune` changes.
+pub(crate) fn build_tuned(
+    data: &Path,
+    fake: &Path,
+    agent: FakeAgentOptions,
+    tune: impl FnOnce(&mut AppConfig),
+) -> Result<Arc<App>, Box<dyn std::error::Error>> {
+    build_served_tuned(
+        data,
+        fake,
+        Arc::new(ScriptedUsage::default()),
+        agent,
+        Arc::new(FakeGitHub::default()),
+        "http://127.0.0.1:9",
+        tune,
+    )
+}
+
 /// [`build_with_github`] whose runs reach Yulius at `internal_url` (their `YULIUS_URL`).
 pub(crate) fn build_served(
     data: &Path,
@@ -134,6 +152,19 @@ pub(crate) fn build_served(
     agent: FakeAgentOptions,
     github: Arc<FakeGitHub>,
     internal_url: &str,
+) -> Result<Arc<App>, Box<dyn std::error::Error>> {
+    build_served_tuned(data, fake, usage, agent, github, internal_url, |_| {})
+}
+
+/// [`build_served`] whose configuration `tune` changes.
+fn build_served_tuned(
+    data: &Path,
+    fake: &Path,
+    usage: Arc<ScriptedUsage>,
+    agent: FakeAgentOptions,
+    github: Arc<FakeGitHub>,
+    internal_url: &str,
+    tune: impl FnOnce(&mut AppConfig),
 ) -> Result<Arc<App>, Box<dyn std::error::Error>> {
     let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
     let store = SqliteStore::open(&data.join("yulius.db"))?;
@@ -145,6 +176,7 @@ pub(crate) fn build_served(
     );
     config.contained = false;
     config.resume_stagger_ms = 1_500;
+    tune(&mut config);
     let deps = Deps {
         store: Arc::new(store),
         clock: Arc::new(SystemClock),

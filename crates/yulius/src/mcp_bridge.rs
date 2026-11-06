@@ -826,7 +826,10 @@ mod tests {
         let (mut stream, _) = listener.accept()?;
         read_request(&mut stream)?;
         drop(lines_tx);
-        assert!(rx.try_recv().is_err(), "a ping's answer reached Claude Code");
+        assert!(
+            rx.try_recv().is_err(),
+            "a ping's answer reached Claude Code"
+        );
         Ok(())
     }
 

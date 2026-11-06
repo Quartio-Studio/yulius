@@ -59,7 +59,7 @@ impl WatchBounds {
 pub struct WatchFacts {
     /// Now (ms).
     pub now_ms: i64,
-    /// The task is Running with a live Claude Code session whose SessionStart arrived.
+    /// The task is Running with a live session.
     pub running: bool,
     /// When the current run was spawned (ms).
     pub spawned_ms: i64,
@@ -195,8 +195,8 @@ impl App {
             };
             let facts = WatchFacts {
                 now_ms: self.now().0,
-                running: task.status == TaskStatus::Running
-                    && runtime.session_started.load(Ordering::SeqCst),
+                // A session not ready for input yet is refused by `type_into_session`.
+                running: task.status == TaskStatus::Running,
                 spawned_ms: runtime.spawned_ms.load(Ordering::SeqCst),
                 seen_ms: runtime.mcp_seen_ms.load(Ordering::SeqCst),
                 turn_open: runtime.turn_in_progress(),
@@ -334,7 +334,11 @@ mod tests {
         let (action, second) = decide(&later, first, &bounds());
         assert_eq!(action, WatchAction::Reconnect);
         assert_eq!(second.unanswered, 2);
-        assert_eq!(second.silent_since_ms, 12 * MIN, "the first silence is kept");
+        assert_eq!(
+            second.silent_since_ms,
+            12 * MIN,
+            "the first silence is kept"
+        );
         let (action, third) = decide(
             &WatchFacts {
                 now_ms: 40 * MIN,
@@ -352,7 +356,11 @@ mod tests {
             third,
             &bounds(),
         );
-        assert_eq!(action, WatchAction::None, "a fourth unanswered is never typed");
+        assert_eq!(
+            action,
+            WatchAction::None,
+            "a fourth unanswered is never typed"
+        );
     }
 
     #[test]
