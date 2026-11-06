@@ -126,8 +126,9 @@ On 2026-11-06, at `d6adf649` (the branch after merging `origin/dev` at `30e2b108
   macOS targets and deps pass; `cargo nextest run --workspace --profile ci` ran 3164 tests,
   3164 passed, 16 skipped.
 - `cd e2e && npx e2e run` (full suite, at the review round 1 head before the dev merge; that merge
-  touched `mock.js` and `task-done.e2e.ts` only in parts this task does not, and Yulius CI's e2e
-  job runs the merged head): 858 passed, 1 skipped (`agent.e2e.ts` needs a model), 1
+  changed web and e2e files this task does not touch (`status.js`, `tasktime.js`,
+  `task-done.e2e.ts`, `times.e2e.ts`) and other lines of `mock.js` and `e2e/README.md`; Yulius CI's
+  e2e job runs the merged head): 858 passed, 1 skipped (`agent.e2e.ts` needs a model), 1
   failed: `task-done.e2e.ts` "the end banner keeps keyboard focus when the task's details are
   read again", under host load (load average 16-22); it passed 3 of 3 runs of the file alone. This
   change does not touch the task view (`terminal-core.js` lost only `resizeReadOnly`, `false` for
