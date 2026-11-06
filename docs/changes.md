@@ -15,6 +15,15 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   process starts. Each job records how long it waited: `ci_status` reads "websites passed, waited
   39m 0s, ran 44m 2s", the run page ends a job's output with "[waited 39 min, ran 44 min]", and a
   timeout says "timed out: ran 1 h 0 min, its time limit; it waited 39 min 12 s before it started".
+- A task session whose Yulius MCP server Claude Code dropped is reconnected, and a superadmin can
+  restart Yulius (SPEC-432, ADR-0276, task #414). A session lost `delivery_merge` and `ci_status`
+  mid-goal and waited for a person to run `/mcp`. Now the session's `yulius mcp` bridge pings Yulius
+  every minute; an idle task silent for 3 minutes gets `/mcp reconnect yulius` typed, then "Yulius's
+  tools are reconnected; continue" if its turn ended while cut off. Mid-turn, `yulius tool <name>
+  '<json>'` calls any Yulius tool from the shell. **Settings → Instance → Restart…** pauses every
+  task, restarts the server with the build it runs through the update helper's new `restart`
+  action, and resumes the tasks, as an update does without installing.
+
 - A revealed agent-secret key is copied with its line breaks (SPEC-431, ADR-0275, task #413, fixes
   #1096). A pasted key is stored with literal `\n`, and Show and Copy value on the Secrets page gave
   that one-line form back. The reveal now returns a key block as its key file (real line breaks, one

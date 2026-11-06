@@ -25,7 +25,7 @@ use std::time::Duration;
 
 use tokio::sync::Notify;
 use yulius_contracts::api::updates::{
-    AvailableUpdate, BuildView, CommitView, PauseProgress, ProgressView, StartUpdate,
+    AvailableUpdate, BuildView, CommitView, PauseProgress, ProgressView, StartRestart, StartUpdate,
     UpdateCheckView, UpdateRunView, UpdateView, WaitingDeploy, WaitingTask,
 };
 use yulius_contracts::events::UiEvent;
@@ -213,6 +213,27 @@ fn build_view(commit: Option<&str>) -> BuildView {
     }
 }
 
+/// A restart with the running build (SPEC-432 RST-002): a run whose target is the build it
+/// started from.
+fn is_restart(run: &UpdateRunRecord) -> bool {
+    run.from_commit.as_deref() == Some(run.target_commit.as_str())
+}
+
+/// What the helper is asked once the tasks are paused: install the build, or restart.
+fn install_action(run: &UpdateRunRecord) -> HelperAction {
+    if is_restart(run) {
+        HelperAction::Restart
+    } else {
+        HelperAction::Install
+    }
+}
+
+/// The audit action of a run's step: `update.<what>`, or `restart.<what>` for a restart.
+fn audit_action(run: &UpdateRunRecord, what: &str) -> String {
+    let kind = if is_restart(run) { "restart" } else { "update" };
+    format!("{kind}.{what}")
+}
+
 fn request_id(run: &UpdateRunRecord, action: HelperAction) -> String {
     format!("{}-{}", run.id, action.as_str())
 }
@@ -232,6 +253,7 @@ fn step_message(step: &str) -> Option<&'static str> {
         "checking_host" => "Checking that sandboxes still get Docker.",
         "succeeded" => "The new version runs.",
         "rolling_back" => "The new version failed its check. Restoring the previous one.",
+        "restarted" => "Yulius runs again.",
         _ => return None,
     })
 }
@@ -931,6 +953,98 @@ impl App {
         self.update_view(ctx).await
     }
 
+    /// `POST /api/admin/restart` (superadmin, SPEC-432 RST-002): restarts the server with the
+    /// build it runs, as an update does without building or installing: every task is paused
+    /// (frozen), the helper restarts the service, and the tasks resume.
+    ///
+    /// # Errors
+    /// `Forbidden` for others; `Invalid` without confirmation; `Conflict` without a helper or a
+    /// known build, or while a run is open.
+    pub async fn start_restart(
+        &self,
+        ctx: &AuthContext,
+        req: &StartRestart,
+    ) -> AppResult<UpdateView> {
+        self.require_superadmin(ctx)?;
+        if !req.confirm {
+            return Err(AppError::Invalid(
+                "confirm the restart: tasks pause while the server restarts".into(),
+            ));
+        }
+        let services = self.update_services().ok_or_else(|| {
+            AppError::Conflict("restarts are not available on this server".into())
+        })?;
+        if !services.helper.as_ref().is_some_and(|h| h.installed()) {
+            return Err(AppError::Conflict(
+                "the update helper is not installed on this server (see the operations guide)"
+                    .into(),
+            ));
+        }
+        let build = services
+            .build
+            .clone()
+            .filter(|commit| policy::is_commit(commit))
+            .ok_or_else(|| {
+                AppError::Conflict(
+                    "this server's build is unknown, so the restart could not check it came back"
+                        .into(),
+                )
+            })?;
+        if self.deps.store.open_update_run().await?.is_some() {
+            return Err(AppError::Conflict(
+                "an update or restart is already running".into(),
+            ));
+        }
+        // An update waits for deploys while it builds; a restart has nothing to build, so it
+        // starts only with none running (SPEC-342, review round 1). The gate closes first, so
+        // nothing that passed it is missed, and opens again on a refusal.
+        match self.deploys_in_flight().await {
+            Ok((0, _)) => {}
+            Ok((running, _)) => {
+                self.open_deploys();
+                return Err(AppError::Conflict(format!(
+                    "{running} deploy(s) are running: restart once they finished"
+                )));
+            }
+            Err(err) => {
+                self.open_deploys();
+                return Err(err);
+            }
+        }
+        let login = self.login_of(&ctx.user.id).await;
+        let now = self.now();
+        let run = UpdateRunRecord {
+            id: self.deps.crypto.new_id(),
+            target_commit: build.clone(),
+            from_commit: Some(build.clone()),
+            summary: "Restart".into(),
+            // Nothing to build: the tasks pause at once.
+            state: RunState::Draining,
+            outcome: None,
+            error: None,
+            requested_by: login.clone(),
+            created_at: now,
+            state_since: now,
+            finished_at: None,
+        };
+        if !self.deps.store.insert_update_run(&run).await? {
+            // Another run started meanwhile: the gate is its own now.
+            return Err(AppError::Conflict(
+                "an update or restart is already running".into(),
+            ));
+        }
+        self.reset_phase(&run);
+        self.updates.proceed.store(false, Ordering::SeqCst);
+        self.switch_hold(true).await;
+        self.deps
+            .store
+            .audit(now, &login, "restart.started", Some(&build), Some(&run.id))
+            .await?;
+        self.publish_run(&run, "requested");
+        self.wake_updates();
+        self.update_view(ctx).await
+    }
+
     /// `POST /api/admin/update/cancel` (superadmin): stops an update that is building or pausing
     /// tasks; nothing is installed and paused tasks go on at once.
     ///
@@ -951,7 +1065,11 @@ impl App {
             })?;
         let login = self.login_of(&ctx.user.id).await;
         let now = self.now();
-        let message = format!("Cancelled by {login}; nothing was installed.");
+        let message = if is_restart(&run) {
+            format!("Cancelled by {login}; Yulius was not restarted.")
+        } else {
+            format!("Cancelled by {login}; nothing was installed.")
+        };
         if !self
             .deps
             .store
@@ -976,7 +1094,7 @@ impl App {
             .audit(
                 now,
                 &login,
-                "update.cancelled",
+                &audit_action(&run, "cancelled"),
                 Some(&run.target_commit),
                 Some(&run.id),
             )
@@ -1006,7 +1124,7 @@ impl App {
             .audit(
                 self.now(),
                 &login,
-                "update.proceeded",
+                &audit_action(&run, "proceeded"),
                 Some(&run.target_commit),
                 Some(&run.id),
             )
@@ -1230,9 +1348,12 @@ impl App {
                             ..run.clone()
                         };
                         self.reset_phase(&moved);
-                        if let Err(err) =
-                            self.write_request(helper.as_ref(), &moved, HelperAction::Install, None)
-                        {
+                        if let Err(err) = self.write_request(
+                            helper.as_ref(),
+                            &moved,
+                            install_action(&moved),
+                            None,
+                        ) {
                             tracing::warn!(error = %err, "could not write the install request");
                         }
                         let _ = self
@@ -1241,7 +1362,7 @@ impl App {
                             .audit(
                                 self.now(),
                                 "system",
-                                "update.installing",
+                                &audit_action(&run, "installing"),
                                 Some(&run.target_commit),
                                 Some(&run.id),
                             )
@@ -1270,8 +1391,9 @@ impl App {
                 }
             }
             RunState::Installing => {
-                let finished = match self.helper_status(&run, HelperAction::Install) {
-                    None if self.await_ack(&run, HelperAction::Install).await => Some((
+                let action = install_action(&run);
+                let finished = match self.helper_status(&run, action) {
+                    None if self.await_ack(&run, action).await => Some((
                         RunState::Failed,
                         Some(
                             "The update helper did not respond; nothing was installed.".to_owned(),
@@ -1350,7 +1472,7 @@ impl App {
                 .audit(
                     self.now(),
                     "system",
-                    "update.failed",
+                    &audit_action(run, "failed"),
                     Some(&run.target_commit),
                     Some(&run.id),
                 )
@@ -1374,7 +1496,7 @@ impl App {
                 .audit(
                     self.now(),
                     "system",
-                    "update.cancelled",
+                    &audit_action(run, "cancelled"),
                     Some(&run.target_commit),
                     Some(&run.id),
                 )
@@ -1569,7 +1691,7 @@ impl App {
                 .audit(
                     self.now(),
                     "system",
-                    "update.finished",
+                    &audit_action(run, "finished"),
                     Some(&run.target_commit),
                     Some(outcome.as_str()),
                 )
@@ -1716,11 +1838,12 @@ impl App {
     }
 
     async fn run_view(&self, run: &UpdateRunRecord) -> UpdateRunView {
+        let restart = is_restart(run);
         let action = match run.state {
             RunState::Building => Some(HelperAction::Build),
-            RunState::Installing | RunState::Resuming => Some(HelperAction::Install),
+            RunState::Installing | RunState::Resuming => Some(install_action(run)),
             _ => match run.outcome.or(Some(run.state)) {
-                Some(RunState::RolledBack | RunState::Succeeded) => Some(HelperAction::Install),
+                Some(RunState::RolledBack | RunState::Succeeded) => Some(install_action(run)),
                 _ => None,
             },
         };
@@ -1735,7 +1858,14 @@ impl App {
                 total: p.total,
             });
         let mut tasks = None;
-        let mut message = step.as_deref().and_then(step_message).map(str::to_owned);
+        let mut message = step
+            .as_deref()
+            .and_then(|step| match step {
+                "starting" if restart => Some("Starting Yulius again."),
+                "checking" if restart => Some("Checking that Yulius runs again."),
+                step => step_message(step),
+            })
+            .map(str::to_owned);
         // The gate is closed once built: the deploys it waits for (SPEC-342 DPU-006).
         let (running, deploys) = if self.updates.deploys.is_closed()
             && matches!(run.state, RunState::Building | RunState::Draining)
@@ -1793,13 +1923,18 @@ impl App {
                 message = Some(format!("Resuming tasks: {done} of {total}."));
                 step = Some("resuming".into());
             }
+            RunState::Succeeded if restart => message = Some("Restarted.".into()),
             RunState::Succeeded => {
                 message = Some(format!("Updated to {}.", policy::short(&run.target_commit)));
             }
             RunState::RolledBack => {
                 message = Some("The update was rolled back; the previous version runs.".into());
             }
+            RunState::Failed if restart => message = Some("The restart failed.".into()),
             RunState::Failed => message = Some("The update failed.".into()),
+            RunState::Cancelled if restart => {
+                message = Some("Cancelled; Yulius was not restarted.".into());
+            }
             RunState::Cancelled => message = Some("Cancelled; nothing was installed.".into()),
             RunState::Building | RunState::Installing => {}
         }
@@ -1813,6 +1948,7 @@ impl App {
         };
         UpdateRunView {
             id: run.id.clone(),
+            restart,
             target: build_view(Some(&run.target_commit)),
             from: build_view(run.from_commit.as_deref()),
             summary: run.summary.clone(),

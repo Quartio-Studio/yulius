@@ -65,6 +65,14 @@ enum Command {
     /// Internal: the stdio bridge of a task run's Yulius MCP (SPEC-358), started by Claude Code.
     #[command(hide = true)]
     Mcp,
+    /// In a task's session: call one Yulius tool (as its `yulius` MCP server would) and print
+    /// its text; for when the session's Yulius MCP tools are unavailable (SPEC-432).
+    Tool {
+        /// The tool, e.g. `delivery_merge`.
+        name: String,
+        /// Its arguments as one JSON object, e.g. '{"reviewed_head": "<sha>"}'.
+        arguments: Option<String>,
+    },
     /// Scan this repository with Vidoc's vidoc-1 (SPEC-195): the branch's changes against the
     /// integration branch, or the whole repository with --all; exit 0 passed, 1 failed, 2 not run.
     /// `yulius security-scan --help` lists the options.
@@ -610,6 +618,16 @@ fn main() -> ExitCode {
                 Box::new(std::io::stdout()),
                 Box::new(|k| std::env::var(k).ok()),
                 yulius::mcp_bridge::Settings::default(),
+            );
+            ExitCode::from(u8::try_from(code).unwrap_or(1))
+        }
+        Command::Tool { name, arguments } => {
+            let code = yulius::tool_cli::run(
+                &mut std::io::stdout(),
+                &name,
+                arguments.as_deref(),
+                yulius::tool_cli::Pace::default(),
+                &|k| std::env::var(k).ok(),
             );
             ExitCode::from(u8::try_from(code).unwrap_or(1))
         }

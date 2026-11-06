@@ -565,6 +565,10 @@ impl App {
                 ));
             }
         };
+        // Its bridge pings every minute: a silent one was dropped (SPEC-432 MCR-002).
+        if let McpCaller::Agent(agent) = &caller {
+            self.note_mcp_contact(&agent.task.id, &id);
+        }
         let result: AppResult<Value> = match request.method.as_str() {
             "initialize" => {
                 let requested = request

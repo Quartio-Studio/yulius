@@ -1484,6 +1484,13 @@ rotate every team and agent secret at its source.
 
 ### Updates from main (the update helper)
 
+**Restart without updating** (SPEC-432): **Settings → Instance → Restart…** (refused while a
+deploy runs: a restart has no build to wait through) pauses every task as step 2 below does, asks the helper to `restart` (stop and start `yulius.service`, then wait until
+`/internal/version` reports the same commit; nothing is backed up, installed or rolled back), and
+resumes the tasks one by one. It needs the update helper; prefer it to `systemctl restart`, which
+does not pause tasks. A task session whose Yulius MCP was dropped by Claude Code is reconnected by
+Yulius after 3 silent minutes (it types `/mcp reconnect yulius` into the idle session).
+
 Yulius updates itself from `main` of **Quartio-Studio/yulius** (SPEC-001 OPS-006..OPS-009,
 SPEC-002 ADR-18). It knows the commit it was built from (`yulius version`, and
 `GET /internal/version` on the internal listener) and checks `main` every hour and whenever a
@@ -1538,10 +1545,11 @@ commits. Nothing updates by itself: a superadmin chooses **Update now** and conf
    nothing happened, except the tasks a person paused, which stay paused until they resume them.
    A server that starts with no update open thaws any run group left frozen but those.
 
-The service user cannot replace `/usr/local/bin/yulius` or restart itself. A root-owned **path
-unit** starts the helper when the server writes `/var/lib/yulius/update/request.json`; the request
-can only say "build" or "install" one commit, everything else (repository, paths, service) is in
-the root-owned unit. The helper refuses a request that is not a regular file owned by the
+The service user cannot replace `/usr/local/bin/yulius`, and it restarts only through the helper.
+A root-owned **path unit** starts the helper when the server writes
+`/var/lib/yulius/update/request.json`; the request can only say "build" or "install" one commit,
+or "restart" the installed one (SPEC-432: the service can have root stop and start it, nothing
+more). Everything else (repository, paths, service) is in the root-owned unit. The helper refuses a request that is not a regular file owned by the
 service user, larger than 16 KiB, malformed, older than 15 minutes or already handled. It reports in
 `/var/lib/yulius-update/status.json`, which the server reads.
 
