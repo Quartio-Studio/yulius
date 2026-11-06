@@ -3052,6 +3052,21 @@ function revealed(body, value, notes) {
   return { value: fields.includes('value') ? value || null : null, notes: fields.includes('notes') ? notes || null : null };
 }
 
+/**
+ * The key file an agent secret stands for when it is a key block stored with literal `\n`, as the
+ * server reveals it (`dotenv::key_block`, ADR-0275): armour on the first and last lines, a body
+ * between, no other `\`, `'`, CR or `${`, one final line break. Any other value as stored.
+ */
+function keyFileOf(value) {
+  if (!value) return value;
+  const text = (value.endsWith('\\n') ? value.slice(0, -2) : value).split('\\n').join('\n');
+  const lines = text.split('\n');
+  const armour = (line, edge) => new RegExp(`^-----${edge} [^-]+-----$`).test(line);
+  const block = lines.length >= 3 && armour(lines[0], 'BEGIN') && armour(lines[lines.length - 1], 'END')
+    && !/[\\'\r]/.test(text) && !text.includes('${');
+  return block ? `${text}\n` : value;
+}
+
 function audit(db, action, id, detail) {
   vaultOf(db).activity.unshift({ at: new Date().toISOString(), actor: db.me.user.login, action, secret_id: id, detail });
 }
@@ -3205,7 +3220,7 @@ route('POST', `/api/agent-secrets/${ID}/reveal`, ({ db, p, body }) => {
   const refused = needFresh(db);
   if (refused) return refused;
   audit(db, body.purpose === 'copy' ? 'vault.agent.copy' : 'vault.agent.reveal', secret.id, secret.name);
-  return revealed(body, secret.value, [secret.username && `User name: ${secret.username}`, secret.description].filter(Boolean).join('\n\n'));
+  return revealed(body, keyFileOf(secret.value), [secret.username && `User name: ${secret.username}`, secret.description].filter(Boolean).join('\n\n'));
 });
 route('POST', `/api/agent-secrets/${ID}/request`, ({ db, p, body }) => {
   const secret = agentSecret(db, p[0]);

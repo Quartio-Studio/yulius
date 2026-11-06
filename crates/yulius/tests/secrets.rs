@@ -1465,6 +1465,56 @@ async fn a_flattened_key_is_refused_and_an_older_one_is_marked_for_its_managers(
     Ok(())
 }
 
+/// SPEC-431 RVK-001, RVK-002: a key stored with literal `\n` is revealed, to show or to copy, as
+/// the key file it stands for; any other value comes back as stored, its `\n` included.
+#[tokio::test]
+async fn a_revealed_key_block_comes_back_as_its_key_file() -> TestResult {
+    let w = world().await?;
+    let (begin, end) = (
+        format!("-----BEGIN {}-----", "SYNTHETIC KEY"),
+        format!("-----END {}-----", "SYNTHETIC KEY"),
+    );
+    let escaped = format!("{begin}\\nc3ludGhldGljLWtleS0wMQ==\\nc3ludGhldGljLWtleS0wMg==\\n{end}");
+    let file = format!("{begin}\nc3ludGhldGljLWtleS0wMQ==\nc3ludGhldGljLWtleS0wMg==\n{end}\n");
+    let json_text = r#"{"note":"line one\nline two"}"#;
+    let mut ids = Vec::new();
+    for (name, value) in [
+        ("DEPLOY_KEY", escaped.as_str()),
+        ("SERVICE_JSON", json_text),
+    ] {
+        let created =
+            add_agent_secret(&w, &w.writer, "s1", json!({"name": name, "value": value})).await?;
+        assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+        ids.push(created.body["id"].as_str().ok_or("id")?.to_owned());
+    }
+    let alice = browser_session(&w.h, "u-alice").await?;
+    enroll(&w.h, &alice).await?;
+    for purpose in ["show", "copy"] {
+        let body = json!({"purpose": purpose, "fields": ["value"]});
+        let key = call(
+            &w.h.router,
+            Method::POST,
+            &format!("/api/agent-secrets/{}/reveal", ids[0]),
+            Some(body.clone()),
+            &alice,
+        )
+        .await?;
+        assert_eq!(key.status, StatusCode::OK, "{}", key.body);
+        assert_eq!(key.body["value"], file.as_str(), "{purpose}");
+        let other = call(
+            &w.h.router,
+            Method::POST,
+            &format!("/api/agent-secrets/{}/reveal", ids[1]),
+            Some(body),
+            &alice,
+        )
+        .await?;
+        assert_eq!(other.status, StatusCode::OK, "{}", other.body);
+        assert_eq!(other.body["value"], json_text, "{purpose}");
+    }
+    Ok(())
+}
+
 /// AC-VLT-5, SPEC-040 AC5: who may see, manage and read agent secrets; values come back only
 /// from a reveal by someone who manages the secret, after a two-factor unlock.
 #[tokio::test]
