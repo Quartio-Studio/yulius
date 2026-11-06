@@ -1398,7 +1398,9 @@ resolves to nothing, the run gets the server without that variable or token.
     as other attachments (streamed, the upload limit, a free safe name) in its own folder,
     `users/<id>/superagent/attachments/`, whose absolute path is the same inside its root; 422 for
     a name that is not `.png`, `.jpg`, `.jpeg`, `.gif` or `.webp` (it has no file tools), before
-    the body is read; 404 while the caller's Global Superagent is not running; at most 500 files,
+    the body is read; 404 while the caller's Global Superagent is not running (also while it moves
+    to another host sandbox), while a running one takes images until it ends or moves, whatever
+    its person's access meanwhile (they land in the person's own folder); at most 500 files,
     those older than a week removed at the next upload.
 - Notes ([SPEC-041](../.ai/specs/SPEC-041-here-we-want-auto-saved-notes-sandbox-wi.md),
   [SPEC-103](../.ai/specs/SPEC-103-add-me-after-team-that-is-for-user-and-n.md)): one notepad per
