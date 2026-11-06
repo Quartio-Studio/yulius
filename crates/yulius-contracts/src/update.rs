@@ -3,7 +3,7 @@
 //! The server, running as the unprivileged service user, writes one [`HelperRequest`] to
 //! `<data>/update/request.json` (mode 0600, written atomically). A root-owned systemd path unit
 //! starts `yulius update-helper`, which accepts nothing but "build" or "install" one commit of
-//! `main` of the fixed repository, and reports in [`HelperStatus`] at
+//! `main` of the fixed repository, or "restart" the installed one (SPEC-432 RST-001), and reports in [`HelperStatus`] at
 //! `<helper state>/status.json` (root-owned, readable by the service). Both files are bounded
 //! and carry [`VERSION`]; anything else is refused.
 
@@ -28,6 +28,9 @@ pub enum HelperAction {
     Build,
     /// Stop the service, back up, install the staged build, start, check; roll back on failure.
     Install,
+    /// Stop and start the service with the build it runs, and check it came back (SPEC-432
+    /// RST-001). Nothing is backed up, installed or rolled back.
+    Restart,
 }
 
 impl HelperAction {
@@ -37,6 +40,7 @@ impl HelperAction {
         match self {
             Self::Build => "build",
             Self::Install => "install",
+            Self::Restart => "restart",
         }
     }
 }
