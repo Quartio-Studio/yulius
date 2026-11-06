@@ -4,6 +4,20 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-06
+
+- An agent that answered and needs nothing is no longer "Needs you" (SPEC-429, ADR-0273, task #411,
+  fixes #1090). Every turn that ended without an achieved `/goal` read "Your turn" under Needs you.
+  A follow-up question after a met goal also drops it, so "so all good here and you don't need
+  anything from me?", answered "Yes, nothing is needed from you", kept the task in Needs you and
+  said "The agent is waiting for your reply". Now an idle agent reads "Your turn" only while its
+  work is visibly unfinished: plan steps open, or a goal Claude Code last recorded as set, not met
+  or failed (`goal_unfinished` in the task view). Otherwise it reads "Answered" under Done
+  ("answered 12m ago"), is counted nowhere, and has no reply banner. Its activity stays `waiting`,
+  so no chain starts and its slot is kept. A question or permission prompt, `needs_you`, a browser
+  request, a held prompt, failing checks and a blocked chain still need a person, and the
+  `needs_you` tool tells agents that a plain-text question reaches nobody.
+
 ## 2026-11-05
 
 - Two Superagents: every person now also has a Global Superagent (SPEC-427, task #409,

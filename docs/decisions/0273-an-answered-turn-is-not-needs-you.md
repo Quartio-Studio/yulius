@@ -25,8 +25,8 @@ goal retries), a browser request, a held prompt, failing checks and a blocked ch
    start, the queue does not take the slot, and a prompt makes the task Working as before.
 3. The server (`AttentionFacts::group`) and the web UI (`taskInfo`) apply the one rule. The task
    view carries `goal_unfinished`, and the plan counts after every finished turn.
-4. The briefing tells agents that a question asked only in plain text reaches nobody: they ask with
-   `AskUserQuestion` or `needs_you`.
+4. The `needs_you` tool tells agents that a question asked only in plain text reaches nobody. The
+   briefing is at its byte budget, and agents read the tool's description when they choose how to ask.
 
 ## Alternatives
 
@@ -43,5 +43,5 @@ goal retries), a browser request, a held prompt, failing checks and a blocked ch
 
 - A conversation the agent answered reads "Answered" under Done until someone writes to it.
 - An agent that stops mid-plan, or with a failed or open goal, still reads "Your turn".
-- An agent with neither a plan nor a goal that asks in plain text is not flagged. The briefing line
-  covers it, and the transcript still shows the question.
+- An agent with neither a plan nor a goal that asks in plain text is not flagged. The `needs_you`
+  description covers it, and the transcript still shows the question.
