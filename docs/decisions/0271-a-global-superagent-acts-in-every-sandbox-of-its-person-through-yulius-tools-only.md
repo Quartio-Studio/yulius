@@ -112,15 +112,17 @@ their task runs.
 - Contained without a holder, it runs the host's Claude Code installation, which may lag the copy
   isolated runs bind (ADR-0266). What it relies on was measured on 2.1.311: `--tools`,
   `--strict-mcp-config`, `--setting-sources`, `disableAllHooks`, `CLAUDE_CODE_SHELL_PREFIX`, and
-  how Claude Code reads a message as a command (its JavaScript trim drops U+FEFF, so a message
-  that starts with a character nobody sees is refused), ends the session (`exit`, `quit`, `:q` and the like,
-  refused) or attaches a lone path (refused). Another release may read messages differently.
-- Claude Code attaches an image file a pasted part names (a line or a part before a space that a
-  path follows, unquoted and unescaped, ending in `.png`, `.jpg`, `.jpeg`, `.gif` or `.webp`), so
-  such a message is refused; other paths in a message are text. The word `ultraplan` anywhere
-  starts a command of its own (2.1.311) and is refused too. A line that is only a relative image
-  name makes Claude Code look for it on the clipboard with a fixed command (`xclip`, `wl-paste`),
-  which a refused message never reaches.
+  how Claude Code reads a message: its JavaScript trim drops U+FEFF before a `/`, and at submit it
+  strips characters nobody sees and then does not submit, so the text would join the next message
+  (`ex` and `it` make `exit`); such characters are refused but an emoji's variation selector and
+  joiner, which it keeps. Its exit words (`exit`, `quit`, `:q` and the like) are refused. Another release may read messages differently.
+- Claude Code attaches an image file a pasted line names: the line is split before each space a
+  path follows, and when every part is a path (or there is one part), each one unquoted and
+  unescaped that is an absolute path ending in `.png`, `.jpg`, `.jpeg`, `.gif` or `.webp` is read;
+  such a message is refused, as is a one-part line of a bare image name (which it compares with
+  the clipboard) and, to be safe, a drive path. A path in a sentence is text to it and passes. The
+  word `ultraplan` can start a command of its own (2.1.311, behind a feature flag); a message
+  holding it anywhere is refused, more than Claude Code would act on.
 - Every one of its tools is pre-allowed, on an uncontained server too: no key reaches it, so no
   question Claude Code asked about a tool could be answered.
 - A person who can work in no sandbox (read-only access, a guest without one) has no Global

@@ -100,9 +100,9 @@ as the person's own agent does over the remote MCP.
   `POST /api/superagent/message {text}` types one bracketed paste and Enter, with control
   characters but line breaks and tabs removed and `@` as `＠`; a message that starts with `!`, or
   with `/` but is not `/clear`, `/compact`, `/context` or `/cost`, is refused (422), as is one
-  that starts with a character nobody sees (Claude Code's trim drops U+FEFF before a `/`), one
-  of Claude Code's exit words, one naming an image file Claude Code would attach, or one holding
-  `ultraplan` (a command by keyword). The terminal still fits
+  that holds a character nobody sees but an emoji's own (Claude Code's trim drops U+FEFF before a
+  `/`, and it strips the rest at submit without submitting), one of Claude Code's exit words, one
+  naming an image file Claude Code would attach, or one holding `ultraplan` (a command by keyword). The terminal still fits
   its panel (the page sends resizes, not keys). `POST /api/superagent/interrupt` sends Esc; a
   second one within 2 s is dropped (two open Claude Code's rewind menu). A message is typed even if
   its request goes away meanwhile. Both answer 404 to anyone without a running one.
@@ -121,6 +121,7 @@ as the person's own agent does over the remote MCP.
 - [x] Review round 2 fixed: messages instead of keys, no editor, no merges
 - [x] Review round 3 fixed: hidden characters, exit words and paths refused, resizes, one interrupt
 - [x] Review round 4 (approved) minors fixed: image paths, keyword, emoji, interrupt gap, detached typing
+- [x] Review round 5 fixed: invisible characters anywhere, multi-part lines, a clock stepped back
 - [x] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 

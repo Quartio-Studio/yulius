@@ -1396,7 +1396,8 @@ resolves to nothing, the run gets the server without that variable or token.
   - `POST /api/superagent/message` `{"text"}` → 204: types the message into the caller's Global
     Superagent as one bracketed paste and Enter (control characters but LF and tab removed, `@` as
     `＠`); 422 for an empty message, one over 64 KiB, one that starts with `!`, or with `/` but is
-    not `/clear`, `/compact`, `/context` or `/cost`, one that starts with a character nobody sees,
+    not `/clear`, `/compact`, `/context` or `/cost`, one holding a character nobody sees (but an
+    emoji's variation selector or joiner),
     an exit word (`exit`, `quit`, `:q`…), one naming an image file Claude Code would attach, or
     one holding `ultraplan`; 404 when none runs (SPEC-427 GSA-007). The
     terminal's `resize` frames are still applied.

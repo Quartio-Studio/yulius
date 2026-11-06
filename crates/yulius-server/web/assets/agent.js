@@ -218,14 +218,15 @@ function createCompose(ctx) {
   const error = h('p', { class: 'agent-compose-error small', role: 'alert', hidden: true });
   let sending = false;
   async function send() {
-    const text = input.value.trim();
+    const sent = input.value;
+    const text = sent.trim();
     if (!text || sending) return;
     sending = true;
     error.hidden = true;
     try {
       await ctx.api.post('/api/superagent/message', { text });
-      // What was typed while it was on its way stays.
-      if (input.value.trim() === text) input.value = '';
+      // What was typed while it was on its way stays, without the part that went.
+      input.value = input.value.startsWith(sent) ? input.value.slice(sent.length).trimStart() : input.value;
     } catch (err) {
       error.textContent = err.message;
       error.hidden = false;

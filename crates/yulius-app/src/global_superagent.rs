@@ -87,24 +87,30 @@ const INTERRUPT_GAP_MS: i64 = 2_000;
 /// LF, other control characters but tab removed (no ESC can end the paste or drive the TUI), `@`
 /// as `＠` (no file of the server is attached by a mention), one of [`GLOBAL_COMMANDS`] or text
 /// that starts with neither `/` nor `!` (no other command and no shell). Characters a reader
-/// cannot see are refused, as Claude Code's own trim drops some Rust's keeps (U+FEFF before a
-/// `/`); so are its exit words and a message that is only a path (it would attach that file).
+/// cannot see are refused but an emoji's own, as Claude Code drops them (its trim drops U+FEFF
+/// before a `/`; at submit it strips the rest and does not submit); so are its exit words, an
+/// image path it would attach and its keyword command.
 ///
 /// # Errors
 /// `Invalid` for an empty or oversized message, a `!` line, another command, hidden characters,
 /// an exit word or a lone path.
 pub fn global_message(text: &str) -> AppResult<String> {
-    // Only what comes before the first visible character decides how Claude Code reads it; an
-    // emoji's variation selector or joiner later on is text (review round 4).
-    if let Some(c) = text
-        .chars()
-        .take_while(|c| c.is_whitespace() || c.is_control() || crate::cross_sandbox::unseen(*c))
-        .find(|c| crate::cross_sandbox::unseen(*c) && !c.is_control())
-    {
-        return Err(AppError::Invalid(format!(
-            "the message starts with a character nobody sees (U+{:04X}); remove it",
-            u32::from(c)
-        )));
+    // Claude Code strips these at submit and then does not submit, so the text would wait for the
+    // next message to join it (`ex` + `it`); it keeps only an emoji's variation selector and the
+    // joiner between two emoji (review round 5).
+    let chars: Vec<char> = text.chars().collect();
+    for (at, c) in chars.iter().enumerate() {
+        if c.is_control() || !crate::cross_sandbox::unseen(*c) {
+            continue;
+        }
+        let before = at.checked_sub(1).and_then(|i| chars.get(i)).copied();
+        let after = chars.get(at + 1).copied();
+        if !emoji_part(*c, before, after) {
+            return Err(AppError::Invalid(format!(
+                "the message holds a character nobody sees (U+{:04X}); remove it",
+                u32::from(*c)
+            )));
+        }
     }
     let text = crate::task_message::clean_message(text);
     if EXIT_WORDS.contains(&text.as_str()) {
@@ -156,9 +162,26 @@ const IMAGE_EXTENSIONS: &[&str] = &[".png", ".jpg", ".jpeg", ".gif", ".webp"];
 /// quoted), each part unquoted once and unescaped; a part that is an absolute path, or a name
 /// without spaces (it would look for it on the clipboard), ending in an image extension.
 fn attaches_an_image(text: &str) -> bool {
+    let trim = |part: &str| {
+        part.trim_matches(|c: char| c.is_whitespace() || c == '\u{feff}')
+            .to_owned()
+    };
     text.lines().any(|line| {
-        path_parts(line).into_iter().any(|part| {
-            let part = unescape(unquote(part.trim()));
+        let parts: Vec<String> = path_parts(line)
+            .into_iter()
+            .map(trim)
+            .filter(|part| !part.is_empty())
+            .collect();
+        // A line of several parts is text unless every part is a path.
+        let pathlike = |part: &String| {
+            let part = unquote(part);
+            part.starts_with('/') || drive_path(part)
+        };
+        if parts.len() > 1 && !parts.iter().all(pathlike) {
+            return false;
+        }
+        parts.iter().any(|part| {
+            let part = unescape(unquote(part));
             let lower = part.to_lowercase();
             IMAGE_EXTENSIONS.iter().any(|ext| lower.ends_with(ext))
                 && (part.starts_with('/')
@@ -166,6 +189,20 @@ fn attaches_an_image(text: &str) -> bool {
                     || !part.contains(char::is_whitespace))
         })
     })
+}
+
+/// Whether the invisible `c` belongs to an emoji, as Claude Code keeps it: a variation selector
+/// right after a character from U+00A9 on, or a zero-width joiner between two of them (after a
+/// variation selector too).
+fn emoji_part(c: char, before: Option<char>, after: Option<char>) -> bool {
+    let emoji = |c: Option<char>| {
+        c.is_some_and(|c| u32::from(c) >= 0xA9 && !crate::cross_sandbox::unseen(c))
+    };
+    match c {
+        '\u{fe0e}' | '\u{fe0f}' => emoji(before),
+        '\u{200d}' => (emoji(before) || before == Some('\u{fe0f}')) && emoji(after),
+        _ => false,
+    }
 }
 
 /// `line` split before each space a path follows.
@@ -668,7 +705,12 @@ mod tests {
             "'/usr/share/x.png'",
             "look at this\n/usr/share/pixmaps/x.png",
             "/a/x.png /b/y.png",
-            "see /srv/my\\ pic.PNG",
+            "/srv/my\\ pic.PNG",
+            "/usr/share/pixmaps/x.png\u{feff}",
+            "a\u{200b}b",
+            "ex\u{200b}",
+            "ultra\u{200b}plan",
+            "fix the typo\u{200e} in both repos",
             "shot.jpeg",
             "\"C:\\a.webp\"",
             "plan it with UltraPlan",
@@ -682,6 +724,8 @@ mod tests {
             "looks good \u{2764}\u{fe0f}",
             "the family \u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}",
             "the screenshot in the PR is fine",
+            "see /srv/my\\ pic.PNG",
+            "set the logo to /web/assets/logo.png",
         ] {
             assert!(global_message(allowed).is_ok(), "{allowed:?}");
         }

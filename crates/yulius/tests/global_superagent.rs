@@ -801,6 +801,11 @@ async fn the_person_talks_to_the_global_superagent_by_message_only() -> TestResu
     let esc = interrupt().await?;
     assert_eq!(esc.status, StatusCode::NO_CONTENT, "{:?}", esc.body);
     read_until(&mut socket, &mut screen, "^[^[").await?;
+    // A clock that stepped back does not keep it closed (review round 5).
+    f.h.clock.0.fetch_sub(5_000, Ordering::SeqCst);
+    let esc = interrupt().await?;
+    assert_eq!(esc.status, StatusCode::NO_CONTENT, "{:?}", esc.body);
+    read_until(&mut socket, &mut screen, "^[^[^[").await?;
 
     // A key is refused; a message is typed.
     socket
@@ -811,8 +816,8 @@ async fn the_person_talks_to_the_global_superagent_by_message_only() -> TestResu
     let sent = say(&f, &f.alice, "echo said-$((2+3)) to ops@example.com").await?;
     assert_eq!(sent.status, StatusCode::NO_CONTENT, "{:?}", sent.body);
     read_until(&mut socket, &mut screen, "ops\u{ff20}example.com^[[201~").await?;
-    // Two Esc (the second interrupt within the gap was dropped), then the paste's two.
-    assert_eq!(screen.matches("^[").count(), 4, "{screen:?}");
+    // Three Esc (the second interrupt, within the gap, was dropped), then the paste's two.
+    assert_eq!(screen.matches("^[").count(), 5, "{screen:?}");
     assert!(!screen.contains("keyed-"), "a key reached it: {screen:?}");
 
     for refused in [
@@ -872,14 +877,16 @@ async fn a_message_whose_request_goes_away_is_still_submitted() -> TestResult {
         session_hash: None,
         token: None,
     };
-    // Dropped while it waits between the paste and the Enter.
-    let dropped = tokio::time::timeout(
-        std::time::Duration::from_millis(100),
+    // Dropped once its paste shows, while it waits for the Enter.
+    let typing =
         f.h.app
-            .global_superagent_message(&ctx, "echo detached-$((4+4))"),
-    )
-    .await;
-    assert!(dropped.is_err(), "it was still waiting: {dropped:?}");
+            .global_superagent_message(&ctx, "echo detached-$((4+4))");
+    tokio::pin!(typing);
+    tokio::select! {
+        done = &mut typing => return Err(format!("it ended before its paste showed: {done:?}").into()),
+        shown = read_until(&mut socket, &mut screen, "[201~") => shown?,
+    }
+    drop(typing);
     // The Enter arrives: the fake's shell runs the line it got and says what it could not run.
     read_until(&mut socket, &mut screen, "not found").await?;
     f.h.app.end_all_shells().await;
