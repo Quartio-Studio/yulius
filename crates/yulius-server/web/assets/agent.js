@@ -224,7 +224,8 @@ function createCompose(ctx) {
     error.hidden = true;
     try {
       await ctx.api.post('/api/superagent/message', { text });
-      input.value = '';
+      // What was typed while it was on its way stays.
+      if (input.value.trim() === text) input.value = '';
     } catch (err) {
       error.textContent = err.message;
       error.hidden = false;

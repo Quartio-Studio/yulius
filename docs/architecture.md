@@ -1242,8 +1242,8 @@ resuming the conversation kept in its folder. Its `shell.json` is version 2, whi
 end and remove. No key of the person reaches it (`ShellAttach::takes_keys`, `can_write` false):
 `POST /api/superagent/message` types each message as one bracketed paste and Enter
 (`global_message`: control characters removed, `@` as `＠`, `!` lines and commands but `/clear`,
-`/compact`, `/context` and `/cost` refused, as are characters nobody sees, exit words and lone
-paths), and `POST /api/superagent/interrupt` sends Esc (one per 2 s), so
+`/compact`, `/context` and `/cost` refused, as are leading characters nobody sees, exit words,
+image paths Claude Code would attach and the `ultraplan` keyword), and `POST /api/superagent/interrupt` sends Esc (one per 2 s), so
 neither its editor (`EDITOR`/`VISUAL` refuse too), its `!` mode nor its menus are reachable. It is
 not served `change_merge`. The web UI opens it from the tools rail
 outside a sandbox, where the rail shows only the Superagent.

@@ -113,11 +113,14 @@ their task runs.
   isolated runs bind (ADR-0266). What it relies on was measured on 2.1.311: `--tools`,
   `--strict-mcp-config`, `--setting-sources`, `disableAllHooks`, `CLAUDE_CODE_SHELL_PREFIX`, and
   how Claude Code reads a message as a command (its JavaScript trim drops U+FEFF, so a message
-  with a character nobody sees is refused), ends the session (`exit`, `quit`, `:q` and the like,
+  that starts with a character nobody sees is refused), ends the session (`exit`, `quit`, `:q` and the like,
   refused) or attaches a lone path (refused). Another release may read messages differently.
-- A message that names a file mid-sentence (`compare '/etc/hosts' in both repos`) is passed on as
-  text; a Claude Code that attached such a file would read it as the server, inside its root of
-  `/usr`, `/etc`, `/opt` and its own folder.
+- Claude Code attaches an image file a pasted part names (a line or a part before a space that a
+  path follows, unquoted and unescaped, ending in `.png`, `.jpg`, `.jpeg`, `.gif` or `.webp`), so
+  such a message is refused; other paths in a message are text. The word `ultraplan` anywhere
+  starts a command of its own (2.1.311) and is refused too. A line that is only a relative image
+  name makes Claude Code look for it on the clipboard with a fixed command (`xclip`, `wl-paste`),
+  which a refused message never reaches.
 - Every one of its tools is pre-allowed, on an uncontained server too: no key reaches it, so no
   question Claude Code asked about a tool could be answered.
 - A person who can work in no sandbox (read-only access, a guest without one) has no Global
