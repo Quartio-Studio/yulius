@@ -23,11 +23,13 @@ real line breaks and one final break, as `secret_copy_to_env` already writes it 
   a usable key.
 - Root cause: an agent secret never spans lines, so a pasted key is stored with each break written
   as literal `\n` (ADR-0156, SPEC-193). Every reader of that form turns it back into the key file
-  (`dotenv::key_block`: the `.env` copy, `secret_verify`), except the reveal:
+  (the `.env` copy through `dotenv::key_block`, `secret_verify` by reading each `\n` as a break),
+  except the reveal:
   `reveal_agent_secret` (`crates/yulius-app/src/vault/agents.rs`) returns the stored form, and the
   page shows and copies it as returned.
-- Why tests missed it: the reveal tests use one-line values (`STRIPE`, passwords) and a flattened
-  key (which is kept as stored); none reveals an escaped key block.
+- Why tests missed it: the Rust reveal tests use one-line values (`STRIPE`, passwords) and a
+  flattened key (kept as stored), and the e2e test that reveals pasted keys
+  (`secrets.e2e.ts`, SPEC-193) asserted the escaped form, with the mock returning it as stored.
 - What else the cause touches: the **Show** box displays the same one-line form. Team secrets are
   unaffected: their values hold real line breaks (ADR-0214).
 
@@ -42,7 +44,7 @@ real line breaks and one final break, as `secret_copy_to_env` already writes it 
 ## Plan
 
 - [x] Reproduce the defect and find its root cause
-- [ ] Write the fix spec and the regression test that fails
+- [x] Write the fix spec and the regression test that fails
 - [ ] Fix the cause until the regression test and every gate pass
 - [ ] Independent review in a fresh session, findings fixed test-first
 

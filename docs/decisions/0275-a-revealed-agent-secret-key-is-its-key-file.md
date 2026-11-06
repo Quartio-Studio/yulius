@@ -10,9 +10,9 @@ task #413, fixes #1096. Builds on [ADR-0156](0156-a-pasted-multi-line-secret-is-
 ## Context
 
 An agent secret never spans lines, so a key is stored with each line break written as literal `\n`.
-The `.env` copy and `secret_verify` read that form back as the key file (`dotenv::key_block`), but
-the reveal returned it as stored: a person who pressed **Show** and **Copy value** got
-`-----BEGIN …-----\nMII…` on one line, which is not a usable key.
+The `.env` copy (`dotenv::key_block`) and `secret_verify` (which reads each `\n` as a break) read
+that form back as the key file, but the reveal returned it as stored: a person who pressed **Show**
+and **Copy value** got `-----BEGIN …-----\nMII…` on one line, which is not a usable key.
 
 ## Decision
 
