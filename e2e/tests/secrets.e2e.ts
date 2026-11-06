@@ -183,14 +183,23 @@ test('a pasted multi-line key keeps its line breaks as \\n, and a flattened one 
   await expect(edit).toBeHidden();
   await expect(old.getByText('Paste again')).toBeHidden();
 
-  // Both read back as the vault holds them.
+  // Both are shown and copied as their key files, with line breaks and a final one (SPEC-431,
+  // #1096: "secrets with \n are copied with \n while should be copied as linebreaks").
+  await browser.evaluate(() => {
+    (window as any).__copied = [];
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (text: string) => { (window as any).__copied.push(text); } } });
+  });
   await screen.getByRole('button', 'Show DEPLOY_PEM').click();
   await setUpTwoFactor(screen, browser);
-  for (const [name, stored] of [['DEPLOY_PEM', pemStored], ['OLD_DEPLOY_KEY', sshStored]]) {
+  const files = [['DEPLOY_PEM', `${keyFile('MOCK PRIVATE KEY', pemBody, '\n')}\n`], ['OLD_DEPLOY_KEY', `${keyFile('MOCK OPENSSH PRIVATE KEY', sshBody, '\n')}\n`]];
+  for (const [name, file] of files) {
     if (name !== 'DEPLOY_PEM') await screen.getByRole('button', `Show ${name}`).click();
     const shown = screen.getByRole('dialog', name);
     await shown.getByRole('button', 'Show value').click();
-    expect(await browser.evaluate(() => document.querySelector('dialog.modal .secret-value')!.textContent)).toBe(stored);
+    expect(await browser.evaluate(() => document.querySelector('dialog.modal .secret-value')!.textContent)).toBe(file);
+    await shown.getByRole('button', 'Copy value').click();
+    await expect(shown.getByRole('button', 'Copy value')).toHaveAttribute('title', 'Copied');
+    expect(await browser.evaluate(() => (window as any).__copied.filter((t: string) => t !== '').pop())).toBe(file);
     await shown.getByRole('button', 'Done').click();
     await expect(shown).toBeHidden();
   }
