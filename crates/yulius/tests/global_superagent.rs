@@ -11,12 +11,15 @@ use crate::support;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 
+use axum::body::Body;
 use axum::http::{Method, StatusCode};
 use futures::SinkExt as _;
 use serde_json::{Value, json};
 use support::{
-    TestResult, call, perms, seed_github_user, seed_sandbox, serve, ws_connect, ws_refusal_status,
+    TestResult, call, perms, seed_github_user, seed_sandbox, send, serve, ws_connect,
+    ws_refusal_status,
 };
 use tokio_tungstenite::tungstenite::Message;
 use yulius_domain::ids::{SandboxId, TaskId, UserId};
@@ -816,6 +819,86 @@ async fn its_person_types_into_the_global_superagent() -> TestResult {
             gone.body
         );
     }
+    f.h.app.end_all_shells().await;
+    Ok(())
+}
+
+/// AC-GIM-1 to AC-GIM-3 (SPEC-433): an image pasted into the Global Superagent is stored in its
+/// own folder, inside its root, and its path answered; only images, only for its own person
+/// while it runs; images older than a week go at the next upload.
+#[tokio::test]
+async fn an_image_pasted_into_the_global_superagent_is_kept_in_its_own_folder() -> TestResult {
+    let f = fixture().await?;
+    let upload = |name: &str, creds: &support::Creds| {
+        let path = format!("/api/superagent/attachments?name={name}");
+        let creds = creds.clone();
+        let router = f.h.router.clone();
+        async move {
+            send(
+                &router,
+                Method::POST,
+                &path,
+                Body::from(b"png".to_vec()),
+                Some(3),
+                &creds,
+            )
+            .await
+        }
+    };
+    // Nobody's Global Superagent runs yet.
+    let early = upload("shot.png", &f.alice).await?;
+    assert_eq!(early.status, StatusCode::NOT_FOUND, "{:?}", early.body);
+    global_id(&f, &f.alice).await?;
+    let folder =
+        std::fs::canonicalize(f.data.join("users/u-alice/superagent"))?.join("attachments");
+
+    let stored = upload("shot.png", &f.alice).await?;
+    assert_eq!(stored.status, StatusCode::CREATED, "{:?}", stored.body);
+    let path = PathBuf::from(stored.body["path"].as_str().ok_or("path")?);
+    assert_eq!(path, folder.join("shot.png"));
+    assert_eq!(std::fs::read(&path)?, b"png");
+    let again = upload("shot.png", &f.alice).await?;
+    assert_eq!(again.status, StatusCode::CREATED, "{:?}", again.body);
+    assert_eq!(
+        again.body["name"], "shot-2.png",
+        "a free name, never replaced"
+    );
+
+    // It has no file tools: only what Claude Code reads as an image.
+    let pdf = upload("notes.pdf", &f.alice).await?;
+    assert_eq!(
+        pdf.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{:?}",
+        pdf.body
+    );
+    assert!(
+        pdf.body.to_string().contains("images only"),
+        "{:?}",
+        pdf.body
+    );
+    assert!(!folder.join("notes.pdf").exists());
+    assert_eq!(
+        upload("Photo.JPEG", &f.alice).await?.status,
+        StatusCode::CREATED
+    );
+    // carol's own is not running, and alice's is never hers.
+    let foreign = upload("shot.png", &f.carol).await?;
+    assert_eq!(foreign.status, StatusCode::NOT_FOUND, "{:?}", foreign.body);
+    assert!(!f.data.join("users/u-carol/superagent/attachments").exists());
+
+    // Claude Code read each image when it was pasted: a week later it goes.
+    let old = std::fs::File::options()
+        .write(true)
+        .open(folder.join("shot.png"))?;
+    old.set_modified(std::time::SystemTime::now() - Duration::from_secs(8 * 24 * 3600))?;
+    drop(old);
+    assert_eq!(
+        upload("next.webp", &f.alice).await?.status,
+        StatusCode::CREATED
+    );
+    assert!(!folder.join("shot.png").exists(), "older than a week");
+    assert!(folder.join("shot-2.png").exists(), "newer");
     f.h.app.end_all_shells().await;
     Ok(())
 }

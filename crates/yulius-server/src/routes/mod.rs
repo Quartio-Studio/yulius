@@ -452,6 +452,10 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
             "/api/sandboxes/{sid}/shells/{id}/attachments",
             post(uploads::shell_attachment),
         )
+        .route(
+            "/api/superagent/attachments",
+            post(uploads::global_superagent_attachment),
+        )
 }
 
 /// Internal (loopback) routes.

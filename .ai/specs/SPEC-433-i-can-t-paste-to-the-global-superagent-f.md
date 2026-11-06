@@ -46,7 +46,7 @@ terminal. Text pastes keep working as they do.
   the same path, and answers 201 with the stored file's absolute path as other attachments do
   (`{path, name, size, sha256, replaced}`, a free name, never replacing a file).
 - GIM-002: only images Claude Code takes (`png`, `jpg`, `jpeg`, `gif`, `webp`, any case) are
-  stored; any other name is refused before the body is read (400, saying it takes images only, it
+  stored; any other name is refused before the body is read (422, saying it takes images only, it
   has no file tools). Only the caller's own running Global Superagent takes files (404 without one,
   another person never reaches it); a disabled account is refused.
 - GIM-003: the folder is bounded: at most `MAX_ATTACHMENTS_PER_FOLDER` (500) files, and images
@@ -72,7 +72,7 @@ terminal. Text pastes keep working as they do.
 - AC-GIM-1: alice, whose Global Superagent runs, uploads `shot.png`: 201, the path is
   `<data>/users/u-alice/superagent/attachments/shot.png` (canonical) and holds the bytes; a second
   `shot.png` gets a free name.
-- AC-GIM-2: `notes.pdf` is refused with 400 and nothing is written; carol (no running Global
+- AC-GIM-2: `notes.pdf` is refused with 422 and nothing is written; carol (no running Global
   Superagent) gets 404 and writes nothing into alice's folder.
 - AC-GIM-3: an image older than a week in the folder is removed by the next upload; a newer one
   stays.
