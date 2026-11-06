@@ -2390,10 +2390,12 @@ a.dl-task:hover { text-decoration: underline; }
    settles. The grip (.tab-grip) is styled with the top bar's. */
 :is(.term-tabs, .ed-tabs, .bp-tablist).reordering { cursor: grabbing; user-select: none; }
 :is(.term-tabs, .ed-tabs, .bp-tablist).reordering :is(.term-tab, .ed-tab, .bp-tab) { transition: transform var(--duration-fast) var(--ease); }
-:is(.term-tab, .ed-tab, .bp-tab).dragging { position: relative; z-index: var(--z-raised); transition: none; background: var(--surface-2); box-shadow: var(--shadow); cursor: grabbing; }
-:is(.term-tab, .ed-tab, .bp-tab).settling { position: relative; z-index: var(--z-raised); transition: transform var(--duration-fast) var(--ease); }
-/* A tab with a grip: 8 px before it and 4 px to the name; after the strips' own paddings. */
-:is(.term-tab, .ed-tab, .bp-tab):has(> .tab-grip) { padding-left: 8px; gap: 4px; }
+:is(.term-tabs, .ed-tabs, .bp-tablist) :is(.term-tab, .ed-tab, .bp-tab).dragging { position: relative; z-index: var(--z-raised); transition: none; background: var(--surface-2); box-shadow: var(--shadow); cursor: grabbing; }
+:is(.term-tabs, .ed-tabs, .bp-tablist) :is(.term-tab, .ed-tab, .bp-tab).settling { position: relative; z-index: var(--z-raised); transition: transform var(--duration-fast) var(--ease); }
+/* A tab with a grip: 8 px before it and 4 px to the name (its other parts keep their gap); after
+   the strips' own paddings. */
+:is(.term-tab, .ed-tab, .bp-tab):has(> .tab-grip) { padding-left: 8px; }
+:is(.term-tab, .ed-tab, .bp-tab) > .tab-grip { margin-right: -2px; }
 @media not (any-pointer: fine) {
   :is(.term-tab, .ed-tab, .bp-tab):has(> .tab-grip) { padding-left: 12px; }
 }

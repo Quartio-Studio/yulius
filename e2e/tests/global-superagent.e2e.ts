@@ -1,7 +1,7 @@
 import { test } from '@e2e-dev/web';
 import { expect } from 'e2e';
 import type { Browser, Screen } from '@e2e-dev/web';
-import { axeViolations, DRAG_GRIP, DRAG_HINT, dragTab, failOnPageErrors, firstShown, mock, openSuperagent, tabGrips, tabMenu, tabNames } from './support.ts';
+import { axeViolations, DRAG_GRIP, DRAG_HINT, dragTab, failOnPageErrors, firstShown, mock, openSuperagent, tabGrips, tabMenu, tabNames, tabsInPlace } from './support.ts';
 
 failOnPageErrors();
 
@@ -290,6 +290,27 @@ test('the Superagent tabs move by drag, keyboard and menu and stay so', async ({
   await dragTab(browser, all, here);
   await expect.poll(() => tabNames(browser, strip)).toEqual(['All sandboxes', 'This sandbox']);
   await expect(here).toHaveAttribute('aria-selected', 'true');
+  // Both settle side by side: the tab slid aside is not left shifted (review round 1).
+  await expect.poll(() => tabsInPlace(browser, strip)).toBe(true);
+
+  // The chosen tab, dragged, rides above with the dragged tabs' background (review round 1).
+  const box = await here.boundingBox();
+  if (!box) throw new Error('tab not laid out');
+  await browser.mouse.move(box.x + 12, box.y + box.height / 2);
+  await browser.mouse.down();
+  await browser.mouse.move(box.x + 40, box.y + box.height / 2);
+  expect(await browser.evaluate((selector) => {
+    const tab = document.querySelector(`${selector} .term-tab.dragging`) as HTMLElement;
+    const probe = document.body.appendChild(document.createElement('div'));
+    probe.style.background = 'var(--surface-2)';
+    const want = getComputedStyle(probe).backgroundColor;
+    probe.remove();
+    return { key: tab.dataset.key, same: getComputedStyle(tab).backgroundColor === want, cursor: getComputedStyle(tab).cursor };
+  }, strip)).toEqual({ key: 'sandbox', same: true, cursor: 'grabbing' });
+  await browser.keyboard.press('Escape');
+  await browser.mouse.up();
+  expect(await tabNames(browser, strip)).toEqual(['All sandboxes', 'This sandbox']);
+  await expect.poll(() => tabsInPlace(browser, strip)).toBe(true);
   expect(await startsOf(browser)).toEqual({ sandbox: 1, global: 0 });
 
   // The arrows follow the order shown: Home is All sandboxes now.

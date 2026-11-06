@@ -1,6 +1,6 @@
 import { test, type Browser, type Screen } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, DRAG_GRIP, DRAG_HINT, dragTab, failOnPageErrors, firstShown, mock, tabGrips, tabMenu, tabNames, terminalShown } from './support.ts';
+import { axeViolations, DRAG_GRIP, DRAG_HINT, dragTab, failOnPageErrors, firstShown, mock, pressAndMove, tabGrips, tabMenu, tabNames, tabsInPlace, terminalShown } from './support.ts';
 
 failOnPageErrors();
 
@@ -204,11 +204,29 @@ test('terminal tabs move by drag, keyboard and menu and stay so', async ({ app, 
   expect(await tabNames(browser, termStrip)).toEqual(['Terminal 1', 'Terminal 3', 'Terminal 2']);
   expect(await axeViolations(browser)).toEqual([]);
 
-  // A press on × closes the tab and moves nothing.
-  const close = browser.locator('#term-tab-sh_sb_studio_seed1 .term-tab-close');
-  await close.click();
+  // A tab being renamed does not drag: the press edits its name (review round 1).
+  await tab('Terminal 3').focus();
+  await browser.keyboard.press('F2');
+  await expect(screen.getByRole('textbox', 'Rename Terminal 3')).toBeFocused();
+  expect(await pressAndMove(browser, '.term-tab-rename', 80)).toBe(false);
+  await browser.keyboard.press('Escape');
+  expect(await tabNames(browser, termStrip)).toEqual(['Terminal 1', 'Terminal 3', 'Terminal 2']);
+
+  // A rename ending as another tab is pressed (the press takes the focus) redraws the strip once
+  // the tab is let go, with both the new name and the new place (review round 1).
+  await tab('Terminal 2').focus();
+  await browser.keyboard.press('F2');
+  await screen.getByRole('textbox', 'Rename Terminal 2').fill('dev server');
+  await dragTab(browser, tab('Terminal 1'), browser.locator('#term-tab-sh_sb_studio_seed2'));
+  await expect.poll(() => tabNames(browser, termStrip)).toEqual(['Terminal 3', 'dev server', 'Terminal 1']);
+  await expect.poll(() => tabsInPlace(browser, termStrip)).toBe(true);
+
+  // A press on × closes the tab and moves nothing, however far the pointer goes.
+  expect(await pressAndMove(browser, '#term-tab-sh_sb_studio_seed1 .term-tab-close', -80)).toBe(false);
+  expect(await tabNames(browser, termStrip)).toEqual(['Terminal 3', 'dev server', 'Terminal 1']);
+  await browser.locator('#term-tab-sh_sb_studio_seed1 .term-tab-close').click();
   await expect(tab('Terminal 1')).toBeHidden();
-  expect(await tabNames(browser, termStrip)).toEqual(['Terminal 3', 'Terminal 2']);
+  expect(await tabNames(browser, termStrip)).toEqual(['Terminal 3', 'dev server']);
 
   // Kept after a reload (the panel closed first, so the terminals are read once seeded); a new
   // terminal comes last.

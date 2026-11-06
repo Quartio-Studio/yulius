@@ -112,6 +112,9 @@ export function createTabDrag(tablist, { keyOf, commit, cancelled = () => {}, se
     const { order } = layout(state, dx);
     const from = state.lefts[state.keys.indexOf(state.key)] + bounded(state, dx);
     const tabs = commit(order);
+    // A strip that keeps its tab elements (the Superagent's) only moves them: the ones slid aside
+    // are in their new places now (review round 1 of SPEC-434).
+    for (const other of state.tabs) if (other !== state.tab && other.isConnected) other.style.transform = '';
     const tab = tabs.find((t) => keyOf(t) === state.key);
     if (!tab) return;
     // From where it was let go into its place (FLIP).

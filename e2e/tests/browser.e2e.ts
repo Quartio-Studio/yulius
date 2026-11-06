@@ -1,6 +1,6 @@
 import { test } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, DRAG_GRIP, DRAG_HINT, dragTab, failOnPageErrors, mock, tabGrips, tabMenu, tabNames } from './support.ts';
+import { axeViolations, DRAG_GRIP, DRAG_HINT, dragTab, failOnPageErrors, mock, pressAndMove, tabGrips, tabMenu, tabNames, tabsInPlace } from './support.ts';
 
 failOnPageErrors();
 
@@ -119,8 +119,34 @@ test('browser tabs move by drag, keyboard and menu and stay so', async ({ app, b
   // A tab opened since comes last; a press on its × closes it and moves nothing.
   await screen.getByRole('button', 'New tab').click();
   await expect.poll(names).toEqual(['Amazon', 'Checkout', 'New']);
+  expect(await pressAndMove(browser, `${bpStrip} .bp-tab:last-child .bp-tab-close`, -80)).toBe(false);
+  expect(await names()).toEqual(['Amazon', 'Checkout', 'New']);
   await browser.locator(`${bpStrip} .bp-tab:last-child .bp-tab-close`).click();
   await expect.poll(names).toEqual(['Amazon', 'Checkout']);
+
+  // A tab list arriving during a drag (a page's new title) is drawn once the tab is let go, in the
+  // new order (review round 1).
+  const chosen = await browser.evaluate((selector) => document.querySelector(`${selector} [aria-selected="true"]`)?.getAttribute('data-tab-id'), bpStrip);
+  const from = await app_.boundingBox();
+  const to = await aws.boundingBox();
+  if (!from || !to) throw new Error('tabs not laid out');
+  await browser.mouse.move(from.x + 12, from.y + from.height / 2);
+  await browser.mouse.down();
+  await browser.mouse.move(from.x - 20, from.y + from.height / 2);
+  await browser.evaluate(() => {
+    const session = (window as unknown as { __yuliusMock: { browsers: Map<string, { tabs: { id: string; title: string }[]; sendTabs: () => void }> } }).__yuliusMock.browsers.get('sb_product')!;
+    session.tabs.find((tab) => tab.id === 'tab-aws')!.title = 'Console Home';
+    session.sendTabs();
+  });
+  await browser.mouse.move(to.x + 4 - (from.width / 2 - 12), from.y + from.height / 2);
+  await browser.mouse.up();
+  await expect.poll(names).toEqual(['Checkout', 'Console']);
+  await expect.poll(() => tabsInPlace(browser, bpStrip)).toBe(true);
+  // The drag chose nothing.
+  expect(await browser.evaluate((selector) => document.querySelector(`${selector} [aria-selected="true"]`)?.getAttribute('data-tab-id'), bpStrip)).toBe(chosen);
+  await screen.getByRole('tab', /^Checkout/).focus();
+  await browser.keyboard.press('Alt+ArrowRight');
+  expect(await names()).toEqual(['Console', 'Checkout']);
 
   // Kept after a reload.
   await browser.reload();
