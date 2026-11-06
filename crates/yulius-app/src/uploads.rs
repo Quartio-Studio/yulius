@@ -97,7 +97,8 @@ pub(crate) const MAX_PRUNED_ENTRIES: usize = 10_000;
 /// pasted into the Global Superagent stays as long (SPEC-433 GIM-003).
 const DRAFT_MAX_AGE: Duration = Duration::from_secs(7 * 24 * 3600);
 /// Extensions Claude Code (2.1.311) reads as an image when their path is pasted: all the Global
-/// Superagent, without file tools, can take (SPEC-433 GIM-002).
+/// Superagent, without file tools, can take (SPEC-433 GIM-002). Widened together with the page's
+/// `GLOBAL_IMAGE` (`filedrop.js`) and the mock's `/api/superagent/attachments`.
 const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp"];
 
 /// Uploads in progress (the concurrency bound).

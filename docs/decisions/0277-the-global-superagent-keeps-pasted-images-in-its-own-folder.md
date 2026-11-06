@@ -51,5 +51,6 @@ would only be text to it. Claude Code takes `png`, `jpg`, `jpeg`, `gif` and `web
 - Pasting a screenshot works the same in both Superagent tabs; text pastes are unchanged.
 - The Global Superagent's folder holds up to a week of its person's pasted images, removed only by
   the next upload (a person who stops pasting keeps the last ones until then, within the 500 bound).
-- A new Claude Code version that reads more image types needs the list widened in
-  `IMAGE_EXTENSIONS` and the mock.
+- A new Claude Code version that reads more image types needs the list widened in three places
+  together: the server's `IMAGE_EXTENSIONS` (`uploads.rs`), the page's `GLOBAL_IMAGE`
+  (`filedrop.js`, which refuses other files before sending them) and the mock's route.

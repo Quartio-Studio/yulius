@@ -121,8 +121,10 @@ On 2026-11-06, at `dc170eab` (the branch after merging `origin/dev` at `88ec6ddf
     it fails on "older than a week".
   - `global_superagent::the_global_superagent_s_images_folder_refuses_links_and_disabled_accounts`
     (review round 1): a link planted as the folder gives 403 with nothing written; an old folder,
-    an old link and its old target survive the removal (fails when the removal takes every entry);
-    a disabled account stores nothing.
+    an old link and its old target survive the removal (fails when the removal takes every entry).
+    A disabled account is signed out before the upload is looked at (401, nothing stored); this
+    part shows that, not the app's own `Forbidden` check behind it, kept as in the other
+    attachment starts.
   - `e2e/tests/global-superagent.e2e.ts` "an image pasted into the Global Superagent reaches it by
     path…" (AC-GIM-4): failed without the drop on the Global view (nothing typed); with the
     browser's image check missing it fails on 2 uploads instead of 1 (review round 1).
@@ -141,7 +143,12 @@ On 2026-11-06, at `dc170eab` (the branch after merging `origin/dev` at `88ec6ddf
     until it ends or moves; kept as they are, with reasons: the sandbox-folder check now runs
     before the declared-size check (409 before 413 for a sandbox without a folder, no realistic
     case) and the removal's blocking reads follow `prune_old_drafts` on a folder of at most 500.
-  - Round 2 confirms this head.
+  - Round 2 (`46b5b874`): APPROVE with two minors and two nits, own code. Fixed: the disabled
+    account's assertion is exactly 401 and this Evidence says what it proves; ADR-0277 and the
+    `IMAGE_EXTENSIONS` comment name the page's `GLOBAL_IMAGE` and the mock as the other copies of
+    the list. Kept: the page checks the name as given and the server the safe name, which differ
+    only for names such as a bare `.png` or one past about 247 bytes; the server answers 422
+    and the status shows why.
 - Not run: `yulius security-scan` reports "Security scan disabled": Vidoc is turned off for this
   project in Yulius, so nothing was scanned; this is not a pass.
 - Not tested: a real image sent to a model through a running Global Superagent (no model call

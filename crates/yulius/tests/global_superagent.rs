@@ -960,8 +960,14 @@ async fn the_global_superagent_s_images_folder_refuses_links_and_disabled_accoun
     f.h.store
         .update_user_flags(&UserId::parse("u-alice")?, Some(Some(f.h.app.now())), None)
         .await?;
+    // Signed out at once, before the upload is looked at (review round 2).
     let disabled = upload("late.png").await?;
-    assert_ne!(disabled.status, StatusCode::CREATED, "{:?}", disabled.body);
+    assert_eq!(
+        disabled.status,
+        StatusCode::UNAUTHORIZED,
+        "{:?}",
+        disabled.body
+    );
     assert!(!folder.join("late.png").exists());
     f.h.app.end_all_shells().await;
     Ok(())
