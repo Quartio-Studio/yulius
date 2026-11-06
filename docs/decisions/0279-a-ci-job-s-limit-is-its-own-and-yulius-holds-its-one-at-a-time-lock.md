@@ -17,9 +17,10 @@ lock from a job working, and the limit was one instance setting no job could rai
 ## Decision
 
 - A `[[ci.jobs]]` entry may say `exclusive = true`. Yulius then runs one run of that job (each
-  matrix value apart) at a time per sandbox: a later run's job waits for it in queue order before it
-  takes a job slot, as part of its `wait` stage, cancellable, outside its limit. The lock is
-  process-local; a restart requeues every running run.
+  matrix value apart) at a time per sandbox: a later run's job waits for it, in the order the runs'
+  jobs ask for the turn, before it takes a job slot, as part of its `wait` stage, cancellable,
+  outside its limit. The lock is process-local, and an entry nobody holds or waits for is
+  forgotten; a restart requeues every running run.
 - A `[[ci.jobs]]` entry may say `timeout_minutes = N` (1-360). It replaces the instance's limit
   (`YULIUS_CI_JOB_TIMEOUT_MIN`) for that job; without it nothing changes.
 - A job's limit starts when its process starts, after every wait. Each job records how long it
@@ -43,6 +44,9 @@ lock from a job working, and the limit was one instance setting no job could rai
 - A project replaces its in-job lock with `exclusive = true` (an in-job lock left in place never
   waits any more, since Yulius already serialises the job).
 - A waiting exclusive job holds no slot or budget, so other jobs run meanwhile.
+- The limit is read where the jobs are: the integration branch's `yulius.toml`, so a pull request
+  cannot raise its own; only a bootstrap pull request (its branch has no CI yet) runs with its own
+  file, whose commands are trusted the same way.
 - A job's record has three new columns (`timeout_minutes`, `exclusive`, `waited_ms`, migration 0048).
 - An instance older than this refuses a `yulius.toml` using the new keys (unknown key): set them
   after the instance runs this version.

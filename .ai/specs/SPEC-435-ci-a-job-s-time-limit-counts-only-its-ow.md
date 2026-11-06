@@ -38,7 +38,8 @@ run's status says how long each job waited and ran.
 
 - JTL-001: a `[[ci.jobs]]` entry may say `exclusive = true`: one run of that job (each matrix value
   apart) runs at a time in the sandbox. A later run's job waits, before it takes a job slot or its
-  budget, until the earlier one ended, in queue order; the wait is part of its `wait` stage, can be
+  budget, until the earlier one ended, in the order the runs' jobs ask for the turn (after each
+  run's checkout is prepared, so roughly the queue's); the wait is part of its `wait` stage, can be
   cancelled like any queued job, and holds no slot.
 - JTL-002: a job's time limit starts when its process starts, after every wait (JTL-001's and the
   slot's). A job that waited longer than its limit and then runs within it passes.
@@ -46,8 +47,9 @@ run's status says how long each job waited and ran.
   it a job keeps the instance's limit (`YULIUS_CI_JOB_TIMEOUT_MIN`). A job whose own run exceeds its
   limit is still killed and errors.
 - JTL-004: Yulius records how long each job waited before it started (`waited_ms`). The run's API
-  form gives it per job; `ci_status` and the run page say, for a job that waited at least a second,
-  "waited 39m 0s, ran 44m 2s" (or just its run time when it did not wait).
+  form gives it per job; for a job that waited at least a second, `ci_status` says "websites
+  passed, waited 39m 0s, ran 44m 2s" and the run page ends its output with "[waited 39 min, ran
+  44 min]" (otherwise just its run time).
 - JTL-005: a job that times out says it in plain words with how long it ran and waited:
   "timed out: ran 1 h 0 min, its time limit; it waited 39 min 12 s before it started".
 - JTL-006: the jobs in force (`ci_status`, the CI page's API) show a job's own limit and
@@ -65,8 +67,11 @@ run's status says how long each job waited and ran.
 
 ## Acceptance criteria
 
-- With a 4 s instance limit, three runs of an `exclusive` job that each run ~2.5 s never overlap,
-  all pass, and the last one waited longer than 4 s (`waited_ms` > 4000).
+- With a 5 s instance limit, three runs of an `exclusive` job that each run ~3.5 s never overlap,
+  all pass, and the last one waited longer than 5 s (`waited_ms` > 5000).
+- A job waiting for its turn holds no slot: with two slots, both runs' other jobs run while one
+  run's exclusive job waits; a job cancelled while it waits ends cancelled without starting, and a
+  later run still gets the turn.
 - With a 2 s instance limit, a job with `timeout_minutes = 1` running 3 s passes, and a job without
   it running 3 s errors "timed out: ran 2 s, its time limit".
 - `timeout_minutes = 0`, `361`, `"2"` and `exclusive = "yes"` are rejected with the key named;
@@ -80,9 +85,15 @@ run's status says how long each job waited and ran.
 - Store (`yulius-store` `ci` tests): `timeout_minutes`, `exclusive` and `waited_ms` round-trip;
   a requeued run clears `waited_ms`.
 - Integration (`crates/yulius/tests/local_ci.rs`):
-  `an_exclusive_job_waits_its_turn_outside_its_time_limit` (JTL-001/002/004) and
-  `a_jobs_own_time_limit_replaces_the_instance_one` (JTL-003/005). Both fail before the change
-  (`exclusive` and `timeout_minutes` are unknown keys: no CI in force).
+  `an_exclusive_job_waits_its_turn_outside_its_time_limit` (JTL-001/002/004),
+  `a_jobs_own_time_limit_replaces_the_instance_one` (JTL-003/005),
+  `a_job_waiting_for_its_turn_holds_no_slot` and
+  `a_job_cancelled_while_waiting_for_its_turn_never_starts` (JTL-001). All fail before the change
+  (`exclusive` and `timeout_minutes` are unknown keys: no CI in force); the slot test also fails
+  when the slot is taken before the turn (mutation check).
+- `ci::exec` unit test `a_timeout_says_how_long_the_job_ran_and_waited` (JTL-005) and `ci` unit
+  test `an_idle_turn_is_forgotten_and_a_held_one_kept`.
+- e2e `ci.e2e.ts` "an ended job says how long it waited and ran" (JTL-004, the run page).
 - `mcp_text` unit test: the waited/ran wording (JTL-004).
 - Gate: `scripts/dev ci`.
 
@@ -97,6 +108,12 @@ run's status says how long each job waited and ran.
 - The lock is process-local: a restart requeues every running run (their jobs start over), so a
   lost lock holds nothing.
 - `timeout_minutes` is bounded like the instance setting (1-360): every wait needs a bound.
+- `ci_status`'s list of recent runs prints a run's jobs line for a wait only from a minute
+  (`WAIT_SHOWN_MS`): every job waits a few seconds for its slot, and a line per run for that would
+  bury the runs that matter; a run's own view (`run_id`) shows every wait of a second or more.
+- The limit comes from where the jobs come from: the integration branch's `yulius.toml` (a pull
+  request cannot raise its own), or a bootstrap pull request's own file while its branch has no CI,
+  which the jobs' commands are trusted from too.
 - `waited_ms` is measured on the monotonic clock (`tokio::time::Instant`), not as the difference
   of two wall-clock stamps: a duration must not move with a clock step (and the test harness's
   clock is fixed).
