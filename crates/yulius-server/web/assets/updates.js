@@ -28,9 +28,9 @@ export function phaseText(phase, run) {
       const pct = p && p.total ? ` ${Math.floor((p.done / p.total) * 100)}%` : '';
       return `Building the update${pct}. Tasks keep working.`;
     }
-    case 'pausing': return `Updating ${BRAND.name}: tasks are pausing.`;
-    case 'restarting': return `${BRAND.name} is restarting for an update. Tasks continue right after.`;
-    case 'resuming': return 'Updated. Resuming tasks…';
+    case 'pausing': return run && run.restart ? `Restarting ${BRAND.name}: tasks are pausing.` : `Updating ${BRAND.name}: tasks are pausing.`;
+    case 'restarting': return run && run.restart ? `${BRAND.name} is restarting. Tasks continue right after.` : `${BRAND.name} is restarting for an update. Tasks continue right after.`;
+    case 'resuming': return run && run.restart ? 'Restarted. Resuming tasks…' : 'Updated. Resuming tasks…';
     default: return '';
   }
 }
@@ -88,10 +88,11 @@ export function createUpdateButton(ctx, updates) {
         : `Update available: ${available.summary}`;
       setChildren(el, icon('download', { size: 14 }), h('span', { class: 'update-btn-text' }, 'Update'));
     } else if (now === 'running') {
-      const text = phaseText(view.phase, view.run) || `Updating ${BRAND.name}`;
-      el.setAttribute('aria-label', `Updating: ${text}`);
+      const label = view.run && view.run.restart ? 'Restarting' : 'Updating';
+      const text = phaseText(view.phase, view.run) || `${label} ${BRAND.name}`;
+      el.setAttribute('aria-label', `${label}: ${text}`);
       el.title = text;
-      setChildren(el, h('span', { class: 'spinner', 'aria-hidden': 'true' }), h('span', { class: 'update-btn-text' }, 'Updating'));
+      setChildren(el, h('span', { class: 'spinner', 'aria-hidden': 'true' }), h('span', { class: 'update-btn-text' }, label));
     } else {
       el.setAttribute('aria-label', 'Version and updates');
       el.title = 'Version and updates';
@@ -169,7 +170,7 @@ export function createUpdateBanner(ctx) {
     }
     if (!superadmin()) { hide(); return; }
     if (run && (run.state === 'failed' || run.state === 'rolled_back') && dismissed() !== `run:${run.id}`) {
-      const text = run.state === 'rolled_back' ? 'The update was rolled back; the previous version runs.' : 'The update failed; nothing changed.';
+      const text = run.state === 'rolled_back' ? 'The update was rolled back; the previous version runs.' : run.restart ? 'The restart failed.' : 'The update failed; nothing changed.';
       show('warn', icon('warn', { size: 14 }), text, { route: INSTANCE_ROUTE, title: run.error || text, actions: [close(`run:${run.id}`, 'Dismiss')] });
       return;
     }

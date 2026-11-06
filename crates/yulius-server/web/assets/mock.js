@@ -4251,11 +4251,48 @@ route('POST', '/api/admin/update', ({ db, body }) => {
   runUpdate(db, u.run.id);
   return json(202, updateView(db));
 });
+/** Walks a started restart through its phases: nothing to build (SPEC-432 RST-002). */
+function runRestart(db, id) {
+  const live = () => db.update.run && db.update.run.id === id && UPDATE_STATES.includes(db.update.run.state);
+  later(() => {
+    if (!live()) return;
+    moveUpdate(db, 'restarting', { step: 'stopping', message: 'Stopping the server. Agent sessions keep running.' });
+  }, UPDATE_STEP_MS);
+  later(() => {
+    if (!live()) return;
+    moveUpdate(db, 'resuming', { step: 'resuming', message: 'Resuming tasks: 1 of 3.', progress: { done: 1, total: 3 } });
+  }, UPDATE_STEP_MS * 2);
+  later(() => {
+    if (!live()) return;
+    moveUpdate(db, 'succeeded', { message: 'Restarted.' });
+  }, UPDATE_STEP_MS * 3);
+}
+
+route('POST', '/api/admin/restart', ({ db, body }) => {
+  if (!db.me.user.is_superadmin) fail(403, 'forbidden', 'superadmin only');
+  if (body.confirm !== true) fail(422, 'invalid', 'confirm the restart: tasks pause while the server restarts');
+  const u = db.update;
+  if (!u.helper) fail(409, 'conflict', 'the update helper is not installed on this server (see the operations guide)');
+  if (u.run && UPDATE_STATES.includes(u.run.state)) fail(409, 'conflict', 'an update or restart is already running');
+  const now = new Date().toISOString();
+  db.nextId += 1;
+  u.run = {
+    id: `upd_${db.nextId}`, restart: true, target: { commit: u.current, short: short7(u.current) }, from: { commit: u.current, short: short7(u.current) },
+    summary: 'Restart', state: 'pausing', step: 'pausing', message: 'Pausing tasks: 2 of 3 paused.',
+    progress: null, tasks: { paused: 2, total: 3, waiting: [{ id: 'tsk_x', number: 4, title: 'Fix the flaky export test', sandbox: 'studio' }], deadline: new Date(Date.now() + 30 * MIN).toISOString() },
+    deploys: [], error: null, log_tail: [], requested_by: db.me.user.login, started_at: now, state_since: now, finished_at: null, can_cancel: true, can_proceed: true,
+  };
+  emit(db, { type: 'update.updated', phase: 'pausing' });
+  runRestart(db, u.run.id);
+  return json(202, updateView(db));
+});
 route('POST', '/api/admin/update/cancel', ({ db }) => {
   if (!db.me.user.is_superadmin) fail(403, 'forbidden', 'superadmin only');
   const run = db.update.run;
   if (!run || !['building', 'pausing'].includes(run.state)) fail(409, 'conflict', 'no update can be cancelled now (it is restarting or done)');
-  moveUpdate(db, 'cancelled', { error: `Cancelled by ${db.me.user.login}; nothing was installed.`, message: 'Cancelled; nothing was installed.' });
+  moveUpdate(db, 'cancelled', run.restart
+    ? { error: `Cancelled by ${db.me.user.login}; Yulius was not restarted.`, message: 'Cancelled; Yulius was not restarted.' }
+    : { error: `Cancelled by ${db.me.user.login}; nothing was installed.`, message: 'Cancelled; nothing was installed.' });
   return updateView(db);
 });
 route('POST', '/api/admin/update/proceed', ({ db }) => {

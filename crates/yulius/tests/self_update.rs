@@ -1621,3 +1621,53 @@ async fn a_deploy_running_while_draining_holds_the_install() -> TestResult {
     );
     Ok(())
 }
+
+/// SPEC-432 RST-002: a superadmin restarts Yulius with the build it runs: every task freezes,
+/// the helper restarts that build, and the tasks thaw. Others are refused, a confirmation is
+/// needed, and a second run conflicts.
+#[tokio::test]
+async fn a_superadmin_restarts_yulius_with_its_tasks_frozen_then_thawed() -> TestResult {
+    let (i, host) = freezing_instance().await?;
+    let (working, _idle) = two_tasks(&i).await?;
+    let confirmed = Some(json!({"confirm": true}));
+    let r = post(&i, "/api/admin/restart", confirmed.clone(), &i.member).await?;
+    assert_eq!(r.status, StatusCode::FORBIDDEN, "{}", r.body);
+    let r = post(&i, "/api/admin/restart", Some(json!({})), &i.admin).await?;
+    assert_eq!(r.status, StatusCode::UNPROCESSABLE_ENTITY, "{}", r.body);
+    let r = post(&i, "/api/admin/restart", confirmed.clone(), &i.admin).await?;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "{}", r.body);
+    assert_eq!(r.body["run"]["restart"], true, "{}", r.body);
+    assert_eq!(r.body["run"]["target"]["commit"], OLD);
+    assert_eq!(r.body["run"]["state"], "pausing");
+    assert!(i.helper.last().is_none(), "nothing is built");
+    let r = post(&i, "/api/admin/restart", confirmed, &i.admin).await?;
+    assert_eq!(r.status, StatusCode::CONFLICT, "{}", r.body);
+
+    let _ = i.h.app.update_round().await;
+    assert_eq!(host.frozen().len(), 2, "every task is frozen");
+    let _ = i.h.app.update_round().await;
+    let restart = i.helper.last().ok_or("restart request")?;
+    assert_eq!(restart.action, HelperAction::Restart);
+    assert_eq!(restart.commit, OLD);
+    i.helper
+        .report(&restart, HelperState::Running, "stopping", None);
+
+    let restarted = App::new(i.h.app.config.clone(), i.h.app.deps.clone());
+    restarted.set_updates(services(OLD, &i.source, &i.helper));
+    restarted.restore_update_hold().await;
+    let _ = restarted.update_round().await;
+    assert!(host.thawed().is_empty(), "frozen until the helper reports");
+    assert!(restarted.held_for_update(&working));
+    i.helper
+        .report(&restart, HelperState::Done, "restarted", None);
+    let _ = restarted.update_round().await;
+    let _ = restarted.update_round().await;
+    assert_eq!(host.thawed().len(), 2, "every task thawed");
+    assert!(!restarted.held_for_update(&working));
+    let view = restarted.update_view(&support_ctx(&i).await?).await?;
+    let run = view.run.ok_or("run")?;
+    assert_eq!(run.state, "succeeded");
+    assert!(run.restart);
+    assert_eq!(run.message.as_deref(), Some("Restarted."));
+    Ok(())
+}

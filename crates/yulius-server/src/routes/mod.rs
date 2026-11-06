@@ -227,6 +227,7 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
         .route("/api/admin/update/check", post(updates::check))
         .route("/api/admin/update/cancel", post(updates::cancel))
         .route("/api/admin/update/proceed", post(updates::proceed))
+        .route("/api/admin/restart", post(updates::restart))
         // Leftovers on the server's disk (SPEC-215).
         .route("/api/admin/leftovers", get(leftovers::view))
         .route("/api/admin/leftovers/scan", post(leftovers::scan))
