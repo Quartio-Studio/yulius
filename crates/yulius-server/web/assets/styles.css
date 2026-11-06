@@ -576,6 +576,16 @@ button.task-group-head:hover { color: var(--text); }
 /* The Agent (SPEC-035): its quick-work notice, then the user's plain Claude Code session filling
    the panel like a terminal. */
 .agent { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+/* SPEC-428: This sandbox and All sandboxes as tabs, as the Notes tabs. */
+.superagent { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.superagent-pane { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.superagent-pane[hidden] { display: none; }
+.superagent-tabs .term-tab { padding: 0 12px; border-top: 0; border-bottom: 0; border-left: 0; background: none; font: inherit; }
+.superagent-tabs .term-tab.active { background: var(--term-bg); }
+.superagent-tabs .term-tab[aria-disabled="true"] { cursor: not-allowed; opacity: 0.55; }
+.superagent-tab-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--warn); flex: none; }
+.superagent-tab-dot[hidden] { display: none; }
+.agent-note .agent-note-tab { color: inherit; font-weight: 600; text-decoration: underline; }
 .agent-note { flex: none; align-items: flex-start; margin: 8px; overflow-wrap: anywhere; }
 .agent-note .icon { margin-top: 2px; }
 .agent-note a { color: inherit; font-weight: 600; text-decoration: underline; }

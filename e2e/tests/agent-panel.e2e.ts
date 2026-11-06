@@ -9,7 +9,7 @@ failOnPageErrors();
 // quick work that should not become a task.
 
 // The shown Superagent: another sandbox's stays alive, hidden, after a switch (SPEC-113).
-const agentTerminal = '.panel-view:not([hidden]) > .agent .xterm-rows';
+const agentTerminal = '.panel-view:not([hidden]) .superagent-pane:not([hidden]) > .agent .xterm-rows';
 
 // SPEC-132 NSB-001: the Superagent sits first in the tools rail, right under the tools toggle, so
 // the top bar has no button of its own for it, on a desktop or a phone.

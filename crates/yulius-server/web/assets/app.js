@@ -288,6 +288,8 @@ function createApp(root, transport) {
     closeMenu();
     document.querySelectorAll('dialog[open]').forEach((d) => { d.close(); d.remove(); });
     if (shell) {
+      // Closed first: an open Global Superagent would otherwise be shown again outside a sandbox.
+      shell.panels.close();
       shell.panels.setContext(null, null);
       for (const part of [shell.tabRow, shell.sidebar, shell.panels]) if (part && part.destroy) part.destroy();
     }
@@ -699,7 +701,8 @@ function createApp(root, transport) {
       navigate(`/s/${encodeURIComponent(sandbox.slug)}`, { replace: true });
     }
     if (route.name === 'composer' && route.panel && sandbox) {
-      shell.panels.open(route.panel, { persistRail: false });
+      // `/s/<slug>/superagent` asks for the sandbox's own Superagent tab (SPEC-428 SAT-005).
+      shell.panels.open(route.panel, { persistRail: false, tab: 'sandbox' });
       navigate(`/s/${encodeURIComponent(sandbox.slug)}`, { replace: true });
     }
     updateTitle();

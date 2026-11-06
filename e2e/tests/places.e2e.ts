@@ -282,7 +282,7 @@ test('a removed sandbox’s tool views go with it', async ({ app, browser, scree
   await openSuperagent(browser, screen);
   await expect(browser.locator('.agent-term .xterm-rows').first()).toHaveText(/Welcome to Claude Code/);
   await tab(screen, 'product').click();
-  await expect(browser.locator('.panel-view:not([hidden]) > .agent .xterm-rows')).toHaveText(/cwd: .*product/);
+  await expect(browser.locator('.panel-view:not([hidden]) .superagent-pane:not([hidden]) > .agent .xterm-rows')).toHaveText(/cwd: .*product/);
   await expect(browser.locator('.agent')).toHaveCount(2);
 
   await tabMenu(browser, 'studio');

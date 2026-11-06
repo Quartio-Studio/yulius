@@ -133,9 +133,11 @@ watching, steering and unblocking.
   that gives it new tools, an open Superagent restarts by itself once it is idle and goes on with
   its conversation.
 - **Global Superagent**: besides the Superagent of each sandbox, every person has one Global
-  Superagent, opened from the tools rail on All sandboxes and the other pages outside a sandbox
-  (where the rail shows only it) or at `/superagent`, and linked from each sandbox Superagent's
-  note. It sees every sandbox the person can see and keeps them in sync: "which of my sandboxes
+  Superagent, the **All sandboxes** tab of the Superagent panel beside its **This sandbox** tab
+  (as Notes shows its notepads; SPEC-428), in every sandbox and on the pages outside one (where
+  the rail shows only the Superagent), or at `/superagent`. The tab picked last stays in front
+  from sandbox to sandbox, and its message box suggests "check what my sandboxes need from each
+  other and solve it". It sees every sandbox the person can see and keeps them in sync: "which of my sandboxes
   have failing CI?", "the API changed in acme/api, make its clients follow" or "tell every running
   task to merge dev" become tasks, pull requests and task messages in each sandbox, as the person,
   without asking per action. The person writes to it in a message box under its terminal (Enter sends, Interrupt stops its
