@@ -2,7 +2,7 @@
 //! sandbox, which sees every sandbox they can see and keeps them in sync through Yulius.
 //!
 //! Contract:
-//! - one per person, a Cockpit shell marked `global` ([`crate::cockpit::Seat::Global`]):
+//! - one per person, a Cockpit shell marked `global` (its seat is `Seat::Global`):
 //!   [`App::global_superagent_open`] returns the running one or starts it, resuming its newest
 //!   conversation; it shares the sandbox Superagent's start lock, usage-limit moves and update
 //!   refreshes (GSA-001, GSA-005);
@@ -57,7 +57,7 @@ const MASKED_FILES: &[&str] = &["/etc/shadow", "/etc/gshadow"];
 
 /// The remote tools the Global Superagent is not served (GSA-003): the vault and variables,
 /// deployments, and adding, onboarding or skipping projects are the person's decisions.
-pub(crate) const WITHHELD_TOOLS: &[&str] = &[
+pub const WITHHELD_TOOLS: &[&str] = &[
     "secret_update",
     "secret_hosts_answer",
     "secret_delete",
