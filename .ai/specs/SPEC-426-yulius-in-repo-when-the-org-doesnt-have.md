@@ -13,7 +13,7 @@ private GitHub organisation ("Harden firmware: quality gate, deep audit, edge-ca
 paused, "The agent has not written a plan yet"). The request: "Yulius in repo when the org doesnt
 have paid features completely ignores (paid org) gates. For example, it didnt declare a plan … We
 need to be completely independent from github infra … Fix." and, while the work ran, "also make
-sure this is realy the cause and if not, report the real one".
+sure this is realy the cause and if not, report the real one". Fixes #1081.
 
 ## Goal
 
@@ -95,11 +95,12 @@ discovered at the end of a turn.
   a `Read` and a file outside the worktree pass; `<worktree>/docs/../api.rs` is denied.
 - AC2: a spec without a Plan item keeps the edit denied; once the Plan has an item, the edit
   passes.
-- AC3b: a task whose workflow requires a spec (feature) is held like one without a workflow; a spec
-  that exists but cannot be read and a workflow the store cannot read pass
-  (`an_edit_the_gate_cannot_judge_passes`).
 - AC3: a task whose workflow has no spec gate (research) edits code freely (an onboarding task
   has the same policy, `SpecPolicy::NotRequired`).
+- AC3b: a task whose workflow requires a spec (feature) is held like one without a workflow; a spec
+  that exists but cannot be judged (a link, not UTF-8, larger than the 256 KiB Yulius reads) and a
+  workflow the store cannot read pass
+  (`an_edit_the_gate_cannot_judge_passes`).
 - AC4: the launched Claude Code settings register `PreToolUse` for the edit tools with the
   `yulius hook claude PreToolUse` command; the hook client forwards an `Edit` to Yulius and prints
   its answer, and still answers a self-matching `pgrep -f` Bash command locally.
@@ -111,7 +112,9 @@ discovered at the end of a turn.
   worktree. Fails before the fix (the route answers `PreToolUse` with nothing).
 - `edits_are_placed_from_the_agents_folder_and_through_links` (relative paths from `cwd`, a link
   to the worktree, a nested-only Plan, a task without a spec path) and
-  `the_edit_gate_holds_every_edit_until_the_plan_exists` (EDG-005).
+  `the_edit_gate_holds_every_edit_until_the_plan_exists` (EDG-005), and
+  `an_edit_the_gate_cannot_judge_passes` (AC3b: a linked, non-UTF-8 or oversized spec, a feature
+  workflow before and after its store read fails).
 - `crates/yulius-harness` unit tests: the launch plan's `PreToolUse` entries (AC4) and the hook
   client's dispatch (an `Edit` reaches a loopback test server; a Bash self-match is denied without
   one); `an_edit_check_fails_open_and_is_never_held` (no server, a 500, a 202, a Write over 1 MiB

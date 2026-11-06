@@ -36,7 +36,8 @@ local check on Bash commands.
   no spec is started with a workflow without the spec gate (Research, Docs, Chore); a running
   task's workflow does not change. An agent that loops on denials meets the Stop gate at its turn's
   end once its branch changed, which asks a person after three blocks. What the gate cannot judge
-  (a spec that exists but cannot be read, a workflow the store cannot read) passes.
+  (a spec that exists but cannot be read: a link, not UTF-8, over the 256 KiB Yulius reads; a
+  workflow the store cannot read) passes.
 - The edit gate asks only for a Plan. Full validity is still the `Stop` gate's job, so a draft spec
   does not hold the work.
 
