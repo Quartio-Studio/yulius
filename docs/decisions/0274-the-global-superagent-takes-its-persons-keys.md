@@ -40,6 +40,10 @@ directory, repository or home.
   checks and the interrupt gap, are removed; the web UI's All sandboxes tab is the same view as
   This sandbox, its example ("check what my sandboxes need from each other and solve it") moving
   into its note.
+- Every one of its tools stays pre-allowed, on an uncontained server too, although a person could
+  now answer a question: its tools are only Yulius's, each checked against its person's access at
+  the call and audited, as for the person's own agent over the remote MCP, so a question per call
+  would add a click and no safety. It has no built-in tool that a question would guard.
 - Its approval bypass carries its consent as a flag setting: `skipDangerousModePermissionPrompt:
   true` in its `--settings` whenever `--dangerously-skip-permissions` is passed. Flag settings are
   read whatever `--setting-sources` says, and nothing the session writes removes them. Its launch

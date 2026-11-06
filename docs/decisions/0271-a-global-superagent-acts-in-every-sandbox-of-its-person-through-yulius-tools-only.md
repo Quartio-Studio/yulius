@@ -140,6 +140,8 @@ their task runs.
   word `ultraplan` can start a command of its own (2.1.311, behind a feature flag); a message
   holding it anywhere is refused, more than Claude Code would act on.
 - Every one of its tools is pre-allowed, on an uncontained server too: no key reaches it, so no
-  question Claude Code asked about a tool could be answered.
+  question Claude Code asked about a tool could be answered. (Since
+  [0274](0274-the-global-superagent-takes-its-persons-keys.md) keys reach it; the pre-allowing
+  stays, for the reason given there.)
 - A person who can work in no sandbox (read-only access, a guest without one) has no Global
   Superagent.

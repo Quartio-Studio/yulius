@@ -124,8 +124,9 @@ On 2026-11-06, at `d6adf649` (the branch after merging `origin/dev` at `30e2b108
 - `scripts/dev ci`: exit 0. Repository contracts, web unit tests (152), format, clippy, docs,
   macOS targets and deps pass; `cargo nextest run --workspace --profile ci` ran 3164 tests,
   3164 passed, 16 skipped.
-- `cd e2e && npx e2e run` (full suite, at the review round 1 head before the dev merge, which
-  changed no web file of this task): 858 passed, 1 skipped (`agent.e2e.ts` needs a model), 1
+- `cd e2e && npx e2e run` (full suite, at the review round 1 head before the dev merge; that merge
+  touched `mock.js` and `task-done.e2e.ts` only in parts this task does not, and Yulius CI's e2e
+  job runs the merged head): 858 passed, 1 skipped (`agent.e2e.ts` needs a model), 1
   failed: `task-done.e2e.ts` "the end banner keeps keyboard focus when the task's details are
   read again", under host load (load average 16-22); it passed 3 of 3 runs of the file alone. This
   change does not touch the task view (`terminal-core.js` lost only `resizeReadOnly`, `false` for
@@ -155,7 +156,12 @@ On 2026-11-06, at `d6adf649` (the branch after merging `origin/dev` at `30e2b108
     before the refusing script, so those files are now empty read-only binds (test first); three
     items SPEC-427 widened for the removed message path are private again; stale comments about
     keys and the box restated; this Evidence.
-  - Round 2 reviews this head.
+  - Round 2: APPROVE with minors and nits, fixed: the pre-allowed tools on an uncontained server
+    get their reason in ADR-0274 (kept: only Yulius's tools, checked at the call) and ADR-0271 and
+    operations.md say so; architecture says the startup file binds are on a contained server only;
+    wording. Not done (nit, optional): an e2e test that clicks inside the Global terminal; the Rust
+    test's `can_write: true` is what turns on mouse forwarding (`setAppMouse(state.can_write)`).
+  - Round 3 confirms this head.
 - Not run: `yulius security-scan` reports "Security scan disabled": Vidoc is turned off for this
   project in Yulius, so nothing was scanned; this is not a pass.
 - Not tested against a live model or a contained server: a real conversation typed into the
