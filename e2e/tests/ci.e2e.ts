@@ -1,6 +1,6 @@
 import { test } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, failOnPageErrors, mock } from './support.ts';
+import { axeViolations, failOnPageErrors, firstShown, mock } from './support.ts';
 
 failOnPageErrors();
 
@@ -134,6 +134,16 @@ test('a skipped job reads Skipped, not Passed', async ({ app, browser, screen })
   await run.getByRole('tab', /test \(2\/2\)/).click();
   await expect(browser.locator('.run-output')).toHaveText(/scan not run[\s\S]*\[exit code 78\]/);
   expect(await axeViolations(browser)).toEqual([]);
+});
+
+// SPEC-435 JTL-004: an ended job's output ends with how long it waited before it started and how
+// long it ran, apart; a job that did not wait a second says only how long it ran.
+test('an ended job says how long it waited and ran', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/ci?run=ci_s3'));
+  const run = screen.getByRole('region', 'CI run');
+  await firstShown(browser.locator('.run-output'), /Summary[\s\S]*\[exit code 0\]\n\[ran 2 min\]$/);
+  await run.getByRole('tab', /test \(1\/2\)/).click();
+  await expect(browser.locator('.run-output')).toHaveText(/\[exit code 0\]\n\[waited 6 min, ran 2 min\]$/);
 });
 
 // SPEC-238 CRV-003: "we see some dynamic summary all the time". A running run's view starts with
