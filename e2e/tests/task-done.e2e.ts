@@ -119,6 +119,19 @@ test('an agent that answered with nothing open is not your turn', async ({ app, 
   // A prompt typed into it: Working again.
   await touchStudioTask(browser, 12, { activity: 'working', goal_unfinished: false });
   await expect(strip).toHaveText(/Working/);
+
+  // The row's second line (the task graph, a screen reader's row) says it too (review of SPEC-429).
+  const lines = await browser.evaluate(async () => {
+    const statusUrl = '/assets/status.js';
+    const { activityLine } = await import(statusUrl);
+    const idle = { status: 'running', activity: 'waiting', steps: { done: 0, total: 0 } };
+    return {
+      answered: activityLine(idle),
+      unfinished: activityLine({ ...idle, goal_unfinished: true }),
+      midPlan: activityLine({ ...idle, steps: { done: 1, total: 3 } }),
+    };
+  });
+  expect(lines).toEqual({ answered: 'Agent answered — nothing asked of you', unfinished: 'Agent replied — your turn', midPlan: 'Agent replied — your turn' });
 });
 
 // SPEC-130 DMD-003 (#474, task #109 on 2026-10-14: "this is done but pr isnt purple"): its plan was

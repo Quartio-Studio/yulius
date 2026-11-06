@@ -20,11 +20,13 @@ goal retries), a browser request, a held prompt, failing checks and a blocked ch
 1. An idle `waiting` agent (no background shell, no `yulius wait`) needs a person only while its
    work is visibly unfinished: its plan has steps not done or skipped, or Claude Code last recorded
    its goal as set, not met or failed (`goal_unfinished`). Otherwise the task reads "Answered" in
-   the Done group. It is not counted and notifies nobody.
+   the Done group. It is not counted in Needs you. Its notification is an informational "Answered",
+   not a request. Archive and Delete close its session, as for any task under Done.
 2. The activity stays `waiting`. "Answered" is a reading of it, not TSK-014's Done: chains do not
    start, the queue does not take the slot, and a prompt makes the task Working as before.
 3. The server (`AttentionFacts::group`) and the web UI (`taskInfo`) apply the one rule. The task
-   view carries `goal_unfinished`, and the plan counts after every finished turn.
+   view carries `goal_unfinished` (published when a goal record changes it), and the plan counts
+   after every finished turn.
 4. The `needs_you` tool tells agents that a question asked only in plain text reaches nobody. The
    briefing is at its byte budget, and agents read the tool's description when they choose how to ask.
 
@@ -45,3 +47,8 @@ goal retries), a browser request, a held prompt, failing checks and a blocked ch
 - An agent that stops mid-plan, or with a failed or open goal, still reads "Your turn".
 - An agent with neither a plan nor a goal that asks in plain text is not flagged. The `needs_you`
   description covers it, and the transcript still shows the question.
+- A prompt-mode task with no plan whose turn was cut short reads Answered: a capacity hold that
+  Claude Code gave up on, or an API error that ended the turn. Goal mode, the default, keeps its
+  goal set and reads Your turn. A full context that Yulius cannot recover still needs a person
+  (`needs_attention`). When a person typed during the recovery, the turn is theirs anyway.
+- The sidebar reads each idle task's steps, not only those with a pull request.

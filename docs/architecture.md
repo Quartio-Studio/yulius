@@ -2325,7 +2325,8 @@ while its work is visibly unfinished: plan steps open, or a goal that Claude Cod
 not met or failed (`goal_unfinished` in the task view). With neither, and nothing asked (a question or
 permission prompt, `needs_you`, a browser request, a held prompt, failing checks), it answered: it
 reads "Answered" under Done and is counted nowhere, while its activity stays `waiting`, so no chain
-starts and its slot is kept. The server's `AttentionFacts::group` and the web UI's `taskInfo` apply
+starts and its slot is kept. Archive and Delete close its session as for a Done task (`shows_done`),
+and a goal record read after the turn settled publishes the task again. The server's `AttentionFacts::group` and the web UI's `taskInfo` apply
 this one rule ([SPEC-429](../.ai/specs/SPEC-429-hey-why-yulius-still-mark-this-thread-as.md),
 [decision 0273](decisions/0273-an-answered-turn-is-not-needs-you.md)):
 

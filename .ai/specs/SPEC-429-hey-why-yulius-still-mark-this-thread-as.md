@@ -39,11 +39,13 @@ under Done) instead of "Your turn" under Needs you. Needs you stays for what a p
 
 | ID | Requirement | Evidence |
 | --- | --- | --- |
-| ANS-001 | An idle `waiting` task (running, no background shell, no `yulius wait`, no request) whose plan has no open step and whose goal is not unfinished is in the Done group, labelled "Answered". It is not counted in Needs you and sends no notification. | domain unit test; `task_done.rs` |
+| ANS-001 | An idle `waiting` task (running, no background shell, no `yulius wait`, no request) whose plan has no open step and whose goal is not unfinished is in the Done group, labelled "Answered" ("answered 12m ago", second line "Agent answered — nothing asked of you"). It is not counted in Needs you. Its notification is an informational "Answered" in the done tone, not a request. | domain unit test; `task_done.rs`; e2e |
 | ANS-002 | It still needs a person while its work is visibly unfinished: plan steps not done or skipped, or a goal that Claude Code last recorded as set, not met or failed (`goal_unfinished`). A cleared or met goal is not unfinished. | domain unit test; `finish.rs` unit test |
 | ANS-003 | The server (`AttentionFacts::group`) and the web UI (`taskInfo`) apply the same rule: the task view carries `goal_unfinished`, and the plan is read from `steps`. The plan counts after every finished turn, not only once a pull request exists. | domain unit test; e2e `task-done.e2e.ts` |
 | ANS-004 | An answered task's attention bar does not say "The agent is waiting for your reply". Typing into it makes it Working, as for any task. | e2e |
 | ANS-005 | The `needs_you` tool says that a question asked only in plain text reaches nobody, because a turn that ends with nothing open reads Answered. The briefing has no room left in its budget; the tool description is read where agents choose how to ask. | `mcp.rs` unit test |
+| ANS-007 | Archive and Delete close an answered task's session, as for a Done task, because the UI offers them for everything under Done (`shows_done`). Before, the server answered 409 "stop the task first". | `task_done.rs` |
+| ANS-008 | A goal record read after the turn settled changes `goal_unfinished` and publishes the task, so the UI does not keep "Answered" while the counts say Needs you. | `task_done.rs` (event) |
 | ANS-006 | An answered task is still a running session. It is not Done in the TSK-014 sense: its chains do not start and the queue does not take its slot, because its activity stays `waiting`. | unchanged code path; review |
 
 ## Plan

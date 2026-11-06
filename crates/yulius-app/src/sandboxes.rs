@@ -96,6 +96,14 @@ impl App {
         })
     }
 
+    /// Whether the sidebar shows `task` under Done: an achieved goal, a tested pull request with
+    /// its plan complete, or an agent that answered with nothing open (SPEC-429 ANS-007). Archive
+    /// and delete close such a task's session, as the UI offers them.
+    pub(crate) async fn shows_done(&self, task: &TaskRecord) -> bool {
+        let requested = self.browser_requests(&task.sandbox_id).await;
+        matches!(self.task_group(task, &requested).await, Ok(TaskGroup::Done))
+    }
+
     /// A task's sidebar group (`AttentionFacts::group`), so Home's cards and the sandbox tabs
     /// count what the sidebar lists (#147, #170). Ended tasks are answered without reading the
     /// store.

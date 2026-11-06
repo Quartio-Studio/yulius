@@ -268,7 +268,11 @@ export function activityLine(task, info = statusInfo(task)) {
   if (task.status === 'running') {
     if (task.activity === 'done') return steps.total ? `Goal achieved · ${steps.done || 0}/${steps.total} steps` : 'Goal achieved';
     if (task.activity === 'needs_attention') return 'Approve or answer in the terminal';
-    if (task.activity === 'waiting') return steps.total && steps.done >= steps.total ? 'All steps done — review it' : 'Agent replied — your turn';
+    if (task.activity === 'waiting') {
+      if (steps.total && steps.done >= steps.total) return 'All steps done — review it';
+      // Nothing open and nothing asked: not the person's turn (SPEC-429).
+      return info.answered ? 'Agent answered — nothing asked of you' : 'Agent replied — your turn';
+    }
     if (steps.total) return `Step ${Math.min((steps.done || 0) + 1, steps.total)}/${steps.total}${steps.current ? ` · ${steps.current}` : ''}`;
     return 'Working';
   }

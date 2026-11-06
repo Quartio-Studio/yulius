@@ -566,7 +566,12 @@ fn an_achieved_goal_with_no_shell_left_makes_the_task_done() -> TestResult {
             .ok_or("sandbox")?
             .counts;
         assert_eq!(counts.needs_attention, 0, "answered: nobody has to act");
-        stop(&app, &id).await
+        // It reads Answered under Done, where Archive is offered: archiving closes its session
+        // as for a Done task, not "stop the task first" (SPEC-429 ANS-007).
+        let archived = app.archive_task(&ctx, id.as_str(), true).await?;
+        assert!(archived.archived, "archived");
+        assert_eq!(task(&app, &id).await?.status, TaskStatus::Closed);
+        Ok::<(), BoxError>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
@@ -812,6 +817,7 @@ fn an_agent_waiting_for_yulius_does_not_need_a_person() -> TestResult {
                 .and_then(|sandboxes| sandboxes.into_iter().find(|s| s.id == sandbox.as_str()))
                 .map(|s| s.counts.needs_attention)
         };
+        let mut events = app.events.subscribe();
         let id = goal_task(&app, &sandbox, &user, "Merge on green").await?;
         let view = || async {
             let summary = app.task_summary(&task(&app, &id).await?).await?;
@@ -826,17 +832,28 @@ fn an_agent_waiting_for_yulius_does_not_need_a_person() -> TestResult {
         })
         .await?;
         // Its goal failed: the work is unfinished, so it is the person's turn (SPEC-429 ANS-002).
-        // The fake's turn is shorter than a transcript read, so the record may come after it.
-        wait_for("the failed goal", Duration::from_secs(20), || async {
-            match task(&app, &id).await {
-                Ok(record) => app
-                    .task_summary(&record)
-                    .await
-                    .is_ok_and(|summary| summary.goal_unfinished),
-                Err(_) => false,
+        // The fake's turn is shorter than a transcript read, so the record may come after it: the
+        // UI is told then, not left reading Answered (ANS-008).
+        let published = tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                match events.recv().await {
+                    Ok(envelope) => {
+                        if let UiEvent::TaskUpdated { task } = envelope.event
+                            && task.id == id.as_str()
+                            && task.goal_unfinished
+                        {
+                            return true;
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(_) => return false,
+                }
             }
         })
-        .await?;
+        .await;
+        assert_eq!(published, Ok(true), "an update says the goal is unfinished");
+        let summary = app.task_summary(&task(&app, &id).await?).await?;
+        assert!(summary.goal_unfinished, "a failed goal is unfinished");
         assert_eq!(needs_you().await, Some(1), "Your turn needs the person");
 
         // The agent waits for its checks: the next probe finds it.

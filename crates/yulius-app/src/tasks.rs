@@ -564,7 +564,9 @@ impl App {
         archive: bool,
     ) -> AppResult<TaskSummary> {
         let task = self.load_task(ctx, id, Action::Work).await?;
-        let done = task.status == TaskStatus::Running && self.task_is_done(&task).await;
+        // Done, or answered (SPEC-429 ANS-007): what the sidebar shows under Done.
+        let done = task.status == TaskStatus::Running
+            && (self.task_is_done(&task).await || self.shows_done(&task).await);
         if archive && done && task.origin == TaskOrigin::Onboarding {
             // Its run's end decides whether onboarding is over, which the check below reads.
             self.close_task_and_wait(&task.id).await?;
@@ -634,7 +636,9 @@ impl App {
         caller_detail: Option<&serde_json::Value>,
     ) -> AppResult<crate::attachment_trash::DeletedAttachments> {
         let mut task = self.load_task(ctx, id, Action::Work).await?;
-        if task.status == TaskStatus::Running && self.task_is_done(&task).await {
+        if task.status == TaskStatus::Running
+            && (self.task_is_done(&task).await || self.shows_done(&task).await)
+        {
             self.close_task_and_wait(&task.id).await?;
             task = self
                 .deps
