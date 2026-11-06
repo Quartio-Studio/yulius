@@ -1,11 +1,11 @@
 ---
 yulius-task: 550602c1-f7ec-4f6b-8542-02a76331b504
-status: in-progress
+status: done
 ---
 
 # SPEC-430: The Global Superagent takes its person's keys like the sandbox Superagent
 
-Status: in-progress
+Status: done
 Date: 2026-11-06
 Owner: Yulius task #412
 Scope authorization: task #412 (`/goal`, with a screenshot of the All sandboxes tab stuck on
@@ -77,8 +77,8 @@ through Yulius. Its start never stops on Claude Code's Bypass Permissions warnin
 - [x] The message and interrupt endpoints are gone
 - [x] ADR, architecture, product and API docs describe the keys
 - [x] Review round 1 fixed: the home's shell startup files covered, stale comments restated
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -116,3 +116,49 @@ through Yulius. Its start never stops on Claude Code's Bypass Permissions warnin
   does not.
 - **Remove, not keep, the message endpoints.** Nothing else calls them; keeping them would keep
   ~300 lines of message checks for a path the UI no longer has.
+
+## Evidence
+
+On 2026-11-06, at `d6adf649` (the branch after merging `origin/dev` at `30e2b108`):
+
+- `scripts/dev ci`: exit 0. Repository contracts, web unit tests (152), format, clippy, docs,
+  macOS targets and deps pass; `cargo nextest run --workspace --profile ci` ran 3164 tests,
+  3164 passed, 16 skipped.
+- `cd e2e && npx e2e run` (full suite, at the review round 1 head before the dev merge, which
+  changed no web file of this task): 858 passed, 1 skipped (`agent.e2e.ts` needs a model), 1
+  failed: `task-done.e2e.ts` "the end banner keeps keyboard focus when the task's details are
+  read again", under host load (load average 16-22); it passed 3 of 3 runs of the file alone. This
+  change does not touch the task view (`terminal-core.js` lost only `resizeReadOnly`, `false` for
+  every view but the Global one), so it is filed as #1094, not retried.
+  `global-superagent`, `agent-panel`, `superagent-requests`, `terminal` and `places` passed
+  together too (107 tests, one race in this change's own test fixed: the terminal takes the
+  keyboard once shown).
+- Tests, each failing without its change:
+  - `global_superagent::its_person_types_into_the_global_superagent` (AC-GKY-1, AC-GKY-2): failed
+    on `can_write: false` before the server change; a typed line runs (`keyed-7`), carol is
+    refused, both removed endpoints answer 404.
+  - `yulius-harness` `the_global_superagent_runs_with_only_the_yulius_mcp` (AC-GKY-3): failed
+    without `skipDangerousModePermissionPrompt`; without the bypass the key is absent.
+  - `global_superagent::a_contained_global_superagent_has_a_root_of_its_own`: failed without the
+    shell startup file binds (review round 1).
+  - `e2e/tests/global-superagent.e2e.ts` (AC-GKY-4): run against the previous web assets, 2 of its
+    11 tests failed (the example in the note; the focused terminal), all pass with the change.
+- Claude Code 2.1.311 probed in a PTY with a synthetic token (no model called), with the Global
+  Superagent's flags (`--setting-sources "" --strict-mcp-config --tools ""
+  --dangerously-skip-permissions`): with no stored acceptance the Bypass Permissions warning shows;
+  with `skipDangerousModePermissionPrompt: true` in `--settings` it never shows. Its binary takes
+  `VISUAL`, then `EDITOR`, falling back to `code`/`vi`/`nano` only when both are unset, and reads
+  `enabledPlugins` only from the setting sources in force.
+- Independent review in fresh sessions:
+  - Round 1: APPROVE with minors, all in this change's own code and fixed: Claude Code runs its
+    shell prefix through a login bash or zsh, which reads startup files from the writable home
+    before the refusing script, so those files are now empty read-only binds (test first); three
+    items SPEC-427 widened for the removed message path are private again; stale comments about
+    keys and the box restated; this Evidence.
+  - Round 2 reviews this head.
+- Not run: `yulius security-scan` reports "Security scan disabled": Vidoc is turned off for this
+  project in Yulius, so nothing was scanned; this is not a pass.
+- Not tested against a live model or a contained server: a real conversation typed into the
+  Global Superagent; the bubblewrap launch itself (this sandbox cannot create namespaces), so that
+  bubblewrap creates the missing startup files as bind targets inside the writable root is relied
+  on, not observed; the running instance's Claude Code version behaving as 2.1.311 did.
