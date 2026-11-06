@@ -312,12 +312,14 @@ p { margin: 0; }
 .tabrow-tabs.reordering .tab { transition: transform var(--duration-fast) var(--ease); }
 .tabrow-tabs .tab.dragging { z-index: var(--z-raised); transition: none; color: var(--text); background: var(--surface-2); box-shadow: var(--shadow); cursor: grabbing; }
 .tabrow-tabs .tab.settling { z-index: var(--z-raised); transition: transform var(--duration-fast) var(--ease); }
-/* The grip says a sandbox tab drags (SPEC-167, as the Notes tabs' in SPEC-136): faint at rest, the
-   tab's colour when it is hovered or current, 8 px from the edge and 4 px from the name; hidden
-   without a mouse or pen. */
-.tab-grip { display: inline-flex; flex: none; margin: 0 -2px 0 -4px; color: var(--text-faint); cursor: grab; }
-.tab:hover .tab-grip, .tab.active .tab-grip, .tab.dragging .tab-grip { color: currentColor; }
-.tabrow-tabs.reordering .tab-grip { cursor: grabbing; }
+/* The grip says a tab drags (SPEC-136, SPEC-167, SPEC-434: every strip that drags): faint at rest,
+   the tab's colour when it is hovered, chosen or dragged; 8 px from the tab's edge and 4 px from
+   its name. Only a mouse or pen drags (touch scrolls the strip), so a device with neither does not
+   see it, whatever its primary pointer. */
+.tab-grip { display: inline-flex; flex: none; color: var(--text-faint); cursor: grab; }
+.tab .tab-grip { margin: 0 -2px 0 -4px; }
+:is(.tab, .term-tab, .ed-tab, .bp-tab):is(:hover, .active, .dragging) .tab-grip { color: currentColor; }
+.reordering .tab-grip { cursor: grabbing; }
 @media not (any-pointer: fine) {
   .tab-grip { display: none; }
 }
@@ -2384,21 +2386,16 @@ a.dl-task:hover { text-decoration: underline; }
 /* Notes (SPEC-041): a notepad per sandbox and one for the team, saved while typing. */
 .notes-tabs .term-tab { padding: 0 12px; border-top: 0; border-bottom: 0; border-left: 0; background: none; font: inherit; }
 .notes-tabs .term-tab.active { background: var(--term-bg); }
-/* Tabs in any order (SPEC-112): the dragged tab rides above, the others slide aside, it settles. */
-.notes-tabs.reordering, .ed-tabs.reordering { cursor: grabbing; user-select: none; }
-.notes-tabs.reordering .term-tab, .ed-tabs.reordering .ed-tab { transition: transform var(--duration-fast) var(--ease); }
-.notes-tabs .term-tab.dragging, .ed-tabs .ed-tab.dragging { position: relative; z-index: var(--z-raised); transition: none; background: var(--surface-2); box-shadow: var(--shadow); cursor: grabbing; }
-.notes-tabs .term-tab.settling, .ed-tabs .ed-tab.settling { position: relative; z-index: var(--z-raised); transition: transform var(--duration-fast) var(--ease); }
-/* The grip says a tab drags (SPEC-136): faint at rest, the tab's colour when it is hovered, chosen
-   or dragged. Only a mouse or pen drags (touch scrolls the strip), so a device with neither does not
-   see it, whatever its primary pointer. */
-.notes-tabs .term-tab { padding-left: 8px; gap: 4px; }
-.notes-tab-grip { display: inline-flex; color: var(--text-faint); cursor: grab; }
-.notes-tabs .term-tab:hover .notes-tab-grip, .notes-tabs .term-tab.active .notes-tab-grip, .notes-tabs .term-tab.dragging .notes-tab-grip { color: currentColor; }
-.notes-tabs.reordering .notes-tab-grip { cursor: grabbing; }
+/* Tabs in any order (SPEC-112, SPEC-434): the dragged tab rides above, the others slide aside, it
+   settles. The grip (.tab-grip) is styled with the top bar's. */
+:is(.term-tabs, .ed-tabs, .bp-tablist).reordering { cursor: grabbing; user-select: none; }
+:is(.term-tabs, .ed-tabs, .bp-tablist).reordering :is(.term-tab, .ed-tab, .bp-tab) { transition: transform var(--duration-fast) var(--ease); }
+:is(.term-tab, .ed-tab, .bp-tab).dragging { position: relative; z-index: var(--z-raised); transition: none; background: var(--surface-2); box-shadow: var(--shadow); cursor: grabbing; }
+:is(.term-tab, .ed-tab, .bp-tab).settling { position: relative; z-index: var(--z-raised); transition: transform var(--duration-fast) var(--ease); }
+/* A tab with a grip: 8 px before it and 4 px to the name; after the strips' own paddings. */
+:is(.term-tab, .ed-tab, .bp-tab):has(> .tab-grip) { padding-left: 8px; gap: 4px; }
 @media not (any-pointer: fine) {
-  .notes-tab-grip { display: none; }
-  .notes-tabs .term-tab { padding-left: 12px; }
+  :is(.term-tab, .ed-tab, .bp-tab):has(> .tab-grip) { padding-left: 12px; }
 }
 .notes-panes { flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--term-bg); }
 .notes-pane { flex: 1; min-height: 0; display: flex; flex-direction: column; }

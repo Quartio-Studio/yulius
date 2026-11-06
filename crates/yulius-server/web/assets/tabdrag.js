@@ -171,3 +171,14 @@ export function movedBy(order, key, step) {
   next.splice(to, 0, key);
   return next;
 }
+
+/**
+ * `items` in the order a person gave their tabs (`order`, keys): the ones it names in that order,
+ * then the others (opened since) in their own order, as the sandbox tabs keep theirs.
+ */
+export function inOrder(items, order, keyOf) {
+  const rank = new Map((Array.isArray(order) ? order : []).map((key, i) => [key, i]));
+  const at = new Map(items.map((item, i) => [item, i]));
+  const place = (item) => (rank.has(keyOf(item)) ? rank.get(keyOf(item)) : Infinity);
+  return [...items].sort((a, b) => place(a) - place(b) || at.get(a) - at.get(b));
+}

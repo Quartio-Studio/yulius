@@ -7,19 +7,29 @@
 
 import { enc } from './api.js';
 import { BRAND } from './brand.js';
-import { h, icon, setChildren, emptyState, loadError, skeleton, toast, errorToast } from './dom.js';
+import { DRAG_TAB_HINT, h, icon, openMenu, setChildren, emptyState, loadError, skeleton, toast, errorToast } from './dom.js';
 import { createTerminalView } from './terminal.js';
 import { allows } from './status.js';
 import { href } from './router.js';
 import { attachTerminalDrop, shellAttachments } from './filedrop.js';
 import { isPhone } from './theme.js';
 import { readJson, writeJson } from './store.js';
+import { createTabDrag, movedBy } from './tabdrag.js';
 
 const TAB_KEY = 'yulius.superagentTab';
+/** The tabs' order as this browser keeps it (SPEC-434 MTB-001), in every sandbox and page. */
+const ORDER_KEY = 'yulius.superagentOrder';
 /** SPEC-428 SAT-001: the panel's tabs, local first. */
 const TABS = [['sandbox', 'This sandbox'], ['global', 'All sandboxes']];
 /** The tab the person picked last, as this browser stored it (SAT-002): This sandbox until one is picked. */
 export const chosenSuperagentTab = () => (readJson(TAB_KEY, 'sandbox') === 'global' ? 'global' : 'sandbox');
+/** The tabs' keys in the order stored, or local first when what is stored is not the two tabs. */
+function tabOrder() {
+  const stored = readJson(ORDER_KEY, null);
+  const keys = TABS.map(([k]) => k);
+  const valid = Array.isArray(stored) && stored.length === keys.length && keys.every((k) => stored.includes(k));
+  return valid ? [...stored] : keys;
+}
 let panelSeq = 0;
 
 /**
@@ -53,21 +63,44 @@ export function createSuperagentPanel(ctx, sandbox, { global, tab, onTab }) {
   let shown = false;
   // Outside a sandbox only All sandboxes is there (SAT-003).
   const enabled = (k) => Boolean(sandbox) || k === 'global';
-  const tabs = TABS.map(([k, label]) => h('button', {
-    type: 'button', class: 'term-tab', role: 'tab', id: id('tab', k), 'aria-controls': id('pane', k), dataset: { key: k },
-    'aria-disabled': enabled(k) ? null : 'true', title: enabled(k) ? null : 'Open a sandbox first',
-    onClick: () => { if (enabled(k)) select(k, { focusTab: true, picked: true }); },
-  }, label));
-  setChildren(tablist, tabs);
+  // The tabs move as the sandbox and Notes tabs do (SPEC-434 MTB-001): by drag, Alt+←/→ and their
+  // menu; a disabled tab moves too.
+  const drag = createTabDrag(tablist, { keyOf: (tab) => tab.dataset.key, commit: (order) => arrange(order) });
+  const tabs = TABS.map(([k, label]) => {
+    const tab = h('button', {
+      type: 'button', class: 'term-tab', role: 'tab', id: id('tab', k), 'aria-controls': id('pane', k), dataset: { key: k },
+      'aria-disabled': enabled(k) ? null : 'true', title: enabled(k) ? DRAG_TAB_HINT : 'Open a sandbox first',
+      'aria-keyshortcuts': 'Alt+ArrowLeft Alt+ArrowRight',
+      onClick: () => { if (drag.clickConsumed()) return; if (enabled(k)) select(k, { focusTab: true, picked: true }); },
+    }, h('span', { class: 'tab-grip', 'aria-hidden': 'true' }, icon('grip', { size: 12 })), label);
+    tab.addEventListener('pointerdown', (event) => drag.press(event, tab));
+    // Moving a tab without dragging (WCAG 2.5.7), as the Notes and sandbox tabs do.
+    tab.addEventListener('contextmenu', (event) => {
+      event.preventDefault();
+      const order = tabOrder();
+      openMenu({ x: event.clientX, y: event.clientY }, [
+        { label: 'Move left', icon: 'left', disabled: order.indexOf(k) === 0, onSelect: () => move(k, -1) },
+        { label: 'Move right', icon: 'right', disabled: order.indexOf(k) === order.length - 1, onSelect: () => move(k, 1) },
+      ]);
+    });
+    return tab;
+  });
   tabs[0].append(dot, asking);
+  arrange();
   if (sandbox) {
     own = createAgentView(ctx, sandbox, { openGlobal: () => select('global', { picked: true }), onRequests: mark });
     panes.sandbox.append(own.el);
   }
   tablist.addEventListener('keydown', (event) => {
-    // With a modifier the keys are someone else's (Notes reorders its tabs with Alt+←/→).
+    const focused = event.target.closest('[role="tab"]');
+    if (event.altKey && !event.ctrlKey && !event.metaKey && focused && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {
+      event.preventDefault();
+      move(focused.dataset.key, event.key === 'ArrowLeft' ? -1 : 1);
+      return;
+    }
+    // With another modifier the keys are someone else's.
     if (event.altKey || event.ctrlKey || event.metaKey) return;
-    const keys = TABS.map(([k]) => k).filter(enabled);
+    const keys = tabOrder().filter(enabled);
     const at = keys.indexOf(key);
     const next = { ArrowLeft: at - 1, ArrowRight: at + 1, Home: 0, End: keys.length - 1 }[event.key];
     if (next === undefined) return;
@@ -75,7 +108,29 @@ export function createSuperagentPanel(ctx, sandbox, { global, tab, onTab }) {
     select(keys[(next + keys.length) % keys.length], { focusTab: true, picked: true });
   });
 
+  /**
+   * Puts the tabs in `order` (keys), stored for every panel, else in the order stored (another
+   * panel may have moved them); the keyboard stays on the tab it was on. Answers the tabs as drawn.
+   */
+  function arrange(order = null) {
+    if (order) writeJson(ORDER_KEY, order);
+    const drawn = tabOrder().map((k) => tabs.find((tab) => tab.dataset.key === k));
+    if (drawn.some((tab, i) => tablist.children[i] !== tab)) {
+      const focused = tablist.contains(document.activeElement) ? document.activeElement : null;
+      setChildren(tablist, drawn);
+      if (focused) focused.focus();
+    }
+    return drawn;
+  }
+
+  /** Moves tab `k` one place left (-1) or right (1). */
+  function move(k, step) {
+    const order = movedBy(tabOrder(), k, step);
+    if (order) arrange(order);
+  }
+
   function render(focusTab) {
+    arrange();
     for (const tab of tabs) {
       const selected = tab.dataset.key === key;
       tab.classList.toggle('active', selected);
