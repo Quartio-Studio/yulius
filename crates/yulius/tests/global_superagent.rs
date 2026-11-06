@@ -796,6 +796,11 @@ async fn the_person_talks_to_the_global_superagent_by_message_only() -> TestResu
         assert_eq!(esc.status, StatusCode::NO_CONTENT, "{:?}", esc.body);
     }
     read_until(&mut socket, &mut screen, "^[").await?;
+    // Past the gap it is sent again.
+    f.h.clock.0.fetch_add(2_001, Ordering::SeqCst);
+    let esc = interrupt().await?;
+    assert_eq!(esc.status, StatusCode::NO_CONTENT, "{:?}", esc.body);
+    read_until(&mut socket, &mut screen, "^[^[").await?;
 
     // A key is refused; a message is typed.
     socket
@@ -806,12 +811,8 @@ async fn the_person_talks_to_the_global_superagent_by_message_only() -> TestResu
     let sent = say(&f, &f.alice, "echo said-$((2+3)) to ops@example.com").await?;
     assert_eq!(sent.status, StatusCode::NO_CONTENT, "{:?}", sent.body);
     read_until(&mut socket, &mut screen, "ops\u{ff20}example.com^[[201~").await?;
-    // One Esc, then the paste's two: the second interrupt was dropped.
-    assert_eq!(screen.matches("^[").count(), 3, "{screen:?}");
-    assert!(
-        screen.contains("\u{1b}[200~") || screen.contains("[200~"),
-        "{screen:?}"
-    );
+    // Two Esc (the second interrupt within the gap was dropped), then the paste's two.
+    assert_eq!(screen.matches("^[").count(), 4, "{screen:?}");
     assert!(!screen.contains("keyed-"), "a key reached it: {screen:?}");
 
     for refused in [
@@ -822,7 +823,7 @@ async fn the_person_talks_to_the_global_superagent_by_message_only() -> TestResu
         "/clear now",
         "\u{feff}/plugin install x@y",
         "exit",
-        "'/etc/hostname'",
+        "'/usr/share/pixmaps/x.png'",
     ] {
         let resp = say(&f, &f.alice, refused).await?;
         assert_eq!(
@@ -844,6 +845,43 @@ async fn the_person_talks_to_the_global_superagent_by_message_only() -> TestResu
     // Nobody else reaches it.
     let carols = say(&f, &f.carol, "hello").await?;
     assert_eq!(carols.status, StatusCode::NOT_FOUND);
+    f.h.app.end_all_shells().await;
+    Ok(())
+}
+
+/// Review round 4: a message whose request goes away between its paste and its Enter is still
+/// submitted, so no half-typed text waits for the next message to join it.
+#[tokio::test]
+async fn a_message_whose_request_goes_away_is_still_submitted() -> TestResult {
+    use yulius_app::ports::store::UserStore;
+
+    let f = fixture().await?;
+    let served = serve(f.h.router.clone()).await?;
+    let id = global_id(&f, &f.alice).await?;
+    let mut socket = attach(served.addr, &id, &f.alice).await?;
+    let mut screen = String::new();
+    read_until(&mut socket, &mut screen, "ready").await?;
+    let user =
+        f.h.store
+            .user(&UserId::parse("u-alice")?)
+            .await?
+            .ok_or("alice")?;
+    let ctx = yulius_app::auth::AuthContext {
+        user,
+        csrf_token: None,
+        session_hash: None,
+        token: None,
+    };
+    // Dropped while it waits between the paste and the Enter.
+    let dropped = tokio::time::timeout(
+        std::time::Duration::from_millis(100),
+        f.h.app
+            .global_superagent_message(&ctx, "echo detached-$((4+4))"),
+    )
+    .await;
+    assert!(dropped.is_err(), "it was still waiting: {dropped:?}");
+    // The Enter arrives: the fake's shell runs the line it got and says what it could not run.
+    read_until(&mut socket, &mut screen, "not found").await?;
     f.h.app.end_all_shells().await;
     Ok(())
 }

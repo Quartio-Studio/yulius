@@ -94,12 +94,15 @@ const INTERRUPT_GAP_MS: i64 = 2_000;
 /// `Invalid` for an empty or oversized message, a `!` line, another command, hidden characters,
 /// an exit word or a lone path.
 pub fn global_message(text: &str) -> AppResult<String> {
+    // Only what comes before the first visible character decides how Claude Code reads it; an
+    // emoji's variation selector or joiner later on is text (review round 4).
     if let Some(c) = text
         .chars()
+        .take_while(|c| c.is_whitespace() || c.is_control() || crate::cross_sandbox::unseen(*c))
         .find(|c| crate::cross_sandbox::unseen(*c) && !c.is_control())
     {
         return Err(AppError::Invalid(format!(
-            "the message holds a character nobody sees (U+{:04X}); remove it",
+            "the message starts with a character nobody sees (U+{:04X}); remove it",
             u32::from(c)
         )));
     }
@@ -109,15 +112,17 @@ pub fn global_message(text: &str) -> AppResult<String> {
             "that word would end the Global Superagent's session; close its panel instead".into(),
         ));
     }
-    let unquoted = text.trim_matches(|c| matches!(c, '\'' | '"'));
-    if !GLOBAL_COMMANDS.contains(&text.as_str())
-        && !unquoted.contains(char::is_whitespace)
-        && (unquoted.starts_with('/') || unquoted.starts_with('~') || unquoted.starts_with("./"))
-    {
+    if attaches_an_image(&text) {
         return Err(AppError::Invalid(
-            "a message that is only a path would attach that file of the server; say what you want"
+            "an image path on its own would attach that file of the server; describe it instead"
                 .into(),
         ));
+    }
+    // Anywhere in a message, it starts the /ultraplan command by itself (2.1.311).
+    if text.to_lowercase().contains(KEYWORD_COMMAND) {
+        return Err(AppError::Invalid(format!(
+            "\"{KEYWORD_COMMAND}\" starts a command of its own; leave it out"
+        )));
     }
     if text.is_empty() {
         return Err(AppError::Invalid("the message is empty".into()));
@@ -138,6 +143,83 @@ pub fn global_message(text: &str) -> AppResult<String> {
         )));
     }
     Ok(text.replace('@', "\u{ff20}"))
+}
+
+/// A word that dispatches a command wherever it is in a message (Claude Code 2.1.311).
+const KEYWORD_COMMAND: &str = "ultraplan";
+
+/// Image files Claude Code attaches when a pasted part names one.
+const IMAGE_EXTENSIONS: &[&str] = &[".png", ".jpg", ".jpeg", ".gif", ".webp"];
+
+/// Whether Claude Code would attach an image file for `text`, as 2.1.311 reads a paste: each
+/// line split before every space that a path follows (`/`, or a drive like `C:\`, optionally
+/// quoted), each part unquoted once and unescaped; a part that is an absolute path, or a name
+/// without spaces (it would look for it on the clipboard), ending in an image extension.
+fn attaches_an_image(text: &str) -> bool {
+    text.lines().any(|line| {
+        path_parts(line).into_iter().any(|part| {
+            let part = unescape(unquote(part.trim()));
+            let lower = part.to_lowercase();
+            IMAGE_EXTENSIONS.iter().any(|ext| lower.ends_with(ext))
+                && (part.starts_with('/')
+                    || drive_path(&part)
+                    || !part.contains(char::is_whitespace))
+        })
+    })
+}
+
+/// `line` split before each space a path follows.
+fn path_parts(line: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut from = 0;
+    for (at, c) in line.char_indices() {
+        if c != ' ' {
+            continue;
+        }
+        let rest = line.get(at + 1..).unwrap_or_default();
+        let rest = rest.strip_prefix(['"', '\'']).unwrap_or(rest);
+        if rest.starts_with('/') || drive_path(rest) {
+            parts.push(line.get(from..at).unwrap_or_default());
+            from = at + 1;
+        }
+    }
+    parts.push(line.get(from..).unwrap_or_default());
+    parts
+}
+
+/// Starts like `C:\`.
+fn drive_path(text: &str) -> bool {
+    let mut chars = text.chars();
+    matches!(
+        (chars.next(), chars.next(), chars.next()),
+        (Some(letter), Some(':'), Some('\\')) if letter.is_ascii_alphabetic()
+    )
+}
+
+/// `text` without one pair of surrounding quotes.
+fn unquote(text: &str) -> &str {
+    for quote in ['"', '\''] {
+        if let Some(inner) = text.strip_prefix(quote).and_then(|t| t.strip_suffix(quote)) {
+            return inner;
+        }
+    }
+    text
+}
+
+/// `text` with every backslash escape resolved (`\ ` is a space).
+fn unescape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            if let Some(next) = chars.next() {
+                out.push(next);
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// The Global Superagent's MCP instructions (GSA-004).
@@ -414,7 +496,8 @@ impl App {
         let last = runtime
             .interrupted_ms
             .load(std::sync::atomic::Ordering::SeqCst);
-        if last > 0 && now.saturating_sub(last) < INTERRUPT_GAP_MS {
+        // A clock that stepped back counts as the gap passed.
+        if last > 0 && (0..INTERRUPT_GAP_MS).contains(&now.saturating_sub(last)) {
             return Ok(());
         }
         match writer.as_mut() {
@@ -571,26 +654,37 @@ mod tests {
             "\u{feff}/plugin install x",
             "\u{200b}/plugin",
             "\u{feff}!ls",
-            "a\u{202e}b",
+            "\u{202e}hi",
             "\u{e0041}hi",
         ] {
             assert!(global_message(hidden).is_err(), "{hidden:?}");
         }
-        // Its exit words, and a message that is only a path (it would attach that file).
+        // Its exit words, its keyword command, and image paths it would attach (review round 4).
         for refused in [
             "exit",
             "quit",
             ":q",
             ":wq!",
             "'/usr/share/x.png'",
-            "\"~/a.jpg\"",
-            "./b.gif",
-            "/etc/hosts",
+            "look at this\n/usr/share/pixmaps/x.png",
+            "/a/x.png /b/y.png",
+            "see /srv/my\\ pic.PNG",
+            "shot.jpeg",
+            "\"C:\\a.webp\"",
+            "plan it with UltraPlan",
         ] {
             assert!(global_message(refused).is_err(), "{refused:?}");
         }
-        assert!(global_message("exit the loop in #5").is_ok());
-        assert!(global_message("compare '/etc/hosts' in both repos").is_ok());
+        for allowed in [
+            "exit the loop in #5",
+            "compare '/etc/hosts' in both repos",
+            "~/notes.md and ./b.txt",
+            "looks good \u{2764}\u{fe0f}",
+            "the family \u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}",
+            "the screenshot in the PR is fine",
+        ] {
+            assert!(global_message(allowed).is_ok(), "{allowed:?}");
+        }
     }
 
     /// Review round 2: it cannot merge what it opened.
