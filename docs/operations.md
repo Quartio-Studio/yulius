@@ -1480,6 +1480,13 @@ rotate every team and agent secret at its source.
 
 ### Updates from main (the update helper)
 
+**Restart without updating** (SPEC-432): **Settings → Instance → Restart…** pauses every task as
+step 2 below does, asks the helper to `restart` (stop and start `yulius.service`, then wait until
+`/internal/version` reports the same commit; nothing is backed up, installed or rolled back), and
+resumes the tasks one by one. It needs the update helper; prefer it to `systemctl restart`, which
+does not pause tasks. A task session whose Yulius MCP was dropped by Claude Code is reconnected by
+Yulius after 3 silent minutes (it types `/mcp reconnect yulius` into the idle session).
+
 Yulius updates itself from `main` of **Quartio-Studio/yulius** (SPEC-001 OPS-006..OPS-009,
 SPEC-002 ADR-18). It knows the commit it was built from (`yulius version`, and
 `GET /internal/version` on the internal listener) and checks `main` every hour and whenever a

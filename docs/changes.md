@@ -6,6 +6,15 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-06
 
+- A task session whose Yulius MCP server Claude Code dropped is reconnected, and a superadmin can
+  restart Yulius (SPEC-432, ADR-0276, task #414). A session lost `delivery_merge` and `ci_status`
+  mid-goal and waited for a person to run `/mcp`. Now the session's `yulius mcp` bridge pings Yulius
+  every minute; an idle task silent for 3 minutes gets `/mcp reconnect yulius` typed, then "Yulius's
+  tools are reconnected; continue" if its turn ended while cut off. Mid-turn, `yulius tool <name>
+  '<json>'` calls any Yulius tool from the shell. **Settings → Instance → Restart…** pauses every
+  task, restarts the server with the build it runs through the update helper's new `restart`
+  action, and resumes the tasks, as an update does without installing.
+
 - An agent that answered and needs nothing is no longer "Needs you" (SPEC-429, ADR-0273, task #411,
   fixes #1090). Every turn that ended without an achieved `/goal` read "Your turn" under Needs you.
   A follow-up question after a met goal also drops it, so "so all good here and you don't need

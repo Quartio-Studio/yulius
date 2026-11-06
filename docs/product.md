@@ -392,7 +392,10 @@ watching, steering and unblocking.
   Once the new version is built, every task is frozen at once, mid-turn, and thawed after the
   restart; the agents don't notice (SPEC-160). A deploy (CD or environment run) running when the
   new version is built finishes first, and new deploys are refused until the update installed, so an
-  update never cuts a deploy (SPEC-342).
+  update never cuts a deploy (SPEC-342). **Restart…** on the Instance page restarts the server
+  the same way without installing anything (SPEC-432). A task session whose Yulius tools Claude
+  Code dropped is reconnected by Yulius, and an agent can call any Yulius tool from its shell with
+  `yulius tool` (SPEC-432).
 
 ## Principles
 
