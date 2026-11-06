@@ -2769,7 +2769,7 @@ function mockAttachmentName(raw) {
   out = out.replace(/^[.-]+/, '').replace(/-+$/, '');
   return out && !/^\.+$/.test(out) ? out : 'attachment';
 }
-function storeAttachment(db, sid, folder, query, body) {
+function storeAttachment(db, sid, folder, query, body, dir = `${MOCK_UPLOADS}/${sid}/attachments/${folder}`) {
   if (!body.blob) fail(422, 'invalid', 'the request body is the file');
   uploadTooLarge(db, body.size);
   db.attachments = db.attachments || new Map();
@@ -2781,7 +2781,7 @@ function storeAttachment(db, sid, folder, query, body) {
   for (let n = 2; names.has(name); n += 1) name = `${stem}-${n}${ext}`;
   names.add(name);
   db.attachments.set(folder, names);
-  return json(201, { path: `${MOCK_UPLOADS}/${sid}/attachments/${folder}/${name}`, name, size: body.size, sha256: mockSha(body.text || ''), replaced: false });
+  return json(201, { path: `${dir}/${name}`, name, size: body.size, sha256: mockSha(body.text || ''), replaced: false });
 }
 route('POST', `/api/tasks/${ID}/attachments`, async ({ db, p, query, body }) => {
   const task = taskOf(db, p[0]);
@@ -2803,6 +2803,14 @@ route('POST', `/api/sandboxes/${ID}/shells/${ID}/attachments`, ({ db, p, query, 
   const shell = db.shells.get(p[1]);
   if (!shell || shell.sandbox_id !== p[0]) fail(404, 'not_found', 'not found');
   return storeAttachment(db, p[0], `shells/${shell.id}`, query, body);
+});
+// SPEC-433: an image pasted into the running Global Superagent, kept in its own folder.
+route('POST', '/api/superagent/attachments', ({ db, query, body }) => {
+  // How many reached the server: the page sends images only (review round 1).
+  db.globalUploads = (db.globalUploads || 0) + 1;
+  if (![...db.shells.values()].some((s) => s.global)) fail(404, 'not_found', 'not found');
+  if (!/\.(png|jpe?g|gif|webp)$/i.test(mockAttachmentName(query.get('name')))) fail(422, 'invalid', 'the Global Superagent takes images only (PNG, JPEG, GIF or WebP): it has no file tools to open other files');
+  return storeAttachment(db, null, 'superagent', query, body, '/srv/yulius/users/you/superagent/attachments');
 });
 route('DELETE', `/api/sandboxes/${ID}/files`, ({ db, p, query }) => {
   need(sandboxOf(db, p[0]), 'write');
