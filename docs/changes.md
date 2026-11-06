@@ -4,6 +4,14 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-06
+
+- The two Superagents are tabs of one Superagent panel (SPEC-428, task #410, ADR-0272): **This
+  sandbox** and **All sandboxes** (the Global Superagent), as the Notes tabs. The Global
+  Superagent is now one click away in every sandbox, stays in front across sandboxes once picked
+  (one session, its typed text kept, no sandbox Superagent started), and its message box suggests
+  "check what my sandboxes need from each other and solve it".
+
 ## 2026-11-05
 
 - Two Superagents: every person now also has a Global Superagent (SPEC-427, task #409,
