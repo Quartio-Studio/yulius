@@ -513,14 +513,23 @@ fn plan_claude(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
         redaction_hook(&request.yulius_exe)?,
     );
     // A Bash command that waits on or kills itself (`pgrep -f`/`pkill -f` matching its own
-    // `bash -c` line) is refused before it runs (complaint 1, F 2026-10-12).
+    // `bash -c` line) is refused before it runs (complaint 1, F 2026-10-12); an edit of the
+    // task's code waits for its spec's Plan, decided by Yulius (SPEC-426 EDG-001).
+    let pre_tool_use = hook_command(request, "claude", "PreToolUse")?;
     hooks.insert(
         "PreToolUse".to_owned(),
-        json!([{ "matcher": "Bash", "hooks": [{
-            "type": "command",
-            "command": hook_command(request, "claude", "PreToolUse")?,
-            "timeout": CLAUDE_TOOL_HOOK_TIMEOUT_SECONDS
-        }] }]),
+        json!([
+            { "matcher": "Bash", "hooks": [{
+                "type": "command",
+                "command": pre_tool_use,
+                "timeout": CLAUDE_TOOL_HOOK_TIMEOUT_SECONDS
+            }] },
+            { "matcher": crate::guard_client::EDIT_TOOLS.map(|(tool, _)| tool).join("|"), "hooks": [{
+                "type": "command",
+                "command": pre_tool_use,
+                "timeout": CLAUDE_TOOL_HOOK_TIMEOUT_SECONDS
+            }] }
+        ]),
     );
     let settings = json!({
         "hooks": hooks,

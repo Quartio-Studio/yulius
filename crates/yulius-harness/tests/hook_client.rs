@@ -59,6 +59,33 @@ fn serve_once(response: Vec<u8>) -> io::Result<(String, JoinHandle<io::Result<Re
     Ok((url, handle))
 }
 
+/// [`serve_once`] that stops waiting for the connection after `within` (an error, not a hang).
+fn serve_once_within(
+    response: Vec<u8>,
+    within: Duration,
+) -> io::Result<(String, JoinHandle<io::Result<Request>>)> {
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    listener.set_nonblocking(true)?;
+    let url = format!("http://127.0.0.1:{}", listener.local_addr()?.port());
+    let handle = thread::spawn(move || {
+        let deadline = Instant::now() + within;
+        let mut stream = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock && Instant::now() < deadline => {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(e) => return Err(e),
+            }
+        };
+        stream.set_nonblocking(false)?;
+        let request = read_request(&mut stream)?;
+        stream.write_all(&response)?;
+        Ok(request)
+    });
+    Ok((url, handle))
+}
+
 fn env_with(url: String, token: Option<&'static str>) -> impl Fn(&str) -> Option<String> {
     move |key| match key {
         "YULIUS_URL" => Some(url.clone()),
@@ -520,5 +547,144 @@ fn an_unheld_hook_does_not_retry() -> TestResult {
     );
     assert!(output.is_empty());
     assert!(started.elapsed() < Duration::from_secs(3));
+    Ok(())
+}
+
+/// SPEC-426 EDG-001: an edit tool's `PreToolUse` goes to Yulius (its edit gate) and its answer is
+/// printed; a Bash command is still checked in the sandbox, without a connection.
+#[test]
+fn pre_tool_use_sends_edits_to_yulius_and_checks_bash_locally() -> TestResult {
+    let body = br#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"write the Plan"}}"#;
+    let mut response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+        body.len()
+    )
+    .into_bytes();
+    response.extend_from_slice(body);
+    let (url, server) = serve_once(response)?;
+    let payload = br#"{"hook_event_name":"PreToolUse","tool_name":"Edit","cwd":"/w","session_id":"s","tool_input":{"file_path":"/w/api.rs","old_string":"secret text","new_string":"more"}}"#;
+    let mut output = Vec::new();
+    let code = run_hook(
+        "claude",
+        "PreToolUse",
+        &mut &payload[..],
+        &mut output,
+        &env_with(url, Some("task-token-SYNTHETIC")),
+    );
+    assert_eq!(code, 0);
+    assert_eq!(output, body);
+    let request = join(server)?;
+    assert_eq!(
+        request.line.trim_end(),
+        "POST /hooks/claude/PreToolUse HTTP/1.1"
+    );
+    // Only what the edit gate reads leaves the sandbox: never the file's content.
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&request.body)?,
+        serde_json::json!({"hook_event_name": "PreToolUse", "tool_name": "Edit", "cwd": "/w",
+                           "tool_input": {"file_path": "/w/api.rs"}})
+    );
+
+    let (url, listener) = untouched_listener()?;
+    let env = env_with(url, Some("task-token-SYNTHETIC"));
+    let mut output = Vec::new();
+    let bash = br#"{"tool_name":"Bash","tool_input":{"command":"pkill -f cargo-nextest"}}"#;
+    run_hook("claude", "PreToolUse", &mut &bash[..], &mut output, &env);
+    assert!(
+        String::from_utf8_lossy(&output).contains("\"permissionDecision\":\"deny\""),
+        "a self-matching pkill is denied locally"
+    );
+    let mut output = Vec::new();
+    let read = br#"{"tool_name":"Read","tool_input":{"file_path":"/w/api.rs"}}"#;
+    run_hook("claude", "PreToolUse", &mut &read[..], &mut output, &env);
+    assert!(output.is_empty(), "other tools pass without a word");
+    assert_no_connection(&listener);
+    Ok(())
+}
+
+/// SPEC-426 EDG-001 (review round 1): an edit's `PreToolUse` fails open like every hook (no
+/// server, a 500) and is never held: a `202` prints nothing and is not asked again. A `Write`
+/// larger than the forwarding bound still reaches the gate, trimmed.
+#[test]
+fn an_edit_check_fails_open_and_is_never_held() -> TestResult {
+    let edit = br#"{"tool_name":"Write","tool_input":{"file_path":"/w/api.rs","content":"x"}}"#;
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let gone = format!("http://127.0.0.1:{}", listener.local_addr()?.port());
+    drop(listener);
+    let mut output = Vec::new();
+    let code = run_hook(
+        "claude",
+        "PreToolUse",
+        &mut &edit[..],
+        &mut output,
+        &env_with(gone, Some("t")),
+    );
+    assert_eq!((code, output.is_empty()), (0, true));
+
+    for response in [
+        b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n".to_vec(),
+        b"HTTP/1.1 202 Accepted\r\nRetry-After: 1\r\nContent-Length: 0\r\n\r\n".to_vec(),
+    ] {
+        let (url, server) = serve_once_within(response, Duration::from_secs(10))?;
+        let mut output = Vec::new();
+        let started = Instant::now();
+        let code = run_hook(
+            "claude",
+            "PreToolUse",
+            &mut &edit[..],
+            &mut output,
+            &env_with(url, Some("t")),
+        );
+        assert_eq!((code, output.is_empty()), (0, true));
+        assert!(
+            started.elapsed() < Duration::from_millis(900),
+            "not asked again"
+        );
+        join(server)?;
+    }
+
+    let content = "y".repeat(MAX_INPUT_BYTES + 10);
+    let big = serde_json::to_vec(&serde_json::json!({
+        "tool_name": "Write", "tool_input": {"file_path": "/w/api.rs", "content": content}
+    }))?;
+    let (url, server) = serve_once_within(
+        b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n".to_vec(),
+        Duration::from_secs(10),
+    )?;
+    let mut output = Vec::new();
+    run_hook(
+        "claude",
+        "PreToolUse",
+        &mut big.as_slice(),
+        &mut output,
+        &env_with(url, Some("t")),
+    );
+    let request = join(server).map_err(|e| format!("the large Write was not sent: {e}"))?;
+    assert!(
+        request.body.len() < 200,
+        "trimmed: {} bytes",
+        request.body.len()
+    );
+    let sent: serde_json::Value = serde_json::from_slice(&request.body)?;
+    assert_eq!(sent["tool_input"]["file_path"], "/w/api.rs");
+
+    // Non-string fields are left out, and an edit without a path is still asked about.
+    let (url, server) = serve_once_within(
+        b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n".to_vec(),
+        Duration::from_secs(10),
+    )?;
+    let odd = br#"{"tool_name":"Edit","cwd":7,"tool_input":{"file_path":["x"]}}"#;
+    run_hook(
+        "claude",
+        "PreToolUse",
+        &mut &odd[..],
+        &mut Vec::new(),
+        &env_with(url, Some("t")),
+    );
+    let request = join(server)?;
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&request.body)?,
+        serde_json::json!({"tool_name": "Edit"})
+    );
     Ok(())
 }

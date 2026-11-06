@@ -1789,6 +1789,13 @@ boundary and the client sends the same request again after `Retry-After` seconds
 up by the CLI (an interrupt, its own hook timeout) and ends: the task runs again. `401` means the
 run is unknown or finished.
 
+`PreToolUse` reaches the listener only for `Edit`, `MultiEdit`, `Write` and `NotebookEdit` (Bash
+is checked in the sandbox). The client sends a trimmed body, `{"hook_event_name", "tool_name",
+"cwd", "tool_input": {"file_path"|"notebook_path"}}` (never the file's content), and the answer is
+never held: `200` with `{"hookSpecificOutput": {"hookEventName": "PreToolUse",
+"permissionDecision": "deny", "permissionDecisionReason": "…"}}` while the task needs a spec and
+its spec has no Plan item and the file is code in its worktree, else no output (SPEC-426).
+
 `SessionEnd` (body `{"reason": "prompt_input_exit|clear|logout|resume|other", …}`) answers `200`
 with no output; it tells Yulius why the session ends before the process exits (above).
 

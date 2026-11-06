@@ -23,6 +23,9 @@ use yulius_contracts::hooks::SENT_AT_HEADER;
 
 /// Maximum hook payload read from stdin.
 pub const MAX_INPUT_BYTES: usize = 1024 * 1024;
+/// Maximum `PreToolUse` input read: a `Write` carries the whole file, of which only the path is
+/// sent on (SPEC-426 EDG-001).
+pub const MAX_TOOL_INPUT_BYTES: usize = 16 * 1024 * 1024;
 /// Maximum response body accepted.
 pub const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 /// Maximum response head (status line and headers).
@@ -52,6 +55,12 @@ impl HoldPolicy {
     /// Production bounds: [`HOLD_MAX`], at least 1 s between requests, 2 s after a failure.
     pub const DEFAULT: Self = Self {
         max: HOLD_MAX,
+        min_wait: Duration::from_secs(1),
+        reconnect: Duration::from_secs(2),
+    };
+    /// No hold: a `202` fails open at once (a hook Yulius never holds, the edit gate).
+    pub const NEVER: Self = Self {
+        max: Duration::ZERO,
         min_wait: Duration::from_secs(1),
         reconnect: Duration::from_secs(2),
     };
@@ -85,9 +94,31 @@ pub fn run_hook_with(
     if harness == "claude" && event == "PostToolUse" {
         return crate::scrub_client::post_tool_use(input, output, env);
     }
-    // Commands that can never work as meant are refused here too, before they run.
+    // Commands that can never work as meant are refused here, before they run; an edit of a
+    // file goes to Yulius's edit gate (SPEC-426 EDG-001).
     if harness == "claude" && event == "PreToolUse" {
-        return crate::guard_client::pre_tool_use(input, output);
+        let mut body = Vec::new();
+        if input
+            .take(MAX_TOOL_INPUT_BYTES as u64 + 1)
+            .read_to_end(&mut body)
+            .is_err()
+        {
+            return 0;
+        }
+        let Some(request) = crate::guard_client::edit_request(&body) else {
+            return crate::guard_client::pre_tool_use(&mut body.as_slice(), output);
+        };
+        if let Ok(answer) = forward(
+            harness,
+            event,
+            &mut request.as_slice(),
+            env,
+            HOOK_TIMEOUT,
+            HoldPolicy::NEVER,
+        ) {
+            let _ignored = output.write_all(&answer).and_then(|()| output.flush());
+        }
+        return 0;
     }
     if let Ok(body) = forward(harness, event, input, env, HOOK_TIMEOUT, hold) {
         let _ignored = output.write_all(&body).and_then(|()| output.flush());
