@@ -2,7 +2,8 @@
 // CKP-008): the user's own plain Claude Code session in this sandbox, in the right tool panel beside
 // the page, for quick work that should not become a task. One per user and sandbox, opened (or started, resuming its last conversation) by
 // POST /api/sandboxes/{sid}/cockpit; its terminal is the shell terminal protocol. There is no way
-// to delete it: /clear starts over inside it.
+// to delete it: /clear starts over inside it. The panel shows it and the person's Global
+// Superagent (SPEC-427) as two tabs, This sandbox and All sandboxes (SPEC-428).
 
 import { enc } from './api.js';
 import { BRAND } from './brand.js';
@@ -12,13 +13,112 @@ import { allows } from './status.js';
 import { href } from './router.js';
 import { attachTerminalDrop, shellAttachments } from './filedrop.js';
 import { isPhone } from './theme.js';
+import { readJson, writeJson } from './store.js';
+
+const TAB_KEY = 'yulius.superagentTab';
+/** SPEC-428 SAT-001: the panel's tabs, local first. */
+const TABS = [['sandbox', 'This sandbox'], ['global', 'All sandboxes']];
+/** The tab chosen last in a sandbox, the same in every sandbox (SAT-002): This sandbox until one is picked. */
+export const chosenSuperagentTab = () => (readJson(TAB_KEY, 'sandbox') === 'global' ? 'global' : 'sandbox');
+let panelSeq = 0;
+
+/**
+ * The Superagent panel of `sandbox` (null outside a sandbox): This sandbox and All sandboxes as tabs,
+ * as Notes shows its notepads (SPEC-428). `global()` is the page's one Global Superagent view
+ * (SAT-004): the panel showing its tab holds it, so its session is attached once and its box keeps
+ * what was typed from one sandbox to the next. A session starts when its tab first shows.
+ */
+export function createSuperagentPanel(ctx, sandbox, { global }) {
+  const seq = ++panelSeq;
+  const id = (part, key) => `superagent-${seq}-${part}-${key}`;
+  const tablist = h('div', { class: 'term-tabs superagent-tabs', role: 'tablist', 'aria-label': 'Superagents' });
+  const panes = {};
+  for (const [key] of TABS) panes[key] = h('div', { class: 'superagent-pane', id: id('pane', key), role: 'tabpanel', 'aria-labelledby': id('tab', key), hidden: true });
+  const el = h('div', { class: 'superagent' }, tablist, panes.sandbox, panes.global);
+  let own = null;
+  // This sandbox's own Superagent, made when its tab first shows; its note's All sandboxes selects that tab.
+  const viewOf = (key) => (key === 'global' ? global() : own || (own = mountOwn()));
+  function mountOwn() {
+    const view = createAgentView(ctx, sandbox, { openGlobal: () => select('global') });
+    panes.sandbox.append(view.el);
+    return view;
+  }
+  let key = null;
+  let shown = false;
+  // Outside a sandbox only All sandboxes is there (SAT-003).
+  const enabled = (k) => Boolean(sandbox) || k === 'global';
+  const tabs = TABS.map(([k, label]) => h('button', {
+      type: 'button', class: 'term-tab', role: 'tab', id: id('tab', k), 'aria-controls': id('pane', k), dataset: { key: k },
+      'aria-disabled': enabled(k) ? null : 'true', title: enabled(k) ? null : 'Open a sandbox first',
+      onClick: () => { if (enabled(k)) select(k, { focusTab: true }); },
+    }, label));
+  setChildren(tablist, tabs);
+  tablist.addEventListener('keydown', (event) => {
+    const keys = TABS.map(([k]) => k).filter(enabled);
+    const at = keys.indexOf(key);
+    const next = { ArrowLeft: at - 1, ArrowRight: at + 1, Home: 0, End: keys.length - 1 }[event.key];
+    if (next === undefined) return;
+    event.preventDefault();
+    select(keys[(next + keys.length) % keys.length], { focusTab: true });
+  });
+
+  function render(focusTab) {
+    for (const tab of tabs) {
+      const selected = tab.dataset.key === key;
+      tab.classList.toggle('active', selected);
+      tab.setAttribute('aria-selected', String(selected));
+      tab.tabIndex = selected ? 0 : -1;
+      if (selected && focusTab) tab.focus();
+    }
+  }
+
+  /**
+   * Shows tab `k`. A tab picked in a sandbox is remembered; `focusTab` keeps the keyboard on the strip
+   * (as Notes), `context` (a new page, not the person) leaves it where it is.
+   */
+  function select(k, { focusTab = false, context = false } = {}) {
+    const next = enabled(k) ? k : 'global';
+    if (sandbox) writeJson(TAB_KEY, next);
+    const before = key && viewOf(key);
+    const view = viewOf(next);
+    if (before && before !== view && shown && before.hide) before.hide();
+    key = next;
+    if (next === 'global' && view.el.parentNode !== panes.global) panes.global.append(view.el);
+    for (const [k2] of TABS) panes[k2].hidden = k2 !== next;
+    render(focusTab);
+    if (shown) view.show({ context: context || focusTab });
+  }
+
+  return {
+    el,
+    title: 'Superagent',
+    show(opts = {}) {
+      shown = true;
+      select(!sandbox ? 'global' : opts.tab || chosenSuperagentTab(), { context: Boolean(opts.context) });
+    },
+    hide() {
+      shown = false;
+      if (!key) return;
+      const view = viewOf(key);
+      // The Global view may already show in another sandbox's panel.
+      if (key === 'global' && !panes.global.contains(view.el)) return;
+      if (view.hide) view.hide();
+    },
+    destroy() {
+      if (own) own.destroy();
+      // The Global view outlives this panel: it is only taken out.
+      const shared = global();
+      if (panes.global.contains(shared.el)) shared.el.remove();
+    },
+  };
+}
 
 /**
  * The Superagent's panel view: its quick-work notice above the session. Starts on the first show.
  * Without a sandbox it is the person's Global Superagent (SPEC-427 GSA-006): one session that sees
  * every sandbox of theirs, opened by POST /api/superagent.
  */
-export function createAgentView(ctx, sandbox) {
+export function createAgentView(ctx, sandbox, { openGlobal } = {}) {
   const global = !sandbox;
   const write = global || allows(sandbox.access, 'write');
   const name = global ? 'Global Superagent' : 'Superagent';
@@ -27,7 +127,8 @@ export function createAgentView(ctx, sandbox) {
   // On phones the panel covers the page: it closes so the composer shows.
   const closeOnPhone = () => { if (isPhone() && ctx.closePanel) ctx.closePanel(); };
   const newTask = !global && write ? h('a', { href: href(`/s/${encodeURIComponent(sandbox.slug)}`), dataset: { route: `/s/${encodeURIComponent(sandbox.slug)}` }, onClick: closeOnPhone }, 'New task') : null;
-  const globalLink = h('a', { href: href('/superagent'), dataset: { route: '/superagent' }, onClick: closeOnPhone }, 'Global Superagent');
+  // SPEC-428 SAT-006: the other tab of the same panel.
+  const globalTab = h('button', { type: 'button', class: 'link-btn agent-note-tab', onClick: () => openGlobal && openGlobal() }, 'All sandboxes');
   // AGT-002: what the Superagent is for, and where bigger work goes.
   const notice = global
     ? h('div', { class: 'banner banner-info agent-note small', role: 'note', 'aria-label': 'About the Global Superagent' },
@@ -38,7 +139,7 @@ export function createAgentView(ctx, sandbox) {
       icon('info', { size: 16 }),
       h('span', { class: 'banner-text' },
         h('strong', null, 'For quick work'), ': setting up automations, asking a quick question. Anything more complex, such as writing code, belongs in a task, not here', newTask ? [': ', newTask, '.'] : '.',
-        ' Work across sandboxes: the ', globalLink, ', from All sandboxes.'));
+        ' Work across sandboxes: the Global Superagent, in ', globalTab, '.'));
   const body = h('div', { class: 'agent-term' });
   const requests = global ? null : createRequests(ctx, sandbox);
   const link = global ? null : createLink(ctx, sandbox, () => restart());
@@ -214,7 +315,7 @@ export function createAgentView(ctx, sandbox) {
  * /compact, /context and /cost; Interrupt sends Esc.
  */
 function createCompose(ctx) {
-  const input = h('textarea', { class: 'input agent-compose-input', rows: 2, 'aria-label': 'Message to the Global Superagent', placeholder: 'Ask about your sandboxes, or tell it what to keep in sync…' });
+  const input = h('textarea', { class: 'input agent-compose-input', rows: 2, 'aria-label': 'Message to the Global Superagent', placeholder: 'For example: check what my sandboxes need from each other and solve it' });
   const error = h('p', { class: 'agent-compose-error small', role: 'alert', hidden: true });
   let sending = false;
   async function send() {

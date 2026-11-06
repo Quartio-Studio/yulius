@@ -699,7 +699,8 @@ function createApp(root, transport) {
       navigate(`/s/${encodeURIComponent(sandbox.slug)}`, { replace: true });
     }
     if (route.name === 'composer' && route.panel && sandbox) {
-      shell.panels.open(route.panel, { persistRail: false });
+      // `/s/<slug>/superagent` asks for the sandbox's own Superagent tab (SPEC-428 SAT-005).
+      shell.panels.open(route.panel, { persistRail: false, tab: 'sandbox' });
       navigate(`/s/${encodeURIComponent(sandbox.slug)}`, { replace: true });
     }
     updateTitle();
