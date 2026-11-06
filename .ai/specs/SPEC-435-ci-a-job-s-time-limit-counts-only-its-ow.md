@@ -126,7 +126,7 @@ run's status says how long each job waited and ran.
   inside the job (read from the quartio-v2 `dev` branch at 375f18ff); Yulius's limit started at the
   job's process start (`ci_watch`), so the in-job wait counted.
 - Red: `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^local_ci::(an_exclusive|a_jobs_own)/)'`
-  at 920a1a39 (tests only): both failed with `Error: "gate jobs"` (the new keys were unknown, so no CI
+  on 920a1a39 plus the two tests later committed in 5e428a72 (uncommitted then, no code change yet): both failed with `Error: "gate jobs"` (the new keys were unknown, so no CI
   was in force).
 - Green: all `local_ci` integration tests passed (63/63 at e12b97d2), as did the `yulius-domain`,
   `yulius-store`, `yulius-app` and `yulius-contracts` unit tests (1030/1030 at 5e428a72, then the new
