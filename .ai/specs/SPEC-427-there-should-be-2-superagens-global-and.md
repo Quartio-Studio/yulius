@@ -127,7 +127,7 @@ as the person's own agent does over the remote MCP.
 - [x] Review round 6 fixed: a label before every message, stricter emoji, UNC paths
 - [x] Review round 7 (approved) fixed: a fixed label, its meaning in the instructions
 - [x] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
