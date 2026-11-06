@@ -76,6 +76,7 @@ through Yulius. Its start never stops on Claude Code's Bypass Permissions warnin
 - [x] The All sandboxes tab is the sandbox Superagent's view, without a message box
 - [x] The message and interrupt endpoints are gone
 - [x] ADR, architecture, product and API docs describe the keys
+- [x] Review round 1 fixed: the home's shell startup files covered, stale comments restated
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 
