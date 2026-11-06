@@ -141,9 +141,9 @@ test('a skipped job reads Skipped, not Passed', async ({ app, browser, screen })
 test('an ended job says how long it waited and ran', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/ci?run=ci_s3'));
   const run = screen.getByRole('region', 'CI run');
-  await firstShown(browser.locator('.run-output'), /Summary[\s\S]*\[exit code 0\]\n\[ran 2 min\]$/);
+  await firstShown(browser.locator('.run-output'), /lint: no warnings\s+\[exit code 0\]\s+\[ran 2 min\]$/);
   await run.getByRole('tab', /test \(1\/2\)/).click();
-  await expect(browser.locator('.run-output')).toHaveText(/\[exit code 0\]\n\[waited 6 min, ran 2 min\]$/);
+  await expect(browser.locator('.run-output')).toHaveText(/Summary[\s\S]*\[exit code 0\]\s+\[waited 6 min, ran 2 min\]$/);
 });
 
 // SPEC-238 CRV-003: "we see some dynamic summary all the time". A running run's view starts with
