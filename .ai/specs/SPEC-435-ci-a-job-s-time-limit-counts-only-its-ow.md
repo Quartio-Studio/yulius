@@ -1,11 +1,11 @@
 ---
 yulius-task: 63e456b0-2c64-46f6-ad01-4b16759aab37
-status: in-progress
+status: done
 ---
 
 # SPEC-435: A CI job's time limit counts only its own run, and a job can set its own limit
 
-Status: in-progress
+Status: done
 Date: 2026-11-06
 Owner: Yulius task #417
 Scope authorization: task #417, asked by the project's owner via quartio-v2's main session
@@ -63,7 +63,7 @@ run's status says how long each job waited and ran.
 - [x] A job's limit is its own and starts after every wait
 - [x] Exclusive jobs wait in queue order before their slot, and each job records its wait
 - [x] ci_status and the run page say how long a job waited and ran; a timeout says both
-- [ ] Docs, changes, gate green and an independent review in a fresh session
+- [x] Docs, changes, gate green and an independent review in a fresh session
 
 ## Acceptance criteria
 
@@ -119,3 +119,39 @@ run's status says how long each job waited and ran.
   clock is fixed).
 - The run page's stage waterfall keeps calling the job's wait "for a job slot" even when it was
   also its turn: one wait stage per job, as SPEC-385 shapes it; the job's own line says "waited".
+
+## Evidence
+
+- Root cause: quartio-v2's `scripts/gate` takes `flock "$HOME/.cache/quartio-gate/ci-<step>.lock"`
+  inside the job (read from the quartio-v2 `dev` branch at 375f18ff); Yulius's limit started at the
+  job's process start (`ci_watch`), so the in-job wait counted.
+- Red: `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^local_ci::(an_exclusive|a_jobs_own)/)'`
+  at 920a1a39 (tests only): both failed with `Error: "gate jobs"` (the new keys were unknown, so no CI
+  was in force).
+- Green: all `local_ci` integration tests passed (63/63 at e12b97d2), as did the `yulius-domain`,
+  `yulius-store`, `yulius-app` and `yulius-contracts` unit tests (1030/1030 at 5e428a72, then the new
+  `timed_out` and turn-pruning unit tests).
+- Mutation: taking the job slot before the turn made `a_job_waiting_for_its_turn_holds_no_slot` fail
+  at f44b8f1c (round 1) and e12b97d2 (round 2); restored afterwards.
+- e2e: `npx e2e run tests/ci.e2e.ts tests/pipeline.e2e.ts`: the new test first failed on its own
+  expectation (the mock's lint output has no "Summary"); after the fix `ci.e2e.ts` passed 20/20 and
+  `pipeline.e2e.ts` passed in the same run.
+- Gate: `scripts/dev ci` at 6425ca07 exit 1, 3168/3169 passed. The failure was
+  `local_ci::the_security_job_and_the_others_never_cancel_each_other`: the PR run's jobs waited 8 s for
+  slots behind the dev run's blocking jobs. That is the known flake #1079 (open since 2026-11-05),
+  which this change does not touch. `scripts/dev ci` at 954276ec exit 0, with 3173 passed and 16
+  skipped (lint, macOS, deps, docs included). e12b97d2 changes only `local_ci.rs` since then: its 63
+  tests and `cargo clippy -p yulius --all-targets -D warnings` passed.
+- Security: `yulius security-scan` printed "Security scan disabled: Vidoc is turned off in Yulius".
+  Nothing was scanned, so it is not a pass.
+- Review (fresh sessions, `om-code-review`):
+  - Round 1 approved 6425ca07 with 5 minor findings and 3 nits, all in this change's own code: a doc
+    comment placement, missing tests (turn holds no slot, cancel while waiting, full timeout
+    wording), the undocumented list threshold, the "queue order" wording, thin margins, the
+    unpruned turn map, JTL-004 wording, and where the limit is read from. All were fixed in f44b8f1c and
+    954276ec.
+  - Round 2 approved 954276ec with 2 minor findings and 1 nit about the turn tests' wait conditions,
+    fixed in e12b97d2.
+- Not tested: a real multi-hour run on the instance, and the quartio-v2 job with `exclusive` and
+  `timeout_minutes` set (the owner sets them once the instance runs this version). A restart while
+  a job waits for its turn is covered by the existing requeue path, not by a new test.
