@@ -547,10 +547,10 @@ impl App {
         })
     }
 
-    /// Archives a resting task (UI-006), or a finished one (TSK-014): Done by the sidebar's rule
-    /// (`task_is_done`: the goal achieved, or the plan complete with its pull request merged or
-    /// tested, and no background shell), so nothing is left to wait for and it is closed as it
-    /// is archived.
+    /// Archives a resting task (UI-006), or a finished one (TSK-014): Done (`task_is_done`: the
+    /// goal achieved, or the plan complete with its pull request merged or tested, and no
+    /// background shell) or shown under Done (`shows_done`: an agent that answered with nothing
+    /// open, SPEC-429), so nothing is left to wait for and it is closed as it is archived.
     ///
     /// # Errors
     /// `Conflict` for other live tasks; while a finished task's session is closing (it changed
@@ -611,7 +611,7 @@ impl App {
     /// Deletes a task permanently (SPEC-001 TSK-009): write access, not live. Removes the
     /// local worktree and branch (uncommitted work included), run directories, archived
     /// transcripts and every record; remote branches and pull requests are untouched. Audited.
-    /// A finished task (`task_is_done`, as for archiving) is closed first, and deleted once its
+    /// A finished task (`task_is_done` or `shows_done`, as for archiving) is closed first, and deleted once its
     /// run has ended (SPEC-039).
     ///
     /// # Errors
