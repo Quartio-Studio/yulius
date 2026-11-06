@@ -372,7 +372,8 @@ watching, steering and unblocking.
   there, and a person allows that once per secret, unless it was imported with `--env-files`
   (SPEC-129, SPEC-256). A multi-line key (PEM, OpenSSH) is
   pasted into the value as it is: the field keeps a key's line breaks as literal `\n`, and it lands
-  in the `.env` as its file, byte for byte (SPEC-186, SPEC-193). A key saved before that, its line
+  in the `.env` as its file, byte for byte (SPEC-186, SPEC-193); Show and Copy value give that
+  file too, with its line breaks (SPEC-431). A key saved before that, its line
   breaks lost, is marked "Paste again" for the people who manage it. From a computer, `yulius
   secrets import --to team|agent [file]` brings in a `.env` (or typed, hidden values) at once,
   into the checkout's sandbox, or with `--instance` team-wide (team secrets) or global, switched on

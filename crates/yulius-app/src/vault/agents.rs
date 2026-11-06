@@ -10,7 +10,7 @@ use yulius_contracts::api::secrets::{
 };
 use yulius_domain::ids::SandboxId;
 use yulius_domain::permission::{AccessLevel, Action};
-use yulius_domain::vault::dotenv::flattened_key;
+use yulius_domain::vault::dotenv::{flattened_key, key_block};
 use yulius_domain::vault::hosts::{HostPattern, parse_hosts};
 use yulius_domain::vault::{
     Injection, ROTATE_AFTER_MS, SecretName, check_agent_value, placeholder,
@@ -747,7 +747,11 @@ impl App {
                 .join("\n\n"),
         );
         let notes = Zeroizing::new((!notes.is_empty()).then(|| notes.to_string()));
-        let value = Zeroizing::new(Some(payload.value.clone()));
+        // A key stored with literal `\n` comes back as its key file, as a `.env` copy writes it
+        // (SPEC-431, ADR-0275); any other value as stored.
+        let value = Zeroizing::new(Some(
+            key_block(&payload.value).unwrap_or_else(|| payload.value.clone()),
+        ));
         let revealed = pick(&wanted, &value, &notes);
         self.vault_audit(
             &Self::vault_actor(ctx),

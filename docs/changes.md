@@ -6,6 +6,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-06
 
+- A revealed agent-secret key is copied with its line breaks (SPEC-431, ADR-0275, task #413, fixes
+  #1096). A pasted key is stored with literal `\n`, and Show and Copy value on the Secrets page gave
+  that one-line form back. The reveal now returns a key block as its key file (real line breaks, one
+  final break), as the `.env` copy writes it; any other value comes back as stored.
 - An agent that answered and needs nothing is no longer "Needs you" (SPEC-429, ADR-0273, task #411,
   fixes #1090). Every turn that ended without an achieved `/goal` read "Your turn" under Needs you.
   A follow-up question after a met goal also drops it, so "so all good here and you don't need
