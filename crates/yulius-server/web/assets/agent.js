@@ -36,14 +36,19 @@ export function createSuperagentPanel(ctx, sandbox, { global, tab, onTab }) {
   const panes = {};
   for (const [key] of TABS) panes[key] = h('div', { class: 'superagent-pane', id: id('pane', key), role: 'tabpanel', 'aria-labelledby': id('tab', key), hidden: true });
   const el = h('div', { class: 'superagent' }, tablist, panes.sandbox, panes.global);
-  let own = null;
-  // This sandbox's own Superagent, made when its tab first shows; its note's All sandboxes selects that tab.
-  const viewOf = (key) => (key === 'global' ? global() : own || (own = mountOwn()));
-  function mountOwn() {
-    const view = createAgentView(ctx, sandbox, { openGlobal: () => select('global', { picked: true }) });
-    panes.sandbox.append(view.el);
-    return view;
+  // This sandbox's tab says when its Superagent asks to start a task while it is not in front
+  // (review round 3).
+  const dot = h('span', { class: 'superagent-tab-dot', 'aria-hidden': 'true', hidden: true });
+  const asking = h('span', { id: id('asking', 'sandbox'), hidden: true }, 'Your Superagent asks to start a task');
+  function mark(count) {
+    dot.hidden = count === 0;
+    if (count) tabs[0].setAttribute('aria-describedby', asking.id);
+    else tabs[0].removeAttribute('aria-describedby');
   }
+  // This sandbox's own Superagent, made with the panel so its requests show on the tab; its session
+  // starts only when its tab first shows. Its note's All sandboxes selects that tab.
+  let own = null;
+  const viewOf = (key) => (key === 'global' ? global() : own);
   let key = null;
   let shown = false;
   // Outside a sandbox only All sandboxes is there (SAT-003).
@@ -54,6 +59,11 @@ export function createSuperagentPanel(ctx, sandbox, { global, tab, onTab }) {
     onClick: () => { if (enabled(k)) select(k, { focusTab: true, picked: true }); },
   }, label));
   setChildren(tablist, tabs);
+  tabs[0].append(dot, asking);
+  if (sandbox) {
+    own = createAgentView(ctx, sandbox, { openGlobal: () => select('global', { picked: true }), onRequests: mark });
+    panes.sandbox.append(own.el);
+  }
   tablist.addEventListener('keydown', (event) => {
     // With a modifier the keys are someone else's (Notes reorders its tabs with Alt+←/→).
     if (event.altKey || event.ctrlKey || event.metaKey) return;
@@ -129,7 +139,7 @@ export function createSuperagentPanel(ctx, sandbox, { global, tab, onTab }) {
  * Without a sandbox it is the person's Global Superagent (SPEC-427 GSA-006): one session that sees
  * every sandbox of theirs, opened by POST /api/superagent.
  */
-export function createAgentView(ctx, sandbox, { openGlobal } = {}) {
+export function createAgentView(ctx, sandbox, { openGlobal, onRequests } = {}) {
   const global = !sandbox;
   const write = global || allows(sandbox.access, 'write');
   const name = global ? 'Global Superagent' : 'Superagent';
@@ -152,7 +162,7 @@ export function createAgentView(ctx, sandbox, { openGlobal } = {}) {
         h('strong', null, 'For quick work'), ': setting up automations, asking a quick question. Anything more complex, such as writing code, belongs in a task, not here', newTask ? [': ', newTask, '.'] : '.',
         ' Work across sandboxes: the Global Superagent, in ', globalTab, '.'));
   const body = h('div', { class: 'agent-term' });
-  const requests = global ? null : createRequests(ctx, sandbox);
+  const requests = global ? null : createRequests(ctx, sandbox, onRequests);
   const link = global ? null : createLink(ctx, sandbox, () => restart());
   // GSA-007: the Global Superagent takes messages, not keys; its terminal only shows it.
   const compose = global ? createCompose(ctx) : null;
@@ -464,7 +474,7 @@ export function shownPrompt(text) {
  * answered once, and goes when the Superagent's call ends. Create task takes a click only once the
  * whole prompt was in view (scrolled to its end) and the card has been there a moment.
  */
-function createRequests(ctx, sandbox) {
+function createRequests(ctx, sandbox, onCount) {
   const el = h('div', { class: 'agent-requests', hidden: true });
   const path = `/api/sandboxes/${enc(sandbox.id)}/superagent/requests`;
   let alive = true;
@@ -501,6 +511,7 @@ function createRequests(ctx, sandbox) {
       el.append(shown.el);
     }
     el.hidden = cards.size === 0;
+    if (onCount) onCount(cards.size);
   }
 
   function card(request) {

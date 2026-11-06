@@ -65,6 +65,10 @@ from each other and solve it".
   Global Superagent, in **All sandboxes**." where All sandboxes is a button that selects that tab.
 - SAT-007: the Global Superagent's message box suggests the example: placeholder "For example:
   check what my sandboxes need from each other and solve it".
+- SAT-008: while the sandbox Superagent asks to start a task (SPEC-335), the This sandbox tab shows
+  a dot and is described "Your Superagent asks to start a task", also when All sandboxes is in front
+  and This sandbox was never shown in the page: the sandbox view is made with the panel (its
+  requests read), its session still starts only when its tab first shows (review round 3).
 
 ## Plan
 
@@ -73,8 +77,9 @@ from each other and solve it".
 - [x] One Global Superagent view follows the tabs across sandboxes and pages
 - [x] The sandbox note selects the All sandboxes tab and the box suggests the example
 - [x] ADR, architecture, product and changes describe the tabs
-- [ ] Review round 1 fixed: the tab in front kept, only picked tabs remembered, more paths tested
-- [ ] Review round 2 fixed: one tab in front per page, keys with a modifier ignored
+- [x] Review round 1 fixed: the tab in front kept, only picked tabs remembered, more paths tested
+- [x] Review round 2 fixed: one tab in front per page, keys with a modifier ignored
+- [x] Review round 3 fixed: a hidden request marks the This sandbox tab
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 
