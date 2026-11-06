@@ -1,11 +1,11 @@
 ---
 yulius-task: 9f702770-1042-4644-a3d5-e4d93a5a0a47
-status: in-progress
+status: done
 ---
 
 # SPEC-434: every tab strip of the tool panel moves like the sandbox tabs
 
-Status: in progress
+Status: implemented
 Date: 2026-11-06
 Owner: Yulius task #416
 Scope authorization: user request: "make all things like this movable and behave like this"
@@ -68,12 +68,12 @@ no grip; they get it.
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] Superagent tabs move by drag, keys and menu with the shared grip
-- [ ] Terminal tabs move by drag, keys and menu and keep their order per sandbox
-- [ ] Browser tabs move by drag, keys and menu and keep their order per sandbox
-- [ ] Editor tabs show the grip and the click-or-drag hint
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Superagent tabs move by drag, keys and menu with the shared grip
+- [x] Terminal tabs move by drag, keys and menu and keep their order per sandbox
+- [x] Browser tabs move by drag, keys and menu and keep their order per sandbox
+- [x] Editor tabs show the grip and the click-or-drag hint
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Design
 
@@ -111,3 +111,31 @@ no grip; they get it.
   what the sandbox order already does.
 - The page tabs of the CI and Git pages stay fixed (see Context).
 - One shared `.tab-grip` style instead of a copy per strip: four more copies would drift.
+
+## Evidence
+
+- Tests written first, each failing before its change: `global-superagent.e2e.ts` "the Superagent
+  tabs move by drag, keyboard and menu and stay so" (no grip/hint), `terminals.e2e.ts` "terminal
+  tabs move by drag, keyboard and menu and stay so", `browser.e2e.ts` "browser tabs move by drag,
+  keyboard and menu and stay so", and the grip/hint assertion in `editor.e2e.ts` "the editor’s file
+  tabs move by drag, Alt+arrows and the menu". The Notes grip test now reads the shared `.tab-grip`.
+- Visual check in the Yulius browser (mock on port 20100): the Superagent, Browser and Shell strips
+  show the grip as the top bar does.
+- Independent review (fresh session, `om-code-review`), 3 rounds, approved on `e917b2ff`:
+  - Round 1 (own code): the Superagent's other tab kept its slide offset after a drag (fixed in
+    `tabdrag.js` `end()`, test `tabsInPlace`, which failed before); dragged/settling rules lost to
+    the strips' `.active` rules (selector raised; a mutation reverting it fails the Superagent test);
+    × presses, a rename and redraws during a press were not proven (tests added: `pressAndMove`,
+    rename input, `sendTabs()` and a rename ending mid-press); the grip's 4 px gap is asserted and the
+    tab's other parts keep 6 px.
+  - Round 2: the mid-press redraw tests could pass without the `drag.dragging` guards; they now
+    assert mid-press that the pressed tab is still the strip's (the reviewer's guard-removal
+    mutation fails both, 4/4 runs; real code passes 10/10 twice).
+  - Not changed: the per-sandbox order keys stay after a sandbox goes (pre-existing pattern of
+    `yulius.shellActive.<id>`, bounded to the tabs of the last write); the nit to wait a mock tick
+    after `sendTabs()` would need a fixed sleep, which the test rules forbid, and the next
+    `evaluate` round-trip already follows it (4/4 runs held).
+- `python3 scripts/bootstrap.py` then `scripts/dev ci`: exit 0, nextest 3165 passed, 16 skipped.
+- `cd e2e && npx e2e run`: 75 files passed, 1 skipped; 863 tests passed, 1 skipped.
+- `yulius security-scan`: "Security scan disabled" (Vidoc is off in Yulius): not run, not passed.
+- Not covered: a real touch screen (the coarse-pointer rule is checked as CSS, as SPEC-136 does).
