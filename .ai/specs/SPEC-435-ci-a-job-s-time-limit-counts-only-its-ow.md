@@ -49,18 +49,18 @@ run's status says how long each job waited and ran.
   form gives it per job; `ci_status` and the run page say, for a job that waited at least a second,
   "waited 39m 0s, ran 44m 2s" (or just its run time when it did not wait).
 - JTL-005: a job that times out says it in plain words with how long it ran and waited:
-  "timed out: ran 1h 0m, its limit; it waited 39m 12s before it started".
+  "timed out: ran 1 h 0 min, its time limit; it waited 39 min 12 s before it started".
 - JTL-006: the jobs in force (`ci_status`, the CI page's API) show a job's own limit and
   `exclusive`, so a project can check its settings took effect. The contract template
   (`docs/api.md`, the `yulius.toml` format) documents both keys.
 
 ## Plan
 
-- [ ] Spec, ADR and the failing tests for both keys and the wait
-- [ ] `timeout_minutes` and `exclusive` parse, render and reach each job's record
-- [ ] A job's limit is its own and starts after every wait
-- [ ] Exclusive jobs wait in queue order before their slot, and each job records its wait
-- [ ] ci_status and the run page say how long a job waited and ran; a timeout says both
+- [x] Spec, ADR and the failing tests for both keys and the wait
+- [x] `timeout_minutes` and `exclusive` parse, render and reach each job's record
+- [x] A job's limit is its own and starts after every wait
+- [x] Exclusive jobs wait in queue order before their slot, and each job records its wait
+- [x] ci_status and the run page say how long a job waited and ran; a timeout says both
 - [ ] Docs, changes, gate green and an independent review in a fresh session
 
 ## Acceptance criteria
@@ -68,7 +68,7 @@ run's status says how long each job waited and ran.
 - With a 4 s instance limit, three runs of an `exclusive` job that each run ~2.5 s never overlap,
   all pass, and the last one waited longer than 4 s (`waited_ms` > 4000).
 - With a 2 s instance limit, a job with `timeout_minutes = 1` running 3 s passes, and a job without
-  it running 3 s errors "timed out: ran 2s, its limit".
+  it running 3 s errors "timed out: ran 2 s, its time limit".
 - `timeout_minutes = 0`, `361`, `"2"` and `exclusive = "yes"` are rejected with the key named;
   rendering a configuration keeps both keys.
 - A job that waited reads "<name> passed, waited 39m 0s, ran 44m 2s" in `ci_status`.
@@ -97,3 +97,8 @@ run's status says how long each job waited and ran.
 - The lock is process-local: a restart requeues every running run (their jobs start over), so a
   lost lock holds nothing.
 - `timeout_minutes` is bounded like the instance setting (1-360): every wait needs a bound.
+- `waited_ms` is measured on the monotonic clock (`tokio::time::Instant`), not as the difference
+  of two wall-clock stamps: a duration must not move with a clock step (and the test harness's
+  clock is fixed).
+- The run page's stage waterfall keeps calling the job's wait "for a job slot" even when it was
+  also its turn: one wait stage per job, as SPEC-385 shapes it; the job's own line says "waited".
