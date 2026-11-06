@@ -201,7 +201,8 @@ export function mountInstancePage(ctx) {
           h('button', { type: 'button', class: 'btn btn-primary', disabled: view.helper_installed === false, onClick: () => confirmAndStartUpdate(ctx, available) }, icon('download', { size: 14 }), 'Update now…'))));
     }
     if (run && OUTCOMES.has(run.state)) parts.push(outcome(run));
-    if (!running && view.helper_installed === true) {
+    // A restart checks that the same build comes back: it needs the build known.
+    if (!running && view.helper_installed === true && view.current && view.current.commit) {
       parts.push(h('div', { class: 'row instance-restart' },
         h('span', { class: 'muted small' }, 'Restart the server with the version it runs; tasks pause and continue.'),
         h('span', { class: 'spacer' }),

@@ -28,22 +28,28 @@ hand does not pause the tasks.
 ## Decision
 
 - **The bridge pings.** `yulius mcp` sends `ping` (id `yulius-bridge-alive`) to `POST /mcp` every
-  60 s and keeps the answers to itself. Every request of a task's agent to `POST /mcp` records the
-  task's last contact in memory.
+  60 s and keeps the answers to itself. Every request of the session's MCP client to `POST /mcp`
+  records the task's last contact in memory, and a ping its last ping; a `yulius tool` call (id
+  `yulius-tool`) records nothing. A new or reattached run starts afresh.
 - **A silent session is reconnected.** Every 30 s Yulius types `/mcp reconnect yulius` into a
   Running task's session when its last contact (or its spawn, if later) is 3 minutes old, the
   server has been up 3 minutes, no turn is open, no update holds tasks, the task is not paused and
-  no person typed in the last minute. Reconnects of one task are 10 minutes apart, and after 3 in a
-  row with no contact Yulius stops.
+  no person typed in the last minute. Silence counts from a hold's end too: a frozen bridge pings
+  nothing. Reconnects of one task are 10 minutes apart, and hourly after 3 in a row with no
+  contact (a sandbox that could not reach Yulius gets its MCP back once it can).
 - **It is told to continue.** Once the bridge is heard after a reconnect, a task whose last turn
-  closed while it was silent gets "Yulius's tools are reconnected; continue" once, unless its goal
-  is achieved or it waits for a person.
+  closed while it was surely cut off gets "Yulius's tools are reconnected; continue" once, unless
+  its goal is achieved or it waits for a person. Surely cut off means 90 s after its last ping,
+  or since its spawn for a run this server started that never pinged. A reattached run that never
+  pinged here (an older bridge) is reconnected but never told to continue: when it was cut off is
+  not known.
 - **`yulius tool <name> [<json>]`** calls any Yulius tool from the shell through the same
   `POST /mcp`, for a turn that cannot wait for an idle moment. The briefing names it in one
   sentence.
 - **A restart is an update run whose target is the running build.** `POST /api/admin/restart`
   (superadmin, confirmed) opens a run straight in `draining` with `from_commit` equal to
-  `target_commit`: every task is frozen, the root helper gets a new action `restart` (stop, start,
+  `target_commit`, refused while a deploy runs (an update waits for deploys while it builds; a
+  restart has nothing to build): every task is frozen, the root helper gets a new action `restart` (stop, start,
   wait until the server reports that commit; refused for a build other than the one it installed;
   nothing backed up, installed or rolled back), and the tasks thaw one by one. The Instance page
   offers **Restart…** and shows the run as a restart.
@@ -68,7 +74,10 @@ hand does not pause the tasks.
 
 - Each task session's bridge makes one small request a minute.
 - A session started before this release has a bridge that does not ping: after the update it reads
-  as silent and gets one `/mcp reconnect yulius`, which starts the new bridge.
+  as silent once idle and gets one `/mcp reconnect yulius`, which starts the new bridge, and no
+  continue text.
+- The unprivileged service can now have the root helper stop and start it at will; that is no more
+  than the service stopping itself.
 - `/mcp reconnect` is Claude Code's inline action; a Claude Code without it would show its usage
   line. Yulius keeps Claude Code current (0266), so runs use a version with it.
 - A restart that does not come back is reported failed; the server stays as the helper left it, as

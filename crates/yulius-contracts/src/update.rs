@@ -3,8 +3,9 @@
 //! The server, running as the unprivileged service user, writes one [`HelperRequest`] to
 //! `<data>/update/request.json` (mode 0600, written atomically). A root-owned systemd path unit
 //! starts `yulius update-helper`, which accepts nothing but "build" or "install" one commit of
-//! `main` of the fixed repository, or "restart" the installed one (SPEC-432 RST-001), and reports in [`HelperStatus`] at
-//! `<helper state>/status.json` (root-owned, readable by the service). Both files are bounded
+//! `main` of the fixed repository, or "restart" the installed one (SPEC-432 RST-001), and
+//! reports in [`HelperStatus`] at `<helper state>/status.json` (root-owned, readable by the
+//! service). Both files are bounded
 //! and carry [`VERSION`]; anything else is refused.
 
 use serde::{Deserialize, Serialize};

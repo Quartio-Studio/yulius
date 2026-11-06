@@ -228,6 +228,12 @@ fn install_action(run: &UpdateRunRecord) -> HelperAction {
     }
 }
 
+/// The audit action of a run's step: `update.<what>`, or `restart.<what>` for a restart.
+fn audit_action(run: &UpdateRunRecord, what: &str) -> String {
+    let kind = if is_restart(run) { "restart" } else { "update" };
+    format!("{kind}.{what}")
+}
+
 fn request_id(run: &UpdateRunRecord, action: HelperAction) -> String {
     format!("{}-{}", run.id, action.as_str())
 }
@@ -984,6 +990,27 @@ impl App {
                         .into(),
                 )
             })?;
+        if self.deps.store.open_update_run().await?.is_some() {
+            return Err(AppError::Conflict(
+                "an update or restart is already running".into(),
+            ));
+        }
+        // An update waits for deploys while it builds; a restart has nothing to build, so it
+        // starts only with none running (SPEC-342, review round 1). The gate closes first, so
+        // nothing that passed it is missed, and opens again on a refusal.
+        match self.deploys_in_flight().await {
+            Ok((0, _)) => {}
+            Ok((running, _)) => {
+                self.open_deploys();
+                return Err(AppError::Conflict(format!(
+                    "{running} deploy(s) are running: restart once they finished"
+                )));
+            }
+            Err(err) => {
+                self.open_deploys();
+                return Err(err);
+            }
+        }
         let login = self.login_of(&ctx.user.id).await;
         let now = self.now();
         let run = UpdateRunRecord {
@@ -1001,6 +1028,7 @@ impl App {
             finished_at: None,
         };
         if !self.deps.store.insert_update_run(&run).await? {
+            // Another run started meanwhile: the gate is its own now.
             return Err(AppError::Conflict(
                 "an update or restart is already running".into(),
             ));
@@ -1037,7 +1065,11 @@ impl App {
             })?;
         let login = self.login_of(&ctx.user.id).await;
         let now = self.now();
-        let message = format!("Cancelled by {login}; nothing was installed.");
+        let message = if is_restart(&run) {
+            format!("Cancelled by {login}; Yulius was not restarted.")
+        } else {
+            format!("Cancelled by {login}; nothing was installed.")
+        };
         if !self
             .deps
             .store
@@ -1062,7 +1094,7 @@ impl App {
             .audit(
                 now,
                 &login,
-                "update.cancelled",
+                &audit_action(&run, "cancelled"),
                 Some(&run.target_commit),
                 Some(&run.id),
             )
@@ -1092,7 +1124,7 @@ impl App {
             .audit(
                 self.now(),
                 &login,
-                "update.proceeded",
+                &audit_action(&run, "proceeded"),
                 Some(&run.target_commit),
                 Some(&run.id),
             )
@@ -1330,7 +1362,7 @@ impl App {
                             .audit(
                                 self.now(),
                                 "system",
-                                "update.installing",
+                                &audit_action(&run, "installing"),
                                 Some(&run.target_commit),
                                 Some(&run.id),
                             )
@@ -1440,7 +1472,7 @@ impl App {
                 .audit(
                     self.now(),
                     "system",
-                    "update.failed",
+                    &audit_action(run, "failed"),
                     Some(&run.target_commit),
                     Some(&run.id),
                 )
@@ -1464,7 +1496,7 @@ impl App {
                 .audit(
                     self.now(),
                     "system",
-                    "update.cancelled",
+                    &audit_action(run, "cancelled"),
                     Some(&run.target_commit),
                     Some(&run.id),
                 )
@@ -1659,11 +1691,7 @@ impl App {
                 .audit(
                     self.now(),
                     "system",
-                    if is_restart(run) {
-                        "restart.finished"
-                    } else {
-                        "update.finished"
-                    },
+                    &audit_action(run, "finished"),
                     Some(&run.target_commit),
                     Some(outcome.as_str()),
                 )
@@ -1830,7 +1858,14 @@ impl App {
                 total: p.total,
             });
         let mut tasks = None;
-        let mut message = step.as_deref().and_then(step_message).map(str::to_owned);
+        let mut message = step
+            .as_deref()
+            .and_then(|step| match step {
+                "starting" if restart => Some("Starting Yulius again."),
+                "checking" if restart => Some("Checking that Yulius runs again."),
+                step => step_message(step),
+            })
+            .map(str::to_owned);
         // The gate is closed once built: the deploys it waits for (SPEC-342 DPU-006).
         let (running, deploys) = if self.updates.deploys.is_closed()
             && matches!(run.state, RunState::Building | RunState::Draining)

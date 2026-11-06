@@ -61,8 +61,10 @@ which does not freeze the tasks.
 - **MCR-001 The bridge says it is alive.** `yulius mcp` sends a `ping` to `POST /mcp` every 60 s,
   whatever Claude Code sends (Claude Code's own `initialize` reaches Yulius at the start). Its answer is never written to stdout. A ping
   that fails is dropped (the next one tries again).
-- **MCR-002 Yulius records each task's last bridge contact.** Every agent request with an id that
-  reaches `POST /mcp` with a task token sets the task's runtime `mcp_seen_ms`.
+- **MCR-002 Yulius records each task's last bridge contact.** Every request with an id of the
+  session's MCP client that reaches `POST /mcp` with a task token sets the task's runtime
+  `mcp_seen_ms`, and a bridge ping `mcp_pinged_ms`; a `yulius tool` call (id `yulius-tool`) sets
+  neither. A new or reattached run starts afresh.
 - **MCR-003 A silent bridge is reconnected.** Every 30 s, for each live task, Yulius types
   `/mcp reconnect yulius` into the session when all hold:
   - the task is Running with a session that started at least 3 minutes ago, and the server has
@@ -70,12 +72,14 @@ which does not freeze the tasks.
   - no Yulius request from its bridge for 3 minutes;
   - no turn is open, no update holds tasks, the task is not paused, and no person typed in the
     last minute;
-  - Yulius has not typed a reconnect into it in the last 10 minutes, and fewer than 3 reconnects
-    went unanswered (no contact since) in a row.
+  - Yulius has not typed a reconnect into it in the last 10 minutes (60 minutes once 3 went
+    unanswered in a row); silence also counts from the end of a hold, since a frozen bridge pings
+    nothing.
 - **MCR-004 The agent is told to continue.** When the bridge is heard from again after a
-  reconnect, and the task's last turn closed while it was silent, Yulius types "Yulius's tools
-  are reconnected; continue" once, unless its goal is achieved or it waits for a person
-  (`needs_you`).
+  reconnect, and the task's last turn closed while it was surely cut off (90 s after its last
+  ping, or after the spawn of a run this server started that never pinged), Yulius types "Yulius's
+  tools are reconnected; continue" once, unless its goal is achieved or it waits for a person
+  (`needs_you`). A reattached run that never pinged here is never told to continue.
 - **MCR-005 `yulius tool` calls a Yulius tool from the shell.** `yulius tool <name> [<json
   arguments>]` sends `tools/call` to the session's `POST /mcp` with its task token and prints the
   tool's text. Exit 0 on success, 1 when the tool answers an error, 2 for a usage or environment
@@ -86,8 +90,8 @@ which does not freeze the tasks.
 - **RST-002 A superadmin restarts Yulius.** `POST /api/admin/restart` (superadmin, `confirm`)
   opens an update run whose target is the running build, straight in `draining`. It is refused
   without the helper, without a known build, or while a run is open. The run then goes the
-  update's way: tasks frozen, the helper asked to `restart`, tasks thawed. The audit log records
-  `restart.started`.
+  update's way: tasks frozen, the helper asked to `restart`, tasks thawed. It is refused while a
+  deploy runs. The audit log records `restart.started`, and its later steps as `restart.*`.
 - **RST-003 The Instance page offers it.** The Instance page's update card shows a "Restart"
   button to superadmins when no run is open, with a confirmation that says tasks pause and resume.
   A restart run reads as a restart ("Restarting", "Restarted"), not as an update.

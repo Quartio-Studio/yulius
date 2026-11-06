@@ -1671,3 +1671,85 @@ async fn a_superadmin_restarts_yulius_with_its_tasks_frozen_then_thawed() -> Tes
     assert_eq!(run.message.as_deref(), Some("Restarted."));
     Ok(())
 }
+
+/// SPEC-432 review round 1 (M2): a restart while a deploy runs is refused before any task pauses
+/// (an update waits for deploys while it builds; a restart has nothing to build), and deploys are
+/// not held by it.
+#[tokio::test]
+async fn a_restart_is_refused_while_a_deploy_runs() -> TestResult {
+    let (i, host) = freezing_instance().await?;
+    two_tasks(&i).await?;
+    deploying_project(&i).await?;
+    running_deploy(&i, "cdr_running").await?;
+    let r = post(
+        &i,
+        "/api/admin/restart",
+        Some(json!({"confirm": true})),
+        &i.admin,
+    )
+    .await?;
+    assert_eq!(r.status, StatusCode::CONFLICT, "{}", r.body);
+    assert!(r.body.to_string().contains("1 deploy"), "{}", r.body);
+    let _ = i.h.app.update_round().await;
+    assert!(host.frozen().is_empty(), "no task paused");
+    assert!(i.h.app.deploy_permit().is_ok(), "deploys go on");
+    deploy_ends(&i, "cdr_running").await?;
+    let r = post(
+        &i,
+        "/api/admin/restart",
+        Some(json!({"confirm": true})),
+        &i.admin,
+    )
+    .await?;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "{}", r.body);
+    Ok(())
+}
+
+/// SPEC-432 review round 1 (minor 7): a cancelled restart and a failed one say so as a restart
+/// and thaw every task; without the helper a restart is refused.
+#[tokio::test]
+async fn a_cancelled_or_failed_restart_thaws_its_tasks() -> TestResult {
+    let (i, host) = freezing_instance().await?;
+    let (working, _idle) = two_tasks(&i).await?;
+    let confirmed = Some(json!({"confirm": true}));
+    let r = post(&i, "/api/admin/restart", confirmed.clone(), &i.admin).await?;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "{}", r.body);
+    let _ = i.h.app.update_round().await;
+    assert_eq!(host.frozen().len(), 2);
+    let r = post(&i, "/api/admin/update/cancel", None, &i.admin).await?;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    assert_eq!(r.body["run"]["state"], "cancelled");
+    assert_eq!(
+        r.body["run"]["message"],
+        "Cancelled; Yulius was not restarted."
+    );
+    let error = r.body["run"]["error"].as_str().unwrap_or_default();
+    assert!(error.ends_with("Yulius was not restarted."), "{error}");
+    assert!(host.frozen().is_empty(), "thawed at once");
+    assert!(!i.h.app.held_for_update(&working));
+
+    let r = post(&i, "/api/admin/restart", confirmed.clone(), &i.admin).await?;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "{}", r.body);
+    let _ = i.h.app.update_round().await;
+    let _ = i.h.app.update_round().await;
+    let restart = i.helper.last().ok_or("restart request")?;
+    assert_eq!(restart.action, HelperAction::Restart);
+    i.helper.report(
+        &restart,
+        HelperState::Failed,
+        "failed",
+        Some("Could not start yulius.service: unit failed"),
+    );
+    let _ = i.h.app.update_round().await;
+    let _ = i.h.app.update_round().await;
+    let view = get(&i, &i.admin).await?;
+    assert_eq!(view["run"]["state"], "failed", "{view}");
+    assert_eq!(view["run"]["message"], "The restart failed.");
+    assert!(host.frozen().is_empty(), "every task thawed");
+    assert!(!i.h.app.held_for_update(&working));
+
+    i.helper.installed.store(false, Ordering::SeqCst);
+    let r = post(&i, "/api/admin/restart", confirmed, &i.admin).await?;
+    assert_eq!(r.status, StatusCode::CONFLICT, "{}", r.body);
+    Ok(())
+}

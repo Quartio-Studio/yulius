@@ -371,7 +371,7 @@ fn reported_commit(url: &str) -> Result<Option<String>, String> {
 struct Refused {
     id: String,
     commit: String,
-    install: bool,
+    action: HelperAction,
 }
 
 struct Helper {
@@ -472,7 +472,11 @@ impl Helper {
             let refused = field("id").filter(|id| valid_id(id)).map(|id| Refused {
                 id,
                 commit: field("commit").filter(|c| is_commit(c)).unwrap_or_default(),
-                install: field("action").as_deref() == Some("install"),
+                action: match field("action").as_deref() {
+                    Some("install") => HelperAction::Install,
+                    Some("restart") => HelperAction::Restart,
+                    _ => HelperAction::Build,
+                },
             });
             (refused, reason)
         })
@@ -492,11 +496,7 @@ impl Helper {
         let status = HelperStatus {
             version: VERSION,
             id: refused.id.clone(),
-            action: if refused.install {
-                HelperAction::Install
-            } else {
-                HelperAction::Build
-            },
+            action: refused.action,
             commit: refused.commit.clone(),
             state: HelperState::Failed,
             step: "failed".into(),
