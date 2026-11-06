@@ -1,11 +1,11 @@
 ---
 yulius-task: 8cb194b5-003b-4501-b0b0-50b032b36fb2
-status: in-progress
+status: done
 ---
 
 # SPEC-427: A Global Superagent sees every sandbox of its person and keeps them in sync
 
-Status: in-progress
+Status: done
 Date: 2026-11-05
 Owner: Yulius task #409
 Scope authorization: task #409 (`/goal`): "there should be 2 superagens: global and
@@ -177,3 +177,68 @@ as the person's own agent does over the remote MCP.
   config live in its own folder, so a new host resumes it.
 - **Own config folder.** The person's home is writable by their task runs; a session outside every
   sandbox takes its settings only from a folder no run can write.
+
+## Evidence
+
+At `c8534735` (the branch, with `origin/dev` up to date), on 2026-11-06:
+
+- `scripts/dev ci`: exit 0. Repository contracts, format, clippy, docs, macOS targets and deps
+  pass; `cargo nextest run --workspace --profile ci` ran 3155 tests, 3155 passed, 16 skipped.
+- `cd e2e && npx e2e run`: run in two parts, because the first run hit its 50-minute bound. The
+  first part had 63 files pass, `original-prompt.e2e.ts` fail once under the full suite's load,
+  and 2 files interrupted. The second part re-ran the remaining 13 files plus
+  `global-superagent.e2e.ts`: 160 tests passed, and `agent.e2e.ts` was skipped (it needs a
+  model). `original-prompt` passed there. After the web changes of review rounds 2, 3 and 5,
+  `global-superagent`, `agent-panel`, `superagent-requests` and `terminal` passed again (68
+  tests).
+- New tests:
+  - `crates/yulius/tests/global_superagent.rs`, 12 tests:
+    - one session per person in its own folder, without built-in tools or settings files, its
+      shell prefix refusing;
+    - the remote tools in every sandbox, the withheld ones refused in both `tools/list` and
+      `tools/call`, the audit;
+    - a contained launch recorded at the session host;
+    - the host removed or lost, adoption after a restart, a usage-limit move and an update
+      refresh, each staying global;
+    - the bearer refused without a sandbox and bounded per minute;
+    - messages only: keys refused, the label, commands, refusals, interrupts and their gap;
+    - a dropped request still submits.
+  - `task_message::a_global_superagent_message_names_the_superagent`.
+  - `yulius-harness` `the_global_superagent_runs_with_only_the_yulius_mcp`.
+  - Unit tests of `global_message`, `global_paste` and the withheld tools (`global_superagent.rs`).
+  - `e2e/tests/global-superagent.e2e.ts`, 5 tests.
+- Mutation checks, each making its test fail:
+  - without the withheld-tool filter;
+  - without the `--tools ""` launch flags;
+  - without the key refusal;
+  - without `resizeReadOnly`;
+  - without the detached typing;
+  - with the old interrupt-gap condition.
+- Claude Code 2.1.311 was probed in a PTY with a synthetic token, so no model was called:
+  - `--tools ""` and `--restricted` still run `!` commands and hooks;
+  - `--setting-sources ""` and `disableAllHooks` stop hooks and status lines;
+  - a refusing `CLAUDE_CODE_SHELL_PREFIX` blocks `!` commands, quote, `;` and `$()` escapes
+    included;
+  - the CLI accepts the launch flags.
+- Independent review in fresh sessions, 7 rounds. Every finding was in this change's own code
+  and was fixed test-first:
+  - Round 1: commands could run in the session; the containment test could not fail; host loss;
+    a panel starting a sandbox Superagent; no rate limit; the sweep; the record version; docs.
+  - Round 2: Ctrl+G opened an editor, so the person now talks to it by message only;
+    `change_merge` withheld; a canonical root; the 1 MiB limit noted.
+  - Round 3: U+FEFF before a `/`; resizes; a double interrupt; detached typing; prompts on
+    uncontained servers.
+  - Round 4 (approved, with minors): image paths as Claude Code reads them; `ultraplan`; emoji;
+    the clock; tests.
+  - Round 5: invisible characters anywhere; multi-part lines; a test that steps the clock back.
+  - Round 6: characters Claude Code strips and then holds back, after which every message comes
+    after a fixed label; stricter emoji; UNC paths.
+  - Round 7: **APPROVE**. Its minors were fixed: a fixed label (no login carries a keyword) that
+    its instructions name; tests; docs.
+- Not run: `yulius security-scan` reports "Security scan disabled". Vidoc is turned off for this
+  project in Yulius, so nothing was scanned; this is not a pass.
+- Not tested against a live model or a real isolated instance:
+  - a real conversation of the Global Superagent;
+  - the bubblewrap launch on a contained server (its plan is tested, not its run);
+  - whether the host's Claude Code version behaves as 2.1.311 did in the probes.
+
