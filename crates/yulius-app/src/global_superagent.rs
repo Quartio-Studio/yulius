@@ -815,6 +815,8 @@ mod tests {
             b"\x1b[200~/clear\x1b[201~".to_vec()
         );
         // No keyword Claude Code acts on is in the label (review round 7).
+        // Its instructions name the label as it is.
+        assert!(super::GLOBAL_INSTRUCTIONS.contains(super::MESSAGE_LABEL));
         let label = super::MESSAGE_LABEL.to_lowercase();
         assert!(
             !["ultraplan", "ultrathink", "ultracode"]

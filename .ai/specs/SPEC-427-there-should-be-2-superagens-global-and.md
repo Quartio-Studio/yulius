@@ -180,7 +180,7 @@ as the person's own agent does over the remote MCP.
 
 ## Evidence
 
-At `c8534735` (the branch, with `origin/dev` up to date), on 2026-11-06:
+At `c8534735` (the branch before its last merge of `origin/dev`, rerun after it below), on 2026-11-06:
 
 - `scripts/dev ci`: exit 0. Repository contracts, format, clippy, docs, macOS targets and deps
   pass; `cargo nextest run --workspace --profile ci` ran 3155 tests, 3155 passed, 16 skipped.
@@ -232,7 +232,7 @@ At `c8534735` (the branch, with `origin/dev` up to date), on 2026-11-06:
     the clock; tests.
   - Round 5: invisible characters anywhere; multi-part lines; a test that steps the clock back.
   - Round 6: characters Claude Code strips and then holds back, after which every message comes
-    after a fixed label; stricter emoji; UNC paths.
+    after a label (`Message from <login>:`, fixed in round 7); stricter emoji; UNC paths.
   - Round 7: **APPROVE**. Its minors were fixed: a fixed label (no login carries a keyword) that
     its instructions name; tests; docs.
 - Not run: `yulius security-scan` reports "Security scan disabled". Vidoc is turned off for this
