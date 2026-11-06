@@ -88,6 +88,9 @@ pub struct TranscriptFacts {
     pub last_turn_at: Option<yulius_domain::time::Timestamp>,
     /// A goal is open: set or "not met", not achieved, failed or cleared since (SPEC-079 BGW-005).
     pub goal_open: bool,
+    /// Claude Code last recorded the goal as set, not met or failed: its work is unfinished
+    /// (SPEC-429 ANS-002).
+    pub goal_unfinished: bool,
     /// Claude Code recorded a goal in this session (any outcome): a launch `/goal` was taken
     /// (SPEC-146 GWR-003).
     pub goal_recorded: bool,
@@ -171,6 +174,7 @@ impl TranscriptFacts {
                 }
                 self.goal_recorded = true;
                 self.goal_open = goal_stays_open(*outcome);
+                self.goal_unfinished = goal_unfinished(*outcome);
                 self.fold_goal(*outcome);
             }
             Observation::LimitReached { .. } => self.limit_pending = true,
@@ -207,6 +211,13 @@ impl TranscriptFacts {
             GoalOutcome::Set | GoalOutcome::Cleared => self.goal_achieved = Some(false),
         }
     }
+}
+
+/// Whether the goal's work is unfinished after Claude Code recorded `outcome`: set, not met or
+/// failed (SPEC-429 ANS-002).
+#[must_use]
+pub(crate) fn goal_unfinished(outcome: GoalOutcome) -> bool {
+    !matches!(outcome, GoalOutcome::Met | GoalOutcome::Cleared)
 }
 
 /// Whether the goal is open after Claude Code recorded `outcome`: set or not met yet, so a verdict
@@ -782,6 +793,12 @@ impl App {
         runtime
             .goal_open
             .store(goal_stays_open(outcome), Ordering::SeqCst);
+        // The UI reads it beside an idle task (Answered or Your turn): a record that came after the
+        // turn settled is published (SPEC-429 ANS-008).
+        let unfinished = goal_unfinished(outcome);
+        if runtime.goal_unfinished.swap(unfinished, Ordering::SeqCst) != unfinished {
+            self.publish_task(task_id).await;
+        }
         let verdict = matches!(
             outcome,
             GoalOutcome::Met | GoalOutcome::NotMet | GoalOutcome::Failed
@@ -840,6 +857,9 @@ impl App {
             runtime.goal_achieved.store(achieved, Ordering::SeqCst);
         }
         runtime.goal_open.store(facts.goal_open, Ordering::SeqCst);
+        runtime
+            .goal_unfinished
+            .store(facts.goal_unfinished, Ordering::SeqCst);
         // A goal recorded while Yulius was down was taken: a restarted launch-goal watch ends.
         if facts.goal_recorded {
             runtime.goal_submitted.store(true, Ordering::SeqCst);
@@ -1353,6 +1373,13 @@ impl App {
         self.existing_runtime(task_id)
             .is_some_and(|runtime| runtime.background_waits.load(Ordering::SeqCst) > 0)
     }
+
+    /// Whether Claude Code last recorded the task's goal as set, not met or failed (SPEC-429
+    /// ANS-002).
+    pub(crate) fn goal_unfinished(&self, task_id: &TaskId) -> bool {
+        self.existing_runtime(task_id)
+            .is_some_and(|runtime| runtime.goal_unfinished.load(Ordering::SeqCst))
+    }
 }
 
 #[cfg(test)]
@@ -1519,6 +1546,31 @@ mod tests {
         assert_eq!(stopped.turn_open, Some(false));
     }
 
+    /// SPEC-429 ANS-002: the goal's work is unfinished while Claude Code last recorded it set, not
+    /// met or failed; a met or cleared goal is not, and a prompt typed after a met goal (a
+    /// follow-up question) does not reopen it.
+    #[test]
+    fn the_last_goal_outcome_says_whether_its_work_is_unfinished() {
+        for (outcome, unfinished) in [
+            (GoalOutcome::Set, true),
+            (GoalOutcome::NotMet, true),
+            (GoalOutcome::Failed, true),
+            (GoalOutcome::Met, false),
+            (GoalOutcome::Cleared, false),
+        ] {
+            let facts = reduce(&[PROMPT, Observation::Goal(outcome, None), ENDED]);
+            assert_eq!(facts.goal_unfinished, unfinished, "{outcome:?}");
+        }
+        let follow_up = reduce(&[
+            Observation::Goal(GoalOutcome::Met, None),
+            ENDED,
+            PROMPT,
+            ENDED,
+        ]);
+        assert!(!follow_up.goal_unfinished, "answered after a met goal");
+        assert!(!reduce(&[PROMPT, ENDED]).goal_unfinished, "no goal");
+    }
+
     /// TSK-014: a replay is reduced to its final state, in transcript order.
     #[test]
     fn a_replayed_transcript_reduces_to_its_final_state() {
@@ -1541,6 +1593,7 @@ mod tests {
                 limit_pending: false,
                 last_turn_at: Some(Timestamp(1)),
                 goal_open: false,
+                goal_unfinished: false,
                 goal_recorded: true,
                 goal_retry: None,
                 turn_closed_at: None,

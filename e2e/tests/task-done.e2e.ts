@@ -93,6 +93,47 @@ test('an agent waiting for Yulius is Working, not your turn', async ({ app, brow
   await expect(screen.getByRole('region', 'Needs you').getByRole('link', /Checkout API/)).toBeVisible();
 });
 
+// SPEC-429 (task #17 of another project on 2026-11-06: "so all good here and you don't need
+// anything from me?" was answered "Yes, nothing is needed from you", and the task still read Your
+// turn under Needs you): an agent that stopped with nothing open answered. It is with the Done
+// tasks, counted nowhere and without "waiting for your reply"; work left is still Your turn.
+test('an agent that answered with nothing open is not your turn', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await firstShown(screen.getByRole('heading', { level: 1 }), '#12 Checkout API');
+
+  // A conversation without a plan: the agent answered and stopped.
+  await touchStudioTask(browser, 12, { activity: 'waiting', stepsList: [] });
+  const strip = browser.locator('.strip-status');
+  await expect(strip).toHaveText('Answered');
+  await expect(strip).toHaveAttribute('data-tone', 'done');
+  await expect(screen.getByRole('region', 'Done').getByRole('link', /Checkout API/)).toBeVisible();
+  await expect(screen.getByRole('region', 'Needs you').getByRole('link', /Checkout API/)).toBeHidden();
+  await expect(browser.locator('.attention-bar')).toBeHidden();
+
+  // Its goal failed: the work is unfinished, so the next move is the user's.
+  await touchStudioTask(browser, 12, { goal_unfinished: true });
+  await expect(strip).toHaveText(/Your turn/);
+  await expect(screen.getByRole('region', 'Needs you').getByRole('link', /Checkout API/)).toBeVisible();
+  await expect(browser.locator('.attention-bar')).toHaveText(/waiting for your reply/);
+
+  // A prompt typed into it: Working again.
+  await touchStudioTask(browser, 12, { activity: 'working', goal_unfinished: false });
+  await expect(strip).toHaveText(/Working/);
+
+  // The row's second line (the task graph, a screen reader's row) says it too (review of SPEC-429).
+  const lines = await browser.evaluate(async () => {
+    const statusUrl = '/assets/status.js';
+    const { activityLine } = await import(statusUrl);
+    const idle = { status: 'running', activity: 'waiting', steps: { done: 0, total: 0 } };
+    return {
+      answered: activityLine(idle),
+      unfinished: activityLine({ ...idle, goal_unfinished: true }),
+      midPlan: activityLine({ ...idle, steps: { done: 1, total: 3 } }),
+    };
+  });
+  expect(lines).toEqual({ answered: 'Agent answered — nothing asked of you', unfinished: 'Agent replied — your turn', midPlan: 'Agent replied — your turn' });
+});
+
 // SPEC-130 DMD-003 (#474, task #109 on 2026-10-14: "this is done but pr isnt purple"): its plan was
 // complete and its pull request's checks green, but its agent still waited in `yulius wait` for
 // the merge it had armed. Not Done before that merge: it goes on by itself.
@@ -185,7 +226,8 @@ test('a task view reads Done once its pull request is read late', async ({ app, 
   // it came before the release, so only the pull request read can make the strip Done.
   await expect(screen.getByRole('link', /^Needs you in the browser Task #10 AWS login for deploy/)).toBeVisible({ timeout: 15_000 });
   const strip = browser.locator('.strip-status');
-  await expect(strip).toHaveText('Your turn');
+  // Its plan is complete and nothing asks: before the pull request is read it answered (SPEC-429).
+  await expect(strip).toHaveText('Answered');
   await browser.evaluate(() => (window as unknown as HoldingGit).__releaseGit!());
   await expect(strip).toHaveText(/^Done · PR #221/);
 });

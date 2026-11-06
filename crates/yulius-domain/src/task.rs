@@ -410,6 +410,9 @@ pub struct AttentionFacts {
     pub chain_blocked: bool,
     /// The task has a plan with steps not done or skipped yet (STP-001).
     pub plan_open: bool,
+    /// Claude Code last recorded the session's goal as set, not met or failed: the goal's work
+    /// is unfinished (SPEC-429 ANS-002). A met or cleared goal is not.
+    pub goal_unfinished: bool,
     /// The idle agent left background shells running: it wakes by itself when they report.
     pub background_shells: bool,
     /// The idle agent waits in `yulius wait` (its checks, its delivery or an armed merge): it
@@ -448,8 +451,10 @@ impl AttentionFacts {
     /// keep it Working, an achieved goal makes it Done, an agent waiting in `yulius wait` (its
     /// armed merge) or checks still running (In review) keep it Working, and otherwise a tested or
     /// merged pull request makes it Done. Otherwise the task's own state: a
-    /// permission prompt or "Your turn" needs you (unless the agent's background shells still
-    /// run or it waits in `yulius wait`: it goes on by itself), an achieved goal is Done, a
+    /// permission prompt needs you, and so does "Your turn", an idle agent with steps open or an
+    /// unfinished goal (unless the agent's background shells still run or it waits in
+    /// `yulius wait`: it goes on by itself); an idle agent with neither answered and is Done
+    /// ("Answered", SPEC-429), as is an achieved goal; a
     /// queued, chained or prepared task is Queued (a chain whose predecessor ended otherwise needs you), and
     /// the rest is Working.
     #[must_use]
@@ -490,7 +495,11 @@ impl AttentionFacts {
             TaskStatus::Running => match self.activity {
                 Some(Activity::Waiting | Activity::Done) if self.background_shells => G::Working,
                 Some(Activity::Waiting) if self.yulius_wait => G::Working,
-                Some(Activity::NeedsAttention | Activity::Waiting) => G::NeedsYou,
+                // Stopped with work left: the person's turn (SPEC-429 ANS-002).
+                Some(Activity::Waiting) if self.plan_open || self.goal_unfinished => G::NeedsYou,
+                // Answered: nothing open and nothing asked (ANS-001).
+                Some(Activity::Waiting) => G::Done,
+                Some(Activity::NeedsAttention) => G::NeedsYou,
                 Some(Activity::Done) => G::Done,
                 Some(Activity::Working) | None => G::Working,
             },
@@ -851,6 +860,7 @@ mod tests {
             browser_request: false,
             chain_blocked: false,
             plan_open: false,
+            goal_unfinished: false,
             background_shells: false,
             yulius_wait: false,
             pull: None,
@@ -948,7 +958,12 @@ mod tests {
         let running = |activity| facts(TaskStatus::Running, Some(activity));
         // The task's own state.
         assert!(running(A::NeedsAttention).needs_you());
-        assert!(running(A::Waiting).needs_you(), "Your turn needs you");
+        let stopped_mid_plan = AttentionFacts {
+            plan_open: true,
+            ..running(A::Waiting)
+        };
+        assert!(stopped_mid_plan.needs_you(), "Your turn needs you");
+        assert!(!running(A::Waiting).needs_you(), "answered (SPEC-429)");
         assert!(!running(A::Working).needs_you());
         assert!(!running(A::Done).needs_you());
         assert!(!facts(TaskStatus::Running, None).needs_you());
@@ -1066,7 +1081,12 @@ mod tests {
             "running, no activity yet"
         );
         assert_eq!(running(Some(A::NeedsAttention)).group(), G::NeedsYou);
-        assert_eq!(running(Some(A::Waiting)).group(), G::NeedsYou);
+        assert_eq!(running(Some(A::Waiting)).group(), G::Done, "answered");
+        let your_turn = AttentionFacts {
+            plan_open: true,
+            ..running(Some(A::Waiting))
+        };
+        assert_eq!(your_turn.group(), G::NeedsYou);
         assert_eq!(running(Some(A::Done)).group(), G::Done);
         // Background shells keep a finished turn going: Working, not Your turn or Done.
         for activity in [A::Waiting, A::Done] {
@@ -1146,6 +1166,63 @@ mod tests {
         assert_eq!(with(A::Waiting, P::Errored, false).group(), G::Working);
         // While the agent works, the pull request does not count.
         assert_eq!(with(A::Working, P::Failing, false).group(), G::Working);
+    }
+
+    /// SPEC-429 (task #17 of another project on 2026-11-06: "so all good here and you don't need
+    /// anything from me?" answered "Yes, nothing is needed from you", and the task read Your turn
+    /// under Needs you): an idle agent with no open plan and no unfinished goal answered; nobody
+    /// has to act. Unfinished work and every explicit request still need a person.
+    #[test]
+    fn an_answered_turn_needs_nobody() {
+        use Activity as A;
+        use PullSignal as P;
+        use TaskGroup as G;
+        let answered = facts(TaskStatus::Running, Some(A::Waiting));
+        assert_eq!(answered.group(), G::Done, "answered: nothing open");
+        assert!(!answered.needs_you());
+        // Work left: open steps, or a goal set, not met or failed.
+        let open_plan = AttentionFacts {
+            plan_open: true,
+            ..answered
+        };
+        assert_eq!(open_plan.group(), G::NeedsYou, "stopped mid-plan");
+        let unfinished = AttentionFacts {
+            goal_unfinished: true,
+            ..answered
+        };
+        assert_eq!(unfinished.group(), G::NeedsYou, "its goal is unfinished");
+        // Explicit requests still need a person.
+        for asked in [
+            AttentionFacts {
+                activity: Some(A::NeedsAttention),
+                ..answered
+            },
+            AttentionFacts {
+                held_prompt: true,
+                ..answered
+            },
+            AttentionFacts {
+                browser_request: true,
+                ..answered
+            },
+            AttentionFacts {
+                pull: Some(P::Failing),
+                ..answered
+            },
+        ] {
+            assert_eq!(asked.group(), G::NeedsYou, "{asked:?}");
+        }
+        // Background work or a wait still reads Working.
+        let shells = AttentionFacts {
+            background_shells: true,
+            ..open_plan
+        };
+        assert_eq!(shells.group(), G::Working);
+        let waits = AttentionFacts {
+            yulius_wait: true,
+            ..unfinished
+        };
+        assert_eq!(waits.group(), G::Working);
     }
 
     /// A task being stopped is with the ended ones, as in the sidebar: a held prompt or a browser
