@@ -748,152 +748,49 @@ async fn the_global_bearer_is_bounded_per_minute() -> TestResult {
     Ok(())
 }
 
-async fn say(
-    f: &Fixture,
-    creds: &support::Creds,
-    text: &str,
-) -> Result<support::Resp, Box<dyn std::error::Error>> {
-    call(
-        &f.h.router,
-        Method::POST,
-        "/api/superagent/message",
-        Some(json!({"text": text})),
-        creds,
-    )
-    .await
-}
-
-/// GSA-007 (review round 2): the person talks to it by message only. Its terminal is read-only
-/// (keys could open an editor, a shell or a menu); each message is typed as one bracketed paste
-/// and Enter, `@` as `＠`; `!` lines and commands but /clear, /compact, /context and /cost are
-/// refused; Esc interrupts it.
+/// AC-GKY-1, AC-GKY-2 (SPEC-430): its person types into it as into the sandbox Superagent (keys,
+/// pastes and clicks reach its terminal); nobody else attaches to it; the message endpoints of
+/// SPEC-427 GSA-007 are gone.
 #[tokio::test]
-async fn the_person_talks_to_the_global_superagent_by_message_only() -> TestResult {
+async fn its_person_types_into_the_global_superagent() -> TestResult {
     let f = fixture().await?;
     let served = serve(f.h.router.clone()).await?;
-    let none = say(&f, &f.alice, "hello").await?;
-    assert_eq!(none.status, StatusCode::NOT_FOUND, "none runs yet");
     let id = global_id(&f, &f.alice).await?;
     let mut socket = attach(served.addr, &id, &f.alice).await?;
     let state = read_message(&mut socket, "state").await?;
-    assert_eq!(state["can_write"], false, "{state}");
+    assert_eq!(state["can_write"], true, "{state}");
     let mut screen = String::new();
     read_until(&mut socket, &mut screen, "ready").await?;
-
-    // Interrupt sends Esc (the fake's terminal echoes it as ^[); a second one right after is the
-    // same wish and is dropped: two would open Claude Code's rewind menu (review round 3).
-    let interrupt = || {
-        call(
-            &f.h.router,
-            Method::POST,
-            "/api/superagent/interrupt",
-            None,
-            &f.alice,
-        )
-    };
-    for _ in 0..2 {
-        let esc = interrupt().await?;
-        assert_eq!(esc.status, StatusCode::NO_CONTENT, "{:?}", esc.body);
-    }
-    read_until(&mut socket, &mut screen, "^[").await?;
-    // Past the gap it is sent again.
-    f.h.clock.0.fetch_add(2_001, Ordering::SeqCst);
-    let esc = interrupt().await?;
-    assert_eq!(esc.status, StatusCode::NO_CONTENT, "{:?}", esc.body);
-    read_until(&mut socket, &mut screen, "^[^[").await?;
-    // A clock that stepped back does not keep it closed (review round 5).
-    f.h.clock.0.fetch_sub(5_000, Ordering::SeqCst);
-    let esc = interrupt().await?;
-    assert_eq!(esc.status, StatusCode::NO_CONTENT, "{:?}", esc.body);
-    read_until(&mut socket, &mut screen, "^[^[^[").await?;
-
-    // A key is refused; a message is typed.
     socket
         .send(Message::text(
             json!({"type": "input", "data": "echo keyed-$((3+4))\r"}).to_string(),
         ))
         .await?;
-    let sent = say(&f, &f.alice, "echo said-$((2+3)) to ops@example.com").await?;
-    assert_eq!(sent.status, StatusCode::NO_CONTENT, "{:?}", sent.body);
-    read_until(&mut socket, &mut screen, "ops\u{ff20}example.com^[[201~").await?;
-    // After Yulius's label, so Claude Code never reads it as a command (review round 6).
-    assert!(
-        screen.contains("^[[200~Message from your person:"),
-        "{screen:?}"
+    // The fake's shell runs the line it got.
+    read_until(&mut socket, &mut screen, "keyed-7").await?;
+
+    let refused = ws_connect(
+        served.addr,
+        &format!("/api/shells/{id}/terminal"),
+        &f.carol,
+        ORIGIN,
+    )
+    .await;
+    assert_eq!(
+        refused.as_ref().err().and_then(ws_refusal_status),
+        Some(404)
     );
-    // Three Esc (the second interrupt, within the gap, was dropped), then the paste's two.
-    assert_eq!(screen.matches("^[").count(), 5, "{screen:?}");
-    assert!(!screen.contains("keyed-"), "a key reached it: {screen:?}");
-
-    for refused in [
-        "!cat /etc/passwd",
-        "/plugin install x@y",
-        "/memory",
-        "  ",
-        "/clear now",
-        "\u{feff}/plugin install x@y",
-        "exit",
-        "'/usr/share/pixmaps/x.png'",
-    ] {
-        let resp = say(&f, &f.alice, refused).await?;
-        assert_eq!(
-            resp.status,
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "{refused}: {:?}",
-            resp.body
-        );
+    for path in ["/api/superagent/message", "/api/superagent/interrupt"] {
+        let gone = call(
+            &f.h.router,
+            Method::POST,
+            path,
+            Some(json!({"text": "hello"})),
+            &f.alice,
+        )
+        .await?;
+        assert_eq!(gone.status, StatusCode::NOT_FOUND, "{path}: {:?}", gone.body);
     }
-    for allowed in ["/clear", "/compact"] {
-        let resp = say(&f, &f.alice, allowed).await?;
-        assert_eq!(
-            resp.status,
-            StatusCode::NO_CONTENT,
-            "{allowed}: {:?}",
-            resp.body
-        );
-    }
-    // Nobody else reaches it.
-    let carols = say(&f, &f.carol, "hello").await?;
-    assert_eq!(carols.status, StatusCode::NOT_FOUND);
-    f.h.app.end_all_shells().await;
-    Ok(())
-}
-
-/// Review round 4: a message whose request goes away between its paste and its Enter is still
-/// submitted, so no half-typed text waits for the next message to join it.
-#[tokio::test]
-async fn a_message_whose_request_goes_away_is_still_submitted() -> TestResult {
-    use yulius_app::ports::store::UserStore;
-
-    let f = fixture().await?;
-    let served = serve(f.h.router.clone()).await?;
-    let id = global_id(&f, &f.alice).await?;
-    let mut socket = attach(served.addr, &id, &f.alice).await?;
-    let mut screen = String::new();
-    read_until(&mut socket, &mut screen, "ready").await?;
-    let user =
-        f.h.store
-            .user(&UserId::parse("u-alice")?)
-            .await?
-            .ok_or("alice")?;
-    let ctx = yulius_app::auth::AuthContext {
-        user,
-        csrf_token: None,
-        session_hash: None,
-        token: None,
-    };
-    // Dropped once its paste shows, while it waits for the Enter.
-    let mut typing = Box::pin(
-        f.h.app
-            .global_superagent_message(&ctx, "echo detached-$((4+4))"),
-    );
-    tokio::select! {
-        done = &mut typing => return Err(format!("it ended before its paste showed: {done:?}").into()),
-        shown = read_until(&mut socket, &mut screen, "[201~") => shown?,
-    }
-    drop(typing);
-    // The Enter arrives: the fake's shell runs the line it got and says what it could not run.
-    read_until(&mut socket, &mut screen, "not found").await?;
     f.h.app.end_all_shells().await;
     Ok(())
 }
