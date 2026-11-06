@@ -343,6 +343,8 @@ test('the Superagent tabs move by drag, keyboard and menu and stay so', async ({
   await app.open(mock('/superagent'));
   await expect(all).toHaveAttribute('aria-selected', 'true');
   expect(await tabNames(browser, strip)).toEqual(['All sandboxes', 'This sandbox']);
+  // Its terminal takes the keyboard once it shows (SPEC-430): then the tab is focused.
+  await expect(browser.locator(`${shownAgent} .xterm-helper-textarea`)).toBeFocused();
   await all.focus();
   await browser.keyboard.press('ArrowRight');
   await browser.keyboard.press('End');
@@ -354,4 +356,44 @@ test('the Superagent tabs move by drag, keyboard and menu and stay so', async ({
   await browser.reload();
   await expect(all).toHaveAttribute('aria-selected', 'true');
   expect(await tabNames(browser, strip)).toEqual(['This sandbox', 'All sandboxes']);
+});
+
+test('an image pasted into the Global Superagent reaches it by path; text stays text; other files are not sent', async ({ app, browser }) => {
+  // SPEC-433: "I can't paste to the global superadmin". Kept in its own folder, inside its root.
+  await app.open(mock('/superagent'));
+  const terminal = browser.locator(`${shownAgent} .xterm-rows`);
+  await expect(terminal).toHaveText(/Welcome to Claude Code/);
+  const paste = (item: { image?: string; text?: string }) => browser.evaluate(([sel, it]) => {
+    const data = new DataTransfer();
+    if (it.image) data.items.add(new File(['img'], it.image, { type: 'image/png' }));
+    if (it.text) data.setData('text/plain', it.text);
+    document.querySelector(`${sel} .xterm-helper-textarea`)!.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
+  }, [shownAgent, item] as const);
+
+  // The panel is narrow: the path wraps where the row ends.
+  const typed = () => browser.evaluate((sel) => (document.querySelector(`${sel} .xterm-rows`)!.textContent || '').replace(/\s+/g, ''), shownAgent);
+  await paste({ image: 'image.png' });
+  await expect.poll(typed).toMatch(/\/srv\/yulius\/users\/you\/superagent\/attachments\/pasted-\d{8}-\d{6}\.png/);
+  await expect(browser.locator(`${shownAgent} .upload-text`)).toHaveText(/^Added pasted-\d{8}-\d{6}\.png$/);
+  await paste({ text: 'plain words' });
+  await expect(terminal).toHaveText(/plain words/);
+
+  // It has no file tools: a PDF dropped on it is not sent, and the status says why.
+  await browser.evaluate((sel) => {
+    const data = new DataTransfer();
+    data.items.add(new File(['%PDF'], 'notes.pdf', { type: 'application/pdf' }));
+    const target = document.querySelector(`${sel} .term`)!;
+    for (const type of ['dragenter', 'dragover']) target.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, composed: true, dataTransfer: data }));
+  }, shownAgent);
+  await expect(browser.locator(`${shownAgent} .drop-overlay`)).toHaveText('Drop an image to send to Claude');
+  await browser.evaluate((sel) => {
+    const data = new DataTransfer();
+    data.items.add(new File(['%PDF'], 'notes.pdf', { type: 'application/pdf' }));
+    document.querySelector(`${sel} .term`)!.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, composed: true, dataTransfer: data }));
+  }, shownAgent);
+  await expect(browser.locator(`${shownAgent} .upload-errors`)).toHaveText(/notes\.pdf: .*images only/);
+  await expect(terminal).not.toHaveText(/notes\.pdf/);
+  // Refused in the page, before any byte is sent (review round 1): only the image reached it.
+  expect(await browser.evaluate(() => (window as unknown as { __yuliusMock: { globalUploads?: number } }).__yuliusMock.globalUploads)).toBe(1);
+  expect(await axeViolations(browser)).toEqual([]);
 });

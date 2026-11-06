@@ -453,6 +453,20 @@ export function shellAttachments(ctx, sandboxId, shellId) {
   return (file, options) => ctx.api.post(`/api/sandboxes/${enc(sandboxId)}/shells/${enc(shellId)}/attachments?name=${encodeURIComponent(file.name)}`, file, options);
 }
 
+/** The images Claude Code reads from a pasted path, as the server's `IMAGE_EXTENSIONS`. */
+const GLOBAL_IMAGE = /\.(png|jpe?g|gif|webp)$/i;
+
+/**
+ * Uploads an image pasted into the person's Global Superagent, kept in its own folder (SPEC-433):
+ * it has no file tools to open anything else, so another file is refused here, before any byte
+ * is sent (review round 1), as the server would.
+ */
+export function globalSuperagentAttachments(ctx) {
+  return (file, options) => (GLOBAL_IMAGE.test(file.name)
+    ? ctx.api.post(`/api/superagent/attachments?name=${encodeURIComponent(file.name)}`, file, options)
+    : Promise.reject(new Error('the Global Superagent takes images only (PNG, JPEG, GIF or WebP): it has no file tools to open other files')));
+}
+
 /** `pasted-20261010-153012.png` for a clipboard image (always named `image.png`). */
 function pastedName(file) {
   const now = new Date();

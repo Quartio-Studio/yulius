@@ -140,7 +140,7 @@ watching, steering and unblocking.
   other and solve it". It sees every sandbox the person can see and keeps them in sync: "which of my sandboxes
   have failing CI?", "the API changed in acme/api, make its clients follow" or "tell every running
   task to merge dev" become tasks, pull requests and task messages in each sandbox, as the person,
-  without asking per action. The person types into its terminal and clicks in it exactly as in the sandbox Superagent's (SPEC-430); only they can open it. It has no shell or file tools: it works only through Yulius's tools
+  without asking per action. The person types into its terminal and clicks in it exactly as in the sandbox Superagent's (SPEC-430), and a screenshot pasted or an image dropped there reaches it as an image (SPEC-433); only they can open it. It has no shell or file tools: it works only through Yulius's tools
   (the remote MCP's, SPEC-247), and deploying, agent secrets, variables and adding or onboarding
   projects stay the person's, and the pull requests it opens are merged by a person or a task. Its conversation is kept in a folder of its own, so it continues
   when it starts again under another sandbox; a person with only read access has none (SPEC-427).

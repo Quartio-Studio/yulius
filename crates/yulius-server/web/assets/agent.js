@@ -11,7 +11,7 @@ import { DRAG_TAB_HINT, h, icon, openMenu, setChildren, emptyState, loadError, s
 import { createTerminalView } from './terminal.js';
 import { allows } from './status.js';
 import { href } from './router.js';
-import { attachTerminalDrop, shellAttachments } from './filedrop.js';
+import { attachTerminalDrop, globalSuperagentAttachments, shellAttachments } from './filedrop.js';
 import { isPhone } from './theme.js';
 import { readJson, writeJson } from './store.js';
 import { createTabDrag, movedBy } from './tabdrag.js';
@@ -343,8 +343,11 @@ export function createAgentView(ctx, sandbox, { openGlobal, onRequests } = {}) {
         open: (file) => ctx.openFile && ctx.openFile(sandbox, { root: 'sandbox', ...file }),
       },
     });
-    // Files dropped here (or a pasted image) reach Claude by path, as in a task's terminal.
-    if (!global) attachTerminalDrop(ctx, terminal, { label: 'Drop to send to Claude', upload: shellAttachments(ctx, sandbox.id, shell.id) });
+    // Files dropped here (or a pasted image) reach Claude by path, as in a task's terminal; the
+    // Global Superagent's images go to its own folder, the only one it sees (SPEC-433).
+    attachTerminalDrop(ctx, terminal, global
+      ? { label: 'Drop an image to send to Claude', upload: globalSuperagentAttachments(ctx) }
+      : { label: 'Drop to send to Claude', upload: shellAttachments(ctx, sandbox.id, shell.id) });
     setChildren(body, terminal.el);
     terminal.start();
     if (wantFocus) focus();

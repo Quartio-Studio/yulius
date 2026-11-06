@@ -12,6 +12,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   menu's Move left / Move right, as the sandbox and Notes tabs do. Each keeps its order in this
   browser (the terminals and Browser tabs per sandbox, a new one last). The Editor's file tabs,
   which already moved, show the grip too.
+- A screenshot pasted into the Global Superagent reaches it (SPEC-433, task #415, ADR-0277): in
+  the All sandboxes tab a pasted or dropped image did nothing. It is now kept in the Global
+  Superagent's own folder and its path pasted, which Claude Code turns into an image, as in a
+  sandbox's Superagent. It has no file tools, so other files are refused with "images only".
 - A task session whose Yulius MCP server Claude Code dropped is reconnected, and a superadmin can
   restart Yulius (SPEC-432, ADR-0276, task #414). A session lost `delivery_merge` and `ci_status`
   mid-goal and waited for a person to run `/mcp`. Now the session's `yulius mcp` bridge pings Yulius
