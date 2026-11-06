@@ -12,7 +12,7 @@ import { createTerminalView } from './terminal.js';
 import { attachTerminalDrop, shellAttachments } from './filedrop.js';
 import { createBrowserPanel } from './browser.js';
 import { createEditorView } from './editorview.js';
-import { createAgentView } from './agent.js';
+import { chosenSuperagentTab, createAgentView, createSuperagentPanel } from './agent.js';
 import { createNotesView } from './notes.js';
 import { allows } from './status.js';
 import { readJson, writeJson } from './store.js';
@@ -124,6 +124,12 @@ export function createPanelHost(ctx) {
   let recent = []; // sandbox ids whose views are kept, the one used last first
   const toolOf = new Map(); // sandbox id → the tool it had open, or null (SPEC-113 KST-005)
   const arriving = new Set(); // sandbox ids whose page is loading, not the context yet (SPEC-170)
+  // The page's one Global Superagent view, held by whichever Superagent panel shows its tab (SPEC-428).
+  let globalAgent = null;
+  const sharedGlobal = () => globalAgent || (globalAgent = createAgentView(ctx, null));
+  // The Superagent tab in front in every sandbox of this page: the stored choice once, then whatever
+  // a sandbox's panel shows (SAT-002, review round 2).
+  let agentTab = chosenSuperagentTab();
 
   // ---- width (default 45 % of the work area, resizable, remembered per user in this browser). The
   // work area is the room the centre and the panel share: the window less the rail and the sidebar,
@@ -170,8 +176,9 @@ export function createPanelHost(ctx) {
   }
 
   function createView(k) {
-    // Outside a sandbox the Superagent is the person's Global Superagent (SPEC-427 GSA-006).
-    if (k === 'agent') return createAgentView(ctx, sandbox);
+    // This sandbox's Superagent and the person's Global one, as tabs (SPEC-428); outside a sandbox
+    // only the Global one (SPEC-427 GSA-006).
+    if (k === 'agent') return createSuperagentPanel(ctx, sandbox, { global: sharedGlobal, tab: () => agentTab, onTab: (tab) => { agentTab = tab; } });
     if (!sandbox) return simpleView(h('div', { class: 'panel-msg' }, 'Open a sandbox first.'));
     if (k === 'browser') return createBrowserPanel(ctx, sandbox);
     // The selected task, while it is one of this view's sandbox (the view outlives a switch).
@@ -308,7 +315,14 @@ export function createPanelHost(ctx) {
     rail,
     panel,
     /** Sign-out: drop every tool view (terminals, browser, editor) and unsubscribe. */
-    destroy() { offs.forEach((off) => off()); window.removeEventListener('resize', refit); if (ctx.refitPanel === refit) ctx.refitPanel = null; destroyWhere(() => true); },
+    destroy() {
+      offs.forEach((off) => off());
+      window.removeEventListener('resize', refit);
+      if (ctx.refitPanel === refit) ctx.refitPanel = null;
+      destroyWhere(() => true);
+      if (globalAgent) globalAgent.destroy();
+      globalAgent = null;
+    },
     get railVisible() { return railVisible; },
     setRailVisible,
     /** Applies the remembered rail visibility once the rail is in the document. */
@@ -349,19 +363,21 @@ export function createPanelHost(ctx) {
         const editor = views.get(`editor:${sandbox.id}`);
         if (editor && editor.taskChanged) editor.taskChanged();
       }
+      // The Global Superagent in front: it stays open from page to page, in and out of sandboxes,
+      // and a sandbox entered starts no session of its own (SPEC-428 SAT-005).
+      const globalOpen = !panel.hidden && kind === 'agent' && (!left || agentTab === 'global');
       if (!sandbox) {
-        // The Global Superagent stays open from one page outside a sandbox to the next.
-        if (!panel.hidden && (sandboxChanged || kind !== 'agent')) close();
+        if (globalOpen && sandboxChanged) show('agent', { context: true });
+        else if (!panel.hidden && kind !== 'agent') close();
+        else if (!panel.hidden && sandboxChanged) close();
+      } else if (globalOpen && sandboxChanged) {
+        show('agent', { context: true, tab: 'global' });
       } else if (sandboxChanged && toolOf.has(sandbox.id)) {
         // Back in a sandbox: the tool it had open, or none (KST-005). A rail the person hid is shown
         // for that tool only, as for a Superagent link.
         const tool = toolOf.get(sandbox.id);
         if (tool) show(tool, { context: true, persistRail: false });
         else if (!panel.hidden) close();
-      } else if (!panel.hidden && sandboxChanged && !left && kind === 'agent') {
-        // The Global Superagent was open outside a sandbox: a sandbox entered starts no session of
-        // its own by itself (SPEC-427, review round 1).
-        close();
       // Shown again for the new context, not opened by the person: the keyboard stays with the page.
       } else if (!panel.hidden && kind && (sandboxChanged || taskChanged)) show(kind, { context: true });
       updateBadges();

@@ -1283,12 +1283,15 @@ the input as a command or exit word even when it held back text it stripped (`gl
 `/compact`, `/context` and `/cost` refused, as are characters nobody sees but an emoji's, exit words,
 image paths Claude Code would attach and the `ultraplan` keyword), and `POST /api/superagent/interrupt` sends Esc (one per 2 s), so
 neither its editor (`EDITOR`/`VISUAL` refuse too), its `!` mode nor its menus are reachable. It is
-not served `change_merge`. The web UI opens it from the tools rail
-outside a sandbox, where the rail shows only the Superagent.
+not served `change_merge`. The web UI shows it as the All sandboxes tab of the Superagent panel,
+beside This sandbox ([SPEC-428](../.ai/specs/SPEC-428-this-2-superagents-thingy-should-be-some.md),
+[decision 0272](decisions/0272-the-two-superagents-are-tabs-of-one-panel.md)): `panels.js` holds
+one Global view per page (`sharedGlobal`), which `createSuperagentPanel` moves into the panel
+showing that tab, so the session is attached once; outside a sandbox only that tab is enabled.
 
 ```mermaid
 flowchart LR
-  P["Person: rail on All sandboxes"] -->|"POST /api/superagent"| Y["Yulius"]
+  P["Person: Superagent panel, All sandboxes tab"] -->|"POST /api/superagent"| Y["Yulius"]
   Y -->|"spawn, bwrap root users/ID/superagent"| G["Global Superagent: claude --tools '' --strict-mcp-config"]
   G -->|"/mcp, gs_ bearer"| R["remote MCP tools minus WITHHELD_TOOLS (person's access per call)"]
   R --> A["sandbox A: tasks, CI, files, pull requests"]

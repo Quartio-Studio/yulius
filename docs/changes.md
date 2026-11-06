@@ -17,6 +17,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   so no chain starts and its slot is kept. A question or permission prompt, `needs_you`, a browser
   request, a held prompt, failing checks and a blocked chain still need a person, and the
   `needs_you` tool tells agents that a plain-text question reaches nobody.
+- The two Superagents are tabs of one Superagent panel (SPEC-428, task #410, ADR-0272): **This
+  sandbox** and **All sandboxes** (the Global Superagent), as the Notes tabs. The Global
+  Superagent is now one click away in every sandbox, stays in front across sandboxes once picked
+  (one session, its typed text kept, no sandbox Superagent started), and its message box suggests
+  "check what my sandboxes need from each other and solve it".
 
 ## 2026-11-05
 
