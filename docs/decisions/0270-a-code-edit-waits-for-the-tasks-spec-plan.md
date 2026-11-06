@@ -31,12 +31,10 @@ local check on Bash commands.
   workflow), and the task's spec does not exist yet or has no top-level Plan item. The reason says
   where to write the spec and what it needs. Everything else passes, and so does any failure to
   decide.
-- Like the Stop gate, it gives up after three denials in a turn, counted in rounds: denials within
-  3 s of a round's first (one response's parallel edits) are one round, so each round is a chance
-  for the agent to react. After the third round the rest of that turn's edits pass without a look
-  and the task's terminal says so once. A denial its client stopped waiting for (sent more than
-  5 s ago) went ahead already and is not counted. A spec Yulius cannot read, or a person telling the
-  agent to go on without one, does not leave the agent stuck.
+- Unlike the Stop gate, it never gives up. The agent can always get through: the spec is
+  documentation, which is never held. A person who wants no spec chooses a workflow without the
+  spec gate (Research, Docs, Chore). An agent that loops on denials meets the Stop gate, which asks
+  a person after three blocks.
 - The edit gate asks only for a Plan. Full validity is still the `Stop` gate's job, so a draft spec
   does not hold the work.
 
@@ -50,6 +48,10 @@ local check on Bash commands.
   read in shell text. The `Stop` gate still sees whatever such edits change.
 - **Use GitHub branch protection or required checks.** A free private repository cannot have
   them, and the gate has to run before the push, not after it. Yulius stays the enforcer.
+- **Give up after a few denials, as the Stop gate does** (tried in review): counting calls lets
+  one response's parallel edits use up the denials, and a time window cannot group them either,
+  because Claude Code runs each tool's hook as its block finishes streaming, often tens of seconds
+  apart. Any count lets code through before the agent has seen a single denial.
 - **A nudge as additional context, not a denial.** The briefing already gives that advice, and the
   report shows that advice alone is ignored.
 
@@ -61,7 +63,7 @@ local check on Bash commands.
 - Each edit-tool call costs one loopback round trip, with three store reads (the run, the task
   and its workflow) and a read of the spec file. While the spec is missing, each checked edit also
   looks for it under the specs directory (`yulius.toml` and up to 500 candidate files), as the Stop
-  gate does; once the gate gave up for the turn, edits are not checked at all.
+  gate does.
 - A worktree nested inside the repository (Claude Code's `.claude/worktrees/<name>/`) is judged
   from the task's root: a non-Markdown file under its `docs/` counts as code.
 - `..` is resolved by the text, before links: `<worktree>/linkdir/../api.rs` with `linkdir`

@@ -65,13 +65,12 @@ discovered at the end of a turn.
   when the task has no path), the `yulius-task` frontmatter, the Plan checklist and `spec_check`,
   says that documentation edits are not held, and tells the agent to make the edit again once the
   Plan is there.
-- **EDG-005 It gives up as the Stop gate does.** Denials are counted per turn (reset by the next
-  prompt) in rounds: denials within 3 s of a round's first (one response's parallel edits) are one
-  round. After three rounds, the rest of that turn's edits pass without a look and the task's
-  terminal says once that the agent's edits were refused three times for want of a Plan. A hook
-  its client stopped waiting for (sent more than 5 s ago) is answered with nothing and not
-  counted. A spec Yulius cannot read (a
-  link) or an agent told to go on without one is therefore not stuck.
+- **EDG-005 It never gives up.** Every such edit is denied until the Plan exists. The way through
+  is always open (the spec is documentation; a workflow without the spec gate for work that needs
+  none), and an agent that loops meets the Stop gate, which asks a person after three blocks.
+  Counting denials does not work: Claude Code runs each edit's hook as that tool's block finishes
+  streaming, so one response's edits can be tens of seconds apart and any count lets code through
+  before the agent saw a denial (review rounds 2 and 3).
 - **EDG-004 The rest of the gate is unchanged.** The `Stop` gate still requires a valid spec;
   the edit gate asks only for a Plan, so a draft spec being written does not hold the work.
 
@@ -83,7 +82,8 @@ discovered at the end of a turn.
 - [x] Claude Code sends edit tools' PreToolUse to Yulius
 - [x] ADR, architecture and docs describe the edit gate
 - [x] Independent review in a fresh session, findings fixed test-first
-- [ ] Review round 2 approves the fixed head
+- [x] Review round 2 approves the fixed head
+- [ ] The edit gate holds every edit until the Plan exists, reviewed in round 4
 - [ ] Every gate green, Evidence and the changes log updated
 
 ## Acceptance criteria
@@ -106,7 +106,7 @@ discovered at the end of a turn.
   worktree. Fails before the fix (the route answers `PreToolUse` with nothing).
 - `edits_are_placed_from_the_agents_folder_and_through_links` (relative paths from `cwd`, a link
   to the worktree, a nested-only Plan, a task without a spec path) and
-  `the_edit_gate_gives_up_after_three_denials_and_says_so` (EDG-005).
+  `the_edit_gate_holds_every_edit_until_the_plan_exists` (EDG-005).
 - `crates/yulius-harness` unit tests: the launch plan's `PreToolUse` entries (AC4) and the hook
   client's dispatch (an `Edit` reaches a loopback test server; a Bash self-match is denied without
   one); `an_edit_check_fails_open_and_is_never_held` (no server, a 500, a 202, a Write over 1 MiB

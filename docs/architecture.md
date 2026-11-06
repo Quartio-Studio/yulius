@@ -648,10 +648,11 @@ missing or invalid (`spec_gate`, DSC-013), at most three times. Before a code ed
 hook claude PreToolUse`, which fails open. `edit_gate` denies an edit of a non-documentation file
 in the task's worktree while the task needs a spec and its spec has no Plan item yet. The client
 sends only the event, the tool, the agent's folder and the path, and the hook is never held.
-Denials are counted in rounds (those within 3 s of a round's first, one response's parallel edits,
-are one); as the Stop gate does, the edit gate gives up after three rounds in a turn, says so in
-the task's terminal and stops looking until the next prompt. A goal task's long turn is therefore
-refused its first code edits until its plan exists
+Unlike the Stop gate it never gives up. Claude Code runs each edit's hook as that tool's block
+finishes streaming, so no count or time window tells one response from the next. The way through
+stays open (the spec is documentation), and an agent that loops meets the Stop gate, which asks a
+person after three blocks. A goal task's long turn therefore cannot change code with the edit
+tools before its plan exists; Bash edits are left to the Stop gate
 ([SPEC-426](../.ai/specs/SPEC-426-yulius-in-repo-when-the-org-doesnt-have.md),
 [decision 0270](decisions/0270-a-code-edit-waits-for-the-tasks-spec-plan.md)). Bash calls are
 checked in the sandbox (`guard_client`, a `pgrep -f` that matches itself) and never sent.

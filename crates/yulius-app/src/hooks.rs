@@ -27,12 +27,6 @@ use crate::ports::store::TaskFieldUpdate;
 
 /// Consecutive Stop-hook blocks per turn before the task needs attention (AC-DSC-3).
 pub const MAX_GATE_BLOCKS: u32 = 3;
-/// Edit-gate denials within this long of a round's first are one round (one response's
-/// parallel edits; SPEC-426 EDG-005).
-pub const EDIT_ROUND_MS: i64 = 3_000;
-/// A `PreToolUse` sent longer ago than this was given up by its client, whose edit went ahead
-/// (the hook client's request deadline).
-const EDIT_HOOK_PATIENCE_MS: i64 = 5_000;
 /// Largest repository document read for the briefing or the gate.
 const MAX_DOC_BYTES: u64 = 256 * 1024;
 /// Largest number of decision records read.
@@ -282,9 +276,7 @@ impl App {
             )),
             events::USER_PROMPT_SUBMIT => self.hook_prompt_submit(ctx, input, sent).await,
             events::STOP => self.hook_stop(ctx, input).await,
-            events::PRE_TOOL_USE => Ok(HookReply::Output(
-                self.hook_pre_tool_use(ctx, input, sent).await,
-            )),
+            events::PRE_TOOL_USE => Ok(HookReply::Output(self.hook_pre_tool_use(ctx, input).await)),
             events::NOTIFICATION => {
                 // Only a notice that asks a person to act needs one: Claude Code's reminder that
                 // it waits for input ("idle", about a minute after a turn ended) keeps a finished
@@ -716,9 +708,6 @@ impl App {
             store.update_task(&task.id, &update, self.now()).await?;
         }
         runtime.resumed_turn.store(false, Ordering::SeqCst);
-        if let Ok(mut turn) = runtime.edit_gate.lock() {
-            *turn = crate::supervisor::EditGateTurn::default();
-        }
         // The retry's prompt (or a person's) starts the turn an armed retry waited for.
         runtime.goal_retry_armed.store(false, Ordering::SeqCst);
         runtime.turn_began_ms.store(self.now().0, Ordering::SeqCst);
@@ -993,56 +982,18 @@ fn resolved_through_links(path: &Path) -> Option<PathBuf> {
 }
 
 impl App {
-    /// `PreToolUse`: the edit gate's answer (SPEC-426 EDG-005). Its denials are counted in
-    /// rounds, the agent's chances to react: those within [`EDIT_ROUND_MS`] of a round's first
-    /// (one response's parallel edits) are one round. After [`MAX_GATE_BLOCKS`] rounds the turn's
-    /// edits pass without a look, as the Stop gate gives up, and the task says so once. A hook its
-    /// client stopped waiting for (sent more than [`EDIT_HOOK_PATIENCE_MS`] ago) went ahead
-    /// already: it is answered with nothing and not counted. A failure to decide lets the edit go
-    /// ahead (the Stop gate still checks).
-    async fn hook_pre_tool_use(
-        &self,
-        ctx: &AgentContext,
-        input: &HookInput,
-        sent: i64,
-    ) -> HookOutput {
-        let runtime = self.runtime(&ctx.task.id);
-        if runtime.edit_gate.lock().is_ok_and(|turn| turn.gave_up) {
-            return HookOutput::default();
-        }
-        let reason = match self.edit_gate(&ctx.task, input).await {
-            Ok(Some(reason)) => reason,
-            Ok(None) => return HookOutput::default(),
+    /// `PreToolUse`: the edit gate's answer. It never gives up (SPEC-426 EDG-005): the spec is
+    /// documentation, so the way through stays open, and an agent that loops meets the Stop
+    /// gate. A failure to decide lets the edit go ahead (the Stop gate still checks).
+    async fn hook_pre_tool_use(&self, ctx: &AgentContext, input: &HookInput) -> HookOutput {
+        match self.edit_gate(&ctx.task, input).await {
+            Ok(Some(reason)) => HookOutput::deny_tool(reason),
+            Ok(None) => HookOutput::default(),
             Err(err) => {
                 tracing::warn!(error = %err, task = %ctx.task.id, "edit gate unavailable");
-                return HookOutput::default();
+                HookOutput::default()
             }
-        };
-        let now = self.now().0;
-        if now.saturating_sub(sent) > EDIT_HOOK_PATIENCE_MS {
-            return HookOutput::default();
         }
-        let Ok(mut turn) = runtime.edit_gate.lock() else {
-            return HookOutput::default();
-        };
-        if turn.gave_up {
-            return HookOutput::default();
-        }
-        if turn.rounds == 0 || now.saturating_sub(turn.round_began_ms) >= EDIT_ROUND_MS {
-            turn.rounds += 1;
-            turn.round_began_ms = now;
-        }
-        if turn.rounds <= MAX_GATE_BLOCKS {
-            return HookOutput::deny_tool(reason);
-        }
-        turn.gave_up = true;
-        drop(turn);
-        runtime.hub.notice(format!(
-            "Yulius: the agent's code edits were refused {MAX_GATE_BLOCKS} times because the \
-             task's spec has no Plan yet; the rest of this turn's edits go ahead, and the end of \
-             the turn still asks for the spec."
-        ));
-        HookOutput::default()
     }
 
     /// The discipline gate before a code edit (SPEC-426 EDG-002): `Some(reason)` when an edit

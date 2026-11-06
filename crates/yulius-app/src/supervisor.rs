@@ -103,17 +103,6 @@ struct ActiveRun {
     writer: Box<dyn RunWriter>,
 }
 
-/// The edit gate's denials in the current turn (SPEC-426 EDG-005).
-#[derive(Debug, Default)]
-pub(crate) struct EditGateTurn {
-    /// Denial rounds so far.
-    pub(crate) rounds: u32,
-    /// When the current round began (ms).
-    pub(crate) round_began_ms: i64,
-    /// The gate gave up for the rest of the turn.
-    pub(crate) gave_up: bool,
-}
-
 /// Runtime state of one task with a hub that outlives individual runs.
 pub struct TaskRuntime {
     /// Terminal fan-out.
@@ -290,8 +279,6 @@ pub struct TaskRuntime {
     pub(crate) person_held_ms: AtomicI64,
     /// Turn-end step nudges already given to the agent (`Nudge::key`), so each is given once.
     pub(crate) nudged: Mutex<std::collections::BTreeSet<String>>,
-    /// The edit gate's denials since the turn began (SPEC-426 EDG-005).
-    pub(crate) edit_gate: Mutex<EditGateTurn>,
     /// The terminal already said that this task acts on GitHub as the App, not its owner
     /// (F 2026-10-11), so it is said once.
     pub(crate) acting_as_app_said: AtomicBool,
@@ -427,7 +414,6 @@ impl TaskRuntime {
             person_freeze: std::sync::atomic::AtomicU8::new(0),
             person_held_ms: AtomicI64::new(0),
             nudged: Mutex::new(std::collections::BTreeSet::new()),
-            edit_gate: Mutex::new(EditGateTurn::default()),
             acting_as_app_said: AtomicBool::new(false),
             switch_refused_ms: AtomicI64::new(0),
             context: Mutex::new(crate::context_full::ContextEpisode::default()),
