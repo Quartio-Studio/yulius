@@ -1394,7 +1394,8 @@ resolves to nothing, the run gets the server without that variable or token.
     `WS /api/shells/{id}/terminal`, read-only (`can_write` false; an `input` frame answers an
     `error`); it is never in a sandbox's `GET …/shells`. `change_merge` is withheld too.
   - `POST /api/superagent/message` `{"text"}` → 204: types the message into the caller's Global
-    Superagent as one bracketed paste and Enter (control characters but LF and tab removed, `@` as
+    Superagent as one bracketed paste and Enter, after the label `Message from <login>:` (the four
+    commands alone; control characters but LF and tab removed, `@` as
     `＠`); 422 for an empty message, one over 64 KiB, one that starts with `!`, or with `/` but is
     not `/clear`, `/compact`, `/context` or `/cost`, one holding a character nobody sees (but an
     emoji's variation selector or joiner),

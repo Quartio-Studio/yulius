@@ -43,8 +43,13 @@ their task runs.
   Ctrl+G and `/memory` start an external editor (`vi` from the host) without any shell prefix,
   `/plugin` installs code, and `@path` attaches a file read as the server. So its terminal is
   read-only, and `POST /api/superagent/message` types each message as one bracketed paste and
-  Enter: control characters removed (no ESC ends the paste), `@` typed as `＠`, `!` lines and every
-  command but `/clear`, `/compact`, `/context` and `/cost` refused; `POST …/interrupt` sends Esc.
+  Enter, after the label `Message from <login>:` (one of `/clear`, `/compact`, `/context` and
+  `/cost` alone). Claude Code then never reads the input as a command, a `!` line or an exit
+  word, whatever it does with the characters of a message: when it strips some at submit it holds
+  the text back unsent, and the next message joins it, but every person's word comes after a word
+  of Yulius's. On top of that, control characters are removed (no ESC ends the paste), `@` is
+  typed as `＠`, and `!` lines, other commands, characters nobody sees, exit words, image paths and
+  a keyword command are refused (below); `POST …/interrupt` sends Esc.
   `EDITOR` and `VISUAL` name the refusing script as well.
 - **Its tools are the remote MCP's for its person, minus the person's decisions.** Its `gs_`
   bearer resolves to a caller acting as an operate token of its person would, with the actor
@@ -113,14 +118,20 @@ their task runs.
   isolated runs bind (ADR-0266). What it relies on was measured on 2.1.311: `--tools`,
   `--strict-mcp-config`, `--setting-sources`, `disableAllHooks`, `CLAUDE_CODE_SHELL_PREFIX`, and
   how Claude Code reads a message: its JavaScript trim drops U+FEFF before a `/`, and at submit it
-  strips characters nobody sees and then does not submit, so the text would join the next message
-  (`ex` and `it` make `exit`); such characters are refused but an emoji's variation selector and
-  joiner, which it keeps. Its exit words (`exit`, `quit`, `:q` and the like) are refused. Another release may read messages differently.
+  strips characters nobody sees (and a few more, such as U+16FE4 and U+1107F) and then does not
+  submit. The label keeps such held text harmless; Yulius still refuses those characters, except
+  in a conservative set of emoji (a selector after a pictograph or in a keycap, a joiner between
+  pictographs, a subdivision flag's tags), refusing some Claude Code would keep (in other scripts,
+  rarer emoji). Its exit words (`exit`, `quit`, `:q` and the like) are refused. Another release
+  may read messages differently; the label does not depend on that.
 - Claude Code attaches an image file a pasted line names: the line is split before each space a
   path follows, and when every part is a path (or there is one part), each one unquoted and
   unescaped that is an absolute path ending in `.png`, `.jpg`, `.jpeg`, `.gif` or `.webp` is read;
   such a message is refused, as is a one-part line of a bare image name (which it compares with
-  the clipboard) and, to be safe, a drive path. A path in a sentence is text to it and passes. The
+  the clipboard) and, to be safe, a drive path; a part starting `\\` counts as a path. A path in
+  a sentence is text to it and passes. A one-part line naming an image with spaces in it (`look
+  at shot.png`) passes; Claude Code compares it with the clipboard by a fixed command, which finds
+  nothing on the server. The
   word `ultraplan` can start a command of its own (2.1.311, behind a feature flag); a message
   holding it anywhere is refused, more than Claude Code would act on.
 - Every one of its tools is pre-allowed, on an uncontained server too: no key reaches it, so no

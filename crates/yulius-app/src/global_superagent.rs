@@ -93,26 +93,28 @@ const INTERRUPT_GAP_MS: i64 = 2_000;
 ///
 /// # Errors
 /// `Invalid` for an empty or oversized message, a `!` line, another command, hidden characters,
-/// an exit word or a lone path.
+/// an exit word, an image path Claude Code would attach or its keyword command.
 pub fn global_message(text: &str) -> AppResult<String> {
     // Claude Code strips these at submit and then does not submit, so the text would wait for the
     // next message to join it (`ex` + `it`); it keeps only an emoji's variation selector and the
     // joiner between two emoji (review round 5).
+    // Line and paragraph separators are line breaks (Claude Code makes them so too).
+    let text = text.replace(['\u{2028}', '\u{2029}'], "\n");
     let chars: Vec<char> = text.chars().collect();
     for (at, c) in chars.iter().enumerate() {
-        if c.is_control() || !crate::cross_sandbox::unseen(*c) {
+        // Two more that Claude Code strips (2.1.311).
+        let stripped = matches!(c, '\u{16fe4}' | '\u{1107f}');
+        if c.is_control() || !(stripped || crate::cross_sandbox::unseen(*c)) {
             continue;
         }
-        let before = at.checked_sub(1).and_then(|i| chars.get(i)).copied();
-        let after = chars.get(at + 1).copied();
-        if !emoji_part(*c, before, after) {
+        if stripped || !emoji_part(&chars, at) {
             return Err(AppError::Invalid(format!(
                 "the message holds a character nobody sees (U+{:04X}); remove it",
                 u32::from(*c)
             )));
         }
     }
-    let text = crate::task_message::clean_message(text);
+    let text = crate::task_message::clean_message(&text);
     if EXIT_WORDS.contains(&text.as_str()) {
         return Err(AppError::Invalid(
             "that word would end the Global Superagent's session; close its panel instead".into(),
@@ -151,6 +153,22 @@ pub fn global_message(text: &str) -> AppResult<String> {
     Ok(text.replace('@', "\u{ff20}"))
 }
 
+/// The bytes typed for a (checked) message from `login`: one bracketed paste, a command alone,
+/// any other text after the label `Message from <login>:` (review round 6). Claude Code then
+/// never reads the input as a command, `!` line or exit word, also when it held text back that it
+/// stripped, since everything the person writes comes after a visible word of Yulius's.
+#[must_use]
+pub fn global_paste(login: &str, text: &str) -> Vec<u8> {
+    if GLOBAL_COMMANDS.contains(&text) {
+        return format!("\x1b[200~{text}\x1b[201~").into_bytes();
+    }
+    let login: String = crate::task_message::clean_message(login)
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        .collect();
+    format!("\x1b[200~Message from {login}:\n\n{text}\x1b[201~").into_bytes()
+}
+
 /// A word that dispatches a command wherever it is in a message (Claude Code 2.1.311).
 const KEYWORD_COMMAND: &str = "ultraplan";
 
@@ -159,8 +177,9 @@ const IMAGE_EXTENSIONS: &[&str] = &[".png", ".jpg", ".jpeg", ".gif", ".webp"];
 
 /// Whether Claude Code would attach an image file for `text`, as 2.1.311 reads a paste: each
 /// line split before every space that a path follows (`/`, or a drive like `C:\`, optionally
-/// quoted), each part unquoted once and unescaped; a part that is an absolute path, or a name
-/// without spaces (it would look for it on the clipboard), ending in an image extension.
+/// quoted); a line of several parts is text unless every part is a path (`/`, `\\`, a drive);
+/// otherwise each part unquoted once and unescaped that is an absolute path, or a name without
+/// spaces (it would look for it on the clipboard), ending in an image extension.
 fn attaches_an_image(text: &str) -> bool {
     let trim = |part: &str| {
         part.trim_matches(|c: char| c.is_whitespace() || c == '\u{feff}')
@@ -175,7 +194,7 @@ fn attaches_an_image(text: &str) -> bool {
         // A line of several parts is text unless every part is a path.
         let pathlike = |part: &String| {
             let part = unquote(part);
-            part.starts_with('/') || drive_path(part)
+            part.starts_with('/') || part.starts_with("\\\\") || drive_path(part)
         };
         if parts.len() > 1 && !parts.iter().all(pathlike) {
             return false;
@@ -191,16 +210,69 @@ fn attaches_an_image(text: &str) -> bool {
     })
 }
 
-/// Whether the invisible `c` belongs to an emoji, as Claude Code keeps it: a variation selector
-/// right after a character from U+00A9 on, or a zero-width joiner between two of them (after a
-/// variation selector too).
-fn emoji_part(c: char, before: Option<char>, after: Option<char>) -> bool {
-    let emoji = |c: Option<char>| {
-        c.is_some_and(|c| u32::from(c) >= 0xA9 && !crate::cross_sandbox::unseen(c))
+/// Characters that take an emoji's variation selector or joiner here: a subset of Unicode's
+/// emoji and pictographs, so whatever Claude Code would strip around them is refused instead.
+fn pictograph(c: char) -> bool {
+    matches!(u32::from(c),
+        0x00A9 | 0x00AE | 0x203C | 0x2049 | 0x2122 | 0x2139 | 0x2194..=0x2199 | 0x21A9 | 0x21AA
+        | 0x231A | 0x231B | 0x2328 | 0x23CF | 0x23E9..=0x23F3 | 0x23F8..=0x23FA | 0x2614 | 0x2615
+        | 0x2639 | 0x263A | 0x2640 | 0x2642 | 0x2648..=0x2653 | 0x2660 | 0x2663 | 0x2665 | 0x2666
+        | 0x2668 | 0x267B | 0x267F | 0x26A0 | 0x26A1 | 0x26AA | 0x26AB | 0x26BD | 0x26BE | 0x26C4
+        | 0x26C5 | 0x26D4 | 0x26EA | 0x26F2 | 0x26F3 | 0x26F5 | 0x26FA | 0x26FD | 0x2702 | 0x2705
+        | 0x2708..=0x270D | 0x270F | 0x2712 | 0x2714 | 0x2716 | 0x271D | 0x2721 | 0x2728 | 0x2733
+        | 0x2734 | 0x2744 | 0x2747 | 0x274C | 0x274E | 0x2753..=0x2755 | 0x2757 | 0x2763 | 0x2764
+        | 0x2795..=0x2797 | 0x27A1 | 0x27B0 | 0x27BF | 0x2B1B | 0x2B1C | 0x2B50 | 0x2B55
+        | 0x1F300..=0x1F3FA | 0x1F400..=0x1F64F | 0x1F680..=0x1F6FF | 0x1F900..=0x1F9FF
+        | 0x1FA70..=0x1FAFF)
+}
+
+/// Skin tones, which may stand between an emoji and its joiner.
+fn skin_tone(c: char) -> bool {
+    matches!(u32::from(c), 0x1F3FB..=0x1F3FF)
+}
+
+/// The tag letters of the three flags made of them (England, Scotland, Wales) after U+1F3F4.
+const TAG_FLAGS: [&str; 3] = ["gbeng", "gbsct", "gbwls"];
+
+/// Whether the invisible character at `at` belongs to an emoji (review rounds 5 and 6): a
+/// variation selector after a pictograph or in a keycap (`1️⃣`), a joiner between two
+/// pictographs (a selector or a skin tone may come between), or the tags of a subdivision flag.
+fn emoji_part(chars: &[char], at: usize) -> bool {
+    let get = |i: Option<usize>| i.and_then(|i| chars.get(i)).copied();
+    let Some(c) = get(Some(at)) else {
+        return false;
     };
+    let before = get(at.checked_sub(1));
+    let after = get(at.checked_add(1));
     match c {
-        '\u{fe0e}' | '\u{fe0f}' => emoji(before),
-        '\u{200d}' => (emoji(before) || before == Some('\u{fe0f}')) && emoji(after),
+        '\u{fe0e}' | '\u{fe0f}' => {
+            before.is_some_and(pictograph)
+                || (before.is_some_and(|b| b.is_ascii_digit() || b == '#' || b == '*')
+                    && after == Some('\u{20e3}'))
+        }
+        '\u{200d}' => {
+            let mut base = at.checked_sub(1);
+            if get(base).is_some_and(skin_tone) {
+                base = base.and_then(|i| i.checked_sub(1));
+            }
+            if get(base) == Some('\u{fe0f}') {
+                base = base.and_then(|i| i.checked_sub(1));
+            }
+            get(base).is_some_and(pictograph) && after.is_some_and(pictograph)
+        }
+        '\u{e0020}'..='\u{e007f}' => TAG_FLAGS.iter().any(|flag| {
+            let tags: Vec<char> = flag
+                .chars()
+                .filter_map(|letter| char::from_u32(0xE0000 + u32::from(letter)))
+                .chain(['\u{e007f}'])
+                .collect();
+            (1..=tags.len()).any(|offset| {
+                at.checked_sub(offset).is_some_and(|start| {
+                    chars.get(start) == Some(&'\u{1f3f4}')
+                        && chars.get(start + 1..start + 1 + tags.len()) == Some(tags.as_slice())
+                })
+            })
+        }),
         _ => false,
     }
 }
@@ -504,6 +576,7 @@ impl App {
     pub async fn global_superagent_message(&self, ctx: &AuthContext, text: &str) -> AppResult<()> {
         let text = global_message(text)?;
         let runtime = self.reachable_global_superagent(ctx).await?;
+        let login = self.login_of(&ctx.user.id).await;
         // Detached: a client that goes away between the paste and its Enter leaves no text
         // waiting in its input for the next message to add to (review round 3).
         Self::run_detached(async move {
@@ -511,9 +584,7 @@ impl App {
             let writer = writer
                 .as_mut()
                 .ok_or_else(|| AppError::Conflict("the Global Superagent has ended".into()))?;
-            writer
-                .input(format!("\x1b[200~{text}\x1b[201~").as_bytes())
-                .await?;
+            writer.input(&global_paste(&login, &text)).await?;
             tokio::time::sleep(crate::task_message::SUBMIT_DELAY).await;
             writer.input(b"\r").await
         })
@@ -729,6 +800,51 @@ mod tests {
         ] {
             assert!(global_message(allowed).is_ok(), "{allowed:?}");
         }
+    }
+
+    /// Review round 6: Claude Code holds back a message it stripped, so every one but a command
+    /// comes after a label of Yulius's; the characters it strips are refused, an emoji's kept.
+    #[test]
+    fn a_message_comes_after_a_label_and_only_emoji_keep_invisible_characters() {
+        assert_eq!(
+            super::global_paste("alice", "/x then exit"),
+            b"\x1b[200~Message from alice:\n\n/x then exit\x1b[201~".to_vec()
+        );
+        assert_eq!(
+            super::global_paste("al\u{1b}ice/", "/clear"),
+            b"\x1b[200~/clear\x1b[201~".to_vec()
+        );
+        assert_eq!(
+            super::global_paste("al\u{1b}ice/", "hi"),
+            b"\x1b[200~Message from alice:\n\nhi\x1b[201~".to_vec()
+        );
+        assert_eq!(global_message("a\u{2028}b").ok().as_deref(), Some("a\nb"));
+        for refused in [
+            "\u{16fe4}/memory",
+            "ex\u{16fe4}",
+            "ex\u{1107f}",
+            "\u{e9}\u{fe0f}",
+            "\u{4e2d}\u{fe0f}",
+            "\u{1f600}\u{200d}\u{e9}",
+            "\u{e9}\u{200d}\u{1f600}",
+            "\u{1f1e6}\u{fe0f}\u{200d}\u{1f600}",
+            "\\\\a /usr/share/pixmaps/x.png",
+            "\u{e0067}\u{e0062}",
+        ] {
+            assert!(global_message(refused).is_err(), "{refused:?}");
+        }
+        for allowed in [
+            "1\u{fe0f}\u{20e3} done",
+            "\u{1f3f4}\u{e0067}\u{e0062}\u{e0065}\u{e006e}\u{e0067}\u{e007f} team",
+            "\u{1f44d}\u{1f3fd}",
+            "\u{1f469}\u{1f3fd}\u{200d}\u{1f4bb}",
+            "\u{1f1f5}\u{1f1f1}",
+            "\u{1f3f3}\u{fe0f}\u{200d}\u{1f308}",
+            "\u{2764}\u{fe0f}",
+        ] {
+            assert!(global_message(allowed).is_ok(), "{allowed:?}");
+        }
+        assert!(super::attaches_an_image("/usr/share/x.png\u{feff}"));
     }
 
     /// Review round 2: it cannot merge what it opened.

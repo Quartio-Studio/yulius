@@ -1240,8 +1240,9 @@ requests a minute. A removed host ends it, and the next `POST /api/superagent` l
 its person lost write access; it then starts under the oldest sandbox the person can work in,
 resuming the conversation kept in its folder. Its `shell.json` is version 2, which older releases
 end and remove. No key of the person reaches it (`ShellAttach::takes_keys`, `can_write` false):
-`POST /api/superagent/message` types each message as one bracketed paste and Enter
-(`global_message`: control characters removed, `@` as `＠`, `!` lines and commands but `/clear`,
+`POST /api/superagent/message` types each message as one bracketed paste and Enter, after the
+label `Message from <login>:` (`global_paste`; the four commands alone), so Claude Code never reads
+the input as a command or exit word even when it held back text it stripped (`global_message`: control characters removed, `@` as `＠`, `!` lines and commands but `/clear`,
 `/compact`, `/context` and `/cost` refused, as are characters nobody sees but an emoji's, exit words,
 image paths Claude Code would attach and the `ultraplan` keyword), and `POST /api/superagent/interrupt` sends Esc (one per 2 s), so
 neither its editor (`EDITOR`/`VISUAL` refuse too), its `!` mode nor its menus are reachable. It is

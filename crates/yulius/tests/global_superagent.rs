@@ -816,6 +816,8 @@ async fn the_person_talks_to_the_global_superagent_by_message_only() -> TestResu
     let sent = say(&f, &f.alice, "echo said-$((2+3)) to ops@example.com").await?;
     assert_eq!(sent.status, StatusCode::NO_CONTENT, "{:?}", sent.body);
     read_until(&mut socket, &mut screen, "ops\u{ff20}example.com^[[201~").await?;
+    // After Yulius's label, so Claude Code never reads it as a command (review round 6).
+    assert!(screen.contains("^[[200~Message from alice:"), "{screen:?}");
     // Three Esc (the second interrupt, within the gap, was dropped), then the paste's two.
     assert_eq!(screen.matches("^[").count(), 5, "{screen:?}");
     assert!(!screen.contains("keyed-"), "a key reached it: {screen:?}");
