@@ -36,6 +36,7 @@ use yulius_domain::permission::Action;
 use yulius_domain::time::Timestamp;
 
 use crate::auth::{AuthContext, hex_token};
+use crate::cockpit::Seat;
 use crate::context::App;
 use crate::error::{AppError, AppResult};
 use crate::hub::{Hub, Subscription};
@@ -47,6 +48,8 @@ use crate::write_grant::WriteGrant;
 
 /// Prefix of a Cockpit's Yulius MCP bearer (SPEC-037).
 pub const COCKPIT_TOKEN_PREFIX: &str = "ck_";
+/// Prefix of a Global Superagent's Yulius MCP bearer (SPEC-427 GSA-003).
+pub const GLOBAL_TOKEN_PREFIX: &str = "gs_";
 /// The exit status a Cockpit's viewers get when it ended to start again on another subscription
 /// (SPEC-074 SUP-004): the panel follows it to the new one.
 pub const SWITCHED_STATUS: &str = "switched";
@@ -61,6 +64,8 @@ pub(crate) const COCKPIT_NOT_MOVED: &str = "The Superagent could not move to ano
      process could not be ended, so it stays on this one.";
 /// What a Cockpit's bearer is derived for, hashed with its host token.
 const COCKPIT_TOKEN_LABEL: &[u8] = b"yulius-cockpit-mcp\0";
+/// What a Global Superagent's bearer is derived from instead (SPEC-427).
+const GLOBAL_TOKEN_LABEL: &[u8] = b"yulius-global-superagent-mcp\0";
 
 /// Live shells allowed per user and sandbox.
 pub const MAX_SHELLS_PER_SANDBOX: usize = 8;
@@ -96,6 +101,9 @@ const MAX_ORPHANS: usize = 1024;
 const SHELL_FILE: &str = "shell.json";
 /// Version of [`ShellFile`].
 const SHELL_FILE_VERSION: u32 = 1;
+/// A Global Superagent's record (SPEC-427): a Yulius from before it ends and removes the record
+/// it cannot read, instead of adopting it as its host sandbox's Superagent (review round 1).
+const GLOBAL_SHELL_FILE_VERSION: u32 = 2;
 /// Time allowed to reattach to one surviving shell at startup.
 const ADOPT_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -122,13 +130,13 @@ pub struct ShellState {
     /// Serialises the Cockpit starts of one user in one sandbox (one Cockpit each); other users
     /// and sandboxes never wait for them.
     #[allow(clippy::type_complexity)]
-    pub(crate) cockpit_start: Mutex<HashMap<(UserId, SandboxId), Arc<tokio::sync::Mutex<()>>>>,
+    pub(crate) cockpit_start: Mutex<HashMap<(UserId, Seat), Arc<tokio::sync::Mutex<()>>>>,
     /// The conversation each user's Cockpit could not resume (it exited at once), by sandbox:
     /// the next start begins a fresh one instead of failing the same way.
-    pub(crate) cockpit_unresumable: Mutex<HashMap<(UserId, SandboxId), String>>,
+    pub(crate) cockpit_unresumable: Mutex<HashMap<(UserId, Seat), String>>,
     /// The Cockpits a usage limit ended whose start on another subscription failed: the next
     /// start still continues the cut turn (SPEC-074 SUP-004).
-    pub(crate) cockpit_continue: Mutex<std::collections::HashSet<(UserId, SandboxId)>>,
+    pub(crate) cockpit_continue: Mutex<std::collections::HashSet<(UserId, Seat)>>,
     /// The next creation number (tab order among shells created in the same millisecond).
     next_seq: AtomicU64,
 }
@@ -154,6 +162,10 @@ pub struct ShellRuntime {
     /// Whether an adopted Cockpit is to start again to get what this Yulius serves:
     /// [`crate::cockpit::REFRESH_NONE`], `REFRESH_DUE` or `REFRESH_WAITING` (for its turn).
     pub(crate) refresh: AtomicU8,
+    /// A Cockpit that is its person's Global Superagent (SPEC-427): `sandbox` only hosts it.
+    pub(crate) global: bool,
+    /// When Yulius last sent a Global Superagent an interrupt (ms; 0: never).
+    pub(crate) interrupted_ms: AtomicI64,
     sandbox: SandboxId,
     creator: UserId,
     task: Option<TaskId>,
@@ -169,7 +181,7 @@ pub struct ShellRuntime {
     hub: Hub,
     /// A Cockpit's screen is redacted of agent secrets, as a task's (SPEC-147 SAM-004).
     scrub: crate::vault::TerminalScrub,
-    writer: tokio::sync::Mutex<Option<Box<dyn RunWriter>>>,
+    pub(crate) writer: tokio::sync::Mutex<Option<Box<dyn RunWriter>>>,
     ended: AtomicBool,
     /// Its owner closed it: hidden and refused while it ends.
     closing: AtomicBool,
@@ -236,6 +248,9 @@ struct ShellFile {
     /// The launch digest a Cockpit was started with (absent in older records, SPEC-186).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     launch: Option<String>,
+    /// A Global Superagent's record (absent for every other shell, SPEC-427).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    global: bool,
     /// Sealed host token, lowercase hex.
     token: String,
 }
@@ -247,10 +262,25 @@ impl ShellRuntime {
         &self.id
     }
 
-    /// Owning sandbox.
+    /// Owning sandbox (a Global Superagent's host).
     #[must_use]
     pub fn sandbox(&self) -> &SandboxId {
         &self.sandbox
+    }
+
+    /// Whether it is its person's Global Superagent (SPEC-427).
+    #[must_use]
+    pub fn is_global_superagent(&self) -> bool {
+        self.kind == ShellKind::Cockpit && self.global
+    }
+
+    /// Where a Cockpit sits: its sandbox, or its person's global seat (SPEC-427).
+    pub(crate) fn seat(&self) -> Seat {
+        if self.global {
+            Seat::Global
+        } else {
+            Seat::Sandbox(self.sandbox.clone())
+        }
     }
 
     /// The user who opened the shell.
@@ -274,10 +304,16 @@ impl ShellRuntime {
     /// The Cockpit's bearer for the Yulius MCP server (SPEC-037 MGT-005): `ck_` and the SHA-256
     /// of a fixed label and the host token. The host token is persisted with the shell, so the
     /// bearer survives a server restart with its Cockpit; the hash reveals nothing about it.
+    /// A Global Superagent's is `gs_` of another label (SPEC-427 GSA-003).
     pub(crate) fn cockpit_token(&self, crypto: &dyn crate::ports::Crypto) -> String {
-        let mut data = COCKPIT_TOKEN_LABEL.to_vec();
+        let (prefix, label) = if self.global {
+            (GLOBAL_TOKEN_PREFIX, GLOBAL_TOKEN_LABEL)
+        } else {
+            (COCKPIT_TOKEN_PREFIX, COCKPIT_TOKEN_LABEL)
+        };
+        let mut data = label.to_vec();
         data.extend_from_slice(&self.token);
-        format!("{COCKPIT_TOKEN_PREFIX}{}", crypto.sha256_hex(&data))
+        format!("{prefix}{}", crypto.sha256_hex(&data))
     }
 
     /// Tells the shell's viewers something (a short line beside the terminal).
@@ -332,6 +368,13 @@ pub struct ShellAttach {
 }
 
 impl ShellAttach {
+    /// Whether its viewers type into it: a Global Superagent takes messages instead (SPEC-427
+    /// GSA-007), so its terminal is read-only.
+    #[must_use]
+    pub fn takes_keys(&self) -> bool {
+        !self.runtime.is_global_superagent()
+    }
+
     /// PTY size (cols, rows).
     #[must_use]
     pub fn size(&self) -> (u16, u16) {
@@ -663,6 +706,7 @@ impl App {
                 task_id,
                 &cwd,
                 name,
+                false,
             );
             map.insert(id.clone(), Arc::clone(&runtime));
             runtime
@@ -781,7 +825,11 @@ impl App {
     pub(crate) fn save_shell(&self, runtime: &ShellRuntime) -> AppResult<()> {
         let sealed = self.deps.crypto.seal(&runtime.token)?;
         let file = ShellFile {
-            version: SHELL_FILE_VERSION,
+            version: if runtime.global {
+                GLOBAL_SHELL_FILE_VERSION
+            } else {
+                SHELL_FILE_VERSION
+            },
             id: runtime.id.clone(),
             sandbox: runtime.sandbox.as_str().to_owned(),
             creator: runtime.creator.as_str().to_owned(),
@@ -794,6 +842,7 @@ impl App {
             limit_handled_at: Some(runtime.limit_handled_ms.load(Ordering::SeqCst))
                 .filter(|ms| *ms > 0),
             launch: runtime.launch.get().cloned(),
+            global: runtime.global,
             token: hex_token(&sealed.0),
         };
         write_shell_file(&runtime.run_dir, &file).map_err(AppError::internal)
@@ -816,6 +865,7 @@ impl App {
         task: Option<TaskId>,
         cwd: &Path,
         name: String,
+        global: bool,
     ) -> Arc<ShellRuntime> {
         Arc::new(ShellRuntime {
             id: id.to_owned(),
@@ -826,6 +876,8 @@ impl App {
             limit_handled_ms: AtomicI64::new(0),
             launch: OnceLock::new(),
             refresh: AtomicU8::new(crate::cockpit::REFRESH_NONE),
+            global,
+            interrupted_ms: AtomicI64::new(0),
             sandbox: sandbox.clone(),
             creator: creator.clone(),
             task,
@@ -1246,6 +1298,12 @@ impl App {
         if data.len() > MAX_SHELL_INPUT_BYTES {
             return Err(AppError::Invalid("input frame too large".into()));
         }
+        // A key could open an editor, a shell or a menu outside every sandbox (SPEC-427 GSA-007).
+        if !attach.takes_keys() {
+            return Err(AppError::Forbidden(
+                "the Global Superagent takes messages, not keys: use its message box".into(),
+            ));
+        }
         if !self.shell_may_write(ctx, attach).await {
             return Err(AppError::Forbidden("write access is required".into()));
         }
@@ -1386,7 +1444,12 @@ impl App {
     async fn adopt_shell(self: &Arc<Self>, dir_name: &str, run_dir: &Path) -> AppResult<()> {
         let bytes = std::fs::read(run_dir.join(SHELL_FILE)).map_err(AppError::internal)?;
         let file: ShellFile = serde_json::from_slice(&bytes).map_err(AppError::internal)?;
-        if file.version != SHELL_FILE_VERSION || file.id != dir_name {
+        let known = if file.global {
+            file.version == GLOBAL_SHELL_FILE_VERSION
+        } else {
+            file.version == SHELL_FILE_VERSION
+        };
+        if !known || file.id != dir_name {
             return Err(AppError::Invalid("unknown shell record".into()));
         }
         let sandbox = SandboxId::parse(&file.sandbox).map_err(|_| AppError::NotFound)?;
@@ -1409,7 +1472,16 @@ impl App {
             .map(TaskId::parse)
             .transpose()
             .map_err(|_| AppError::NotFound)?;
-        let folder = self.shell_folder(&sandbox, task.as_ref()).await;
+        let creator = UserId::parse(&file.creator).map_err(|_| AppError::NotFound)?;
+        let global = file.global && file.kind == ShellKind::Cockpit;
+        let folder = if global {
+            named_folder(
+                &self.sandbox_dir(&sandbox),
+                &self.global_superagent_work(&creator),
+            )
+        } else {
+            self.shell_folder(&sandbox, task.as_ref()).await
+        };
         let account = OnceLock::new();
         if let Some(id) = file
             .account
@@ -1422,7 +1494,7 @@ impl App {
         // A Cockpit started with another launch than this Yulius serves (an update, or a record
         // from before the digest) starts again once idle (SPEC-186 SAV-006).
         let refresh = if file.kind == ShellKind::Cockpit
-            && file.launch.as_deref() != Some(self.cockpit_launch_digest().as_str())
+            && file.launch.as_deref() != Some(self.cockpit_launch_digest(global).as_str())
         {
             crate::cockpit::REFRESH_DUE
         } else {
@@ -1440,8 +1512,10 @@ impl App {
             limit_handled_ms: AtomicI64::new(file.limit_handled_at.unwrap_or(0)),
             launch,
             refresh: AtomicU8::new(refresh),
+            global,
+            interrupted_ms: AtomicI64::new(0),
             sandbox,
-            creator: UserId::parse(&file.creator).map_err(|_| AppError::NotFound)?,
+            creator,
             task,
             folder,
             name: Mutex::new(clean_name(&file.name).unwrap_or_else(|_| "Terminal".into())),

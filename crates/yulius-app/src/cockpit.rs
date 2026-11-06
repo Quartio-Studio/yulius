@@ -164,6 +164,16 @@ impl TurnState {
     }
 }
 
+/// Where a Cockpit sits, one per person each: a sandbox's Superagent, or the person's Global
+/// Superagent, which a sandbox only hosts (SPEC-427).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) enum Seat {
+    /// The Superagent of this sandbox.
+    Sandbox(SandboxId),
+    /// The Global Superagent.
+    Global,
+}
+
 /// The model family the Cockpit runs: the default model, Opus 5.5, so its weekly Opus cap binds
 /// (SPEC-023).
 fn cockpit_family() -> ModelFamily {
@@ -191,10 +201,7 @@ impl App {
         }
         tracing::warn!(shell = %runtime.id(), conversation = %resumed, ?code, "the cockpit could not resume its conversation; the next start begins a fresh one");
         if let Ok(mut failed) = self.shells.cockpit_unresumable.lock() {
-            failed.insert(
-                (runtime.creator().clone(), runtime.sandbox().clone()),
-                resumed.clone(),
-            );
+            failed.insert((runtime.creator().clone(), runtime.seat()), resumed.clone());
         }
     }
 
@@ -210,15 +217,24 @@ impl App {
 
     /// What a Cockpit this Yulius starts is served and started with, as a digest: its MCP
     /// instructions and tools, whether the egress proxy is wired and
-    /// [`COCKPIT_LAUNCH_REVISION`] (SPEC-186 SAV-006).
-    pub(crate) fn cockpit_launch_digest(&self) -> String {
-        let view = json!({
-            "revision": COCKPIT_LAUNCH_REVISION,
-            // Started without the egress proxy, it gets it once the proxy is wired.
-            "egress": self.egress_wired(),
-            "instructions": crate::mcp::COCKPIT_INSTRUCTIONS,
-            "tools": crate::mcp::cockpit_tool_descriptors(),
-        });
+    /// [`COCKPIT_LAUNCH_REVISION`] (SPEC-186 SAV-006); a Global Superagent's (`global`) are its
+    /// own (SPEC-427).
+    pub(crate) fn cockpit_launch_digest(&self, global: bool) -> String {
+        let view = if global {
+            json!({
+                "revision": crate::global_superagent::GLOBAL_LAUNCH_REVISION,
+                "instructions": crate::global_superagent::GLOBAL_INSTRUCTIONS,
+                "tools": crate::global_superagent::global_tool_descriptors(),
+            })
+        } else {
+            json!({
+                "revision": COCKPIT_LAUNCH_REVISION,
+                // Started without the egress proxy, it gets it once the proxy is wired.
+                "egress": self.egress_wired(),
+                "instructions": crate::mcp::COCKPIT_INSTRUCTIONS,
+                "tools": crate::mcp::cockpit_tool_descriptors(),
+            })
+        };
         self.deps.crypto.sha256_hex(view.to_string().as_bytes())
     }
 
@@ -253,9 +269,11 @@ impl App {
         let crypto = self.deps.crypto.as_ref();
         // Compared as hashes, so the time taken says nothing about a token's characters.
         let wanted = crypto.sha256_hex(token.as_bytes());
+        // A Global Superagent's bearer is not one (SPEC-427 GSA-003).
         let cockpit = self
             .live_cockpits()
             .into_iter()
+            .filter(|cockpit| !cockpit.global)
             .find(|cockpit| crypto.sha256_hex(cockpit.cockpit_token(crypto).as_bytes()) == wanted)
             .ok_or(AppError::Unauthenticated)?;
         let user = self
@@ -281,9 +299,9 @@ impl App {
 
     /// The caller's running Cockpit in `sandbox`.
     fn running_cockpit(&self, user: &UserId, sandbox: &SandboxId) -> Option<Arc<ShellRuntime>> {
-        self.sandbox_shells(sandbox)
-            .into_iter()
-            .find(|shell| shell.kind == ShellKind::Cockpit && shell.creator() == user)
+        self.sandbox_shells(sandbox).into_iter().find(|shell| {
+            shell.kind == ShellKind::Cockpit && !shell.global && shell.creator() == user
+        })
     }
 
     /// `POST /api/sandboxes/{sid}/cockpit`: the caller's Cockpit, started (resuming the newest
@@ -317,7 +335,9 @@ impl App {
         user: &UserRecord,
         record: &SandboxRecord,
     ) -> AppResult<ShellInfo> {
-        let _starting = self.cockpit_start_slot(&user.id, &record.id).await?;
+        let _starting = self
+            .cockpit_start_slot(&user.id, Seat::Sandbox(record.id.clone()))
+            .await?;
         if let Some(running) = self.running_cockpit(&user.id, &record.id) {
             return Ok(running.info());
         }
@@ -326,12 +346,28 @@ impl App {
                 "the sandbox repository is not cloned yet".into(),
             ));
         }
+        self.start_on_account(user, record, false).await
+    }
+
+    /// Starts `user`'s Cockpit hosted by `record` (its sandbox, or a Global Superagent's host) on
+    /// a subscription with capacity; one a usage limit ended, whose move failed, continues the
+    /// cut turn now. The caller holds the start lock.
+    pub(crate) async fn start_on_account(
+        self: &Arc<Self>,
+        user: &UserRecord,
+        record: &SandboxRecord,
+        global: bool,
+    ) -> AppResult<ShellInfo> {
         // The Cockpit runs the default model, Opus 5.5: its weekly Opus cap binds (SPEC-023).
         let account = self
             .pool_account(Provider::Anthropic, cockpit_family())
             .await?;
-        // A Cockpit a usage limit ended, whose move failed, continues the cut turn now.
-        let key = (user.id.clone(), record.id.clone());
+        let seat = if global {
+            Seat::Global
+        } else {
+            Seat::Sandbox(record.id.clone())
+        };
+        let key = (user.id.clone(), seat);
         let pending = |remove: bool| {
             self.shells.cockpit_continue.lock().is_ok_and(|mut set| {
                 if remove {
@@ -342,23 +378,28 @@ impl App {
             })
         };
         let started = self
-            .start_cockpit(user, record, &account, pending(false))
+            .start_cockpit(user, record, global, &account, pending(false))
             .await?;
         pending(true);
         Ok(started)
     }
 
-    /// Starts `user`'s Cockpit in `record` on `account`, resuming the newest conversation; with
-    /// `continue_interrupted`, it redoes the turn a usage limit cut (SPEC-074 SUP-004). The caller
-    /// holds the start lock.
+    /// Starts `user`'s Cockpit in `record` (or, `global`, their Global Superagent hosted by it,
+    /// SPEC-427) on `account`, resuming the newest conversation; with `continue_interrupted`, it
+    /// redoes the turn a usage limit cut (SPEC-074 SUP-004). The caller holds the start lock.
     async fn start_cockpit(
         self: &Arc<Self>,
         user: &UserRecord,
         record: &SandboxRecord,
+        global: bool,
         account: &AccountRecord,
         continue_interrupted: bool,
     ) -> AppResult<ShellInfo> {
-        let repo = self.sandbox_repo(&record.id);
+        let folder = if global {
+            self.global_superagent_folder(&user.id)?
+        } else {
+            self.sandbox_repo(&record.id)
+        };
         let credential = self.open_credential(account)?;
         let id = self.new_shell_id();
         let runtime = self.new_shell_runtime(
@@ -367,20 +408,25 @@ impl App {
             &record.id,
             &user.id,
             None,
-            &repo,
+            &folder,
             COCKPIT_NAME.to_owned(),
+            global,
         );
         let _ = runtime.account.set(account.id.clone());
-        let _ = runtime.launch.set(self.cockpit_launch_digest());
-        match self
-            .launch_cockpit(user, record, &runtime, credential, continue_interrupted)
-            .await
-        {
+        let _ = runtime.launch.set(self.cockpit_launch_digest(global));
+        let launched = if global {
+            self.launch_global_superagent(user, &runtime, credential, continue_interrupted)
+                .await
+        } else {
+            self.launch_cockpit(user, record, &runtime, credential, continue_interrupted)
+                .await
+        };
+        match launched {
             Ok(reader) => match self.register_shell(&runtime) {
                 Ok(()) => {
                     self.start_pump(&runtime, reader);
                     self.start_cockpit_watch(&runtime);
-                    tracing::info!(shell = %id, sandbox = %record.slug, user = %user.id, account = %account.id, continue_interrupted, "cockpit started");
+                    tracing::info!(shell = %id, sandbox = %record.slug, global, user = %user.id, account = %account.id, continue_interrupted, "cockpit started");
                     self.end_if_removed(&runtime);
                     Ok(runtime.info())
                 }
@@ -409,10 +455,14 @@ impl App {
     }
 
     async fn watch_cockpit(self: Arc<Self>, runtime: Arc<ShellRuntime>) {
-        let home = self
-            .users_dir()
-            .join(runtime.creator().as_str())
-            .join("home");
+        // A Global Superagent's conversations are in its own folder (SPEC-427 GSA-002).
+        let home = if runtime.global {
+            self.global_superagent_dir(runtime.creator())
+        } else {
+            self.users_dir()
+                .join(runtime.creator().as_str())
+                .join("home")
+        };
         let info = runtime.info();
         let folder = PathBuf::from(&info.folder);
         let started = info.created_at;
@@ -439,7 +489,10 @@ impl App {
                 return;
             }
             let now = self.now().0;
-            if link_tested.is_none_or(|at| now.saturating_sub(at) >= LINK_EVERY_MS) {
+            // A Global Superagent's link is the server's own, not its host sandbox's (SPEC-427).
+            if !runtime.global
+                && link_tested.is_none_or(|at| now.saturating_sub(at) >= LINK_EVERY_MS)
+            {
                 link_tested = Some(now);
                 // Never past the Cockpit's end (review round 1).
                 tokio::select! {
@@ -652,7 +705,9 @@ impl App {
         let user = ctx.user.clone();
         Self::run_detached(async move {
             {
-                let _starting = app.cockpit_start_slot(&user.id, &record.id).await?;
+                let _starting = app
+                    .cockpit_start_slot(&user.id, Seat::Sandbox(record.id.clone()))
+                    .await?;
                 if let Some(running) = app.running_cockpit(&user.id, &record.id) {
                     let account = app
                         .pool_account(Provider::Anthropic, cockpit_family())
@@ -665,7 +720,7 @@ impl App {
                         return Err(AppError::Conflict(COCKPIT_NOT_RESTARTED.into()));
                     }
                     tracing::info!(shell = %running.id(), user = %user.id, "the person restarts their Superagent");
-                    return app.start_cockpit(&user, &record, &account, false).await;
+                    return app.start_cockpit(&user, &record, false, &account, false).await;
                 }
             }
             app.start_requested_cockpit(&user, &record).await
@@ -765,7 +820,7 @@ impl App {
         seen: Option<(&std::path::Path, u64)>,
     ) -> Refresh {
         let Ok(_starting) = self
-            .cockpit_start_slot(runtime.creator(), runtime.sandbox())
+            .cockpit_start_slot(runtime.creator(), runtime.seat())
             .await
         else {
             return Refresh::Failed;
@@ -777,7 +832,7 @@ impl App {
             Ok(Some(user)) if user.disabled_at.is_none() => user,
             _ => return Refresh::Failed,
         };
-        let Ok((record, _)) = self.require(&owner, runtime.sandbox(), Action::Work).await else {
+        let Ok(record) = self.cockpit_host(&owner, runtime).await else {
             return Refresh::Failed;
         };
         let account = match self
@@ -802,7 +857,10 @@ impl App {
             tracing::warn!(shell = %runtime.id(), "the cockpit is not restarted: its process could not be ended");
             return Refresh::Failed;
         }
-        match self.start_cockpit(&owner, &record, &account, false).await {
+        match self
+            .start_cockpit(&owner, &record, runtime.global, &account, false)
+            .await
+        {
             Ok(started) => {
                 tracing::info!(from = %runtime.id(), to = %started.id, "cockpit restarted to get what this Yulius serves");
             }
@@ -829,7 +887,7 @@ impl App {
             self.record_limit(account, resets_at, window_minutes).await;
         }
         let Ok(_starting) = self
-            .cockpit_start_slot(runtime.creator(), runtime.sandbox())
+            .cockpit_start_slot(runtime.creator(), runtime.seat())
             .await
         else {
             return false;
@@ -842,7 +900,7 @@ impl App {
             Ok(Some(user)) if user.disabled_at.is_none() => user,
             _ => return false,
         };
-        let Ok((record, _)) = self.require(&owner, runtime.sandbox(), Action::Work).await else {
+        let Ok(record) = self.cockpit_host(&owner, runtime).await else {
             return false;
         };
         let account = match self
@@ -864,7 +922,10 @@ impl App {
             runtime.notice(COCKPIT_NOT_MOVED);
             return false;
         }
-        match self.start_cockpit(&owner, &record, &account, true).await {
+        match self
+            .start_cockpit(&owner, &record, runtime.global, &account, true)
+            .await
+        {
             Ok(started) => {
                 tracing::info!(from = %runtime.id(), to = %started.id, account = %account.id, "cockpit moved to another subscription after a usage limit");
             }
@@ -872,21 +933,37 @@ impl App {
             Err(err) => {
                 tracing::warn!(error = %err, shell = %runtime.id(), "the cockpit could not start on another subscription");
                 if let Ok(mut pending) = self.shells.cockpit_continue.lock() {
-                    pending.insert((runtime.creator().clone(), runtime.sandbox().clone()));
+                    pending.insert((runtime.creator().clone(), runtime.seat()));
                 }
             }
         }
         true
     }
 
-    /// Takes the start lock of `user`'s Cockpit in `sandbox`: one start at a time per user and
-    /// sandbox, other users and sandboxes never wait (CKP-001, SPEC-077 DRS-004).
-    async fn cockpit_start_slot(
+    /// The sandbox a running Cockpit starts again in for `owner`: its own, while they may work
+    /// there, or for a Global Superagent its host or another (SPEC-427 GSA-005).
+    async fn cockpit_host(
+        &self,
+        owner: &UserRecord,
+        runtime: &ShellRuntime,
+    ) -> AppResult<SandboxRecord> {
+        if runtime.global {
+            return self.global_host(owner, Some(runtime.sandbox())).await;
+        }
+        Ok(self
+            .require(owner, runtime.sandbox(), Action::Work)
+            .await?
+            .0)
+    }
+
+    /// Takes the start lock of `user`'s Cockpit at `seat`: one start at a time per user and
+    /// seat, other users and seats never wait (CKP-001, SPEC-077 DRS-004).
+    pub(crate) async fn cockpit_start_slot(
         &self,
         user: &UserId,
-        sandbox: &SandboxId,
+        seat: Seat,
     ) -> AppResult<CockpitStartSlot<'_>> {
-        let key = (user.clone(), sandbox.clone());
+        let key = (user.clone(), seat);
         let lock = {
             let mut starts = self
                 .shells
@@ -933,7 +1010,11 @@ impl App {
             .cockpit_unresumable
             .lock()
             .ok()
-            .and_then(|failed| failed.get(&(user.id.clone(), record.id.clone())).cloned());
+            .and_then(|failed| {
+                failed
+                    .get(&(user.id.clone(), Seat::Sandbox(record.id.clone())))
+                    .cloned()
+            });
         let resume = newest.filter(|id| Some(id) != unresumable.as_ref());
         // Yulius attaches the repository's `.mcp.json` servers; Claude Code rejects them here
         // instead of asking the person (SPEC-095 PMC-001, PMC-004).
@@ -959,6 +1040,7 @@ impl App {
             project_mcp_servers,
             mcp,
             contained: self.config.contained,
+            only_yulius: None,
         })?;
         if let Some(id) = resume {
             let _ = runtime.resumed.set((id, self.now()));
@@ -988,9 +1070,9 @@ impl App {
 
 /// A held Cockpit start lock. Dropped, it forgets the lock when no other start holds or waits for
 /// it, so the map keeps only pairs with a start running or waiting (SPEC-077 DRS-005).
-struct CockpitStartSlot<'a> {
+pub(crate) struct CockpitStartSlot<'a> {
     app: &'a App,
-    key: (UserId, SandboxId),
+    key: (UserId, Seat),
     guard: Option<tokio::sync::OwnedMutexGuard<()>>,
 }
 

@@ -1,0 +1,181 @@
+---
+yulius-task: 77eb0740-3b1f-475b-8cf3-8b00a09feb33
+status: done
+---
+
+# SPEC-426: A code edit waits for the task's spec and its Plan
+
+Status: done
+Date: 2026-11-05
+Owner: Yulius task #408
+Scope authorization: task #408 (`/goal`), with a screenshot of task #2 of a project in a free
+private GitHub organisation ("Harden firmware: quality gate, deep audit, edge-case te…", goal mode,
+paused, "The agent has not written a plan yet"). The request: "Yulius in repo when the org doesnt
+have paid features completely ignores (paid org) gates. For example, it didnt declare a plan … We
+need to be completely independent from github infra … Fix." and, while the work ran, "also make
+sure this is realy the cause and if not, report the real one". Fixes #1081.
+
+## Goal
+
+An agent cannot change a task's code before the task has its spec with a Plan, whatever the
+repository's GitHub plan: Yulius itself refuses the first code edit (Claude Code's `Edit`, `Write`,
+`MultiEdit` and `NotebookEdit`) of a task that needs a spec while it has none with a Plan
+checklist, and says what to write. The plan is then on the task from the start of the work, not
+discovered at the end of a turn.
+
+## Context
+
+- **The GitHub plan is not the cause.** The discipline gate (SPEC-002 DSC-*, ADR-07) is Yulius's
+  own: the `Stop` hook (`App::hook_stop` → `spec_gate`, `crates/yulius-app/src/hooks.rs`) reads
+  the task's workflow, the worktree's Git state and the spec file. None of it calls GitHub, and
+  none of it differs between a free and a paid organisation. What a free private organisation
+  lacks (rulesets, SPEC-423; branch protection) guards the production branch, not the plan.
+  Yulius's notices (Needs you, attention, the sidebar) are its own too: nothing is sent through
+  GitHub notifications or mail.
+- **The real cause: the gate only runs when the agent ends a turn.** The spec and Plan are
+  checked at `Stop` alone (and at delivery). Claude Code's hooks Yulius registers before a tool
+  runs are local only: `PreToolUse` for Bash, answered in the sandbox (`guard_client`). A goal-mode
+  task (the default for new tasks, TSK-010) works through one long turn, so its agent can read,
+  audit and change code for a long time before its first `Stop`; until then it is told the rule
+  only in its briefing ("before changing code, write the task spec …"), and nothing holds it. The
+  screenshot is that state: a goal task, in the middle of its work, with no spec and so no steps.
+- Why tests missed it: every discipline test (`crates/yulius/tests/agent_hooks.rs`) drives the
+  `Stop` hook; no test asks what happens to an edit before it.
+- What else the cause touches: the step strip and the progress of every such task stay empty
+  until the first turn end; an agent that never ends a turn before its work is done meets the gate
+  only once everything is written, and writes the plan after the fact.
+
+## Requirements
+
+- **EDG-001 Edits reach Yulius.** Claude Code's `PreToolUse` for `Edit`, `Write`, `MultiEdit` and
+  `NotebookEdit` goes to Yulius (`yulius hook claude PreToolUse` forwards it, failing open like
+  every hook, and never held: a `202` fails open at once); `Bash` keeps its local check and is not
+  sent. Only the event, the tool, the agent's folder (`cwd`) and the edited path leave the sandbox,
+  never the file's content; the client reads up to 16 MiB of the input so a large `Write` is still
+  judged (a larger input is not judged and passes).
+- **EDG-002 A code edit waits for the Plan.** Yulius denies such an edit
+  (`permissionDecision: deny` with a reason) when all hold: the edited file (`file_path`, or
+  `notebook_path`, a relative one from the agent's `cwd`) is inside the task's worktree, after
+  resolving `.` and `..`, or through links to it; it is not
+  documentation (`is_documentation_path`, the rule the `Stop` gate uses for DSC-013); the task needs
+  a spec for a change beyond documentation (its workflow's spec gate, or no workflow; not an
+  onboarding task, not a workflow without the spec gate); and the task's spec does not exist or has
+  no top-level Plan item. Everything else passes untouched, and any failure to decide passes.
+- **EDG-003 The reason says what to do.** The reason names the spec path (or the specs directory
+  when the task has no path), the `yulius-task` frontmatter, the Plan checklist and `spec_check`,
+  says that documentation edits are not held, and tells the agent to make the edit again once the
+  Plan is there.
+- **EDG-004 The rest of the gate is unchanged.** The `Stop` gate still requires a valid spec;
+  the edit gate asks only for a Plan, so a draft spec being written does not hold the work.
+- **EDG-005 It never gives up.** Every such edit is denied until the Plan exists. The way through
+  is always open (the spec is documentation; a workflow without the spec gate for work that needs
+  none, chosen when the task starts), and an agent that loops meets the Stop gate at its turn's
+  end, which asks a person after three blocks.
+  Counting denials does not work: Claude Code runs each edit's hook as that tool's block finishes
+  streaming, so one response's edits can be tens of seconds apart and any count lets code through
+  before the agent saw a denial (review rounds 2 and 3).
+
+## Plan
+
+- [x] Reproduce the defect and find its root cause
+- [x] Write the fix spec and the regression test that fails
+- [x] Yulius refuses a code edit of a task whose spec has no Plan yet
+- [x] Claude Code sends edit tools' PreToolUse to Yulius
+- [x] ADR, architecture and docs describe the edit gate
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Review round 2 approves the fixed head
+- [x] The edit gate holds every edit until the Plan exists, reviewed in round 4
+- [x] Every gate green, Evidence and the changes log updated
+
+## Acceptance criteria
+
+- AC1: a task without a workflow and without a spec: `PreToolUse` `Edit` of `<worktree>/api.rs`
+  is denied with a reason naming the spec path; a `Write` of the spec itself and an `Edit` of
+  `README.md` pass;
+  a `Read` and a file outside the worktree pass; `<worktree>/docs/../api.rs` is denied.
+- AC2: a spec without a Plan item keeps the edit denied; once the Plan has an item, the edit
+  passes.
+- AC3: a task whose workflow has no spec gate (research) edits code freely (an onboarding task
+  has the same policy, `SpecPolicy::NotRequired`).
+- AC3b: a task whose workflow requires a spec (feature) is held like one without a workflow; a spec
+  that exists but cannot be judged (a link, not UTF-8, larger than the 256 KiB Yulius reads) and a
+  workflow the store cannot read pass
+  (`an_edit_the_gate_cannot_judge_passes`).
+- AC4: the launched Claude Code settings register `PreToolUse` for the edit tools with the
+  `yulius hook claude PreToolUse` command; the hook client forwards an `Edit` to Yulius and prints
+  its answer, and still answers a self-matching `pgrep -f` Bash command locally.
+
+## Test plan
+
+- `crates/yulius/tests/agent_hooks.rs` `a_code_edit_waits_for_the_spec_plan` (AC1, AC2) and
+  `edits_without_a_spec_gate_pass` (AC3), through the internal HTTP hook route with a real Git
+  worktree. Fails before the fix (the route answers `PreToolUse` with nothing).
+- `edits_are_placed_from_the_agents_folder_and_through_links` (relative paths from `cwd`, a link
+  to the worktree, a nested-only Plan, a task without a spec path) and
+  `the_edit_gate_holds_every_edit_until_the_plan_exists` (EDG-005), and
+  `an_edit_the_gate_cannot_judge_passes` (AC3b: a linked, non-UTF-8 or oversized spec, a feature
+  workflow before and after its store read fails).
+- `crates/yulius-harness` unit tests: the launch plan's `PreToolUse` entries (AC4) and the hook
+  client's dispatch (an `Edit` reaches a loopback test server; a Bash self-match is denied without
+  one); `an_edit_check_fails_open_and_is_never_held` (no server, a 500, a 202, a Write over 1 MiB
+  sent trimmed).
+
+## Decisions
+
+- [ADR-0270](../../docs/decisions/0270-a-code-edit-waits-for-the-tasks-spec-plan.md): the
+  discipline gate also runs before a code edit, on Yulius, through Claude Code's `PreToolUse`.
+
+## Evidence
+
+- **Root cause, checked against the report.** The GitHub plan is not the cause. `spec_gate`,
+  `spec_required`, `branch_changed`, the briefing and the spec sync read only the store, the
+  worktree's Git and the spec file, and none of them calls GitHub. Yulius's notices (Needs you,
+  attention, the sidebar) are its own. The gate ran only at `Stop`, and the only `PreToolUse` hook
+  was the local Bash check (`guard_client`). The reporter's repository (Perfect-Data, another
+  owner) and its task's transcript could not be read from here (`reference_repo` refused it), so
+  the screenshot's state was matched from the code: a goal task in the middle of its turn, with no
+  spec and so no steps. Filed as #1081.
+- **Tests seen failing before each fix.**
+  - `a_code_edit_waits_for_the_spec_plan` (committed alone in 14eacbb6): before the fix the route
+    answered `PreToolUse` with nothing ("a code edit without a spec is denied").
+  - The harness launch snapshot and the client dispatch test (1bb9cb50) failed before c77635ee.
+  - The review-round tests (f104b9ea, 574b1e0d, 84e53617, 5dbb70e8, 719bcc33) each failed before
+    their fix: `cwd` placement, links, a 202 held, per-call counting, a give-up after streamed
+    edits, a linked spec, an unreadable workflow (also shown by a mutation run, restored), and an
+    oversized spec.
+- **Full gate.**
+  - `scripts/dev ci` at 0a271ef0: exit 0, 3142 tests passed, 16 skipped.
+  - At 9cc2ac5a (the reviewed head): 3146 passed and 1 failed, 16 skipped. The failure was
+    `pool_supervision::personal_mcp_servers_reach_only_their_holders_runs`, NotFound after 1.4 s.
+    That test reads the run's `mcp.json` and `launch.json`, which this change does not touch. It
+    passed in the full gate at 0a271ef0, which already had the launch change, and 5 of 5 isolated
+    runs. Filed as #1084 rather than retried; Yulius CI runs the whole gate on the pull request
+    head.
+  - Gate runs at 14d4ff9d, 912173dc and a5541051 were stopped when review findings replaced those
+    heads.
+  - Afterwards: `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^agent_hooks::/)'`
+    28 passed; `-p yulius-harness` 142 passed; clippy (`-D warnings`) and
+    `scripts/check_repository.py` pass.
+- **Security scan.** `yulius security-scan`: "Security scan disabled: Vidoc is turned off in
+  Yulius". That is unrun, not passed.
+- **No web UI change**, so the e2e suite was not run.
+- **Independent review in fresh sessions.**
+  - Round 1 approved 0a271ef0 with 4 minors and 5 nits, fixed test-first in f104b9ea and 14d4ff9d.
+  - Round 2 requested changes: denials counted per call (major). Fixed in 574b1e0d and 912173dc.
+  - Round 3 requested changes: Claude Code 2.1.311 runs each tool's hook as its block finishes
+    streaming, so a time window cannot group one response either (major). The give-up was removed
+    in 84e53617 and a5541051.
+  - Round 4 approved a5541051 with minors (an unreadable spec or workflow held edits for good;
+    docs), fixed in 5dbb70e8, cdb91f1f and a5d5c73d.
+  - Round 5 approved a5d5c73d with two minors (a duplicated policy; specs over 256 KiB), fixed in
+    719bcc33 and 9cc2ac5a.
+  - Round 6 approved 9cc2ac5a. Its remaining nits (an exact 256 KiB boundary, an untested
+    sub-millisecond race, a grow-during-read race; all of them only deny) and the pre-existing
+    256 KiB cut of the Stop gate are #1083.
+  - Pre-existing and outside the change: #1082 (the Stop gate calls a linked spec missing).
+- **Not tested.**
+  - A real Claude Code session in a sandbox. The hook shape (`permissionDecision: deny`) is
+    Claude Code's documented one, and the review read the installed 2.1.311 binary.
+  - The reporter's free-organisation repository.
+  - Sessions started before this change: they keep their old settings until they restart.
+  - Bash edits are not held by design; the Stop gate catches them.

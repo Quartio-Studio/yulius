@@ -132,6 +132,18 @@ watching, steering and unblocking.
   approve (SPEC-335). After an update
   that gives it new tools, an open Superagent restarts by itself once it is idle and goes on with
   its conversation.
+- **Global Superagent**: besides the Superagent of each sandbox, every person has one Global
+  Superagent, opened from the tools rail on All sandboxes and the other pages outside a sandbox
+  (where the rail shows only it) or at `/superagent`, and linked from each sandbox Superagent's
+  note. It sees every sandbox the person can see and keeps them in sync: "which of my sandboxes
+  have failing CI?", "the API changed in acme/api, make its clients follow" or "tell every running
+  task to merge dev" become tasks, pull requests and task messages in each sandbox, as the person,
+  without asking per action. The person writes to it in a message box under its terminal (Enter sends, Interrupt stops its
+  turn); its terminal only shows it, and it takes no `!` commands and no Claude Code commands but
+  `/clear`, `/compact`, `/context` and `/cost`. It has no shell or file tools: it works only through Yulius's tools
+  (the remote MCP's, SPEC-247), and deploying, agent secrets, variables and adding or onboarding
+  projects stay the person's, and the pull requests it opens are merged by a person or a task. Its conversation is kept in a folder of its own, so it continues
+  when it starts again under another sandbox; a person with only read access has none (SPEC-427).
 - **MCP servers**: configured once on the MCP page with two settings, Available in (every sandbox
   or this one) and For (the whole team or only me), and attached on every subscription. A team
   server goes to every task run of its scope and to the Superagent; a personal one only to its
@@ -199,7 +211,10 @@ watching, steering and unblocking.
   the onboarding gate show Connect Claude, and every start a person asks for is refused at once
   with a link to Subscriptions; tasks started by a chain, a rule or an automation wait and say why
   (SPEC-246).
-- **Delivery discipline**: spec when it matters, effort-weighted steps, independent review
+- **Delivery discipline**: spec when it matters (a task that needs one is refused code edits with
+  Claude Code's edit tools until its spec has a Plan, SPEC-426; Bash edits and the spec's validity
+  are the turn-end gate's),
+  effort-weighted steps, independent review
   (findings in the change's own code are fixed before merge, never deferred to an issue),
   merge on green into `dev`, cleanup; promotion to `main` is a person's. Profiles live in
   `yulius.toml`, with the branch policy (typed branches, conventional titles, `dev` → `main`

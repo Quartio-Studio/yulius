@@ -57,6 +57,14 @@ async fn fixture() -> Result<Fixture, Box<dyn std::error::Error>> {
 async fn fixture_with_workflow(
     workflow: Option<(&str, bool)>,
 ) -> Result<Fixture, Box<dyn std::error::Error>> {
+    fixture_with_task(workflow, |_| {}).await
+}
+
+/// [`fixture_with_workflow`] whose main task is changed by `tweak` before it is stored.
+async fn fixture_with_task(
+    workflow: Option<(&str, bool)>,
+    tweak: impl FnOnce(&mut TaskRecord),
+) -> Result<Fixture, Box<dyn std::error::Error>> {
     let h = harness_with_git(Arc::new(GitAdapter::new("git")))?;
     let repo = tempfile::tempdir()?;
     let origin = repo.path().join("origin.git");
@@ -174,6 +182,7 @@ async fn fixture_with_workflow(
     }
     main.worktree_path = Some(worktree.to_string_lossy().into_owned());
     main.spec_path = Some("docs/specs/checkout.md".into());
+    tweak(&mut main);
     store.insert_task(&main).await?;
     store
         .insert_task(&mk_task(
@@ -1298,5 +1307,282 @@ async fn an_answered_stop_is_kept_in_the_run_directory() -> TestResult {
     hook(&f, "Stop", json!({})).await?;
     let answered = yulius_app::outage::stop_answered_at(&run);
     assert!(answered >= before && answered > 0, "{answered}");
+    Ok(())
+}
+
+/// `rel` in `f`'s worktree, as the agent names it.
+fn file_of(f: &Fixture, rel: &str) -> String {
+    f.worktree.join(rel).to_string_lossy().into_owned()
+}
+
+/// What `PreToolUse` answered for `tool` on `input`: the deny reason, or `None` when it passed.
+async fn pre_tool_use(
+    f: &Fixture,
+    tool: &str,
+    input: serde_json::Value,
+) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    let body = hook(
+        f,
+        "PreToolUse",
+        json!({"hook_event_name": "PreToolUse", "tool_name": tool, "tool_input": input}),
+    )
+    .await?;
+    if body.is_null() {
+        return Ok(None);
+    }
+    let out = &body["hookSpecificOutput"];
+    assert_eq!(out["hookEventName"], "PreToolUse", "{body:?}");
+    assert_eq!(out["permissionDecision"], "deny", "{body:?}");
+    Ok(Some(
+        out["permissionDecisionReason"]
+            .as_str()
+            .ok_or("reason")?
+            .to_owned(),
+    ))
+}
+
+/// SPEC-426 EDG-002/003 (AC1, AC2): a code edit of a task that needs a spec waits until the spec
+/// has a Plan; documentation, reads and files outside the worktree are never held.
+#[tokio::test]
+async fn a_code_edit_waits_for_the_spec_plan() -> TestResult {
+    let f = fixture().await?;
+    let file = |rel: &str| f.worktree.join(rel).to_string_lossy().into_owned();
+    let reason = pre_tool_use(&f, "Edit", json!({"file_path": file("api.rs")}))
+        .await?
+        .ok_or("a code edit without a spec is denied")?;
+    assert!(
+        reason.contains("docs/specs/checkout.md")
+            && reason.contains("Plan")
+            && reason.contains("yulius-task: t-main")
+            && reason.contains("spec_check"),
+        "{reason}"
+    );
+    for (tool, input) in [
+        (
+            "Write",
+            json!({"file_path": file("docs/specs/checkout.md")}),
+        ),
+        ("Edit", json!({"file_path": file("README.md")})),
+        ("Read", json!({"file_path": file("api.rs")})),
+        ("Write", json!({"file_path": "/elsewhere/api.rs"})),
+    ] {
+        assert_eq!(
+            pre_tool_use(&f, tool, input.clone()).await?,
+            None,
+            "{tool} {input}"
+        );
+    }
+    for (tool, input) in [
+        ("Write", json!({"file_path": file("docs/../api.rs")})),
+        ("MultiEdit", json!({"file_path": file("src/lib.rs")})),
+        (
+            "NotebookEdit",
+            json!({"notebook_path": file("probe.ipynb")}),
+        ),
+    ] {
+        assert!(
+            pre_tool_use(&f, tool, input.clone()).await?.is_some(),
+            "{tool} {input}"
+        );
+    }
+
+    // A spec without a Plan item still holds the edit; one Plan item lets it through.
+    std::fs::create_dir_all(f.worktree.join("docs/specs"))?;
+    std::fs::write(
+        f.worktree.join("docs/specs/checkout.md"),
+        "---\nyulius-task: t-main\nstatus: draft\n---\n# Checkout API\n\n## Goal\n\nPay.\n",
+    )?;
+    assert!(
+        pre_tool_use(&f, "Edit", json!({"file_path": file("api.rs")}))
+            .await?
+            .is_some(),
+        "no Plan yet"
+    );
+    std::fs::write(
+        f.worktree.join("docs/specs/checkout.md"),
+        "---\nyulius-task: t-main\nstatus: draft\n---\n# Checkout API\n\n## Goal\n\nPay.\n\n\
+         ## Plan\n\n- [ ] Card payments work end to end\n",
+    )?;
+    assert_eq!(
+        pre_tool_use(&f, "Edit", json!({"file_path": file("api.rs")})).await?,
+        None,
+        "a draft spec with a Plan is enough"
+    );
+    Ok(())
+}
+
+/// SPEC-426 AC3: a task whose workflow needs no spec (research) and an onboarding task edit code
+/// freely.
+#[tokio::test]
+async fn edits_without_a_spec_gate_pass() -> TestResult {
+    let research = fixture_with_workflow(Some(("wf-research-test", false))).await?;
+    let onboarding = fixture_with_task(None, |task| task.origin = TaskOrigin::Onboarding).await?;
+    for f in [&research, &onboarding] {
+        let path = f.worktree.join("probe.rs");
+        assert_eq!(
+            pre_tool_use(f, "Write", json!({"file_path": path.to_string_lossy()})).await?,
+            None
+        );
+    }
+    Ok(())
+}
+
+/// SPEC-426 EDG-002 (review round 1): a relative path is placed from the agent's folder (`cwd`),
+/// a path through a link to the worktree is the worktree's, a task without a spec path is told
+/// the specs directory, and a Plan of nested items only is no Plan.
+#[tokio::test]
+async fn edits_are_placed_from_the_agents_folder_and_through_links() -> TestResult {
+    let f = fixture().await?;
+    let cwd = |rel: &str| f.worktree.join(rel).to_string_lossy().into_owned();
+    std::fs::create_dir_all(f.worktree.join("src"))?;
+    let placed = |dir: &str, file: &str| {
+        json!({"hook_event_name": "PreToolUse", "tool_name": "Write",
+               "tool_input": {"file_path": file}, "cwd": cwd(dir)})
+    };
+    let body = hook(&f, "PreToolUse", placed("docs", "diagram.svg")).await?;
+    assert!(
+        body.is_null(),
+        "docs/diagram.svg is documentation: {body:?}"
+    );
+    let body = hook(&f, "PreToolUse", placed("src", "lib.rs")).await?;
+    assert_eq!(body["hookSpecificOutput"]["permissionDecision"], "deny");
+    let body = hook(&f, "PreToolUse", placed("src", "../docs/x.svg")).await?;
+    assert!(body.is_null(), "{body:?}");
+
+    let link = f.worktree.with_file_name("wt-link");
+    std::os::unix::fs::symlink(&f.worktree, &link)?;
+    let through = link.join("api.rs").to_string_lossy().into_owned();
+    assert!(
+        pre_tool_use(&f, "Edit", json!({"file_path": through}))
+            .await?
+            .is_some(),
+        "an edit through a link to the worktree is held"
+    );
+
+    std::fs::create_dir_all(f.worktree.join("docs/specs"))?;
+    std::fs::write(
+        f.worktree.join("docs/specs/checkout.md"),
+        "---\nyulius-task: t-main\nstatus: draft\n---\n# Checkout\n\n## Plan\n\n  - [ ] nested only\n",
+    )?;
+    assert!(
+        pre_tool_use(&f, "Edit", json!({"file_path": cwd("api.rs")}))
+            .await?
+            .is_some(),
+        "nested items are no Plan"
+    );
+
+    let unnamed = fixture_with_task(None, |task| task.spec_path = None).await?;
+    let file = unnamed
+        .worktree
+        .join("api.rs")
+        .to_string_lossy()
+        .into_owned();
+    let reason = pre_tool_use(&unnamed, "Edit", json!({"file_path": file}))
+        .await?
+        .ok_or("denied")?;
+    assert!(reason.contains("under `"), "{reason}");
+    Ok(())
+}
+
+/// SPEC-426 EDG-005 (review round 3): the edit gate never gives up. Claude Code runs each edit's
+/// hook as its block finishes streaming, so neither call counts nor time windows tell one
+/// response from the next; the way through is always open (the spec is documentation), and an
+/// agent that loops meets the Stop gate, which asks a person after three blocks.
+#[tokio::test]
+async fn the_edit_gate_holds_every_edit_until_the_plan_exists() -> TestResult {
+    use std::sync::atomic::Ordering;
+    let f = fixture().await?;
+    let mut watch = f.h.app.runtime(&f.task).hub.watch();
+    let file = f.worktree.join("api.rs").to_string_lossy().into_owned();
+    // One streamed response's edits arrive tens of seconds apart; later responses too.
+    for call in 1..=8 {
+        assert!(
+            pre_tool_use(&f, "Write", json!({"file_path": file}))
+                .await?
+                .is_some(),
+            "call {call}"
+        );
+        f.h.clock.0.fetch_add(10_000, Ordering::SeqCst);
+    }
+    assert!(
+        notices(&mut watch).is_empty(),
+        "denials say nothing to the person"
+    );
+    // The spec, being documentation, can always be written; then the edit passes.
+    std::fs::create_dir_all(f.worktree.join("docs/specs"))?;
+    let spec = f.worktree.join("docs/specs/checkout.md");
+    assert_eq!(
+        pre_tool_use(&f, "Write", json!({"file_path": spec.to_string_lossy()})).await?,
+        None
+    );
+    std::fs::write(
+        &spec,
+        "---\nyulius-task: t-main\nstatus: draft\n---\n# Checkout\n\n## Plan\n\n- [ ] Pay\n",
+    )?;
+    assert_eq!(
+        pre_tool_use(&f, "Write", json!({"file_path": file})).await?,
+        None
+    );
+    Ok(())
+}
+
+/// SPEC-426 EDG-002 (review round 4): what the gate cannot decide passes: a spec that exists but
+/// cannot be read (a link) and a workflow the store cannot read never hold an edit, which would
+/// otherwise stay held for good.
+#[tokio::test]
+async fn an_edit_the_gate_cannot_judge_passes() -> TestResult {
+    let f = fixture().await?;
+    std::fs::create_dir_all(f.worktree.join("docs/specs"))?;
+    std::fs::write(f.worktree.join("docs/specs/real.md"), "# Draft\n")?;
+    std::os::unix::fs::symlink("real.md", f.worktree.join("docs/specs/checkout.md"))?;
+    let file = f.worktree.join("api.rs").to_string_lossy().into_owned();
+    assert_eq!(
+        pre_tool_use(&f, "Edit", json!({"file_path": file})).await?,
+        None,
+        "a linked spec cannot be read: not judged"
+    );
+
+    // A spec that is not UTF-8, or larger than Yulius reads (its Plan maybe past the cut), is
+    // not judged either.
+    std::fs::remove_file(f.worktree.join("docs/specs/checkout.md"))?;
+    std::fs::write(f.worktree.join("docs/specs/checkout.md"), b"# Draft \xff\n")?;
+    assert_eq!(
+        pre_tool_use(&f, "Edit", json!({"file_path": file_of(&f, "api.rs")})).await?,
+        None,
+        "not UTF-8"
+    );
+    let mut big = "# Big\n\n".to_owned();
+    big.push_str(&"filler line\n".repeat(30_000));
+    big.push_str("\n## Plan\n\n- [ ] Pay\n");
+    std::fs::write(f.worktree.join("docs/specs/checkout.md"), big)?;
+    assert_eq!(
+        pre_tool_use(&f, "Edit", json!({"file_path": file_of(&f, "api.rs")})).await?,
+        None,
+        "too large to judge"
+    );
+
+    // A feature (its workflow requires a spec) is held; once its workflow cannot be read, not.
+    let feature = fixture_with_workflow(Some(("wf-feature-test", true))).await?;
+    let file = feature
+        .worktree
+        .join("probe.rs")
+        .to_string_lossy()
+        .into_owned();
+    assert!(
+        pre_tool_use(&feature, "Write", json!({"file_path": file}))
+            .await?
+            .is_some(),
+        "a feature's code edit waits for its Plan"
+    );
+    feature
+        .h
+        .store
+        .execute_for_tests("DROP TABLE workflows")
+        .await?;
+    assert_eq!(
+        pre_tool_use(&feature, "Write", json!({"file_path": file})).await?,
+        None,
+        "an unreadable workflow is a failure to decide"
+    );
     Ok(())
 }

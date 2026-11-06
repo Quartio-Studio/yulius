@@ -761,7 +761,7 @@ export function createSidebar(ctx) {
   function range() {
     const shell = app();
     let other = 0;
-    if (shell && !shell.classList.contains('no-sandbox')) {
+    if (shell) {
       const rail = shell.querySelector('.rail');
       const panel = shell.querySelector('.panel');
       other += rail && !rail.hidden ? rail.getBoundingClientRect().width : 0;

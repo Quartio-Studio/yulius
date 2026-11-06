@@ -638,6 +638,43 @@ from Yulius's block in the clone's `info/attributes`; Yulius merges the integrat
 locally before GitHub merges (SPEC-050 DLV-203), so GitHub never sees those conflicts. A review
 carries over Git's own merges of the integration branch, checked with `git merge-tree`.
 
+## The discipline gate
+
+The discipline gate is Yulius's own, and nothing in it depends on the repository's host or its
+GitHub plan. It answers Claude Code's hooks from the task's workflow, the worktree's Git state and
+the spec file. At a turn's end, the `Stop` hook blocks a task that needs a spec while its spec is
+missing or invalid (`spec_gate`, DSC-013), at most three times. Before a code edit, Claude Code's
+`PreToolUse` for `Edit`, `MultiEdit`, `Write` and `NotebookEdit` reaches Yulius through `yulius
+hook claude PreToolUse`, which fails open. `edit_gate` denies an edit of a non-documentation file
+in the task's worktree while the task needs a spec and its spec has no Plan item yet. The client
+sends only the event, the tool, the agent's folder and the path, and the hook is never held.
+Unlike the Stop gate it never gives up. Claude Code runs each edit's hook as that tool's block
+finishes streaming, so no count or time window tells one response from the next. The way through
+stays open (the spec is documentation, which the agent or a person in the editor can write); an
+agent that loops meets the Stop gate at its turn's end, which asks a person after three blocks;
+what the gate cannot judge (an unreadable spec or workflow) passes. A goal task's long turn therefore cannot change code with the edit
+tools before its plan exists; Bash edits are left to the Stop gate
+([SPEC-426](../.ai/specs/SPEC-426-yulius-in-repo-when-the-org-doesnt-have.md),
+[decision 0270](decisions/0270-a-code-edit-waits-for-the-tasks-spec-plan.md)). Bash calls are
+checked in the sandbox (`guard_client`, a `pgrep -f` that matches itself) and never sent.
+
+```mermaid
+sequenceDiagram
+    participant A as Agent (Claude Code)
+    participant H as yulius hook (sandbox)
+    participant Y as Yulius (internal API)
+    A->>H: PreToolUse Bash
+    H-->>A: local check only (self-matching pgrep -f denied)
+    A->>H: PreToolUse Edit / Write of a file
+    H->>Y: POST /hooks/claude/PreToolUse
+    Y-->>H: deny until the spec has a Plan (code files of a task that needs a spec), else nothing
+    H-->>A: the answer
+    A->>H: Stop (turn end)
+    H->>Y: POST /hooks/claude/Stop
+    Y-->>H: block while the spec is missing or invalid, else the turn ends
+    H-->>A: the answer
+```
+
 ## Agent feedback
 
 Yulius has no messages for now ([SPEC-028](../.ai/specs/SPEC-028-delete-message-mechanism-for-now-until-w.md),
@@ -1211,6 +1248,52 @@ sequenceDiagram
   else 4 minutes, or the call dropped
     Y-->>S: unanswered, request gone
   end
+```
+
+### The Global Superagent
+
+Beside the sandbox Superagents every person has one **Global Superagent**, which sees every
+sandbox they can see and keeps them in sync
+([SPEC-427](../.ai/specs/SPEC-427-there-should-be-2-superagens-global-and.md),
+[decision 0271](decisions/0271-a-global-superagent-acts-in-every-sandbox-of-its-person-through-yulius-tools-only.md),
+`global_superagent.rs`). It is a Cockpit marked `global` in its shell record, so it shares the
+start lock, usage-limit moves, update refreshes, adoption and the terminal protocol; its seat is
+`Seat::Global` instead of `Seat::Sandbox(id)`. A sandbox its person can work in hosts it (its shell
+is registered there: private terminal, idle end, removal); the process runs elsewhere. Claude Code
+starts with `--strict-mcp-config --tools ""`: no built-in tool, no MCP server but Yulius, no hook,
+no agent secret and no egress proxy. It reads no settings file (`--setting-sources ""`,
+`disableAllHooks`), and `CLAUDE_CODE_SHELL_PREFIX`/`SHELL` name a read-only `no-shell` script in its
+run directory that refuses every command Claude Code would run (`!`, hooks, status lines). Its
+folder and config are `users/<id>/superagent` (working folder `work/`), which no run binds, and on
+a contained server it runs in a bubblewrap namespace whose only writable root is that folder,
+without a sandbox holder, the host's `/etc/shadow` and `/etc/gshadow` covered
+(`App::global_containment`); its bearer never crosses a sandbox's network.
+Its `gs_` bearer makes `App::mcp_handle` hand the call to the remote MCP (`remote_mcp_handle`) with
+a `RemoteCaller` for its person as an operate token, its `superagent` set: the remote tools but
+`WITHHELD_TOOLS` (the vault and variables, `cd_deploy`, `project_import`, `onboarding_*`), every
+project tool checked against the person's access at the call, the actor `superagent:<login>` on
+the Superagent channel, changes audited `remote.tool` with `via: global-superagent`, at most 120
+requests a minute. A removed host ends it, and the next `POST /api/superagent` leaves a host where
+its person lost write access; it then starts under the oldest sandbox the person can work in,
+resuming the conversation kept in its folder. Its `shell.json` is version 2, which older releases
+end and remove. No key of the person reaches it (`ShellAttach::takes_keys`, `can_write` false):
+`POST /api/superagent/message` types each message as one bracketed paste and Enter, after the
+label `Message from your person:` (`global_paste`; the four commands alone), so Claude Code never reads
+the input as a command or exit word even when it held back text it stripped (`global_message`: control characters removed, `@` as `＠`, `!` lines and commands but `/clear`,
+`/compact`, `/context` and `/cost` refused, as are characters nobody sees but an emoji's, exit words,
+image paths Claude Code would attach and the `ultraplan` keyword), and `POST /api/superagent/interrupt` sends Esc (one per 2 s), so
+neither its editor (`EDITOR`/`VISUAL` refuse too), its `!` mode nor its menus are reachable. It is
+not served `change_merge`. The web UI opens it from the tools rail
+outside a sandbox, where the rail shows only the Superagent.
+
+```mermaid
+flowchart LR
+  P["Person: rail on All sandboxes"] -->|"POST /api/superagent"| Y["Yulius"]
+  Y -->|"spawn, bwrap root users/ID/superagent"| G["Global Superagent: claude --tools '' --strict-mcp-config"]
+  G -->|"/mcp, gs_ bearer"| R["remote MCP tools minus WITHHELD_TOOLS (person's access per call)"]
+  R --> A["sandbox A: tasks, CI, files, pull requests"]
+  R --> B["sandbox B: tasks, CI, files, pull requests"]
+  H["host sandbox (oldest the person can work in)"] -.->|"registers the shell"| G
 ```
 
 A repository's `.mcp.json` would make Claude Code ask about each of its servers when the

@@ -1940,7 +1940,7 @@ warning) while nothing answers to it.
 | Updates | `DISABLE_AUTOUPDATER=1` in every session and sign-in terminal: a contained session could only fail to update itself (#45). The server keeps the CLI of isolated runs current instead, under `<data>/claude-code`, and each run binds the newer of it and the host's npm install (SPEC-421, ADR-0266; docs/operations.md) |
 | Transcript | `<config>/projects/<cwd-slug>/<session>.jsonl` |
 | Usage | `message.usage` per assistant message (dedupe by message id + request id); limit errors from synthetic API error messages |
-| Hooks | `--settings` JSON `hooks` for SessionStart, UserPromptSubmit, Stop, Notification, SessionEnd |
+| Hooks | `--settings` JSON `hooks` for SessionStart, UserPromptSubmit, Stop, Notification, SessionEnd, PreToolUse (Bash; edit tools), PostToolUse |
 | Status line | `--settings` JSON `statusLine` → `yulius hook claude StatusLine` (§7.5): the repository and branch, and the session's plan usage for the pool (ADR-17) |
 | Skills | `<config>/skills/<name>/SKILL.md` + repository `.claude/skills` |
 | Login (account add) | `claude setup-token` in a server-owned PTY; token captured from output and masked before display; ends `ok` on exit or 5 s after a complete token, and the UI's dialog closes itself on `ok`, retries on failure and cancels the sign-in when closed early (SPEC-243, ADR-0184) |
@@ -2051,7 +2051,11 @@ task's activity nor its achieved goal (SPEC-346 LPH-002, ADR-0234). Responses:
   refused connection or a 5xx is retried every 2 s (a server restart). The CLI's `timeout` for
   these two events is 8 days + 1 h; the other events keep 15 s.
 - `PreToolUse` (matcher `Bash`, `guard_client.rs`) never reaches the server: the hook client refuses
-  a command whose `pgrep -f`/`pkill -f` pattern matches its own `bash -c` line.
+  a command whose `pgrep -f`/`pkill -f` pattern matches its own `bash -c` line. `PreToolUse` for
+  `Edit`, `MultiEdit`, `Write` and `NotebookEdit` (a second matcher, same command) is forwarded and
+  answered by the edit gate: `permissionDecision: deny` for a non-documentation file of the task's
+  worktree while the task needs a spec and its spec has no Plan item yet, else no output; never
+  held (SPEC-426, ADR-0270).
 - `Notification` → `needs_attention` only for the `notification_type`s that ask a person to act: `permission_prompt`, `worker_permission_prompt`, `elicitation_dialog`, `elicitation_url_dialog`, `agent_needs_input`. Every other type (Claude Code 2.1.292 also sends `idle_prompt`, `auth_success`, `agent_completed`, `push_notification`, `quota_auto_resume_*`, `computer_use_*`, `model_refusal_fallback`, `auth_storage_failure`, and later releases add more) leaves the activity as it is, so a finished task stays `waiting`/`done` and a working one `working` (F 2026-10-11, SPEC-032 STA-002). Without `notification_type` (older CLIs) the idle text rule applies. The agent's next assistant line after such a notice makes the task `working` again (STA-003).
 - `SessionEnd` → no output; its `reason` is kept for the run until it exits: `prompt_input_exit`
   (`/exit`, Ctrl+C twice, Ctrl+D) and `logout` make the exit a normal close whatever its code;

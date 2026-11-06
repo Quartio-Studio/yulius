@@ -1061,7 +1061,7 @@ run by itself.
 Task agents and Cockpits manage the same things through the Yulius MCP tools (SPEC-002 §7.4,
 SPEC-037, SPEC-066), acting for the task's owner or the Cockpit's owner, who must still have
 write access; every changing call is audited with the caller (`task:<n>`, `cockpit:<login>`, or
-`remote:<login>` for the remote MCP):
+`remote:<login>` for the remote MCP, `superagent:<login>` for the Global Superagent, SPEC-427):
 
 | Tool | Same as | Notes |
 | --- | --- | --- |
@@ -1377,6 +1377,34 @@ resolves to nothing, the run gets the server without that variable or token.
     terminals. Its terminal is `WS /api/shells/{id}/terminal`; files go to
     `POST …/shells/{id}/attachments`. It ends when Claude Code exits or after 24 h without
     viewers, keeps running across a restart, and the next call resumes its conversation.
+  - `POST /api/superagent` (signed in) → 200 `Shell`: the caller's **Global Superagent**
+    (SPEC-427, ADR-0271), started when none runs or when its host sandbox is no longer one the
+    caller can work in (concurrent calls start one), as `claude [--resume <newest conversation>]
+    --settings '{"disableAllHooks":true,"outputStyle":"Concise"}' --setting-sources ""
+    --strict-mcp-config --tools "" --model claude-opus-5-5 --effort high
+    [--dangerously-skip-permissions]` in `users/<id>/superagent/work` with
+    `CLAUDE_CONFIG_DIR=users/<id>/superagent/.claude` and `CLAUDE_CODE_SHELL_PREFIX`/`SHELL` naming
+    a script that refuses every command, contained in a bubblewrap root of that folder; its only MCP server is Yulius with a `gs_…` bearer, served the remote MCP's tools
+    (with `project`) for the caller as an operate token (120 requests a minute), without `secret_update`,
+    `secret_hosts_answer`, `secret_delete`, `variables_set`, `variable_delete`, `cd_deploy`,
+    `project_import`, `onboarding_start` and `onboarding_skip`; every one of its tools is
+    pre-allowed, on an uncontained server too. It is hosted by the oldest live sandbox the caller can work in:
+    409 when there is none (read-only access everywhere), else as `POST …/cockpit` (409 without a
+    Claude subscription, 429 while none has capacity). Its terminal is
+    `WS /api/shells/{id}/terminal`, read-only (`can_write` false; an `input` frame answers an
+    `error`); it is never in a sandbox's `GET …/shells`. `change_merge` is withheld too.
+  - `POST /api/superagent/message` `{"text"}` → 204: types the message into the caller's Global
+    Superagent as one bracketed paste and Enter, after the label `Message from your person:` (the
+    four commands go alone). Control characters but LF and tab are removed and `@` is typed as
+    `＠`); 422 for an empty message, one over 64 KiB, one that starts with `!`, or with `/` but is
+    not `/clear`, `/compact`, `/context` or `/cost`, one holding a character nobody sees (but in a
+    conservative set of emoji: a selector after a pictograph or in a keycap, a joiner between
+    pictographs, a subdivision flag's tags),
+    an exit word (`exit`, `quit`, `:q`…), one naming an image file Claude Code would attach, or
+    one holding `ultraplan`; 404 when none runs (SPEC-427 GSA-007). The
+    terminal's `resize` frames are still applied.
+  - `POST /api/superagent/interrupt` → 204: Esc into it, which interrupts its turn; a second one
+    within 2 s is dropped (204); 404 when none runs.
 - Notes ([SPEC-041](../.ai/specs/SPEC-041-here-we-want-auto-saved-notes-sandbox-wi.md),
   [SPEC-103](../.ai/specs/SPEC-103-add-me-after-team-that-is-for-user-and-n.md)): one notepad per
   sandbox, one for the team and one per person, saved by the web UI as people type.
@@ -1760,6 +1788,13 @@ boundary and the client sends the same request again after `Retry-After` seconds
 2 s, so a server restart does not release the agent; a hold nobody asks about for 45 s was given
 up by the CLI (an interrupt, its own hook timeout) and ends: the task runs again. `401` means the
 run is unknown or finished.
+
+`PreToolUse` reaches the listener only for `Edit`, `MultiEdit`, `Write` and `NotebookEdit` (Bash
+is checked in the sandbox). The client sends a trimmed body, `{"hook_event_name", "tool_name",
+"cwd", "tool_input": {"file_path"|"notebook_path"}}` (never the file's content), and the answer is
+never held: `200` with `{"hookSpecificOutput": {"hookEventName": "PreToolUse",
+"permissionDecision": "deny", "permissionDecisionReason": "…"}}` while the task needs a spec and
+its spec has no Plan item and the file is code in its worktree, else no output (SPEC-426).
 
 `SessionEnd` (body `{"reason": "prompt_input_exit|clear|logout|resume|other", …}`) answers `200`
 with no output; it tells Yulius why the session ends before the process exits (above).
