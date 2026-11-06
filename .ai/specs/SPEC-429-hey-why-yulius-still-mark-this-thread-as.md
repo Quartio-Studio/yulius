@@ -112,6 +112,9 @@ under Done) instead of "Your turn" under Needs you. Needs you stays for what a p
   stale "Answered" after a late goal record, the row's "your turn" line, notification wording, stalls
   without a plan). All were answered in dd9ce858. Round 2 approved dbe1807f, with nits (doc
   comments, table order) fixed here.
+- Yulius CI at 70f51794 failed one test of this change. The archive test asserted Closed at once,
+  but `close_task_now` keeps the task Running until its session is gone. It now waits for Closed,
+  as the sibling archive test does, and passed 3 runs in a row locally.
 - Not tested: task #17 itself lives in another project and could not be opened from here. Its case
   (a met goal, then an answered follow-up) is reproduced by `task_done.rs`
   `an_achieved_goal_with_no_shell_left_makes_the_task_done`. Real Claude Code timing was not run;

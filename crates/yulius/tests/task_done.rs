@@ -570,7 +570,13 @@ fn an_achieved_goal_with_no_shell_left_makes_the_task_done() -> TestResult {
         // as for a Done task, not "stop the task first" (SPEC-429 ANS-007).
         let archived = app.archive_task(&ctx, id.as_str(), true).await?;
         assert!(archived.archived, "archived");
-        assert_eq!(task(&app, &id).await?.status, TaskStatus::Closed);
+        // Closed, not stopped; it stays Running until its session is gone (`close_task_now`).
+        wait_for("the close", Duration::from_secs(30), || async {
+            task(&app, &id)
+                .await
+                .is_ok_and(|t| t.status == TaskStatus::Closed)
+        })
+        .await?;
         Ok::<(), BoxError>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
