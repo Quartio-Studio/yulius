@@ -138,6 +138,8 @@ test('browser tabs move by drag, keyboard and menu and stay so', async ({ app, b
     session.tabs.find((tab) => tab.id === 'tab-aws')!.title = 'Console Home';
     session.sendTabs();
   });
+  // The mock delivers a socket message a timer tick later: let it arrive while the tab is held.
+  await browser.evaluate(() => new Promise((resolve) => { setTimeout(() => resolve(true), 0); }));
   // Still pressed: the strip is not drawn again under the pointer (#477), the old title stays.
   await expect.poll(() => browser.evaluate((selector) => {
     const held = document.querySelector<HTMLElement>(`${selector} .bp-tab.dragging`);

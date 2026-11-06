@@ -121,7 +121,7 @@ no grip; they get it.
   tabs move by drag, Alt+arrows and the menu". The Notes grip test now reads the shared `.tab-grip`.
 - Visual check in the Yulius browser (mock on port 20100): the Superagent, Browser and Shell strips
   show the grip as the top bar does.
-- Independent review (fresh session, `om-code-review`), 3 rounds, approved on `e917b2ff`:
+- Independent review (fresh session, `om-code-review`), 4 rounds: approved on `e917b2ff`, then on this Evidence and the round 3 nit below:
   - Round 1 (own code): the Superagent's other tab kept its slide offset after a drag (fixed in
     `tabdrag.js` `end()`, test `tabsInPlace`, which failed before); dragged/settling rules lost to
     the strips' `.active` rules (selector raised; a mutation reverting it fails the Superagent test);
@@ -130,11 +130,13 @@ no grip; they get it.
     tab's other parts keep 6 px.
   - Round 2: the mid-press redraw tests could pass without the `drag.dragging` guards; they now
     assert mid-press that the pressed tab is still the strip's (the reviewer's guard-removal
-    mutation fails both, 4/4 runs; real code passes 10/10 twice).
+    mutation fails the Browser test in 4/4 runs and the Terminals test in the run whose log was
+    kept; real code passes 10/10 twice).
+  - Round 3 nit, adopted: the Browser test waits one timer tick after `sendTabs()` (the mock
+    delivers socket messages a tick later; the pattern `terminals.e2e.ts` already uses), so the
+    mid-press check sees the new list arrive.
   - Not changed: the per-sandbox order keys stay after a sandbox goes (pre-existing pattern of
-    `yulius.shellActive.<id>`, bounded to the tabs of the last write); the nit to wait a mock tick
-    after `sendTabs()` would need a fixed sleep, which the test rules forbid, and the next
-    `evaluate` round-trip already follows it (4/4 runs held).
+    `yulius.shellActive.<id>`, bounded to the tabs of the last write).
 - `python3 scripts/bootstrap.py` then `scripts/dev ci`: exit 0, nextest 3165 passed, 16 skipped.
 - `cd e2e && npx e2e run`: 75 files passed, 1 skipped; 863 tests passed, 1 skipped.
 - `yulius security-scan`: "Security scan disabled" (Vidoc is off in Yulius): not run, not passed.
