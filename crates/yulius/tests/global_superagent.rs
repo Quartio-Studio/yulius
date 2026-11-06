@@ -878,10 +878,10 @@ async fn a_message_whose_request_goes_away_is_still_submitted() -> TestResult {
         token: None,
     };
     // Dropped once its paste shows, while it waits for the Enter.
-    let typing =
+    let mut typing = Box::pin(
         f.h.app
-            .global_superagent_message(&ctx, "echo detached-$((4+4))");
-    tokio::pin!(typing);
+            .global_superagent_message(&ctx, "echo detached-$((4+4))"),
+    );
     tokio::select! {
         done = &mut typing => return Err(format!("it ended before its paste showed: {done:?}").into()),
         shown = read_until(&mut socket, &mut screen, "[201~") => shown?,
