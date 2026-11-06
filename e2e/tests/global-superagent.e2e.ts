@@ -234,3 +234,44 @@ test('the Global Superagent in front stays in front in a sandbox that had anothe
   await expect(browser.locator('.panel .panel-title')).toHaveText('Superagent');
   expect(await startsOf(browser)).toEqual({ sandbox: 0, global: 1 });
 });
+
+// Review round 2: the tab picked last shows in every sandbox, also in a panel that was not shown when
+// it was picked.
+test('a sandbox\'s panel shown again shows the tab picked last elsewhere', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await firstShown(screen.getByRole('heading', { level: 1 }), '#12 Checkout API');
+  await openSuperagent(browser, screen);
+  await expect(tabs(screen).getByRole('tab', 'This sandbox')).toHaveAttribute('aria-selected', 'true');
+  const sandboxes = screen.getByRole('navigation', 'Sandboxes');
+  await sandboxes.getByRole('link', /^product\b/).click();
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('New task');
+  await expect(tabs(screen).getByRole('tab', 'This sandbox')).toHaveAttribute('aria-selected', 'true');
+  await sandboxes.getByRole('link', /^studio\b/).click();
+  await tabs(screen).getByRole('tab', 'All sandboxes').click();
+  await expect(browser.locator(`${shownAgent} .xterm-rows`)).toHaveText(/superagent\/work/);
+  await openSuperagent(browser, screen);
+  await expect(screen.getByRole('region', 'Tool panel')).toBeHidden();
+  // product's remembered tool (SPEC-113 KST-005) comes back on All sandboxes.
+  await sandboxes.getByRole('link', /^product\b/).click();
+  await expect(tabs(screen).getByRole('tab', 'All sandboxes')).toHaveAttribute('aria-selected', 'true');
+  // Back to This sandbox in product, closed; studio's panel opened from the rail follows.
+  await tabs(screen).getByRole('tab', 'This sandbox').click();
+  await openSuperagent(browser, screen);
+  await expect(screen.getByRole('region', 'Tool panel')).toBeHidden();
+  await sandboxes.getByRole('link', /^studio\b/).click();
+  await expect(screen.getByRole('region', 'Tool panel')).toBeHidden();
+  await openSuperagent(browser, screen);
+  await expect(tabs(screen).getByRole('tab', 'This sandbox')).toHaveAttribute('aria-selected', 'true');
+});
+
+test('the tab keys with a modifier do not switch the Superagent tabs', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await firstShown(screen.getByRole('heading', { level: 1 }), '#12 Checkout API');
+  await openSuperagent(browser, screen);
+  const here = tabs(screen).getByRole('tab', 'This sandbox');
+  await expect(here).toHaveAttribute('aria-selected', 'true');
+  await here.focus();
+  await browser.keyboard.press('Alt+ArrowRight');
+  await browser.keyboard.press('Control+End');
+  await expect(here).toHaveAttribute('aria-selected', 'true');
+});

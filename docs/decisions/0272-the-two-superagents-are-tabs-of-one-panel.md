@@ -46,6 +46,8 @@ two live views of it in one page would size it against each other.
 
 - The Global Superagent is reachable from every page; GSA-006's "closes the panel instead" no
   longer holds and SPEC-427's e2e test was changed with it.
-- `panels.js` owns the shared view (`sharedGlobal`) and destroys it at sign-out; a panel only
-  detaches it when its sandbox's views go.
+- `panels.js` owns the shared view (`sharedGlobal`) and the page's tab in front (`agentTab`, read
+  from storage once at load), and destroys the view at sign-out; a panel only detaches it when its
+  sandbox's views go. Only a tab the person picks is stored, so another browser tab's choice never
+  switches this page's panel.
 - The panel's title is "Superagent" everywhere; the tab names which one is shown.

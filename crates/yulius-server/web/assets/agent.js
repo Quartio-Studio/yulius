@@ -18,17 +18,18 @@ import { readJson, writeJson } from './store.js';
 const TAB_KEY = 'yulius.superagentTab';
 /** SPEC-428 SAT-001: the panel's tabs, local first. */
 const TABS = [['sandbox', 'This sandbox'], ['global', 'All sandboxes']];
-/** The tab chosen last in a sandbox, the same in every sandbox (SAT-002): This sandbox until one is picked. */
-const chosenSuperagentTab = () => (readJson(TAB_KEY, 'sandbox') === 'global' ? 'global' : 'sandbox');
+/** The tab the person picked last, as this browser stored it (SAT-002): This sandbox until one is picked. */
+export const chosenSuperagentTab = () => (readJson(TAB_KEY, 'sandbox') === 'global' ? 'global' : 'sandbox');
 let panelSeq = 0;
 
 /**
  * The Superagent panel of `sandbox` (null outside a sandbox): This sandbox and All sandboxes as tabs,
  * as Notes shows its notepads (SPEC-428). `global()` is the page's one Global Superagent view
  * (SAT-004): the panel showing its tab holds it, so its session is attached once and its box keeps
- * what was typed from one sandbox to the next. A session starts when its tab first shows.
+ * what was typed from one sandbox to the next. A session starts when its tab first shows. `tab()` is
+ * the page's tab in front in every sandbox, which `onTab` updates (review round 2).
  */
-export function createSuperagentPanel(ctx, sandbox, { global }) {
+export function createSuperagentPanel(ctx, sandbox, { global, tab, onTab }) {
   const seq = ++panelSeq;
   const id = (part, key) => `superagent-${seq}-${part}-${key}`;
   const tablist = h('div', { class: 'term-tabs superagent-tabs', role: 'tablist', 'aria-label': 'Superagents' });
@@ -48,12 +49,14 @@ export function createSuperagentPanel(ctx, sandbox, { global }) {
   // Outside a sandbox only All sandboxes is there (SAT-003).
   const enabled = (k) => Boolean(sandbox) || k === 'global';
   const tabs = TABS.map(([k, label]) => h('button', {
-      type: 'button', class: 'term-tab', role: 'tab', id: id('tab', k), 'aria-controls': id('pane', k), dataset: { key: k },
-      'aria-disabled': enabled(k) ? null : 'true', title: enabled(k) ? null : 'Open a sandbox first',
-      onClick: () => { if (enabled(k)) select(k, { focusTab: true, picked: true }); },
-    }, label));
+    type: 'button', class: 'term-tab', role: 'tab', id: id('tab', k), 'aria-controls': id('pane', k), dataset: { key: k },
+    'aria-disabled': enabled(k) ? null : 'true', title: enabled(k) ? null : 'Open a sandbox first',
+    onClick: () => { if (enabled(k)) select(k, { focusTab: true, picked: true }); },
+  }, label));
   setChildren(tablist, tabs);
   tablist.addEventListener('keydown', (event) => {
+    // With a modifier the keys are someone else's (Notes reorders its tabs with Alt+←/→).
+    if (event.altKey || event.ctrlKey || event.metaKey) return;
     const keys = TABS.map(([k]) => k).filter(enabled);
     const at = keys.indexOf(key);
     const next = { ArrowLeft: at - 1, ArrowRight: at + 1, Home: 0, End: keys.length - 1 }[event.key];
@@ -73,13 +76,17 @@ export function createSuperagentPanel(ctx, sandbox, { global }) {
   }
 
   /**
-   * Shows tab `k`. Only a tab the person `picked` in a sandbox is remembered (review round 1);
+   * Shows tab `k`, in a sandbox the page's tab from now on. Only a tab the person `picked` is stored
+   * for the next page load (review round 1);
    * `focusTab` keeps the keyboard on the strip (as Notes), `context` (a new page, not the person)
    * leaves it where it is.
    */
   function select(k, { focusTab = false, context = false, picked = false } = {}) {
     const next = enabled(k) ? k : 'global';
-    if (sandbox && picked) writeJson(TAB_KEY, next);
+    if (sandbox) {
+      onTab(next);
+      if (picked) writeJson(TAB_KEY, next);
+    }
     const before = key && viewOf(key);
     const view = viewOf(next);
     if (before && before !== view && shown && before.hide) before.hide();
@@ -93,15 +100,13 @@ export function createSuperagentPanel(ctx, sandbox, { global }) {
   return {
     el,
     title: 'Superagent',
-    /** The tab in front, or null before the first show. */
-    get tab() { return key; },
     /**
-     * Shows `opts.tab`, else the tab already in front (a new page keeps it, whatever another browser
-     * tab stored meanwhile; review round 1), else the one chosen last.
+     * Shows `opts.tab`, else the page's tab in front (whatever another browser tab stored meanwhile;
+     * review rounds 1 and 2).
      */
     show(opts = {}) {
       shown = true;
-      select(opts.tab || key || chosenSuperagentTab(), { context: Boolean(opts.context) });
+      select(opts.tab || (sandbox ? tab() : 'global'), { context: Boolean(opts.context) });
     },
     hide() {
       shown = false;

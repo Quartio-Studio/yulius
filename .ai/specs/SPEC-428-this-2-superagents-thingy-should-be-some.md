@@ -46,8 +46,10 @@ from each other and solve it".
 - SAT-002: in a sandbox the panel shows the tab the person picked last (a click, the keys or the
   note's button, remembered per browser, `yulius.superagentTab`, This sandbox until the person picks
   one; a tab shown for them, as in SAT-005, is not remembered), and the shown tab is the same in
-  every sandbox. A panel shown again for a new page or another sandbox keeps the tab in front,
-  whatever another browser tab stored meanwhile. A session starts only when its tab is first shown:
+  every sandbox: the page holds one tab in front, read from storage once at load and then set by
+  whichever sandbox's panel shows a tab, so a panel shown again (a new page, another sandbox, the
+  rail, a sandbox's remembered tool) shows it, whatever another browser tab stored meanwhile. The
+  tab keys with Alt, Ctrl or Meta held do nothing. A session starts only when its tab is first shown:
   picking All sandboxes in a sandbox starts no sandbox Superagent.
 - SAT-003: outside a sandbox (All sandboxes, Settings, `/superagent`) the panel shows All sandboxes;
   This sandbox is disabled there ("Open a sandbox first") and the remembered choice is not changed.
@@ -72,6 +74,7 @@ from each other and solve it".
 - [x] The sandbox note selects the All sandboxes tab and the box suggests the example
 - [x] ADR, architecture, product and changes describe the tabs
 - [ ] Review round 1 fixed: the tab in front kept, only picked tabs remembered, more paths tested
+- [ ] Review round 2 fixed: one tab in front per page, keys with a modifier ignored
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 
