@@ -77,6 +77,7 @@ through Yulius. Its start never stops on Claude Code's Bypass Permissions warnin
 - [x] The message and interrupt endpoints are gone
 - [x] ADR, architecture, product and API docs describe the keys
 - [x] Review round 1 fixed: the home's shell startup files covered, stale comments restated
+- [x] Review round 2 fixed: why the tools stay pre-allowed, contained-only binds in the docs
 - [x] Independent review in a fresh session, findings fixed test-first
 - [x] Every gate green, docs and the changes log updated
 
