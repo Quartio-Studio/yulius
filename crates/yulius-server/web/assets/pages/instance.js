@@ -1,11 +1,12 @@
 // Instance (superadmin; SPEC-001 OPS-006..OPS-009, ADM-002): the version this server runs, the
 // update offered from main (checked when the page opens, SPEC-149) with its new commits, "Update
 // now" and the update's progress (building → pausing tasks → restarting → resuming, with a
-// failure or rollback said plainly, and the new version's re-check of sandboxes' Docker), whether
+// failure or rollback said plainly, and the new version's re-check of sandboxes' Docker), a
+// restart with the running version (pausing tasks → restarting → resuming, SPEC-432), whether
 // sandboxes get Docker (SPEC-203), the leftovers on the disk (SPEC-215), and the Jev and Vidoc
 // keys.
 
-import { h, icon, setChildren, errorToast, confirmDialog, badge, skeleton } from '../dom.js';
+import { h, icon, setChildren, toast, errorToast, confirmDialog, badge, skeleton } from '../dom.js';
 import { relLong, dateTime } from '../format.js';
 import { BRAND } from '../brand.js';
 import { pageFrame } from './common.js';
@@ -19,6 +20,12 @@ const STEPS = [
   ['building', 'Build', 'The new version is built on this server while tasks keep working.'],
   ['pausing', 'Pause tasks', 'Tasks pause at once, mid-step. The agents don’t notice.'],
   ['restarting', 'Restart', 'Installs and starts the new version, after a database backup.'],
+  ['resuming', 'Resume', 'Tasks continue one by one.'],
+];
+/** A restart builds and installs nothing (SPEC-432 RST-002). */
+const RESTART_STEPS = [
+  ['pausing', 'Pause tasks', 'Tasks pause at once, mid-step. The agents don’t notice.'],
+  ['restarting', 'Restart', 'Stops and starts the server with the version it runs.'],
   ['resuming', 'Resume', 'Tasks continue one by one.'],
 ];
 
@@ -51,10 +58,11 @@ function deploysLine(deploys) {
   }));
 }
 
-/** The stepper of a running update. */
+/** The stepper of a running update or restart. */
 function stepper(run) {
-  const index = STEPS.findIndex(([state]) => state === run.state);
-  return h('ol', { class: 'update-steps' }, STEPS.map(([state, title, text], i) => {
+  const steps = run.restart ? RESTART_STEPS : STEPS;
+  const index = steps.findIndex(([state]) => state === run.state);
+  return h('ol', { class: 'update-steps' }, steps.map(([state, title, text], i) => {
     const status = i < index ? 'done' : i === index ? 'current' : 'next';
     let extra = null;
     if (status === 'current' && state === 'building') extra = progressBar(run.progress, 'Build progress');
@@ -83,10 +91,14 @@ function stepper(run) {
   }));
 }
 
-/** The outcome of the last update. */
+/** The outcome of the last update or restart. */
 function outcome(run) {
   const tone = { succeeded: 'ok', failed: 'danger', rolled_back: 'danger', cancelled: '' }[run.state];
-  const title = {
+  const title = run.restart ? {
+    succeeded: 'Restarted',
+    failed: 'The last restart failed',
+    cancelled: 'The last restart was cancelled',
+  }[run.state] : {
     succeeded: `Updated to ${short(run.target.commit)}`,
     failed: 'The last update failed',
     rolled_back: 'The last update was rolled back',
@@ -151,7 +163,7 @@ export function mountInstancePage(ctx) {
     parts.push(h('div', { class: 'instance-version' },
       h('span', { class: 'muted small' }, 'This server runs'),
       view.current && view.current.commit ? commitLink(view.current.commit) : h('span', { class: 'mono' }, 'an unknown build'),
-      running ? badge('updating', 'warn') : available ? badge('update available', 'accent') : check.relation === 'up_to_date' ? badge('up to date', 'ok') : null));
+      running ? badge(run.restart ? 'restarting' : 'updating', 'warn') : available ? badge('update available', 'accent') : check.relation === 'up_to_date' ? badge('up to date', 'ok') : null));
     if (check.error) {
       parts.push(h('div', { class: 'banner banner-warn', role: 'status' }, icon('warn', { size: 16 }), h('span', { class: 'banner-text' }, check.error)));
     } else if (check.checked_at) {
@@ -167,13 +179,15 @@ export function mountInstancePage(ctx) {
     }
     if (running) {
       parts.push(h('div', { class: 'update-run' },
-        h('div', { class: 'row' }, h('strong', null, `Updating to ${short(run.target.commit)}`), h('span', { class: 'muted small' }, run.summary)),
+        run.restart
+          ? h('div', { class: 'row' }, h('strong', null, `Restarting ${BRAND.name}`), h('span', { class: 'muted small' }, `with ${short(run.target.commit)}`))
+          : h('div', { class: 'row' }, h('strong', null, `Updating to ${short(run.target.commit)}`), h('span', { class: 'muted small' }, run.summary)),
         stepper(run),
         h('div', { class: 'row' },
           run.can_proceed && run.tasks && run.tasks.waiting.length
             ? h('button', { type: 'button', class: 'btn btn-sm', onClick: () => proceed() }, 'Continue without waiting')
             : null,
-          run.can_cancel ? h('button', { type: 'button', class: 'btn btn-sm', onClick: () => cancel() }, 'Cancel update') : null)));
+          run.can_cancel ? h('button', { type: 'button', class: 'btn btn-sm', onClick: () => cancel(run) }, run.restart ? 'Cancel restart' : 'Cancel update') : null)));
     } else if (available) {
       const shown = available.commits.slice(0, 12);
       parts.push(h('div', { class: 'update-offer' },
@@ -187,6 +201,13 @@ export function mountInstancePage(ctx) {
           h('button', { type: 'button', class: 'btn btn-primary', disabled: view.helper_installed === false, onClick: () => confirmAndStartUpdate(ctx, available) }, icon('download', { size: 14 }), 'Update now…'))));
     }
     if (run && OUTCOMES.has(run.state)) parts.push(outcome(run));
+    // A restart checks that the same build comes back: it needs the build known.
+    if (!running && view.helper_installed === true && view.current && view.current.commit) {
+      parts.push(h('div', { class: 'row instance-restart' },
+        h('span', { class: 'muted small' }, 'Restart the server with the version it runs; tasks pause and continue.'),
+        h('span', { class: 'spacer' }),
+        h('button', { type: 'button', class: 'btn btn-sm', onClick: () => restart() }, icon('refresh', { size: 14 }), 'Restart…')));
+    }
     setChildren(updatesBody, ...parts);
   }
 
@@ -205,13 +226,35 @@ export function mountInstancePage(ctx) {
     }
   }
 
-  async function cancel() {
-    if (!(await confirmDialog({ title: 'Cancel the update?', message: 'Nothing is installed, and paused tasks continue at once.', confirmLabel: 'Cancel update', danger: true }))) return;
+  async function cancel(run) {
+    const what = run && run.restart ? 'restart' : 'update';
+    const message = what === 'restart' ? 'Nothing restarts, and paused tasks continue at once.' : 'Nothing is installed, and paused tasks continue at once.';
+    if (!(await confirmDialog({ title: `Cancel the ${what}?`, message, confirmLabel: `Cancel ${what}`, danger: true }))) return;
     try {
       await ctx.api.post('/api/admin/update/cancel', {});
       await ctx.updates.refresh();
     } catch (error) {
-      errorToast(error, 'Couldn’t cancel the update');
+      errorToast(error, `Couldn’t cancel the ${what}`);
+    }
+  }
+
+  /** Restarts the server with the version it runs, as an update does without installing. */
+  async function restart() {
+    const ok = await confirmDialog({
+      title: `Restart ${BRAND.name}?`,
+      message: h('ol', { class: 'update-confirm-steps' },
+        h('li', null, 'Tasks pause at once, mid-step. The agents don’t notice; terminals stay open.'),
+        h('li', null, 'The server stops and starts again with the version it runs (about a minute).'),
+        h('li', null, 'Tasks continue one by one.')),
+      confirmLabel: 'Restart',
+    });
+    if (!ok) return;
+    try {
+      await ctx.api.post('/api/admin/restart', { confirm: true });
+      toast('Restarting. Tasks pause and continue right after.', { kind: 'ok' });
+      await ctx.updates.refresh();
+    } catch (error) {
+      errorToast(error, 'Couldn’t restart');
     }
   }
 

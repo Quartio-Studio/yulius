@@ -7,7 +7,7 @@ use axum::http::StatusCode;
 use yulius_app::model::Secret;
 use yulius_contracts::api::updates::{
     JevKeyView, JevTestResult, SandboxDockerView, SetJevKey, SetVidocEnabled, SetVidocKey,
-    StartUpdate, UpdateView, VidocKeyView, VidocTestResult,
+    StartRestart, StartUpdate, UpdateView, VidocKeyView, VidocTestResult,
 };
 use yulius_contracts::update::VersionInfo;
 
@@ -34,6 +34,18 @@ pub async fn start(
     Ok((
         StatusCode::ACCEPTED,
         Json(app.start_update(&ctx, &req).await?),
+    ))
+}
+
+/// `POST /api/admin/restart` (SPEC-432 RST-002).
+pub async fn restart(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Json(req): Json<StartRestart>,
+) -> ApiResult<(StatusCode, Json<UpdateView>)> {
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(app.start_restart(&ctx, &req).await?),
     ))
 }
 

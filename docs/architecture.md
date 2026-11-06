@@ -746,6 +746,15 @@ A restart or an update is invisible to a task's session
   one thing Yulius types into an idle session, besides a person's message. The woken turn ends
   with a Stop Yulius answers, so the branch is pushed and delivery goes on.
 - **Armed merges** are restored, then tried once at the start.
+- **A dropped server is reconnected**
+  ([SPEC-432](../.ai/specs/SPEC-432-fix-so-this-never-ever-happen-again-also.md),
+  [decision 0276](decisions/0276-a-session-whose-yulius-mcp-went-silent-is-reconnected-and-a-superadmin-restarts-yulius.md)).
+  Claude Code can still mark the server failed for good (a stdio server gets 30 s to connect).
+  The bridge pings `POST /mcp` every minute and every agent request records the task's last
+  contact. A Running, idle task silent for 3 minutes gets `/mcp reconnect yulius` typed (at most
+  every 10 minutes, 3 times unanswered), and once heard again, if its turn closed while it was
+  silent, "Yulius's tools are reconnected; continue". Mid-turn, `yulius tool <name> '<json>'` calls
+  any Yulius tool from the shell.
 
 ```mermaid
 sequenceDiagram
@@ -760,6 +769,11 @@ sequenceDiagram
     Y-->>B: 100 Continue, then the answer
     B-->>C: the answer, one line
     Y->>C: 90 s later, to a task idle since the outage: "Yulius is back#59; continue"
+    B->>Y: ping every 60 s (the task's last contact)
+    Note over C,B: Claude Code dropped the server: no ping
+    Y->>C: idle and silent 3 min: "/mcp reconnect yulius"
+    C->>B: a new bridge: initialize, then pings
+    Y->>C: turn closed while silent: "Yulius's tools are reconnected#59; continue"
 ```
 
 ## A task's own files

@@ -39,6 +39,26 @@ test('an update on offer is announced to the superadmin and runs to the end', as
   expect(await axeViolations(browser)).toEqual([]);
 });
 
+// SPEC-432 RST-003: a superadmin restarts the server with the version it runs: the tasks pause,
+// it restarts and they resume, with no build step; the outcome says "Restarted".
+test('a superadmin restarts the server from the instance page', async ({ app, browser, screen }) => {
+  await app.open(mock('/admin/instance', ''));
+  await screen.getByRole('button', 'Restart…').click();
+  const dialog = screen.getByRole('dialog', /^Restart Yulius\?$/);
+  await expect(dialog.getByText(/Tasks pause at once, mid-step/)).toBeVisible();
+  expect(await axeViolations(browser)).toEqual([]);
+  await dialog.getByRole('button', 'Restart').click();
+  await expect(dialog).toBeHidden();
+  await expect.poll(() => browser.evaluate(() => document.body.innerText), { timeout: 5000 }).toMatch(/Restarting Yulius/);
+  const steps = await browser.evaluate(() => [...document.querySelectorAll('.update-step-title')].map((e) => e.textContent));
+  expect(steps.join(' | ')).not.toMatch(/Build/);
+  await expect(screen.getByRole('button', 'Cancel restart')).toBeVisible();
+  await expect.poll(() => browser.evaluate(() => document.body.innerText), { timeout: 15000 }).toMatch(/Restarted/);
+  expect(await browser.evaluate(() => document.body.innerText)).not.toMatch(/Updated to/);
+  // Once it ended, it can be restarted again.
+  await expect(screen.getByRole('button', 'Restart…')).toBeVisible();
+});
+
 // SPEC-342 DPU-006: a deploy running when the build is done is waited for, named under the Build
 // step with a link to its project's CI/CD page (an environment run's: Git), before tasks pause.
 test('an update waits for a running deploy before it pauses tasks and names it', async ({ app, browser, screen }) => {

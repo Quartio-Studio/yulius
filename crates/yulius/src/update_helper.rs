@@ -11,6 +11,8 @@
 //!   is on `main` and not older than the commit this helper installed last, check it out exactly,
 //!   `cargo build --release --locked -p yulius` with `YULIUS_BUILD_COMMIT` set, and stage the
 //!   binary. Touches no service.
+//! - **restart**: the installed build only (SPEC-432): stop and start the service and wait until
+//!   it reports that commit again. Nothing is backed up, installed or rolled back.
 //! - **install**: the staged build of that commit only: stop the service (agent sessions keep
 //!   running), back up the binary and the database, install, start, and wait until the new
 //!   server reports that commit; otherwise restore the previous binary and database and start
@@ -369,7 +371,7 @@ fn reported_commit(url: &str) -> Result<Option<String>, String> {
 struct Refused {
     id: String,
     commit: String,
-    install: bool,
+    action: HelperAction,
 }
 
 struct Helper {
@@ -428,6 +430,7 @@ impl Helper {
             let result = match request.action {
                 HelperAction::Build => self.build(&request),
                 HelperAction::Install => self.install(&request),
+                HelperAction::Restart => self.restart(&request),
             };
             if let Err(err) = result {
                 eprintln!("yulius update-helper: failed: {err}");
@@ -469,7 +472,11 @@ impl Helper {
             let refused = field("id").filter(|id| valid_id(id)).map(|id| Refused {
                 id,
                 commit: field("commit").filter(|c| is_commit(c)).unwrap_or_default(),
-                install: field("action").as_deref() == Some("install"),
+                action: match field("action").as_deref() {
+                    Some("install") => HelperAction::Install,
+                    Some("restart") => HelperAction::Restart,
+                    _ => HelperAction::Build,
+                },
             });
             (refused, reason)
         })
@@ -489,11 +496,7 @@ impl Helper {
         let status = HelperStatus {
             version: VERSION,
             id: refused.id.clone(),
-            action: if refused.install {
-                HelperAction::Install
-            } else {
-                HelperAction::Build
-            },
+            action: refused.action,
             commit: refused.commit.clone(),
             state: HelperState::Failed,
             step: "failed".into(),
@@ -994,6 +997,33 @@ impl Helper {
                 write_new(&path, &mut file, 0o600, Some((uid, gid)))?;
             }
         }
+        Ok(())
+    }
+
+    /// Stops and starts the service with the build it runs, and waits until it reports that
+    /// build (SPEC-432 RST-001). A build other than the one this helper installed is refused.
+    fn restart(&self, request: &HelperRequest) -> Result<(), String> {
+        let commit = request.commit.as_str();
+        if let Some(installed) = self.installed_commit()
+            && installed != commit
+        {
+            return Err(format!(
+                "{} is not the installed {}; nothing was restarted.",
+                short(commit),
+                short(&installed)
+            ));
+        }
+        self.report(HelperState::Running, "stopping", |s| {
+            s.previous = Some(commit.to_owned());
+        });
+        eprintln!("yulius update-helper: restarting");
+        self.stop_service()?;
+        self.step("starting");
+        self.start_service()?;
+        self.step("checking");
+        self.wait_healthy(Some(commit))?;
+        self.report(HelperState::Done, "restarted", |_| {});
+        eprintln!("yulius update-helper: {} restarted", short(commit));
         Ok(())
     }
 

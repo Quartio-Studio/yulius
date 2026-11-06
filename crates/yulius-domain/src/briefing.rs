@@ -899,8 +899,10 @@ fn tools(playground: bool) -> String {
         .join(", ");
     // `yulius wait` is in "Git and delivery". Claude Code stops such an `rm` for a person even
     // with approvals bypassed (SPEC-192).
-    let shell = " Remove this task's files at `/`, in `/tmp` or via a variable with \
-                 `yulius remove`, not `rm`.";
+    // Claude Code can drop the server for good mid-session; the shell still reaches Yulius
+    // (SPEC-432 MCR-005).
+    let shell = " Unavailable? Run `yulius tool <name> '<json>'`. Remove this task's files at \
+                 `/`, in `/tmp` or via a variable with `yulius remove`, not `rm`.";
     format!(
         "## Yulius tools\n\nThe `yulius` MCP server (each tool says when to use it): \
          {names}.{shell}\n\n"
@@ -2039,7 +2041,7 @@ mod tests {
                      (it shows images).\n";
         assert!(!build_briefing(&input, DEFAULT_BUDGET_BYTES).contains(files));
         input.task.goal = "This part @'/srv/a.png' looks wrong".to_owned();
-        for budget in [DEFAULT_BUDGET_BYTES, DEFAULT_BUDGET_BYTES - 1_700] {
+        for budget in [DEFAULT_BUDGET_BYTES, DEFAULT_BUDGET_BYTES - 1_650] {
             let text = build_briefing(&input, budget);
             let task = &text[text.find("## Your task").ok_or("no task section")?..];
             assert!(task.contains(files), "{budget}: {task}");
@@ -2511,7 +2513,7 @@ mod tests {
     fn a_long_goal_shrinks_before_a_mandatory_part_is_cut() -> TestResult {
         let profile = DeliveryProfile::standard();
         let layout = DocsLayout::default();
-        let budget = DEFAULT_BUDGET_BYTES - 1_700;
+        let budget = DEFAULT_BUDGET_BYTES - 1_650;
         for (isolated, docker) in [(false, false), (true, false), (true, true)] {
             let mut input = base(&profile, &layout)?;
             input.isolated = isolated;
@@ -2610,7 +2612,7 @@ mod tests {
     fn the_containers_section_never_displaces_the_task_or_the_architecture() -> TestResult {
         let profile = DeliveryProfile::standard();
         let layout = DocsLayout::default();
-        let budget = DEFAULT_BUDGET_BYTES - 1_700;
+        let budget = DEFAULT_BUDGET_BYTES - 1_650;
         for goal_len in [80, 200, 400, 600] {
             let mut input = base(&profile, &layout)?;
             input.project_name = "Quartio-Studio/yulius".to_owned();
@@ -2671,6 +2673,19 @@ mod tests {
                     "Remove this task's files at `/`, in `/tmp` or via a variable with \
                      `yulius remove`, not `rm`."
                 ),
+                "{rendered}"
+            );
+        }
+    }
+
+    /// SPEC-432 MCR-005: the tools name `yulius tool`, so an agent whose Yulius MCP server was
+    /// dropped calls its tools from the shell instead of waiting for a person.
+    #[test]
+    fn the_tools_name_yulius_tool_for_when_the_server_is_gone() {
+        for playground in [false, true] {
+            let rendered = tools(playground);
+            assert!(
+                rendered.contains(" Unavailable? Run `yulius tool <name> '<json>'`."),
                 "{rendered}"
             );
         }
