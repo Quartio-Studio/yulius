@@ -1,11 +1,11 @@
 ---
 yulius-task: 746c60a2-d83f-41d3-befb-9f0908241417
-status: in-progress
+status: done
 ---
 
 # SPEC-433: An image pasted into the Global Superagent reaches it
 
-Status: in-progress
+Status: done
 Date: 2026-11-06
 Owner: Yulius task #415
 Scope authorization: task #415 (`/goal`): "I can't paste to the global superadmin. Fix." (the
@@ -65,8 +65,8 @@ terminal. Text pastes keep working as they do.
 - [x] The All sandboxes terminal uploads pasted and dropped images and types their paths
 - [x] ADR, architecture, API and product docs describe the Global Superagent's images
 - [x] Review round 1 fixed: links, old folders and disabled accounts tested, images checked in the browser
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -101,3 +101,50 @@ terminal. Text pastes keep working as they do.
 - **A new route under `/api/superagent`**, beside `POST /api/superagent`, rather than the shell's
   `…/shells/{id}/attachments` with a special case: the folder belongs to the person, not to a
   sandbox or a shell id.
+
+## Evidence
+
+On 2026-11-06, at `dc170eab` (the branch after merging `origin/dev` at `88ec6ddf`):
+
+- Reproduced before the change (e2e probe against the mock, at `d6642cb9`, the code the instance
+  runs): a text paste into the All sandboxes terminal reached the session; a clipboard image did
+  nothing.
+- `scripts/dev ci`: exit 0. Repository contracts, web unit tests, format, clippy, docs, macOS
+  targets and deps pass; `cargo nextest run --workspace --profile ci` ran 3167 tests, 3167 passed,
+  16 skipped (at `b397bbc8` before review round 1: 3166 passed).
+- `cd e2e && npx e2e run` (full suite at `b397bbc8`): 861 passed, 1 skipped (`agent.e2e.ts` needs
+  a model). After review round 1 (`filedrop.js`, `mock.js`, this spec's e2e test), the
+  `global-superagent` and `filedrop` files pass: 25 of 25.
+- Tests, each failing without its change:
+  - `global_superagent::an_image_pasted_into_the_global_superagent_is_kept_in_its_own_folder`
+    (AC-GIM-1 to AC-GIM-3): 404 before the route existed; with the week-old removal commented out
+    it fails on "older than a week".
+  - `global_superagent::the_global_superagent_s_images_folder_refuses_links_and_disabled_accounts`
+    (review round 1): a link planted as the folder gives 403 with nothing written; an old folder,
+    an old link and its old target survive the removal (fails when the removal takes every entry);
+    a disabled account stores nothing.
+  - `e2e/tests/global-superagent.e2e.ts` "an image pasted into the Global Superagent reaches it by
+    path…" (AC-GIM-4): failed without the drop on the Global view (nothing typed); with the
+    browser's image check missing it fails on 2 uploads instead of 1 (review round 1).
+  - The existing `uploads::`, `cockpit::` and `global_superagent::` tests (78) pass after
+    `begin_attachment` became `begin_attachment_in` below a given base.
+- Claude Code 2.1.311 probed in a PTY with a synthetic token (no model called) and the Global
+  Superagent's flags (`--setting-sources "" --strict-mcp-config --tools ""
+  --dangerously-skip-permissions`, `skipDangerousModePermissionPrompt` in `--settings`): a
+  bracketed paste of a PNG's absolute path shows `[Image #1]`; its binary lists `png`, `jpg`,
+  `jpeg`, `gif`, `webp` as image extensions.
+- Independent review in fresh sessions:
+  - Round 1 (`b397bbc8`): APPROVE with two minors and three nits, all this change's own code.
+    Fixed test-first: the page refuses a non-image before sending it (a large PDF was posted only
+    to be refused); tests for a planted link, old folders and links kept, a disabled account.
+    Nits: `docs/api.md` says when the upload answers 404 and that a running one takes images
+    until it ends or moves; kept as they are, with reasons: the sandbox-folder check now runs
+    before the declared-size check (409 before 413 for a sandbox without a folder, no realistic
+    case) and the removal's blocking reads follow `prune_old_drafts` on a folder of at most 500.
+  - Round 2 confirms this head.
+- Not run: `yulius security-scan` reports "Security scan disabled": Vidoc is turned off for this
+  project in Yulius, so nothing was scanned; this is not a pass.
+- Not tested: a real image sent to a model through a running Global Superagent (no model call
+  here), and the bubblewrap launch itself (this sandbox cannot create namespaces): that the
+  contained session opens `users/<id>/superagent/attachments/<name>` rests on its root being that
+  folder bound at the same path (`App::global_containment`), as the reviewer checked in code.
