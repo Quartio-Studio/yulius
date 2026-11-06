@@ -71,11 +71,11 @@ through Yulius. Its start never stops on Claude Code's Bypass Permissions warnin
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] The Global Superagent's terminal takes its person's keys and clicks
-- [ ] Its start never stops on the Bypass Permissions warning
-- [ ] The All sandboxes tab is the sandbox Superagent's view, without a message box
-- [ ] The message and interrupt endpoints are gone
-- [ ] ADR, architecture, product and API docs describe the keys
+- [x] The Global Superagent's terminal takes its person's keys and clicks
+- [x] Its start never stops on the Bypass Permissions warning
+- [x] The All sandboxes tab is the sandbox Superagent's view, without a message box
+- [x] The message and interrupt endpoints are gone
+- [x] ADR, architecture, product and API docs describe the keys
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 

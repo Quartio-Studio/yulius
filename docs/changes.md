@@ -6,6 +6,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-06
 
+- The Global Superagent works like the sandbox Superagent (SPEC-430, task #412, ADR-0274): its
+  person types and clicks in its terminal, with no separate message box, and it no longer stops
+  at start on Claude Code's Bypass Permissions warning, which nobody could answer. It stays the
+  person's own, reaches every sandbox of theirs through Yulius, and still runs no commands.
 - The two Superagents are tabs of one Superagent panel (SPEC-428, task #410, ADR-0272): **This
   sandbox** and **All sandboxes** (the Global Superagent), as the Notes tabs. The Global
   Superagent is now one click away in every sandbox, stays in front across sandboxes once picked

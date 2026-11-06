@@ -14,6 +14,8 @@ Extends SPEC-021/SPEC-035 (the Superagent, `cockpit.rs`) and SPEC-247 (the remot
 decided in [ADR-0271](../../docs/decisions/0271-a-global-superagent-acts-in-every-sandbox-of-its-person-through-yulius-tools-only.md).
 GSA-006's web UI is amended by [SPEC-428](SPEC-428-this-2-superagents-thingy-should-be-some.md): the two
 Superagents are tabs of one panel, and a sandbox entered with the Global one in front keeps it open.
+GSA-007 is superseded by [SPEC-430](SPEC-430-this-should-be-exactly-like-normal-super.md): its person
+types into its terminal as into the sandbox Superagent's; the message endpoints are removed.
 
 ## Goal
 
