@@ -569,7 +569,9 @@ fn a_task_whose_yulius_mcp_went_silent_is_reconnected_then_continues() -> TestRe
     use crate::pool_supervision::{
         build_tuned, new_task, runtime, screen, seed, stop, temp, wait_for,
     };
-    use yulius_app::mcp_watch::{CONTINUE_TEXT, RECONNECT_TEXT, WatchAction, WatchBounds};
+    use yulius_app::mcp_watch::{
+        CONTINUE_TEXT, MCP_PING_ID, RECONNECT_TEXT, WatchAction, WatchBounds,
+    };
     use yulius_ptyhost::test_support::locate_fake_agent;
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
     let (_dir, data) = temp()?;
@@ -593,15 +595,16 @@ fn a_task_whose_yulius_mcp_went_silent_is_reconnected_then_continues() -> TestRe
             .await?;
         }
         let bounds = WatchBounds {
-            started: yulius_domain::time::Timestamp(0),
             silent_after_ms: 1_000,
             reconnect_gap_ms: 60_000,
+            ..WatchBounds::new(yulius_domain::time::Timestamp(0))
         };
+        let ping = json!(MCP_PING_ID);
         // Passes run until the cut task's turn has closed and it was silent for a second.
         let deadline = Instant::now() + Duration::from_secs(30);
         let mut typed = Vec::new();
         while Instant::now() < deadline && typed.is_empty() {
-            app.note_mcp_contact(&heard);
+            app.note_mcp_contact(&heard, &ping);
             typed = app.watch_mcp(&bounds).await;
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
@@ -612,15 +615,15 @@ fn a_task_whose_yulius_mcp_went_silent_is_reconnected_then_continues() -> TestRe
         })
         .await?;
         // Within the gap, nothing more.
-        app.note_mcp_contact(&heard);
+        app.note_mcp_contact(&heard, &ping);
         assert!(app.watch_mcp(&bounds).await.is_empty());
         // Its bridge is heard again; the turn the reconnect's echo closed came after the silence.
         tokio::time::sleep(Duration::from_millis(20)).await;
-        app.note_mcp_contact(&cut);
+        app.note_mcp_contact(&cut, &ping);
         let deadline = Instant::now() + Duration::from_secs(30);
         let mut typed = Vec::new();
         while Instant::now() < deadline && typed.is_empty() {
-            app.note_mcp_contact(&heard);
+            app.note_mcp_contact(&heard, &ping);
             typed = app.watch_mcp(&bounds).await;
             tokio::time::sleep(Duration::from_millis(100)).await;
         }

@@ -719,5 +719,23 @@ async fn an_agent_request_records_its_tasks_mcp_contact() -> TestResult {
     assert_eq!(answer["result"], json!({}));
     assert!(h.app.mcp_contact_ms(&pinged) >= before);
     assert_eq!(h.app.mcp_contact_ms(&other), 0);
+    // Review round 1: a `yulius tool` call comes from the shell, not the session's MCP client.
+    let answer = call(
+        &internal,
+        Method::POST,
+        "/mcp",
+        Some(json!({"jsonrpc": "2.0", "id": "yulius-tool", "method": "ping", "params": {}})),
+        &Creds {
+            bearer: Some("tok-other".into()),
+            ..Creds::default()
+        },
+    )
+    .await?;
+    assert_eq!(answer.status, StatusCode::OK);
+    assert_eq!(
+        h.app.mcp_contact_ms(&other),
+        0,
+        "a shell call is no contact"
+    );
     Ok(())
 }

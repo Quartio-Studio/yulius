@@ -14,6 +14,8 @@ use yulius_git::agent_call::{CallError, CallLimits, agent_call};
 
 /// The route the call goes to.
 const PATH: &str = "/mcp";
+/// The JSON-RPC error `POST /mcp` answers a refused task token with.
+const REFUSED_TOKEN: i64 = -32001;
 /// The largest answer read.
 const MAX_ANSWER: usize = 32 * 1024 * 1024;
 
@@ -72,7 +74,7 @@ pub fn run(
     }
     let body = json!({
         "jsonrpc": "2.0",
-        "id": 1,
+        "id": yulius_app::mcp_watch::SHELL_CALL_ID,
         "method": "tools/call",
         "params": {"name": name, "arguments": arguments},
     })
@@ -109,16 +111,19 @@ pub fn run(
             }
         }
     };
-    if matches!(answer.status, 401 | 403) {
+    let refused = |answer: &Value| {
+        answer.pointer("/error/code").and_then(Value::as_i64) == Some(REFUSED_TOKEN)
+    };
+    let parsed = serde_json::from_slice::<Value>(&answer.body).ok();
+    if matches!(answer.status, 401 | 403) || parsed.as_ref().is_some_and(refused) {
         let _ = writeln!(
             out,
-            "yulius tool: Yulius refused this session's token (HTTP {}): the task's run ended or \
-             its token changed",
-            answer.status
+            "yulius tool: Yulius refused this session's token: the task's run ended or its token \
+             changed"
         );
         return 2;
     }
-    let Ok(answer) = serde_json::from_slice::<Value>(&answer.body) else {
+    let Some(answer) = parsed else {
         let _ = writeln!(
             out,
             "yulius tool: Yulius answered HTTP {} with no JSON",
@@ -265,11 +270,17 @@ mod tests {
     fn a_refused_token_or_bad_arguments_exit_2() -> Result<(), Box<dyn std::error::Error>> {
         let listener = TcpListener::bind("127.0.0.1:0")?;
         let port = listener.local_addr()?.port();
-        let server = answer_once(listener, "401 Unauthorized", "");
+        // Review round 1: `POST /mcp` answers a refused token with JSON-RPC -32001, not 401.
+        let server = answer_once(
+            listener,
+            "200 OK",
+            r#"{"jsonrpc":"2.0","id":"yulius-tool","error":{"code":-32001,"message":"invalid or expired task token"}}"#,
+        );
         let (code, said) = call(port, "steps_get", None);
         assert_eq!(code, 2, "{said}");
         assert!(said.contains("refused this session's token"), "{said}");
-        server.join().map_err(|_| "server panicked")??;
+        let request = server.join().map_err(|_| "server panicked")??;
+        assert_eq!(request["id"], json!("yulius-tool"), "a shell call's id");
         let (code, said) = call(port, "steps_get", Some("[1]"));
         assert_eq!(code, 2, "{said}");
         let mut out = Vec::new();

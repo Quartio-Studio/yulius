@@ -34,7 +34,7 @@ const MAX_ANSWER: usize = 32 * 1024 * 1024;
 /// Methods that change nothing, sent again even when Yulius may have read them.
 const SAFE_TO_RESEND: [&str; 3] = ["initialize", "ping", "tools/list"];
 /// The id of the bridge's own pings: never one of Claude Code's.
-pub const ALIVE_ID: &str = "yulius-bridge-alive";
+pub const ALIVE_ID: &str = yulius_app::mcp_watch::MCP_PING_ID;
 /// The longest one ping may take.
 const PING_BOUND: Duration = Duration::from_secs(30);
 /// How long the calls in flight may finish once Claude Code closed stdin.
