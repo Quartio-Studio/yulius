@@ -17,7 +17,7 @@
 // (drag, Alt+←/→, the tab's menu).
 
 import { enc } from './api.js';
-import { h, icon, iconButton, setChildren, toast, errorToast, confirmDialog, openMenu, openModal, field, closableTabKeys, skeleton } from './dom.js';
+import { DRAG_TAB_HINT, h, icon, iconButton, setChildren, toast, errorToast, confirmDialog, openMenu, openModal, field, closableTabKeys, skeleton } from './dom.js';
 import { allows } from './status.js';
 import { token, activeTheme, onThemeChange, px, hexToken } from './theme.js';
 import { readJson, writeJson } from './store.js';
@@ -1066,7 +1066,9 @@ export function createEditorView(ctx, sandbox, getTask) {
     const focused = tabbar.contains(document.activeElement) ? document.activeElement.dataset.path : null;
     const items = tabs.map((tab, index) => {
       const name = tab.path.split('/').pop();
-      const button = h('div', { class: ['ed-tab', tab === active && 'active'], role: 'tab', tabindex: tab === active ? '0' : '-1', dataset: { path: tab.path }, title: tab.path, 'aria-selected': String(tab === active), 'aria-keyshortcuts': 'Delete Backspace Alt+ArrowLeft Alt+ArrowRight' },
+      const button = h('div', { class: ['ed-tab', tab === active && 'active'], role: 'tab', tabindex: tab === active ? '0' : '-1', dataset: { path: tab.path }, title: `${tab.path}\n${DRAG_TAB_HINT}`, 'aria-selected': String(tab === active), 'aria-keyshortcuts': 'Delete Backspace Alt+ArrowLeft Alt+ArrowRight' },
+        // The grip says the tab drags, as on every strip that does (SPEC-434 MTB-004).
+        h('span', { class: 'tab-grip', 'aria-hidden': 'true' }, icon('grip', { size: 12 })),
         h('span', { class: 'ed-tab-name' }, name),
         dirtyOf(tab) ? h('span', { class: 'sr-only' }, ', modified') : null,
         // Not a button: see closableTabKeys. Delete or Backspace closes the focused tab.
