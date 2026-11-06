@@ -192,6 +192,11 @@ test('a sandbox entered while the Global Superagent is open keeps it open and st
   await screen.getByRole('navigation', 'Sandboxes').getByRole('link', /^product\b/).click();
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('New task');
   await expect(tabs(screen).getByRole('tab', 'All sandboxes')).toHaveAttribute('aria-selected', 'true');
+  // Closed and opened again from the rail, it shows the tab it had.
+  await openSuperagent(browser, screen);
+  await expect(screen.getByRole('region', 'Tool panel')).toBeHidden();
+  await openSuperagent(browser, screen);
+  await expect(tabs(screen).getByRole('tab', 'All sandboxes')).toHaveAttribute('aria-selected', 'true');
   expect(await startsOf(browser)).toEqual({ sandbox: 0, global: 1 });
   // /s/<slug>/superagent asks for the sandbox's own.
   await app.open(mock('/s/studio/superagent'));
