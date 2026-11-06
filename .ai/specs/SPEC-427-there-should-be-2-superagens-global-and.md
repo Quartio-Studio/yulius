@@ -98,7 +98,7 @@ as the person's own agent does over the remote MCP.
   external editor, `!` commands, plugin installs and file mentions that would run or read as the
   server: its terminal is read-only (`can_write` false; a typed key is refused), and
   `POST /api/superagent/message {text}` types one bracketed paste and Enter, the text after the
-  label `Message from <login>:` unless it is one of the commands below (so held text Claude Code
+  label `Message from your person:` unless it is one of the commands below (so held text Claude Code
   stripped and did not submit can never make the next message a command or exit word), with control
   characters but line breaks and tabs removed and `@` as `＠`; a message that starts with `!`, or
   with `/` but is not `/clear`, `/compact`, `/context` or `/cost`, is refused (422), as is one
@@ -125,6 +125,7 @@ as the person's own agent does over the remote MCP.
 - [x] Review round 4 (approved) minors fixed: image paths, keyword, emoji, interrupt gap, detached typing
 - [x] Review round 5 fixed: invisible characters anywhere, multi-part lines, a clock stepped back
 - [x] Review round 6 fixed: a label before every message, stricter emoji, UNC paths
+- [x] Review round 7 (approved) fixed: a fixed label, its meaning in the instructions
 - [x] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 

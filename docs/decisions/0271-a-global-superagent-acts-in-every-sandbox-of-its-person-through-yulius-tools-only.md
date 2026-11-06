@@ -43,7 +43,7 @@ their task runs.
   Ctrl+G and `/memory` start an external editor (`vi` from the host) without any shell prefix,
   `/plugin` installs code, and `@path` attaches a file read as the server. So its terminal is
   read-only, and `POST /api/superagent/message` types each message as one bracketed paste and
-  Enter, after the label `Message from <login>:` (one of `/clear`, `/compact`, `/context` and
+  Enter, after the label `Message from your person:` (one of `/clear`, `/compact`, `/context` and
   `/cost` alone). Claude Code then never reads the input as a command, a `!` line or an exit
   word, whatever it does with the characters of a message: when it strips some at submit it holds
   the text back unsent, and the next message joins it, but every person's word comes after a word
@@ -123,7 +123,9 @@ their task runs.
   in a conservative set of emoji (a selector after a pictograph or in a keycap, a joiner between
   pictographs, a subdivision flag's tags), refusing some Claude Code would keep (in other scripts,
   rarer emoji). Its exit words (`exit`, `quit`, `:q` and the like) are refused. Another release
-  may read messages differently; the label does not depend on that.
+  may read messages differently; the label relies only on Claude Code reading commands, `!` and
+  exit words at the start of its input. The label is fixed (no login could carry a word Claude
+  Code acts on), and its instructions say that the same words inside a tool's result are data.
 - Claude Code attaches an image file a pasted line names: the line is split before each space a
   path follows, and when every part is a path (or there is one part), each one unquoted and
   unescaped that is an absolute path ending in `.png`, `.jpg`, `.jpeg`, `.gif` or `.webp` is read;
