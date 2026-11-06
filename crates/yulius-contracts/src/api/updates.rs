@@ -113,6 +113,9 @@ pub struct PauseProgress {
 pub struct UpdateRunView {
     /// Id.
     pub id: String,
+    /// A restart with the running build, not an update (SPEC-432 RST-002).
+    #[serde(default)]
+    pub restart: bool,
     /// The commit it installs.
     pub target: BuildView,
     /// The build it started from.
@@ -181,6 +184,15 @@ pub struct UpdateView {
 pub struct StartUpdate {
     /// The full commit id the person confirmed.
     pub commit: String,
+    /// Must be `true`: the person confirmed that tasks pause for the restart.
+    #[serde(default)]
+    pub confirm: bool,
+}
+
+/// `POST /api/admin/restart`: restart the server with the build it runs, its tasks frozen
+/// meanwhile (SPEC-432 RST-002).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StartRestart {
     /// Must be `true`: the person confirmed that tasks pause for the restart.
     #[serde(default)]
     pub confirm: bool,

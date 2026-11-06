@@ -126,6 +126,24 @@ fn build_with_github(
     build_served(data, fake, usage, agent, github, "http://127.0.0.1:9")
 }
 
+/// [`build_with`] whose configuration `tune` changes.
+pub(crate) fn build_tuned(
+    data: &Path,
+    fake: &Path,
+    agent: FakeAgentOptions,
+    tune: impl FnOnce(&mut AppConfig),
+) -> Result<Arc<App>, Box<dyn std::error::Error>> {
+    build_served_tuned(
+        data,
+        fake,
+        Arc::new(ScriptedUsage::default()),
+        agent,
+        Arc::new(FakeGitHub::default()),
+        "http://127.0.0.1:9",
+        tune,
+    )
+}
+
 /// [`build_with_github`] whose runs reach Yulius at `internal_url` (their `YULIUS_URL`).
 pub(crate) fn build_served(
     data: &Path,
@@ -134,6 +152,19 @@ pub(crate) fn build_served(
     agent: FakeAgentOptions,
     github: Arc<FakeGitHub>,
     internal_url: &str,
+) -> Result<Arc<App>, Box<dyn std::error::Error>> {
+    build_served_tuned(data, fake, usage, agent, github, internal_url, |_| {})
+}
+
+/// [`build_served`] whose configuration `tune` changes.
+fn build_served_tuned(
+    data: &Path,
+    fake: &Path,
+    usage: Arc<ScriptedUsage>,
+    agent: FakeAgentOptions,
+    github: Arc<FakeGitHub>,
+    internal_url: &str,
+    tune: impl FnOnce(&mut AppConfig),
 ) -> Result<Arc<App>, Box<dyn std::error::Error>> {
     let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
     let store = SqliteStore::open(&data.join("yulius.db"))?;
@@ -145,6 +176,7 @@ pub(crate) fn build_served(
     );
     config.contained = false;
     config.resume_stagger_ms = 1_500;
+    tune(&mut config);
     let deps = Deps {
         store: Arc::new(store),
         clock: Arc::new(SystemClock),
@@ -903,6 +935,8 @@ fn personal_mcp_servers_reach_only_their_holders_runs() -> TestResult {
             })
             .await?
             .id;
+        // Its launch files, not only its attempt: the attempt is recorded before the spawn writes
+        // them (#1084).
         wait_for("the automation's run", Duration::from_secs(30), || {
             let app = app.clone();
             let id = automated.clone();
@@ -913,7 +947,7 @@ fn personal_mcp_servers_reach_only_their_holders_runs() -> TestResult {
                     .await
                     .ok()
                     .flatten()
-                    .is_some()
+                    .is_some_and(|run| run_servers(&run.run_dir).is_ok())
             }
         })
         .await?;

@@ -626,6 +626,74 @@ fn install_needs_the_staged_build_of_that_commit() -> TestResult {
     Ok(())
 }
 
+/// SPEC-432 RST-001: a restart stops and starts the service with the build it runs, and backs
+/// up, installs and checks the host for nothing.
+#[test]
+fn a_restart_stops_and_starts_the_same_build() -> TestResult {
+    let mut env = Env::new()?;
+    env.health(None)?;
+    std::fs::create_dir_all(&env.args.state_dir)?;
+    std::fs::write(env.args.state_dir.join("installed-commit"), OLD)?;
+    env.request("run-0020-restart", HelperAction::Restart, OLD)?;
+    let status = env.run()?;
+    assert_eq!(status.state, HelperState::Done, "{status:?}");
+    assert_eq!(status.step, "restarted");
+    assert_eq!(std::fs::read_to_string(&env.args.binary)?, OLD);
+    let calls = std::fs::read_to_string(env.bin("systemctl.log"))?;
+    let verbs: Vec<&str> = calls
+        .lines()
+        .filter_map(|l| l.split_whitespace().next())
+        .filter(|verb| *verb != "is-active")
+        .collect();
+    assert_eq!(verbs, ["stop", "start"]);
+    assert!(!env.args.state_dir.join("backups").exists());
+    assert!(env.bin("active").exists());
+    Ok(())
+}
+
+/// RST-001: a restart of another build than the one installed is refused untouched.
+#[test]
+fn a_restart_of_another_build_is_refused() -> TestResult {
+    let mut env = Env::new()?;
+    env.health(None)?;
+    std::fs::create_dir_all(&env.args.state_dir)?;
+    std::fs::write(env.args.state_dir.join("installed-commit"), &env.c)?;
+    env.request("run-0021-restart", HelperAction::Restart, OLD)?;
+    let status = env.run()?;
+    assert_eq!(status.state, HelperState::Failed, "{status:?}");
+    assert!(
+        status
+            .error
+            .unwrap_or_default()
+            .contains("not the installed"),
+        "the reason is given"
+    );
+    assert!(
+        !env.bin("systemctl.log").exists(),
+        "the service was not touched"
+    );
+    Ok(())
+}
+
+/// RST-001: a server that does not come back is reported failed; nothing is rolled back.
+#[test]
+fn a_restart_whose_server_stays_down_fails() -> TestResult {
+    let mut env = Env::new()?;
+    env.health(Some(OLD.to_owned()))?;
+    env.request("run-0022-restart", HelperAction::Restart, OLD)?;
+    let status = env.run()?;
+    assert_eq!(status.state, HelperState::Failed, "{status:?}");
+    assert!(
+        status
+            .error
+            .unwrap_or_default()
+            .contains("did not become healthy"),
+        "the reason is given"
+    );
+    assert_eq!(std::fs::read_to_string(&env.args.binary)?, OLD);
+    Ok(())
+}
+
 /// A fake `yulius host check` that records its arguments and prints `report` (exit `code`).
 fn host_check(env: &mut Env, report: &str, code: i32) -> TestResult {
     let program = env.bin("host-check");
