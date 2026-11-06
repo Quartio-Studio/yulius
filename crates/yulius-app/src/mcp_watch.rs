@@ -183,8 +183,9 @@ pub fn decide(
         // A bridge that pings every minute and stopped.
         Some(facts.pinged_ms + bounds.ping_grace_ms)
     } else if facts.spawned_ms >= bounds.started.0 {
-        // Spawned by this server, with a bridge that pings, and never pinged: never connected.
-        Some(facts.spawned_ms)
+        // Spawned by this server, with a bridge that pings, and never pinged: cut off since its
+        // last contact, or its spawn if it never connected.
+        Some(facts.spawned_ms.max(facts.seen_ms))
     } else {
         None
     };
@@ -537,6 +538,26 @@ mod tests {
         assert_eq!(
             decide(&heard(never), typed, &bounds()).0,
             WatchAction::Continue
+        );
+    }
+
+    /// Review round 2: a run spawned here whose MCP client connected but whose bridge died
+    /// before its first ping was cut off after that contact, not from its spawn.
+    #[test]
+    fn a_session_heard_before_its_first_ping_is_cut_off_from_that_contact() {
+        let connected = WatchFacts {
+            seen_ms: 11 * MIN,
+            pinged_ms: 0,
+            turn_closed_ms: 11 * MIN - 5_000,
+            ..silent()
+        };
+        let (action, typed) = decide(&connected, Reconnects::default(), &bounds());
+        assert_eq!(action, WatchAction::Reconnect);
+        assert_eq!(typed.cut_off_from_ms, Some(11 * MIN));
+        assert_eq!(
+            decide(&heard(connected), typed, &bounds()).0,
+            WatchAction::None,
+            "its turn closed before the contact"
         );
     }
 }

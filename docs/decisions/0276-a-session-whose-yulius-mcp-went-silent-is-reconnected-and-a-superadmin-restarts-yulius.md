@@ -40,7 +40,7 @@ hand does not pause the tasks.
 - **It is told to continue.** Once the bridge is heard after a reconnect, a task whose last turn
   closed while it was surely cut off gets "Yulius's tools are reconnected; continue" once, unless
   its goal is achieved or it waits for a person. Surely cut off means 90 s after its last ping,
-  or since its spawn for a run this server started that never pinged. A reattached run that never
+  or since its last contact (else its spawn) for a run this server started that never pinged. A reattached run that never
   pinged here (an older bridge) is reconnected but never told to continue: when it was cut off is
   not known.
 - **`yulius tool <name> [<json>]`** calls any Yulius tool from the shell through the same
@@ -49,9 +49,10 @@ hand does not pause the tasks.
 - **A restart is an update run whose target is the running build.** `POST /api/admin/restart`
   (superadmin, confirmed) opens a run straight in `draining` with `from_commit` equal to
   `target_commit`, refused while a deploy runs (an update waits for deploys while it builds; a
-  restart has nothing to build): every task is frozen, the root helper gets a new action `restart` (stop, start,
-  wait until the server reports that commit; refused for a build other than the one it installed;
-  nothing backed up, installed or rolled back), and the tasks thaw one by one. The Instance page
+  restart has nothing to build). Every task is frozen, the root helper gets a new action
+  `restart` (stop, start, wait until the server reports that commit; refused for a build other
+  than the one it installed; nothing backed up, installed or rolled back), and the tasks thaw one
+  by one. The Instance page
   offers **Restart…** and shows the run as a restart.
 
 ## Alternatives
