@@ -124,7 +124,7 @@ impl Drop for Ends<'_> {
 /// marks and overrides, zero-width ones, the soft hyphen, the Arabic, Syriac, Kaithi and
 /// Egyptian format characters), Unicode tag characters (which carry
 /// hidden ASCII), variation selectors, fillers that draw as blanks, private-use and noncharacters.
-fn unseen(c: char) -> bool {
+pub(crate) fn unseen(c: char) -> bool {
     if matches!(c, '\n' | '\t' | '\r') {
         return false;
     }

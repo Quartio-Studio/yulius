@@ -146,7 +146,9 @@ export function createAgentView(ctx, sandbox) {
       transport: ctx.transport,
       path: `/api/shells/${enc(shell.id)}/terminal`,
       onLink: (uri, event) => ctx.openLink(uri, event),
-      readOnlyLabel: () => 'Read-only',
+      readOnlyLabel: () => (global ? 'Write to it below' : 'Read-only'),
+      // Its terminal takes no keys but still fits the panel (review round 3).
+      resizeReadOnly: global,
       // A usage limit moved it to another subscription (SPEC-074 SUP-006), or an update restarts
       // it to get new tools (SPEC-186 SAV-006): it goes on, so the panel follows it instead of
       // offering Start again.

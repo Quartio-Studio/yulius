@@ -137,11 +137,6 @@ const SHARED_TOOLS: &[&str] = &[
     "secrets_list",
 ];
 
-/// The remote tool `name`'s action, when it is one.
-pub(crate) fn remote_tool_action(name: &str) -> Option<Action> {
-    remote_tool(name).map(|(_, action)| action)
-}
-
 fn remote_tool(name: &str) -> Option<(Reach, Action)> {
     REMOTE_TOOLS
         .iter()

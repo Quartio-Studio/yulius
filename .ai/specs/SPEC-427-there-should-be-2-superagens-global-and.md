@@ -59,8 +59,8 @@ as the person's own agent does over the remote MCP.
   repository. On a contained server it runs in a bubblewrap namespace of its own with that folder
   as its only writable root (no sandbox holder, no repository, the host's `/etc/shadow` and
   `/etc/gshadow` covered); it gets no agent secrets, no
-  sandbox MCP servers and no egress proxy. With bypass on a contained server as SPEC-208; on an
-  uncontained one only its read tools are pre-allowed.
+  sandbox MCP servers and no egress proxy. With bypass on a contained server as SPEC-208; every tool of
+  its own is pre-allowed, on an uncontained server too (no key could answer a question).
 - GSA-003: its bearer (`gs_…`, distinct from the sandbox Superagent's `ck_…`) is served on the
   internal `/mcp` the remote MCP's tools for its person, each project tool with `project`, checked
   per call against the person's access to that project as an `operate` token is, except the tools
@@ -99,8 +99,12 @@ as the person's own agent does over the remote MCP.
   server: its terminal is read-only (`can_write` false; a typed key is refused), and
   `POST /api/superagent/message {text}` types one bracketed paste and Enter, with control
   characters but line breaks and tabs removed and `@` as `＠`; a message that starts with `!`, or
-  with `/` but is not `/clear`, `/compact`, `/context` or `/cost`, is refused (422).
-  `POST /api/superagent/interrupt` sends Esc. Both answer 404 to anyone without a running one.
+  with `/` but is not `/clear`, `/compact`, `/context` or `/cost`, is refused (422), as is one
+  that holds a character nobody sees (Claude Code's trim drops U+FEFF before a `/`), one of
+  Claude Code's exit words, or only a path (it would attach that file). The terminal still fits
+  its panel (the page sends resizes, not keys). `POST /api/superagent/interrupt` sends Esc; a
+  second one within 2 s is dropped (two open Claude Code's rewind menu). A message is typed even if
+  its request goes away meanwhile. Both answer 404 to anyone without a running one.
   `EDITOR` and `VISUAL` name the refusing script too. It is not served `change_merge`: text it
   reads in one sandbox must not merge code into another.
 
@@ -114,6 +118,7 @@ as the person's own agent does over the remote MCP.
 - [x] ADR, architecture, product and API docs describe the two Superagents
 - [x] Review round 1 fixed: no shell, hooks or settings files, a recorded contained plan, bounds
 - [x] Review round 2 fixed: messages instead of keys, no editor, no merges
+- [ ] Review round 3 fixed: hidden characters, exit words and paths refused, resizes, one interrupt
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 
@@ -152,7 +157,7 @@ as the person's own agent does over the remote MCP.
   instead of (person, sandbox).
 - **No built-in tools instead of approvals.** It acts in every sandbox without asking, as the
   person asked; what keeps that safe is that it can only call Yulius, whose tools check the
-  person's access per call, audit changes and merge only on green CI. Claude Code's file and shell
+  person's access per call and audit changes; it merges nothing. Claude Code's file and shell
   tools would reach a folder outside every sandbox and are not needed to coordinate.
 - **Reuse the remote MCP's tools** rather than give the sandbox Superagent's tools a `sandbox`
   argument: they already take `project`, check access per call and are tested, and the person's

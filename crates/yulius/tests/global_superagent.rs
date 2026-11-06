@@ -564,6 +564,14 @@ async fn a_contained_global_superagent_has_a_root_of_its_own() -> TestResult {
         argv.last().map(String::as_str),
         Some("--dangerously-skip-permissions")
     );
+    // Every tool of its own is pre-allowed: no key could answer a question about one.
+    let allowed = argv
+        .windows(2)
+        .find(|w| w[0] == "--allowedTools")
+        .map(|w| w[1].clone())
+        .ok_or("no allowed tools")?;
+    assert!(allowed.contains("mcp__yulius__task_create"), "{allowed}");
+    assert!(!allowed.contains("change_merge"), "{allowed}");
     Ok(())
 }
 
@@ -772,6 +780,23 @@ async fn the_person_talks_to_the_global_superagent_by_message_only() -> TestResu
     let mut screen = String::new();
     read_until(&mut socket, &mut screen, "ready").await?;
 
+    // Interrupt sends Esc (the fake's terminal echoes it as ^[); a second one right after is the
+    // same wish and is dropped: two would open Claude Code's rewind menu (review round 3).
+    let interrupt = || {
+        call(
+            &f.h.router,
+            Method::POST,
+            "/api/superagent/interrupt",
+            None,
+            &f.alice,
+        )
+    };
+    for _ in 0..2 {
+        let esc = interrupt().await?;
+        assert_eq!(esc.status, StatusCode::NO_CONTENT, "{:?}", esc.body);
+    }
+    read_until(&mut socket, &mut screen, "^[").await?;
+
     // A key is refused; a message is typed.
     socket
         .send(Message::text(
@@ -780,7 +805,9 @@ async fn the_person_talks_to_the_global_superagent_by_message_only() -> TestResu
         .await?;
     let sent = say(&f, &f.alice, "echo said-$((2+3)) to ops@example.com").await?;
     assert_eq!(sent.status, StatusCode::NO_CONTENT, "{:?}", sent.body);
-    read_until(&mut socket, &mut screen, "ops\u{ff20}example.com").await?;
+    read_until(&mut socket, &mut screen, "ops\u{ff20}example.com^[[201~").await?;
+    // One Esc, then the paste's two: the second interrupt was dropped.
+    assert_eq!(screen.matches("^[").count(), 3, "{screen:?}");
     assert!(
         screen.contains("\u{1b}[200~") || screen.contains("[200~"),
         "{screen:?}"
@@ -793,6 +820,9 @@ async fn the_person_talks_to_the_global_superagent_by_message_only() -> TestResu
         "/memory",
         "  ",
         "/clear now",
+        "\u{feff}/plugin install x@y",
+        "exit",
+        "'/etc/hostname'",
     ] {
         let resp = say(&f, &f.alice, refused).await?;
         assert_eq!(
@@ -811,15 +841,6 @@ async fn the_person_talks_to_the_global_superagent_by_message_only() -> TestResu
             resp.body
         );
     }
-    let esc = call(
-        &f.h.router,
-        Method::POST,
-        "/api/superagent/interrupt",
-        None,
-        &f.alice,
-    )
-    .await?;
-    assert_eq!(esc.status, StatusCode::NO_CONTENT, "{:?}", esc.body);
     // Nobody else reaches it.
     let carols = say(&f, &f.carol, "hello").await?;
     assert_eq!(carols.status, StatusCode::NOT_FOUND);

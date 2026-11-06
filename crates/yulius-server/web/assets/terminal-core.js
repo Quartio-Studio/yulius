@@ -95,6 +95,8 @@ function keyboardOnPage() {
  *   onState(state), onExit(exit), onNotice(text)
  *   exitActions(exit)          optional [{label, run}] shown in the exit banner
  *   exitMessage(exit)          optional {tone, text} for the exit banner (status.js endedMessage)
+ *   resizeReadOnly             ask the server to fit the PTY to this view even when it may not type
+ *                              (the Global Superagent takes messages, not keys; SPEC-427)
  *   followServerSize           render at the PTY size from `state` and never ask the server
  *                              to resize (account login terminals: fixed 500 columns so
  *                              tokens and URLs never wrap; the view scrolls horizontally)
@@ -112,7 +114,7 @@ function keyboardOnPage() {
  *                              files in the terminal's folder become links (termlinks.js)
  * Call start() after the element is in the document; destroy() when done.
  */
-export function createTerminalView({ transport, path, onLink, readOnlyLabel, onState, onExit, onNotice, exitActions, exitMessage, emptyMessage, onReady, onConnection, onFatal, topOffer = null, fontSize, fileLinks = null, followServerSize = false }) {
+export function createTerminalView({ transport, path, onLink, readOnlyLabel, onState, onExit, onNotice, exitActions, exitMessage, emptyMessage, onReady, onConnection, onFatal, topOffer = null, fontSize, fileLinks = null, followServerSize = false, resizeReadOnly = false }) {
   const banner = h('div', { class: 'term-banner', hidden: true, role: 'status' });
   const noticeEl = h('div', { class: 'term-notice', hidden: true, role: 'status', 'aria-live': 'polite' });
   // Connection trouble floats over the terminal: it never changes the terminal's size.
@@ -666,7 +668,7 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     // shell follows the last resize).
     if (opened && !shown()) lastSent = null;
     const own = ownSize();
-    if (own && gotState && state.can_write && !exited && !sameSize(lastSent, own)) {
+    if (own && gotState && (state.can_write || resizeReadOnly) && !exited && !sameSize(lastSent, own)) {
       if (socket.resize(own.cols, own.rows)) lastSent = own;
     }
     // An ended session has no PTY to follow: fit it to this screen (a desktop-sized screen would

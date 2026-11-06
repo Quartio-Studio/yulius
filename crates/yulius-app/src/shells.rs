@@ -164,6 +164,8 @@ pub struct ShellRuntime {
     pub(crate) refresh: AtomicU8,
     /// A Cockpit that is its person's Global Superagent (SPEC-427): `sandbox` only hosts it.
     pub(crate) global: bool,
+    /// When Yulius last sent a Global Superagent an interrupt (ms; 0: never).
+    pub(crate) interrupted_ms: AtomicI64,
     sandbox: SandboxId,
     creator: UserId,
     task: Option<TaskId>,
@@ -875,6 +877,7 @@ impl App {
             launch: OnceLock::new(),
             refresh: AtomicU8::new(crate::cockpit::REFRESH_NONE),
             global,
+            interrupted_ms: AtomicI64::new(0),
             sandbox: sandbox.clone(),
             creator: creator.clone(),
             task,
@@ -1510,6 +1513,7 @@ impl App {
             launch,
             refresh: AtomicU8::new(refresh),
             global,
+            interrupted_ms: AtomicI64::new(0),
             sandbox,
             creator,
             task,

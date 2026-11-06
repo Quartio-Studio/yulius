@@ -30,7 +30,7 @@ use crate::error::{AppError, AppResult};
 use crate::model::{SandboxRecord, Secret, UserRecord};
 use crate::ports::harness::CockpitLaunch;
 use crate::ports::session::{Bind, Containment, PlannedFile, RunReader};
-use crate::remote::{RemoteCaller, remote_tool_action, remote_tool_descriptors};
+use crate::remote::{RemoteCaller, remote_tool_descriptors};
 use crate::shells::{GLOBAL_TOKEN_PREFIX, ShellInfo, ShellRuntime};
 
 /// Bump when a Global Superagent's launch changes in a way a running one must get: running ones
@@ -76,18 +76,49 @@ pub(crate) const WITHHELD_TOOLS: &[&str] = &[
 /// open a menu, an editor or a plugin installer.
 pub const GLOBAL_COMMANDS: &[&str] = &["/clear", "/compact", "/context", "/cost"];
 
-/// The wait between a pasted message and its Enter, so the TUI sees typed text and then a submit.
-const SUBMIT_DELAY: std::time::Duration = std::time::Duration::from_millis(300);
+/// Words Claude Code ends its session on when they are the whole message (2.1.311).
+const EXIT_WORDS: &[&str] = &["exit", "quit", ":q", ":q!", ":wq", ":wq!"];
+
+/// How long after an interrupt another one is dropped: two Esc in a row open Claude Code's rewind
+/// menu, which the next message would answer (review round 3).
+const INTERRUPT_GAP_MS: i64 = 2_000;
 
 /// A person's message as Yulius types it into their Global Superagent (GSA-007): line breaks as
 /// LF, other control characters but tab removed (no ESC can end the paste or drive the TUI), `@`
 /// as `＠` (no file of the server is attached by a mention), one of [`GLOBAL_COMMANDS`] or text
-/// that starts with neither `/` nor `!` (no other command and no shell).
+/// that starts with neither `/` nor `!` (no other command and no shell). Characters a reader
+/// cannot see are refused, as Claude Code's own trim drops some Rust's keeps (U+FEFF before a
+/// `/`); so are its exit words and a message that is only a path (it would attach that file).
 ///
 /// # Errors
-/// `Invalid` for an empty or oversized message, a `!` line or another command.
+/// `Invalid` for an empty or oversized message, a `!` line, another command, hidden characters,
+/// an exit word or a lone path.
 pub fn global_message(text: &str) -> AppResult<String> {
+    if let Some(c) = text
+        .chars()
+        .find(|c| crate::cross_sandbox::unseen(*c) && !c.is_control())
+    {
+        return Err(AppError::Invalid(format!(
+            "the message holds a character nobody sees (U+{:04X}); remove it",
+            u32::from(c)
+        )));
+    }
     let text = crate::task_message::clean_message(text);
+    if EXIT_WORDS.contains(&text.as_str()) {
+        return Err(AppError::Invalid(
+            "that word would end the Global Superagent's session; close its panel instead".into(),
+        ));
+    }
+    let unquoted = text.trim_matches(|c| matches!(c, '\'' | '"'));
+    if !GLOBAL_COMMANDS.contains(&text.as_str())
+        && !unquoted.contains(char::is_whitespace)
+        && (unquoted.starts_with('/') || unquoted.starts_with('~') || unquoted.starts_with("./"))
+    {
+        return Err(AppError::Invalid(
+            "a message that is only a path would attach that file of the server; say what you want"
+                .into(),
+        ));
+    }
     if text.is_empty() {
         return Err(AppError::Invalid("the message is empty".into()));
     }
@@ -127,12 +158,11 @@ pub fn global_tool_descriptors() -> Vec<ToolDescriptor> {
         .collect()
 }
 
-/// Its tools that only read: pre-allowed on an uncontained server, where the others ask first
-/// (ADR-0165).
-fn global_read_tools() -> Vec<String> {
+/// Its tools, every one pre-allowed: nobody could answer Claude Code's question about one, as no
+/// key reaches it (GSA-007; review round 3), so on an uncontained server too it never asks.
+fn global_tool_names() -> Vec<String> {
     global_tool_descriptors()
         .into_iter()
-        .filter(|tool| remote_tool_action(&tool.name) == Some(Action::View))
         .map(|tool| tool.name)
         .collect()
 }
@@ -291,7 +321,7 @@ impl App {
             project_mcp_servers: Vec::new(),
             mcp: Vec::new(),
             contained: self.config.contained,
-            only_yulius: Some(global_read_tools()),
+            only_yulius: Some(global_tool_names()),
         })?;
         if let Some(id) = resume {
             let _ = runtime.resumed.set((id, self.now()));
@@ -355,15 +385,20 @@ impl App {
     pub async fn global_superagent_message(&self, ctx: &AuthContext, text: &str) -> AppResult<()> {
         let text = global_message(text)?;
         let runtime = self.reachable_global_superagent(ctx).await?;
-        let mut writer = runtime.writer.lock().await;
-        let writer = writer
-            .as_mut()
-            .ok_or_else(|| AppError::Conflict("the Global Superagent has ended".into()))?;
-        writer
-            .input(format!("\x1b[200~{text}\x1b[201~").as_bytes())
-            .await?;
-        tokio::time::sleep(SUBMIT_DELAY).await;
-        writer.input(b"\r").await
+        // Detached: a client that goes away between the paste and its Enter leaves no text
+        // waiting in its input for the next message to add to (review round 3).
+        Self::run_detached(async move {
+            let mut writer = runtime.writer.lock().await;
+            let writer = writer
+                .as_mut()
+                .ok_or_else(|| AppError::Conflict("the Global Superagent has ended".into()))?;
+            writer
+                .input(format!("\x1b[200~{text}\x1b[201~").as_bytes())
+                .await?;
+            tokio::time::sleep(crate::task_message::SUBMIT_DELAY).await;
+            writer.input(b"\r").await
+        })
+        .await
     }
 
     /// `POST /api/superagent/interrupt`: Esc into the caller's Global Superagent, which ends its
@@ -374,8 +409,22 @@ impl App {
     pub async fn global_superagent_interrupt(&self, ctx: &AuthContext) -> AppResult<()> {
         let runtime = self.reachable_global_superagent(ctx).await?;
         let mut writer = runtime.writer.lock().await;
+        // A second one within the gap is the same wish; sent, it would open the rewind menu.
+        let now = self.now().0;
+        let last = runtime
+            .interrupted_ms
+            .load(std::sync::atomic::Ordering::SeqCst);
+        if last > 0 && now.saturating_sub(last) < INTERRUPT_GAP_MS {
+            return Ok(());
+        }
         match writer.as_mut() {
-            Some(writer) => writer.input(b"\x1b").await,
+            Some(writer) => {
+                writer.input(b"\x1b").await?;
+                runtime
+                    .interrupted_ms
+                    .store(now, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            }
             None => Err(AppError::Conflict("the Global Superagent has ended".into())),
         }
     }
@@ -516,6 +565,32 @@ mod tests {
             assert!(global_message(refused).is_err(), "{refused:?}");
         }
         assert!(global_message(&"x".repeat(crate::task_message::MAX_MESSAGE_BYTES + 1)).is_err());
+        // Review round 3: Claude Code's JS trim drops U+FEFF, Rust's keeps it; no hidden
+        // character gets a command or a `!` past this.
+        for hidden in [
+            "\u{feff}/plugin install x",
+            "\u{200b}/plugin",
+            "\u{feff}!ls",
+            "a\u{202e}b",
+            "\u{e0041}hi",
+        ] {
+            assert!(global_message(hidden).is_err(), "{hidden:?}");
+        }
+        // Its exit words, and a message that is only a path (it would attach that file).
+        for refused in [
+            "exit",
+            "quit",
+            ":q",
+            ":wq!",
+            "'/usr/share/x.png'",
+            "\"~/a.jpg\"",
+            "./b.gif",
+            "/etc/hosts",
+        ] {
+            assert!(global_message(refused).is_err(), "{refused:?}");
+        }
+        assert!(global_message("exit the loop in #5").is_ok());
+        assert!(global_message("compare '/etc/hosts' in both repos").is_ok());
     }
 
     /// Review round 2: it cannot merge what it opened.

@@ -76,3 +76,18 @@ test('a sandbox entered while the Global Superagent is open starts no Superagent
   await expect(screen.getByRole('region', 'Tool panel')).toBeHidden();
   expect(await browser.evaluate(() => (window as unknown as { __yuliusMock: { cockpitStarts?: number } }).__yuliusMock.cockpitStarts ?? 0)).toBe(0);
 });
+
+test('the Global Superagent\'s session follows its panel\'s size though it takes no keys', async ({ app, browser, screen }) => {
+  await browser.setViewport({ width: 1400, height: 900 });
+  await app.open(mock('/superagent'));
+  await expect(browser.locator(`${shownAgent} .xterm-rows`)).toHaveText(/Welcome to Claude Code/);
+  const cols = () => browser.evaluate(() => {
+    type Shells = { __yuliusMock: { shells: Map<string, { global?: boolean; session?: { cols: number; sized?: boolean } }> } };
+    const shell = [...(window as unknown as Shells).__yuliusMock.shells.values()].find((s) => s.global && s.session);
+    return shell && shell.session && shell.session.sized ? shell.session.cols : 0;
+  });
+  await expect.poll(cols).toBeGreaterThan(20);
+  const before = await cols();
+  await screen.getByRole('button', 'Maximize panel').click();
+  await expect.poll(cols).toBeGreaterThan(before + 10);
+});

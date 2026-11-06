@@ -1387,8 +1387,8 @@ resolves to nothing, the run gets the server without that variable or token.
     a script that refuses every command, contained in a bubblewrap root of that folder; its only MCP server is Yulius with a `gs_…` bearer, served the remote MCP's tools
     (with `project`) for the caller as an operate token (120 requests a minute), without `secret_update`,
     `secret_hosts_answer`, `secret_delete`, `variables_set`, `variable_delete`, `cd_deploy`,
-    `project_import`, `onboarding_start` and `onboarding_skip`; on an uncontained server only its
-    read tools are pre-allowed. It is hosted by the oldest live sandbox the caller can work in:
+    `project_import`, `onboarding_start` and `onboarding_skip`; every one of its tools is
+    pre-allowed, on an uncontained server too. It is hosted by the oldest live sandbox the caller can work in:
     409 when there is none (read-only access everywhere), else as `POST …/cockpit` (409 without a
     Claude subscription, 429 while none has capacity). Its terminal is
     `WS /api/shells/{id}/terminal`, read-only (`can_write` false; an `input` frame answers an
@@ -1396,9 +1396,11 @@ resolves to nothing, the run gets the server without that variable or token.
   - `POST /api/superagent/message` `{"text"}` → 204: types the message into the caller's Global
     Superagent as one bracketed paste and Enter (control characters but LF and tab removed, `@` as
     `＠`); 422 for an empty message, one over 64 KiB, one that starts with `!`, or with `/` but is
-    not `/clear`, `/compact`, `/context` or `/cost`; 404 when none runs (SPEC-427 GSA-007).
-  - `POST /api/superagent/interrupt` → 204: Esc into it, which interrupts its turn; 404 when none
-    runs.
+    not `/clear`, `/compact`, `/context` or `/cost`, one holding a character nobody sees, an exit
+    word (`exit`, `quit`, `:q`…) or only a path; 404 when none runs (SPEC-427 GSA-007). The
+    terminal's `resize` frames are still applied.
+  - `POST /api/superagent/interrupt` → 204: Esc into it, which interrupts its turn; a second one
+    within 2 s is dropped (204); 404 when none runs.
 - Notes ([SPEC-041](../.ai/specs/SPEC-041-here-we-want-auto-saved-notes-sandbox-wi.md),
   [SPEC-103](../.ai/specs/SPEC-103-add-me-after-team-that-is-for-user-and-n.md)): one notepad per
   sandbox, one for the team and one per person, saved by the web UI as people type.
