@@ -1,11 +1,11 @@
 ---
 yulius-task: f3ac9ff7-41e6-4a4c-b161-7101b6275855
-status: in-progress
+status: done
 ---
 
 # SPEC-432: A session whose Yulius MCP dropped is reconnected, and a superadmin restarts Yulius
 
-Status: in progress
+Status: implemented
 Date: 2026-11-06
 Owner: Yulius task #414
 Scope authorization: task #414 ("fix so this never ever happen again. Also add 'restart' button in
@@ -99,13 +99,13 @@ which does not freeze the tasks.
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] The MCP bridge tells Yulius it is alive, and Yulius records each task's last contact
-- [ ] Yulius reconnects a session whose Yulius MCP went silent, then tells it to continue
-- [ ] `yulius tool` calls any Yulius tool from the shell
-- [ ] The update helper restarts the service without installing
-- [ ] A superadmin restarts Yulius from the Instance page: tasks freeze, restart, thaw
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] The MCP bridge tells Yulius it is alive, and Yulius records each task's last contact
+- [x] Yulius reconnects a session whose Yulius MCP went silent, then tells it to continue
+- [x] `yulius tool` calls any Yulius tool from the shell
+- [x] The update helper restarts the service without installing
+- [x] A superadmin restarts Yulius from the Instance page: tasks freeze, restart, thaw
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -168,3 +168,54 @@ which does not freeze the tasks.
   surface Yulius relies on yet.
 - Both changes ship in one pull request because the person asked for them together; each is a
   separate commit series.
+
+## Review
+
+Independent reviewer in a fresh session (read-only, `om-code-review`), on this branch's own
+commits.
+
+- **Round 1** (`ac0d69ad`): request changes. Own code, all fixed test-first:
+  - M1: the continue text would have reached tasks idle long before the silence, at this release's
+    rollout (an older bridge never pings) and for a turn closing within a ping. Now pings are
+    recorded apart, the cut-off is the last ping plus 90 s (or the spawn of a run this server
+    started), and a reattached run that never pinged is never told to continue.
+  - M2: a restart during a deploy froze every task up to 30 minutes, then cancelled. Now it is
+    refused while a deploy runs.
+  - Minors: hourly backoff instead of giving up after 3; state reset per run; `yulius tool` calls
+    are no contact; silence counts from a hold's end; refusals log at debug; `restart.*` audits and
+    restart wording; failure-path tests; operations and contracts docs; `-32001` exits 2.
+  - Answered, not changed: `yulius tool` writes to stdout as `yulius wait` does; SPEC-028 is
+    amended through the ADR as ADR-0244 did. Whether real Claude Code takes a pasted
+    `/mcp reconnect`: verified (Evidence).
+- **Round 2** (`bf0d50c5`): approve, with nits. Fixed: a run heard before its first ping is cut
+  off from that contact (test); the operations sentence and the ADR index wording. Left: the gate
+  may reopen in the milliseconds between a restart's deploy count and its run's insert; a deploy
+  starting then is waited for, never cut.
+
+## Evidence
+
+- Real Claude Code 2.1.311 in a PTY (no model call), with a fake stdio MCP server that exits
+  before `initialize`: Claude Code retried once, then left it failed (no spawn for 15 s). Typing
+  the bracketed paste `/mcp reconnect fakey` and Enter respawned it: "Successfully reconnected to
+  fakey". A healthy server is respawned the same way.
+- `./target/debug/yulius tool steps_get` in this session printed the live plan (exit 0);
+  `yulius tool no_such_tool '{}'` printed "unknown tool: no_such_tool" (exit 1).
+- Unit: `mcp_bridge` 11 passed (pings on the interval, answers kept from stdout, a failed ping
+  survived); `mcp_watch` 10 passed; `tool_cli` 4 passed; `update_helper` 20 passed (restart of the
+  installed build, of another build refused untouched, a server that stays down fails).
+- Integration: `restart::a_task_whose_yulius_mcp_went_silent_is_reconnected_then_continues`;
+  `mcp_coordination::an_agent_request_records_its_tasks_mcp_contact` (a shell call is no
+  contact); `self_update` 31 passed, with the restart run frozen and thawed, refused during a
+  deploy, cancelled and failed.
+- `cd e2e && npx e2e run tests/update.e2e.ts`: 21 passed, with "a superadmin restarts the server
+  from the instance page".
+- `scripts/dev ci` exit 0 on `ac0d69ad` (3182 tests passed) and on `bf0d50c5` (3187 passed). The
+  last commits (one rule line, one unit test, docs) are covered by the targeted runs above and by
+  Yulius CI on the pull request head.
+- Security scan: Vidoc is turned off for this project in Yulius (`yulius security-scan` reports
+  it disabled); not run, not passed.
+- Not tested: an actual production restart through systemd and the root helper (the helper's
+  `restart` is tested with fake `systemctl` and health), and a real session whose Yulius MCP was
+  dropped by Claude Code mid-goal being reconnected by a running Yulius (its parts are tested: the
+  watch with the fake agent, the typed reconnect with real Claude Code).
+
