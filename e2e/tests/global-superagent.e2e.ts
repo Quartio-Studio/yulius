@@ -106,6 +106,23 @@ test('the sandbox note\'s All sandboxes selects that tab, and the arrow keys mov
   await browser.keyboard.press('End');
   await expect(all).toHaveAttribute('aria-selected', 'true');
   await expect(all).toBeFocused();
+  await browser.keyboard.press('Home');
+  await expect(here).toHaveAttribute('aria-selected', 'true');
+  await expect(here).toBeFocused();
+  await browser.keyboard.press('ArrowRight');
+  await expect(all).toHaveAttribute('aria-selected', 'true');
+  await expect(all).toBeFocused();
+});
+
+test('outside a sandbox the keys skip the disabled This sandbox', async ({ app, browser, screen }) => {
+  await app.open(mock('/superagent'));
+  const all = tabs(screen).getByRole('tab', 'All sandboxes');
+  await expect(all).toHaveAttribute('aria-selected', 'true');
+  await all.focus();
+  await browser.keyboard.press('ArrowLeft');
+  await expect(all).toHaveAttribute('aria-selected', 'true');
+  await expect(all).toBeFocused();
+  await expect(tabs(screen).getByRole('tab', 'This sandbox')).toHaveAttribute('aria-selected', 'false');
 });
 
 test('All sandboxes stays chosen in every sandbox and after a reload, with one Global session and no sandbox one', async ({ app, browser, screen }) => {
@@ -125,6 +142,11 @@ test('All sandboxes stays chosen in every sandbox and after a reload, with one G
   expect(await browser.locator('.superagent-pane .agent-compose').count()).toBe(1);
   // studio's own Superagent started when its tab showed; product's never did.
   expect(await startsOf(browser)).toEqual({ sandbox: 1, global: 1 });
+  // Out of the sandboxes it stays open too.
+  await app.open(mock('/settings'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Settings');
+  await expect(tabs(screen).getByRole('tab', 'All sandboxes')).toHaveAttribute('aria-selected', 'true');
+  await expect(screen.getByRole('textbox', 'Message to the Global Superagent')).toHaveValue('half a thought');
 
   // Back in studio, whose own Superagent is not shown again.
   await app.open(mock('/s/studio/t/12'));
@@ -158,6 +180,19 @@ test('a sandbox entered while the Global Superagent is open keeps it open and st
   await expect(tabs(screen).getByRole('tab', 'This sandbox')).not.toHaveAttribute('aria-disabled', 'true');
   await expect(browser.locator(`${shownAgent} .xterm-rows`)).toHaveText(/superagent\/work/);
   expect(await startsOf(browser)).toEqual({ sandbox: 0, global: 1 });
+  // Shown for the new page, not by the person: the keyboard stays with the page, and nothing was
+  // picked, so nothing is remembered (review round 1).
+  await expect(screen.getByRole('textbox', 'Task prompt')).toBeFocused();
+  expect(await browser.evaluate(() => window.localStorage.getItem('yulius.superagentTab'))).toBeNull();
+  // A choice another browser tab stored meanwhile changes nothing here: a new page, another sandbox.
+  await browser.evaluate(() => window.localStorage.setItem('yulius.superagentTab', '"sandbox"'));
+  await app.open(mock('/s/studio/t/12'));
+  await firstShown(screen.getByRole('heading', { level: 1 }), '#12 Checkout API');
+  await expect(tabs(screen).getByRole('tab', 'All sandboxes')).toHaveAttribute('aria-selected', 'true');
+  await screen.getByRole('navigation', 'Sandboxes').getByRole('link', /^product\b/).click();
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('New task');
+  await expect(tabs(screen).getByRole('tab', 'All sandboxes')).toHaveAttribute('aria-selected', 'true');
+  expect(await startsOf(browser)).toEqual({ sandbox: 0, global: 1 });
   // /s/<slug>/superagent asks for the sandbox's own.
   await app.open(mock('/s/studio/superagent'));
   await expect(tabs(screen).getByRole('tab', 'This sandbox')).toHaveAttribute('aria-selected', 'true');
@@ -177,4 +212,19 @@ test('the Global Superagent\'s session follows its panel\'s size though it takes
   const before = await cols();
   await screen.getByRole('button', 'Maximize panel').click();
   await expect.poll(cols).toBeGreaterThan(before + 10);
+});
+
+test('the Global Superagent in front stays in front in a sandbox that had another tool open', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await firstShown(screen.getByRole('heading', { level: 1 }), '#12 Checkout API');
+  if (await browser.locator('.rail:not([hidden])').count() === 0) await screen.getByRole('button', /^Show tools/).click();
+  await screen.getByRole('navigation', 'Tools').getByRole('button', 'Notes').click();
+  await expect(browser.locator('.panel .panel-title')).toHaveText('Notes');
+  await app.open(mock('/superagent'));
+  await expect(browser.locator(`${shownAgent} .xterm-rows`)).toHaveText(/superagent\/work/);
+  // studio remembered Notes (SPEC-113 KST-005); the Global Superagent in front wins (SAT-005).
+  await screen.getByRole('navigation', 'Sandboxes').getByRole('link', /^studio\b/).click();
+  await expect(tabs(screen).getByRole('tab', 'All sandboxes')).toHaveAttribute('aria-selected', 'true');
+  await expect(browser.locator('.panel .panel-title')).toHaveText('Superagent');
+  expect(await startsOf(browser)).toEqual({ sandbox: 0, global: 1 });
 });

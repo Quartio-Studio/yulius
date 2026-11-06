@@ -19,7 +19,7 @@ const TAB_KEY = 'yulius.superagentTab';
 /** SPEC-428 SAT-001: the panel's tabs, local first. */
 const TABS = [['sandbox', 'This sandbox'], ['global', 'All sandboxes']];
 /** The tab chosen last in a sandbox, the same in every sandbox (SAT-002): This sandbox until one is picked. */
-export const chosenSuperagentTab = () => (readJson(TAB_KEY, 'sandbox') === 'global' ? 'global' : 'sandbox');
+const chosenSuperagentTab = () => (readJson(TAB_KEY, 'sandbox') === 'global' ? 'global' : 'sandbox');
 let panelSeq = 0;
 
 /**
@@ -39,7 +39,7 @@ export function createSuperagentPanel(ctx, sandbox, { global }) {
   // This sandbox's own Superagent, made when its tab first shows; its note's All sandboxes selects that tab.
   const viewOf = (key) => (key === 'global' ? global() : own || (own = mountOwn()));
   function mountOwn() {
-    const view = createAgentView(ctx, sandbox, { openGlobal: () => select('global') });
+    const view = createAgentView(ctx, sandbox, { openGlobal: () => select('global', { picked: true }) });
     panes.sandbox.append(view.el);
     return view;
   }
@@ -50,7 +50,7 @@ export function createSuperagentPanel(ctx, sandbox, { global }) {
   const tabs = TABS.map(([k, label]) => h('button', {
       type: 'button', class: 'term-tab', role: 'tab', id: id('tab', k), 'aria-controls': id('pane', k), dataset: { key: k },
       'aria-disabled': enabled(k) ? null : 'true', title: enabled(k) ? null : 'Open a sandbox first',
-      onClick: () => { if (enabled(k)) select(k, { focusTab: true }); },
+      onClick: () => { if (enabled(k)) select(k, { focusTab: true, picked: true }); },
     }, label));
   setChildren(tablist, tabs);
   tablist.addEventListener('keydown', (event) => {
@@ -59,7 +59,7 @@ export function createSuperagentPanel(ctx, sandbox, { global }) {
     const next = { ArrowLeft: at - 1, ArrowRight: at + 1, Home: 0, End: keys.length - 1 }[event.key];
     if (next === undefined) return;
     event.preventDefault();
-    select(keys[(next + keys.length) % keys.length], { focusTab: true });
+    select(keys[(next + keys.length) % keys.length], { focusTab: true, picked: true });
   });
 
   function render(focusTab) {
@@ -73,12 +73,13 @@ export function createSuperagentPanel(ctx, sandbox, { global }) {
   }
 
   /**
-   * Shows tab `k`. A tab picked in a sandbox is remembered; `focusTab` keeps the keyboard on the strip
-   * (as Notes), `context` (a new page, not the person) leaves it where it is.
+   * Shows tab `k`. Only a tab the person `picked` in a sandbox is remembered (review round 1);
+   * `focusTab` keeps the keyboard on the strip (as Notes), `context` (a new page, not the person)
+   * leaves it where it is.
    */
-  function select(k, { focusTab = false, context = false } = {}) {
+  function select(k, { focusTab = false, context = false, picked = false } = {}) {
     const next = enabled(k) ? k : 'global';
-    if (sandbox) writeJson(TAB_KEY, next);
+    if (sandbox && picked) writeJson(TAB_KEY, next);
     const before = key && viewOf(key);
     const view = viewOf(next);
     if (before && before !== view && shown && before.hide) before.hide();
@@ -92,23 +93,28 @@ export function createSuperagentPanel(ctx, sandbox, { global }) {
   return {
     el,
     title: 'Superagent',
+    /** The tab in front, or null before the first show. */
+    get tab() { return key; },
+    /**
+     * Shows `opts.tab`, else the tab already in front (a new page keeps it, whatever another browser
+     * tab stored meanwhile; review round 1), else the one chosen last.
+     */
     show(opts = {}) {
       shown = true;
-      select(!sandbox ? 'global' : opts.tab || chosenSuperagentTab(), { context: Boolean(opts.context) });
+      select(opts.tab || key || chosenSuperagentTab(), { context: Boolean(opts.context) });
     },
     hide() {
       shown = false;
       if (!key) return;
+      // The Global view may already show in another sandbox's panel, or not exist yet.
+      if (key === 'global' && !panes.global.firstChild) return;
       const view = viewOf(key);
-      // The Global view may already show in another sandbox's panel.
-      if (key === 'global' && !panes.global.contains(view.el)) return;
       if (view.hide) view.hide();
     },
     destroy() {
       if (own) own.destroy();
       // The Global view outlives this panel: it is only taken out.
-      const shared = global();
-      if (panes.global.contains(shared.el)) shared.el.remove();
+      if (panes.global.firstChild) panes.global.firstChild.remove();
     },
   };
 }

@@ -12,7 +12,7 @@ import { createTerminalView } from './terminal.js';
 import { attachTerminalDrop, shellAttachments } from './filedrop.js';
 import { createBrowserPanel } from './browser.js';
 import { createEditorView } from './editorview.js';
-import { chosenSuperagentTab, createAgentView, createSuperagentPanel } from './agent.js';
+import { createAgentView, createSuperagentPanel } from './agent.js';
 import { createNotesView } from './notes.js';
 import { allows } from './status.js';
 import { readJson, writeJson } from './store.js';
@@ -337,6 +337,9 @@ export function createPanelHost(ctx) {
       const sandboxChanged = (nextSandbox && nextSandbox.id) !== (sandbox && sandbox.id);
       const taskChanged = (nextTask && nextTask.id) !== (task && task.id);
       const left = sandbox;
+      // The Superagent tab in front of the panel left, if it is open (SPEC-428).
+      const leftAgent = !panel.hidden && kind === 'agent' ? views.get(viewKey('agent')) : null;
+      const leftTab = leftAgent ? leftAgent.tab : null;
       sandbox = nextSandbox;
       task = nextTask;
       if (sandboxChanged) {
@@ -362,7 +365,7 @@ export function createPanelHost(ctx) {
       }
       // The Global Superagent in front: it stays open from page to page, in and out of sandboxes,
       // and a sandbox entered starts no session of its own (SPEC-428 SAT-005).
-      const globalOpen = !panel.hidden && kind === 'agent' && (!left || chosenSuperagentTab() === 'global');
+      const globalOpen = leftTab === 'global';
       if (!sandbox) {
         if (globalOpen && sandboxChanged) show('agent', { context: true });
         else if (!panel.hidden && kind !== 'agent') close();
@@ -373,10 +376,11 @@ export function createPanelHost(ctx) {
         // Back in a sandbox: the tool it had open, or none (KST-005). A rail the person hid is shown
         // for that tool only, as for a Superagent link.
         const tool = toolOf.get(sandbox.id);
-        if (tool) show(tool, { context: true, persistRail: false });
+        if (tool) show(tool, { context: true, persistRail: false, tab: leftTab || undefined });
         else if (!panel.hidden) close();
-      // Shown again for the new context, not opened by the person: the keyboard stays with the page.
-      } else if (!panel.hidden && kind && (sandboxChanged || taskChanged)) show(kind, { context: true });
+      // Shown again for the new context, not opened by the person: the keyboard stays with the page,
+      // and the Superagent its tab (the same in every sandbox).
+      } else if (!panel.hidden && kind && (sandboxChanged || taskChanged)) show(kind, { context: true, tab: leftTab || undefined });
       updateBadges();
     },
     open: show,

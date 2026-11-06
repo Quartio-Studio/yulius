@@ -43,19 +43,22 @@ from each other and solve it".
   End move between enabled tabs). This sandbox holds the sandbox Superagent as before (its note,
   connection banner, task requests, terminal); All sandboxes holds the Global Superagent as before
   (its note, read-only terminal, message box).
-- SAT-002: in a sandbox the panel shows the tab chosen last (remembered per browser,
-  `yulius.superagentTab`, This sandbox until the person picks one), and the shown tab is the same in
-  every sandbox. A session starts only when its tab is first shown: picking All sandboxes in a
-  sandbox starts no sandbox Superagent.
+- SAT-002: in a sandbox the panel shows the tab the person picked last (a click, the keys or the
+  note's button, remembered per browser, `yulius.superagentTab`, This sandbox until the person picks
+  one; a tab shown for them, as in SAT-005, is not remembered), and the shown tab is the same in
+  every sandbox. A panel shown again for a new page or another sandbox keeps the tab in front,
+  whatever another browser tab stored meanwhile. A session starts only when its tab is first shown:
+  picking All sandboxes in a sandbox starts no sandbox Superagent.
 - SAT-003: outside a sandbox (All sandboxes, Settings, `/superagent`) the panel shows All sandboxes;
   This sandbox is disabled there ("Open a sandbox first") and the remembered choice is not changed.
 - SAT-004: one Global Superagent view serves the whole page: whichever sandbox's panel (or the one
   outside) shows the All sandboxes tab holds its terminal and message box, so the session is
   attached once and keeps what was typed in its box from one sandbox to the next.
 - SAT-005: a sandbox entered while the panel shows the Global Superagent (from outside a sandbox,
-  or from another sandbox on All sandboxes) keeps the panel open on All sandboxes; no sandbox
-  Superagent starts (replaces GSA-006's "closes the panel instead"). `/s/<slug>/superagent`
-  opens the This sandbox tab.
+  or from another sandbox on All sandboxes) keeps the panel open on All sandboxes, also when that
+  sandbox had another tool open last (it wins over SPEC-113 KST-005), and so does leaving the
+  sandboxes; no sandbox Superagent starts and the keyboard stays with the page (replaces GSA-006's
+  "closes the panel instead"). `/s/<slug>/superagent` opens the This sandbox tab.
 - SAT-006: the sandbox Superagent's note points to the other tab: "Work across sandboxes: the
   Global Superagent, in **All sandboxes**." where All sandboxes is a button that selects that tab.
 - SAT-007: the Global Superagent's message box suggests the example: placeholder "For example:
@@ -64,10 +67,11 @@ from each other and solve it".
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] The Superagent panel shows This sandbox and All sandboxes as tabs
-- [ ] One Global Superagent view follows the tabs across sandboxes and pages
-- [ ] The sandbox note selects the All sandboxes tab and the box suggests the example
-- [ ] ADR, architecture, product and changes describe the tabs
+- [x] The Superagent panel shows This sandbox and All sandboxes as tabs
+- [x] One Global Superagent view follows the tabs across sandboxes and pages
+- [x] The sandbox note selects the All sandboxes tab and the box suggests the example
+- [x] ADR, architecture, product and changes describe the tabs
+- [ ] Review round 1 fixed: the tab in front kept, only picked tabs remembered, more paths tested
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 
