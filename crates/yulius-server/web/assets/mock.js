@@ -3436,6 +3436,8 @@ route('POST', '/api/superagent', async ({ db }) => {
   const host = db.sandboxes.find((s) => (RANK[s.access] || 0) >= RANK.write);
   if (!host) fail(409, 'conflict', 'the Global Superagent needs a sandbox you can work in (write access)');
   needClaude(db);
+  // How often the page asked for it: one shared view asks once (SPEC-428 SAT-004).
+  db.globalOpens = (db.globalOpens || 0) + 1;
   let shell = [...db.shells.values()].find((s) => s.global);
   if (!shell) {
     db.nextId += 1;

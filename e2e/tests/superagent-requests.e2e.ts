@@ -1,7 +1,7 @@
 import { test } from '@e2e-dev/web';
 import { expect } from 'e2e';
 import type { Browser } from '@e2e-dev/web';
-import { axeViolations, eventsConnected, failOnPageErrors, mock as mockPage, openSuperagent } from './support.ts';
+import { axeViolations, eventsConnected, failOnPageErrors, firstShown, mock as mockPage, openSuperagent } from './support.ts';
 
 failOnPageErrors();
 
@@ -264,4 +264,38 @@ test('an answered card takes no second click while it goes', async ({ app, brows
   await expect(screen.getByRole('button', 'Decline')).toBeDisabled();
   await browser.evaluate(() => (window as unknown as { __yuliusMock: { releaseList: () => void } }).__yuliusMock.releaseList());
   await expect(browser.locator('.agent-request')).toBeHidden();
+});
+
+// SPEC-428 review round 3: with All sandboxes in front, a request of this sandbox's Superagent marks
+// the This sandbox tab, also when that tab has not been shown in this page (no session is started for
+// it).
+test('a request while All sandboxes is in front marks the This sandbox tab', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/tasks'));
+  await openSuperagent(browser, screen);
+  const strip = screen.getByRole('region', 'Tool panel').getByRole('tablist', 'Superagents');
+  await strip.getByRole('tab', 'All sandboxes').click();
+  await browser.reload();
+  await firstShown(screen.getByRole('heading', { level: 1 }));
+  await openSuperagent(browser, screen);
+  const all = strip.getByRole('tab', 'All sandboxes');
+  await expect(all).toHaveAttribute('aria-selected', 'true');
+  const marker = browser.locator('.superagent-tabs [data-key="sandbox"] .superagent-tab-dot');
+  await expect(marker).toBeHidden();
+
+  const id = await ask(browser, 'sb_studio', { sandbox: 'product', prompt: PROMPT, title: 'API client v2' });
+  await expect(marker).toBeVisible();
+  const here = strip.getByRole('tab', 'This sandbox');
+  expect(await browser.evaluate(() => {
+    const tab = document.querySelector('.superagent-tabs [data-key="sandbox"]');
+    const note = tab && document.getElementById(tab.getAttribute('aria-describedby') || '');
+    return note ? note.textContent : null;
+  })).toBe('Your Superagent asks to start a task');
+  expect(await browser.evaluate(() => (window as unknown as { __yuliusMock: { cockpitStarts?: number } }).__yuliusMock.cockpitStarts ?? 0)).toBe(0);
+  expect(await axeViolations(browser)).toEqual([]);
+
+  await here.click();
+  await expect(screen.getByRole('group', 'Your Superagent asks to start a task in product')).toBeVisible();
+  await browser.evaluate((r) => (window as unknown as Asking).__yuliusMock.endSuperagentRequest('sb_studio', r), id);
+  await expect(screen.getByRole('group', 'Your Superagent asks to start a task in product')).toBeHidden();
+  await expect(marker).toBeHidden();
 });
