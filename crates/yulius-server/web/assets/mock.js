@@ -3448,26 +3448,6 @@ route('POST', '/api/superagent', async ({ db }) => {
   }
   return shellDto(shell);
 });
-// A message for the Global Superagent (SPEC-427 GSA-007): Yulius types it, as the server does;
-// `!` lines and commands but a few are refused.
-route('POST', '/api/superagent/message', async ({ db, body }) => {
-  const shell = [...db.shells.values()].find((s) => s.global);
-  if (!shell) fail(404, 'not_found', 'not found');
-  const text = String((body || {}).text || '').trim();
-  if (!text) fail(422, 'invalid', 'the message is empty');
-  if (text.startsWith('!')) fail(422, 'invalid', 'the Global Superagent runs no commands: code work belongs in a task in its sandbox');
-  if (text.startsWith('/') && !['/clear', '/compact', '/context', '/cost'].includes(text)) fail(422, 'invalid', 'the Global Superagent takes only these commands: /clear, /compact, /context, /cost');
-  if (shell.session) {
-    shell.session.input = text.replaceAll('@', '＠');
-    shell.session.out(shell.session.input);
-    shell.session.run();
-  }
-  return json(204);
-});
-route('POST', '/api/superagent/interrupt', async ({ db }) => {
-  if (![...db.shells.values()].some((s) => s.global)) fail(404, 'not_found', 'not found');
-  return json(204);
-});
 // The Superagent's link to Yulius (SPEC-355): a test sets it with
 // `__yuliusMock.setCockpitLink('sb_studio', 'lost' | 'recovered' | 'ok', lostAt)`; a restart
 // ends the running Cockpit as `switched` and starts it again resuming its conversation.
@@ -5418,12 +5398,11 @@ class ShellSession {
       if (hold && !this.released) { hold.then(() => { this.released = true; this.receive(ws, data); }); return; }
       this.viewers.add(ws);
       if (msg.cols && msg.rows) { this.cols = msg.cols; this.rows = msg.rows; this.sized = true; }
-      // The Global Superagent takes messages, not keys (SPEC-427 GSA-007).
-      ws.push(JSON.stringify({ type: 'state', attempt_seq: null, harness: null, cols: this.cols, rows: this.rows, can_write: !this.shell.global, controller: true, status: 'running' }));
+      ws.push(JSON.stringify({ type: 'state', attempt_seq: null, harness: null, cols: this.cols, rows: this.rows, can_write: true, controller: true, status: 'running' }));
       ws.push(terminalFrame(2, this.seq, `${E}2J${E}H${this.screen}`));
     } else if (msg.type === 'resize') {
       if (msg.cols && msg.rows) { this.cols = msg.cols; this.rows = msg.rows; this.sized = true; }
-    } else if (msg.type === 'input' && !this.shell.global) {
+    } else if (msg.type === 'input') {
       for (const ch of String(msg.data || '')) {
         if (ch === '\r') this.run();
         else if (ch === '\x7f') { if (this.input) { this.input = this.input.slice(0, -1); this.out('\b \b'); } }

@@ -8,6 +8,9 @@ Superagent panel and the Notes tabs). Changes the web UI of
 [0271](0271-a-global-superagent-acts-in-every-sandbox-of-its-person-through-yulius-tools-only.md)
 (SPEC-427 GSA-006); the sessions, endpoints and tools stay as they are.
 
+The Global message box is removed by
+[0274](0274-the-global-superagent-takes-its-persons-keys.md).
+
 ## Context
 
 The Global Superagent (ADR-0271) opened only from the rail on the pages outside a sandbox, and a

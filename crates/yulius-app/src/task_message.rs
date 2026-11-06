@@ -37,7 +37,7 @@ pub const MAX_MESSAGE_BYTES: usize = MAX_PROMPT_BYTES;
 
 /// The wait between the pasted text and its Enter, so the TUI sees typed text and then a submit
 /// (as for the goal and `/compact`).
-pub(crate) const SUBMIT_DELAY: Duration = Duration::from_millis(300);
+const SUBMIT_DELAY: Duration = Duration::from_millis(300);
 
 /// The text as it is typed: line breaks as LF, every other control character but tab removed
 /// (an ESC would end the bracketed paste or drive the TUI), surrounding whitespace trimmed.

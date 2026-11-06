@@ -590,12 +590,6 @@ button.task-group-head:hover { color: var(--text); }
 .agent-note .icon { margin-top: 2px; }
 .agent-note a { color: inherit; font-weight: 600; text-decoration: underline; }
 .agent-term { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--term-bg); }
-/* The Global Superagent's message box under its read-only terminal (SPEC-427 GSA-007). */
-.agent-compose { flex: none; padding: 8px; border-top: 1px solid var(--border); background: var(--bg); }
-.agent-compose-row { display: flex; gap: 8px; align-items: flex-end; }
-.agent-compose-input { flex: 1; min-width: 0; resize: vertical; }
-.agent-compose-actions { display: flex; flex-direction: column; gap: 4px; }
-.agent-compose-error { margin: 0 0 6px; color: var(--danger); }
 .agent-msg { flex: 1; padding: 24px 16px; background: var(--surface); }
 /* SPEC-355: the Superagent's lost link to Yulius, with its restart, above its session. */
 .agent-link { flex: none; margin: 0 8px 8px; }

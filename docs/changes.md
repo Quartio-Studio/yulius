@@ -6,6 +6,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-06
 
+- The Global Superagent works like the sandbox Superagent (SPEC-430, task #412, ADR-0274): its
+  person types and clicks in its terminal, with no separate message box, and it no longer stops
+  at start on Claude Code's Bypass Permissions warning, which nobody could answer. It stays the
+  person's own, reaches every sandbox of theirs through Yulius, and still runs no commands.
 - An agent that answered and needs nothing is no longer "Needs you" (SPEC-429, ADR-0273, task #411,
   fixes #1090). Every turn that ended without an achieved `/goal` read "Your turn" under Needs you.
   A follow-up question after a met goal also drops it, so "so all good here and you don't need

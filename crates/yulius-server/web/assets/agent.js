@@ -25,9 +25,9 @@ let panelSeq = 0;
 /**
  * The Superagent panel of `sandbox` (null outside a sandbox): This sandbox and All sandboxes as tabs,
  * as Notes shows its notepads (SPEC-428). `global()` is the page's one Global Superagent view
- * (SAT-004): the panel showing its tab holds it, so its session is attached once and its box keeps
- * what was typed from one sandbox to the next. A session starts when its tab first shows. `tab()` is
- * the page's tab in front in every sandbox, which `onTab` updates (review round 2).
+ * (SAT-004): the panel showing its tab holds it, so its session is attached once. A session starts
+ * when its tab first shows. `tab()` is the page's tab in front in every sandbox, which `onTab`
+ * updates (review round 2).
  */
 export function createSuperagentPanel(ctx, sandbox, { global, tab, onTab }) {
   const seq = ++panelSeq;
@@ -155,7 +155,7 @@ export function createAgentView(ctx, sandbox, { openGlobal, onRequests } = {}) {
     ? h('div', { class: 'banner banner-info agent-note small', role: 'note', 'aria-label': 'About the Global Superagent' },
       icon('info', { size: 16 }),
       h('span', { class: 'banner-text' },
-        h('strong', null, 'Sees all your sandboxes'), ' and keeps them in sync: what runs where, the same change across repositories. Code work still belongs in a task in its sandbox.'))
+        h('strong', null, 'Sees all your sandboxes'), ' and keeps them in sync: what runs where, the same change across repositories. Code work still belongs in a task in its sandbox. For example: check what my sandboxes need from each other and solve it.'))
     : h('div', { class: 'banner banner-info agent-note small', role: 'note', 'aria-label': 'About the Superagent' },
       icon('info', { size: 16 }),
       h('span', { class: 'banner-text' },
@@ -164,9 +164,7 @@ export function createAgentView(ctx, sandbox, { openGlobal, onRequests } = {}) {
   const body = h('div', { class: 'agent-term' });
   const requests = global ? null : createRequests(ctx, sandbox, onRequests);
   const link = global ? null : createLink(ctx, sandbox, () => restart());
-  // GSA-007: the Global Superagent takes messages, not keys; its terminal only shows it.
-  const compose = global ? createCompose(ctx) : null;
-  const el = h('div', { class: 'agent' }, notice, link && link.el, requests && requests.el, body, compose && compose.el);
+  const el = h('div', { class: 'agent' }, notice, link && link.el, requests && requests.el, body);
   let terminal = null;
   let alive = true;
   let opening = false;
@@ -256,8 +254,7 @@ export function createAgentView(ctx, sandbox, { openGlobal, onRequests } = {}) {
   function focus() {
     // On phones a focused terminal raises the soft keyboard over the page (as in the task view).
     if (!shown || isPhone()) return;
-    if (compose) compose.focus();
-    else if (terminal) terminal.focus();
+    if (terminal) terminal.focus();
   }
 
   function mount(shell, { focus: wantFocus = true, from = null } = {}) {
@@ -268,9 +265,6 @@ export function createAgentView(ctx, sandbox, { openGlobal, onRequests } = {}) {
       transport: ctx.transport,
       path: `/api/shells/${enc(shell.id)}/terminal`,
       onLink: (uri, event) => ctx.openLink(uri, event),
-      readOnlyLabel: () => (global ? 'Write to it below' : 'Read-only'),
-      // Its terminal takes no keys but still fits the panel (review round 3).
-      resizeReadOnly: global,
       // A usage limit moved it to another subscription (SPEC-074 SUP-006), or an update restarts
       // it to get new tools (SPEC-186 SAV-006): it goes on, so the panel follows it instead of
       // offering Start again.
@@ -328,44 +322,6 @@ export function createAgentView(ctx, sandbox, { openGlobal, onRequests } = {}) {
       drop();
     },
   };
-}
-
-/**
- * SPEC-427 GSA-007: the Global Superagent's message box. Enter sends (Shift+Enter is a new line):
- * Yulius types the message into the session, refusing `!` lines and commands but /clear,
- * /compact, /context and /cost; Interrupt sends Esc.
- */
-function createCompose(ctx) {
-  const input = h('textarea', { class: 'input agent-compose-input', rows: 2, 'aria-label': 'Message to the Global Superagent', placeholder: 'For example: check what my sandboxes need from each other and solve it' });
-  const error = h('p', { class: 'agent-compose-error small', role: 'alert', hidden: true });
-  let sending = false;
-  async function send() {
-    const sent = input.value;
-    const text = sent.trim();
-    if (!text || sending) return;
-    sending = true;
-    error.hidden = true;
-    try {
-      await ctx.api.post('/api/superagent/message', { text });
-      // What was typed while it was on its way stays, without the part that went.
-      input.value = input.value.startsWith(sent) ? input.value.slice(sent.length).trimStart() : input.value;
-    } catch (err) {
-      error.textContent = err.message;
-      error.hidden = false;
-    } finally {
-      sending = false;
-    }
-  }
-  input.addEventListener('keydown', (event) => {
-    if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
-      event.preventDefault();
-      send();
-    }
-  });
-  const sendButton = h('button', { type: 'button', class: 'btn btn-primary btn-sm', onClick: () => send() }, 'Send');
-  const stop = h('button', { type: 'button', class: 'btn btn-sm', title: 'Interrupt its turn (Esc)', onClick: () => ctx.api.post('/api/superagent/interrupt').catch((err) => errorToast(err)) }, 'Interrupt');
-  const el = h('div', { class: 'agent-compose' }, error, h('div', { class: 'agent-compose-row' }, input, h('div', { class: 'agent-compose-actions' }, sendButton, stop)));
-  return { el, focus: () => input.focus() };
 }
 
 /**
