@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-06
 
+- Every tab strip of the tool panel moves like the sandbox tabs (SPEC-434, ADR-0278, task #416).
+  The Superagent's This sandbox and All sandboxes, the Shell's terminals and the Browser's tabs now
+  show the six-dot grip, say "Click to open, drag to reorder", and move by drag, Alt+←/→ and their
+  menu's Move left / Move right, as the sandbox and Notes tabs do. Each keeps its order in this
+  browser (the terminals and Browser tabs per sandbox, a new one last). The Editor's file tabs,
+  which already moved, show the grip too.
 - A revealed agent-secret key is copied with its line breaks (SPEC-431, ADR-0275, task #413, fixes
   #1096). A pasted key is stored with literal `\n`, and Show and Copy value on the Secrets page gave
   that one-line form back. The reveal now returns a key block as its key file (real line breaks, one
