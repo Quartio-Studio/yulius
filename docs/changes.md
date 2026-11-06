@@ -6,6 +6,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-06
 
+- A revealed agent-secret key is copied with its line breaks (SPEC-431, ADR-0275, task #413, fixes
+  #1096). A pasted key is stored with literal `\n`, and Show and Copy value on the Secrets page gave
+  that one-line form back. The reveal now returns a key block as its key file (real line breaks, one
+  final break), as the `.env` copy writes it; any other value comes back as stored.
 - The Global Superagent works like the sandbox Superagent (SPEC-430, task #412, ADR-0274): its
   person types and clicks in its terminal, with no separate message box, and it no longer stops
   at start on Claude Code's Bypass Permissions warning, which nobody could answer. It stays the
