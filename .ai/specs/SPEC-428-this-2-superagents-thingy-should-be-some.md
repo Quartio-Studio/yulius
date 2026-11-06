@@ -1,11 +1,11 @@
 ---
 yulius-task: 1b0c5dd5-ae03-44a8-9ac1-9518a90a3f28
-status: in-progress
+status: done
 ---
 
 # SPEC-428: The two Superagents are tabs of one Superagent panel
 
-Status: in-progress
+Status: done
 Date: 2026-11-06
 Owner: Yulius task #410
 Scope authorization: task #410 (`/goal`): "this 2-superagents-thingy should be somewhere here [the
@@ -80,8 +80,8 @@ from each other and solve it".
 - [x] Review round 1 fixed: the tab in front kept, only picked tabs remembered, more paths tested
 - [x] Review round 2 fixed: one tab in front per page, keys with a modifier ignored
 - [x] Review round 3 fixed: a hidden request marks the This sandbox tab
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -113,3 +113,60 @@ from each other and solve it".
   person watching it while moving between sandboxes keeps watching it.
 - **The example as the box's placeholder**, where the person types, rather than a button that sends
   it: it is the person's to send.
+
+## Evidence
+
+At `78f8bd3d` on 2026-11-06 (`origin/dev` had no newer commit to merge):
+
+- `scripts/dev ci`: exit 0. It covers the repository contracts (docs links, unique decision
+  numbers, design tokens), format, clippy, docs, macOS targets and deps, and
+  `cargo nextest run --workspace --profile ci`: 3164 tests run, 3164 passed, 16 skipped. It also
+  passed at `458527ae` and `873b59a1`.
+- `cd e2e && npx e2e run` (the whole suite, 33 min): 858 passed, 1 skipped, 1 failed.
+  - Skipped: `agent.e2e.ts`, which needs a model.
+  - Failed: `editor.e2e.ts` "a folder chosen while the worktrees are read switches to it once
+    the question is answered". This is the known load flake #1087, filed before this change, in
+    the Editor's folder picker, which this change does not touch. Run alone right after, the file
+    passed 32 of 32.
+- The Superagent suites after the last fix: `global-superagent`, `agent-panel`,
+  `superagent-requests`, `places` and `notes`, 113 of 113 passed. The round-4 reviewer also ran
+  `rail`, `consistency` and `sessions`: 41 passed.
+- New and changed tests:
+  - `e2e/tests/global-superagent.e2e.ts` (11 tests):
+    - the tabs in a sandbox, with the note, the terminal, the example placeholder and axe;
+    - outside a sandbox, This sandbox disabled and skipped by the keys;
+    - the note's button and the keys (←/→, Home, End, and a modifier doing nothing);
+    - All sandboxes kept across sandboxes, Settings and a reload, with one Global session, its
+      box's text kept and no sandbox session started (mock `globalOpens`, `cockpitStarts`);
+    - a sandbox entered with it open keeps it, the keyboard staying on the page and nothing
+      stored;
+    - a choice another browser tab stored changes nothing;
+    - it wins over a sandbox's remembered tool;
+    - a panel shown again shows the tab picked last elsewhere;
+    - `/s/<slug>/superagent` opens This sandbox.
+  - `superagent-requests.e2e.ts`: a request while All sandboxes is in front marks the This
+    sandbox tab, starting no session.
+  - `agent-panel.e2e.ts` and `places.e2e.ts` had their selectors updated for the panes.
+- Mutation checks. Each change below made a test fail, and the code was restored afterwards:
+  - a Global view per panel instead of one shared view;
+  - a re-show re-reading storage instead of the panel's tab;
+  - deciding `globalOpen` from storage;
+  - a per-panel tab instead of the page's tab;
+  - no request count passed to the tab.
+- Independent review in fresh sessions, 4 rounds. Every finding in this change's own code was
+  fixed test-first:
+  - Round 1: a re-show re-read the stored choice, which another browser tab shares, and started
+    a sandbox Superagent unasked; tabs were stored without the person picking one; untested
+    paths; `destroy()` created the Global view; sign-out re-showed it.
+  - Round 2: a closed panel came back on its own stale tab; modifier keys switched tabs.
+  - Round 3 (code approved): a request card loaded hidden behind All sandboxes.
+  - Round 4: **APPROVE** at `78f8bd3d`. Its minor (no dot for a sandbox whose panel was never
+    made in this page) is as SAT-008 states: on `dev`, requests showed only inside the open
+    panel. Its nits do no harm: one more link read per resync for a kept panel, and a card made
+    while hidden is armed by the time it shows.
+- Pre-existing, filed: #1089. Playground guests are offered the Superagent, which the server
+  refuses them; this was already so for the sandbox Superagent on `dev`.
+- Not run: `yulius security-scan` reports "Security scan disabled". Vidoc is turned off for this
+  project in Yulius, so nothing was scanned; this is not a pass.
+- Not tested against a live server or model: the panel was driven only against the mock. The
+  sessions and endpoints are SPEC-427's and are unchanged.
