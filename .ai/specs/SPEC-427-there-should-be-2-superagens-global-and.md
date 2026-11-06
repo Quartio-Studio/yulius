@@ -64,7 +64,7 @@ as the person's own agent does over the remote MCP.
   as its only writable root (no sandbox holder, no repository, the host's `/etc/shadow` and
   `/etc/gshadow` covered); it gets no agent secrets, no
   sandbox MCP servers and no egress proxy. With bypass on a contained server as SPEC-208; every tool of
-  its own is pre-allowed, on an uncontained server too (no key could answer a question).
+  its own is pre-allowed, on an uncontained server too (they are only Yulius's tools, each checked at the call; SPEC-430).
 - GSA-003: its bearer (`gs_…`, distinct from the sandbox Superagent's `ck_…`) is served on the
   internal `/mcp` the remote MCP's tools for its person, each project tool with `project`, checked
   per call against the person's access to that project as an `operate` token is, except the tools

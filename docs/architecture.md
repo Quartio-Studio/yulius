@@ -1279,7 +1279,9 @@ resuming the conversation kept in its folder. Its `shell.json` is version 2, whi
 end and remove. Its person types into its terminal as into the sandbox Superagent's
 ([SPEC-430](../.ai/specs/SPEC-430-this-should-be-exactly-like-normal-super.md),
 [decision 0274](decisions/0274-the-global-superagent-takes-its-persons-keys.md)); `EDITOR` and
-`VISUAL` name the refusing script too, so neither its `!` mode nor its editor runs anything, and its
+`VISUAL` name the refusing script too, and the login shell Claude Code runs that script through
+finds its home's startup files as empty read-only binds, so neither its `!` mode nor its editor
+runs anything, and its
 `--settings` carry `skipDangerousModePermissionPrompt` with the approval bypass, since it reads no
 settings file where Claude Code keeps the accepted warning. It is not served `change_merge`. The web UI shows it as the All sandboxes tab of the Superagent panel,
 beside This sandbox ([SPEC-428](../.ai/specs/SPEC-428-this-2-superagents-thingy-should-be-some.md),

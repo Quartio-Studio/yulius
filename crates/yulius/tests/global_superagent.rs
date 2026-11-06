@@ -516,6 +516,26 @@ async fn a_contained_global_superagent_has_a_root_of_its_own() -> TestResult {
     if Path::new("/etc/shadow").is_file() {
         assert!(binds.iter().any(|b| b.dest == Path::new("/etc/shadow")));
     }
+    // Claude Code runs its shell prefix through a login bash or zsh, which reads these from its
+    // writable home before the refusing script runs: each is an empty read-only file (SPEC-430
+    // review round 1).
+    for startup in [
+        ".profile",
+        ".bash_profile",
+        ".bash_login",
+        ".bashrc",
+        ".bash_logout",
+        ".zshenv",
+        ".zprofile",
+        ".zshrc",
+        ".zlogin",
+        ".zlogout",
+    ] {
+        assert!(
+            binds.iter().any(|b| b.dest == own.join(startup)),
+            "{startup}: {binds:?}"
+        );
+    }
     assert!(
         !readonly
             .iter()

@@ -55,6 +55,22 @@ const NO_SHELL: &str = "#!/bin/sh\necho 'The Global Superagent runs no commands:
 /// Host files its root covers with an empty one, as no run of a sandbox sees them.
 const MASKED_FILES: &[&str] = &["/etc/shadow", "/etc/gshadow"];
 
+/// Files of its writable home a login bash or zsh reads: Claude Code runs [`NO_SHELL_SCRIPT`]
+/// through one, which would run them before the refusal, so each is an empty read-only file
+/// (SPEC-430 review round 1: its person's keys reach it).
+const SHELL_STARTUP_FILES: &[&str] = &[
+    ".profile",
+    ".bash_profile",
+    ".bash_login",
+    ".bashrc",
+    ".bash_logout",
+    ".zshenv",
+    ".zprofile",
+    ".zshrc",
+    ".zlogin",
+    ".zlogout",
+];
+
 /// The remote tools the Global Superagent is not served (GSA-003): the vault and variables,
 /// deployments, and adding, onboarding or skipping projects are the person's decisions.
 pub const WITHHELD_TOOLS: &[&str] = &[
@@ -90,8 +106,9 @@ pub fn global_tool_descriptors() -> Vec<ToolDescriptor> {
         .collect()
 }
 
-/// Its tools, every one pre-allowed: nobody could answer Claude Code's question about one, as no
-/// key reaches it (GSA-007; review round 3), so on an uncontained server too it never asks.
+/// Its tools, every one pre-allowed, on an uncontained server too: they are only Yulius's, each
+/// checked against its person's access at the call (GSA-003), so a question per call would add
+/// nothing.
 fn global_tool_names() -> Vec<String> {
     global_tool_descriptors()
         .into_iter()
@@ -325,9 +342,11 @@ impl App {
             binds: MASKED_FILES
                 .iter()
                 .filter(|file| std::path::Path::new(file).is_file())
-                .map(|file| Bind {
+                .map(PathBuf::from)
+                .chain(SHELL_STARTUP_FILES.iter().map(|file| dir.join(file)))
+                .map(|dest| Bind {
                     source: PathBuf::from("/dev/null"),
-                    dest: PathBuf::from(file),
+                    dest,
                     writable: false,
                 })
                 .collect(),

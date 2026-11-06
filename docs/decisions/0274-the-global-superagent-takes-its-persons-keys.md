@@ -62,6 +62,11 @@ directory, repository or home.
   installs that no settings source it reads enables, `/login`, `/model`. Its environment holds the
   subscription token and its own `gs_` bearer, both of which its person already reaches (the
   sandbox Superagent gives the same person a shell with the same kind of token).
+- Claude Code runs its shell prefix through a login bash or zsh, which reads startup files from
+  its home before the refusing script: on a contained server those files (`.profile`,
+  `.bash_profile`, `.bash_login`, `.bashrc`, `.bash_logout`, `.zshenv`, `.zprofile`, `.zshrc`,
+  `.zlogin`, `.zlogout`) are empty read-only binds, since keys now reach Claude Code commands that
+  write files in its root (`/export`).
 - It still runs no command, no hook and no editor, reads no settings file, and works only through
   Yulius's tools, minus the withheld ones; a Claude Code release that ran code on a key would need
   a holder of its own for it, as 0271 says for a pasted message.

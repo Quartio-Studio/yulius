@@ -179,7 +179,7 @@ pub struct ShellRuntime {
     hub: Hub,
     /// A Cockpit's screen is redacted of agent secrets, as a task's (SPEC-147 SAM-004).
     scrub: crate::vault::TerminalScrub,
-    pub(crate) writer: tokio::sync::Mutex<Option<Box<dyn RunWriter>>>,
+    writer: tokio::sync::Mutex<Option<Box<dyn RunWriter>>>,
     ended: AtomicBool,
     /// Its owner closed it: hidden and refused while it ends.
     closing: AtomicBool,

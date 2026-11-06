@@ -25,8 +25,8 @@ let panelSeq = 0;
 /**
  * The Superagent panel of `sandbox` (null outside a sandbox): This sandbox and All sandboxes as tabs,
  * as Notes shows its notepads (SPEC-428). `global()` is the page's one Global Superagent view
- * (SAT-004): the panel showing its tab holds it, so its session is attached once and its box keeps
- * what was typed from one sandbox to the next. A session starts when its tab first shows. `tab()` is
+ * (SAT-004): the panel showing its tab holds it, so its session is attached once. A session starts
+ * when its tab first shows. `tab()` is
  * the page's tab in front in every sandbox, which `onTab` updates (review round 2).
  */
 export function createSuperagentPanel(ctx, sandbox, { global, tab, onTab }) {
