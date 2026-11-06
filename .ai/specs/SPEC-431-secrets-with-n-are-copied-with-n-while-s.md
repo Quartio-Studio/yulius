@@ -1,11 +1,11 @@
 ---
 yulius-task: a9aefba3-c8cb-46dc-bce9-96cb7fee5cba
-status: in-progress
+status: done
 ---
 
 # SPEC-431: A revealed agent-secret key is copied with its line breaks
 
-Status: in-progress
+Status: done
 Date: 2026-11-06
 Owner: Yulius task #413
 Scope authorization: task #413, asked by the project's owner ("secrets with \n are copied with \n
@@ -45,8 +45,8 @@ real line breaks and one final break, as `secret_copy_to_env` already writes it 
 
 - [x] Reproduce the defect and find its root cause
 - [x] Write the fix spec and the regression test that fails
-- [ ] Fix the cause until the regression test and every gate pass
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] Fix the cause until the regression test and every gate pass
+- [x] Independent review in a fresh session, findings fixed test-first
 
 ## Acceptance criteria
 
@@ -60,6 +60,8 @@ real line breaks and one final break, as `secret_copy_to_env` already writes it 
 - `secrets::a_revealed_key_block_comes_back_as_its_key_file` (HTTP, `crates/yulius/tests/secrets.rs`):
   stores an escaped synthetic key and a one-line text holding `\n`, reveals both for show and copy;
   fails before the fix (literal `\n` returned).
+- `secrets.e2e.ts` "a pasted multi-line key keeps its line breaks as \n…": Show and Copy value of a
+  pasted PEM and OpenSSH key give the key file (the mock reveals as the server does).
 - Gate: `scripts/dev ci`.
 
 ## Decisions
@@ -67,3 +69,21 @@ real line breaks and one final break, as `secret_copy_to_env` already writes it 
 - [ADR-0275](../../docs/decisions/0275-a-revealed-agent-secret-key-is-its-key-file.md): the server
   reveals a key block as its file, with the same rule as the `.env` copy, rather than the page
   unescaping it or every `\n` being turned into a break.
+
+## Evidence
+
+- Red: `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^secrets::a_revealed_key_block/)'`
+  at e59d5f66 failed: `left: "-----BEGIN SYNTHETIC KEY-----\\nc3lu…"` (literal `\n`), right: the key file.
+- Green: with the fix, the `secrets*` integration tests 68/68 passed; after review round 1, the
+  `dotenv` unit tests and `secrets*` integration tests 81/81 passed.
+- e2e: `npx e2e run tests/secrets.e2e.ts` failed on the new expectation before the mock change
+  (`expected "-----BEGIN MOCK PRIVATE KEY-----\\nbW9j…"` to be the key file) and passed 28/28 after it.
+- Gate: `scripts/dev ci` exit 0 at 22999554 and again at 8dee57d2 (3168 tests passed, 16 skipped;
+  lint, macOS, deps, shear, docs).
+- Security: `yulius security-scan` printed "Security scan disabled" (Vidoc is off for this project):
+  not scanned, not passed.
+- Review (fresh session, `om-code-review`): round 1 requested changes (own: mock/e2e still pinned the
+  escaped form; `key_block`'s unescaped copy unwiped; two doc nits), all fixed in 9b10b518, 957c7831,
+  8dee57d2; round 2 approved 8dee57d2.
+- Not tested: a real browser against a running `yulius serve` with a real key (covered by the HTTP
+  test and the mock-mode e2e); the wipe of `key_block`'s copy is not observable by a test.
