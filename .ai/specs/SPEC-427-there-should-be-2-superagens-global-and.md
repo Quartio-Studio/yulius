@@ -113,7 +113,7 @@ as the person's own agent does over the remote MCP.
 - [x] The rail opens the Global Superagent outside a sandbox
 - [x] ADR, architecture, product and API docs describe the two Superagents
 - [x] Review round 1 fixed: no shell, hooks or settings files, a recorded contained plan, bounds
-- [ ] Review round 2 fixed: messages instead of keys, no editor, no merges
+- [x] Review round 2 fixed: messages instead of keys, no editor, no merges
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 
