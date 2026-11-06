@@ -902,3 +902,67 @@ async fn an_image_pasted_into_the_global_superagent_is_kept_in_its_own_folder() 
     f.h.app.end_all_shells().await;
     Ok(())
 }
+
+/// SPEC-433 review round 1: its images folder is never reached through a link, the week-old
+/// removal takes only regular files (never a folder, nor a link or what it points at), and a
+/// disabled account stores nothing.
+#[tokio::test]
+async fn the_global_superagent_s_images_folder_refuses_links_and_disabled_accounts() -> TestResult {
+    use yulius_app::ports::store::UserStore as _;
+
+    let f = fixture().await?;
+    global_id(&f, &f.alice).await?;
+    let upload = |name: &'static str| {
+        let router = f.h.router.clone();
+        let creds = f.alice.clone();
+        async move {
+            send(
+                &router,
+                Method::POST,
+                &format!("/api/superagent/attachments?name={name}"),
+                Body::from(b"png".to_vec()),
+                Some(3),
+                &creds,
+            )
+            .await
+        }
+    };
+    let own = std::fs::canonicalize(f.data.join("users/u-alice/superagent"))?;
+    let folder = own.join("attachments");
+    let elsewhere = f.data.join("elsewhere");
+    std::fs::create_dir_all(&elsewhere)?;
+    std::os::unix::fs::symlink(&elsewhere, &folder)?;
+    let linked = upload("shot.png").await?;
+    assert_eq!(linked.status, StatusCode::FORBIDDEN, "{:?}", linked.body);
+    assert_eq!(
+        std::fs::read_dir(&elsewhere)?.count(),
+        0,
+        "nothing through the link"
+    );
+    std::fs::remove_file(&folder)?;
+
+    // Old entries that are not regular files stay, and so does what a link points at.
+    let week_ago = std::time::SystemTime::now() - Duration::from_secs(8 * 24 * 3600);
+    std::fs::create_dir_all(folder.join("old-folder"))?;
+    std::fs::File::open(folder.join("old-folder"))?.set_modified(week_ago)?;
+    let target = elsewhere.join("kept.png");
+    std::fs::write(&target, b"x")?;
+    std::fs::File::options()
+        .write(true)
+        .open(&target)?
+        .set_modified(week_ago)?;
+    std::os::unix::fs::symlink(&target, folder.join("old-link.png"))?;
+    assert_eq!(upload("shot.png").await?.status, StatusCode::CREATED);
+    assert!(folder.join("old-folder").is_dir());
+    assert!(folder.join("old-link.png").symlink_metadata().is_ok());
+    assert!(target.exists());
+
+    f.h.store
+        .update_user_flags(&UserId::parse("u-alice")?, Some(Some(f.h.app.now())), None)
+        .await?;
+    let disabled = upload("late.png").await?;
+    assert_ne!(disabled.status, StatusCode::CREATED, "{:?}", disabled.body);
+    assert!(!folder.join("late.png").exists());
+    f.h.app.end_all_shells().await;
+    Ok(())
+}
