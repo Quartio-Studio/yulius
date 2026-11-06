@@ -644,9 +644,13 @@ impl App {
         };
         // An exclusive job's turn comes first, so it holds no slot or budget while an earlier
         // run of it runs; its wait is part of the same stage and never of its time limit.
-        let turn = job
-            .exclusive
-            .then(|| self.ci_turn(&run.sandbox_id, &job.name));
+        // Its entry is dropped last (declared before the turn and the permit): after them.
+        let (turn, _turn_entry) = if job.exclusive {
+            let (turn, entry) = self.ci_turn(&run.sandbox_id, &job.name);
+            (Some(turn), Some(entry))
+        } else {
+            (None, None)
+        };
         let held = async {
             let turn = match turn {
                 Some(turn) => Some(turn.lock_owned().await),
@@ -1288,7 +1292,6 @@ fn first_reason(jobs: &[CiJobRecord], state: RunState) -> Option<String> {
         })
 }
 
-/// Resolves once the run is cancelled, with the reason.
 /// Why a job that ran its whole time `limit` ended, with how long it waited before it started
 /// (SPEC-435 JTL-005): "timed out: ran 1 h 0 min, its time limit; it waited 39 min 12 s before
 /// it started".
@@ -1304,6 +1307,7 @@ fn timed_out(limit: Duration, waited_ms: i64) -> String {
     }
 }
 
+/// Resolves once the run is cancelled, with the reason.
 pub(super) async fn wait_cancel(cancel: &mut watch::Receiver<Option<String>>) -> String {
     loop {
         if let Some(reason) = cancel.borrow().clone() {
@@ -1582,6 +1586,20 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+
+    /// SPEC-435 JTL-005: a timeout says how long the job ran (its limit) and, when it waited a
+    /// second or more first, how long it waited.
+    #[test]
+    fn a_timeout_says_how_long_the_job_ran_and_waited() {
+        assert_eq!(
+            timed_out(Duration::from_secs(3600), 39 * 60_000 + 12_000),
+            "timed out: ran 1 h 0 min, its time limit; it waited 39 min 12 s before it started"
+        );
+        assert_eq!(
+            timed_out(Duration::from_secs(2), 999),
+            "timed out: ran 2 s, its time limit"
+        );
+    }
 
     /// SPEC-367 CJP-003: at a checkout's name, a link and a folder that is not a registered
     /// checkout go, through handles and without reaching the link's target; a registered checkout

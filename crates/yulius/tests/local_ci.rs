@@ -2345,7 +2345,7 @@ async fn run_jobs(f: &Fixture, run: &Value) -> BoxResult<Vec<Value>> {
 }
 
 /// SPEC-435 JTL-001/002/004: three runs of an `exclusive` job run one at a time (a job that finds
-/// another inside exits 7), and the last one, which waited longer than the 4 s limit for its turn,
+/// another inside exits 7), and the last one, which waited longer than the 5 s limit for its turn,
 /// still passes: the wait is outside its limit, and its record says how long it waited.
 #[tokio::test]
 async fn an_exclusive_job_waits_its_turn_outside_its_time_limit() -> TestResult {
@@ -2354,13 +2354,13 @@ async fn an_exclusive_job_waits_its_turn_outside_its_time_limit() -> TestResult 
         |data| {
             format!(
                 "[[ci.jobs]]\nname = \"site\"\ncpus = 1\nexclusive = true\ncommand = 'b=\"{dir}/busy\"; \
-                 if [ -e \"$b\" ]; then echo overlap; exit 7; fi; touch \"$b\"; sleep 2.5; rm \"$b\"'\n",
+                 if [ -e \"$b\" ]; then echo overlap; exit 7; fi; touch \"$b\"; sleep 3.5; rm \"$b\"'\n",
                 dir = data.display()
             )
         },
         None,
         |config| {
-            config.ci.job_timeout = Duration::from_secs(4);
+            config.ci.job_timeout = Duration::from_secs(5);
             config.ci.lanes = 3;
         },
     )
@@ -2386,9 +2386,128 @@ async fn an_exclusive_job_waits_its_turn_outside_its_time_limit() -> TestResult 
     }
     waits.sort_unstable();
     assert!(
-        waits[2] > 4_000,
+        waits[2] > 5_000,
         "the last job waited longer than its limit: {waits:?}"
     );
+    Ok(())
+}
+
+/// The `site` and `lint` jobs of every run, by run id, once `ready` holds for them all.
+async fn until_runs(
+    f: &Fixture,
+    ready: impl Fn(&[(String, Vec<Value>)]) -> bool,
+) -> BoxResult<Vec<(String, Vec<Value>)>> {
+    let deadline = tokio::time::Instant::now() + WAIT;
+    loop {
+        f.h.app.ci_dispatch().await;
+        let overview = f.get("/api/sandboxes/s1/ci").await?;
+        let mut runs = Vec::new();
+        for run in overview["runs"].as_array().ok_or("runs")? {
+            runs.push((
+                run["id"].as_str().ok_or("id")?.to_owned(),
+                run_jobs(f, run).await?,
+            ));
+        }
+        if ready(&runs) {
+            return Ok(runs);
+        }
+        if tokio::time::Instant::now() > deadline {
+            return Err(format!("CI never got there: {runs:?}").into());
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// The state of `name` in `jobs`.
+fn job_state<'a>(jobs: &'a [Value], name: &str) -> &'a str {
+    jobs.iter()
+        .find(|j| j["name"] == name)
+        .and_then(|j| j["state"].as_str())
+        .unwrap_or("?")
+}
+
+/// An `exclusive` job that blocks until `<data>/go` exists, and a quick `lint`.
+fn turn_toml(data: &Path) -> String {
+    format!(
+        "[[ci.jobs]]\nname = \"site\"\ncpus = 1\nexclusive = true\n\
+         command = 'while [ ! -e \"{dir}/go\" ]; do sleep 0.05; done'\n\n\
+         [[ci.jobs]]\nname = \"lint\"\ncpus = 1\ncommand = 'true'\n",
+        dir = data.display()
+    )
+}
+
+/// SPEC-435 JTL-001: a job waiting for its turn holds no job slot. With two slots, one run's
+/// `site` runs and the other's waits for its turn, and both runs' `lint` still run meanwhile; a
+/// waiting `site` holding a slot would leave `lint` queued until the running one ends.
+#[tokio::test]
+async fn a_job_waiting_for_its_turn_holds_no_slot() -> TestResult {
+    let f = fixture_tuned(false, turn_toml, None, |config| config.ci.max_jobs = 2).await?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    let runs = until_runs(&f, |runs| {
+        runs.len() == 2
+            && runs
+                .iter()
+                .all(|(_, jobs)| job_state(jobs, "lint") == "passed")
+    })
+    .await?;
+    let mut sites: Vec<&str> = runs
+        .iter()
+        .map(|(_, jobs)| job_state(jobs, "site"))
+        .collect();
+    sites.sort_unstable();
+    assert_eq!(sites, ["queued", "running"], "{runs:?}");
+    std::fs::write(f.data.join("go"), "")?;
+    f.settle().await?;
+    let overview = f.get("/api/sandboxes/s1/ci").await?;
+    for run in overview["runs"].as_array().ok_or("runs")? {
+        assert_eq!(run["state"], "passed", "{overview}");
+    }
+    Ok(())
+}
+
+/// SPEC-435 JTL-001: a job cancelled while it waits for its turn ends cancelled without having
+/// started, and the turn still comes to a later run of the job.
+#[tokio::test]
+async fn a_job_cancelled_while_waiting_for_its_turn_never_starts() -> TestResult {
+    let f = fixture_with(false, turn_toml).await?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    let runs = until_runs(&f, |runs| {
+        let mut sites: Vec<&str> = runs.iter().map(|(_, j)| job_state(j, "site")).collect();
+        sites.sort_unstable();
+        sites == ["queued", "running"]
+    })
+    .await?;
+    let (waiting, _) = runs
+        .iter()
+        .find(|(_, jobs)| job_state(jobs, "site") == "queued")
+        .ok_or("a waiting run")?;
+    let cancelled = f
+        .post(&format!("/api/sandboxes/s1/ci/runs/{waiting}/cancel"), None)
+        .await?;
+    assert_eq!(cancelled.status, StatusCode::OK, "{}", cancelled.body);
+    let runs = until_runs(&f, |runs| {
+        runs.iter()
+            .any(|(id, jobs)| id == waiting && job_state(jobs, "site") == "cancelled")
+    })
+    .await?;
+    let site = runs
+        .iter()
+        .find(|(id, _)| id == waiting)
+        .and_then(|(_, jobs)| jobs.iter().find(|j| j["name"] == "site"))
+        .ok_or("the cancelled site")?;
+    assert!(site["waited_ms"].is_null(), "never started: {site}");
+    assert!(site["duration_ms"].is_null(), "never started: {site}");
+    std::fs::write(f.data.join("go"), "")?;
+    f.settle().await?;
+    // A later run of the job gets the turn.
+    let again = f
+        .post(&format!("/api/sandboxes/s1/ci/runs/{waiting}/rerun"), None)
+        .await?;
+    assert_eq!(again.status, StatusCode::OK, "{}", again.body);
+    let again = again.body["id"].as_str().ok_or("id")?.to_owned();
+    f.settle().await?;
+    let detail = f.get(&format!("/api/sandboxes/s1/ci/runs/{again}")).await?;
+    assert_eq!(detail["state"], "passed", "{detail}");
     Ok(())
 }
 

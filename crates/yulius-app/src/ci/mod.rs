@@ -293,9 +293,38 @@ pub struct CiState {
     /// TRN-010): passes started by runs that end together wait for each other.
     pub(crate) armed_passes: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     /// The turn of each `exclusive` job (`<sandbox>/<job name>`; SPEC-435 JTL-001): its runs
-    /// take it in the order they asked. One small entry per exclusive job name seen since the
-    /// start (a few per sandbox).
+    /// take it in the order they asked; an entry nobody holds or waits for goes ([`TurnEntry`]).
     turns: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+}
+
+/// An `exclusive` job's claim on its turn's entry (SPEC-435): dropped after the job's turn and
+/// its wait, it forgets the entry when nobody else holds or waits for it.
+pub(crate) struct TurnEntry {
+    app: Arc<App>,
+    key: String,
+}
+
+impl Drop for TurnEntry {
+    fn drop(&mut self) {
+        let mut turns = self
+            .app
+            .ci
+            .turns
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        forget_idle_turn(&mut turns, &self.key);
+    }
+}
+
+/// Removes the turn of `key` when the map holds its only handle. Every holder and waiter took its
+/// handle under the map's lock, which the caller holds, so none can appear meanwhile.
+fn forget_idle_turn(turns: &mut HashMap<String, Arc<tokio::sync::Mutex<()>>>, key: &str) {
+    if turns
+        .get(key)
+        .is_some_and(|turn| Arc::strong_count(turn) == 1)
+    {
+        turns.remove(key);
+    }
 }
 
 /// A running CI job's weight on its sandbox (SPEC-362 CSW-002): counted from its start until it
@@ -453,15 +482,29 @@ fn gate_view(gate: &Gate) -> CiGate {
 }
 
 impl App {
-    /// The turn of `job` in `sandbox`, for an `exclusive` job (SPEC-435 JTL-001).
-    fn ci_turn(&self, sandbox: &SandboxId, job: &str) -> Arc<tokio::sync::Mutex<()>> {
-        self.ci
+    /// The turn of `job` in `sandbox`, for an `exclusive` job (SPEC-435 JTL-001), and the entry
+    /// that forgets it once nobody holds or waits for it: drop that after the turn.
+    fn ci_turn(
+        self: &Arc<Self>,
+        sandbox: &SandboxId,
+        job: &str,
+    ) -> (Arc<tokio::sync::Mutex<()>>, TurnEntry) {
+        let key = format!("{}/{job}", sandbox.as_str());
+        let turn = self
+            .ci
             .turns
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .entry(format!("{}/{job}", sandbox.as_str()))
+            .entry(key.clone())
             .or_default()
-            .clone()
+            .clone();
+        (
+            turn,
+            TurnEntry {
+                app: Arc::clone(self),
+                key,
+            },
+        )
     }
 
     /// The time limit of `job`'s run: its own `timeout_minutes`, else the instance's (SPEC-435).
@@ -1582,7 +1625,22 @@ impl App {
 
 #[cfg(test)]
 mod lane_tests {
-    use super::{busy_in, own_jobs_apply, reserve_run, take_lane};
+    use super::{busy_in, forget_idle_turn, own_jobs_apply, reserve_run, take_lane};
+
+    /// SPEC-435: an exclusive job's turn stays while a job holds or waits for it, and goes once
+    /// nobody does, so the map does not keep every job name ever seen.
+    #[test]
+    fn an_idle_turn_is_forgotten_and_a_held_one_kept() {
+        let mut turns = std::collections::HashMap::new();
+        let held = std::sync::Arc::new(tokio::sync::Mutex::new(()));
+        turns.insert("s1/site".to_owned(), std::sync::Arc::clone(&held));
+        forget_idle_turn(&mut turns, "s1/site");
+        assert!(turns.contains_key("s1/site"), "held: kept");
+        drop(held);
+        forget_idle_turn(&mut turns, "s1/site");
+        assert!(turns.is_empty(), "idle: forgotten");
+        forget_idle_turn(&mut turns, "s1/none");
+    }
 
     /// CI-110: a stale branch is not tested with the integration branch's old jobs it still
     /// carries; a pull request that changed the jobs is tested with its own.
