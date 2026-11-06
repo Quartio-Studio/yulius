@@ -1,7 +1,8 @@
 // How long a task has been in the state a person sees (SPEC-087 TIM-003). Each sidebar group
 // answers its own question, in words: "working 1h 20m" (since it last started working without
 // needing anyone), "waiting 12m" (for you), "queued 2h", "paused 5m", "in review 3m" (its checks
-// run), "done 3h ago", "stopped 2d ago". The tooltip gives the exact times. The sidebar, the Tasks
+// run), "done 3h ago" ("answered 3h ago" for an agent that stopped with nothing open, SPEC-429),
+// "stopped 2d ago". The tooltip gives the exact times. The sidebar, the Tasks
 // page and a task's overview all use this, so they always agree.
 
 import { dateTime, duration } from './format.js';
@@ -78,7 +79,7 @@ export function taskTime(task, info, now = Date.now()) {
     case 'needs':
       return lasting('waiting', state, 'Waiting for you since');
     case 'done':
-      return past('done', state, 'Done since');
+      return info.answered ? past('answered', state, 'Answered since') : past('done', state, 'Done since');
     case 'ended': {
       const word = ENDED_WORDS[status] || (String(status).startsWith('failed') ? 'failed' : 'stopped');
       if (status === 'stopping') return lasting(word, state, 'Stopping since');

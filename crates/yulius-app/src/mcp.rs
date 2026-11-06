@@ -358,7 +358,7 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "needs_you".into(),
-            description: "Ask a person to do something only a person can (add a credential to the vault on the Secrets page, allow a secret, deploy production, decide on a paid plan): the task shows \"Needs you: <action>\" and people are notified, until a person writes to the task or you call it again with resolved: true (for example once cd_status shows the secret). It reads as What happened, Problem and To do (Decide with decision: true): give each part in its own field, short and plain, and say exactly what to do and where in action; go on with other work meanwhile. Not for questions you can decide yourself, and not for reading another repository of this project's owner: reference_repo fetches it without a person.".into(),
+            description: "Ask a person to do something only a person can (add a credential to the vault on the Secrets page, allow a secret, deploy production, decide on a paid plan): the task shows \"Needs you: <action>\" and people are notified, until a person writes to the task or you call it again with resolved: true (for example once cd_status shows the secret). It reads as What happened, Problem and To do (Decide with decision: true): give each part in its own field, short and plain, and say exactly what to do and where in action; go on with other work meanwhile. Not for questions you can decide yourself, and not for reading another repository of this project's owner: reference_repo fetches it without a person. A question asked only in plain text reaches nobody: a turn that ends with no step open and no request reads Answered, not Needs you.".into(),
             input_schema: schema(json!({
                 "happened": {"type": "string", "description": "What happened, one or two sentences (at most 300 characters), e.g. 'The dev deploy script reaches the VM over SSH'"},
                 "problem": {"type": "string", "description": "What is wrong or blocked because of it (at most 500 characters), e.g. 'No DEV_SSH_KEY secret exists, so the deploy cannot log in'"},
@@ -945,6 +945,20 @@ mod tests {
             );
         }
         assert!(!description.contains("follow-up work"), "{description}");
+    }
+
+    /// SPEC-429 ANS-005: `needs_you` says a plain-text question reaches nobody, since a turn that
+    /// ends with nothing open reads Answered.
+    #[test]
+    fn needs_you_says_a_plain_text_question_reaches_nobody() {
+        let tool = tool_descriptors()
+            .into_iter()
+            .find(|t| t.name == "needs_you");
+        let description = tool.map(|t| t.description).unwrap_or_default();
+        assert!(
+            description.contains("A question asked only in plain text reaches nobody"),
+            "{description}"
+        );
     }
 
     /// SPEC-188 OSP-002: `task_create` names the supertask's examples as the start menu does.

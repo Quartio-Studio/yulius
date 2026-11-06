@@ -3241,9 +3241,10 @@ async fn a_task_without_a_github_creator_delivers_as_the_app() -> TestResult {
 }
 
 /// #147: Home's cards and the sandbox tabs count "needs you" with the sidebar's rule (`taskInfo`
-/// in the web UI): Your turn, held prompts, blocked chains and failing checks count; a paused or
-/// ended task does not; a tested pull request answers for a finished task once its plan is
-/// complete (#139). The pull request facts are what the Git overview last read.
+/// in the web UI): Your turn (stopped with steps open), held prompts, blocked chains and failing
+/// checks count; a paused or ended task, or an idle one with nothing open (answered, SPEC-429),
+/// does not; a tested pull request answers for a finished task once its plan is complete (#139).
+/// The pull request facts are what the Git overview last read.
 #[tokio::test]
 async fn needs_you_counts_follow_the_sidebar_rule() -> TestResult {
     use yulius_app::intake::{ChainRecord, HoldRecord, hold_state};
@@ -3303,6 +3304,7 @@ async fn needs_you_counts_follow_the_sidebar_rule() -> TestResult {
     // Your turn; a held prompt; a chain whose predecessor ended otherwise.
     f.add_task("t2", "Your turn", "feat/2-your-turn", "dev")
         .await?;
+    set_steps(&f, "t2", &["done", "pending"]).await?;
     set("t2", TaskStatus::Running, Some(Activity::Waiting)).await?;
     f.add_task("t3", "Held prompt", "feat/3-held", "dev")
         .await?;
@@ -3332,8 +3334,9 @@ async fn needs_you_counts_follow_the_sidebar_rule() -> TestResult {
     f.add_task("t6", "Closed", "feat/6-closed", "dev").await?;
     f.h.store.insert_hold(&hold("t6")?).await?;
 
-    // Before any Git overview read, t1's pull request is not known: Your turn.
-    assert_eq!(needs().await?, 4);
+    // Before any Git overview read, t1's pull request is not known; with its plan complete and
+    // nothing asked, it answered (SPEC-429).
+    assert_eq!(needs().await?, 3);
 
     // Green checks, read by the Git overview: t1 is Done.
     f.h.github.set_checks(&head, ChecksState::Success);
@@ -3411,7 +3414,8 @@ async fn working_and_queued_counts_split_the_sidebar_working_group() -> TestResu
         ("t5", TaskStatus::WaitingCapacity, Some(Activity::Working)),
         ("t6", TaskStatus::Running, Some(Activity::Working)),
         ("t7", TaskStatus::Switching, None),
-        // Your turn needs you; an achieved goal is Done; a stop asked for is with the ended.
+        // Your turn (steps open) needs you; an achieved goal is Done; a stop asked for is with the
+        // ended.
         ("t8", TaskStatus::Running, Some(Activity::Waiting)),
         ("t9", TaskStatus::Running, Some(Activity::Done)),
         ("t10", TaskStatus::Stopping, Some(Activity::Working)),
@@ -3420,9 +3424,11 @@ async fn working_and_queued_counts_split_the_sidebar_working_group() -> TestResu
         f.add_task(id, id, &format!("feat/{id}"), "dev").await?;
         set(id, status, activity).await?;
     }
+    set_steps(&f, "t8", &["done", "pending"]).await?;
 
-    // Before any Git overview read, t1's pull request is not known: Your turn.
-    assert_eq!(counts().await?, (2, 4, 2));
+    // Before any Git overview read, t1's pull request is not known; its plan is complete and
+    // nothing asks: it answered, counted nowhere (SPEC-429).
+    assert_eq!(counts().await?, (1, 4, 2));
 
     // Checks running, read by the Git overview: t1 is In review, in the Working group.
     f.h.github.set_checks(&head, ChecksState::Pending);

@@ -260,6 +260,9 @@ pub struct TaskRuntime {
     /// Claude Code recorded a goal that is active and not achieved (set, or "not met"): its
     /// evaluator gives a verdict after each Stop (SPEC-079 BGW-005).
     pub(crate) goal_open: AtomicBool,
+    /// Claude Code last recorded the goal as set, not met or failed: an idle agent that stopped
+    /// has work left, so it is the person's turn (SPEC-429 ANS-002).
+    pub(crate) goal_unfinished: AtomicBool,
     /// The clean Stop (ms) whose turn waits for the goal verdict before it reads idle (0 = none).
     /// Whoever takes it settles that turn (SPEC-079 BGW-005).
     pub(crate) verdict_stop_ms: crate::finish::VerdictSlot,
@@ -406,6 +409,7 @@ impl TaskRuntime {
             launches: Mutex::new(std::collections::BTreeMap::new()),
             ended_stretch: Mutex::new(None),
             goal_open: AtomicBool::new(false),
+            goal_unfinished: AtomicBool::new(false),
             verdict_stop_ms: crate::finish::VerdictSlot::default(),
             watch_polls: AtomicU64::new(0),
             replay_transcript: AtomicBool::new(false),
@@ -3803,6 +3807,7 @@ impl App {
             launches.clear();
         }
         runtime.goal_open.store(false, Ordering::SeqCst);
+        runtime.goal_unfinished.store(false, Ordering::SeqCst);
         runtime.verdict_stop_ms.clear();
         if let Ok(mut end) = runtime.session_end.lock() {
             *end = None;

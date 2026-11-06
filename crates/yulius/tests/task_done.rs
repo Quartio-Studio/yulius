@@ -479,7 +479,9 @@ fn data_dir() -> Result<(tempfile::TempDir, PathBuf), BoxError> {
 
 /// TSK-014: the goal turn ends cleanly (Stop hook), Claude Code records the goal as achieved and
 /// no shell is left: the task is Done. Typing again makes it Working; after that turn it waits
-/// for the user (the achieved goal no longer counts).
+/// for the user (the achieved goal no longer counts), but it answered with nothing open: nobody
+/// has to act, and it is not counted in Needs you (SPEC-429; task #17 of another project read
+/// Your turn after "you don't need anything from me?" was answered).
 #[test]
 fn an_achieved_goal_with_no_shell_left_makes_the_task_done() -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
@@ -548,7 +550,34 @@ fn an_achieved_goal_with_no_shell_left_makes_the_task_done() -> TestResult {
             Some(Activity::Waiting),
             "a late read of the prompt does not reopen the finished turn"
         );
-        stop(&app, &id).await
+        let summary = app.task_summary(&task(&app, &id).await?).await?;
+        assert!(!summary.goal_unfinished, "its goal was met");
+        let ctx = yulius_app::auth::AuthContext {
+            user: app.deps.store.user(&user).await?.ok_or("user")?,
+            csrf_token: None,
+            session_hash: None,
+            token: None,
+        };
+        let counts = app
+            .list_sandboxes(&ctx)
+            .await?
+            .into_iter()
+            .find(|s| s.id == sandbox.as_str())
+            .ok_or("sandbox")?
+            .counts;
+        assert_eq!(counts.needs_attention, 0, "answered: nobody has to act");
+        // It reads Answered under Done, where Archive is offered: archiving closes its session
+        // as for a Done task, not "stop the task first" (SPEC-429 ANS-007).
+        let archived = app.archive_task(&ctx, id.as_str(), true).await?;
+        assert!(archived.archived, "archived");
+        // Closed, not stopped; it stays Running until its session is gone (`close_task_now`).
+        wait_for("the close", Duration::from_secs(30), || async {
+            task(&app, &id)
+                .await
+                .is_ok_and(|t| t.status == TaskStatus::Closed)
+        })
+        .await?;
+        Ok::<(), BoxError>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
@@ -794,6 +823,7 @@ fn an_agent_waiting_for_yulius_does_not_need_a_person() -> TestResult {
                 .and_then(|sandboxes| sandboxes.into_iter().find(|s| s.id == sandbox.as_str()))
                 .map(|s| s.counts.needs_attention)
         };
+        let mut events = app.events.subscribe();
         let id = goal_task(&app, &sandbox, &user, "Merge on green").await?;
         let view = || async {
             let summary = app.task_summary(&task(&app, &id).await?).await?;
@@ -807,6 +837,29 @@ fn an_agent_waiting_for_yulius_does_not_need_a_person() -> TestResult {
             view().await.ok() == Some((Some("waiting".into()), Some(0), false))
         })
         .await?;
+        // Its goal failed: the work is unfinished, so it is the person's turn (SPEC-429 ANS-002).
+        // The fake's turn is shorter than a transcript read, so the record may come after it: the
+        // UI is told then, not left reading Answered (ANS-008).
+        let published = tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                match events.recv().await {
+                    Ok(envelope) => {
+                        if let UiEvent::TaskUpdated { task } = envelope.event
+                            && task.id == id.as_str()
+                            && task.goal_unfinished
+                        {
+                            return true;
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(_) => return false,
+                }
+            }
+        })
+        .await;
+        assert_eq!(published, Ok(true), "an update says the goal is unfinished");
+        let summary = app.task_summary(&task(&app, &id).await?).await?;
+        assert!(summary.goal_unfinished, "a failed goal is unfinished");
         assert_eq!(needs_you().await, Some(1), "Your turn needs the person");
 
         // The agent waits for its checks: the next probe finds it.

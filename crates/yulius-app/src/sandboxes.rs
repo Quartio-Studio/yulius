@@ -96,6 +96,14 @@ impl App {
         })
     }
 
+    /// Whether the sidebar shows `task` under Done: an achieved goal, a tested pull request with
+    /// its plan complete, or an agent that answered with nothing open (SPEC-429 ANS-007). Archive
+    /// and delete close such a task's session, as the UI offers them.
+    pub(crate) async fn shows_done(&self, task: &TaskRecord) -> bool {
+        let requested = self.browser_requests(&task.sandbox_id).await;
+        matches!(self.task_group(task, &requested).await, Ok(TaskGroup::Done))
+    }
+
     /// A task's sidebar group (`AttentionFacts::group`), so Home's cards and the sandbox tabs
     /// count what the sidebar lists (#147, #170). Ended tasks are answered without reading the
     /// store.
@@ -121,7 +129,8 @@ impl App {
             && task
                 .activity
                 .is_some_and(yulius_domain::task::Activity::is_idle);
-        // The pull request and the plan matter only after a finished turn.
+        // The pull request, the plan and the goal matter only after a finished turn: with no step
+        // open and no unfinished goal, an idle agent answered (SPEC-429).
         let (pull, plan_open) = if finished {
             let pull = match self.observed_pulls.get(&task.sandbox_id, &task.id) {
                 Some(observed) => observed,
@@ -132,7 +141,7 @@ impl App {
                     .filter(|record| crate::delivery::past_merge(&record.stage))
                     .map(|_| PullSignal::Merged),
             };
-            let plan_open = pull.is_some() && plan_open(&store.steps(&task.id).await?);
+            let plan_open = plan_open(&store.steps(&task.id).await?);
             (pull, plan_open)
         } else {
             (None, false)
@@ -144,6 +153,7 @@ impl App {
             browser_request: requested.contains(task.id.as_str()),
             chain_blocked,
             plan_open,
+            goal_unfinished: finished && self.goal_unfinished(&task.id),
             background_shells: finished
                 && self
                     .background_shells_of(&task.id)

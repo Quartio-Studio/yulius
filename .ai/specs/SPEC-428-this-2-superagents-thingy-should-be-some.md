@@ -12,7 +12,9 @@ Scope authorization: task #410 (`/goal`): "this 2-superagents-thingy should be s
 sandbox Superagent panel] as a section like here [the Notes tabs Team / This sandbox / Me]. The
 example task will be: check out what sandboxes needs between each other and solve it".
 Changes the web UI of SPEC-427 GSA-006; decided in
-[ADR-0272](../../docs/decisions/0272-the-two-superagents-are-tabs-of-one-panel.md).
+[ADR-0272](../../docs/decisions/0272-the-two-superagents-are-tabs-of-one-panel.md). The Global
+message box is removed by [SPEC-430](SPEC-430-this-should-be-exactly-like-normal-super.md); its example
+moved into the Global note.
 
 ## Goal
 

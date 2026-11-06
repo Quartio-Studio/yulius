@@ -101,6 +101,11 @@ pub struct TaskSummary {
     /// when Yulius has news, so the task is not the person's turn (SPEC-085 STT-002).
     #[serde(default)]
     pub yulius_wait: bool,
+    /// While the agent is idle: Claude Code last recorded its goal as set, not met or failed, so
+    /// the agent that stopped left work unfinished and it is the person's turn. Without it, or an
+    /// open plan, an idle agent answered (SPEC-429).
+    #[serde(default)]
+    pub goal_unfinished: bool,
     /// The task this one runs after (SPEC-001 TSK-012): while `chained` it waits for it; the
     /// link stays after the task started.
     #[serde(default)]

@@ -1276,14 +1276,13 @@ the Superagent channel, changes audited `remote.tool` with `via: global-superage
 requests a minute. A removed host ends it, and the next `POST /api/superagent` leaves a host where
 its person lost write access; it then starts under the oldest sandbox the person can work in,
 resuming the conversation kept in its folder. Its `shell.json` is version 2, which older releases
-end and remove. No key of the person reaches it (`ShellAttach::takes_keys`, `can_write` false):
-`POST /api/superagent/message` types each message as one bracketed paste and Enter, after the
-label `Message from your person:` (`global_paste`; the four commands alone), so Claude Code never reads
-the input as a command or exit word even when it held back text it stripped (`global_message`: control characters removed, `@` as `＠`, `!` lines and commands but `/clear`,
-`/compact`, `/context` and `/cost` refused, as are characters nobody sees but an emoji's, exit words,
-image paths Claude Code would attach and the `ultraplan` keyword), and `POST /api/superagent/interrupt` sends Esc (one per 2 s), so
-neither its editor (`EDITOR`/`VISUAL` refuse too), its `!` mode nor its menus are reachable. It is
-not served `change_merge`. The web UI shows it as the All sandboxes tab of the Superagent panel,
+end and remove. Its person types into its terminal as into the sandbox Superagent's
+([SPEC-430](../.ai/specs/SPEC-430-this-should-be-exactly-like-normal-super.md),
+[decision 0274](decisions/0274-the-global-superagent-takes-its-persons-keys.md)); `EDITOR` and
+`VISUAL` name the refusing script too, and on a contained server the login shell Claude Code runs
+that script through finds its home's startup files as empty read-only binds, so neither its `!`
+mode nor its editor runs anything, and its `--settings` carry `skipDangerousModePermissionPrompt` with the approval bypass, since it reads no
+settings file where Claude Code keeps the accepted warning. It is not served `change_merge`. The web UI shows it as the All sandboxes tab of the Superagent panel,
 beside This sandbox ([SPEC-428](../.ai/specs/SPEC-428-this-2-superagents-thingy-should-be-some.md),
 [decision 0272](decisions/0272-the-two-superagents-are-tabs-of-one-panel.md)): `panels.js` holds
 one Global view per page (`sharedGlobal`), which `createSuperagentPanel` moves into the panel
@@ -2323,8 +2322,30 @@ flowchart LR
     attention -.->|"agent works on"| working
 ```
 
-A task is Done through an achieved goal or a tested pull request with a complete plan, so a task
-without a goal that opens no pull request would wait at "Your turn" for good. For that reason the
+Needs you means a person has to act. An idle agent that stopped reads "Your turn" under Needs you only
+while its work is visibly unfinished: plan steps open, or a goal that Claude Code last recorded as set,
+not met or failed (`goal_unfinished` in the task view). With neither, and nothing asked (a question or
+permission prompt, `needs_you`, a browser request, a held prompt, failing checks), it answered: it
+reads "Answered" under Done and is counted nowhere, while its activity stays `waiting`, so no chain
+starts and its slot is kept. Archive and Delete close its session as for a Done task (`shows_done`),
+and a goal record read after the turn settled publishes the task again. The server's `AttentionFacts::group` and the web UI's `taskInfo` apply
+this one rule ([SPEC-429](../.ai/specs/SPEC-429-hey-why-yulius-still-mark-this-thread-as.md),
+[decision 0273](decisions/0273-an-answered-turn-is-not-needs-you.md)):
+
+```mermaid
+flowchart LR
+    idle["idle agent: waiting"] --> going{"background work or yulius wait?"}
+    going -->|"yes"| working["Working"]
+    going -->|"no"| asked{"a request: prompt, needs_you,\nbrowser, held prompt, failing checks?"}
+    asked -->|"yes"| needs["Needs you"]
+    asked -->|"no"| open{"steps open or goal unfinished?"}
+    open -->|"yes"| turn["Your turn (Needs you)"]
+    open -->|"no"| answered["Answered (Done group)"]
+```
+
+A task is Done (TSK-014: chains start, the queue may take its slot) through an achieved goal or a
+tested pull request with a complete plan, so a task without a goal that opens no pull request would
+never be Done. For that reason the
 tasks Yulius creates itself are goal tasks: an automation run's task and the onboarding
 preparation. Only the continuation of an imported session is a prompt task, because the person
 whose conversation it continues decides when it is finished

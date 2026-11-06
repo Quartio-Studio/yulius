@@ -36,17 +36,13 @@ test('outside a sandbox the rail opens the Global Superagent, which stays open a
   const terminal = browser.locator(`${shownAgent} .xterm-rows`);
   await expect(terminal).toHaveText(/Welcome to Claude Code/);
   await expect(terminal).toHaveText(/superagent\/work/);
-  // It takes messages, not keys (GSA-007): the box has the keyboard.
-  const box = screen.getByRole('textbox', 'Message to the Global Superagent');
-  await expect(box).toBeFocused();
+  // Its person types into it as into the sandbox Superagent: no other box (SPEC-430 GKY-003).
+  await expect(browser.locator(`${shownAgent} .xterm-helper-textarea`)).toBeFocused();
   await browser.keyboard.type('what runs where?');
   await browser.keyboard.press('Enter');
   await expect(terminal).toHaveText(/Good question/);
-  await expect(box).toHaveValue('');
-  await browser.keyboard.type('!cat /etc/passwd');
-  await browser.keyboard.press('Enter');
-  await expect(screen.getByRole('alert')).toHaveText(/runs no commands/);
-  await expect(box).toHaveValue('!cat /etc/passwd');
+  expect(await browser.locator('.agent textarea:not(.xterm-helper-textarea)').count()).toBe(0);
+  expect(await browser.locator(`${shownAgent} .term-banner-readonly`).count()).toBe(0);
   expect(await axeViolations(browser)).toEqual([]);
 
   // Settings is outside a sandbox too: the same session stays beside it.
@@ -74,9 +70,9 @@ test('in a sandbox the Superagent panel shows This sandbox and All sandboxes as 
   await expect(all).toHaveAttribute('aria-selected', 'true');
   await expect(screen.getByRole('note', 'About the Global Superagent')).toHaveText(/Sees all your sandboxes/);
   await expect(browser.locator(`${shownAgent} .xterm-rows`)).toHaveText(/superagent\/work/);
-  // The example of what it is for (SAT-007).
-  await expect(screen.getByRole('textbox', 'Message to the Global Superagent'))
-    .toHaveAttribute('placeholder', 'For example: check what my sandboxes need from each other and solve it');
+  // The example of what it is for (SAT-007), in its note now that it has no box (SPEC-430).
+  await expect(screen.getByRole('note', 'About the Global Superagent'))
+    .toHaveText(/For example: check what my sandboxes need from each other and solve it\./);
   expect(await axeViolations(browser)).toEqual([]);
 
   await here.click();
@@ -118,6 +114,8 @@ test('outside a sandbox the keys skip the disabled This sandbox', async ({ app, 
   await app.open(mock('/superagent'));
   const all = tabs(screen).getByRole('tab', 'All sandboxes');
   await expect(all).toHaveAttribute('aria-selected', 'true');
+  // Its terminal takes the keyboard once it shows, as This sandbox's does (SPEC-430).
+  await expect(browser.locator(`${shownAgent} .xterm-helper-textarea`)).toBeFocused();
   await all.focus();
   await browser.keyboard.press('ArrowLeft');
   await expect(all).toHaveAttribute('aria-selected', 'true');
@@ -131,15 +129,13 @@ test('All sandboxes stays chosen in every sandbox and after a reload, with one G
   await openSuperagent(browser, screen);
   await tabs(screen).getByRole('tab', 'All sandboxes').click();
   await expect(browser.locator(`${shownAgent} .xterm-rows`)).toHaveText(/superagent\/work/);
-  // What is typed stays in its box from one sandbox to the next (SAT-004).
-  await screen.getByRole('textbox', 'Message to the Global Superagent').fill('half a thought');
 
   await screen.getByRole('navigation', 'Sandboxes').getByRole('link', /^product\b/).click();
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('New task');
   await expect(tabs(screen).getByRole('tab', 'All sandboxes')).toHaveAttribute('aria-selected', 'true');
   await expect(browser.locator(`${shownAgent} .xterm-rows`)).toHaveText(/superagent\/work/);
-  await expect(screen.getByRole('textbox', 'Message to the Global Superagent')).toHaveValue('half a thought');
-  expect(await browser.locator('.superagent-pane .agent-compose').count()).toBe(1);
+  // One Global view for the page (SAT-004).
+  expect(await browser.locator('.superagent-pane [aria-label="About the Global Superagent"]').count()).toBe(1);
   // studio's own Superagent started when its tab showed; product's never did.
   expect(await startsOf(browser)).toEqual({ sandbox: 1, global: 1 });
 
@@ -205,7 +201,7 @@ test('a sandbox entered while the Global Superagent is open keeps it open and st
   await expect(browser.locator(`${shownAgent} .xterm-rows`)).toHaveText(/sandboxes\/studio\/repo/);
 });
 
-test('the Global Superagent\'s session follows its panel\'s size though it takes no keys', async ({ app, browser, screen }) => {
+test('the Global Superagent\'s session follows its panel\'s size', async ({ app, browser, screen }) => {
   await browser.setViewport({ width: 1400, height: 900 });
   await app.open(mock('/superagent'));
   await expect(browser.locator(`${shownAgent} .xterm-rows`)).toHaveText(/Welcome to Claude Code/);

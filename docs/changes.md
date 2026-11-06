@@ -6,6 +6,21 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-06
 
+- The Global Superagent works like the sandbox Superagent (SPEC-430, task #412, ADR-0274): its
+  person types and clicks in its terminal, with no separate message box, and it no longer stops
+  at start on Claude Code's Bypass Permissions warning, which nobody could answer. It stays the
+  person's own, reaches every sandbox of theirs through Yulius, and still runs no commands.
+- An agent that answered and needs nothing is no longer "Needs you" (SPEC-429, ADR-0273, task #411,
+  fixes #1090). Every turn that ended without an achieved `/goal` read "Your turn" under Needs you.
+  A follow-up question after a met goal also drops it, so "so all good here and you don't need
+  anything from me?", answered "Yes, nothing is needed from you", kept the task in Needs you and
+  said "The agent is waiting for your reply". Now an idle agent reads "Your turn" only while its
+  work is visibly unfinished: plan steps open, or a goal Claude Code last recorded as set, not met
+  or failed (`goal_unfinished` in the task view). Otherwise it reads "Answered" under Done
+  ("answered 12m ago"), is counted nowhere, and has no reply banner. Its activity stays `waiting`,
+  so no chain starts and its slot is kept. A question or permission prompt, `needs_you`, a browser
+  request, a held prompt, failing checks and a blocked chain still need a person, and the
+  `needs_you` tool tells agents that a plain-text question reaches nobody.
 - The two Superagents are tabs of one Superagent panel (SPEC-428, task #410, ADR-0272): **This
   sandbox** and **All sandboxes** (the Global Superagent), as the Notes tabs. The Global
   Superagent is now one click away in every sandbox, stays in front across sandboxes once picked
