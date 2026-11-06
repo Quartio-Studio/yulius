@@ -1,7 +1,8 @@
 //! Server-lifetime background work: crash recovery and the metrics recount, queue draining, the
 //! subscription pool's resume loop (ROT-010) and account usage refresh (ROT-009) (SPEC-002 §6.1,
 //! §7.5, §10). Nothing is typed into an idle task's session (SPEC-028 MSR-004), except "Yulius is
-//! back; continue" into a task that went idle while Yulius was down (SPEC-358 MSB-007).
+//! back; continue" into a task that went idle while Yulius was down (SPEC-358 MSB-007), and
+//! `/mcp reconnect yulius` into one whose Yulius MCP went silent (SPEC-432 MCR-003).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -53,6 +54,8 @@ impl App {
             // The runs are reattached: the tasks that went idle while Yulius was down are woken
             // once their transcripts replayed (MSB-007).
             app.schedule_outage_wakes(outage);
+            // Sessions whose Yulius MCP Claude Code dropped are reconnected (SPEC-432 MCR-003).
+            app.start_mcp_watch(outage.started);
             // Merges armed before the restart stay armed (DLV-205), and one whose checks passed
             // meanwhile merges now (SPEC-358 MSB-008).
             app.resume_armed_merges().await;

@@ -12,6 +12,15 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   menu's Move left / Move right, as the sandbox and Notes tabs do. Each keeps its order in this
   browser (the terminals and Browser tabs per sandbox, a new one last). The Editor's file tabs,
   which already moved, show the grip too.
+- A task session whose Yulius MCP server Claude Code dropped is reconnected, and a superadmin can
+  restart Yulius (SPEC-432, ADR-0276, task #414). A session lost `delivery_merge` and `ci_status`
+  mid-goal and waited for a person to run `/mcp`. Now the session's `yulius mcp` bridge pings Yulius
+  every minute; an idle task silent for 3 minutes gets `/mcp reconnect yulius` typed, then "Yulius's
+  tools are reconnected; continue" if its turn ended while cut off. Mid-turn, `yulius tool <name>
+  '<json>'` calls any Yulius tool from the shell. **Settings → Instance → Restart…** pauses every
+  task, restarts the server with the build it runs through the update helper's new `restart`
+  action, and resumes the tasks, as an update does without installing.
+
 - A revealed agent-secret key is copied with its line breaks (SPEC-431, ADR-0275, task #413, fixes
   #1096). A pasted key is stored with literal `\n`, and Show and Copy value on the Secrets page gave
   that one-line form back. The reveal now returns a key block as its key file (real line breaks, one

@@ -1621,3 +1621,135 @@ async fn a_deploy_running_while_draining_holds_the_install() -> TestResult {
     );
     Ok(())
 }
+
+/// SPEC-432 RST-002: a superadmin restarts Yulius with the build it runs: every task freezes,
+/// the helper restarts that build, and the tasks thaw. Others are refused, a confirmation is
+/// needed, and a second run conflicts.
+#[tokio::test]
+async fn a_superadmin_restarts_yulius_with_its_tasks_frozen_then_thawed() -> TestResult {
+    let (i, host) = freezing_instance().await?;
+    let (working, _idle) = two_tasks(&i).await?;
+    let confirmed = Some(json!({"confirm": true}));
+    let r = post(&i, "/api/admin/restart", confirmed.clone(), &i.member).await?;
+    assert_eq!(r.status, StatusCode::FORBIDDEN, "{}", r.body);
+    let r = post(&i, "/api/admin/restart", Some(json!({})), &i.admin).await?;
+    assert_eq!(r.status, StatusCode::UNPROCESSABLE_ENTITY, "{}", r.body);
+    let r = post(&i, "/api/admin/restart", confirmed.clone(), &i.admin).await?;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "{}", r.body);
+    assert_eq!(r.body["run"]["restart"], true, "{}", r.body);
+    assert_eq!(r.body["run"]["target"]["commit"], OLD);
+    assert_eq!(r.body["run"]["state"], "pausing");
+    assert!(i.helper.last().is_none(), "nothing is built");
+    let r = post(&i, "/api/admin/restart", confirmed, &i.admin).await?;
+    assert_eq!(r.status, StatusCode::CONFLICT, "{}", r.body);
+
+    let _ = i.h.app.update_round().await;
+    assert_eq!(host.frozen().len(), 2, "every task is frozen");
+    let _ = i.h.app.update_round().await;
+    let restart = i.helper.last().ok_or("restart request")?;
+    assert_eq!(restart.action, HelperAction::Restart);
+    assert_eq!(restart.commit, OLD);
+    i.helper
+        .report(&restart, HelperState::Running, "stopping", None);
+
+    let restarted = App::new(i.h.app.config.clone(), i.h.app.deps.clone());
+    restarted.set_updates(services(OLD, &i.source, &i.helper));
+    restarted.restore_update_hold().await;
+    let _ = restarted.update_round().await;
+    assert!(host.thawed().is_empty(), "frozen until the helper reports");
+    assert!(restarted.held_for_update(&working));
+    i.helper
+        .report(&restart, HelperState::Done, "restarted", None);
+    let _ = restarted.update_round().await;
+    let _ = restarted.update_round().await;
+    assert_eq!(host.thawed().len(), 2, "every task thawed");
+    assert!(!restarted.held_for_update(&working));
+    let view = restarted.update_view(&support_ctx(&i).await?).await?;
+    let run = view.run.ok_or("run")?;
+    assert_eq!(run.state, "succeeded");
+    assert!(run.restart);
+    assert_eq!(run.message.as_deref(), Some("Restarted."));
+    Ok(())
+}
+
+/// SPEC-432 review round 1 (M2): a restart while a deploy runs is refused before any task pauses
+/// (an update waits for deploys while it builds; a restart has nothing to build), and deploys are
+/// not held by it.
+#[tokio::test]
+async fn a_restart_is_refused_while_a_deploy_runs() -> TestResult {
+    let (i, host) = freezing_instance().await?;
+    two_tasks(&i).await?;
+    deploying_project(&i).await?;
+    running_deploy(&i, "cdr_running").await?;
+    let r = post(
+        &i,
+        "/api/admin/restart",
+        Some(json!({"confirm": true})),
+        &i.admin,
+    )
+    .await?;
+    assert_eq!(r.status, StatusCode::CONFLICT, "{}", r.body);
+    assert!(r.body.to_string().contains("1 deploy"), "{}", r.body);
+    let _ = i.h.app.update_round().await;
+    assert!(host.frozen().is_empty(), "no task paused");
+    assert!(i.h.app.deploy_permit().is_ok(), "deploys go on");
+    deploy_ends(&i, "cdr_running").await?;
+    let r = post(
+        &i,
+        "/api/admin/restart",
+        Some(json!({"confirm": true})),
+        &i.admin,
+    )
+    .await?;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "{}", r.body);
+    Ok(())
+}
+
+/// SPEC-432 review round 1 (minor 7): a cancelled restart and a failed one say so as a restart
+/// and thaw every task; without the helper a restart is refused.
+#[tokio::test]
+async fn a_cancelled_or_failed_restart_thaws_its_tasks() -> TestResult {
+    let (i, host) = freezing_instance().await?;
+    let (working, _idle) = two_tasks(&i).await?;
+    let confirmed = Some(json!({"confirm": true}));
+    let r = post(&i, "/api/admin/restart", confirmed.clone(), &i.admin).await?;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "{}", r.body);
+    let _ = i.h.app.update_round().await;
+    assert_eq!(host.frozen().len(), 2);
+    let r = post(&i, "/api/admin/update/cancel", None, &i.admin).await?;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    assert_eq!(r.body["run"]["state"], "cancelled");
+    assert_eq!(
+        r.body["run"]["message"],
+        "Cancelled; Yulius was not restarted."
+    );
+    let error = r.body["run"]["error"].as_str().unwrap_or_default();
+    assert!(error.ends_with("Yulius was not restarted."), "{error}");
+    assert!(host.frozen().is_empty(), "thawed at once");
+    assert!(!i.h.app.held_for_update(&working));
+
+    let r = post(&i, "/api/admin/restart", confirmed.clone(), &i.admin).await?;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "{}", r.body);
+    let _ = i.h.app.update_round().await;
+    let _ = i.h.app.update_round().await;
+    let restart = i.helper.last().ok_or("restart request")?;
+    assert_eq!(restart.action, HelperAction::Restart);
+    i.helper.report(
+        &restart,
+        HelperState::Failed,
+        "failed",
+        Some("Could not start yulius.service: unit failed"),
+    );
+    let _ = i.h.app.update_round().await;
+    let _ = i.h.app.update_round().await;
+    let view = get(&i, &i.admin).await?;
+    assert_eq!(view["run"]["state"], "failed", "{view}");
+    assert_eq!(view["run"]["message"], "The restart failed.");
+    assert!(host.frozen().is_empty(), "every task thawed");
+    assert!(!i.h.app.held_for_update(&working));
+
+    i.helper.installed.store(false, Ordering::SeqCst);
+    let r = post(&i, "/api/admin/restart", confirmed, &i.admin).await?;
+    assert_eq!(r.status, StatusCode::CONFLICT, "{}", r.body);
+    Ok(())
+}
