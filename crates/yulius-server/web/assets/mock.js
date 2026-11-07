@@ -1954,6 +1954,8 @@ function ciRun(id, reference, sha, state, minutesAgo, { failJob = null, skipJob 
       id: `${id}_j${i}`, name: job.name, command: job.command, matrix: job.matrix, state: jobState, reason: null,
       exit_code: jobState === 'passed' ? 0 : jobState === 'failed' ? 101 : jobState === 'skipped' ? 78 : null,
       duration_ms: jobState === 'passed' || jobState === 'failed' ? 120000 + i * 30000 : jobState === 'skipped' ? 2000 : null,
+      // SPEC-435: the second job waited for its turn behind another run of it; the others hardly.
+      waited_ms: jobState === 'queued' ? null : i === 1 ? 6 * 60000 : 300,
       output: jobState === 'queued' ? '' : jobState === 'running' ? `$ ${job.command}\n   Compiling yulius-app v0.1.0\n`
         : jobState === 'skipped' ? `$ ${job.command}\nSecurity scan not run: No Vidoc API key.\n` : ciOutput(job, !failed),
     };

@@ -6,6 +6,15 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-06
 
+- A CI job's time limit counts only its own run, and a job can set its own (SPEC-435, ADR-0279,
+  task #417). quartio-v2's `websites` job waited 39 minutes for another PR's run of it (a `flock`
+  inside the job) and timed out at 1 h with no test failing. Two new `[[ci.jobs]]` keys:
+  `exclusive = true` makes Yulius run one run of the job at a time per sandbox, the later one
+  waiting for its turn before it takes a slot, outside its limit; `timeout_minutes = N` (1-360)
+  replaces the instance's `YULIUS_CI_JOB_TIMEOUT_MIN` for that job. A job's limit starts when its
+  process starts. Each job records how long it waited: `ci_status` reads "websites passed, waited
+  39m 0s, ran 44m 2s", the run page ends a job's output with "[waited 39 min, ran 44 min]", and a
+  timeout says "timed out: ran 1 h 0 min, its time limit; it waited 39 min 12 s before it started".
 - A screenshot pasted into the Global Superagent reaches it (SPEC-433, task #415, ADR-0277): in
   the All sandboxes tab a pasted or dropped image did nothing. It is now kept in the Global
   Superagent's own folder and its path pasted, which Claude Code turns into an image, as in a

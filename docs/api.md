@@ -702,6 +702,11 @@ memory_gb = 8               #   default: an equal share of the sandbox among the
                             #   memory_gb (1-4096) follows the CPUs
 secrets = "VIDOC_API_KEY"    # optional: at most 8 agent secrets, as placeholders through the egress
                             #   proxy; only the integration branch's entry grants them (ADR-0116)
+timeout_minutes = 120       # optional (1-360): its own time limit, counted from its start (never
+                            #   its waits); default: the instance's YULIUS_CI_JOB_TIMEOUT_MIN
+exclusive = true            # optional: one run of it (each matrix value apart) at a time in the
+                            #   sandbox; a later run's job waits for its turn, outside its limit,
+                            #   holding no slot (ADR-0279)
 # or, for one job: [commands] gate = "…"   (not both)
 
 [resources.env]             # optional: the budget in this repository's tools' terms (SPEC-082)
@@ -736,7 +741,7 @@ get `{cpus}`; a declared table, even an empty one, replaces them (SPEC-268).
 | `POST /api/sandboxes/{sid}/hygiene/cleanup` | write | `{"removed": [Target], "skipped": [Target + "reason"], "report": HygieneReport}` |
 
 ```text
-CiOverview = {"gate": {"source": "profile|yulius_toml", "jobs": [{"name", "command", "matrix"}]} | null,
+CiOverview = {"gate": {"source": "profile|yulius_toml", "jobs": [{"name", "command", "matrix", "timeout_minutes"|null, "exclusive"}]} | null,
               "gate_problem": "yulius.toml line 7: …" | null,
               "runs": [CiRun] (newest 30, without outputs), "can_run": true,
               "status_access": "for administrators: commit statuses cannot be published …" | null,
@@ -746,7 +751,8 @@ CiRun = {"id", "reference": "pr/12|branch/dev", "label": "PR #12|dev", "pr_numbe
          "source": "profile|yulius_toml|pull_request",
          "jobs": [{"id", "name", "command", "matrix",
                    "state": "queued|running|passed|failed|error|cancelled|skipped", "reason", "exit_code",
-                   "duration_ms", "output" (run detail only: last 512 KiB, escapes removed)}],
+                   "duration_ms", "waited_ms" (before it started: its turn, a slot; never in its limit) | null,
+                   "output" (run detail only: last 512 KiB, escapes removed)}],
          "reason": "superseded by 0d7e5f3|…" | null, "queued_at", "started_at", "ended_at",
          "duration_ms", "requested_by": "yulius|<login>|task:<n>",
          "status": "published|pending|not published: …"}

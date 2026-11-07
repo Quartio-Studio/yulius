@@ -55,6 +55,14 @@ export function jobsLine(jobs) {
   return parts.join(' · ');
 }
 
+/** SPEC-435 JTL-004: how long an ended job waited before it started and ran, apart:
+ * "\n[waited 39 min, ran 44 min]"; its run time alone when it did not wait a second. */
+export function jobTook(job) {
+  if (job.duration_ms === null || job.duration_ms === undefined) return '';
+  const waited = job.waited_ms >= 1000 ? `waited ${duration(job.waited_ms)}, ` : '';
+  return `\n[${waited}ran ${duration(job.duration_ms)}]`;
+}
+
 // The run whose view was left last, per sandbox: the list it goes back to puts the keyboard on its
 // card (SPEC-238 review round 1).
 const leftRun = new Map();
@@ -347,7 +355,7 @@ export function mountCiSection(ctx, sandbox, route, host, actions) {
       if (!job) { output.textContent = ''; return; }
       const atBottom = output.scrollTop + output.clientHeight >= output.scrollHeight - 8;
       const exit = job.exit_code === null || job.exit_code === undefined ? '' : `\n[exit code ${job.exit_code}]`;
-      output.textContent = (job.output || (ACTIVE.has(job.state) ? 'Waiting for output…' : 'No output.')) + exit;
+      output.textContent = (job.output || (ACTIVE.has(job.state) ? 'Waiting for output…' : 'No output.')) + exit + jobTook(job);
       if (atBottom || ACTIVE.has(job.state)) output.scrollTop = output.scrollHeight;
     };
     // SPEC-258 RRA-002/003: Cancel while it runs, Run again once it ended, for writers only.
