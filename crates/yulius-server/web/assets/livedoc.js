@@ -61,7 +61,7 @@ export function createLiveDoc({ api, sid, root, path, client: page, user, canWri
   let saveTimer = 0;
   let saveIsFallback = false; // the timer is a teammate's fallback, not this person's own
   let saveWanted = false; // a save waits for this tab's edits to be confirmed
-  let saveForced = false; // that save is Keep mine's: it writes over a disk that moved on
+  let forcedOver = null; // that save is Keep mine's, over this disk version (`state.diskSha`)
   let saving = null;
   let catching = null;
   let catchAgain = false;
@@ -275,14 +275,15 @@ export function createLiveDoc({ api, sid, root, path, client: page, user, canWri
   function save({ force = false, keepalive = false } = {}) {
     clearTimeout(saveTimer);
     saveTimer = 0;
-    // Keep mine pressed while this tab's typing was on its way is still Keep mine once it lands.
-    force = force || saveForced;
-    if (destroyed || !session || readOnly || !canWrite()) { saveWanted = false; saveForced = false; settle(); return Promise.resolve(); }
+    // Keep mine pressed while this tab's typing was on its way is still Keep mine once it lands,
+    // over the disk version it was pressed against only, never one the disk moved on to since.
+    force = force || (forcedOver != null && forcedOver === state.diskSha);
+    if (destroyed || !session || readOnly || !canWrite()) { saveWanted = false; forcedOver = null; settle(); return Promise.resolve(); }
     if (state.diskSha != null && !force) { saveWanted = false; settle(); return Promise.resolve(); }
     // This tab's typing first: the save waits until the server has it.
-    if (pending()) { saveWanted = true; saveForced = force; return Promise.resolve(); }
+    if (pending()) { saveWanted = true; forcedOver = force ? state.diskSha : null; return Promise.resolve(); }
     saveWanted = false;
-    saveForced = false;
+    forcedOver = null;
     if (state.saved && !force) { settle(); return Promise.resolve(); }
     if (saving && !force) { saveWanted = true; return saving; }
     const at = session;
@@ -310,7 +311,7 @@ export function createLiveDoc({ api, sid, root, path, client: page, user, canWri
   function disk({ force = false } = {}) {
     if (destroyed || !session) return Promise.resolve();
     // Take disk version after a waiting Keep mine: the disk's text wins.
-    if (force) saveForced = false;
+    if (force) forcedOver = null;
     const at = session;
     return api.post(`/api/sandboxes/${sid}/files/live/disk`, { ...base(), session: at, force }).then((done) => {
       if (destroyed || session !== at) return;

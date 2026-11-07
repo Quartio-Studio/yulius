@@ -159,7 +159,12 @@ On 2026-11-07, branch at `c15e5822` plus the pinned-launch test fix (current wit
   it) with a deterministic e2e test, `Keep mine pressed before this tab’s typing is confirmed
   writes once it lands` (holds the edit; failed at the "Saved" poll before the fix). After it:
   `editor.e2e.ts` and `live-editor.e2e.ts` 45 of 45, and both Keep-mine tests 120 of 120 runs
-  with 4 workers.
+  with 4 workers. Review round 4 approved it with one low finding in that fix (a waiting Keep
+  mine could outlive its conflict and write over a newer disk change): the waiting save now
+  forces only over the disk version Keep mine was pressed against, with the test `a waiting Keep
+  mine does not write over a disk that moved on again` (failed 3 of 3 before); then the two files
+  46 of 46 and the three Keep-mine tests 120 of 120 with 4 workers. Its nit (Keep mine pressed
+  just before the page closes still writes nothing, as before) is left as it was on `dev`.
 - Not tested: a real Chromium and a real Claude Code session (the tests use the fake DevTools
   server and the fake `claude`), and the restart of already-running Superagents to pick up the
   tools, which the existing launch-digest tests cover generically.

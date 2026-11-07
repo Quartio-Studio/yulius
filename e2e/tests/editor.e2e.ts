@@ -1083,6 +1083,33 @@ test('Keep mine pressed before this tab’s typing is confirmed writes once it l
   expect(await browser.evaluate(() => (window as unknown as { __yuliusMock: { repoTrees: Record<string, { files: Map<string, string> }> } }).__yuliusMock.repoTrees['sb_studio|sandbox'].files.get('notes.txt'))).toBe(`mine ${ON_DISK}`);
 });
 
+/**
+ * A waiting Keep mine answers the disk version it was pressed against: when the disk moves on
+ * again before this tab's typing lands, nothing is written over the newer version (review of
+ * #1114, round 4).
+ */
+test('a waiting Keep mine does not write over a disk that moved on again', async ({ app, browser, screen }) => {
+  type Mock = { __yuliusMock: { live: { holdEdits: boolean; edits: unknown[]; saveAsks: { force: boolean }[] }; releaseEdits(): void; repoTrees: Record<string, { files: Map<string, string> }> } };
+  const edits = () => browser.evaluate(() => (window as unknown as Mock).__yuliusMock.live.edits.length);
+  const typeKey = (key: string) => browser.evaluate((k) => { const ed = (window as unknown as LiveWindow).monaco.editor.getEditors()[0]; ed.focus(); ed.trigger('keyboard', 'type', { text: k }); }, key);
+  await conflictOn(app, browser, screen, (b) => b.evaluate(() => (window as unknown as LiveWindow).__yuliusMock.removeRepoFile('sb_studio', 'notes.txt')));
+  await expect.poll(() => editorStatus(browser)).toContain('Deleted on disk');
+  const confirmed = await edits();
+  await browser.evaluate(() => { (window as unknown as Mock).__yuliusMock.live.holdEdits = true; });
+  await typeKey('x');
+  await screen.getByRole('button', 'Keep mine').click();
+  await writeDisk(browser, 'theirs\n');
+  await expect.poll(() => editorStatus(browser), { timeout: LOOKS_MS }).toContain('Changed on disk');
+  await browser.evaluate(() => (window as unknown as Mock).__yuliusMock.releaseEdits());
+  // A keystroke after the held one is sent only once that one's step is back.
+  await expect.poll(edits).toBeGreaterThan(confirmed);
+  await typeKey('y');
+  await expect.poll(edits).toBeGreaterThan(confirmed + 1);
+  expect(await browser.evaluate(() => (window as unknown as Mock).__yuliusMock.live.saveAsks.filter((ask) => ask.force).length)).toBe(0);
+  expect(await browser.evaluate(() => (window as unknown as Mock).__yuliusMock.repoTrees['sb_studio|sandbox'].files.get('notes.txt'))).toBe('theirs\n');
+  expect(await editorStatus(browser)).toContain('Changed on disk');
+});
+
 test('a disk back at the text’s version ends the conflict by itself', async ({ app, browser, screen }) => {
   await conflictOn(app, browser, screen);
   await writeDisk(browser, ON_DISK);
