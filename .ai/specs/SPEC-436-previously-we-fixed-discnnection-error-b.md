@@ -1,11 +1,11 @@
 ---
 yulius-task: ec28e4c6-607e-424a-8865-3523f28bce59
-status: in-progress
+status: done
 ---
 
 # SPEC-436: Yulius never reconnects a live Yulius MCP
 
-Status: in progress
+Status: implemented
 Date: 2026-11-07
 Owner: Yulius task #418
 Scope authorization: task #418 ("previously we fixed disconnection error but running reconnect is
@@ -73,10 +73,10 @@ still does not ping.
 
 - [x] Reproduce the defect and find its root cause
 - [x] Spec, issue and ADR for reconnecting only a bridge known to ping
-- [ ] Regression test: a bridge that never pings is never reconnected
-- [ ] The watch leaves a live bridge alone and reconnects only a dropped one
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Regression test: a bridge that never pings is never reconnected
+- [x] The watch leaves a live bridge alone and reconnects only a dropped one
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -123,3 +123,44 @@ still does not ping.
   logs show neither in 529 connections; `yulius tool` stays the shell fallback.
 - Found on the way, outside this change: the `/yulius/bin/yulius` wrapper refuses `yulius tool`
   (#1109).
+
+## Review
+
+Independent reviewer in a fresh session (read-only, `om-code-review`, `yulius-review`), on
+`origin/dev...HEAD`.
+
+- **Round 1** (`1881bc33`): request changes; all own code, no defect in `decide`.
+  - Medium: no test of the usual real drop after an update (a reattached run whose bridge pinged
+    here and stopped). Added `a_reattached_bridge_that_pinged_here_and_stopped_is_reconnected`;
+    adding `&& facts.spawned_ms >= bounds.started.0` to the ping branch makes it fail.
+  - Low: the test plan said the integration test's bridge pinged (it never reaches `POST /mcp`);
+    the loop guarantee was wider than the code (now "in a run whose bridge never pinged here");
+    three doc sentences (ADR-0276 note, operations, the decisions index). All fixed.
+  - Informational, not adopted: treat a never-pinged bridge as gone once another bridge of the
+    same sandbox pinged here (the binary then pings). Narrows the accepted gap; left for later.
+- **Round 2** (`3ff6ac27`): approve, no new findings.
+
+## Evidence
+
+- Root cause from Claude Code's own logs (`~/.cache/claude-cli-nodejs/*/mcp-logs-yulius/`): 3 idle
+  sessions reconnected every 210 s from 2026-11-07 00:19 to 07:51 UTC (129-130 `Sending SIGINT to
+  MCP server process` each, each followed by a clean connect); no server failure on its own in
+  529 connections since 2026-10-25.
+- Regression tests failed before the fix (`eed25a0f`):
+  `a_bridge_that_never_pings_is_never_reconnected` and
+  `a_reconnect_answered_by_a_bridge_that_does_not_ping_is_the_last` (`left: Reconnect, right:
+  None`); pass after it. `cargo nextest run -p yulius-app -E 'test(/mcp_watch::/)'`: 11 passed.
+- Integration: `restart::a_task_whose_yulius_mcp_went_silent_is_reconnected_then_continues` and
+  `mcp_coordination::an_agent_request_records_its_tasks_mcp_contact` passed.
+- `scripts/dev ci` on `3ff6ac27`: doctor, check, lint, macos passed; nextest 3199 of 3200 passed,
+  1 failed: `cockpit::an_idle_superagents_strays_are_reaped_after_the_bound` timed out waiting
+  for the reap after 21 s under the gate's load. It passed 5 of 5 runs alone (2.3 s each), it is
+  outside this change (cockpit stray reaping), and it is #1110. The stages after nextest, run
+  separately on the same head: `scripts/doctests.py` exit 0, `scripts/dev deps` exit 0,
+  `cargo doc --workspace --all-features --no-deps` exit 0. Yulius CI on the pull request head is
+  the gate of record.
+- Security scan: Vidoc is turned off for this project in Yulius (`yulius security-scan` reports
+  it disabled); not run, not passed.
+- Not tested: a live instance with a sandbox on an older base after this build is installed (the
+  rule is unit-tested with the facts the logs show); sessions in other sandboxes, such as the
+  screenshot's, whose logs are out of this sandbox's reach.
