@@ -746,6 +746,15 @@ A restart or an update is invisible to a task's session
   one thing Yulius types into an idle session, besides a person's message. The woken turn ends
   with a Stop Yulius answers, so the branch is pushed and delivery goes on.
 - **Armed merges** are restored, then tried once at the start.
+- **A dropped server is reconnected**
+  ([SPEC-432](../.ai/specs/SPEC-432-fix-so-this-never-ever-happen-again-also.md),
+  [decision 0276](decisions/0276-a-session-whose-yulius-mcp-went-silent-is-reconnected-and-a-superadmin-restarts-yulius.md)).
+  Claude Code can still mark the server failed for good (a stdio server gets 30 s to connect).
+  The bridge pings `POST /mcp` every minute and every agent request records the task's last
+  contact. A Running, idle task silent for 3 minutes gets `/mcp reconnect yulius` typed (at most
+  every 10 minutes, 3 times unanswered), and once heard again, if its turn closed while it was
+  silent, "Yulius's tools are reconnected; continue". Mid-turn, `yulius tool <name> '<json>'` calls
+  any Yulius tool from the shell.
 
 ```mermaid
 sequenceDiagram
@@ -760,6 +769,11 @@ sequenceDiagram
     Y-->>B: 100 Continue, then the answer
     B-->>C: the answer, one line
     Y->>C: 90 s later, to a task idle since the outage: "Yulius is back#59; continue"
+    B->>Y: ping every 60 s (the task's last contact)
+    Note over C,B: Claude Code dropped the server: no ping
+    Y->>C: idle and silent 3 min: "/mcp reconnect yulius"
+    C->>B: a new bridge: initialize, then pings
+    Y->>C: turn closed while silent: "Yulius's tools are reconnected#59; continue"
 ```
 
 ## A task's own files
@@ -1282,7 +1296,12 @@ end and remove. Its person types into its terminal as into the sandbox Superagen
 `VISUAL` name the refusing script too, and on a contained server the login shell Claude Code runs
 that script through finds its home's startup files as empty read-only binds, so neither its `!`
 mode nor its editor runs anything, and its `--settings` carry `skipDangerousModePermissionPrompt` with the approval bypass, since it reads no
-settings file where Claude Code keeps the accepted warning. It is not served `change_merge`. The web UI shows it as the All sandboxes tab of the Superagent panel,
+settings file where Claude Code keeps the accepted warning. It is not served `change_merge`. An
+image pasted into (or dropped on) its terminal is uploaded by `POST /api/superagent/attachments`
+into `users/<id>/superagent/attachments/`, inside its root at the same path, and its path pasted,
+which Claude Code turns into an image (images only, as it has no file tools; the week-old ones go
+at the next upload; [SPEC-433](../.ai/specs/SPEC-433-i-can-t-paste-to-the-global-superagent-f.md),
+[decision 0277](decisions/0277-the-global-superagent-keeps-pasted-images-in-its-own-folder.md)). The web UI shows it as the All sandboxes tab of the Superagent panel,
 beside This sandbox ([SPEC-428](../.ai/specs/SPEC-428-this-2-superagents-thingy-should-be-some.md),
 [decision 0272](decisions/0272-the-two-superagents-are-tabs-of-one-panel.md)): `panels.js` holds
 one Global view per page (`sharedGlobal`), which `createSuperagentPanel` moves into the panel
@@ -1291,6 +1310,8 @@ showing that tab, so the session is attached once; outside a sandbox only that t
 ```mermaid
 flowchart LR
   P["Person: Superagent panel, All sandboxes tab"] -->|"POST /api/superagent"| Y["Yulius"]
+  P -->|"pasted image: POST /api/superagent/attachments"| F["users/ID/superagent/attachments"]
+  F -.->|"path pasted, read as an image"| G
   Y -->|"spawn, bwrap root users/ID/superagent"| G["Global Superagent: claude --tools '' --strict-mcp-config"]
   G -->|"/mcp, gs_ bearer"| R["remote MCP tools minus WITHHELD_TOOLS (person's access per call)"]
   R --> A["sandbox A: tasks, CI, files, pull requests"]
@@ -2419,6 +2440,29 @@ job ends. `ci_status` with a `run_id` shows them before the end of a failed job'
 that failed early in a long job stays diagnosable
 ([SPEC-145](../.ai/specs/SPEC-145-fix-460-485-ci-keeps-a-failed-test-s-out.md),
 [decision 0119](decisions/0119-ci-keeps-failing-tests-output-from-the-whole-job.md)).
+
+## CI job waits and time limits
+
+A job waits before it starts, in `App::ci_job` (`crates/yulius-app/src/ci/exec.rs`): an
+`exclusive` job first for its turn (one run of it per sandbox at a time, a process-local
+`tokio::sync::Mutex` per `<sandbox>/<job name>` in `CiState`, taken in the order the runs asked),
+then every job for a job slot and its CPU and memory budget. Both waits are the job's `wait` stage;
+a cancellation ends them. The job records how long it waited (`ci_jobs.waited_ms`) with its start.
+Its time limit, its own `timeout_minutes` or else `YULIUS_CI_JOB_TIMEOUT_MIN`, starts when its
+process starts (`ci_watch`), so no wait counts; a job that runs out of it is killed and errors
+"timed out: ran 2 h 0 min, its time limit; it waited 39 min 12 s before it started"
+([SPEC-435](../.ai/specs/SPEC-435-ci-a-job-s-time-limit-counts-only-its-ow.md),
+[decision 0279](decisions/0279-a-ci-job-s-limit-is-its-own-and-yulius-holds-its-one-at-a-time-lock.md)).
+
+```mermaid
+flowchart LR
+  Q["job queued (run started)"] -->|"exclusive"| T["its turn: the earlier run of it ended"]
+  Q -->|"not exclusive"| S
+  T --> S["a job slot and its budget"]
+  S -->|"waited_ms recorded"| R["process starts: the limit starts"]
+  R -->|"ends within timeout_minutes or the instance's"| E["its exit decides its state"]
+  R -->|"runs out of it"| X["killed: error, says ran and waited"]
+```
 
 ## CI job states
 

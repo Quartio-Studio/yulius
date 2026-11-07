@@ -1691,6 +1691,7 @@ impl App {
                     dirs: vec![("run files", files.to_path_buf()), ("cache", cache)],
                     max: self.config.ci.run_disk_max,
                 }),
+                self.config.ci.job_timeout,
             ),
         )
         .await

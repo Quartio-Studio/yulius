@@ -914,6 +914,9 @@ impl App {
                     started_at: Some(now),
                     ended_at: Some(now),
                     need: job.need,
+                    timeout_minutes: job.timeout_minutes,
+                    exclusive: job.exclusive,
+                    waited_ms: None,
                 }
             })
             .collect();

@@ -702,6 +702,11 @@ memory_gb = 8               #   default: an equal share of the sandbox among the
                             #   memory_gb (1-4096) follows the CPUs
 secrets = "VIDOC_API_KEY"    # optional: at most 8 agent secrets, as placeholders through the egress
                             #   proxy; only the integration branch's entry grants them (ADR-0116)
+timeout_minutes = 120       # optional (1-360): its own time limit, counted from its start (never
+                            #   its waits); default: the instance's YULIUS_CI_JOB_TIMEOUT_MIN
+exclusive = true            # optional: one run of it (each matrix value apart) at a time in the
+                            #   sandbox; a later run's job waits for its turn, outside its limit,
+                            #   holding no slot (ADR-0279)
 # or, for one job: [commands] gate = "…"   (not both)
 
 [resources.env]             # optional: the budget in this repository's tools' terms (SPEC-082)
@@ -736,7 +741,7 @@ get `{cpus}`; a declared table, even an empty one, replaces them (SPEC-268).
 | `POST /api/sandboxes/{sid}/hygiene/cleanup` | write | `{"removed": [Target], "skipped": [Target + "reason"], "report": HygieneReport}` |
 
 ```text
-CiOverview = {"gate": {"source": "profile|yulius_toml", "jobs": [{"name", "command", "matrix"}]} | null,
+CiOverview = {"gate": {"source": "profile|yulius_toml", "jobs": [{"name", "command", "matrix", "timeout_minutes"|null, "exclusive"}]} | null,
               "gate_problem": "yulius.toml line 7: …" | null,
               "runs": [CiRun] (newest 30, without outputs), "can_run": true,
               "status_access": "for administrators: commit statuses cannot be published …" | null,
@@ -746,7 +751,8 @@ CiRun = {"id", "reference": "pr/12|branch/dev", "label": "PR #12|dev", "pr_numbe
          "source": "profile|yulius_toml|pull_request",
          "jobs": [{"id", "name", "command", "matrix",
                    "state": "queued|running|passed|failed|error|cancelled|skipped", "reason", "exit_code",
-                   "duration_ms", "output" (run detail only: last 512 KiB, escapes removed)}],
+                   "duration_ms", "waited_ms" (before it started: its turn, a slot; never in its limit) | null,
+                   "output" (run detail only: last 512 KiB, escapes removed)}],
          "reason": "superseded by 0d7e5f3|…" | null, "queued_at", "started_at", "ended_at",
          "duration_ms", "requested_by": "yulius|<login>|task:<n>",
          "status": "published|pending|not published: …"}
@@ -1393,6 +1399,15 @@ resolves to nothing, the run gets the server without that variable or token.
     Claude subscription, 429 while none has capacity). Its terminal is
     `WS /api/shells/{id}/terminal`, written by the caller alone (SPEC-430); it is never in a
     sandbox's `GET …/shells`. `change_merge` is withheld too.
+  - `POST /api/superagent/attachments?name` (signed in), raw body → 201 `UploadedFile`: an image
+    pasted into (or dropped on) the caller's running Global Superagent (SPEC-433, ADR-0277), stored
+    as other attachments (streamed, the upload limit, a free safe name) in its own folder,
+    `users/<id>/superagent/attachments/`, whose absolute path is the same inside its root; 422 for
+    a name that is not `.png`, `.jpg`, `.jpeg`, `.gif` or `.webp` (it has no file tools), before
+    the body is read; 404 while the caller's Global Superagent is not running (also while it moves
+    to another host sandbox), while a running one takes images until it ends or moves, whatever
+    its person's access meanwhile (they land in the person's own folder); at most 500 files,
+    those older than a week removed at the next upload.
 - Notes ([SPEC-041](../.ai/specs/SPEC-041-here-we-want-auto-saved-notes-sandbox-wi.md),
   [SPEC-103](../.ai/specs/SPEC-103-add-me-after-team-that-is-for-user-and-n.md)): one notepad per
   sandbox, one for the team and one per person, saved by the web UI as people type.
@@ -1445,6 +1460,7 @@ resolves to nothing, the run gets the server without that variable or token.
 | POST | `/api/admin/update` | superadmin | `{"commit","confirm":true}` → 202 `UpdateView`: installs exactly that commit, which must be the offered head of `main`; 422 without `confirm` or for a malformed commit, 409 without an installed helper, while an update runs, or for any other commit |
 | POST | `/api/admin/update/cancel` | superadmin | while building or pausing tasks: nothing is installed, paused tasks go on → `UpdateView`; 409 otherwise |
 | POST | `/api/admin/update/proceed` | superadmin | while pausing tasks: restart without waiting for tasks still in a turn → `UpdateView`; 409 otherwise |
+| POST | `/api/admin/restart` | superadmin | `{"confirm":true}` → 202 `UpdateView`: restarts the server with the build it runs, as an update without building or installing: tasks pause (frozen), the helper's `restart` stops, starts and checks that build, tasks resume; its run has `"restart": true`; 422 without `confirm`, 409 without an installed helper or a known build, or while a run is open (SPEC-432) |
 | GET | `/api/admin/jev` | superadmin | → `JevKeyView` (never the key) |
 | PUT | `/api/admin/jev` | superadmin | `{"key"}` (8–4096 printable characters, no spaces; 422 otherwise) → `JevKeyView`: sealed with the master key, used by task intake at once (ADM-002) |
 | DELETE | `/api/admin/jev` | superadmin | removes the saved key (the `YULIUS_JEV_API_KEY_FILE` key is used again, if any) → `JevKeyView` |
@@ -1693,7 +1709,7 @@ after an unlock.
 | DELETE | `/api/agent-secrets/{id}` | → 204 |
 | POST | `/api/agent-secrets/{id}/request` | `{allow: bool, hosts: [..]}` → `AgentSecret`: answers the hosts an agent asked for with `secret_request_hosts` (SPEC-121): `true` binds them, `false` dismisses them; the request is cleared either way, in one step with the bindings. `hosts` are the requested hosts the person saw, in any order: 409 unless they are exactly what waits (a host asked for meanwhile is never allowed unseen), and 409 when nothing waits or the bindings changed meanwhile; 422 when allowing would bind more than 16 hosts (the request stays). People who manage it (403 for readers, 404 without access). Audited (`vault.agent.allow` / `vault.agent.dismiss`) |
 | POST | `/api/agent-secrets/{id}/env` | `{allow: bool, env_files, env_requested_by?}` → `AgentSecret`: whether agents (every task of each project it reaches: its own, or those a global secret is switched on for) may copy the value into git-ignored `.env` files with `secret_copy_to_env` (SPEC-129). `true` answers an agent's request (`env_files` `asked` → `allowed`); `false` dismisses it or revokes an allowance (→ `no`; copies already written stay). `env_files` and `env_requested_by` are what the person saw: 409 unless they still hold, and when there is nothing to answer; 422 for an unknown `env_files`; 409 when allowing a personal or a production secret. People who manage it (403 for readers, 404 without access). Audited (`vault.agent.env_allow` / `vault.agent.env_dismiss` / `vault.agent.env_revoke`) |
-| POST | `/api/agent-secrets/{id}/reveal` | `{purpose?, fields?: ["value","notes"]}` → `{value, notes}` (`notes` = the description, led by a stored user name and, for older secrets, `Two-factor seed: …`) for people who manage it, after an unlock (403 `reauth_required` otherwise; 403 for readers, 404 without access). Audited (`vault.agent.reveal` / `vault.agent.copy`) |
+| POST | `/api/agent-secrets/{id}/reveal` | `{purpose?, fields?: ["value","notes"]}` → `{value, notes}` (`value` as stored, but a key block stored with literal `\n` as its key file with real line breaks, ADR-0275; `notes` = the description, led by a stored user name and, for older secrets, `Two-factor seed: …`) for people who manage it, after an unlock (403 `reauth_required` otherwise; 403 for readers, 404 without access). Audited (`vault.agent.reveal` / `vault.agent.copy`) |
 | GET | `/api/sandboxes/{sid}/agent-states` | (read) → `[AgentState]`: `{name, description, version, bytes, files, updated_by, updated_at, restored_path?, restored_version?, restored_at?}`, never content (SPEC-271): the project's folders of operator state; `restored_path` (`~/…` of the sandbox home) is the copy written to, stale while `restored_version` < `version` |
 | PUT | `/api/sandboxes/{sid}/agent-states/{name}?description&replace` | raw `application/gzip` tar body, ≤ 64 MiB (larger `Content-Length` refused before reading) → `AgentState`: stores a packed folder as the agent state `name` (an agent secret name), sealed per version. Only files and folders with relative paths, ≤ 20 000 entries and 512 MiB unpacked (422 otherwise). Write access; the slot and the access are checked before the body is read, 429 while two states are moving. A state never restored is replaced (version + 1); once restored, 409 naming the sandbox's copy unless `replace=true`; 409 while a CD run holds it (whatever `replace` says), and once a CD run saved it last, 409 unless `replace=true` ([ADR-0207](decisions/0207-cd-runs-restore-and-save-agent-states-under-one-hold.md)). Audited `vault.state.import` / `vault.state.replace` with name, files and bytes ([ADR-0200](decisions/0200-operator-state-is-a-sealed-agent-state-with-one-writer.md)) |
 | GET | `/api/sandboxes/{sid}/agent-states/{name}/archive` | → the newest packed state (`application/gzip`, `Cache-Control: no-store`), for people with write access, never through a read-only token (403 for both; 429 while two states are moving). Audited `vault.state.export` |

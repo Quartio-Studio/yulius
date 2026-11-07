@@ -39,13 +39,16 @@ pub fn key_block(value: &str) -> Option<String> {
         .unwrap_or(value)
         .replace("\\n", "\n");
     let lines: Vec<&str> = text.split('\n').collect();
-    let (first, last) = (lines.first()?, lines.last()?);
     let block = lines.len() >= 3
-        && armour(first, "BEGIN").is_some()
-        && armour(last, "END").is_some()
+        && lines.first().is_some_and(|l| armour(l, "BEGIN").is_some())
+        && lines.last().is_some_and(|l| armour(l, "END").is_some())
         && !text.contains(['\\', '\'', '\r'])
         && !text.contains("${");
-    block.then(|| format!("{text}\n"))
+    drop(lines);
+    // The unescaped copy holds the value, a key or not: wiped (SPEC-431 review).
+    let file = block.then(|| format!("{text}\n"));
+    wipe(text);
+    file
 }
 
 /// Whether `value` is a key flattened onto one line (SPEC-193 MLK-002): it opens with

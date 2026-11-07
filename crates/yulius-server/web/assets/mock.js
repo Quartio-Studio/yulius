@@ -1954,6 +1954,8 @@ function ciRun(id, reference, sha, state, minutesAgo, { failJob = null, skipJob 
       id: `${id}_j${i}`, name: job.name, command: job.command, matrix: job.matrix, state: jobState, reason: null,
       exit_code: jobState === 'passed' ? 0 : jobState === 'failed' ? 101 : jobState === 'skipped' ? 78 : null,
       duration_ms: jobState === 'passed' || jobState === 'failed' ? 120000 + i * 30000 : jobState === 'skipped' ? 2000 : null,
+      // SPEC-435: the second job waited for its turn behind another run of it; the others hardly.
+      waited_ms: jobState === 'queued' ? null : i === 1 ? 6 * 60000 : 300,
       output: jobState === 'queued' ? '' : jobState === 'running' ? `$ ${job.command}\n   Compiling yulius-app v0.1.0\n`
         : jobState === 'skipped' ? `$ ${job.command}\nSecurity scan not run: No Vidoc API key.\n` : ciOutput(job, !failed),
     };
@@ -2767,7 +2769,7 @@ function mockAttachmentName(raw) {
   out = out.replace(/^[.-]+/, '').replace(/-+$/, '');
   return out && !/^\.+$/.test(out) ? out : 'attachment';
 }
-function storeAttachment(db, sid, folder, query, body) {
+function storeAttachment(db, sid, folder, query, body, dir = `${MOCK_UPLOADS}/${sid}/attachments/${folder}`) {
   if (!body.blob) fail(422, 'invalid', 'the request body is the file');
   uploadTooLarge(db, body.size);
   db.attachments = db.attachments || new Map();
@@ -2779,7 +2781,7 @@ function storeAttachment(db, sid, folder, query, body) {
   for (let n = 2; names.has(name); n += 1) name = `${stem}-${n}${ext}`;
   names.add(name);
   db.attachments.set(folder, names);
-  return json(201, { path: `${MOCK_UPLOADS}/${sid}/attachments/${folder}/${name}`, name, size: body.size, sha256: mockSha(body.text || ''), replaced: false });
+  return json(201, { path: `${dir}/${name}`, name, size: body.size, sha256: mockSha(body.text || ''), replaced: false });
 }
 route('POST', `/api/tasks/${ID}/attachments`, async ({ db, p, query, body }) => {
   const task = taskOf(db, p[0]);
@@ -2801,6 +2803,14 @@ route('POST', `/api/sandboxes/${ID}/shells/${ID}/attachments`, ({ db, p, query, 
   const shell = db.shells.get(p[1]);
   if (!shell || shell.sandbox_id !== p[0]) fail(404, 'not_found', 'not found');
   return storeAttachment(db, p[0], `shells/${shell.id}`, query, body);
+});
+// SPEC-433: an image pasted into the running Global Superagent, kept in its own folder.
+route('POST', '/api/superagent/attachments', ({ db, query, body }) => {
+  // How many reached the server: the page sends images only (review round 1).
+  db.globalUploads = (db.globalUploads || 0) + 1;
+  if (![...db.shells.values()].some((s) => s.global)) fail(404, 'not_found', 'not found');
+  if (!/\.(png|jpe?g|gif|webp)$/i.test(mockAttachmentName(query.get('name')))) fail(422, 'invalid', 'the Global Superagent takes images only (PNG, JPEG, GIF or WebP): it has no file tools to open other files');
+  return storeAttachment(db, null, 'superagent', query, body, '/srv/yulius/users/you/superagent/attachments');
 });
 route('DELETE', `/api/sandboxes/${ID}/files`, ({ db, p, query }) => {
   need(sandboxOf(db, p[0]), 'write');
@@ -3046,6 +3056,21 @@ function revealed(body, value, notes) {
   return { value: fields.includes('value') ? value || null : null, notes: fields.includes('notes') ? notes || null : null };
 }
 
+/**
+ * The key file an agent secret stands for when it is a key block stored with literal `\n`, as the
+ * server reveals it (`dotenv::key_block`, ADR-0275): armour on the first and last lines, a body
+ * between, no other `\`, `'`, CR or `${`, one final line break. Any other value as stored.
+ */
+function keyFileOf(value) {
+  if (!value) return value;
+  const text = (value.endsWith('\\n') ? value.slice(0, -2) : value).split('\\n').join('\n');
+  const lines = text.split('\n');
+  const armour = (line, edge) => new RegExp(`^-----${edge} [^-]+-----$`).test(line);
+  const block = lines.length >= 3 && armour(lines[0], 'BEGIN') && armour(lines[lines.length - 1], 'END')
+    && !/[\\'\r]/.test(text) && !text.includes('${');
+  return block ? `${text}\n` : value;
+}
+
 function audit(db, action, id, detail) {
   vaultOf(db).activity.unshift({ at: new Date().toISOString(), actor: db.me.user.login, action, secret_id: id, detail });
 }
@@ -3199,7 +3224,7 @@ route('POST', `/api/agent-secrets/${ID}/reveal`, ({ db, p, body }) => {
   const refused = needFresh(db);
   if (refused) return refused;
   audit(db, body.purpose === 'copy' ? 'vault.agent.copy' : 'vault.agent.reveal', secret.id, secret.name);
-  return revealed(body, secret.value, [secret.username && `User name: ${secret.username}`, secret.description].filter(Boolean).join('\n\n'));
+  return revealed(body, keyFileOf(secret.value), [secret.username && `User name: ${secret.username}`, secret.description].filter(Boolean).join('\n\n'));
 });
 route('POST', `/api/agent-secrets/${ID}/request`, ({ db, p, body }) => {
   const secret = agentSecret(db, p[0]);
@@ -4231,11 +4256,48 @@ route('POST', '/api/admin/update', ({ db, body }) => {
   runUpdate(db, u.run.id);
   return json(202, updateView(db));
 });
+/** Walks a started restart through its phases: nothing to build (SPEC-432 RST-002). */
+function runRestart(db, id) {
+  const live = () => db.update.run && db.update.run.id === id && UPDATE_STATES.includes(db.update.run.state);
+  later(() => {
+    if (!live()) return;
+    moveUpdate(db, 'restarting', { step: 'stopping', message: 'Stopping the server. Agent sessions keep running.' });
+  }, UPDATE_STEP_MS);
+  later(() => {
+    if (!live()) return;
+    moveUpdate(db, 'resuming', { step: 'resuming', message: 'Resuming tasks: 1 of 3.', progress: { done: 1, total: 3 } });
+  }, UPDATE_STEP_MS * 2);
+  later(() => {
+    if (!live()) return;
+    moveUpdate(db, 'succeeded', { message: 'Restarted.' });
+  }, UPDATE_STEP_MS * 3);
+}
+
+route('POST', '/api/admin/restart', ({ db, body }) => {
+  if (!db.me.user.is_superadmin) fail(403, 'forbidden', 'superadmin only');
+  if (body.confirm !== true) fail(422, 'invalid', 'confirm the restart: tasks pause while the server restarts');
+  const u = db.update;
+  if (!u.helper) fail(409, 'conflict', 'the update helper is not installed on this server (see the operations guide)');
+  if (u.run && UPDATE_STATES.includes(u.run.state)) fail(409, 'conflict', 'an update or restart is already running');
+  const now = new Date().toISOString();
+  db.nextId += 1;
+  u.run = {
+    id: `upd_${db.nextId}`, restart: true, target: { commit: u.current, short: short7(u.current) }, from: { commit: u.current, short: short7(u.current) },
+    summary: 'Restart', state: 'pausing', step: 'pausing', message: 'Pausing tasks: 2 of 3 paused.',
+    progress: null, tasks: { paused: 2, total: 3, waiting: [{ id: 'tsk_x', number: 4, title: 'Fix the flaky export test', sandbox: 'studio' }], deadline: new Date(Date.now() + 30 * MIN).toISOString() },
+    deploys: [], error: null, log_tail: [], requested_by: db.me.user.login, started_at: now, state_since: now, finished_at: null, can_cancel: true, can_proceed: true,
+  };
+  emit(db, { type: 'update.updated', phase: 'pausing' });
+  runRestart(db, u.run.id);
+  return json(202, updateView(db));
+});
 route('POST', '/api/admin/update/cancel', ({ db }) => {
   if (!db.me.user.is_superadmin) fail(403, 'forbidden', 'superadmin only');
   const run = db.update.run;
   if (!run || !['building', 'pausing'].includes(run.state)) fail(409, 'conflict', 'no update can be cancelled now (it is restarting or done)');
-  moveUpdate(db, 'cancelled', { error: `Cancelled by ${db.me.user.login}; nothing was installed.`, message: 'Cancelled; nothing was installed.' });
+  moveUpdate(db, 'cancelled', run.restart
+    ? { error: `Cancelled by ${db.me.user.login}; Yulius was not restarted.`, message: 'Cancelled; Yulius was not restarted.' }
+    : { error: `Cancelled by ${db.me.user.login}; nothing was installed.`, message: 'Cancelled; nothing was installed.' });
   return updateView(db);
 });
 route('POST', '/api/admin/update/proceed', ({ db }) => {

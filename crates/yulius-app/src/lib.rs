@@ -54,6 +54,7 @@ pub mod manage;
 pub mod mcp;
 pub mod mcp_config;
 pub mod mcp_text;
+pub mod mcp_watch;
 pub mod merge_train;
 pub mod metrics_recount;
 pub mod model;

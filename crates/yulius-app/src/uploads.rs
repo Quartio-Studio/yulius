@@ -41,7 +41,9 @@
 //!   removed after a week; a deleted task's folder stays while another task's request names it and
 //!   otherwise waits a week in the trash (crate::attachment_trash, SPEC-396), a shell's goes when the shell ends and
 //!   at start-up for shells that are gone. A draft or a shell's folder that a task's request or
-//!   an automation's prompt names stays (SPEC-413, ADR-0259);
+//!   an automation's prompt names stays (SPEC-413, ADR-0259). An image pasted into a person's
+//!   Global Superagent is kept in its own folder, `users/<id>/superagent/attachments/`, inside its
+//!   root (images only; those older than a week go at the next upload; SPEC-433, ADR-0277);
 //! - every upload is audited (`file.uploaded`, `attachment.uploaded`).
 
 use std::ffi::OsStr;
@@ -91,8 +93,13 @@ pub(crate) const ATTACHMENTS_DIR: &str = "attachments";
 /// Shell attachment folders inspected at start-up.
 pub(crate) const MAX_PRUNED_ENTRIES: usize = 10_000;
 
-/// How long a file dropped on the composer waits for its task before it is removed.
+/// How long a file dropped on the composer waits for its task before it is removed; an image
+/// pasted into the Global Superagent stays as long (SPEC-433 GIM-003).
 const DRAFT_MAX_AGE: Duration = Duration::from_secs(7 * 24 * 3600);
+/// Extensions Claude Code (2.1.311) reads as an image when their path is pasted: all the Global
+/// Superagent, without file tools, can take (SPEC-433 GIM-002). Widened together with the page's
+/// `GLOBAL_IMAGE` (`filedrop.js`) and the mock's `/api/superagent/attachments`.
+const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp"];
 
 /// Uploads in progress (the concurrency bound).
 pub struct UploadState {
@@ -552,6 +559,20 @@ fn count_waiting_drafts(folder: &OwnedFd, limit: usize) -> AppResult<usize> {
         .count())
 }
 
+/// Removes the regular files of `folder` older than a week, among the first
+/// [`MAX_PRUNED_ENTRIES`] listed, through its handle (an image pasted into the Global Superagent,
+/// which Claude Code read when it was pasted; SPEC-433 GIM-003). Blocks; best effort.
+fn remove_old_files(folder: &OwnedFd) {
+    let Ok(names) = names_in(folder, MAX_PRUNED_ENTRIES) else {
+        return;
+    };
+    for name in names {
+        if kind_at(folder, &name).is_ok_and(|(kind, stat)| old_draft(kind, &stat)) {
+            let _ = unlinkat(folder, name.as_os_str(), UnlinkatFlags::NoRemoveDir);
+        }
+    }
+}
+
 /// Makes a rename or link durable (best effort: not every file system syncs directories).
 fn sync_dir(folder: &OwnedFd) {
     let _ = nix::unistd::fsync(folder);
@@ -563,14 +584,20 @@ enum Owner<'a> {
     Shell(&'a str),
     /// Files dropped on the new-task composer, before any task exists (one folder per user).
     Draft(&'a str),
+    /// Images pasted into a person's Global Superagent: in its own folder, below the users'
+    /// folder rather than a sandbox's (SPEC-433).
+    Global(&'a str),
 }
 
 impl Owner<'_> {
+    /// The folders below the base: a sandbox's folder, or for [`Owner::Global`] the users'.
     fn parts(&self) -> [&str; 3] {
         match self {
             Self::Task(id) => [ATTACHMENTS_DIR, "tasks", id.as_str()],
             Self::Shell(id) => [ATTACHMENTS_DIR, "shells", id],
             Self::Draft(user) => [ATTACHMENTS_DIR, "drafts", user],
+            // `App::global_superagent_dir`'s `attachments`.
+            Self::Global(user) => [user, "superagent", ATTACHMENTS_DIR],
         }
     }
 
@@ -579,6 +606,7 @@ impl Owner<'_> {
             Self::Task(id) => format!("task:{}", id.as_str()),
             Self::Shell(id) => format!("shell:{id}"),
             Self::Draft(user) => format!("draft:{user}"),
+            Self::Global(user) => format!("superagent:{user}"),
         }
     }
 }
@@ -794,6 +822,50 @@ impl App {
         .await
     }
 
+    /// Starts an image pasted (or dropped) into the caller's running Global Superagent, kept in
+    /// its own folder, inside its root at the same path; images older than a week there are
+    /// removed first (SPEC-433).
+    ///
+    /// # Errors
+    /// `NotFound` while the caller's Global Superagent is not running; `Forbidden` for a disabled
+    /// account; `Invalid` for a name that is not an image Claude Code reads, before the body is
+    /// read, and otherwise as [`App::begin_task_attachment`].
+    pub async fn begin_global_superagent_attachment(
+        &self,
+        ctx: &AuthContext,
+        name: &str,
+        declared: Option<u64>,
+    ) -> AppResult<Upload> {
+        if self.running_global_superagent(&ctx.user.id).is_none() {
+            return Err(AppError::NotFound);
+        }
+        if ctx.user.disabled_at.is_some() {
+            return Err(AppError::Forbidden("this account is disabled".into()));
+        }
+        let stored = attachment_name(name);
+        let ext = split_extension(&stored)
+            .1
+            .trim_start_matches('.')
+            .to_ascii_lowercase();
+        if !IMAGE_EXTENSIONS.contains(&ext.as_str()) {
+            return Err(AppError::Invalid(
+                "the Global Superagent takes images only (PNG, JPEG, GIF or WebP): it has no \
+                 file tools to open other files"
+                    .into(),
+            ));
+        }
+        let users = std::fs::canonicalize(self.users_dir())
+            .map_err(|_| AppError::Conflict("the Global Superagent has no folder yet".into()))?;
+        self.begin_attachment_in(
+            Self::upload_actor(ctx),
+            (&users, &users),
+            &Owner::Global(ctx.user.id.as_str()),
+            name,
+            (declared, false),
+        )
+        .await
+    }
+
     /// Starts an attachment for the new-task composer of `sandbox` (write access to it): the
     /// file waits in the caller's drafts folder, outside every worktree, until the prompt that
     /// names its path starts a task. Drafts older than a week that no request names are removed
@@ -933,12 +1005,35 @@ impl App {
         name: &str,
         (declared, replaces): (Option<u64>, bool),
     ) -> AppResult<Upload> {
+        let sandbox_dir = std::fs::canonicalize(self.sandbox_dir(sandbox))
+            .map_err(|_| AppError::Conflict("the sandbox has no folder yet".into()))?;
+        self.begin_attachment_in(
+            actor,
+            (&sandbox_dir, &self.sandbox_dir_absolute(sandbox)),
+            owner,
+            name,
+            (declared, replaces),
+        )
+        .await
+    }
+
+    /// [`App::begin_attachment`] below `base` (canonical, opened by path), whose stored paths
+    /// are answered below `shown` (the same folder as its runs see it).
+    async fn begin_attachment_in(
+        &self,
+        actor: String,
+        (base, shown): (&Path, &Path),
+        owner: &Owner<'_>,
+        name: &str,
+        (declared, replaces): (Option<u64>, bool),
+    ) -> AppResult<Upload> {
         self.check_declared(declared).await?;
         let name = attachment_name(name);
         let slot = self.upload_slot()?;
-        let sandbox_dir = std::fs::canonicalize(self.sandbox_dir(sandbox))
-            .map_err(|_| AppError::Conflict("the sandbox has no folder yet".into()))?;
-        let dir = ensure_plain_dirs(&sandbox_dir, &owner.parts())?;
+        let dir = ensure_plain_dirs(base, &owner.parts())?;
+        if matches!(owner, Owner::Global(_)) {
+            remove_old_files(&dir.1);
+        }
         // A name that replaces a regular file adds none, so a full folder still takes it.
         let replacing = replaces && kind_in(&dir.1, &name)? == Some(SFlag::S_IFREG);
         let count = match owner {
@@ -956,9 +1051,7 @@ impl App {
         let shown_dir = owner
             .parts()
             .iter()
-            .fold(self.sandbox_dir_absolute(sandbox), |path, part| {
-                path.join(part)
-            })
+            .fold(shown.to_path_buf(), |path, part| path.join(part))
             .to_string_lossy()
             .into_owned();
         self.new_upload(

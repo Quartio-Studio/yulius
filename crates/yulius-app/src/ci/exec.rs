@@ -585,9 +585,10 @@ impl App {
         }
     }
 
-    /// Runs one job of a run of `share` jobs: waits for a slot and its CPU and memory budget
-    /// (or cancellation; SPEC-082 RES-003), runs it and records the end; `true` when the sandbox
-    /// refused it over the disk quota.
+    /// Runs one job of a run of `share` jobs: waits for its turn when it is `exclusive`
+    /// (SPEC-435 JTL-001), then for a slot and its CPU and memory budget (or cancellation;
+    /// SPEC-082 RES-003), runs it within its own time limit and records the end; `true` when the
+    /// sandbox refused it over the disk quota.
     async fn ci_job(
         self: Arc<Self>,
         sandbox: &SandboxRecord,
@@ -599,6 +600,8 @@ impl App {
     ) -> bool {
         let store = &self.deps.store;
         let waiting = self.now();
+        // How long it waits is measured on the monotonic clock: a wall-clock step never makes it.
+        let waiting_since = tokio::time::Instant::now();
         let slots = self.ci_slots();
         let budget = self.capacity().ci_job(job.need, share);
         // Its wait for a slot and its budget is a stage from its start, open while it waits
@@ -639,10 +642,23 @@ impl App {
                 }],
             )
         };
+        // An exclusive job's turn comes first, so it holds no slot or budget while an earlier
+        // run of it runs; its wait is part of the same stage and never of its time limit.
+        // Its entry is dropped last (declared before the turn and the permit): after them.
+        let (turn, _turn_entry) = if job.exclusive {
+            let (turn, entry) = self.ci_turn(&run.sandbox_id, &job.name);
+            (Some(turn), Some(entry))
+        } else {
+            (None, None)
+        };
         let held = async {
+            let turn = match turn {
+                Some(turn) => Some(turn.lock_owned().await),
+                None => None,
+            };
             let slot = slots.acquire_owned().await.ok()?;
             let reservation = self.ci_reserve(budget).await?;
-            Some((slot, reservation))
+            Some((turn, slot, reservation))
         };
         let permit = tokio::select! {
             permit = held => permit,
@@ -669,8 +685,10 @@ impl App {
             return false;
         };
         let started_at = self.now();
+        let waited_ms = i64::try_from(waiting_since.elapsed().as_millis()).unwrap_or(i64::MAX);
         let started = CiJobUpdate {
             started_at: Some(started_at),
+            waited_ms: Some(waited_ms),
             ..CiJobUpdate::default()
         };
         match store
@@ -755,12 +773,7 @@ impl App {
             Ok(Ended::TimedOut) => (
                 RunState::Error,
                 None,
-                Some(format!(
-                    "timed out after {}",
-                    dom::format_duration(
-                        i64::try_from(self.config.ci.job_timeout.as_millis()).unwrap_or(i64::MAX)
-                    )
-                )),
+                Some(timed_out(self.ci_job_limit(job), waited_ms)),
             ),
             Ok(Ended::OutputLimit) => (
                 RunState::Error,
@@ -787,6 +800,7 @@ impl App {
             started_at: None,
             ended_at: Some(self.now()),
             usage,
+            waited_ms: None,
         };
         if let Err(err) = store
             .transition_ci_job(&job.id, &[RunState::Running], state, &end)
@@ -1090,7 +1104,7 @@ impl App {
                 &token,
                 RunLog::Created(created),
                 (ring, Some(stages), Some(failures)),
-                (cancel, None),
+                (cancel, None, self.ci_job_limit(job)),
             )
             .await;
         // The job's process ended (or its host is gone): its proxy credential ends too.
@@ -1102,8 +1116,9 @@ impl App {
 
     /// Starts `plan` through the process host as run `ids` (its id and its group) and follows
     /// it to its end: its log into `ring`, `sink`, `stages` (when its spans are recorded) and
-    /// `failures` (a CI job's), cancellation, the CI job timeout, the output limit and, for a CD
-    /// or environment run, the disk `bound` of its files. Returns how it ended and what it used.
+    /// `failures` (a CI job's), cancellation, its time `limit` (from the process's start), the
+    /// output limit and, for a CD or environment run, the disk `bound` of its files. Returns how
+    /// it ended and what it used.
     #[allow(clippy::too_many_arguments)] // One job's whole context; split further it only moves.
     pub(super) async fn ci_watch(
         &self,
@@ -1118,7 +1133,11 @@ impl App {
             Option<&mut OutputStages>,
             Option<&mut FailureScanner>,
         ),
-        (cancel, bound): (&mut watch::Receiver<Option<String>>, Option<DiskBound>),
+        (cancel, bound, limit): (
+            &mut watch::Receiver<Option<String>>,
+            Option<DiskBound>,
+            Duration,
+        ),
     ) -> Result<(Ended, Used), String> {
         // Opened before the process starts, and read only through this handle: the run can
         // replace the file at `log` (a link to a host file, a FIFO), never what Yulius reads.
@@ -1143,7 +1162,7 @@ impl App {
             }
         };
         let (mut reader, mut writer) = (attached.reader, attached.writer);
-        let deadline = tokio::time::Instant::now() + self.config.ci.job_timeout;
+        let deadline = tokio::time::Instant::now() + limit;
         let mut tick = tokio::time::interval(READ_EVERY);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut ticks = 0u32;
@@ -1271,6 +1290,21 @@ fn first_reason(jobs: &[CiJobRecord], state: RunState) -> Option<String> {
                 .clone()
                 .map(|reason| format!("{}: {reason}", job.name))
         })
+}
+
+/// Why a job that ran its whole time `limit` ended, with how long it waited before it started
+/// (SPEC-435 JTL-005): "timed out: ran 1 h 0 min, its time limit; it waited 39 min 12 s before
+/// it started".
+fn timed_out(limit: Duration, waited_ms: i64) -> String {
+    let ran = dom::format_duration(i64::try_from(limit.as_millis()).unwrap_or(i64::MAX));
+    if waited_ms < 1000 {
+        format!("timed out: ran {ran}, its time limit")
+    } else {
+        format!(
+            "timed out: ran {ran}, its time limit; it waited {} before it started",
+            dom::format_duration(waited_ms)
+        )
+    }
 }
 
 /// Resolves once the run is cancelled, with the reason.
@@ -1553,6 +1587,20 @@ mod tests {
 
     use super::*;
 
+    /// SPEC-435 JTL-005: a timeout says how long the job ran (its limit) and, when it waited a
+    /// second or more first, how long it waited.
+    #[test]
+    fn a_timeout_says_how_long_the_job_ran_and_waited() {
+        assert_eq!(
+            timed_out(Duration::from_secs(3600), 39 * 60_000 + 12_000),
+            "timed out: ran 1 h 0 min, its time limit; it waited 39 min 12 s before it started"
+        );
+        assert_eq!(
+            timed_out(Duration::from_secs(2), 999),
+            "timed out: ran 2 s, its time limit"
+        );
+    }
+
     /// SPEC-367 CJP-003: at a checkout's name, a link and a folder that is not a registered
     /// checkout go, through handles and without reaching the link's target; a registered checkout
     /// with its `.git` file stays; a link at `ci` is refused and nothing is made.
@@ -1751,6 +1799,8 @@ mod tests {
             matrix: None,
             need: yulius_domain::resources::Need::default(),
             secrets: secrets.iter().map(|s| (*s).to_owned()).collect(),
+            timeout_minutes: None,
+            exclusive: false,
         };
         let gate = |source| Gate {
             jobs: vec![job("scan", &["VIDOC_API_KEY"]), job("lint", &[])],
@@ -1850,6 +1900,9 @@ mod tests {
             started_at: None,
             ended_at: None,
             need: yulius_domain::resources::Need::default(),
+            timeout_minutes: None,
+            exclusive: false,
+            waited_ms: None,
         };
         let jobs = vec![job("a", "lint"), job("b", "test"), job("c", "test")];
         assert_eq!(checkout_name(&jobs[0], &jobs, 0), "lint");
