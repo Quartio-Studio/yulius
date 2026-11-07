@@ -19,9 +19,9 @@ use yulius_domain::vault::{
     Injection, PLACEHOLDER_PREFIX, SecretName, placeholder, substitute_placeholders,
 };
 
-use super::AgentPayload;
+use super::{AgentPayload, SecretUser};
 use crate::context::App;
-use crate::coordination::{AgentContext, ProjectCaller};
+use crate::coordination::ProjectCaller;
 use crate::error::{AppError, AppResult};
 use crate::model::SandboxRecord;
 use crate::ports::egress::{
@@ -739,6 +739,7 @@ impl App {
                 "variables": variables,
                 "how_to_use": [
                     "This session uses the project's agent secrets as a task's agent does, without seeing them: Yulius' proxy adds a secret to requests for its bound hosts (call them normally, for example curl https://<host>/...), and in code or CLIs the environment variable NAME holds the placeholder yulius-secret-NAME (for example Authorization: Bearer $NAME), which the proxy replaces for the bound hosts only. Several secrets on one host and header: choose with the request header X-Yulius-Secret: NAME. Secrets added after this session started have no variable yet: write the placeholder.",
+                    "Website sign-in in the project browser: browser_fill_secret types the value into a field of a page on a bound host (open it with browser_open, find the field with browser_snapshot); a login's user name is in the description (older secrets may also store a user name or a two-factor seed: field username or totp).",
                     "A secret with no hosts (or not the one you need) is sent nowhere yet: work out the service's API host from its description and documentation and ask for it with secret_request_hosts; a person allows it on the Secrets page (they may be the person in front of you: give them the link). For a secret with auto_allow: true its creator let agents set it up: the hosts you ask for are bound at once, so ask only for the service's own documented hosts.",
                     "Code that runs outside the proxy (a deploy script, ssh, a deployed app) reads its keys from the git-ignored .env of this repository: put a secret there with secret_copy_to_env, never by writing the file yourself (you would write [secret:NAME]). A person allows each secret once (env_files: allowed); until then the call asks them. A multi-line key (stored with literal \\n) is written as its file, line breaks and final line break included.",
                     "To check that a value someone holds (a file, a key they pasted into a file) is the one in the vault, compute its SHA-256 in a shell without printing the value (for example sha256sum key.pem, or printf %s \"$VAR\" | sha256sum) and call secret_verify with the secret's name and that hash. It says whether it matches exactly, only without a final line break, or with its line breaks written as literal \\n (an agent secret never spans lines, so a multi-line key is stored that way), and on a match how many lines the value stands for.",
@@ -773,7 +774,7 @@ impl App {
     /// into the focused (or `selector`) field of a tab whose page is on one of its hosts.
     pub(crate) async fn tool_browser_fill_secret(
         &self,
-        ctx: &AgentContext,
+        user: SecretUser<'_>,
         args: &Value,
     ) -> AppResult<Value> {
         let args: FillArgs = serde_json::from_value(args.clone())
@@ -785,7 +786,7 @@ impl App {
             ));
         }
         let record = self
-            .resolved_agent_secrets(&ctx.task.sandbox_id, super::Holder::of_task(&ctx.task))
+            .resolved_agent_secrets(user.sandbox(), user.holder())
             .await?
             .into_iter()
             .find(|r| r.name == args.secret.trim())
@@ -811,7 +812,7 @@ impl App {
                 super::PRODUCTION_SECRET
             )));
         }
-        let browser = self.browser_session(&ctx.task.sandbox_id).await?;
+        let browser = self.browser_session(user.sandbox()).await?;
         let tab = browser
             .tabs()
             .into_iter()
@@ -823,9 +824,14 @@ impl App {
             ));
         };
         if record.hosts.is_empty() {
+            let ask = if user.global() {
+                "a person binds the service's sign-in host on the project's Secrets page"
+            } else {
+                "find the service's sign-in host from its description and ask for it with \
+                 secret_request_hosts; a person allows it"
+            };
             return Err(AppError::Forbidden(format!(
-                "{} is bound to no host yet: find the service's sign-in host from its description \
-                 and ask for it with secret_request_hosts; a person allows it",
+                "{} is bound to no host yet: {ask}",
                 record.name
             )));
         }
@@ -857,14 +863,9 @@ impl App {
             selector: args.selector.clone(),
         };
         browser.tool_type(&params).await?;
-        browser.agent_activity(
-            &args.tab_id,
-            None,
-            "type",
-            &format!("#{} {}", ctx.task.number, ctx.task.harness.display_name()),
-        );
+        browser.agent_activity(&args.tab_id, None, "type", &user.label());
         self.note_agent_use(
-            (ctx.attempt.id.as_str(), &ctx.actor()),
+            (&user.run(), &user.actor()),
             &record,
             "vault.agent.fill",
             &format!("{field} on {host}"),

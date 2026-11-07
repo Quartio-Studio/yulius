@@ -24,11 +24,11 @@ fn schema(properties: Value, required: &[&str]) -> Value {
 }
 
 /// The tools a Cockpit is served: managing the project's tasks and automations (SPEC-037
-/// MGT-006, SPEC-066 MGT-012) and using its agent vault as a task's agent does, but the project
-/// browser it has not (SPEC-178, SPEC-186 SAV-002..004, ADR-0150), and messaging tasks for its
-/// person (SPEC-230, ADR-0178), and asking its person to start a task in another of their
-/// sandboxes (SPEC-335, ADR-0227). Everything else belongs to a task.
-pub const COCKPIT_TOOLS: [&str; 25] = [
+/// MGT-006, SPEC-066 MGT-012), using its agent vault and the project browser as a task's agent
+/// does (SPEC-178, SPEC-186 SAV-002, SAV-003, ADR-0150, SPEC-437 SAB-001, ADR-0281), messaging
+/// tasks for its person (SPEC-230, ADR-0178), and asking its person to start a task in another
+/// of their sandboxes (SPEC-335, ADR-0227). Everything else belongs to a task.
+pub const COCKPIT_TOOLS: [&str; 34] = [
     "tasks_list",
     "task_get",
     "task_create",
@@ -54,10 +54,19 @@ pub const COCKPIT_TOOLS: [&str; 25] = [
     "secret_create_from_file",
     "sandboxes_list",
     "sandbox_task_create",
+    "browser_tabs",
+    "browser_open",
+    "browser_navigate",
+    "browser_click",
+    "browser_type",
+    "browser_snapshot",
+    "browser_screenshot",
+    "browser_request_user_action",
+    "browser_fill_secret",
 ];
 
 /// The Superagent's MCP instructions (SPEC-037, SPEC-186 SAV-007).
-pub(crate) const COCKPIT_INSTRUCTIONS: &str = "Yulius runs this project's tasks. When the person asks for work to be done as a task (\"create a task from that\"), create it with task_create; for recurring work (\"every day at 4am …\") create an automation with automation_create (ask for their time zone if it matters). tasks_list, automations_list (with the ready-made automations, enabled by automation_template_enable) and workflows_list show what exists; sessions_search finds how earlier tasks did something. This session uses the project's agent secrets as a task's agent does, never seeing a value: requests to a secret's bound hosts get it from Yulius' proxy ($NAME holds its placeholder), secret_copy_to_env puts allowed ones into this repository's git-ignored .env, secret_request_hosts asks a person to bind hosts, secret_verify tells whether a value the person holds is one of them, from its SHA-256, and secret_create_from_file stores a secret that is in a file (a key in ~/.ssh, one you generated) as a new agent secret without anyone seeing it, so never ask the person to paste a key you can reach; secrets_list names them and says how. When the person wants a task told something (\"tell #5 it may use the DO budget\"), send it with task_message: a task that has not started gets it in its request, a running one in its session; pass on what the person said, labelled as theirs, and nothing they did not ask for. When the person wants work done in another of their sandboxes (another repository), find it with sandboxes_list and ask with sandbox_task_create: the person approves or declines each request on the panel above this session, and the call waits for their answer (a few minutes at most), so tell them it waits there; never ask again for a declined request unless they ask. task_update changes how a task that has not started yet starts (chain an existing task with it; never recreate a task to do so), attachments_trash lists a deleted task's attachments and restores them, task_stop, task_archive and task_delete stop, archive or delete a task, automation_run_now and automation_delete run or delete an automation, task_message tells a task something: do these only when the person asks, naming the task or automation. Work across many of the person's sandboxes at once (keeping them in sync) is their Global Superagent's, opened from All sandboxes.";
+pub(crate) const COCKPIT_INSTRUCTIONS: &str = "Yulius runs this project's tasks. When the person asks for work to be done as a task (\"create a task from that\"), create it with task_create; for recurring work (\"every day at 4am …\") create an automation with automation_create (ask for their time zone if it matters). tasks_list, automations_list (with the ready-made automations, enabled by automation_template_enable) and workflows_list show what exists; sessions_search finds how earlier tasks did something. This session uses the project's agent secrets as a task's agent does, never seeing a value: requests to a secret's bound hosts get it from Yulius' proxy ($NAME holds its placeholder), secret_copy_to_env puts allowed ones into this repository's git-ignored .env, secret_request_hosts asks a person to bind hosts, secret_verify tells whether a value the person holds is one of them, from its SHA-256, and secret_create_from_file stores a secret that is in a file (a key in ~/.ssh, one you generated) as a new agent secret without anyone seeing it, so never ask the person to paste a key you can reach; secrets_list names them and says how. You drive the project browser, the one its tasks and the person's Browser page share, as a task's agent does: browser_open, browser_navigate, browser_snapshot (read a page), browser_click, browser_type and browser_screenshot; browser_fill_secret types an agent secret into a sign-in page of its bound hosts without you seeing it, and browser_request_user_action hands a tab to the person (print its link). When the person wants a task told something (\"tell #5 it may use the DO budget\"), send it with task_message: a task that has not started gets it in its request, a running one in its session; pass on what the person said, labelled as theirs, and nothing they did not ask for. When the person wants work done in another of their sandboxes (another repository), find it with sandboxes_list and ask with sandbox_task_create: the person approves or declines each request on the panel above this session, and the call waits for their answer (a few minutes at most), so tell them it waits there; never ask again for a declined request unless they ask. task_update changes how a task that has not started yet starts (chain an existing task with it; never recreate a task to do so), attachments_trash lists a deleted task's attachments and restores them, task_stop, task_archive and task_delete stop, archive or delete a task, automation_run_now and automation_delete run or delete an automation, task_message tells a task something: do these only when the person asks, naming the task or automation. Work across many of the person's sandboxes at once (keeping them in sync) is their Global Superagent's, opened from All sandboxes.";
 
 /// Who calls the MCP server.
 enum McpCaller {
@@ -696,7 +705,16 @@ impl App {
                     self.tool_secret_request_hosts(SecretUser::Superagent(caller), &args)
                         .await
                 }
-                McpCaller::Cockpit(_) => Err(AppError::Invalid(format!("unknown tool: {name}"))),
+                McpCaller::Cockpit(caller) => {
+                    match self
+                        .browser_tool(SecretUser::Superagent(caller), name, &args)
+                        .await
+                    {
+                        Some(TaskToolResult::Value(outcome)) => outcome,
+                        Some(TaskToolResult::Complete(result)) => return result,
+                        None => Err(AppError::Invalid(format!("unknown tool: {name}"))),
+                    }
+                }
                 McpCaller::Agent(ctx) => match self.task_tool(ctx, name, &args).await {
                     TaskToolResult::Value(outcome) => outcome,
                     TaskToolResult::Complete(result) => return result,
@@ -715,6 +733,9 @@ impl App {
         args: &Value,
     ) -> TaskToolResult {
         let args = args.clone();
+        if let Some(result) = self.browser_tool(SecretUser::Task(ctx), name, &args).await {
+            return result;
+        }
         TaskToolResult::Value(match name {
             "project_context" => self.tool_project_context(ctx).await,
             "scope_claim" => self.tool_scope_claim(ctx, &args).await,
@@ -740,20 +761,6 @@ impl App {
             "production_protect" => self.tool_production_protect(ctx).await,
             "reference_repo" => self.tool_reference_repo(ctx, &args).await,
             "issue_create" => self.tool_issue_create(ctx, &args).await,
-            "browser_tabs" => self.tool_browser_tabs(ctx, &args).await,
-            "browser_open" => self.tool_browser_open(ctx, &args).await,
-            "browser_navigate" => self.tool_browser_navigate(ctx, &args).await,
-            "browser_click" => self.tool_browser_click(ctx, &args).await,
-            "browser_type" => self.tool_browser_type(ctx, &args).await,
-            "browser_snapshot" => self.tool_browser_snapshot(ctx, &args).await,
-            // Returns a complete result with an image item (size-bounded by the tool itself).
-            "browser_screenshot" => {
-                return TaskToolResult::Complete(self.tool_browser_screenshot(ctx, &args).await);
-            }
-            "browser_request_user_action" => {
-                self.tool_browser_request_user_action(ctx, &args).await
-            }
-            "browser_fill_secret" => self.tool_browser_fill_secret(ctx, &args).await,
             "secret_request_hosts" => {
                 self.tool_secret_request_hosts(SecretUser::Task(ctx), &args)
                     .await
@@ -865,8 +872,8 @@ fn map_strings(value: Value, f: &dyn Fn(&str) -> String) -> Value {
     }
 }
 
-/// What a task-only tool gives back.
-enum TaskToolResult {
+/// What a task-only tool (or a browser tool) gives back.
+pub(crate) enum TaskToolResult {
     /// A value to render as text.
     Value(AppResult<Value>),
     /// A complete result (an image).

@@ -124,7 +124,10 @@ watching, steering and unblocking.
   bound hosts carry it (`.mcp.json` servers with placeholders work too); it copies allowed secrets
   into the repository's git-ignored `.env` and asks for hosts, each asked under the person's name
   ("alice's Superagent") for a person to allow; and it tells whether a key the person holds in a
-  file is the one in the vault, from the file's SHA-256 (SPEC-178, SPEC-186). Asked for work in
+  file is the one in the vault, from the file's SHA-256 (SPEC-178, SPEC-186). It drives the
+  sandbox's browser as a task does: it opens and reads pages, clicks, types and takes screenshots,
+  signs in with an agent secret it never sees (only on the secret's hosts), and hands a tab to the
+  person with a link; the Browser page shows its cursor as "alice's Superagent" (SPEC-437). Asked for work in
   another of the person's sandboxes ("make a task in the website repo for that"), it asks the
   person: the request shows above its session with the target, the whole prompt and its start
   options, and nothing reaches that sandbox until the person presses Create task there; Decline,
@@ -140,7 +143,9 @@ watching, steering and unblocking.
   other and solve it". It sees every sandbox the person can see and keeps them in sync: "which of my sandboxes
   have failing CI?", "the API changed in acme/api, make its clients follow" or "tell every running
   task to merge dev" become tasks, pull requests and task messages in each sandbox, as the person,
-  without asking per action. The person types into its terminal and clicks in it exactly as in the sandbox Superagent's (SPEC-430), and a screenshot pasted or an image dropped there reaches it as an image (SPEC-433); only they can open it. It has no shell or file tools: it works only through Yulius's tools
+  without asking per action. It also drives any of those projects' browsers, signing in with their
+  agent secrets without seeing them, its cursor shown as "alice's Global Superagent" (SPEC-437).
+  The person types into its terminal and clicks in it exactly as in the sandbox Superagent's (SPEC-430), and a screenshot pasted or an image dropped there reaches it as an image (SPEC-433); only they can open it. It has no shell or file tools: it works only through Yulius's tools
   (the remote MCP's, SPEC-247), and deploying, agent secrets, variables and adding or onboarding
   projects stay the person's, and the pull requests it opens are merged by a person or a task. Its conversation is kept in a folder of its own, so it continues
   when it starts again under another sandbox; a person with only read access has none (SPEC-427).
