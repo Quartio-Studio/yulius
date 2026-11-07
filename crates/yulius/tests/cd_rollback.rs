@@ -16,6 +16,7 @@ use yulius_app::ports::store_ext::AutomationStore as _;
 
 /// Deploys `v<version file>` and names it; one part.
 const DEPLOY: &str = r#"#!/bin/sh
+if [ -f "$MARKS/fail-deploy" ]; then echo "the build broke"; exit 3; fi
 if [ -f "$MARKS/hold" ]; then touch "$MARKS/holding"; fi
 while [ -f "$MARKS/hold" ]; do sleep 0.1; done
 v="v$(cat version)"
@@ -179,6 +180,14 @@ impl Fixture {
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
+    }
+
+    /// Bob deploys production, which deploys dev first to prove it (SPEC-438): dev's run.
+    async fn proving(&self) -> BoxResult<Value> {
+        let started = self.deploy(&self.bob, "prod", Some("app")).await?;
+        assert_eq!(started.status, StatusCode::OK, "{}", started.body);
+        assert_eq!(started.body["environment"], "dev", "{}", started.body);
+        Ok(started.body)
     }
 
     /// Waits until the deploy holds on its `hold` mark.
@@ -400,24 +409,25 @@ async fn production_deploys_wait_for_a_proven_rollback() -> TestResult {
 
     let config = rollback_cd().replace("{marks}", f.marks.to_str().ok_or("path")?);
     push(&f, "dev", &[("yulius.toml", Some(config))])?;
-    // Nothing drilled yet: production deploys dev first (SPEC-438), but one release cannot be
-    // drilled, so production does not deploy and says why.
-    let started = f.deploy(&f.bob, "prod", Some("app")).await?;
-    assert_eq!(started.status, StatusCode::OK, "{}", started.body);
-    assert_eq!(started.body["environment"], "dev", "{}", started.body);
-    let dev = f
-        .ended(started.body["run_id"].as_str().ok_or("id")?)
-        .await?;
-    assert_eq!(dev["state"], "passed", "{}", dev["output"]);
-    let prod = f.production_run(1).await?;
-    assert_eq!(prod["state"], "error", "{prod}");
+    let refused = f.deploy(&f.bob, "prod", Some("app")).await?;
     assert!(
-        prod["reason"].as_str().is_some_and(
-            |r| r.starts_with("production did not deploy:") && r.contains("no rollback drill")
-        ),
-        "{prod}"
+        refused
+            .body
+            .to_string()
+            .contains("no rollback drill of dev"),
+        "nothing deployed on dev yet, nothing to prove it there: {}",
+        refused.body
     );
-    assert_eq!(f.head("main")?, before, "nothing was promoted");
+    f.deployed(&f.alice, "dev", None).await?;
+    let refused = f.deploy(&f.bob, "prod", Some("app")).await?;
+    assert!(
+        refused
+            .body
+            .to_string()
+            .contains("no rollback drill of dev"),
+        "dev runs this commit and one release cannot be drilled (SPEC-438): {}",
+        refused.body
+    );
 
     // A failing drill does not prove it.
     std::fs::write(f.marks.join("fail-rollback"), "")?;
@@ -576,6 +586,103 @@ async fn production_does_not_deploy_when_the_drill_it_waited_for_fails() -> Test
         refused.body.to_string().contains("did not pass"),
         "{}",
         refused.body
+    );
+    assert_eq!(f.rollback_of("prod").await?["waiting"], Value::Null);
+    Ok(())
+}
+
+/// SPEC-438 review: production waits for exactly what was asked. A dev deploy that fails ends
+/// the wait; a dev that moved on meanwhile is refused as "moved since you looked"; a person who
+/// lost administration meanwhile does not deploy production. Each is a production run saying why,
+/// audited, with `main` unmoved.
+#[tokio::test]
+async fn a_waiting_production_deploy_honours_what_was_asked() -> TestResult {
+    let f = fixture(&rollback_cd()).await?;
+    push(&f, "dev", &scripts("1"))?;
+    f.deployed(&f.alice, "dev", None).await?;
+    let before = f.head("main")?;
+
+    // Dev's own deploy fails.
+    std::fs::write(f.marks.join("fail-deploy"), "")?;
+    let v2 = push(&f, "dev", &[("version", Some("2\n".to_owned()))])?;
+    let dev = f.proving().await?;
+    assert_eq!(
+        f.ended(dev["run_id"].as_str().ok_or("id")?).await?["state"],
+        "failed"
+    );
+    let prod = f.production_run(1).await?;
+    assert_eq!(
+        prod["reason"],
+        format!(
+            "production did not deploy: the deploy of dev at {} failed",
+            &v2[..7]
+        ),
+        "{prod}"
+    );
+    std::fs::remove_file(f.marks.join("fail-deploy"))?;
+
+    // Dev moves on while it is proved: production refuses the commit nobody confirmed.
+    std::fs::write(f.marks.join("hold"), "")?;
+    let dev = f.proving().await?;
+    f.holding().await?;
+    let v3 = push(&f, "dev", &[("version", Some("3\n".to_owned()))])?;
+    std::fs::remove_file(f.marks.join("hold"))?;
+    assert_eq!(
+        f.ended(dev["run_id"].as_str().ok_or("id")?).await?["state"],
+        "passed"
+    );
+    assert_eq!(f.drill(1).await?["state"], "passed");
+    let prod = f.production_run(2).await?;
+    let reason = prod["reason"].as_str().unwrap_or_default();
+    assert!(
+        reason.starts_with("production did not deploy: dev moved since you looked")
+            && reason.contains(&v3[..7]),
+        "{prod}"
+    );
+    assert_eq!(
+        f.head("main")?,
+        before,
+        "the undrilled commit was not promoted"
+    );
+
+    // Bob is no longer an administrator when the drill passes.
+    std::fs::remove_file(f.marks.join("holding"))?;
+    std::fs::write(f.marks.join("hold"), "")?;
+    let dev = f.proving().await?;
+    f.holding().await?;
+    f.h.github
+        .set_perm("bob", "acme/app", support::perms("write"));
+    // Once the cached access is stale, GitHub is asked again.
+    f.h.clock.0.fetch_add(
+        f.h.app.config.permission_ttl_ms + 1,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    std::fs::remove_file(f.marks.join("hold"))?;
+    assert_eq!(
+        f.ended(dev["run_id"].as_str().ok_or("id")?).await?["state"],
+        "passed"
+    );
+    assert_eq!(f.drill(2).await?["state"], "passed");
+    let prod = f.production_run(3).await?;
+    assert_eq!(prod["state"], "error", "{prod}");
+    assert!(
+        prod["reason"]
+            .as_str()
+            .is_some_and(|r| r.starts_with("production did not deploy:")),
+        "{prod}"
+    );
+    assert_eq!(f.head("main")?, before);
+    let entries = f.h.store.automation_audit("app/prod", 50).await?;
+    assert!(
+        entries
+            .iter()
+            .filter(|e| e.action == "cd.refused"
+                && e.detail
+                    .as_deref()
+                    .is_some_and(|d| d.starts_with("production did not deploy")))
+            .count()
+            >= 3,
+        "{entries:?}"
     );
     assert_eq!(f.rollback_of("prod").await?["waiting"], Value::Null);
     Ok(())
