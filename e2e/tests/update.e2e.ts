@@ -59,6 +59,30 @@ test('a superadmin restarts the server from the instance page', async ({ app, br
   await expect(screen.getByRole('button', 'Restart…')).toBeVisible();
 });
 
+// #1117 (SPEC-439 CUB-003): a cancel shows its outcome from the cancel's own answer, at once,
+// with no further read of the update view (held here), and the Cancel button goes.
+test('cancelling an update shows its outcome from the cancel’s answer', async ({ app, browser, screen }) => {
+  await app.open(mock('/admin/instance', '&update=1&build=hold'));
+  await screen.getByRole('button', 'Update now…').click();
+  await screen.getByRole('dialog', /to 9c1e7d3\?$/).getByRole('button', 'Update to 9c1e7d3').click();
+  const cancel = screen.getByRole('button', 'Cancel update');
+  await expect(cancel).toBeVisible();
+  await expect.poll(() => browser.evaluate(() => document.body.innerText), { timeout: 5000 }).toMatch(/Building the new version/);
+  await updateMock(browser, (m) => { m.holdUpdateReads = true; });
+  await cancel.click();
+  const dialog = screen.getByRole('dialog', /^Cancel the update\?$/);
+  await expect(dialog.getByText(/The build stops, nothing is installed/)).toBeVisible();
+  await dialog.getByRole('button', 'Cancel update').click();
+  await expect(dialog).toBeHidden();
+  await expect(screen.getByText('The last update was cancelled')).toBeVisible();
+  await expect(cancel).toBeHidden();
+  // The reads held meanwhile, older than the cancel's answer, do not bring the build back.
+  await updateMock(browser, (m) => { m.holdUpdateReads = false; while (m.updateReads()) m.releaseUpdate(); });
+  await expect.poll(() => updateMock(browser, (m) => m.updateReads())).toBe(0);
+  await expect(screen.getByText('The last update was cancelled')).toBeVisible();
+  await expect(cancel).toBeHidden();
+});
+
 // SPEC-342 DPU-006: a deploy running when the build is done is waited for, named under the Build
 // step with a link to its project's CI/CD page (an environment run's: Git), before tasks pause.
 test('an update waits for a running deploy before it pauses tasks and names it', async ({ app, browser, screen }) => {

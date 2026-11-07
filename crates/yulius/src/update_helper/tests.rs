@@ -86,6 +86,12 @@ printf '   Compiling yulius-domain v0.1.0\n' >&2
 printf '    Building [=>   ] 1/3: yulius-domain\r' >&2
 printf '    Building [==>  ] 2/3: yulius-app\r' >&2
 if [ -f "$(dirname "$0")/cargo.fail" ]; then printf 'error[E0425]: cannot find value `x`\n' >&2; exit 101; fi
+if [ "$(cat "$(dirname "$0")/cargo.hang" 2>/dev/null)" = "$YULIUS_BUILD_COMMIT" ]; then
+  sleep 300 &
+  echo $! > "$(dirname "$0")/cargo.child"
+  wait
+  exit 1
+fi
 mkdir -p "$CARGO_TARGET_DIR/release"
 printf '%s' "$YULIUS_BUILD_COMMIT" > "$CARGO_TARGET_DIR/release/yulius"
 printf '    Building [===> ] 3/3: yulius\r' >&2
@@ -223,6 +229,45 @@ esac"#,
         std::fs::write(staged.join("commit"), commit)?;
         Ok(())
     }
+}
+
+/// Waits up to 30 s until `done` holds.
+fn wait_until(what: &str, mut done: impl FnMut() -> bool) -> TestResult {
+    let started = Instant::now();
+    while !done() {
+        if started.elapsed() > Duration::from_secs(30) {
+            return Err(format!("{what} did not happen within 30 s").into());
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    Ok(())
+}
+
+/// Whether process `pid` has ended (gone, or a zombie waiting to be reaped).
+fn ended(pid: &str) -> bool {
+    std::fs::read_to_string(format!("/proc/{pid}/stat")).map_or(true, |stat| {
+        stat.rsplit_once(") ")
+            .is_some_and(|(_, rest)| rest.starts_with('Z'))
+    })
+}
+
+/// Runs the helper in a thread while the fake cargo hangs building `commit`, once that build's
+/// compiler (a `sleep` child of cargo) runs; answers its pid and the helper's thread.
+fn hanging_build(
+    env: &Env,
+    id: &str,
+    commit: &str,
+) -> Result<(String, std::thread::JoinHandle<Result<(), String>>), Box<dyn std::error::Error>> {
+    std::fs::write(env.bin("cargo.hang"), commit)?;
+    env.request(id, HelperAction::Build, commit)?;
+    let args = env.args.clone();
+    let helper = std::thread::spawn(move || Helper::new(args).run());
+    let child = env.bin("cargo.child");
+    wait_until("the compiler start", || {
+        std::fs::read_to_string(&child).is_ok_and(|pid| !pid.trim().is_empty())
+    })?;
+    let pid = std::fs::read_to_string(&child)?.trim().to_owned();
+    Ok((pid, helper))
 }
 
 fn request_json(overrides: &[(&str, serde_json::Value)]) -> Vec<u8> {
@@ -395,6 +440,52 @@ fn a_failed_build_reports_its_error_and_stages_nothing() -> TestResult {
             .any(|l| l.starts_with("error[E0425]"))
     );
     assert!(!env.args.state_dir.join("staged").join("commit").exists());
+    Ok(())
+}
+
+// #1117 (SPEC-439 CUB-001): a cancel removes the request; the build stops at once, with the
+// compilers cargo started, and nothing is staged.
+#[test]
+fn a_withdrawn_build_stops_with_its_compilers() -> TestResult {
+    let env = Env::new()?;
+    let (compiler, helper) = hanging_build(&env, "run-0005-build", &env.b)?;
+    std::fs::remove_file(env.args.data_dir.join("update").join(REQUEST_FILE))?;
+    wait_until("the helper's end", || helper.is_finished())?;
+    helper.join().map_err(|_| "the helper panicked")??;
+    wait_until("the compiler's end", || ended(&compiler))?;
+    let status: HelperStatus = serde_json::from_slice(&std::fs::read(
+        env.args.state_dir.join(STATUS_FILE),
+    )?)?;
+    assert_eq!(status.id, "run-0005-build");
+    assert_eq!(status.state, HelperState::Failed, "{status:?}");
+    assert_eq!(status.error.as_deref(), Some("The build was cancelled."));
+    assert!(!env.args.state_dir.join("staged").join("commit").exists());
+    Ok(())
+}
+
+// #1117 (SPEC-439 CUB-001): a new update replacing the request being built stops the old build,
+// and the same run builds the new one.
+#[test]
+fn a_replaced_build_stops_and_the_new_request_is_built() -> TestResult {
+    let env = Env::new()?;
+    let (compiler, helper) = hanging_build(&env, "run-0006-build", &env.b)?;
+    env.request("run-0007-build", HelperAction::Build, &env.c)?;
+    wait_until("the helper's end", || helper.is_finished())?;
+    helper.join().map_err(|_| "the helper panicked")??;
+    wait_until("the compiler's end", || ended(&compiler))?;
+    let status: HelperStatus = serde_json::from_slice(&std::fs::read(
+        env.args.state_dir.join(STATUS_FILE),
+    )?)?;
+    assert_eq!(status.id, "run-0007-build");
+    assert_eq!(status.state, HelperState::Done, "{status:?}");
+    let staged = env.args.state_dir.join("staged");
+    assert_eq!(std::fs::read_to_string(staged.join("commit"))?, env.c);
+    assert_eq!(
+        std::fs::read_to_string(env.bin("cargo.log"))?
+            .lines()
+            .count(),
+        2
+    );
     Ok(())
 }
 
