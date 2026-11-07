@@ -768,7 +768,10 @@ mod tests {
         };
         let target = prod(Some("deploy.sh"), Some("rollback.sh"));
         assert!(dev_can_prove(&target, None), "no drill yet");
-        assert!(dev_can_prove(&target, Some(&seen(true, false))), "an older commit");
+        assert!(
+            dev_can_prove(&target, Some(&seen(true, false))),
+            "an older commit"
+        );
         assert!(
             dev_can_prove(&target, Some(&seen(false, false))),
             "an older commit's drill failed: a new one may pass"

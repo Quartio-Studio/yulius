@@ -216,7 +216,12 @@ impl App {
 
     /// The deploy `deployed` starts drill `drill`: a production deploy waiting for the deploy
     /// waits for the drill.
-    pub(super) fn cd_proof_drilling(&self, sandbox: &SandboxId, deployed: &CdRunRecord, drill: &str) {
+    pub(super) fn cd_proof_drilling(
+        &self,
+        sandbox: &SandboxId,
+        deployed: &CdRunRecord,
+        drill: &str,
+    ) {
         if let Ok(mut waits) = self.ci.production_waits.lock() {
             for wait in waits.iter_mut().filter(|w| {
                 w.drill_run.is_none() && w.proved_by(sandbox, &deployed.environment, &deployed.sha)
@@ -254,7 +259,9 @@ impl App {
         match (run.kind, run.stage) {
             (CdRunKind::Deploy, CdStage::Dev) => {
                 // A drill that started took the wait over; one left here had none follow.
-                let waiting = |w: &ProductionWait| w.drill_run.is_none() && w.proved_by(&sandbox.id, env, sha);
+                let waiting = |w: &ProductionWait| {
+                    w.drill_run.is_none() && w.proved_by(&sandbox.id, env, sha)
+                };
                 let why = if state == RunState::Passed {
                     format!(
                         "no rollback drill of {env} followed its deploy at {}: {env} needs an \
@@ -294,14 +301,20 @@ impl App {
         let Ok(mut waits) = self.ci.production_waits.lock() else {
             return Vec::new();
         };
-        let (taken, kept) = std::mem::take(&mut *waits).into_iter().partition(|w| which(w));
+        let (taken, kept) = std::mem::take(&mut *waits)
+            .into_iter()
+            .partition(|w| which(w));
         *waits = kept;
         taken
     }
 
     /// The proof passed: the production deploy runs as the person who asked, with their access
     /// read again and the commit they confirmed (SPEC-438 PDF-002).
-    async fn cd_production_proved(self: &Arc<Self>, sandbox: &SandboxRecord, wait: &ProductionWait) {
+    async fn cd_production_proved(
+        self: &Arc<Self>,
+        sandbox: &SandboxRecord,
+        wait: &ProductionWait,
+    ) {
         let user = match self.deps.store.user(&wait.user_id).await {
             Ok(Some(user)) if user.disabled_at.is_none() => user,
             _ => {

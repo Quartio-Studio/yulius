@@ -412,10 +412,9 @@ async fn production_deploys_wait_for_a_proven_rollback() -> TestResult {
     let prod = f.production_run(1).await?;
     assert_eq!(prod["state"], "error", "{prod}");
     assert!(
-        prod["reason"]
-            .as_str()
-            .is_some_and(|r| r.starts_with("production did not deploy:")
-                && r.contains("no rollback drill")),
+        prod["reason"].as_str().is_some_and(
+            |r| r.starts_with("production did not deploy:") && r.contains("no rollback drill")
+        ),
         "{prod}"
     );
     assert_eq!(f.head("main")?, before, "nothing was promoted");
