@@ -102,6 +102,10 @@ pub struct CdRollback {
     /// no production that deploys drills on it; SPEC-418); `None`: it needs one, or has one.
     #[serde(default)]
     pub not_needed: Option<String>,
+    /// Production stage: the deploy waiting for the drill environment's deploy and drill that
+    /// prove its rollback (SPEC-438), as a sentence; `None`: none waits.
+    #[serde(default)]
+    pub waiting: Option<String>,
 }
 
 /// One part's kept releases.
