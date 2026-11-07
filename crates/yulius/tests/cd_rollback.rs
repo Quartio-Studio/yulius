@@ -158,6 +158,41 @@ impl Fixture {
         }
     }
 
+    /// Waits until the sandbox has `count` production runs, all ended, and returns the newest
+    /// with its output.
+    async fn production_run(&self, count: usize) -> BoxResult<Value> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        loop {
+            let overview = self.get("/api/sandboxes/s1/cd").await?;
+            let runs: Vec<&Value> = overview["runs"]
+                .as_array()
+                .ok_or("runs")?
+                .iter()
+                .filter(|r| r["environment"] == "prod")
+                .collect();
+            if runs.len() >= count && runs.iter().all(|r| r["state"] != "running") {
+                let id = runs[0]["run_id"].as_str().ok_or("id")?;
+                return self.ended(id).await;
+            }
+            if tokio::time::Instant::now() > deadline {
+                return Err(format!("no production run #{count}: {}", overview["runs"]).into());
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    /// Waits until the deploy holds on its `hold` mark.
+    async fn holding(&self) -> TestResult {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        while !self.marks.join("holding").exists() {
+            if tokio::time::Instant::now() > deadline {
+                return Err("the deploy never started".into());
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        Ok(())
+    }
+
     /// The environment `name`'s rollback on the CD page.
     async fn rollback_of(&self, name: &str) -> BoxResult<Value> {
         let overview = self.get("/api/sandboxes/s1/cd").await?;
@@ -365,25 +400,25 @@ async fn production_deploys_wait_for_a_proven_rollback() -> TestResult {
 
     let config = rollback_cd().replace("{marks}", f.marks.to_str().ok_or("path")?);
     push(&f, "dev", &[("yulius.toml", Some(config))])?;
-    let refused = f.deploy(&f.bob, "prod", Some("app")).await?;
+    // Nothing drilled yet: production deploys dev first (SPEC-438), but one release cannot be
+    // drilled, so production does not deploy and says why.
+    let started = f.deploy(&f.bob, "prod", Some("app")).await?;
+    assert_eq!(started.status, StatusCode::OK, "{}", started.body);
+    assert_eq!(started.body["environment"], "dev", "{}", started.body);
+    let dev = f
+        .ended(started.body["run_id"].as_str().ok_or("id")?)
+        .await?;
+    assert_eq!(dev["state"], "passed", "{}", dev["output"]);
+    let prod = f.production_run(1).await?;
+    assert_eq!(prod["state"], "error", "{prod}");
     assert!(
-        refused
-            .body
-            .to_string()
-            .contains("no rollback drill of dev"),
-        "{}",
-        refused.body
+        prod["reason"]
+            .as_str()
+            .is_some_and(|r| r.starts_with("production did not deploy:")
+                && r.contains("no rollback drill")),
+        "{prod}"
     );
-    f.deployed(&f.alice, "dev", None).await?;
-    let refused = f.deploy(&f.bob, "prod", Some("app")).await?;
-    assert!(
-        refused
-            .body
-            .to_string()
-            .contains("no rollback drill of dev"),
-        "one release cannot be drilled: {}",
-        refused.body
-    );
+    assert_eq!(f.head("main")?, before, "nothing was promoted");
 
     // A failing drill does not prove it.
     std::fs::write(f.marks.join("fail-rollback"), "")?;
@@ -405,22 +440,9 @@ async fn production_deploys_wait_for_a_proven_rollback() -> TestResult {
     );
 
     std::fs::remove_file(f.marks.join("fail-rollback"))?;
-    let v3 = push(&f, "dev", &[("version", Some("3\n".to_owned()))])?;
+    push(&f, "dev", &[("version", Some("3\n".to_owned()))])?;
     f.deployed(&f.alice, "dev", None).await?;
     assert_eq!(f.drill(2).await?["state"], "passed");
-    // Dev moved on since its drill: not proven for that commit.
-    push(&f, "dev", &[("notes.txt", Some("x\n".to_owned()))])?;
-    let refused = f.deploy(&f.bob, "prod", Some("app")).await?;
-    assert!(
-        refused
-            .body
-            .to_string()
-            .contains(&format!("ran at {}", &v3[..7])),
-        "{}",
-        refused.body
-    );
-    f.deployed(&f.alice, "dev", None).await?;
-    assert_eq!(f.drill(3).await?["state"], "passed");
     let page = f.rollback_of("prod").await?;
     assert_eq!(page["blocked"], Value::Null, "{page}");
     let run = f.deployed(&f.bob, "prod", Some("app")).await?;
@@ -442,6 +464,127 @@ async fn production_deploys_wait_for_a_proven_rollback() -> TestResult {
     );
     let prod = &f.rollback_of("prod").await?["parts"][0];
     assert_eq!(prod["current"], "v3");
+    Ok(())
+}
+
+/// SPEC-438 AC1, AC4 (PDF-001, PDF-002, PDF-004): dev moved on since its drill; a person's
+/// production deploy deploys dev at that commit, waits for its drill (shown, and a second
+/// production deploy is refused meanwhile), then deploys production by itself.
+#[tokio::test]
+async fn a_production_deploy_proves_its_rollback_on_dev_first() -> TestResult {
+    let f = fixture(&rollback_cd()).await?;
+    push(&f, "dev", &scripts("1"))?;
+    f.deployed(&f.alice, "dev", None).await?;
+    push(&f, "dev", &[("version", Some("2\n".to_owned()))])?;
+    f.deployed(&f.alice, "dev", None).await?;
+    assert_eq!(f.drill(1).await?["state"], "passed");
+    // Agents merged into dev since: its drill is at an older commit.
+    let v3 = push(&f, "dev", &[("version", Some("3\n".to_owned()))])?;
+
+    std::fs::write(f.marks.join("hold"), "")?;
+    let started = f.deploy(&f.bob, "prod", Some("app")).await?;
+    assert_eq!(started.status, StatusCode::OK, "{}", started.body);
+    assert_eq!(
+        (
+            started.body["environment"].as_str(),
+            started.body["commit"].as_str(),
+            started.body["requested_by"].as_str()
+        ),
+        (Some("dev"), Some(v3.as_str()), Some("bob")),
+        "{}",
+        started.body
+    );
+    assert!(
+        started.body["note"]
+            .as_str()
+            .is_some_and(|n| n.contains(&format!("production deploys at {}", &v3[..7]))),
+        "{}",
+        started.body
+    );
+    f.holding().await?;
+    let waiting = format!(
+        "Production deploys at {} once the rollback drill of dev passes (asked by bob)",
+        &v3[..7]
+    );
+    assert_eq!(f.rollback_of("prod").await?["waiting"], waiting);
+    let again = f.deploy(&f.bob, "prod", Some("app")).await?;
+    assert_eq!(again.status, StatusCode::CONFLICT, "{}", again.body);
+    assert!(again.body.to_string().contains(&waiting), "{}", again.body);
+    std::fs::remove_file(f.marks.join("hold"))?;
+
+    let dev = f
+        .ended(started.body["run_id"].as_str().ok_or("id")?)
+        .await?;
+    assert_eq!(dev["state"], "passed", "{}", dev["output"]);
+    let drill = f.drill(2).await?;
+    assert_eq!(
+        (drill["state"].as_str(), drill["commit"].as_str()),
+        (Some("passed"), Some(v3.as_str())),
+        "{drill}"
+    );
+    let prod = f.production_run(1).await?;
+    let output = prod["output"].as_str().unwrap_or_default();
+    assert_eq!(prod["state"], "passed", "{prod}");
+    assert_eq!(prod["requested_by"], "bob");
+    assert!(output.contains("verified v3"), "{output}");
+    assert_eq!(f.mark("prod")?, "v3");
+    git_contains(&f, "main", &v3)?;
+    assert_eq!(f.rollback_of("prod").await?["waiting"], Value::Null);
+    Ok(())
+}
+
+/// SPEC-438 AC2, AC3 (PDF-003, PDF-005): the drill production waited for fails, so production
+/// does not deploy and its run says why; a failed drill at the same tree is then refused as before.
+#[tokio::test]
+async fn production_does_not_deploy_when_the_drill_it_waited_for_fails() -> TestResult {
+    let f = fixture(&rollback_cd()).await?;
+    push(&f, "dev", &scripts("1"))?;
+    f.deployed(&f.alice, "dev", None).await?;
+    push(&f, "dev", &[("version", Some("2\n".to_owned()))])?;
+    f.deployed(&f.alice, "dev", None).await?;
+    assert_eq!(f.drill(1).await?["state"], "passed");
+    let before = f.head("main")?;
+    std::fs::write(f.marks.join("fail-rollback"), "")?;
+    let v3 = push(&f, "dev", &[("version", Some("3\n".to_owned()))])?;
+    let started = f.deploy(&f.bob, "prod", Some("app")).await?;
+    assert_eq!(started.status, StatusCode::OK, "{}", started.body);
+    assert_eq!(started.body["environment"], "dev");
+    assert_eq!(f.drill(2).await?["state"], "failed");
+    let prod = f.production_run(1).await?;
+    assert_eq!(prod["state"], "error", "{prod}");
+    assert_eq!(prod["commit"], v3);
+    assert_eq!(
+        prod["reason"],
+        format!(
+            "production did not deploy: the rollback drill of dev at {} failed",
+            &v3[..7]
+        ),
+        "{prod}"
+    );
+    assert_eq!(f.head("main")?, before, "nothing was promoted");
+    let entries = f.h.store.automation_audit("app/prod", 50).await?;
+    assert!(
+        entries.iter().any(|e| e.action == "cd.refused"
+            && e.detail
+                .as_deref()
+                .is_some_and(|d| d.starts_with("production did not deploy"))),
+        "{entries:?}"
+    );
+    // The same tree failed its drill: a dev deploy cannot fix that, so it is refused.
+    let refused = f.deploy(&f.bob, "prod", Some("app")).await?;
+    assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.body);
+    assert!(
+        refused.body.to_string().contains("did not pass"),
+        "{}",
+        refused.body
+    );
+    assert_eq!(f.rollback_of("prod").await?["waiting"], Value::Null);
+    Ok(())
+}
+
+/// `branch` on the origin contains `sha`.
+fn git_contains(f: &Fixture, branch: &str, sha: &str) -> TestResult {
+    crate::cd::git(&f.origin, &["merge-base", "--is-ancestor", sha, branch])?;
     Ok(())
 }
 
