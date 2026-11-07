@@ -2730,6 +2730,10 @@ leaves a run `running` with no executor (SPEC-347, ADR-0233); an environment-run
 same (SPEC-348, ADR-0235). The wait (and the instance page's view of it) ends an environment run past
 its lost-run limit as `error` (`dlv_expire_lost_run`, as a read does) instead of waiting for it.
 
+A cancel removes the request file, and a new update replaces it: the helper checks every 500 ms
+while cargo builds and, once its request is withdrawn, kills cargo's process group (cargo and its
+compilers), so a cancelled build frees the host at once (SPEC-439, ADR-0283).
+
 ```mermaid
 sequenceDiagram
   participant S as Server (updates.rs)

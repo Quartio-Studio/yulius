@@ -4,6 +4,16 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-08
+
+- Cancelling an update acts at once (SPEC-439, ADR-0283, task #421, #1117). **Cancel update**
+  during the build marked the update cancelled but left the release build compiling for minutes,
+  so the server stayed busy and a restart or a new update waited behind it; the page kept saying
+  "Updating" with a clickable Cancel until it read the view again. Now the update helper notices
+  within half a second that its request is gone and stops the build with every compiler it
+  started, and the instance page shows "The last update was cancelled" as soon as the server
+  answers, its button busy meanwhile.
+
 ## 2026-11-07
 
 - The Superagents use the project browser (SPEC-437, ADR-0281, task #419). A sandbox's Superagent
