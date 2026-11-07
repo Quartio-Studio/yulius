@@ -1,7 +1,8 @@
-//! Who uses agent secrets through the vault's MCP tools (SPEC-186, ADR-0150): a task's agent, in
-//! its worktree, or a person's Superagent, in the sandbox repository it runs in. Both get the same
-//! tools and safeguards; what differs is where a `.env` copy goes, how a person sees who asked,
-//! and whether a task is flagged as needing a person.
+//! Who uses agent secrets and the sandbox browser through the MCP tools (SPEC-186, ADR-0150,
+//! SPEC-437): a task's agent, in its worktree, or a person's Superagent, in the sandbox repository
+//! it runs in (a Global Superagent in the project it names). Both get the same tools and
+//! safeguards; what differs is where a `.env` copy goes, how a person sees who asked or drives the
+//! browser, and whether a task is flagged as needing a person.
 
 use std::sync::atomic::Ordering;
 
@@ -18,12 +19,13 @@ use crate::ports::vault::EnvFiles;
 /// How often a secret request tries to flag a task whose state changes under it.
 const RAISE_TRIES: usize = 3;
 
-/// A caller of the vault tools that use a secret.
+/// A caller of the vault tools that use a secret, and of the browser tools.
 #[derive(Clone, Copy)]
 pub(crate) enum SecretUser<'a> {
     /// A task's agent.
     Task(&'a AgentContext),
-    /// A person's Superagent (its `ck_` caller; no task).
+    /// A person's Superagent (its `ck_` caller, or a Global Superagent's `gs_` one in a project;
+    /// no task).
     Superagent(&'a ProjectCaller),
 }
 
@@ -60,6 +62,26 @@ impl SecretUser<'_> {
                 "cockpit:{}",
                 caller.detail["shell"].as_str().unwrap_or_default()
             ),
+        }
+    }
+
+    /// Its task, `None` for a Superagent.
+    pub(crate) fn task(&self) -> Option<&TaskRecord> {
+        match self {
+            Self::Task(ctx) => Some(&ctx.task),
+            Self::Superagent(_) => None,
+        }
+    }
+
+    /// The label viewers see on its cursor in the browser (BRW-007): `#<n> <harness>`,
+    /// `<login>'s Superagent` or `<login>'s Global Superagent` (SPEC-437 SAB-004).
+    pub(crate) fn label(&self) -> String {
+        match self {
+            Self::Task(ctx) => format!("#{} {}", ctx.task.number, ctx.task.harness.display_name()),
+            Self::Superagent(caller) => match caller.actor.strip_prefix("superagent:") {
+                Some(login) => format!("{login}'s Global Superagent"),
+                None => self.asker(),
+            },
         }
     }
 

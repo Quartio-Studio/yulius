@@ -98,12 +98,28 @@ pub(crate) async fn fixture_with(
     fixture_ending(account, data_dir, None).await
 }
 
+/// [`fixture`] with the sandboxes' browsers from `browser` (SPEC-437).
+pub(crate) async fn fixture_with_browser(
+    browser: Arc<dyn yulius_app::ports::browser::BrowserPort>,
+) -> Result<Fixture, Box<dyn std::error::Error>> {
+    fixture_full(true, None, None, Some(browser)).await
+}
+
 /// [`fixture_with`], optionally with another wait for a shell's exit before its host is
 /// terminated (`shell_exit_ms`).
 async fn fixture_ending(
     account: bool,
     data_dir: Option<PathBuf>,
     exit_ms: Option<u64>,
+) -> Result<Fixture, Box<dyn std::error::Error>> {
+    fixture_full(account, data_dir, exit_ms, None).await
+}
+
+async fn fixture_full(
+    account: bool,
+    data_dir: Option<PathBuf>,
+    exit_ms: Option<u64>,
+    browser: Option<Arc<dyn yulius_app::ports::browser::BrowserPort>>,
 ) -> Result<Fixture, Box<dyn std::error::Error>> {
     // A short base: shell sockets live at <data>/shells/<16 hex>/pty.sock (Unix path limit).
     let dir = tempfile::Builder::new().prefix("yck").tempdir_in("/tmp")?;
@@ -119,6 +135,7 @@ async fn fixture_ending(
         git: Some(Arc::new(yulius::wiring::git::GitAdapter::new("git"))),
         session_host: Some(Arc::clone(&gate) as Arc<dyn SessionHost>),
         harness: Some(harness),
+        browser,
         dir: Some(dir),
         configure: Some(Box::new(move |config| {
             config.contained = false;
@@ -1601,8 +1618,8 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
             .ok_or("carol's cockpit token")?;
     assert_ne!(token, carols, "one token per Cockpit");
 
-    // Exactly the management and vault tools (MGT-006, SPEC-186 SAV-002, SAV-003), and the
-    // person's other sandboxes (SPEC-335).
+    // Exactly the management, vault and browser tools (MGT-006, SPEC-186 SAV-002, SAV-003,
+    // SPEC-437 SAB-001), and the person's other sandboxes (SPEC-335).
     let listed = mcp(&f, &token, "tools/list", json!({})).await?;
     let mut names: Vec<String> = listed["result"]["tools"]
         .as_array()
@@ -1621,6 +1638,15 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
             "automation_template_enable",
             "automation_update",
             "automations_list",
+            "browser_click",
+            "browser_fill_secret",
+            "browser_navigate",
+            "browser_open",
+            "browser_request_user_action",
+            "browser_screenshot",
+            "browser_snapshot",
+            "browser_tabs",
+            "browser_type",
             "sandbox_task_create",
             "sandboxes_list",
             "secret_copy_to_env",
@@ -2918,8 +2944,8 @@ async fn a_limit_from_before_the_start_does_not_move_the_cockpit() -> TestResult
 
 /// SPEC-178 VAU-001 (ADR-0144), SPEC-186 SAV-002..004, SAV-007 (ADR-0150): the Superagent lists
 /// its own sandbox's agent secrets, names, hosts and placeholders only, as a task's agent does,
-/// and is told how it uses and checks them; it is served the vault tools a task's agent is, but
-/// not the project browser's.
+/// and is told how it uses and checks them; it is served the vault tools a task's agent is, the
+/// project browser's included (SPEC-437 SAB-001).
 #[tokio::test]
 async fn the_superagent_lists_its_sandboxs_agent_secrets_without_values() -> TestResult {
     use yulius_domain::ids::UserId;
@@ -2970,12 +2996,12 @@ async fn the_superagent_lists_its_sandboxs_agent_secrets_without_values() -> Tes
         "secret_copy_to_env",
         "secret_request_hosts",
         "secret_create_from_file",
+        "browser_fill_secret",
         "$NAME",
         "/s/fixture/secrets?section=agents",
     ] {
         assert!(how.contains(said), "{said}: {how}");
     }
-    assert!(!how.contains("browser_fill_secret"), "{how}");
 
     let tools = mcp(&f, &token, "tools/list", json!({})).await?;
     let served: Vec<&str> = tools["result"]["tools"]
@@ -2990,20 +3016,11 @@ async fn the_superagent_lists_its_sandboxs_agent_secrets_without_values() -> Tes
         "secret_copy_to_env",
         "secret_request_hosts",
         "secret_create_from_file",
+        // The project browser, as a task's agent has it (SPEC-437 SAB-001).
+        "browser_fill_secret",
     ] {
         assert!(served.contains(&tool), "{tool}: {served:?}");
     }
-    // It has no project browser (SAV-004).
-    assert!(!served.contains(&"browser_fill_secret"), "{served:?}");
-    let (refused, is_error) = cockpit_tool(
-        &f,
-        &token,
-        "browser_fill_secret",
-        json!({"secret": "APIFY_KEY"}),
-    )
-    .await?;
-    assert!(is_error, "{refused}");
-    assert!(refused.to_string().contains("unknown tool"), "{refused}");
     // Only the tools it is served are called for it, task tools included (SPEC-271's agent
     // states among them).
     for tool in [

@@ -90,6 +90,7 @@ mod stages;
 mod start_change;
 mod strays;
 mod subscription_pool;
+mod superagent_browser;
 mod supertask;
 mod supervision;
 mod task_delete;
