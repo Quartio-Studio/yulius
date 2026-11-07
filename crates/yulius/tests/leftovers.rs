@@ -1379,6 +1379,9 @@ async fn ci_run(w: &World, sandbox: &str, id: &str, at: i64, keys: &[&str]) -> B
             started_at: None,
             ended_at: None,
             need: yulius_domain::resources::Need::default(),
+            timeout_minutes: None,
+            exclusive: false,
+            waited_ms: None,
         })
         .collect();
     w.h.store.insert_ci_run(&run, &jobs).await?;

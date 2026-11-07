@@ -33,7 +33,7 @@ fn finding_from_row(row: &Row<'_>) -> rusqlite::Result<FiledFinding> {
 }
 
 const JOB_COLS: &str = "id, run_id, ordinal, name, job_key, command, matrix, state, reason, \
-    exit_code, started_at, ended_at, cpus, memory_mb";
+    exit_code, started_at, ended_at, cpus, memory_mb, timeout_minutes, exclusive, waited_ms";
 
 fn state(text: &str) -> rusqlite::Result<RunState> {
     RunState::parse(text).ok_or_else(|| bad_column("CI state", text))
@@ -97,6 +97,11 @@ fn job_from_row(row: &Row<'_>, with_output: bool) -> rusqlite::Result<CiJobRecor
                 .get::<_, Option<i64>>("memory_mb")?
                 .and_then(|n| u64::try_from(n).ok()),
         },
+        timeout_minutes: row
+            .get::<_, Option<i64>>("timeout_minutes")?
+            .and_then(|n| u32::try_from(n).ok()),
+        exclusive: row.get("exclusive")?,
+        waited_ms: row.get("waited_ms")?,
     })
 }
 
@@ -160,7 +165,7 @@ impl CiStore for SqliteStore {
                 tx.execute(
                     &format!(
                         "INSERT INTO ci_jobs ({JOB_COLS}, output) VALUES ({})",
-                        placeholders(1, 15)
+                        placeholders(1, 18)
                     ),
                     params![
                         job.id,
@@ -177,6 +182,9 @@ impl CiStore for SqliteStore {
                         job.ended_at.map(|t| t.0),
                         job.need.cpus.map(i64::from),
                         job.need.memory_mb.and_then(|m| i64::try_from(m).ok()),
+                        job.timeout_minutes.map(i64::from),
+                        job.exclusive,
+                        job.waited_ms,
                         job.output,
                     ],
                 )
@@ -317,9 +325,10 @@ impl CiStore for SqliteStore {
                  started_at = COALESCE(?5, started_at), ended_at = COALESCE(?6, ended_at), \
                  failures = COALESCE(?8, failures), cpu_ms = COALESCE(?9, cpu_ms), \
                  memory_peak_mb = COALESCE(?10, memory_peak_mb), \
-                 disk_written_mb = COALESCE(?11, disk_written_mb) \
+                 disk_written_mb = COALESCE(?11, disk_written_mb), \
+                 waited_ms = COALESCE(?12, waited_ms) \
                  WHERE id = ?7 AND state IN ({})",
-                placeholders(12, from.len())
+                placeholders(13, from.len())
             );
             let mut args: Vec<Box<dyn rusqlite::ToSql>> = vec![
                 Box::new(to.as_str().to_owned()),
@@ -333,6 +342,7 @@ impl CiStore for SqliteStore {
                 Box::new(update.usage.map(|u| u.cpu_ms)),
                 Box::new(update.usage.map(|u| u.memory_peak_mb)),
                 Box::new(update.usage.and_then(|u| u.disk_written_mb)),
+                Box::new(update.waited_ms),
             ];
             args.extend(
                 from.into_iter()
@@ -374,7 +384,8 @@ impl CiStore for SqliteStore {
                 tx.execute(
                     "UPDATE ci_jobs SET state = 'queued', started_at = NULL, ended_at = NULL, \
                      reason = NULL, exit_code = NULL, output = ?2, failures = NULL, cpu_ms = NULL, \
-                     memory_peak_mb = NULL, disk_written_mb = NULL WHERE run_id = ?1",
+                     memory_peak_mb = NULL, disk_written_mb = NULL, waited_ms = NULL \
+                     WHERE run_id = ?1",
                     [&id, &note],
                 )
                 .map_err(db)?;
@@ -651,18 +662,23 @@ mod tests {
             started_at: None,
             ended_at: None,
             need: Need::default(),
+            timeout_minutes: None,
+            exclusive: false,
+            waited_ms: None,
         }
     }
 
     #[tokio::test]
     async fn runs_jobs_transitions_and_one_running_run_per_sandbox() -> TestResult {
         let store = SqliteStore::open_in_memory()?;
-        // What a job declares is kept with it (SPEC-082 RES-002).
+        // What a job declares is kept with it (SPEC-082 RES-002, SPEC-435).
         let declared = CiJobRecord {
             need: Need {
                 cpus: Some(6),
                 memory_mb: Some(16 * 1024),
             },
+            timeout_minutes: Some(120),
+            exclusive: true,
             ..job("j2", "r1", 1)
         };
         store
@@ -692,6 +708,21 @@ mod tests {
                 .transition_ci_run("r1", &[RunState::Queued], RunState::Cancelled, &start)
                 .await?
         );
+        // SPEC-435 JTL-004: its wait is recorded with its start and kept with its end.
+        assert!(
+            store
+                .transition_ci_job(
+                    "j1",
+                    &[RunState::Queued],
+                    RunState::Running,
+                    &CiJobUpdate {
+                        started_at: Some(Timestamp(7)),
+                        waited_ms: Some(2_340_000),
+                        ..CiJobUpdate::default()
+                    }
+                )
+                .await?
+        );
         let done = CiJobUpdate {
             exit_code: Some(0),
             output: Some("ok\n".into()),
@@ -701,7 +732,7 @@ mod tests {
         };
         assert!(
             store
-                .transition_ci_job("j1", &[RunState::Queued], RunState::Passed, &done)
+                .transition_ci_job("j1", &[RunState::Running], RunState::Passed, &done)
                 .await?
         );
         let jobs = store.ci_jobs("r1", true).await?;
@@ -721,6 +752,19 @@ mod tests {
         assert_eq!(jobs[0].need, Need::default());
         assert_eq!(jobs[1].need.cpus, Some(6));
         assert_eq!(jobs[1].need.memory_mb, Some(16 * 1024));
+        assert_eq!(jobs[0].waited_ms, Some(2_340_000));
+        assert_eq!(
+            (
+                jobs[0].timeout_minutes,
+                jobs[0].exclusive,
+                jobs[1].waited_ms
+            ),
+            (None, false, None)
+        );
+        assert_eq!(
+            (jobs[1].timeout_minutes, jobs[1].exclusive),
+            (Some(120), true)
+        );
         assert!(store.ci_jobs("r1", false).await?[0].output.is_empty());
         let active = store.active_ci_runs().await?;
         assert_eq!(
@@ -775,7 +819,8 @@ mod tests {
                 .iter()
                 .all(|j| j.state == RunState::Queued
                     && j.output.contains("restart")
-                    && j.failures.is_none())
+                    && j.failures.is_none()
+                    && j.waited_ms.is_none())
         );
         Ok(())
     }

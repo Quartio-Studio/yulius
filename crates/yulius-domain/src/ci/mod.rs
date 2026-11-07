@@ -35,6 +35,8 @@ pub const MAX_JOB_NAME_BYTES: usize = 32;
 pub const MAX_MATRIX_VALUE_BYTES: usize = 64;
 /// Most agent secrets one job may name (SPEC-142).
 pub const MAX_JOB_SECRETS: usize = 8;
+/// Largest `timeout_minutes` a job may set (as the instance's `YULIUS_CI_JOB_TIMEOUT_MIN`).
+pub const MAX_JOB_TIMEOUT_MINUTES: u64 = 360;
 /// Name of the single job a gate command defines.
 pub const GATE_JOB: &str = "gate";
 
@@ -123,6 +125,11 @@ pub struct JobDef {
     /// integration branch's list counts: Yulius reads it when a job starts, for a job with that
     /// entry's name and command (SPEC-264).
     pub secrets: Vec<String>,
+    /// Its own time limit in minutes (`timeout_minutes`, SPEC-435 JTL-003); `None`: the
+    /// instance's.
+    pub timeout_minutes: Option<u32>,
+    /// One run of each of its jobs at a time in the sandbox (`exclusive`, SPEC-435 JTL-001).
+    pub exclusive: bool,
 }
 
 /// One job of a run, after matrix expansion.
@@ -140,6 +147,10 @@ pub struct Job {
     pub need: Need,
     /// The agent secrets its definition names (SPEC-142).
     pub secrets: Vec<String>,
+    /// Its definition's own time limit in minutes (SPEC-435); `None`: the instance's.
+    pub timeout_minutes: Option<u32>,
+    /// One run of it at a time in the sandbox (SPEC-435 JTL-001).
+    pub exclusive: bool,
 }
 
 /// An invalid CI job configuration.
@@ -259,6 +270,8 @@ pub fn expand_jobs(defs: &[JobDef]) -> Result<Vec<Job>, CiConfigError> {
                 matrix: None,
                 need: def.need,
                 secrets: def.secrets.clone(),
+                timeout_minutes: def.timeout_minutes,
+                exclusive: def.exclusive,
             });
         } else {
             for value in &def.matrix {
@@ -269,6 +282,8 @@ pub fn expand_jobs(defs: &[JobDef]) -> Result<Vec<Job>, CiConfigError> {
                     matrix: Some(value.clone()),
                     need: def.need,
                     secrets: def.secrets.clone(),
+                    timeout_minutes: def.timeout_minutes,
+                    exclusive: def.exclusive,
                 });
             }
         }
@@ -306,6 +321,8 @@ fn single_job(command: &str) -> Result<Job, GateError> {
         matrix: None,
         need: Need::default(),
         secrets: Vec::new(),
+        timeout_minutes: None,
+        exclusive: false,
     })
 }
 
@@ -357,6 +374,8 @@ fn built_in_security_job() -> Job {
         matrix: None,
         need: Need::default(),
         secrets: vec![VIDOC_SECRET.to_owned()],
+        timeout_minutes: None,
+        exclusive: false,
     }
 }
 
@@ -1105,6 +1124,8 @@ mod tests {
             matrix: Vec::new(),
             need: Need::default(),
             secrets: Vec::new(),
+            timeout_minutes: None,
+            exclusive: false,
         };
         let gate = |defs: &[JobDef]| -> Result<Gate, CiConfigError> {
             Ok(Gate {
@@ -1141,6 +1162,8 @@ mod tests {
             matrix: Vec::new(),
             need: Need::default(),
             secrets: Vec::new(),
+            timeout_minutes: None,
+            exclusive: false,
         };
         let gate = |source: GateSource, defs: &[JobDef]| -> Result<Gate, CiConfigError> {
             Ok(Gate {
@@ -1233,6 +1256,8 @@ mod tests {
             },
             need: Need::default(),
             secrets: Vec::new(),
+            timeout_minutes: None,
+            exclusive: false,
         };
         let jobs = expand_jobs(&[
             def("lint", "cargo clippy", ""),
@@ -1270,6 +1295,8 @@ mod tests {
             matrix: many,
             need: Need::default(),
             secrets: Vec::new(),
+            timeout_minutes: None,
+            exclusive: false,
         };
         let mut defs = vec![
             wide.clone(),

@@ -13,6 +13,12 @@ pub struct CiJobSpec {
     /// Matrix value passed as `YULIUS_CI_MATRIX`.
     #[serde(default)]
     pub matrix: Option<String>,
+    /// Its own time limit in minutes (`timeout_minutes`); absent: the instance's (SPEC-435).
+    #[serde(default)]
+    pub timeout_minutes: Option<u32>,
+    /// One run of it at a time in the sandbox (`exclusive`, SPEC-435).
+    #[serde(default)]
+    pub exclusive: bool,
 }
 
 /// The CI a sandbox's runs execute.
@@ -49,6 +55,10 @@ pub struct CiJob {
     /// Duration in milliseconds, once it ran.
     #[serde(default)]
     pub duration_ms: Option<i64>,
+    /// How long it waited before it started, in milliseconds: for its turn (`exclusive`), a job
+    /// slot and its budget; outside its time limit (SPEC-435). Absent before it started.
+    #[serde(default)]
+    pub waited_ms: Option<i64>,
     /// Output (only in [`CiRunDetail`]): the last 512 KiB of its terminal output, escape
     /// sequences removed, plus Yulius notes; partial while it runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]

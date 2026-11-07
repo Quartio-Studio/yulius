@@ -959,7 +959,9 @@ involved.
   run's jobs) are free, so the jobs of all lanes never ask for more than the sandbox has. Each
   is told its budget in `YULIUS_CPUS` and `YULIUS_MEMORY_MB` and the repository's
   `[resources.env]`. `YULIUS_CI_MAX_JOBS` still bounds the number of jobs. Each job gets
-  `YULIUS_CI_JOB_TIMEOUT_MIN`. A project cuts what its jobs take on a busy host with `cpus` on each
+  `YULIUS_CI_JOB_TIMEOUT_MIN`, or its own `timeout_minutes` (1-360) in `[[ci.jobs]]`, counted from
+  its start: waiting for a slot, or for its turn as an `exclusive` job (one run of it per sandbox
+  at a time), never counts (SPEC-435). A project cuts what its jobs take on a busy host with `cpus` on each
   `[[ci.jobs]]` entry: a run of 6 jobs on 12 CPUs gets 2 each by default, and `cpus = 1` halves it
   (SPEC-362).
 - While any of a sandbox's CI jobs runs, its group weighs 500 on the host (100 otherwise), so its

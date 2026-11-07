@@ -21,7 +21,9 @@
 //!   slots; a job runs through the process host ([`crate::ports::session::SessionHost`]) inside
 //!   the sandbox's containment, with no secret in its environment (only the placeholders and
 //!   egress proxy of the agent secrets its integration branch entry grants, SPEC-142), for at most
-//!   [`CiSettings::job_timeout`]; cancellation and timeouts kill the job's process group, and
+//!   its `timeout_minutes`, else [`CiSettings::job_timeout`], counted from its process's start
+//!   (SPEC-435); an `exclusive` job first waits for its turn, one run of it per sandbox at a time;
+//!   cancellation and timeouts kill the job's process group, and
 //!   the host is terminated when the exit is not seen within [`KILL_GRACE`];
 //! - output is the job's log file, read while it runs, kept as the last [`OUTPUT_BYTES`]
 //!   (escape sequences removed); a log beyond [`MAX_LOG_FILE_BYTES`] ends the job;
@@ -103,7 +105,8 @@ pub struct CiSettings {
     /// Runs of one sandbox executing at once, each in its own job checkouts (F 2026-10-12: one
     /// run at a time made parallel tasks wait behind each other for hours).
     pub lanes: u32,
-    /// Wall-clock limit of one job.
+    /// Wall-clock limit of one job's run, from its process's start, unless its `timeout_minutes`
+    /// says otherwise (SPEC-435).
     pub job_timeout: Duration,
     /// How often each sandbox is checked for new heads.
     pub poll: Duration,
@@ -205,6 +208,12 @@ pub struct CiJobRecord {
     pub ended_at: Option<Timestamp>,
     /// The CPUs and memory it declared (SPEC-082 RES-002).
     pub need: Need,
+    /// Its own time limit in minutes (SPEC-435 JTL-003); `None`: the instance's.
+    pub timeout_minutes: Option<u32>,
+    /// One run of it at a time in the sandbox (SPEC-435 JTL-001).
+    pub exclusive: bool,
+    /// How long it waited before it started (SPEC-435 JTL-004); `None` until it started.
+    pub waited_ms: Option<i64>,
 }
 
 /// Fields set with a run transition.
@@ -235,6 +244,8 @@ pub struct CiJobUpdate {
     pub ended_at: Option<Timestamp>,
     /// What it used, with its end when its process host measured it (SPEC-154).
     pub usage: Option<yulius_domain::stages::ResourceUse>,
+    /// How long it waited before it started, with its start (SPEC-435).
+    pub waited_ms: Option<i64>,
 }
 
 /// The CI configuration of a sandbox as last read.
@@ -281,6 +292,39 @@ pub struct CiState {
     /// One pass deciding a sandbox's armed merges (and its merge train) at a time (SPEC-084
     /// TRN-010): passes started by runs that end together wait for each other.
     pub(crate) armed_passes: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// The turn of each `exclusive` job (`<sandbox>/<job name>`; SPEC-435 JTL-001): its runs
+    /// take it in the order they asked; an entry nobody holds or waits for goes ([`TurnEntry`]).
+    turns: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+}
+
+/// An `exclusive` job's claim on its turn's entry (SPEC-435): dropped after the job's turn and
+/// its wait, it forgets the entry when nobody else holds or waits for it.
+pub(crate) struct TurnEntry {
+    app: Arc<App>,
+    key: String,
+}
+
+impl Drop for TurnEntry {
+    fn drop(&mut self) {
+        let mut turns = self
+            .app
+            .ci
+            .turns
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        forget_idle_turn(&mut turns, &self.key);
+    }
+}
+
+/// Removes the turn of `key` when the map holds its only handle. Every holder and waiter took its
+/// handle under the map's lock, which the caller holds, so none can appear meanwhile.
+fn forget_idle_turn(turns: &mut HashMap<String, Arc<tokio::sync::Mutex<()>>>, key: &str) {
+    if turns
+        .get(key)
+        .is_some_and(|turn| Arc::strong_count(turn) == 1)
+    {
+        turns.remove(key);
+    }
 }
 
 /// A running CI job's weight on its sandbox (SPEC-362 CSW-002): counted from its start until it
@@ -376,6 +420,7 @@ fn job_view(job: &CiJobRecord, with_output: bool) -> CiJob {
             .started_at
             .zip(job.ended_at)
             .map(|(start, end)| end.millis_since(start)),
+        waited_ms: job.waited_ms,
         output: with_output.then(|| job.output.clone()),
         failures: with_output.then(|| job.failures.clone()).flatten(),
     }
@@ -428,6 +473,8 @@ fn gate_view(gate: &Gate) -> CiGate {
                 name: job.name.clone(),
                 command: job.command.clone(),
                 matrix: job.matrix.clone(),
+                timeout_minutes: job.timeout_minutes,
+                exclusive: job.exclusive,
             })
             .collect(),
         source: gate.source.as_str().to_owned(),
@@ -435,6 +482,39 @@ fn gate_view(gate: &Gate) -> CiGate {
 }
 
 impl App {
+    /// The turn of `job` in `sandbox`, for an `exclusive` job (SPEC-435 JTL-001), and the entry
+    /// that forgets it once nobody holds or waits for it: drop that after the turn.
+    fn ci_turn(
+        self: &Arc<Self>,
+        sandbox: &SandboxId,
+        job: &str,
+    ) -> (Arc<tokio::sync::Mutex<()>>, TurnEntry) {
+        let key = format!("{}/{job}", sandbox.as_str());
+        let turn = self
+            .ci
+            .turns
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(key.clone())
+            .or_default()
+            .clone();
+        (
+            turn,
+            TurnEntry {
+                app: Arc::clone(self),
+                key,
+            },
+        )
+    }
+
+    /// The time limit of `job`'s run: its own `timeout_minutes`, else the instance's (SPEC-435).
+    fn ci_job_limit(&self, job: &CiJobRecord) -> Duration {
+        job.timeout_minutes
+            .map_or(self.config.ci.job_timeout, |minutes| {
+                Duration::from_secs(u64::from(minutes) * 60)
+            })
+    }
+
     fn ci_slots(&self) -> Arc<Semaphore> {
         self.ci
             .slots
@@ -698,6 +778,9 @@ impl App {
                 started_at: None,
                 ended_at: None,
                 need: job.need,
+                timeout_minutes: job.timeout_minutes,
+                exclusive: job.exclusive,
+                waited_ms: None,
             })
             .collect();
         self.deps.store.insert_ci_run(&run, &jobs).await?;
@@ -986,6 +1069,9 @@ impl App {
                     started_at: Some(now),
                     ended_at: Some(now),
                     need: job.need,
+                    timeout_minutes: job.timeout_minutes,
+                    exclusive: job.exclusive,
+                    waited_ms: None,
                 }
             })
             .collect();
@@ -1539,7 +1625,22 @@ impl App {
 
 #[cfg(test)]
 mod lane_tests {
-    use super::{busy_in, own_jobs_apply, reserve_run, take_lane};
+    use super::{busy_in, forget_idle_turn, own_jobs_apply, reserve_run, take_lane};
+
+    /// SPEC-435: an exclusive job's turn stays while a job holds or waits for it, and goes once
+    /// nobody does, so the map does not keep every job name ever seen.
+    #[test]
+    fn an_idle_turn_is_forgotten_and_a_held_one_kept() {
+        let mut turns = std::collections::HashMap::new();
+        let held = std::sync::Arc::new(tokio::sync::Mutex::new(()));
+        turns.insert("s1/site".to_owned(), std::sync::Arc::clone(&held));
+        forget_idle_turn(&mut turns, "s1/site");
+        assert!(turns.contains_key("s1/site"), "held: kept");
+        drop(held);
+        forget_idle_turn(&mut turns, "s1/site");
+        assert!(turns.is_empty(), "idle: forgotten");
+        forget_idle_turn(&mut turns, "s1/none");
+    }
 
     /// CI-110: a stale branch is not tested with the integration branch's old jobs it still
     /// carries; a pull request that changed the jobs is tested with its own.
