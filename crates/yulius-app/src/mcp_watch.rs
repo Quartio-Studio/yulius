@@ -541,6 +541,70 @@ mod tests {
         );
     }
 
+    /// #1108: a sandbox keeps the `yulius` of the base it started on, so after an update its
+    /// bridges may predate pings. Heard but never pinged, or reattached and never heard, a bridge
+    /// may be alive: it is never reconnected, however long it is silent.
+    #[test]
+    fn a_bridge_that_never_pings_is_never_reconnected() {
+        let restarted = WatchBounds::new(Timestamp(60 * MIN));
+        let spawned_here = WatchFacts {
+            spawned_ms: 62 * MIN,
+            seen_ms: 62 * MIN + 2_000,
+            pinged_ms: 0,
+            turn_closed_ms: 64 * MIN,
+            ..silent()
+        };
+        let reattached_heard = WatchFacts {
+            spawned_ms: 5 * MIN,
+            seen_ms: 61 * MIN,
+            ..spawned_here
+        };
+        let reattached_never = WatchFacts {
+            seen_ms: 0,
+            ..reattached_heard
+        };
+        for facts in [spawned_here, reattached_heard, reattached_never] {
+            for silent_for in [3, 30, 300] {
+                let later = WatchFacts {
+                    now_ms: (65 + silent_for) * MIN,
+                    ..facts
+                };
+                let (action, _) = decide(&later, Reconnects::default(), &restarted);
+                assert_eq!(action, WatchAction::None, "{later:?}");
+            }
+        }
+    }
+
+    /// #1108, the loop of 2026-11-07: a reconnect answered by a bridge that does not ping either
+    /// (the sandbox's binary predates pings) is the last one typed.
+    #[test]
+    fn a_reconnect_answered_by_a_bridge_that_does_not_ping_is_the_last() {
+        let never = WatchFacts {
+            seen_ms: 0,
+            pinged_ms: 0,
+            ..silent()
+        };
+        let (action, typed) = decide(&never, Reconnects::default(), &bounds());
+        assert_eq!(action, WatchAction::Reconnect);
+        let answered = WatchFacts {
+            now_ms: 21 * MIN,
+            seen_ms: 20 * MIN + 2_000,
+            ..never
+        };
+        let (_, state) = decide(&answered, typed, &bounds());
+        for minutes in [24, 35, 60, 300] {
+            let later = WatchFacts {
+                now_ms: minutes * MIN,
+                ..answered
+            };
+            assert_eq!(
+                decide(&later, state, &bounds()).0,
+                WatchAction::None,
+                "{minutes} min"
+            );
+        }
+    }
+
     /// Review round 2: a run spawned here whose MCP client connected but whose bridge died
     /// before its first ping was cut off after that contact, not from its spawn.
     #[test]
