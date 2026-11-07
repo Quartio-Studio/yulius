@@ -1,11 +1,11 @@
 ---
 yulius-task: 33d4d53d-0016-47a7-9b6a-9f96caf36caf
-status: in-progress
+status: done
 ---
 
 # SPEC-437: The Superagents use the project browser
 
-Status: in-progress
+Status: done
 Date: 2026-11-07
 Owner: Yulius task #419
 Scope authorization: task #419 (`/goal`): "add browser use for superagents", with a screenshot of a
@@ -70,8 +70,8 @@ an agent secret through `browser_fill_secret` without seeing it.
 - [x] The sandbox Superagent drives its sandbox's browser and types agent secrets into it
 - [x] The Global Superagent drives a named project's browser
 - [x] ADR, architecture, API and product docs describe the Superagents' browser
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -113,3 +113,43 @@ an agent secret through `browser_fill_secret` without seeing it.
   it is a separate decision.
 - **Reuse the `SecretUser` caller** for the browser tools: it already says, for a task or a
   Superagent, which sandbox, which person's secrets, which audit actor and process.
+
+## Evidence
+
+On 2026-11-07, branch at `c15e5822` plus the pinned-launch test fix (current with `origin/dev` at
+`7a9f669c`):
+
+- Reproduced the request before the change: the sandbox Superagent's `tools/list` had no
+  `browser_*` tool and its `browser_fill_secret` call answered "unknown tool" (the test
+  `cockpit::the_superagent_lists_its_sandboxs_agent_secrets_without_values` asserted exactly that).
+- New tests, each failing without its change (watched fail first):
+  - `superagent_browser::the_sandbox_superagent_drives_its_sandboxs_browser` (AC-SAB-1, AC-SAB-2):
+    failed with "browser_tabs runs without asking" (not in the launch's allowed tools) before the
+    change; passes after.
+  - `superagent_browser::the_global_superagent_drives_a_named_projects_browser` (AC-SAB-3):
+    failed with "browser_tabs not served"; after review round 1 it failed on the instructions'
+    "web pages" before their fix. It also covers the Secrets-page refusal for an unbound secret,
+    bob's read access ("needs write access"), carol's unseen project ("not found") and the
+    `remote.tool` audit of changing calls only.
+  - `global_superagent::tests::only_it_is_served_a_projects_browser` and the browser check added to
+    `remote_mcp::the_public_mcp_takes_only_personal_agent_tokens` (an operate token is not served
+    the tools and its call is an unknown tool).
+- `scripts/dev ci` at `c15e5822`: doctor, repository contracts, check, lint (format, clippy) and
+  macOS targets passed; `cargo nextest run --workspace --profile ci` ran 3203 tests, 3202 passed,
+  1 failed, 16 skipped. The failure was
+  `yulius-harness::launch a_cockpit_reaches_the_yulius_tools_with_its_token_only_in_its_environment`,
+  which pins the Cockpit's `--allowedTools` string and now includes the three reading browser
+  tools; after updating it, `cargo nextest run -p yulius-harness` 143 of 143 passed. Then
+  `scripts/dev deps` (cargo-shear: no issues) exit 0 and `cargo doc --workspace --no-deps` built
+  without warnings. Yulius CI runs the full gate again on the pull request head.
+- `yulius security-scan`: "Security scan disabled: Vidoc is turned off in Yulius" — disabled, not
+  passed.
+- e2e not run: no web UI file changed (the Browser page already shows any agent's cursor label).
+- Independent review (fresh session, `om-code-review`): round 1 requested changes (one medium:
+  page text as untrusted input for the Global Superagent; lows: two test gaps, the Global
+  Superagent's refusal naming `secret_request_hosts`, stale decision records; nits), all fixed
+  above; round 2 approved `c15e5822`. Its pre-existing finding (a secret typed into a plain-text
+  field shows in a screenshot, true for tasks before this change) is issue #1113.
+- Not tested: a real Chromium and a real Claude Code session (the tests use the fake DevTools
+  server and the fake `claude`), and the restart of already-running Superagents to pick up the
+  tools, which the existing launch-digest tests cover generically.
