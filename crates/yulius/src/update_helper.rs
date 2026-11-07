@@ -24,6 +24,7 @@
 
 use std::io::{BufRead as _, BufReader, Read as _, Write as _};
 use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _, PermissionsExt as _};
+use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitCode, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex};
@@ -43,6 +44,10 @@ use crate::wiring::update_files::{REQUEST_FILE, STATUS_FILE, write_atomic};
 pub const DEFAULT_REPO: &str = "https://github.com/Quartio-Studio/yulius.git";
 /// Longest build.
 const BUILD_TIMEOUT: Duration = Duration::from_secs(2 * 3600);
+/// How often a build checks that its request still stands (SPEC-439 CUB-001).
+const WITHDRAWN_EVERY: Duration = Duration::from_millis(500);
+/// A build whose request the server took back.
+const CANCELLED: &str = "The build was cancelled.";
 /// Longest Git command.
 const GIT_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 /// Longest `systemctl` command.
@@ -268,6 +273,25 @@ fn wait_bounded(child: &mut Child, timeout: Duration) -> std::io::Result<Option<
         }
         std::thread::sleep(Duration::from_millis(100));
     }
+}
+
+/// How a build's cargo ended.
+enum BuildEnd {
+    Exited(ExitStatus),
+    TimedOut,
+    Withdrawn,
+}
+
+/// Kills `child`, the leader of its own process group, with every process of that group.
+fn kill_group(child: &mut Child) {
+    if let Ok(pid) = i32::try_from(child.id()) {
+        let _ = nix::sys::signal::killpg(
+            nix::unistd::Pid::from_raw(pid),
+            nix::sys::signal::Signal::SIGKILL,
+        );
+    }
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 fn run_bounded(command: &mut Command, timeout: Duration, what: &str) -> Result<Output, String> {
@@ -693,14 +717,62 @@ impl Helper {
         if self.git_ok(&["rev-parse", "HEAD"], None)? != commit {
             return Err("the checkout does not match the commit".into());
         }
+        if self.withdrawn(&request.id) {
+            return Err(CANCELLED.into());
+        }
         self.step("compiling");
-        self.compile(commit)?;
+        self.compile(request)?;
         self.stage(commit)?;
         self.report(HelperState::Done, "built", |s| s.progress = None);
         Ok(())
     }
 
-    fn compile(&self, commit: &str) -> Result<(), String> {
+    /// Whether the server took the request `id` back (SPEC-439 CUB-001): its file is gone (a
+    /// cancel or a failure removed it) or holds another request (a new update replaced it). A
+    /// file that cannot be read is no withdrawal.
+    fn withdrawn(&self, id: &str) -> bool {
+        let data = &self.args.data_dir;
+        let Ok(owner) = std::fs::metadata(data) else {
+            return false;
+        };
+        let path = data.join("update").join(REQUEST_FILE);
+        match read_owned_file(&path, owner.uid(), MAX_REQUEST_BYTES) {
+            Ok(None) => true,
+            Ok(Some(bytes)) => serde_json::from_slice::<serde_json::Value>(&bytes)
+                .ok()
+                .and_then(|v| v.get("id")?.as_str().map(|other| other != id))
+                .unwrap_or(false),
+            Err(_) => false,
+        }
+    }
+
+    /// Waits for the build's cargo up to [`BUILD_TIMEOUT`] and while its request `id` stands;
+    /// otherwise kills its process group: cargo and the compilers and build scripts it started.
+    fn wait_build(&self, child: &mut Child, id: &str) -> std::io::Result<BuildEnd> {
+        let started = Instant::now();
+        let mut checked = Instant::now();
+        loop {
+            if let Some(status) = child.try_wait()? {
+                return Ok(BuildEnd::Exited(status));
+            }
+            let end = if started.elapsed() > BUILD_TIMEOUT {
+                Some(BuildEnd::TimedOut)
+            } else if checked.elapsed() >= WITHDRAWN_EVERY {
+                checked = Instant::now();
+                self.withdrawn(id).then_some(BuildEnd::Withdrawn)
+            } else {
+                None
+            };
+            if let Some(end) = end {
+                kill_group(child);
+                return Ok(end);
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    fn compile(&self, request: &HelperRequest) -> Result<(), String> {
+        let commit = request.commit.as_str();
         let target = self.state("target");
         std::fs::create_dir_all(&target)
             .map_err(|e| format!("cannot create {}: {e}", target.display()))?;
@@ -715,6 +787,8 @@ impl Helper {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
+            // Its own group, so that a cancel or the bound stops the compilers too.
+            .process_group(0)
             .spawn()
             .map_err(|e| format!("cannot run cargo: {e}"))?;
         let tail: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
@@ -747,14 +821,15 @@ impl Helper {
                     }
                 }
             });
-            let status = wait_bounded(&mut child, BUILD_TIMEOUT);
+            let status = self.wait_build(&mut child, &request.id);
             let _ = handle.join();
             status
         });
         let lines = tail.lock().map(|t| t.clone()).unwrap_or_default();
         match reader {
-            Ok(Some(status)) if status.success() => Ok(()),
-            Ok(Some(_)) => {
+            Ok(BuildEnd::Exited(status)) if status.success() => Ok(()),
+            Ok(BuildEnd::Withdrawn) => Err(CANCELLED.into()),
+            Ok(BuildEnd::Exited(_)) => {
                 self.report(HelperState::Running, "compiling", |s| {
                     s.log_tail = lines.clone()
                 });
@@ -767,7 +842,7 @@ impl Helper {
                         .map_or("see the log", String::as_str)
                 ))
             }
-            Ok(None) => Err(format!(
+            Ok(BuildEnd::TimedOut) => Err(format!(
                 "The build did not finish within {} hours.",
                 BUILD_TIMEOUT.as_secs() / 3600
             )),
