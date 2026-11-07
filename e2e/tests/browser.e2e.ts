@@ -1,6 +1,6 @@
 import { test } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, failOnPageErrors, mock } from './support.ts';
+import { axeViolations, DRAG_GRIP, DRAG_HINT, dragTab, failOnPageErrors, mock, pressAndMove, tabGrips, tabMenu, tabNames, tabsInPlace } from './support.ts';
 
 failOnPageErrors();
 
@@ -75,4 +75,91 @@ test('the sandbox Chrome streams into the panel and takes clicks and keys', asyn
   await screen.getByRole('button', 'New tab').click();
   await expect(screen.getByRole('tab', /^New tab/)).toHaveAttribute('aria-selected', 'true');
   await expect(screen.getByRole('textbox', 'Address')).toHaveValue('');
+});
+
+// SPEC-434 MTB-003/004: the Browser's tabs move as the sandbox and Notes tabs do, and keep their order.
+const bpStrip = '[role="tablist"][aria-label="Browser tabs"]';
+
+test('browser tabs move by drag, keyboard and menu and stay so', async ({ app, browser, screen }) => {
+  // product: no tab asks for an action (its attention pulse is studio's).
+  await app.open(mock('/s/product', '&ambient=0&browserask=0'));
+  await screen.getByRole('button', /^Show tools/).click();
+  await screen.getByRole('navigation', 'Tools').getByRole('button', /^Browser/).click();
+  const app_ = screen.getByRole('tab', /^Checkout/);
+  const aws = screen.getByRole('tab', /^Amazon/);
+  await expect(app_).toHaveAttribute('aria-selected', 'true');
+  const names = async () => (await tabNames(browser, bpStrip)).map((name) => name.split(' ')[0]);
+  expect(await names()).toEqual(['Checkout', 'Amazon']);
+  const grips = await tabGrips(browser, bpStrip);
+  expect(grips.map((g) => g.grip)).toEqual([DRAG_GRIP, DRAG_GRIP]);
+  for (const g of grips) expect(g.title.endsWith(`\n${DRAG_HINT}`)).toBe(true);
+  await expect(aws).toHaveAttribute('aria-keyshortcuts', 'Delete Backspace Alt+ArrowLeft Alt+ArrowRight');
+
+  // A drag moves Amazon first and chooses nothing.
+  await dragTab(browser, aws, app_);
+  await expect.poll(names).toEqual(['Amazon', 'Checkout']);
+  await expect(app_).toHaveAttribute('aria-selected', 'true');
+
+  // Alt+←/→ moves the focused tab and keeps the keyboard on it.
+  await aws.focus();
+  await browser.keyboard.press('Alt+ArrowRight');
+  expect(await names()).toEqual(['Checkout', 'Amazon']);
+  await expect(aws).toBeFocused();
+  await browser.keyboard.press('Alt+ArrowRight');
+  expect(await names()).toEqual(['Checkout', 'Amazon']);
+
+  // The menu moves it without dragging (WCAG 2.5.7), next to Close.
+  await tabMenu(browser, `${bpStrip} [data-tab-id="tab-app"]`);
+  await expect(screen.getByRole('menuitem', 'Move left')).toHaveAttribute('aria-disabled', 'true');
+  await expect(screen.getByRole('menuitem', 'Close')).toBeVisible();
+  await screen.getByRole('menuitem', 'Move right').click();
+  expect(await names()).toEqual(['Amazon', 'Checkout']);
+  expect(await axeViolations(browser)).toEqual([]);
+
+  // A tab opened since comes last; a press on its × closes it and moves nothing.
+  await screen.getByRole('button', 'New tab').click();
+  await expect.poll(names).toEqual(['Amazon', 'Checkout', 'New']);
+  expect(await pressAndMove(browser, `${bpStrip} .bp-tab:last-child .bp-tab-close`, -80)).toBe(false);
+  expect(await names()).toEqual(['Amazon', 'Checkout', 'New']);
+  await browser.locator(`${bpStrip} .bp-tab:last-child .bp-tab-close`).click();
+  await expect.poll(names).toEqual(['Amazon', 'Checkout']);
+
+  // A tab list arriving during a drag (a page's new title) is drawn once the tab is let go, in the
+  // new order (review round 1).
+  const chosen = await browser.evaluate((selector) => document.querySelector(`${selector} [aria-selected="true"]`)?.getAttribute('data-tab-id'), bpStrip);
+  const from = await app_.boundingBox();
+  const to = await aws.boundingBox();
+  if (!from || !to) throw new Error('tabs not laid out');
+  await browser.mouse.move(from.x + 12, from.y + from.height / 2);
+  await browser.mouse.down();
+  await browser.mouse.move(from.x - 20, from.y + from.height / 2);
+  await browser.evaluate(() => {
+    const session = (window as unknown as { __yuliusMock: { browsers: Map<string, { tabs: { id: string; title: string }[]; sendTabs: () => void }> } }).__yuliusMock.browsers.get('sb_product')!;
+    session.tabs.find((tab) => tab.id === 'tab-aws')!.title = 'Console Home';
+    session.sendTabs();
+  });
+  // The mock delivers a socket message a timer tick later: let it arrive while the tab is held.
+  await browser.evaluate(() => new Promise((resolve) => { setTimeout(() => resolve(true), 0); }));
+  // Still pressed: the strip is not drawn again under the pointer (#477), the old title stays.
+  await expect.poll(() => browser.evaluate((selector) => {
+    const held = document.querySelector<HTMLElement>(`${selector} .bp-tab.dragging`);
+    return held ? { id: held.dataset.tabId, others: [...document.querySelectorAll(`${selector} .bp-tab-title`)].map((t) => t.textContent) } : null;
+  }, bpStrip)).toEqual({ id: 'tab-app', others: [expect.stringMatching(/^Amazon/), expect.stringMatching(/^Checkout/)] });
+  await browser.mouse.move(to.x + 4 - (from.width / 2 - 12), from.y + from.height / 2);
+  await browser.mouse.up();
+  await expect.poll(names).toEqual(['Checkout', 'Console']);
+  await expect.poll(() => tabsInPlace(browser, bpStrip)).toBe(true);
+  // The drag chose nothing.
+  expect(await browser.evaluate((selector) => document.querySelector(`${selector} [aria-selected="true"]`)?.getAttribute('data-tab-id'), bpStrip)).toBe(chosen);
+  await screen.getByRole('tab', /^Checkout/).focus();
+  await browser.keyboard.press('Alt+ArrowRight');
+  expect(await names()).toEqual(['Console', 'Checkout']);
+
+  // Kept after a reload.
+  await browser.reload();
+  // The rail comes back after a reload, without its panel.
+  await expect(screen.getByRole('button', 'Hide tools')).toBeVisible();
+  await screen.getByRole('navigation', 'Tools').getByRole('button', /^Browser/).click();
+  await expect(screen.getByRole('tab', /^Checkout/)).toBeVisible();
+  expect(await names()).toEqual(['Amazon', 'Checkout']);
 });

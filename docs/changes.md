@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-06
 
+- Every tab strip of the tool panel moves like the sandbox tabs (SPEC-434, ADR-0278, task #416).
+  The Superagent's This sandbox and All sandboxes, the Shell's terminals and the Browser's tabs now
+  show the six-dot grip, say "Click to open, drag to reorder", and move by drag, Alt+←/→ and their
+  menu's Move left / Move right, as the sandbox and Notes tabs do. Each keeps its order in this
+  browser (the terminals and Browser tabs per sandbox, a new one last). The Editor's file tabs,
+  which already moved, show the grip too.
 - A CI job's time limit counts only its own run, and a job can set its own (SPEC-435, ADR-0279,
   task #417). quartio-v2's `websites` job waited 39 minutes for another PR's run of it (a `flock`
   inside the job) and timed out at 1 h with no test failing. Two new `[[ci.jobs]]` keys:

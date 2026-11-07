@@ -616,7 +616,7 @@ test('the tabs show a grip and say they can be clicked or dragged', async ({ app
   // SPEC-136 NOT-022/023: a decorative grip before each name, a title naming click and drag (the keys
   // are announced once, through aria-keyshortcuts).
   const tabs = await browser.evaluate(() => [...document.querySelectorAll<HTMLElement>('[role="tablist"][aria-label="Notes"] [role="tab"]')].map((tab) => {
-    const grip = tab.querySelector<HTMLElement>('.notes-tab-grip');
+    const grip = tab.querySelector<HTMLElement>('.tab-grip');
     const box = grip?.getBoundingClientRect();
     return {
       text: tab.textContent,
@@ -632,7 +632,7 @@ test('the tabs show a grip and say they can be clicked or dragged', async ({ app
   // The grip is faint on a tab at rest and takes the tab's colour when it is chosen, hovered or dragged.
   const gripColour = (id: string) => browser.evaluate((key) => {
     const tab = document.getElementById(key) as HTMLElement;
-    return { grip: getComputedStyle(tab.querySelector('.notes-tab-grip') as HTMLElement).color, tab: getComputedStyle(tab).color, cursor: getComputedStyle(tab.querySelector('.notes-tab-grip') as HTMLElement).cursor };
+    return { grip: getComputedStyle(tab.querySelector('.tab-grip') as HTMLElement).color, tab: getComputedStyle(tab).color, cursor: getComputedStyle(tab.querySelector('.tab-grip') as HTMLElement).cursor };
   }, id);
   const chosen = await gripColour('notes-tab-team');
   expect(chosen.grip).toEqual(chosen.tab);
@@ -664,7 +664,7 @@ test('the tabs show a grip and say they can be clicked or dragged', async ({ app
     for (const sheet of [...document.styleSheets]) { try { visit(sheet.cssRules, false); } catch { /* another origin */ } }
     return found.join('\n');
   });
-  expect(coarse).toMatch(/\.notes-tab-grip \{ display: none; \}/);
+  expect(coarse).toMatch(/\.tab-grip \{ display: none; \}/);
 });
 
 test('a remembered tab still opens first', async ({ app, browser, screen }) => {

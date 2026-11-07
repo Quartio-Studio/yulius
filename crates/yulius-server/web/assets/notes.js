@@ -128,7 +128,7 @@ export function createNotesView(ctx, sandbox) {
         // through `aria-keyshortcuts`, not again in the title.
         'aria-keyshortcuts': 'Alt+ArrowLeft Alt+ArrowRight', dataset: { key: pad.key }, title: DRAG_TAB_HINT,
         onClick: () => { if (drag.clickConsumed()) return; select(pad, { focusTab: true }); },
-      }, h('span', { class: 'notes-tab-grip', 'aria-hidden': 'true' }, icon('grip', { size: 12 })), pad.label);
+      }, h('span', { class: 'tab-grip', 'aria-hidden': 'true' }, icon('grip', { size: 12 })), pad.label);
       tab.addEventListener('keydown', (event) => {
         const index = pads.indexOf(pad);
         if (event.altKey && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {

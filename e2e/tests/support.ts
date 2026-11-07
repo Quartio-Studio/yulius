@@ -249,3 +249,102 @@ export async function selectPromptText(browser: Browser, start: number, end: num
     selection.addRange(range);
   }, [start, end]);
 }
+
+/** The names of the tabs of the tablist matching `strip` (a CSS selector), in order. */
+export function tabNames(browser: Browser, strip: string): Promise<string[]> {
+  return browser.evaluate((selector) => [...document.querySelectorAll<HTMLElement>(`${selector} [role="tab"]`)]
+    .map((tab) => {
+      const name = (tab.querySelector('.term-tab-name, .bp-tab-title, .ed-tab-name') || tab).cloneNode(true) as HTMLElement;
+      // What shows: not a note kept for screen readers until it applies.
+      for (const quiet of name.querySelectorAll('[hidden]')) quiet.remove();
+      return name.textContent?.trim() ?? '';
+    }), strip);
+}
+
+/**
+ * Drags the tab `from` along its strip with the mouse, held by its grip, until its centre is just
+ * inside the near edge of `to`: it lands before `to` coming from the right, after it from the left.
+ */
+export async function dragTab(browser: Browser, from: Locator, to: Locator): Promise<void> {
+  const a = await from.boundingBox();
+  const b = await to.boundingBox();
+  if (!a || !b) throw new Error('tabs not laid out');
+  const y = a.y + a.height / 2;
+  const start = a.x + Math.min(12, a.width / 2);
+  const centre = b.x < a.x ? b.x + 4 : b.x + b.width - 4;
+  const end = start + centre - (a.x + a.width / 2);
+  await browser.mouse.move(start, y);
+  await browser.mouse.down();
+  for (const step of [1, 2, 3, 4]) await browser.mouse.move(start + ((end - start) * step) / 4, y);
+  await browser.mouse.up();
+}
+
+/**
+ * How each tab of the tablist `strip` says it drags (SPEC-136, SPEC-434 MTB-004): its title and its
+ * grip (decorative, first, an icon, the grab cursor, laid out).
+ */
+export function tabGrips(browser: Browser, strip: string): Promise<{ title: string; grip: Record<string, unknown> | null }[]> {
+  return browser.evaluate((selector) => [...document.querySelectorAll<HTMLElement>(`${selector} [role="tab"]`)].map((tab) => {
+    const grip = tab.querySelector<HTMLElement>('.tab-grip');
+    const box = grip?.getBoundingClientRect();
+    return {
+      title: tab.title,
+      grip: grip ? {
+        hidden: grip.getAttribute('aria-hidden'), first: tab.firstElementChild === grip, svg: !!grip.querySelector('svg'), cursor: getComputedStyle(grip).cursor, shown: !!box && box.width > 0 && box.height > 0,
+        // 4 px from what follows it, as on the Notes and sandbox tabs.
+        gap: box && grip.nextSibling ? (() => {
+          const range = document.createRange();
+          range.selectNodeContents(grip.nextSibling as Node);
+          return Math.round(range.getBoundingClientRect().left - box.right);
+        })() : null,
+      } : null,
+    };
+  }), strip);
+}
+
+/** A grip as `tabGrips` reads it on a tab that drags. */
+export const DRAG_GRIP = { hidden: 'true', first: true, svg: true, cursor: 'grab', shown: true, gap: 4 };
+
+/** The hint every tab that drags ends its title with. */
+export const DRAG_HINT = 'Click to open, drag to reorder';
+
+/** Opens the context menu of the element matching `selector` (a tab) as a right click does. */
+export function tabMenu(browser: Browser, selector: string): Promise<void> {
+  return browser.evaluate((query) => {
+    const tab = document.querySelector(query) as HTMLElement;
+    const box = tab.getBoundingClientRect();
+    tab.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: box.left + 8, clientY: box.bottom }));
+  }, selector);
+}
+
+/**
+ * Whether the tabs of the tablist `strip` sit side by side where the layout puts them: no tab left
+ * shifted by a drag (an inline transform) and each starting where the one before ends.
+ */
+export function tabsInPlace(browser: Browser, strip: string): Promise<boolean> {
+  return browser.evaluate((selector) => {
+    const tabs = [...document.querySelectorAll<HTMLElement>(`${selector} [role="tab"]`)];
+    if (tabs.some((tab) => tab.style.transform)) return false;
+    return tabs.every((tab, i) => i === 0 || Math.abs(tab.getBoundingClientRect().left - tabs[i - 1].getBoundingClientRect().right) < 1);
+  }, strip);
+}
+
+/**
+ * Presses the element matching `selector` (in a tab), moves the pointer `dx` px along the strip and
+ * releases; answers whether its strip was ever being reordered meanwhile.
+ */
+export async function pressAndMove(browser: Browser, selector: string, dx: number): Promise<boolean> {
+  const box = await browser.locator(selector).boundingBox();
+  if (!box) throw new Error(`${selector} not laid out`);
+  const x = box.x + box.width / 2;
+  const y = box.y + box.height / 2;
+  await browser.mouse.move(x, y);
+  await browser.mouse.down();
+  let reordering = false;
+  for (const step of [1, 2, 3, 4]) {
+    await browser.mouse.move(x + (dx * step) / 4, y);
+    reordering ||= await browser.evaluate(() => !!document.querySelector('[role="tablist"].reordering'));
+  }
+  await browser.mouse.up();
+  return reordering;
+}
