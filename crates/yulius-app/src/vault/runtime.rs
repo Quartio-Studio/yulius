@@ -824,9 +824,14 @@ impl App {
             ));
         };
         if record.hosts.is_empty() {
+            let ask = if user.global() {
+                "a person binds the service's sign-in host on the project's Secrets page"
+            } else {
+                "find the service's sign-in host from its description and ask for it with \
+                 secret_request_hosts; a person allows it"
+            };
             return Err(AppError::Forbidden(format!(
-                "{} is bound to no host yet: find the service's sign-in host from its description \
-                 and ask for it with secret_request_hosts; a person allows it",
+                "{} is bound to no host yet: {ask}",
                 record.name
             )));
         }

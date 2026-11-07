@@ -32,8 +32,14 @@ Yulius, not in its root, so its missing shell, files and proxy do not matter to 
   are asked before on an uncontained server, bypassed on a contained one (ADR-0165).
 - **The Global Superagent gets them with a required `project`** (`GLOBAL_ONLY_TOOLS`), each call
   checked as `Action::Work` on that project, as a browser viewer is. Calls that change something
-  are audited `remote.tool`; the three reading ones are not. A person's own remote agent (an API
-  token) is not served them.
+  are audited `remote.tool`; the three reading ones are not when they run (a refused one is, as
+  every refused call of a `Work` tool). A person's own remote agent (an API token) is not served
+  them.
+- **Page text is data.** Until now the Global Superagent read only project files and transcripts;
+  web pages are a new kind of untrusted text, and all its tools run without asking. Its
+  instructions name web pages and browser snapshots among the text that is data, never an
+  instruction to act, there or elsewhere. A secret it cannot type (one bound to no host) points it
+  to the project's Secrets page, as it has no `secret_request_hosts`.
 - **One caller for both.** The browser tools take the `SecretUser` (a task's agent or a
   Superagent's `ProjectCaller`): its sandbox, the person whose agent secrets it resolves, its audit
   actor and process. `browser_fill_secret` keeps every safeguard (bound hosts only, never a
@@ -53,7 +59,10 @@ Yulius, not in its root, so its missing shell, files and proxy do not matter to 
 - **Not for the Global Superagent**: it would still have to start a task to look at a page in any
   project. Text it reads in one project could ask it to act in another, but the worst a browser
   call does is sign into a bound host of that project, which a task it may already create could do.
-  Rejected.
+  The larger risk is a page's text steering its other pre-allowed tools (`task_create`,
+  `project_change`) across projects; that risk already came with files and transcripts, and is
+  met the same way, by its instructions. Asking the person before each call would undo ADR-0271's
+  no-approval design. Rejected.
 - **Serving them to API tokens too**: the person's own agent has the person's own browser; whether
   it should drive the shared one is a separate decision. Not now.
 
@@ -65,3 +74,8 @@ Yulius, not in its root, so its missing shell, files and proxy do not matter to 
   each restarts once idle.
 - A Superagent and its tasks share one browser and its logins: a sign-in by one is the others'
   too, as between tasks.
+- A prompt injection on a page the Global Superagent reads can still reach its pre-allowed tools;
+  its instructions are the only guard, as for files and transcripts. A person who wants a check
+  per action uses the sandbox Superagent on an uncontained server.
+- A secret typed into a plain-text field can show in a later screenshot, which is not redacted:
+  true for tasks before this change, now for the Superagents too.

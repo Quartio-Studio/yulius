@@ -46,7 +46,8 @@ impl SecretUser<'_> {
         }
     }
 
-    /// The audit actor: `task:<n>`, or `cockpit:<login>`.
+    /// The audit actor: `task:<n>`, `cockpit:<login>`, or `superagent:<login>` for a Global
+    /// Superagent.
     pub(crate) fn actor(&self) -> String {
         match self {
             Self::Task(ctx) => ctx.actor(),
@@ -54,7 +55,8 @@ impl SecretUser<'_> {
         }
     }
 
-    /// What its uses are audited once per: the agent's run, or the Superagent's process.
+    /// What its uses are audited once per: the agent's run, or the Superagent's process
+    /// (`cockpit:<shell>`, a Global Superagent's shell being a Cockpit's too).
     pub(crate) fn run(&self) -> String {
         match self {
             Self::Task(ctx) => ctx.attempt.id.as_str().to_owned(),
@@ -63,6 +65,11 @@ impl SecretUser<'_> {
                 caller.detail["shell"].as_str().unwrap_or_default()
             ),
         }
+    }
+
+    /// Whether it is a Global Superagent, which has no `secret_request_hosts` (SPEC-437).
+    pub(crate) fn global(&self) -> bool {
+        matches!(self, Self::Superagent(caller) if caller.detail["via"] == "global-superagent")
     }
 
     /// Its task, `None` for a Superagent.
@@ -78,10 +85,14 @@ impl SecretUser<'_> {
     pub(crate) fn label(&self) -> String {
         match self {
             Self::Task(ctx) => format!("#{} {}", ctx.task.number, ctx.task.harness.display_name()),
-            Self::Superagent(caller) => match caller.actor.strip_prefix("superagent:") {
-                Some(login) => format!("{login}'s Global Superagent"),
-                None => self.asker(),
-            },
+            Self::Superagent(caller) if self.global() => {
+                let login = caller
+                    .actor
+                    .strip_prefix("superagent:")
+                    .unwrap_or(&caller.actor);
+                format!("{login}'s Global Superagent")
+            }
+            Self::Superagent(_) => self.asker(),
         }
     }
 

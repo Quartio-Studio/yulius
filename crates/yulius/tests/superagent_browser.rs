@@ -20,6 +20,7 @@ use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use yulius::wiring::browser::ChromiumBrowsers;
+use yulius_app::ports::store_ext::AutomationStore as _;
 use yulius_browser::fake::{FakeCdpServer, FakeChromium, write_fake_chromium};
 use yulius_browser::{BrowserConfig, StopTimeouts};
 use yulius_contracts::events::UiEvent;
@@ -328,7 +329,7 @@ async fn the_global_superagent_drives_a_named_projects_browser() -> TestResult {
         f.h.github.set_perm("alice", "acme/website", perms("write"));
         f.h.github.set_perm("bob", "acme/website", perms("write"));
         std::fs::create_dir_all(f.data.join("sandboxes/s2/repo"))?;
-        for creds in [&f.alice, &f.bob] {
+        for creds in [&f.alice, &f.bob, &f.carol] {
             let opened = call(&f.h.router, Method::POST, "/api/superagent", None, creds).await?;
             assert_eq!(opened.status, StatusCode::OK, "{:?}", opened.body);
         }
@@ -348,6 +349,8 @@ async fn the_global_superagent_drives_a_named_projects_browser() -> TestResult {
         let init = mcp(f, &token, "initialize", json!({})).await?;
         let instructions = init["result"]["instructions"].as_str().unwrap_or_default();
         assert!(instructions.contains("browser_open"), "{instructions}");
+        // Page text is data, as files and transcripts are (review round 1).
+        assert!(instructions.contains("web pages"), "{instructions}");
 
         docs_login(f, VALUE).await?;
         let served = serve(f.h.router.clone()).await?;
@@ -396,6 +399,63 @@ async fn the_global_superagent_drives_a_named_projects_browser() -> TestResult {
         )
         .await?;
         assert_eq!(shot["content"][0]["type"], "image", "{shot}");
+        let tabs = mcp_tool(
+            &f.h,
+            &token,
+            "browser_tabs",
+            json!({"project": "acme/fixture"}),
+        )
+        .await?;
+        assert_eq!(tabs["isError"], false, "{tabs}");
+
+        // A call that changes something is audited, a reading one is not (ADR-0281).
+        let audits: Vec<String> =
+            f.h.store
+                .automation_audit("s1", 100)
+                .await?
+                .into_iter()
+                .filter(|e| e.action == "remote.tool" && e.actor == "superagent:alice")
+                .map(|e| e.detail.unwrap_or_default())
+                .collect();
+        for changing in ["browser_open", "browser_fill_secret"] {
+            assert!(
+                audits
+                    .iter()
+                    .any(|d| d.contains(&format!("\"tool\":\"{changing}\""))
+                        && d.contains("global-superagent")),
+                "{changing}: {audits:?}"
+            );
+        }
+        for reading in ["browser_tabs", "browser_screenshot"] {
+            assert!(
+                !audits
+                    .iter()
+                    .any(|d| d.contains(&format!("\"tool\":\"{reading}\""))),
+                "{reading}: {audits:?}"
+            );
+        }
+
+        // A secret bound to no host: it has no secret_request_hosts, so it is told who binds one.
+        let unbound = call(
+            &f.h.router,
+            Method::POST,
+            "/api/sandboxes/s1/agent-secrets",
+            Some(json!({"name": "NEW_LOGIN", "value": "new-pass-4411-abc"})),
+            &f.alice,
+        )
+        .await?;
+        assert_eq!(unbound.status, StatusCode::CREATED, "{}", unbound.body);
+        let refused = mcp_tool(
+            &f.h,
+            &token,
+            "browser_fill_secret",
+            json!({"project": "acme/fixture", "tab_id": tab, "secret": "NEW_LOGIN"}),
+        )
+        .await?;
+        assert_eq!(refused["isError"], true, "{refused}");
+        let said = tool_text(&refused).to_string();
+        assert!(!said.contains("secret_request_hosts"), "{said}");
+        assert!(said.contains("Secrets page"), "{said}");
 
         // bob only reads acme/fixture: its browser is not his to drive.
         let bobs =
@@ -410,6 +470,29 @@ async fn the_global_superagent_drives_a_named_projects_browser() -> TestResult {
         )
         .await?;
         assert_eq!(refused["isError"], true, "{refused}");
+        assert!(
+            tool_text(&refused)
+                .to_string()
+                .contains("needs write access"),
+            "{refused}"
+        );
+        // carol cannot see acme/website: it is not found for her.
+        let carols =
+            f.h.app
+                .global_superagent_mcp_token(&UserId::parse("u-carol")?)
+                .ok_or("carol's Global Superagent")?;
+        let hidden = mcp_tool(
+            &f.h,
+            &carols,
+            "browser_tabs",
+            json!({"project": "acme/website"}),
+        )
+        .await?;
+        assert_eq!(hidden["isError"], true, "{hidden}");
+        assert!(
+            tool_text(&hidden).to_string().contains("not found"),
+            "{hidden}"
+        );
         let unknown = mcp_tool(
             &f.h,
             &token,

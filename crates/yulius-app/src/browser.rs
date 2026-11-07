@@ -40,8 +40,9 @@ pub struct BrowserGrant {
     pub sandbox_id: SandboxId,
 }
 
-/// The browser tools that only read: the Superagent runs them without asking and a Global
-/// Superagent's calls of them are not audited (SPEC-437).
+/// The browser tools that only read: a Global Superagent's calls of them are not audited
+/// (SPEC-437); the harness's `COCKPIT_READ_ONLY_TOOLS` lets the Superagent run the same ones
+/// without asking.
 pub(crate) const READING_TOOLS: [&str; 3] =
     ["browser_tabs", "browser_snapshot", "browser_screenshot"];
 

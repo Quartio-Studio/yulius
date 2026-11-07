@@ -67,9 +67,9 @@ an agent secret through `browser_fill_secret` without seeing it.
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] The sandbox Superagent drives its sandbox's browser and types agent secrets into it
-- [ ] The Global Superagent drives a named project's browser
-- [ ] ADR, architecture, API and product docs describe the Superagents' browser
+- [x] The sandbox Superagent drives its sandbox's browser and types agent secrets into it
+- [x] The Global Superagent drives a named project's browser
+- [x] ADR, architecture, API and product docs describe the Superagents' browser
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 
@@ -105,6 +105,10 @@ an agent secret through `browser_fill_secret` without seeing it.
   project, as from a task. Text it reads in one project could ask it to act in another; the worst
   such a call does is sign into a bound host of that project, which it could already reach with
   `task_create`.
+- **Page text is data for the Global Superagent.** Web pages are a new kind of untrusted text for
+  a session whose tools all run without asking; its instructions name web pages and browser
+  snapshots as data, never instructions (review round 1). A secret bound to no host points it to
+  the Secrets page, since it has no `secret_request_hosts`.
 - **Not for API tokens.** The person's own agent has their own browser; serving the shared one to
   it is a separate decision.
 - **Reuse the `SecretUser` caller** for the browser tools: it already says, for a task or a
