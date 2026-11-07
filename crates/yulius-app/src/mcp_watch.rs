@@ -4,10 +4,11 @@
 //! connect within its bound is marked failed and its bridge closed, and nothing a hook returns
 //! brings it back. The bridge (`yulius mcp`) pings Yulius every minute, and every request of the
 //! session's MCP client to `POST /mcp` records the contact (`yulius tool` calls do not: they come
-//! from the shell). A live, idle task silent for [`SILENT_AFTER_MS`] gets `/mcp reconnect yulius`
-//! typed into its session; once its MCP is heard again, a task whose turn closed while it was
-//! surely cut off is told to continue. This amends SPEC-028 MSR-004 ("nothing is typed into an
-//! idle session") for this one case.
+//! from the shell). A live, idle task silent for [`SILENT_AFTER_MS`] whose MCP is known to be gone
+//! (its bridge pinged and stopped, or a run this server spawned never connected) gets
+//! `/mcp reconnect yulius` typed into its session (ADR-0280); once its MCP is heard again, a task
+//! whose turn closed while it was surely cut off is told to continue. This amends SPEC-028
+//! MSR-004 ("nothing is typed into an idle session") for this one case.
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -106,8 +107,7 @@ pub struct Reconnects {
     pub last_typed_ms: i64,
     /// How many went unanswered in a row.
     pub unanswered: u32,
-    /// From when (ms) the session was surely cut off; `None` when that is not known (a run
-    /// reattached with a bridge that never pinged here), so it is never told to continue.
+    /// From when (ms) the session was surely cut off; `None` before a reconnect.
     pub cut_off_from_ms: Option<i64>,
     /// When the watch last found the task held (ms, 0 = never): a frozen bridge pings nothing,
     /// so its silence counts from the thaw.
@@ -164,6 +164,18 @@ pub fn decide(
             },
         );
     }
+    // Only a Yulius MCP known to be gone is reconnected (ADR-0280). A bridge heard but never
+    // pinged, or a reattached run never heard, may be an older build that does not ping and is
+    // alive: a sandbox keeps the `yulius` of the base it started on (#1108).
+    let gone_since = if facts.pinged_ms > 0 {
+        // A bridge that pings every minute and stopped.
+        Some(facts.pinged_ms + bounds.ping_grace_ms)
+    } else if facts.seen_ms == 0 && facts.spawned_ms >= bounds.started.0 {
+        // Spawned by this server, and its MCP never connected.
+        Some(facts.spawned_ms)
+    } else {
+        None
+    };
     let last_contact = facts.seen_ms.max(facts.spawned_ms).max(state.held_ms);
     let silent = facts.now_ms.saturating_sub(last_contact) >= bounds.silent_after_ms
         && facts.now_ms.saturating_sub(bounds.started.0) >= bounds.silent_after_ms;
@@ -174,20 +186,13 @@ pub fn decide(
     };
     let spaced =
         state.last_typed_ms == 0 || facts.now_ms.saturating_sub(state.last_typed_ms) >= gap;
-    if !idle || !silent || !spaced {
+    if gone_since.is_none() || !idle || !silent || !spaced {
         return (WatchAction::None, state);
     }
     let cut_off_from_ms = if state.unanswered > 0 {
         state.cut_off_from_ms
-    } else if facts.pinged_ms > 0 {
-        // A bridge that pings every minute and stopped.
-        Some(facts.pinged_ms + bounds.ping_grace_ms)
-    } else if facts.spawned_ms >= bounds.started.0 {
-        // Spawned by this server, with a bridge that pings, and never pinged: cut off since its
-        // last contact, or its spawn if it never connected.
-        Some(facts.spawned_ms.max(facts.seen_ms))
     } else {
-        None
+        gone_since
     };
     (
         WatchAction::Reconnect,
@@ -490,39 +495,6 @@ mod tests {
         }
     }
 
-    /// Review round 1 (M1): after the release, a reattached session's older bridge never pings.
-    /// It is reconnected, but never told to continue: when it was cut off is not known, whether
-    /// it finished hours ago or used Yulius just before its turn closed.
-    #[test]
-    fn a_reattached_session_that_never_pinged_is_reconnected_but_not_woken() {
-        let restarted = WatchBounds::new(Timestamp(60 * MIN));
-        let reattached = WatchFacts {
-            now_ms: 64 * MIN,
-            spawned_ms: 5 * MIN,
-            seen_ms: 0,
-            pinged_ms: 0,
-            turn_closed_ms: 30 * MIN,
-            ..silent()
-        };
-        // An older bridge whose last call came just before its turn closed after the start.
-        let busy = WatchFacts {
-            now_ms: 65 * MIN,
-            seen_ms: 61 * MIN,
-            turn_closed_ms: 61 * MIN + 5_000,
-            ..reattached
-        };
-        for facts in [reattached, busy] {
-            let (action, typed) = decide(&facts, Reconnects::default(), &restarted);
-            assert_eq!(action, WatchAction::Reconnect, "{facts:?}");
-            assert_eq!(typed.cut_off_from_ms, None, "{facts:?}");
-            assert_eq!(
-                decide(&heard(facts), typed, &restarted).0,
-                WatchAction::None,
-                "{facts:?}"
-            );
-        }
-    }
-
     /// A session this server spawned whose bridge never pinged never had its tools: a turn
     /// closed after its spawn continues.
     #[test]
@@ -541,23 +513,89 @@ mod tests {
         );
     }
 
-    /// Review round 2: a run spawned here whose MCP client connected but whose bridge died
-    /// before its first ping was cut off after that contact, not from its spawn.
+    /// #1108: a sandbox keeps the `yulius` of the base it started on, so after an update its
+    /// bridges may predate pings. Heard but never pinged, or reattached and never heard, a bridge
+    /// may be alive: it is never reconnected, however long it is silent.
     #[test]
-    fn a_session_heard_before_its_first_ping_is_cut_off_from_that_contact() {
-        let connected = WatchFacts {
-            seen_ms: 11 * MIN,
+    fn a_bridge_that_never_pings_is_never_reconnected() {
+        let restarted = WatchBounds::new(Timestamp(60 * MIN));
+        let spawned_here = WatchFacts {
+            spawned_ms: 62 * MIN,
+            seen_ms: 62 * MIN + 2_000,
             pinged_ms: 0,
-            turn_closed_ms: 11 * MIN - 5_000,
+            turn_closed_ms: 64 * MIN,
             ..silent()
         };
-        let (action, typed) = decide(&connected, Reconnects::default(), &bounds());
+        let reattached_heard = WatchFacts {
+            spawned_ms: 5 * MIN,
+            seen_ms: 61 * MIN,
+            ..spawned_here
+        };
+        let reattached_never = WatchFacts {
+            seen_ms: 0,
+            ..reattached_heard
+        };
+        for facts in [spawned_here, reattached_heard, reattached_never] {
+            for silent_for in [3, 30, 300] {
+                let later = WatchFacts {
+                    now_ms: (65 + silent_for) * MIN,
+                    ..facts
+                };
+                let (action, _) = decide(&later, Reconnects::default(), &restarted);
+                assert_eq!(action, WatchAction::None, "{later:?}");
+            }
+        }
+    }
+
+    /// Review of #1108: after an update or restart every live run is reattached; one whose bridge
+    /// pinged on this server and stopped is gone, reconnected and then told to continue.
+    #[test]
+    fn a_reattached_bridge_that_pinged_here_and_stopped_is_reconnected() {
+        let restarted = WatchBounds::new(Timestamp(60 * MIN));
+        let dropped = WatchFacts {
+            now_ms: 70 * MIN,
+            spawned_ms: 5 * MIN,
+            seen_ms: 61 * MIN,
+            pinged_ms: 61 * MIN,
+            turn_closed_ms: 66 * MIN,
+            ..silent()
+        };
+        let (action, typed) = decide(&dropped, Reconnects::default(), &restarted);
         assert_eq!(action, WatchAction::Reconnect);
-        assert_eq!(typed.cut_off_from_ms, Some(11 * MIN));
+        assert_eq!(typed.cut_off_from_ms, Some(61 * MIN + PING_GRACE_MS));
         assert_eq!(
-            decide(&heard(connected), typed, &bounds()).0,
-            WatchAction::None,
-            "its turn closed before the contact"
+            decide(&heard(dropped), typed, &restarted).0,
+            WatchAction::Continue
         );
+    }
+
+    /// #1108, the loop of 2026-11-07: a reconnect answered by a bridge that does not ping either
+    /// (the sandbox's binary predates pings) is the last one typed.
+    #[test]
+    fn a_reconnect_answered_by_a_bridge_that_does_not_ping_is_the_last() {
+        let never = WatchFacts {
+            seen_ms: 0,
+            pinged_ms: 0,
+            ..silent()
+        };
+        let (action, typed) = decide(&never, Reconnects::default(), &bounds());
+        assert_eq!(action, WatchAction::Reconnect);
+        let answered = WatchFacts {
+            now_ms: 21 * MIN,
+            seen_ms: 20 * MIN + 2_000,
+            ..never
+        };
+        let (_, state) = decide(&answered, typed, &bounds());
+        for minutes in [24, 35, 60, 300] {
+            let later = WatchFacts {
+                now_ms: minutes * MIN,
+                ..answered
+            };
+            assert_eq!(
+                decide(&later, state, &bounds()).0,
+                WatchAction::None,
+                "{minutes} min"
+            );
+        }
     }
 }
