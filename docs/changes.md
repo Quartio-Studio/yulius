@@ -6,6 +6,15 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-07
 
+- The Superagents use the project browser (SPEC-437, ADR-0281, task #419). A sandbox's Superagent
+  answered "this session doesn't have the browser tools" when asked to sign in to a staff panel
+  with a vault password. Now it drives its sandbox's browser as a task's agent does: it opens and
+  reads pages, clicks, types, takes screenshots, signs in with `browser_fill_secret` (only on the
+  secret's hosts, never seeing the value) and hands a tab to the person with a link. The reading
+  tools run without asking. The Global Superagent does the same in any project it names (write
+  access needed); a person's own API-token agent is not given these tools. Viewers see the cursor
+  as "alice's Superagent" or "alice's Global Superagent". Open Superagents restart once idle to
+  get the tools.
 - Yulius no longer restarts a healthy Yulius MCP server (SPEC-436, ADR-0280, task #418, #1108).
   Idle sessions showed `/mcp reconnect yulius` → "Successfully reconnected to yulius" again and
   again: Claude Code's logs show the server never dropped, and Yulius's reconnect watch (ADR-0276)

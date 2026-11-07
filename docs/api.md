@@ -1207,6 +1207,11 @@ resolves to nothing, the run gets the server without that variable or token.
 - Agents print `<public_url>/s/<slug>/browser?tab=<tab_id>` (returned by the
   `browser_request_user_action` MCP tool, which also marks the task `needs_attention` and
   publishes `browser.action_requested`); the web UI opens the browser panel on that tab.
+  The Superagent (`ck_`) is served the nine `browser_*` tools on its sandbox's browser, the Global
+  Superagent (`gs_`) the same with a required `project` (write access to it; not served to API
+  tokens); from either, `browser_request_user_action` flags no task (`task_id: null`) and the
+  viewers' cursor reads `<login>'s Superagent` / `<login>'s Global Superagent` (SPEC-437,
+  ADR-0281).
 - Built-in editor (write; EDT-001..004). `root` is `sandbox` (default, the repository) or
   `task:<task id>` (that task's worktree); `path` is relative (normal components only; `.git`
   is refused, 403; a path leading outside the folder, also through symbolic links, is 403).
@@ -1847,7 +1852,8 @@ task; other hooks answer as usual.
   literal `\n` is written as its file in single quotes, SPEC-186); every MCP result is
   redacted. The Superagent (`ck_` token, SPEC-186) is served `secrets_list`,
   `secret_request_hosts` and `secret_copy_to_env` too (its copies go to the sandbox repository,
-  its asks read `<login>'s Superagent`, its actor is `cockpit:<login>`), not `browser_fill_secret`;
+  its asks read `<login>'s Superagent`, its actor is `cockpit:<login>`), and `browser_fill_secret`,
+  as is the Global Superagent with `project` (actor `superagent:<login>`, SPEC-437);
   the egress proxy accepts its bearer as `yulius:ck_…`. A personal secret is sent only by the
   egress proxy: `browser_fill_secret` and `secret_copy_to_env` refuse it (403) and a
   `${secret:NAME}` reference never resolves to it
