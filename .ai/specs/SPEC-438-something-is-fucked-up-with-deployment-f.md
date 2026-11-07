@@ -1,11 +1,11 @@
 ---
 yulius-task: 2e134745-5dd3-413f-a53e-cb585d7515c3
-status: in-progress
+status: done
 ---
 
 # SPEC-438: A production deploy proves its rollback on dev by itself
 
-Status: in-progress
+Status: done
 Date: 2026-11-07
 Owner: Yulius task #420
 Scope authorization: task #420, asked by the instance's owner with a screenshot of the refusal
@@ -46,8 +46,8 @@ The person no longer races agents' merges into dev.
   production deploys at `<sha>` once its drill passes. The request answers with that dev run.
 - PDF-002. Production waits in the server, bound to the dev run (its id chosen before it starts,
   everything from the wait to the dev start detached from the request) and then to the drill that
-  run prepares, holding a deploy permit so no update restarts the server under it. Once the dev deploy passed and the drill it started
-  passed, Yulius starts the production deploy as that person, with their access checked again and
+  run prepares, holding a deploy permit so no update restarts the server under it. Once the dev
+  deploy passed and the drill it started passed, Yulius starts the production deploy as that person, with their access checked again and
   the commit they confirmed as `expect`. If dev moved, production refuses as it always does
   ("moved since you looked"). Only a person's request does this: an agent's never does, and neither
   does the continuation itself.
@@ -67,10 +67,10 @@ The person no longer races agents' merges into dev.
 ## Plan
 
 - [x] Reproduce the defect and find its root cause
-- [ ] Spec, ADR and the regression test that fails
-- [ ] Production deploy proves its rollback on dev first and continues by itself
-- [ ] Waiting and not-deployed production shown on the CD page and in cd_status
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] Spec, ADR and the regression test that fails
+- [x] Production deploy proves its rollback on dev first and continues by itself
+- [x] Waiting and not-deployed production shown on the CD page and in cd_status
+- [x] Independent review in a fresh session, findings fixed test-first
 
 ## Acceptance criteria
 
@@ -98,3 +98,23 @@ The person no longer races agents' merges into dev.
 - The wait lives in memory, not in the database. A restart already ends the dev deploy as an error,
   so a stored wait would only resume a deploy whose proof never finished. Reversible: a table can
   be added later if waits need to survive restarts.
+
+## Evidence
+
+- Reproduced: before the fix, `production_does_not_deploy_when_the_drill_it_waited_for_fails`
+  got the screenshot's refusal ("rollback is not proven for this commit: the last rollback drill
+  of dev ran at 757f949; deploy dev at this commit first"), and the three new tests failed
+  (commit e28df4f1).
+- `cargo nextest run -p yulius --test main -E 'test(/^cd_rollback::|^cd::/)'`: 37 passed (AC1-AC4
+  and the review's cases: a failed dev deploy, a dev that moved, an administrator demoted while
+  production waits).
+- `npx e2e run tests/cd.e2e.ts`: 26 passed, including "a production deploy proves its rollback on
+  dev first".
+- `scripts/dev ci` at 9c16c493: exit 0, nextest 3205 passed, 16 skipped; fmt, clippy, macOS,
+  deps, doctests green.
+- `yulius security-scan`: Vidoc is turned off for this project; nothing scanned.
+- Independent review in a fresh session: request changes in round 1 (two majors, five minors, all
+  own code), all fixed with tests; round 2 approved at 9c16c493.
+- Not tested: dropping the HTTP request while dev is prepared (the fixture cannot hold
+  `cd_prepare`; the start is detached as ADR-0233's), and the reporter's own project (its run data
+  is not reachable from this sandbox).
