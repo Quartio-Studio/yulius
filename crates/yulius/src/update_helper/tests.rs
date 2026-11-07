@@ -453,9 +453,8 @@ fn a_withdrawn_build_stops_with_its_compilers() -> TestResult {
     wait_until("the helper's end", || helper.is_finished())?;
     helper.join().map_err(|_| "the helper panicked")??;
     wait_until("the compiler's end", || ended(&compiler))?;
-    let status: HelperStatus = serde_json::from_slice(&std::fs::read(
-        env.args.state_dir.join(STATUS_FILE),
-    )?)?;
+    let status: HelperStatus =
+        serde_json::from_slice(&std::fs::read(env.args.state_dir.join(STATUS_FILE))?)?;
     assert_eq!(status.id, "run-0005-build");
     assert_eq!(status.state, HelperState::Failed, "{status:?}");
     assert_eq!(status.error.as_deref(), Some("The build was cancelled."));
@@ -473,9 +472,8 @@ fn a_replaced_build_stops_and_the_new_request_is_built() -> TestResult {
     wait_until("the helper's end", || helper.is_finished())?;
     helper.join().map_err(|_| "the helper panicked")??;
     wait_until("the compiler's end", || ended(&compiler))?;
-    let status: HelperStatus = serde_json::from_slice(&std::fs::read(
-        env.args.state_dir.join(STATUS_FILE),
-    )?)?;
+    let status: HelperStatus =
+        serde_json::from_slice(&std::fs::read(env.args.state_dir.join(STATUS_FILE))?)?;
     assert_eq!(status.id, "run-0007-build");
     assert_eq!(status.state, HelperState::Done, "{status:?}");
     let staged = env.args.state_dir.join("staged");
