@@ -1,7 +1,7 @@
 import { test } from '@e2e-dev/web';
 import { expect } from 'e2e';
 import type { Browser, Screen } from '@e2e-dev/web';
-import { axeViolations, failOnPageErrors, firstShown, mock, openSuperagent } from './support.ts';
+import { axeViolations, DRAG_GRIP, DRAG_HINT, dragTab, failOnPageErrors, firstShown, mock, openSuperagent, tabGrips, tabMenu, tabNames, tabsInPlace } from './support.ts';
 
 failOnPageErrors();
 
@@ -270,6 +270,92 @@ test('the tab keys with a modifier do not switch the Superagent tabs', async ({ 
   await browser.keyboard.press('Alt+ArrowRight');
   await browser.keyboard.press('Control+End');
   await expect(here).toHaveAttribute('aria-selected', 'true');
+});
+
+// SPEC-434 MTB-001/004: the two tabs move as the sandbox and Notes tabs do, and say so.
+const strip = '.panel-view:not([hidden]) [role="tablist"][aria-label="Superagents"]';
+
+test('the Superagent tabs move by drag, keyboard and menu and stay so', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12', '&ambient=0'));
+  await firstShown(screen.getByRole('heading', { level: 1 }), '#12 Checkout API');
+  await openSuperagent(browser, screen);
+  const here = tabs(screen).getByRole('tab', 'This sandbox');
+  const all = tabs(screen).getByRole('tab', 'All sandboxes');
+  await expect(here).toHaveAttribute('aria-selected', 'true');
+  expect(await tabNames(browser, strip)).toEqual(['This sandbox', 'All sandboxes']);
+  expect(await tabGrips(browser, strip)).toEqual([{ title: DRAG_HINT, grip: DRAG_GRIP }, { title: DRAG_HINT, grip: DRAG_GRIP }]);
+  await expect(here).toHaveAttribute('aria-keyshortcuts', 'Alt+ArrowLeft Alt+ArrowRight');
+
+  // A drag moves All sandboxes first and chooses nothing.
+  await dragTab(browser, all, here);
+  await expect.poll(() => tabNames(browser, strip)).toEqual(['All sandboxes', 'This sandbox']);
+  await expect(here).toHaveAttribute('aria-selected', 'true');
+  // Both settle side by side: the tab slid aside is not left shifted (review round 1).
+  await expect.poll(() => tabsInPlace(browser, strip)).toBe(true);
+
+  // The chosen tab, dragged, rides above with the dragged tabs' background (review round 1).
+  const box = await here.boundingBox();
+  if (!box) throw new Error('tab not laid out');
+  await browser.mouse.move(box.x + 12, box.y + box.height / 2);
+  await browser.mouse.down();
+  await browser.mouse.move(box.x + 40, box.y + box.height / 2);
+  expect(await browser.evaluate((selector) => {
+    const tab = document.querySelector(`${selector} .term-tab.dragging`) as HTMLElement;
+    const probe = document.body.appendChild(document.createElement('div'));
+    probe.style.background = 'var(--surface-2)';
+    const want = getComputedStyle(probe).backgroundColor;
+    probe.remove();
+    return { key: tab.dataset.key, same: getComputedStyle(tab).backgroundColor === want, cursor: getComputedStyle(tab).cursor };
+  }, strip)).toEqual({ key: 'sandbox', same: true, cursor: 'grabbing' });
+  await browser.keyboard.press('Escape');
+  await browser.mouse.up();
+  expect(await tabNames(browser, strip)).toEqual(['All sandboxes', 'This sandbox']);
+  await expect.poll(() => tabsInPlace(browser, strip)).toBe(true);
+  expect(await startsOf(browser)).toEqual({ sandbox: 1, global: 0 });
+
+  // The arrows follow the order shown: Home is All sandboxes now.
+  await here.focus();
+  await browser.keyboard.press('Home');
+  await expect(all).toHaveAttribute('aria-selected', 'true');
+  await expect(all).toBeFocused();
+  await browser.keyboard.press('ArrowRight');
+  await expect(here).toHaveAttribute('aria-selected', 'true');
+
+  // Alt+←/→ moves the focused tab and keeps the keyboard on it; an end goes no further.
+  await browser.keyboard.press('Alt+ArrowLeft');
+  expect(await tabNames(browser, strip)).toEqual(['This sandbox', 'All sandboxes']);
+  await expect(here).toBeFocused();
+  await expect(here).toHaveAttribute('aria-selected', 'true');
+  await browser.keyboard.press('Alt+ArrowLeft');
+  expect(await tabNames(browser, strip)).toEqual(['This sandbox', 'All sandboxes']);
+
+  // The menu moves it without dragging (WCAG 2.5.7).
+  await tabMenu(browser, `${strip} [data-key="sandbox"]`);
+  await expect(screen.getByRole('menuitem', 'Move left')).toHaveAttribute('aria-disabled', 'true');
+  await screen.getByRole('menuitem', 'Move right').click();
+  expect(await tabNames(browser, strip)).toEqual(['All sandboxes', 'This sandbox']);
+  expect(await axeViolations(browser)).toEqual([]);
+
+  // Kept in another sandbox, after a reload and outside a sandbox, where the keys skip This sandbox.
+  await screen.getByRole('navigation', 'Sandboxes').getByRole('link', /^product\b/).click();
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('New task');
+  expect(await tabNames(browser, strip)).toEqual(['All sandboxes', 'This sandbox']);
+  await app.open(mock('/superagent'));
+  await expect(all).toHaveAttribute('aria-selected', 'true');
+  expect(await tabNames(browser, strip)).toEqual(['All sandboxes', 'This sandbox']);
+  // Its terminal takes the keyboard once it shows (SPEC-430): then the tab is focused.
+  await expect(browser.locator(`${shownAgent} .xterm-helper-textarea`)).toBeFocused();
+  await all.focus();
+  await browser.keyboard.press('ArrowRight');
+  await browser.keyboard.press('End');
+  await expect(all).toHaveAttribute('aria-selected', 'true');
+  await expect(all).toBeFocused();
+
+  // A stored order that is not the two tabs is ignored.
+  await browser.evaluate(() => localStorage.setItem('yulius.superagentOrder', JSON.stringify(['global', 'global'])));
+  await browser.reload();
+  await expect(all).toHaveAttribute('aria-selected', 'true');
+  expect(await tabNames(browser, strip)).toEqual(['This sandbox', 'All sandboxes']);
 });
 
 test('an image pasted into the Global Superagent reaches it by path; text stays text; other files are not sent', async ({ app, browser }) => {

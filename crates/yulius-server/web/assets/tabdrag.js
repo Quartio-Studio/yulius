@@ -112,6 +112,9 @@ export function createTabDrag(tablist, { keyOf, commit, cancelled = () => {}, se
     const { order } = layout(state, dx);
     const from = state.lefts[state.keys.indexOf(state.key)] + bounded(state, dx);
     const tabs = commit(order);
+    // A strip that keeps its tab elements (the Superagent's) only moves them: the ones slid aside
+    // are in their new places now (review round 1 of SPEC-434).
+    for (const other of state.tabs) if (other !== state.tab && other.isConnected) other.style.transform = '';
     const tab = tabs.find((t) => keyOf(t) === state.key);
     if (!tab) return;
     // From where it was let go into its place (FLIP).
@@ -170,4 +173,15 @@ export function movedBy(order, key, step) {
   next.splice(from, 1);
   next.splice(to, 0, key);
   return next;
+}
+
+/**
+ * `items` in the order a person gave their tabs (`order`, keys): the ones it names in that order,
+ * then the others (opened since) in their own order, as the sandbox tabs keep theirs.
+ */
+export function inOrder(items, order, keyOf) {
+  const rank = new Map((Array.isArray(order) ? order : []).map((key, i) => [key, i]));
+  const at = new Map(items.map((item, i) => [item, i]));
+  const place = (item) => (rank.has(keyOf(item)) ? rank.get(keyOf(item)) : Infinity);
+  return [...items].sort((a, b) => place(a) - place(b) || at.get(a) - at.get(b));
 }

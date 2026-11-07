@@ -9,9 +9,11 @@
 // The socket runs only while the panel is visible.
 
 import { enc } from './api.js';
-import { h, icon, iconButton, setChildren, toast, closableTabKeys } from './dom.js';
+import { DRAG_TAB_HINT, h, icon, iconButton, openMenu, setChildren, toast, closableTabKeys } from './dom.js';
 import { allows } from './status.js';
 import { createStreamView } from './browserstream.js';
+import { readJson, writeJson } from './store.js';
+import { createTabDrag, inOrder, movedBy } from './tabdrag.js';
 
 const WELCOME_PATH = /\/browser\/welcome\?sandbox=/;
 /** A tab is marked as the agent's this long after its last action. */
@@ -76,6 +78,10 @@ export function createBrowserPanel(ctx, sandbox) {
   let selectedAt = 0;
   let knownIds = new Set();
   const agentMarks = new Map(); // tab id → time of the agent's last action
+  // The tabs in the order the person gave them, kept by this browser per sandbox; a tab opened
+  // since comes last (SPEC-434 MTB-003).
+  const orderKey = `yulius.browserTabOrder.${sandbox.id}`;
+  let order = readJson(orderKey, null);
 
   const stream = createStreamView(ctx, sandbox, {
     onTabs,
@@ -92,6 +98,12 @@ export function createBrowserPanel(ctx, sandbox) {
   // ---------------------------------------------------------------- elements
   const tabList = h('div', { class: 'bp-tablist', role: 'tablist', 'aria-label': 'Browser tabs' });
   const tabStrip = h('div', { class: 'bp-tabs' }, tabList, iconButton('plus', 'New tab', () => openUrl('')));
+  let stripStale = false; // a redraw of the tabs held back while one is pressed
+  const drag = createTabDrag(tabList, {
+    keyOf: (node) => node.dataset.tabId,
+    commit: (keys) => reorder(keys),
+    cancelled: () => { if (stripStale) render(); },
+  });
   const backButton = iconButton('back', 'Back', () => current() && stream.history(current().id, -1));
   const forwardButton = iconButton('forward', 'Forward', () => current() && stream.history(current().id, 1));
   const reloadButton = iconButton('refresh', 'Reload', () => current() && stream.reload(current().id));
@@ -165,10 +177,35 @@ export function createBrowserPanel(ctx, sandbox) {
   });
 
   // ---------------------------------------------------------------- rendering
+  /** The tabs as shown: in the person's order. */
+  const shownTabs = () => inOrder(tabs, order, (tab) => tab.id);
+
+  /** Puts the tabs in `keys` (tab ids) and keeps it for this sandbox; answers the tabs drawn. */
+  function reorder(keys) {
+    order = keys;
+    writeJson(orderKey, keys);
+    return renderStrip();
+  }
+
+  /** Moves the tab `id` one place left (-1) or right (1); the keyboard stays on it. */
+  function move(id, step) {
+    const keys = movedBy(shownTabs().map((tab) => tab.id), id, step);
+    if (keys) reorder(keys);
+  }
+
   function render() {
+    renderStrip();
+    renderBar();
+  }
+
+  /** Draws the tabs, unless one is pressed (then once it is let go); answers them. */
+  function renderStrip() {
+    if (drag.dragging) { stripStale = true; return []; }
+    stripStale = false;
     const focused = tabList.contains(document.activeElement) ? document.activeElement.dataset.tabId : null;
     const now = Date.now();
-    const items = tabs.map((tab) => {
+    const shown = shownTabs();
+    const items = shown.map((tab, index) => {
       const active = tab.id === selected;
       const attn = Boolean(tab.action_requested);
       const agent = (agentMarks.get(tab.id) || 0) > now - AGENT_MARK_MS;
@@ -176,19 +213,43 @@ export function createBrowserPanel(ctx, sandbox) {
       const tip = attn ? `Action requested: ${tab.action_requested.reason}` : (tab.url && !isWelcome(tab) ? shortUrl(tab.url) : 'New tab');
       const close = (event) => { if (event) event.stopPropagation(); stream.close(tab.id); };
       const choose = () => { if (!active) select(tab.id); stream.focus(); };
-      const node = h('div', { class: ['bp-tab', active && 'active', attn && 'attention', agent && 'agent'], role: 'tab', tabindex: active ? '0' : '-1', dataset: { tabId: tab.id }, 'aria-selected': String(active), 'aria-keyshortcuts': 'Delete Backspace', title: tip },
+      const node = h('div', { class: ['bp-tab', active && 'active', attn && 'attention', agent && 'agent'], role: 'tab', tabindex: active ? '0' : '-1', dataset: { tabId: tab.id }, 'aria-selected': String(active), 'aria-keyshortcuts': 'Delete Backspace Alt+ArrowLeft Alt+ArrowRight', title: `${tip}\n${DRAG_TAB_HINT}` },
+        h('span', { class: 'tab-grip', 'aria-hidden': 'true' }, icon('grip', { size: 12 })),
         attn ? icon('warn', { size: 12 }) : null,
         h('span', { class: 'bp-tab-title' }, title),
         h('span', { class: 'bp-tab-close', 'aria-hidden': 'true', title: `Close ${title}`, onClick: close }, icon('x')));
-      node.addEventListener('click', choose);
-      node.addEventListener('keydown', (event) => closableTabKeys(event, { select: choose, close: () => close() }));
+      node.addEventListener('click', () => { if (!drag.clickConsumed()) choose(); });
+      // × closes: it drags nothing.
+      node.addEventListener('pointerdown', (event) => { if (!event.target.closest('.bp-tab-close')) drag.press(event, node); });
+      node.addEventListener('keydown', (event) => {
+        if (event.altKey && !event.ctrlKey && !event.metaKey && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {
+          event.preventDefault();
+          move(tab.id, event.key === 'ArrowLeft' ? -1 : 1);
+          return;
+        }
+        closableTabKeys(event, { select: choose, close: () => close() });
+      });
+      // Moving a tab without dragging (WCAG 2.5.7), as the Notes and sandbox tabs do.
+      node.addEventListener('contextmenu', (event) => {
+        event.preventDefault();
+        openMenu({ x: event.clientX, y: event.clientY }, [
+          { label: 'Move left', icon: 'left', disabled: index === 0, onSelect: () => move(tab.id, -1) },
+          { label: 'Move right', icon: 'right', disabled: index === shown.length - 1, onSelect: () => move(tab.id, 1) },
+          { separator: true },
+          { label: 'Close', onSelect: () => close() },
+        ]);
+      });
       return node;
     });
     if (items.length && !items.some((node) => node.tabIndex === 0)) items[0].tabIndex = 0;
     setChildren(tabList, items);
     // Focus stays in the strip; after closing the focused tab it moves to the selected one.
     if (focused) (items.find((node) => node.dataset.tabId === focused) || items.find((node) => node.tabIndex === 0))?.focus();
+    return items;
+  }
 
+  /** The address bar and the buttons for the tab shown. */
+  function renderBar() {
     const tab = current();
     if (document.activeElement !== address) address.value = tab && tab.url && !isWelcome(tab) ? shortUrl(tab.url) : '';
     backButton.disabled = !tab;

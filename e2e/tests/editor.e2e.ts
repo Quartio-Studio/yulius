@@ -1,6 +1,6 @@
 import { test, type Browser } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, editorShown, failOnPageErrors, MONACO_LOAD_MS, mock, pageErrors } from './support.ts';
+import { axeViolations, DRAG_GRIP, DRAG_HINT, editorShown, failOnPageErrors, MONACO_LOAD_MS, mock, pageErrors, tabGrips } from './support.ts';
 
 failOnPageErrors();
 
@@ -572,6 +572,9 @@ test('the editor’s file tabs move by drag, Alt+arrows and the menu', async ({ 
   await tree.getByRole('treeitem', /api$/).click();
   await tree.getByRole('treeitem', 'checkout.rs').click();
   await expect.poll(() => editorTabs(browser)).toEqual(['README.md', 'AGENTS.md', 'src/api/checkout.rs']);
+  // SPEC-434 MTB-004: each shows the grip and says, after its path, that it can be clicked or dragged.
+  expect(await tabGrips(browser, '.ed-tabs')).toEqual(['README.md', 'AGENTS.md', 'src/api/checkout.rs']
+    .map((path) => ({ title: `${path}\n${DRAG_HINT}`, grip: DRAG_GRIP })));
 
   // Drag checkout.rs before README.md: the press does not choose it, the open file stays.
   await screen.getByRole('tab', /^AGENTS\.md/).click();

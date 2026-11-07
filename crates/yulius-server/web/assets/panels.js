@@ -7,7 +7,7 @@
 // over the center.
 
 import { enc } from './api.js';
-import { h, icon, iconButton, setChildren, errorToast, singleFlight, closableTabKeys } from './dom.js';
+import { DRAG_TAB_HINT, h, icon, iconButton, openMenu, setChildren, errorToast, singleFlight, closableTabKeys } from './dom.js';
 import { createTerminalView } from './terminal.js';
 import { attachTerminalDrop, shellAttachments } from './filedrop.js';
 import { createBrowserPanel } from './browser.js';
@@ -17,6 +17,7 @@ import { createNotesView } from './notes.js';
 import { allows } from './status.js';
 import { readJson, writeJson } from './store.js';
 import { createSplitter, layoutPrefs } from './splitter.js';
+import { createTabDrag, inOrder, movedBy } from './tabdrag.js';
 
 /** The panel's width per browser before widths were kept per user (read once as a fallback). */
 const WIDTH_KEY = 'yulius.panelWidth';
@@ -402,7 +403,8 @@ function simpleView(el) {
  * folder (the sandbox repository or the current task's worktree). Tabs close with × or Delete
  * and rename with a double-click or F2. Terminals keep running when the page reloads or the
  * server restarts (`GET /api/sandboxes/{sid}/shells` lists them again); the views of opened
- * tabs stay attached, so switching tabs is instant.
+ * tabs stay attached, so switching tabs is instant. The tabs move by drag, Alt+←/→ and their menu,
+ * in an order this browser keeps per sandbox; a new terminal comes last (SPEC-434 MTB-002).
  */
 function createShellView(ctx, sandbox, getTask) {
   const el = h('div', { class: 'panel-view' });
@@ -411,6 +413,7 @@ function createShellView(ctx, sandbox, getTask) {
     return { el };
   }
   const activeKey = `yulius.shellActive.${sandbox.id}`;
+  const orderKey = `yulius.shellOrder.${sandbox.id}`;
   const tablist = h('div', { class: 'term-tabs', role: 'tablist', 'aria-label': 'Terminals' });
   const views = h('div', { class: 'term-views' });
   setChildren(el, tablist, views);
@@ -424,6 +427,12 @@ function createShellView(ctx, sandbox, getTask) {
   let destroyed = false;
   let where = '';
   let renaming = null;
+  let tabsStale = false; // a redraw held back while a tab is pressed
+  const drag = createTabDrag(tablist, {
+    keyOf: (tab) => tab.dataset.id,
+    commit: (order) => reorder(order),
+    cancelled: () => { if (tabsStale) renderTabs(); },
+  });
 
   const folderLabel = (shell) => {
     if (!shell.task_id) return 'Sandbox repository';
@@ -442,23 +451,47 @@ function createShellView(ctx, sandbox, getTask) {
     return select;
   }
 
+  /** Draws the strip, unless a tab is pressed (then once it is let go); answers the tabs drawn. */
   function renderTabs() {
+    if (drag.dragging) { tabsStale = true; return []; }
+    tabsStale = false;
     const focused = tablist.contains(document.activeElement) ? document.activeElement.dataset.id : null;
     const items = shells.map((shell) => {
       const selected = shell.id === active;
       const name = renaming === shell.id
         ? renameInput(shell)
         : h('span', { class: 'term-tab-name' }, shell.name);
-      const tab = h('div', { class: ['term-tab', selected && 'active', shell.ended && 'term-tab-ended'], role: 'tab', id: `term-tab-${shell.id}`, tabindex: selected ? '0' : '-1', 'aria-selected': String(selected), 'aria-controls': shell.slot ? `term-panel-${shell.id}` : null, dataset: { id: shell.id }, title: `${shell.name} · ${folderLabel(shell)} — double-click or F2 to rename`, 'aria-keyshortcuts': 'F2 Delete Backspace' },
+      const tab = h('div', { class: ['term-tab', selected && 'active', shell.ended && 'term-tab-ended'], role: 'tab', id: `term-tab-${shell.id}`, tabindex: selected ? '0' : '-1', 'aria-selected': String(selected), 'aria-controls': shell.slot ? `term-panel-${shell.id}` : null, dataset: { id: shell.id }, title: `${shell.name} · ${folderLabel(shell)} — double-click or F2 to rename\n${DRAG_TAB_HINT}`, 'aria-keyshortcuts': 'F2 Delete Backspace Alt+ArrowLeft Alt+ArrowRight' },
+        h('span', { class: 'tab-grip', 'aria-hidden': 'true' }, icon('grip', { size: 12 })),
         name,
         // Not a button (see closableTabKeys): Delete or Backspace closes the focused tab.
         h('span', { class: 'term-tab-close', 'aria-hidden': 'true', title: `Close ${shell.name}`, onClick: (event) => { event.stopPropagation(); closeShell(shell); } }, '×'));
-      tab.addEventListener('click', () => { if (renaming !== shell.id) activate(shell.id, { focus: true }); });
+      tab.addEventListener('click', () => { if (!drag.clickConsumed() && renaming !== shell.id) activate(shell.id, { focus: true }); });
+      // × closes and a tab being renamed edits its name: neither drags.
+      tab.addEventListener('pointerdown', (event) => { if (renaming !== shell.id && !event.target.closest('.term-tab-close')) drag.press(event, tab); });
+      tab.addEventListener('contextmenu', (event) => {
+        if (renaming === shell.id) return;
+        event.preventDefault();
+        const index = shells.indexOf(shell);
+        // Moving a tab without dragging (WCAG 2.5.7), as the Notes and sandbox tabs do.
+        openMenu({ x: event.clientX, y: event.clientY }, [
+          { label: 'Move left', icon: 'left', disabled: index === 0, onSelect: () => move(shell, -1) },
+          { label: 'Move right', icon: 'right', disabled: index === shells.length - 1, onSelect: () => move(shell, 1) },
+          { separator: true },
+          { label: 'Rename', disabled: shell.ended, onSelect: () => startRename(shell) },
+          { label: 'Close', onSelect: () => closeShell(shell) },
+        ]);
+      });
       tab.addEventListener('dblclick', () => startRename(shell));
       tab.addEventListener('auxclick', (event) => { if (event.button === 1) closeShell(shell); });
       tab.addEventListener('keydown', (event) => {
         if (renaming === shell.id) return;
         if (event.key === 'F2') { event.preventDefault(); startRename(shell); return; }
+        if (event.altKey && !event.ctrlKey && !event.metaKey && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {
+          event.preventDefault();
+          move(shell, event.key === 'ArrowLeft' ? -1 : 1);
+          return;
+        }
         closableTabKeys(event, { select: () => activate(shell.id, { focus: true }), close: () => closeShell(shell, { fromKeyboard: true }) });
       });
       return tab;
@@ -466,6 +499,20 @@ function createShellView(ctx, sandbox, getTask) {
     // The strip stays when it is empty: a terminal appearing in it never resizes the others.
     setChildren(tablist, items);
     if (focused && renaming === null) (items.find((item) => item.dataset.id === focused) || items.find((item) => item.tabIndex === 0))?.focus();
+    return items;
+  }
+
+  /** Puts the tabs in `order` (terminal ids) and keeps it for this sandbox. */
+  function reorder(order) {
+    shells = inOrder(shells, order, (shell) => shell.id);
+    writeJson(orderKey, shells.map((shell) => shell.id));
+    return renderTabs();
+  }
+
+  /** Moves `shell` one place left (-1) or right (1); the keyboard stays on its tab. */
+  function move(shell, step) {
+    const order = movedBy(shells.map((s) => s.id), shell.id, step);
+    if (order) reorder(order);
   }
 
   function renameInput(shell) {
@@ -566,6 +613,8 @@ function createShellView(ctx, sandbox, getTask) {
     const index = shells.indexOf(shell);
     if (index < 0) return;
     shells.splice(index, 1);
+    // A closed terminal leaves the order kept (its id never comes back).
+    if (readJson(orderKey, null)) writeJson(orderKey, shells.map((s) => s.id));
     if (shell.view) shell.view.destroy();
     if (shell.slot) shell.slot.remove();
     if (active === shell.id) {
@@ -616,7 +665,7 @@ function createShellView(ctx, sandbox, getTask) {
       const list = await fetchList();
       if (destroyed) return;
       loaded = true;
-      shells = list.map((shell) => ({ ...shell }));
+      shells = inOrder(list.map((shell) => ({ ...shell })), readJson(orderKey, null), (shell) => shell.id);
       if (!shells.length) {
         renderTabs();
         await create({ focus: shown && focusWanted });
