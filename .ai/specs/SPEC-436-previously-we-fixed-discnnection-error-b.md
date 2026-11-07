@@ -83,8 +83,8 @@ still does not ping.
 - An idle, Running task heard but never pinged is not reconnected at 3, 30 or 300 minutes of
   silence, whether its run was spawned by this server or reattached.
 - A reattached run never heard by this server is not reconnected.
-- The reconnect loop of the logs cannot happen: after a reconnect answered by a bridge that does
-  not ping, no further reconnect is typed.
+- The reconnect loop of the logs cannot happen: in a run whose bridge never pinged on this server,
+  a reconnect answered by a bridge that does not ping is the last one typed.
 - A bridge that pinged and stopped, and a run spawned here that never connected, are still
   reconnected, and told to continue as before.
 
@@ -95,8 +95,11 @@ still does not ping.
   to 5 hours) and `a_reconnect_answered_by_a_bridge_that_does_not_ping_is_the_last`, both failing
   before the fix; the existing tests of the reattached and heard-before-first-ping cases now
   expect no reconnect; the other MCR-003/MCR-004 tests stay as they are.
-- Integration (`yulius/tests/restart.rs`): the existing silent-task test, whose bridge pinged, still
-  gets the reconnect and the continue text.
+- Unit (`yulius-app::mcp_watch`): `a_reattached_bridge_that_pinged_here_and_stopped_is_reconnected`,
+  the usual real drop after an update or restart (every live run is then reattached).
+- Integration (`yulius/tests/restart.rs`): the existing silent-task test, whose fake agent never
+  reaches `POST /mcp` (a run spawned here that never connected), still gets the reconnect and the
+  continue text.
 
 ## Decisions
 

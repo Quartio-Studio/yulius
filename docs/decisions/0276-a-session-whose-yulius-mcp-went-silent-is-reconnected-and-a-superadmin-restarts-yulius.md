@@ -79,7 +79,7 @@ hand does not pause the tasks.
 - A session started before this release has a bridge that does not ping: after the update it reads
   as silent once idle and gets one `/mcp reconnect yulius`, which starts the new bridge, and no
   continue text. (It did not: the sandbox's binary stayed the old one, so such sessions were
-  reconnected every 3½ minutes; 0280 leaves a bridge that never pinged alone.)
+  reconnected every 3½ minutes; 0280 leaves a bridge heard but never pinged alone.)
 - The unprivileged service can now have the root helper stop and start it at will; that is no more
   than the service stopping itself.
 - `/mcp reconnect` is Claude Code's inline action; a Claude Code without it would show its usage

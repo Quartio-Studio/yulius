@@ -547,6 +547,28 @@ mod tests {
         }
     }
 
+    /// Review of #1108: after an update or restart every live run is reattached; one whose bridge
+    /// pinged on this server and stopped is gone, reconnected and then told to continue.
+    #[test]
+    fn a_reattached_bridge_that_pinged_here_and_stopped_is_reconnected() {
+        let restarted = WatchBounds::new(Timestamp(60 * MIN));
+        let dropped = WatchFacts {
+            now_ms: 70 * MIN,
+            spawned_ms: 5 * MIN,
+            seen_ms: 61 * MIN,
+            pinged_ms: 61 * MIN,
+            turn_closed_ms: 66 * MIN,
+            ..silent()
+        };
+        let (action, typed) = decide(&dropped, Reconnects::default(), &restarted);
+        assert_eq!(action, WatchAction::Reconnect);
+        assert_eq!(typed.cut_off_from_ms, Some(61 * MIN + PING_GRACE_MS));
+        assert_eq!(
+            decide(&heard(dropped), typed, &restarted).0,
+            WatchAction::Continue
+        );
+    }
+
     /// #1108, the loop of 2026-11-07: a reconnect answered by a bridge that does not ping either
     /// (the sandbox's binary predates pings) is the last one typed.
     #[test]

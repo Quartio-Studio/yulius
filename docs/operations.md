@@ -1490,7 +1490,8 @@ deploy runs: a restart has no build to wait through) pauses every task as step 2
 resumes the tasks one by one. It needs the update helper; prefer it to `systemctl restart`, which
 does not pause tasks. A task session whose Yulius MCP was dropped by Claude Code is reconnected by
 Yulius after 3 silent minutes (it types `/mcp reconnect yulius` into the idle session), but only
-when the drop is certain: its bridge had pinged and stopped, or the session never connected. A
+when the drop is certain: its bridge had pinged and stopped, or a session this server spawned never
+connected. A
 sandbox keeps the `yulius` binary of the base it started on until it restarts, so after an update
 its bridges may be an older build that does not ping; those are left alone (ADR-0280).
 
