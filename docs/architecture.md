@@ -751,9 +751,12 @@ A restart or an update is invisible to a task's session
   [decision 0276](decisions/0276-a-session-whose-yulius-mcp-went-silent-is-reconnected-and-a-superadmin-restarts-yulius.md)).
   Claude Code can still mark the server failed for good (a stdio server gets 30 s to connect).
   The bridge pings `POST /mcp` every minute and every agent request records the task's last
-  contact. A Running, idle task silent for 3 minutes gets `/mcp reconnect yulius` typed (at most
-  every 10 minutes, 3 times unanswered), and once heard again, if its turn closed while it was
-  silent, "Yulius's tools are reconnected; continue". Mid-turn, `yulius tool <name> '<json>'` calls
+  contact. A Running, idle task silent for 3 minutes whose MCP is known to be gone (its bridge
+  pinged and stopped, or a run this server spawned never connected) gets `/mcp reconnect yulius`
+  typed (at most every 10 minutes, hourly after 3 unanswered), and once heard again, if its turn
+  closed while it was silent, "Yulius's tools are reconnected; continue". A bridge heard but never
+  pinged may be an older build that is alive, since a sandbox keeps the `yulius` of the base it
+  started on: it is left alone ([decision 0280](decisions/0280-only-a-yulius-mcp-known-to-be-gone-is-reconnected.md)). Mid-turn, `yulius tool <name> '<json>'` calls
   any Yulius tool from the shell.
 
 ```mermaid
@@ -770,8 +773,8 @@ sequenceDiagram
     B-->>C: the answer, one line
     Y->>C: 90 s later, to a task idle since the outage: "Yulius is back#59; continue"
     B->>Y: ping every 60 s (the task's last contact)
-    Note over C,B: Claude Code dropped the server: no ping
-    Y->>C: idle and silent 3 min: "/mcp reconnect yulius"
+    Note over C,B: Claude Code dropped the server: its pings stop
+    Y->>C: pinged before, idle and silent 3 min: "/mcp reconnect yulius"
     C->>B: a new bridge: initialize, then pings
     Y->>C: turn closed while silent: "Yulius's tools are reconnected#59; continue"
 ```
