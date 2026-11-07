@@ -350,6 +350,9 @@ async fn the_global_superagent_drives_a_named_projects_browser() -> TestResult {
         assert!(instructions.contains("browser_open"), "{instructions}");
 
         docs_login(f, VALUE).await?;
+        let served = serve(f.h.router.clone()).await?;
+        let mut viewer =
+            ws_connect(served.addr, "/api/sandboxes/s1/browser", &f.alice, ORIGIN).await?;
         let opened = mcp_tool(
             &f.h,
             &token,
@@ -362,6 +365,11 @@ async fn the_global_superagent_drives_a_named_projects_browser() -> TestResult {
             .as_str()
             .ok_or("tab id")?
             .to_owned();
+        let cursor = wait_json(&mut viewer, |m| {
+            m["type"] == "agent_activity" && m["action"] == "open"
+        })
+        .await?;
+        assert_eq!(cursor["label"], "alice's Global Superagent", "{cursor}");
         let browser =
             f.h.app
                 .browser_session(&SandboxId::parse("s1")?)

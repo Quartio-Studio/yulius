@@ -33,9 +33,9 @@ use crate::context::App;
 use crate::coordination::{Channel, ProjectCaller};
 use crate::error::{AppError, AppResult};
 use crate::manage::TaskChange;
-use crate::mcp::{STRUCTURED_META, cockpit_tool_descriptors};
+use crate::mcp::{STRUCTURED_META, TaskToolResult, cockpit_tool_descriptors};
 use crate::model::SandboxRecord;
-use crate::vault::Holder;
+use crate::vault::{Holder, SecretUser};
 
 /// Largest remote MCP request: a `project_change` of 50 files of 256 KiB, JSON-escaped.
 pub const MAX_REMOTE_BODY_BYTES: usize = 32 << 20;
@@ -108,6 +108,16 @@ const REMOTE_TOOLS: &[(&str, Reach, Action)] = &[
     ("variables_list", Reach::Project, Action::View),
     ("variables_set", Reach::Project, Action::Configure),
     ("variable_delete", Reach::Project, Action::Configure),
+    // The Global Superagent's only (SPEC-437 SAB-002): a viewer of the browser needs write access.
+    ("browser_tabs", Reach::Project, Action::Work),
+    ("browser_open", Reach::Project, Action::Work),
+    ("browser_navigate", Reach::Project, Action::Work),
+    ("browser_click", Reach::Project, Action::Work),
+    ("browser_type", Reach::Project, Action::Work),
+    ("browser_snapshot", Reach::Project, Action::Work),
+    ("browser_screenshot", Reach::Project, Action::Work),
+    ("browser_request_user_action", Reach::Project, Action::Work),
+    ("browser_fill_secret", Reach::Project, Action::Work),
 ];
 
 /// Tools that run in a task of their own, to their end and their audit, even when the caller goes
@@ -176,9 +186,13 @@ impl RemoteCaller {
         }
     }
 
-    /// Whether it is served `tool` (the Global Superagent is not served every one).
+    /// Whether it is served `tool`: the Global Superagent is not served every one, and a
+    /// person's own agent not the Global Superagent's own.
     fn serves(&self, tool: &str) -> bool {
-        self.superagent.is_none() || crate::global_superagent::serves(tool)
+        match self.superagent {
+            Some(_) => crate::global_superagent::serves(tool),
+            None => !crate::global_superagent::GLOBAL_ONLY_TOOLS.contains(&tool),
+        }
     }
 }
 
@@ -428,19 +442,25 @@ fn own_descriptors() -> Vec<ToolDescriptor> {
         .collect()
 }
 
-/// The tools a token of `scope` is served by `tools/list` (RMT-011).
-#[must_use]
-pub fn remote_tool_descriptors(scope: TokenScope) -> Vec<ToolDescriptor> {
-    let shared = cockpit_tool_descriptors()
+/// The Superagent's tools `names`, served with `project` added.
+pub(crate) fn project_descriptors(names: &[&str]) -> Vec<ToolDescriptor> {
+    cockpit_tool_descriptors()
         .into_iter()
-        .filter(|t| SHARED_TOOLS.contains(&t.name.as_str()))
+        .filter(|t| names.contains(&t.name.as_str()))
         .map(|mut t| {
             t.description = t
                 .description
                 .replace("this project", "the project")
                 .replace("this sandbox", "the project");
             with_project(t)
-        });
+        })
+        .collect()
+}
+
+/// The tools a token of `scope` is served by `tools/list` (RMT-011).
+#[must_use]
+pub fn remote_tool_descriptors(scope: TokenScope) -> Vec<ToolDescriptor> {
+    let shared = project_descriptors(SHARED_TOOLS);
     let mut tools: Vec<ToolDescriptor> = own_descriptors().into_iter().chain(shared).collect();
     tools.retain(|t| remote_tool(&t.name).is_some_and(|(_, action)| scope.allows(action)));
     tools.sort_by_key(|t| {
@@ -658,11 +678,24 @@ impl App {
                     actor: caller.actor(),
                     detail: caller.via(),
                 };
-                let outcome = self
-                    .remote_project_tool(caller, &project, &sandbox, name, &args)
-                    .await;
-                // The spawned change tools audit themselves (they outlive their caller).
-                if action != Action::View && !SPAWNED_TOOLS.contains(&name) {
+                let outcome = match self
+                    .browser_tool(SecretUser::Superagent(&project), name, &args)
+                    .await
+                {
+                    // A screenshot only reads, so it is not audited.
+                    Some(TaskToolResult::Complete(result)) => return result,
+                    Some(TaskToolResult::Value(outcome)) => outcome,
+                    None => {
+                        self.remote_project_tool(caller, &project, &sandbox, name, &args)
+                            .await
+                    }
+                };
+                // The spawned change tools audit themselves (they outlive their caller); the
+                // browser's reading tools change nothing.
+                if action != Action::View
+                    && !SPAWNED_TOOLS.contains(&name)
+                    && !crate::browser::READING_TOOLS.contains(&name)
+                {
                     self.audit_remote(caller, name, Some(&sandbox.id), outcome.is_ok())
                         .await;
                 }
@@ -1068,7 +1101,13 @@ mod tests {
 
     #[test]
     fn every_remote_tool_is_described_once_and_project_tools_take_a_project() {
-        let tools = remote_tool_descriptors(TokenScope::Operate);
+        // A token's, and the Global Superagent's own (SPEC-437).
+        let tools: Vec<ToolDescriptor> = remote_tool_descriptors(TokenScope::Operate)
+            .into_iter()
+            .chain(project_descriptors(
+                crate::global_superagent::GLOBAL_ONLY_TOOLS,
+            ))
+            .collect();
         assert_eq!(tools.len(), REMOTE_TOOLS.len());
         for (name, reach, _) in REMOTE_TOOLS {
             let found: Vec<&ToolDescriptor> = tools.iter().filter(|t| t.name == *name).collect();
@@ -1118,6 +1157,9 @@ mod tests {
                 t.name
             );
         }
-        assert!(remote_tool_descriptors(TokenScope::Cli).len() == REMOTE_TOOLS.len());
+        assert_eq!(
+            remote_tool_descriptors(TokenScope::Cli).len(),
+            REMOTE_TOOLS.len() - crate::global_superagent::GLOBAL_ONLY_TOOLS.len()
+        );
     }
 }

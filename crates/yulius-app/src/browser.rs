@@ -40,6 +40,11 @@ pub struct BrowserGrant {
     pub sandbox_id: SandboxId,
 }
 
+/// The browser tools that only read: the Superagent runs them without asking and a Global
+/// Superagent's calls of them are not audited (SPEC-437).
+pub(crate) const READING_TOOLS: [&str; 3] =
+    ["browser_tabs", "browser_snapshot", "browser_screenshot"];
+
 /// The browser tool descriptors served by `tools/list` (SPEC-002 §7.4).
 #[must_use]
 pub fn tool_descriptors() -> Vec<ToolDescriptor> {
