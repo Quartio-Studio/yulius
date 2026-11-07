@@ -1800,7 +1800,15 @@ branch's verified head. Which release is previous, kept or behind a barrier is
 (`App::cd_start_drill`; back to the previous release and forward, `drill_steps`), and a
 production-stage deploy asks `App::cd_rollback_gate` (`yulius_domain::rollback::production_gate`)
 before any secret or promotion: rollback configured, and the newest drill passed at the tree it
-deploys. An environment whose table has no `deploy` and no `rollback` (empty, or a production that
+deploys. A person's production deploy refused only for that proof, where the drill environment can
+deploy the same tree (`yulius_domain::rollback::dev_can_prove`, `App::cd_dev_proof`), deploys that
+environment instead as the same person (`App::cd_start_or_prove`,
+`crates/yulius-app/src/ci/prove.rs`;
+[SPEC-438](../.ai/specs/SPEC-438-something-is-fucked-up-with-deployment-f.md),
+[decision 0282](decisions/0282-a-production-deploy-proves-its-rollback-on-dev-first.md)). The
+production deploy waits in memory (`CiState::production_waits`) for that deploy and the drill it
+starts, then starts as the person with the commit they confirmed; a wait that ends otherwise
+records an ended production run in `error` saying why. An environment whose table has no `deploy` and no `rollback` (empty, or a production that
 only promotes) needs no rollback: `mark_rollback_not_needed`
 (`crates/yulius-app/src/ci/rollback.rs`) sets its `not_needed` reason once per CD overview, which
 `cd_status` and the CD page show, unless a production-stage environment with a deploy command drills
@@ -1817,6 +1825,8 @@ flowchart LR
   D1["dev deploy passes"] -->|"::yulius-release v2"| REL["cd_releases (per env, stage, part)"]
   D1 --> DR["drill on dev: rollback v1, verify, rollback v2, verify"]
   DR -->|"passed at commit X"| GATE{"production deploy of X's tree"}
+  GATE -->|"no drill of this tree: a person's deploy"| D1
+  DR -->|"passed: the waiting production deploy goes on"| PROD
   NOCFG["no rollback in [cd.prod]"] -->|"refused"| GATE
   GATE -->|"proven"| PROD["production deploy"]
   REL --> RB["Roll back to previous / to this (CD page, cd_rollback on dev)"]

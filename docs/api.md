@@ -860,6 +860,7 @@ CdEnvironment = {"name": "dev|prod|<name>", "label": "dev|production|<name>", "s
                  "rollback": CdRollback}
 CdRollback = {"command": "<rollback>"|null (not configured), "migrations", "drill_environment",
               "drill": CdRun|null (its newest drill), "blocked": "<why a production deploy is refused>"|null,
+              "waiting": "<the production deploy waiting for dev's deploy and drill, SPEC-438>"|null,
               "not_needed": "<why it needs no rollback: no deploy command, SPEC-418>"|null,
               "parts": [{"name": ""|"<part>", "current", "previous" (what "Roll back to previous" goes to),
                          "releases": [{"release", "commit", "deployed_at", "requested_by", "current",
@@ -923,6 +924,15 @@ the sandbox's agent secrets (an id that held one is ignored). `drill` must name 
 production-stage deploy whose table has a `deploy` is refused (`conflict`, audited
 `cd.refused`) until the table has `rollback` and the newest drill of its `drill` environment passed
 at a commit with the tree being deployed (with `promote`: the integration commit promoted).
+A person's production deploy refused only for that (the newest drill is missing or ran at another
+tree, none runs, and the drill environment has `deploy` and `rollback` at the integration head,
+whose tree is the one production deploys) deploys the drill environment instead, as that person:
+the answer is that dev run, whose note says production follows (SPEC-438). Once that deploy and
+its drill passed, Yulius starts the production deploy as the person (access read again, the
+confirmed commit as `expect`); otherwise an ended production run in `error` with reason
+"production did not deploy: <why>" is recorded and audited `cd.refused`. While it waits, the
+production rollback's `waiting` says so and another production deploy is refused with it; a
+restart forgets the wait.
 
 ## Stages (pipeline measurements)
 

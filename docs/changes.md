@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-07
 
+- Deploy production proves its rollback on dev by itself (SPEC-438, ADR-0282, task #420, #1115).
+  A production deploy was refused with "rollback is not proven for this commit: the last rollback
+  drill of dev ran at e83c627; deploy dev at this commit first" whenever dev had moved past its
+  last drill, which agents' merges make the usual case. The person then had to deploy dev, wait
+  for its drill and click again before the next merge landed. Now, when only that drill is
+  missing, Deploy production deploys dev at the commit as the same person, waits for the drill and
+  then deploys production. If dev's deploy or drill fails, production does not deploy and its run
+  says why. The CD page and `cd_status` show the wait.
 - Yulius no longer restarts a healthy Yulius MCP server (SPEC-436, ADR-0280, task #418, #1108).
   Idle sessions showed `/mcp reconnect yulius` → "Successfully reconnected to yulius" again and
   again: Claude Code's logs show the server never dropped, and Yulius's reconnect watch (ADR-0276)
