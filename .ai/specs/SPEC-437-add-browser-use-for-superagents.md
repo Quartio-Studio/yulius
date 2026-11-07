@@ -150,6 +150,16 @@ On 2026-11-07, branch at `c15e5822` plus the pinned-launch test fix (current wit
   Superagent's refusal naming `secret_request_hosts`, stale decision records; nits), all fixed
   above; round 2 approved `c15e5822`. Its pre-existing finding (a secret typed into a plain-text
   field shows in a screenshot, true for tasks before this change) is issue #1113.
+- Yulius CI on #1114 at `2613bd6b`: quality passed, security skipped (Vidoc disabled), e2e failed
+  1 of 867: `editor.e2e.ts` "a file deleted under unsaved text offers Keep mine", in code this
+  change does not touch. Reproduced locally (1 of 20 runs; 3 of 60 with 4 workers); diagnostics
+  showed no save reached the server: `livedoc.js` `save({force})` pressed while this tab's typing
+  was unconfirmed kept only `saveWanted`, and the later save ran without force and was refused by
+  the conflict. Fixed in its own commit (a waiting save keeps its force; Take disk version clears
+  it) with a deterministic e2e test, `Keep mine pressed before this tab’s typing is confirmed
+  writes once it lands` (holds the edit; failed at the "Saved" poll before the fix). After it:
+  `editor.e2e.ts` and `live-editor.e2e.ts` 45 of 45, and both Keep-mine tests 120 of 120 runs
+  with 4 workers.
 - Not tested: a real Chromium and a real Claude Code session (the tests use the fake DevTools
   server and the fake `claude`), and the restart of already-running Superagents to pick up the
   tools, which the existing launch-digest tests cover generically.
