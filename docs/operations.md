@@ -1489,7 +1489,11 @@ deploy runs: a restart has no build to wait through) pauses every task as step 2
 `/internal/version` reports the same commit; nothing is backed up, installed or rolled back), and
 resumes the tasks one by one. It needs the update helper; prefer it to `systemctl restart`, which
 does not pause tasks. A task session whose Yulius MCP was dropped by Claude Code is reconnected by
-Yulius after 3 silent minutes (it types `/mcp reconnect yulius` into the idle session).
+Yulius after 3 silent minutes (it types `/mcp reconnect yulius` into the idle session), but only
+when the drop is certain: its bridge had pinged and stopped, or a session this server spawned never
+connected. A
+sandbox keeps the `yulius` binary of the base it started on until it restarts, so after an update
+its bridges may be an older build that does not ping; those are left alone (ADR-0280).
 
 Yulius updates itself from `main` of **Quartio-Studio/yulius** (SPEC-001 OPS-006..OPS-009,
 SPEC-002 ADR-18). It knows the commit it was built from (`yulius version`, and

@@ -4,6 +4,16 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-07
+
+- Yulius no longer restarts a healthy Yulius MCP server (SPEC-436, ADR-0280, task #418, #1108).
+  Idle sessions showed `/mcp reconnect yulius` → "Successfully reconnected to yulius" again and
+  again: Claude Code's logs show the server never dropped, and Yulius's reconnect watch (ADR-0276)
+  restarted it every 3½ minutes, about 130 times per session overnight. A sandbox keeps the
+  `yulius` binary of the base it started on, so after the update its bridges did not ping, and the
+  watch read them as dropped. Now it reconnects only a session whose MCP is known to be gone: its
+  bridge pinged and stopped, or a run this server spawned never connected.
+
 ## 2026-11-06
 
 - Every tab strip of the tool panel moves like the sandbox tabs (SPEC-434, ADR-0278, task #416).

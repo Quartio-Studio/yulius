@@ -2,7 +2,9 @@
 
 ## Status
 
-Accepted. Specified in
+Accepted; its "a silent session is reconnected" is amended by
+[0280](0280-only-a-yulius-mcp-known-to-be-gone-is-reconnected.md) (only a Yulius MCP known to be
+gone is reconnected). Specified in
 [SPEC-432](../../.ai/specs/SPEC-432-fix-so-this-never-ever-happen-again-also.md); task #414.
 Builds on [0244](0244-task-runs-reach-yulius-through-a-stdio-bridge-and-are-woken-after-an-outage.md)
 (the stdio bridge) and [0131](0131-an-update-freezes-every-task-at-once.md) (an update freezes
@@ -76,7 +78,8 @@ hand does not pause the tasks.
 - Each task session's bridge makes one small request a minute.
 - A session started before this release has a bridge that does not ping: after the update it reads
   as silent once idle and gets one `/mcp reconnect yulius`, which starts the new bridge, and no
-  continue text.
+  continue text. (It did not: the sandbox's binary stayed the old one, so such sessions were
+  reconnected every 3½ minutes; 0280 leaves a bridge heard but never pinged alone.)
 - The unprivileged service can now have the root helper stop and start it at will; that is no more
   than the service stopping itself.
 - `/mcp reconnect` is Claude Code's inline action; a Claude Code without it would show its usage
