@@ -1067,6 +1067,22 @@ test('a file deleted under unsaved text offers Keep mine, which writes it again'
   expect(await browser.evaluate(() => (window as unknown as { __yuliusMock: { repoTrees: Record<string, { files: Map<string, string> }> } }).__yuliusMock.repoTrees['sb_studio|sandbox'].files.get('notes.txt'))).toBe(`mine ${ON_DISK}`);
 });
 
+/**
+ * Keep mine pressed while this tab's typing is still on its way (its step not back yet) writes
+ * the text once the typing lands; it was given up, as a save without force (#1114's e2e run).
+ */
+test('Keep mine pressed before this tab’s typing is confirmed writes once it lands', async ({ app, browser, screen }) => {
+  await openLiveFile(app, browser, screen);
+  await browser.evaluate(() => { (window as unknown as { __yuliusMock: { live: { holdEdits: boolean } } }).__yuliusMock.live.holdEdits = true; });
+  await typeMine(browser);
+  await browser.evaluate(() => (window as unknown as LiveWindow).__yuliusMock.removeRepoFile('sb_studio', 'notes.txt'));
+  await expect.poll(() => editorStatus(browser), { timeout: LOOKS_MS }).toContain('Deleted on disk');
+  await screen.getByRole('button', 'Keep mine').click();
+  await browser.evaluate(() => (window as unknown as { __yuliusMock: { releaseEdits(): void } }).__yuliusMock.releaseEdits());
+  await expect.poll(() => editorStatus(browser)).toContain('Saved');
+  expect(await browser.evaluate(() => (window as unknown as { __yuliusMock: { repoTrees: Record<string, { files: Map<string, string> }> } }).__yuliusMock.repoTrees['sb_studio|sandbox'].files.get('notes.txt'))).toBe(`mine ${ON_DISK}`);
+});
+
 test('a disk back at the text’s version ends the conflict by itself', async ({ app, browser, screen }) => {
   await conflictOn(app, browser, screen);
   await writeDisk(browser, ON_DISK);

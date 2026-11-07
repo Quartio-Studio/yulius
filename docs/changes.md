@@ -15,6 +15,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   access needed); a person's own API-token agent is not given these tools. Viewers see the cursor
   as "alice's Superagent" or "alice's Global Superagent". Open Superagents restart once idle to
   get the tools.
+- The Editor's Keep mine no longer gets lost when pressed while the person's last typing is still
+  on its way to the server (found as a flaky e2e test on PR #1114, about 1 run in 20 under load):
+  the save waited for the typing and then ran without Keep mine's force, so the conflict refused
+  it and nothing was written. It now writes once the typing lands.
 - Yulius no longer restarts a healthy Yulius MCP server (SPEC-436, ADR-0280, task #418, #1108).
   Idle sessions showed `/mcp reconnect yulius` → "Successfully reconnected to yulius" again and
   again: Claude Code's logs show the server never dropped, and Yulius's reconnect watch (ADR-0276)
