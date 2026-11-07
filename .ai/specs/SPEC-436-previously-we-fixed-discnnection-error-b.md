@@ -93,8 +93,8 @@ still does not ping.
 - Unit (`yulius-app::mcp_watch`): the regression test
   `a_bridge_that_never_pings_is_never_reconnected` (heard, spawned here and reattached, silent up
   to 5 hours) and `a_reconnect_answered_by_a_bridge_that_does_not_ping_is_the_last`, both failing
-  before the fix; the existing tests of the reattached and heard-before-first-ping cases now
-  expect no reconnect; the other MCR-003/MCR-004 tests stay as they are.
+  before the fix; they replace the two tests that reconnected a bridge heard (or reattached)
+  but never pinged, which are deleted; the other MCR-003/MCR-004 tests stay as they are.
 - Unit (`yulius-app::mcp_watch`): `a_reattached_bridge_that_pinged_here_and_stopped_is_reconnected`,
   the usual real drop after an update or restart (every live run is then reattached).
 - Integration (`yulius/tests/restart.rs`): the existing silent-task test, whose fake agent never
@@ -157,8 +157,8 @@ Independent reviewer in a fresh session (read-only, `om-code-review`, `yulius-re
   for the reap after 21 s under the gate's load. It passed 5 of 5 runs alone (2.3 s each), it is
   outside this change (cockpit stray reaping), and it is #1110. The stages after nextest, run
   separately on the same head: `scripts/doctests.py` exit 0, `scripts/dev deps` exit 0,
-  `cargo doc --workspace --all-features --no-deps` exit 0. Yulius CI on the pull request head is
-  the gate of record.
+  `cargo doc --workspace --all-features --no-deps` exit 0. So the gate is green apart from that
+  flaky test; Yulius CI on the pull request head is the gate of record.
 - Security scan: Vidoc is turned off for this project in Yulius (`yulius security-scan` reports
   it disabled); not run, not passed.
 - Not tested: a live instance with a sandbox on an older base after this build is installed (the
