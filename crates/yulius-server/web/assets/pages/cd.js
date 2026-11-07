@@ -390,7 +390,7 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
       reload({ quiet: true });
       // Production that proves its rollback on dev first answers with dev's deploy (SPEC-438).
       const proving = run.environment !== env.name;
-      if (proving) toast(`Deploying ${word(run.environment)} first to prove the rollback: ${what} deploys by itself once its rollback drill passes.`, { kind: 'ok' });
+      if (proving) toast(`Deploying ${word(run.environment)} first to prove the rollback: ${what} deploys by itself once its rollback drill passes.`, { kind: 'ok', action: { label: 'Open', run: () => openLater(run.run_id) } });
       // Still watched, the view becomes the run; left for the list meanwhile, a toast says it went out.
       if (starting.open()) showRun(run.run_id, starting.view);
       else if (!proving) toast(`Deploying ${what}.`, { kind: 'ok', action: { label: 'Open', run: () => openLater(run.run_id) } });

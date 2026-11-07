@@ -22,8 +22,9 @@ commit: the last rollback drill of dev ran at e83c627; deploy dev at this commit
   When a dev deploy can supply what is missing, the request deploys the drill environment instead,
   as the same person with the same checks. "Can supply" means: rollback is configured; the newest
   drill is missing or at another tree, and none is running; the drill environment has `deploy` and
-  `rollback` at the integration head; and that head has the tree production would deploy. The
-  answer is that dev run, whose note says what follows.
+  `rollback` at the integration head; that head has the tree production would deploy; and the
+  drill environment's newest deploy is of another commit, so a drill can follow. The answer is
+  that dev run, whose note says what follows.
 - **Production waits in the server and continues by itself.** Once that deploy passed and the drill
   it started passed, Yulius starts the production deploy as the person who asked. It checks their
   access again and passes the commit they confirmed as `expect`, so a dev that moved meanwhile is
@@ -34,8 +35,12 @@ commit: the last rollback drill of dev ran at e83c627; deploy dev at this commit
   run in state `error`. Its reason starts "production did not deploy:", with a `cd.refused` audit
   entry. The overview shows the wait on production's rollback, and another production deploy is
   refused while one waits.
-- **The wait is in memory.** A restart ends the dev deploy as an error, as any run left by a
-  restart, and production stays undeployed. The person deploys again.
+- **The wait is in memory, bound to runs.** It is registered, and the dev deploy started,
+  detached from the request (ADR-0233), under a run id chosen beforehand; the drill that deploy
+  prepares takes it over. Every way that deploy or drill ends without a drill passing ends the
+  wait. It holds a deploy permit, so an update waits for it (SPEC-342); a restart for another
+  reason ends the dev deploy as an error, as any run left by a restart, and production stays
+  undeployed. The person deploys again.
 
 ## Alternatives
 
@@ -57,3 +62,7 @@ commit: the last rollback drill of dev ran at e83c627; deploy dev at this commit
   long as all three together, and dev ends on the released commit.
 - Dev is deployed on a person's production request. That deploy is theirs and audited as theirs.
 - The production card's last run tells why production did not deploy when the proof failed.
+- With `promote = true`, a merge into dev during the dev deploy and its drill (minutes) still
+  makes production refuse "moved since you looked": the window is the deploy and the drill, no
+  longer the person's reaction time. Holding merges while production waits would close it; not
+  done here.

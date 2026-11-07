@@ -156,7 +156,7 @@ pub(crate) enum CdActor<'a> {
 }
 
 impl CdActor<'_> {
-    fn label(&self) -> String {
+    pub(super) fn label(&self) -> String {
         match self {
             Self::Person(user) => App::dlv_actor_login(user),
             Self::Agent(ctx) => ctx.actor(),
@@ -191,9 +191,8 @@ pub(crate) enum CdRequest<'a> {
         expected: Option<&'a str>,
         /// How long the person kept the confirmation open, in milliseconds.
         confirm_ms: Option<u64>,
-        /// Why it runs, when Yulius started it for something else (SPEC-438: to prove a
-        /// production deploy's rollback).
-        note: Option<&'a str>,
+        /// A deploy of the drill environment proving a production deploy's rollback (SPEC-438).
+        proving: Option<Proving<'a>>,
     },
     /// Roll a part back (or forward) to a kept release (SPEC-415).
     Rollback {
@@ -204,6 +203,14 @@ pub(crate) enum CdRequest<'a> {
         /// How long the person kept the confirmation open, in milliseconds.
         confirm_ms: Option<u64>,
     },
+}
+
+/// A dev deploy started to prove a production deploy's rollback (SPEC-438): its run id, chosen
+/// before it starts so the waiting production deploy is bound to it, and its note.
+#[derive(Clone, Copy)]
+pub(crate) struct Proving<'a> {
+    pub(crate) run_id: &'a str,
+    pub(crate) note: &'a str,
 }
 
 /// Longest confirmation wait recorded, in milliseconds.
@@ -623,7 +630,7 @@ impl App {
                 CdRequest::Deploy {
                     expected: req.expect.as_deref(),
                     confirm_ms: req.confirm_ms,
-                    note: None,
+                    proving: None,
                 },
             )
             .await?;
@@ -661,7 +668,7 @@ impl App {
             CdRequest::Deploy {
                 expected: None,
                 confirm_ms: None,
-                note: None,
+                proving: None,
             },
         )
         .await
@@ -717,11 +724,18 @@ impl App {
         // What the checks resolve the stage to: a production-stage refusal is audited, as
         // production's always was; a dev-stage failure is not a refused production deploy.
         let mut resolved = fixed;
+        let preset = match &request {
+            CdRequest::Deploy {
+                proving: Some(proving),
+                ..
+            } => Some(proving.run_id.to_owned()),
+            _ => None,
+        };
         let (prepared, confirm_ms) = match request {
             CdRequest::Deploy {
                 expected,
                 confirm_ms,
-                note,
+                proving,
             } => (
                 self.cd_prepare(
                     sandbox,
@@ -732,7 +746,7 @@ impl App {
                 )
                 .await
                 .map(|mut prepared| {
-                    if let Some(note) = note {
+                    if let Some(Proving { note, .. }) = proving {
                         prepared.note = Some(match prepared.note.take() {
                             Some(own) => format!("{note}; {own}"),
                             None => note.to_owned(),
@@ -778,7 +792,7 @@ impl App {
             CdActor::Person(..) => None,
         };
         let run = CdRunRecord {
-            id: self.deps.crypto.new_id(),
+            id: preset.unwrap_or_else(|| self.deps.crypto.new_id()),
             sandbox_id: sandbox.id.clone(),
             environment: env.to_owned(),
             stage: prepared.stage,

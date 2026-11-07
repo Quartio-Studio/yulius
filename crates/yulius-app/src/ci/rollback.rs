@@ -618,6 +618,9 @@ impl App {
             source: None,
             steps: Vec::new(),
         };
+        // A production deploy waiting for this deploy waits for its drill now; every way the
+        // drill does not run ends that wait (SPEC-438).
+        self.cd_proof_drilling(deployed, &run.id);
         let records = match self
             .deps
             .store
@@ -637,7 +640,13 @@ impl App {
             run.steps.extend(drill_steps(History(&mine)));
         }
         if run.steps.is_empty() {
-            return;
+            let why = format!(
+                "no rollback drill of {} followed its deploy at {}: it has no earlier release to go \
+                 back to",
+                run.environment,
+                short_sha(&run.sha)
+            );
+            return self.cd_proof_ended(sandbox, &run.id, &why).await;
         }
         let target_name = format!("{}/{}", sandbox.slug, run.environment);
         let started = self.now();
@@ -684,8 +693,6 @@ impl App {
             source: None,
             steps: run.steps.clone(),
         };
-        // A production deploy waiting for this deploy waits for its drill now (SPEC-438).
-        self.cd_proof_drilling(&sandbox.id, deployed, &run.id);
         let recorded = self
             .cd_record_and_execute(
                 sandbox,
@@ -712,8 +719,7 @@ impl App {
                 short_sha(&run.sha),
                 err.public_message()
             );
-            self.cd_proof_ended(sandbox, &run.environment, &run.sha, &why)
-                .await;
+            self.cd_proof_ended(sandbox, &run.id, &why).await;
         }
     }
 
@@ -738,8 +744,7 @@ impl App {
             ended.environment,
             short_sha(&ended.sha)
         );
-        self.cd_proof_ended(sandbox, &ended.environment, &ended.sha, &why)
-            .await;
+        self.cd_proof_ended(sandbox, &ended.id, &why).await;
     }
 
     /// An environment's rollback for the page (RBK-040): its command and migrations line, each

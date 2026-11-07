@@ -40,10 +40,13 @@ The person no longer races agents' merges into dev.
   supply that proof, starts a deploy of the drill environment instead of failing. "Can supply" means
   all of these hold: the table has `rollback`; the newest drill is missing, or ran at another tree;
   no drill is running; the drill environment is a dev-stage table at the integration head with
-  `deploy` and `rollback`; and the integration head has the tree production would deploy. The dev
+  `deploy` and `rollback`; the integration head has the tree production would deploy; and the drill
+  environment's newest deploy is of another commit (else no drill could follow). The dev
   deploy is the person's own: same checks, secrets and audit as a dev deploy. Its note says
   production deploys at `<sha>` once its drill passes. The request answers with that dev run.
-- PDF-002. Production waits in the server. Once the dev deploy passed and the drill it started
+- PDF-002. Production waits in the server, bound to the dev run (its id chosen before it starts,
+  everything from the wait to the dev start detached from the request) and then to the drill that
+  run prepares, holding a deploy permit so no update restarts the server under it. Once the dev deploy passed and the drill it started
   passed, Yulius starts the production deploy as that person, with their access checked again and
   the commit they confirmed as `expect`. If dev moved, production refuses as it always does
   ("moved since you looked"). Only a person's request does this: an agent's never does, and neither

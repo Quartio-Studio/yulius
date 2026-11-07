@@ -925,8 +925,9 @@ production-stage deploy whose table has a `deploy` is refused (`conflict`, audit
 `cd.refused`) until the table has `rollback` and the newest drill of its `drill` environment passed
 at a commit with the tree being deployed (with `promote`: the integration commit promoted).
 A person's production deploy refused only for that (the newest drill is missing or ran at another
-tree, none runs, and the drill environment has `deploy` and `rollback` at the integration head,
-whose tree is the one production deploys) deploys the drill environment instead, as that person:
+tree, none runs, the drill environment has `deploy` and `rollback` at the integration head, whose
+tree is the one production deploys, and its newest deploy is of another commit) deploys the drill
+environment instead, as that person, detached from the request:
 the answer is that dev run, whose note says production follows (SPEC-438). Once that deploy and
 its drill passed, Yulius starts the production deploy as the person (access read again, the
 confirmed commit as `expect`); otherwise an ended production run in `error` with reason
