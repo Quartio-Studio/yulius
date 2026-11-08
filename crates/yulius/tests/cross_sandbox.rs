@@ -979,11 +979,13 @@ async fn an_approval_refused_by_the_target_is_the_answer() -> TestResult {
     assert!(!refused.status.is_success(), "{:?}", refused.body);
     assert!(call_.await?.is_err());
     assert!(matches!(status_of(&w, &id).await?, TaskStatus::Stopped(_)));
-    let rows = audited(&w, "s2").await?;
-    assert_eq!(
-        rows.last().map(|r| r["outcome"].clone()),
-        Some(json!("failed"))
-    );
+    // Review round 1: in both sandboxes.
+    for sandbox in ["s2", "s1"] {
+        let rows = audited(&w, sandbox).await?;
+        let last = rows.last().ok_or("no audit")?;
+        assert_eq!(last["outcome"], "failed", "{sandbox}: {last}");
+        assert_eq!(last["action"], "update", "{sandbox}: {last}");
+    }
     Ok(())
 }
 
@@ -1080,6 +1082,231 @@ async fn an_unanswered_change_is_audited_as_expired_in_both_sandboxes() -> TestR
         assert_eq!(rows.len(), 1, "{sandbox}: {rows:?}");
         assert_eq!(rows[0]["outcome"], "expired");
         assert_eq!(rows[0]["action"], "update");
+    }
+    Ok(())
+}
+
+/// Review round 1 (major): the card says whether an update starts the task now, from the
+/// arguments that will run. `false` flags and blank texts mean nothing, as `task_update` reads
+/// them, so they are dropped before anyone is asked; a supertask starts now too.
+#[tokio::test]
+async fn an_update_card_says_whether_the_task_starts_now() -> TestResult {
+    let w = world(60_000).await?;
+    let (_, first) = task_in(&w, "s2", "alice", json!({"prompt": "First"})).await?;
+    let (id, number) = task_in(
+        &w,
+        "s2",
+        "alice",
+        json!({"prompt": "Second", "prepared": true}),
+    )
+    .await?;
+    for (args, options, starts_now) in [
+        (
+            json!({"prepared": false, "supertask": false, "start_rule": "  ", "start_at": ""}),
+            json!({}),
+            true,
+        ),
+        (json!({"supertask": true}), json!({"supertask": true}), true),
+        (
+            json!({"after_task": first, "start_rule": " "}),
+            json!({"after_task": first}),
+            false,
+        ),
+        (
+            json!({"start_rule": format!("  #{first} done ")}),
+            json!({"start_rule": format!("#{first} done")}),
+            false,
+        ),
+    ] {
+        let mut asked = args.clone();
+        asked["sandbox"] = json!("website");
+        asked["number"] = json!(number);
+        let call_ = ask_to(&w, CrossAction::Update, asked)?;
+        let request = waiting(&w, 1).await?.remove(0);
+        assert_eq!(request["options"], options, "{args}: {request}");
+        assert_eq!(request["starts_now"], starts_now, "{args}: {request}");
+        let declined = answer(
+            &w,
+            &w.alice,
+            "s1",
+            request["id"].as_str().ok_or("id")?,
+            false,
+        )
+        .await?;
+        assert_eq!(declined.status, StatusCode::OK);
+        call_.await??;
+    }
+    // What the card showed is what runs: approving the blank one starts the task now.
+    let call_ = ask_to(
+        &w,
+        CrossAction::Update,
+        json!({"sandbox": "website", "number": number, "prepared": false, "start_rule": " "}),
+    )?;
+    let (_, outcome) = answer_the_one(&w, call_, true).await?;
+    assert_eq!(outcome["outcome"], "approved", "{outcome}");
+    assert_eq!(status_of(&w, &id).await?, TaskStatus::Queued);
+    Ok(())
+}
+
+/// Review round 1: an update that cannot apply is refused before anyone is asked, as the
+/// target's `task_update` would refuse it, so no card is sure to fail.
+#[tokio::test]
+async fn an_update_that_cannot_apply_is_refused_without_asking() -> TestResult {
+    let w = world(60_000).await?;
+    let (_, queued) = task_in(&w, "s2", "alice", json!({"prompt": "Queued"})).await?;
+    let (_, number) = task_in(
+        &w,
+        "s2",
+        "alice",
+        json!({"prompt": "Prepared", "prepared": true}),
+    )
+    .await?;
+    let caller = superagent("s1", &w.alice_id, "alice")?;
+    for (args, says) in [
+        (json!({"number": queued}), "has started"),
+        (json!({"number": number, "after_task": 99}), "#99"),
+        (json!({"number": number, "start_rule": "whenever"}), "expected a task"),
+        (
+            json!({"number": number, "after_task": queued, "start_rule": format!("#{queued} done")}),
+            "not both",
+        ),
+        (
+            json!({"number": number, "start_at": "2001-01-01T00:00:00Z"}),
+            "start",
+        ),
+        (
+            json!({"number": number, "start_at": "tomorrow"}),
+            "start_at",
+        ),
+        (
+            json!({"number": number, "prepared": true, "supertask": true}),
+            "prepared",
+        ),
+    ] {
+        let mut asked = args.clone();
+        asked["sandbox"] = json!("website");
+        let refused =
+            w.h.app
+                .tool_sandbox_task_request(&caller, CrossAction::Update, &asked)
+                .await;
+        let err = refused.err().ok_or_else(|| format!("{args} was asked"))?;
+        assert!(
+            err.public_message().contains(says),
+            "{args}: {}",
+            err.public_message()
+        );
+    }
+    assert!(requests(&w, &w.alice, "s1").await?.is_empty());
+    Ok(())
+}
+
+/// Review round 1: the card names the task as it is now, not as it was when the Superagent
+/// asked: a stop card of a task that started meanwhile says so.
+#[tokio::test]
+async fn the_card_names_the_task_as_it_is_now() -> TestResult {
+    let w = world(60_000).await?;
+    let (id, number) = task_in(
+        &w,
+        "s2",
+        "alice",
+        json!({"prompt": "Prepared", "prepared": true}),
+    )
+    .await?;
+    let call_ = ask_to(
+        &w,
+        CrossAction::Stop,
+        json!({"sandbox": "website", "number": number}),
+    )?;
+    assert_eq!(waiting(&w, 1).await?[0]["task"]["status"], "prepared");
+    // Started on the target's Tasks page meanwhile.
+    w.h.app
+        .tool_task_update(
+            &superagent("s2", &w.alice_id, "alice")?,
+            &json!({"task_id": id.as_str()}),
+        )
+        .await?;
+    assert_eq!(waiting(&w, 1).await?[0]["task"]["status"], "queued");
+    call_.abort();
+    Ok(())
+}
+
+/// Review round 1: a request naming a task twice (`number` and another task's `task_id`) acts on
+/// the task its card names, the one `number` names, as `task_get` reads it.
+#[tokio::test]
+async fn a_task_named_twice_is_the_one_its_card_names() -> TestResult {
+    let w = world(60_000).await?;
+    let (a, a_number) = task_in(
+        &w,
+        "s2",
+        "alice",
+        json!({"prompt": "A", "title": "A", "prepared": true}),
+    )
+    .await?;
+    let (b, _) = task_in(
+        &w,
+        "s2",
+        "alice",
+        json!({"prompt": "B", "title": "B", "prepared": true}),
+    )
+    .await?;
+    let call_ = ask_to(
+        &w,
+        CrossAction::Update,
+        json!({"sandbox": "website", "number": a_number, "task_id": b.as_str()}),
+    )?;
+    let (request, outcome) = answer_the_one(&w, call_, true).await?;
+    assert_eq!(request["task"]["title"], "A", "{request}");
+    assert_eq!(outcome["task"]["number"], json!(a_number), "{outcome}");
+    assert_eq!(status_of(&w, &a).await?, TaskStatus::Queued);
+    assert_eq!(status_of(&w, &b).await?, TaskStatus::Prepared);
+    Ok(())
+}
+
+/// SPEC-442 XST-003 (review round 1): a message to another person's task that holds their
+/// personal secrets is refused on approval, as `task_message` refuses it, and audited `failed`
+/// in both sandboxes.
+#[tokio::test]
+async fn a_message_to_a_task_holding_its_owners_personal_secrets_is_refused() -> TestResult {
+    let w = world(60_000).await?;
+    let (id, number) = task_in(
+        &w,
+        "s2",
+        "bob",
+        json!({"prompt": "Bob's work", "prepared": true}),
+    )
+    .await?;
+    let added = call(
+        &w.h.router,
+        Method::POST,
+        "/api/sandboxes/s2/agent-secrets",
+        Some(json!({"scope": "personal", "name": "BOB_TOKEN", "value": "bob-personal-token-5ec7", "hosts": ["api.bob.test"], "injection": "bearer"})),
+        &w.bob,
+    )
+    .await?;
+    assert_eq!(added.status, StatusCode::CREATED, "{:?}", added.body);
+    let before = w.h.store.task(&id).await?.ok_or("task")?.prompt;
+    let call_ = ask_to(
+        &w,
+        CrossAction::Message,
+        json!({"sandbox": "website", "number": number, "text": "Use BOB_TOKEN"}),
+    )?;
+    let request = waiting(&w, 1).await?.remove(0);
+    let refused = answer(
+        &w,
+        &w.alice,
+        "s1",
+        request["id"].as_str().ok_or("id")?,
+        true,
+    )
+    .await?;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{:?}", refused.body);
+    assert!(call_.await?.is_err());
+    assert_eq!(w.h.store.task(&id).await?.ok_or("task")?.prompt, before);
+    for sandbox in ["s2", "s1"] {
+        let rows = audited(&w, sandbox).await?;
+        assert_eq!(rows.len(), 1, "{sandbox}: {rows:?}");
+        assert_eq!(rows[0]["outcome"], "failed");
+        assert_eq!(rows[0]["action"], "message");
     }
     Ok(())
 }

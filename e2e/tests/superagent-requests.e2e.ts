@@ -355,3 +355,34 @@ test('Decline on a stop request leaves the task of another sandbox as it was', a
   await expect(browser.locator('.toast:has-text("Declined: nothing was changed.")')).toBeVisible();
   expect(await productTasks(browser)).toEqual(before);
 });
+
+// SPEC-442 review round 1: a message is read to its end before it can be sent, as a prompt is;
+// an update whose card says it starts the task now (`starts_now`) says so even with an option.
+test('Send message takes a click only once the whole message was in view', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/tasks'));
+  await openSuperagent(browser, screen);
+  await ask(browser, 'sb_studio', { sandbox: 'product', prompt: PROMPT, title: 'API client v2', options: { prepared: true } });
+  await screen.getByRole('button', 'Create task').click();
+  await expect(browser.locator('.toast:has-text("Created #")')).toBeVisible();
+  const number = await newest(browser);
+
+  const long = Array.from({ length: 80 }, (_, i) => `Line ${i + 1} of the message.`).join('\n');
+  await ask(browser, 'sb_studio', { sandbox: 'product', action: 'message', number, prompt: long });
+  const card = screen.getByRole('group', `Your Superagent asks to send #${number} a message from you in product`);
+  await expect(card).toHaveText(/Scroll to the end of the message to send it/);
+  await expect(screen.getByRole('button', 'Decline')).toBeEnabled();
+  await expect(screen.getByRole('button', 'Send message')).toBeDisabled();
+  await browser.evaluate(() => {
+    const text = document.querySelector('.agent-request-prompt');
+    if (text) text.scrollTop = text.scrollHeight;
+  });
+  await expect(screen.getByRole('button', 'Send message')).toBeEnabled();
+  await screen.getByRole('button', 'Decline').click();
+  await expect(card).toBeHidden();
+  await expect(browser.locator('.toast:has-text("Declined: nothing was sent.")')).toBeVisible();
+
+  await ask(browser, 'sb_studio', { sandbox: 'product', action: 'update', number, options: { supertask: true }, startsNow: true });
+  const start = screen.getByRole('group', `Your Superagent asks to start #${number} now in product`);
+  await expect(start).toHaveText(/Supertask: runs alone/);
+  await expect(screen.getByRole('button', 'Start now')).toBeVisible();
+});

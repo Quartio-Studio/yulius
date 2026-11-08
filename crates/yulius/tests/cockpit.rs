@@ -1924,6 +1924,115 @@ async fn a_cancelled_cross_sandbox_request_ends_at_once() -> TestResult {
     Ok(())
 }
 
+/// SPEC-442 (review round 1): over the MCP, `sandbox_task_get` reads a task of another sandbox
+/// at once, `sandbox_task_stop` asks for a stop of that task, and a cancelled call is audited
+/// `cancelled` with its action in both sandboxes.
+#[tokio::test]
+async fn the_cross_sandbox_task_tools_over_the_mcp() -> TestResult {
+    use yulius_app::ports::store::{AuditStore, TaskStore};
+    use yulius_domain::ids::{SandboxId, UserId};
+
+    let f = fixture().await?;
+    seed_sandbox(&f.h, "s2", "website", "u-alice").await?;
+    f.h.github.set_perm("alice", "acme/website", perms("write"));
+    cockpit_id(&f, &f.alice).await?;
+    let alice = UserId::parse("u-alice")?;
+    let token =
+        f.h.app
+            .cockpit_mcp_token(&alice, &sid())
+            .ok_or("alice's cockpit token")?;
+    let there = yulius_app::coordination::ProjectCaller {
+        sandbox: SandboxId::parse("s2")?,
+        user: alice.clone(),
+        task: None,
+        channel: yulius_app::coordination::Channel::Superagent,
+        actor: "cockpit:alice".into(),
+        detail: json!({"via": "cockpit", "shell": "sh-website"}),
+    };
+    let created =
+        f.h.app
+            .tool_task_create(&there, &json!({"prompt": "Website work", "prepared": true}))
+            .await?;
+    let number = created["task"]["number"].clone();
+
+    let (got, is_error) = cockpit_tool(
+        &f,
+        &token,
+        "sandbox_task_get",
+        json!({"sandbox": "website", "number": number}),
+    )
+    .await?;
+    assert!(!is_error, "{got}");
+    assert!(got.to_string().contains("Website work"), "{got}");
+    assert_eq!(waiting_requests(&f).await?, 0, "a read asks nobody");
+
+    let bearer = Creds {
+        bearer: Some(token.clone()),
+        ..Creds::default()
+    };
+    let internal = f.h.internal.clone();
+    let asking = {
+        let bearer = bearer.clone();
+        tokio::spawn(async move {
+            call(
+                &internal,
+                Method::POST,
+                "/mcp",
+                Some(
+                    json!({"jsonrpc": "2.0", "id": 9, "method": "tools/call", "params": {
+                    "name": "sandbox_task_stop",
+                    "arguments": {"sandbox": "website", "number": number}}}),
+                ),
+                &bearer,
+            )
+            .await
+            .map(|resp| resp.body)
+            .map_err(|err| err.to_string())
+        })
+    };
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while waiting_requests(&f).await? != 1 {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the request never waited"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let listed = call(
+        &f.h.router,
+        Method::GET,
+        "/api/sandboxes/s1/superagent/requests",
+        None,
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(listed.body[0]["action"], "stop", "{:?}", listed.body);
+    let cancelled = call(
+        &f.h.internal,
+        Method::POST,
+        "/mcp",
+        Some(json!({"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": 9}})),
+        &bearer,
+    )
+    .await?;
+    assert_eq!(cancelled.status, StatusCode::ACCEPTED);
+    let answered = tokio::time::timeout(WAIT, asking).await???;
+    assert!(answered.to_string().contains("cancelled"), "{answered}");
+    for sandbox in ["s2", sid().as_str()] {
+        let rows =
+            f.h.store
+                .audit_details(sandbox, "superagent.cross_task", 5)
+                .await?;
+        assert_eq!(rows.len(), 1, "{sandbox}: {rows:?}");
+        let row: Value = serde_json::from_str(&rows[0])?;
+        assert_eq!(row["outcome"], "cancelled", "{row}");
+        assert_eq!(row["action"], "stop", "{row}");
+    }
+    let task = f.h.store.tasks(&SandboxId::parse("s2")?, false).await?;
+    assert_eq!(task[0].status.as_str(), "prepared", "not stopped");
+    Ok(())
+}
+
 /// MGT-005: once its owner can no longer work in the project, a Cockpit's token is refused.
 #[tokio::test]
 async fn a_cockpit_whose_owner_lost_access_manages_nothing() -> TestResult {

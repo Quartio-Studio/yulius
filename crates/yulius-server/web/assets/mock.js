@@ -3571,7 +3571,7 @@ route('POST', `/api/sandboxes/${ID}/superagent/requests/${ID}`, async ({ db, p, 
   if (request.view.task) {
     const task = db.tasks.find((t) => t.sandbox_id === target.id && t.number === request.view.task.number);
     if (!task) fail(404, 'not_found', 'not found');
-    if (request.view.action === 'update' && !Object.keys(request.view.options).length) task.status = 'queued';
+    if (request.view.action === 'update' && request.view.starts_now) task.status = 'queued';
     if (request.view.action === 'message') task.prompt = `${task.prompt}\n\nMessage from ${db.me.user.login}:\n${request.view.prompt}`;
     if (request.view.action === 'stop') task.status = 'stopped_cancelled';
     task.updated_at = new Date().toISOString();
@@ -6192,13 +6192,15 @@ export function createMockTransport(params) {
     return true;
   };
   // The person's Superagent in `source` asks to start a task in another sandbox (SPEC-335).
-  db.askSuperagent = (source, { sandbox, prompt = null, title = null, options = {}, action = 'create', number = null }) => {
+  db.askSuperagent = (source, { sandbox, prompt = null, title = null, options = {}, action = 'create', number = null, startsNow = null }) => {
     const target = db.sandboxes.find((s) => s.slug === sandbox);
     const task = number === null ? null : db.tasks.find((t) => t.sandbox_id === target.id && t.number === number);
     db.nextId += 1;
     const view = {
       id: `xr_${db.nextId}`, action, sandbox: { id: target.id, slug: target.slug, repository: `${target.repo.owner}/${target.repo.name}` },
       task: task ? { number: task.number, title: task.title, status: task.status } : null,
+      // As the server says it: an update with no start option (or a supertask) starts the task now.
+      starts_now: action === 'update' && (startsNow ?? !Object.keys(options).length),
       title, prompt, options, ends_at: new Date(Date.now() + 4 * MIN).toISOString(),
     };
     db.superagentRequests = [...(db.superagentRequests || []), { source, view }];

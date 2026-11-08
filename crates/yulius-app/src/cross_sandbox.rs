@@ -20,8 +20,9 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::oneshot;
 use yulius_contracts::events::UiEvent;
-use yulius_domain::ids::{SandboxId, UserId};
+use yulius_domain::ids::{SandboxId, TaskId, UserId};
 use yulius_domain::permission::Action;
+use yulius_domain::task::TaskStatus;
 use yulius_domain::time::Timestamp;
 
 use crate::auth::{AuthContext, rfc3339};
@@ -31,6 +32,7 @@ use crate::error::{AppError, AppResult};
 use crate::lifecycle::MAX_PROMPT_BYTES;
 use crate::manage::{TaskChange, tool_detail};
 use crate::model::{SandboxRecord, TaskRecord};
+use crate::start_change::StartFields;
 use crate::task_message::MAX_MESSAGE_BYTES;
 
 /// How long a request waits for its person: below the 300 s within which Node's HTTP client,
@@ -163,6 +165,7 @@ const UPDATE_OPTIONS: [&str; 5] = [
 /// The task a request is about, as its card names it.
 #[derive(Clone)]
 struct Named {
+    id: TaskId,
     number: u32,
     title: String,
     status: &'static str,
@@ -171,6 +174,7 @@ struct Named {
 impl Named {
     fn of(task: &TaskRecord) -> Self {
         Self {
+            id: task.id.clone(),
             number: task.number,
             title: task.title.clone(),
             status: task.status.as_str(),
@@ -199,6 +203,8 @@ struct Waiting {
     action: CrossAction,
     /// The task it is about (all but a create), named by its id in `args`.
     task: Option<Named>,
+    /// An update that starts the task now (XST-006).
+    starts_now: bool,
     /// The same-sandbox tool's arguments, without `sandbox`.
     args: Value,
     actor: String,
@@ -506,16 +512,19 @@ impl App {
             .cross_target(caller, &reference, action.own_tool())
             .await?;
         let mut task_args = without_sandbox(args);
+        let mut starts_now = false;
         let task = if action == CrossAction::Create {
             None
         } else {
-            let task = self
-                .agent_task_ref(&pinned(caller, &target), &task_args)
-                .await?;
+            let there = pinned(caller, &target);
+            let task = self.agent_task_ref(&there, &task_args).await?;
             // The approval acts on the task the card names, by its id.
             if let Some(map) = task_args.as_object_mut() {
                 map.remove("number");
                 map.insert("task_id".into(), json!(task.id.as_str()));
+            }
+            if action == CrossAction::Update {
+                starts_now = self.checked_update(&there, &task, &mut task_args).await?;
             }
             Some(Named::of(&task))
         };
@@ -541,6 +550,7 @@ impl App {
                     target: target.clone(),
                     action,
                     task: task.clone(),
+                    starts_now,
                     args: task_args,
                     actor: caller.actor.clone(),
                     detail: caller.detail.clone(),
@@ -576,45 +586,66 @@ impl App {
     }
 
     /// `GET /api/sandboxes/{sid}/superagent/requests` (XSR-005): the caller's own requests of
-    /// their Superagent in `sid`, oldest first.
-    #[must_use]
-    pub fn superagent_requests(&self, ctx: &AuthContext, sid: &str) -> Vec<Value> {
-        let waiting = self.cross_requests.lock();
-        let mut mine: Vec<(&String, &Waiting)> = waiting
-            .iter()
-            .filter(|(_, w)| w.user == ctx.user.id && w.source.as_str() == sid)
-            .collect();
-        mine.sort_by_key(|(id, w)| (w.ends_at, (*id).clone()));
-        mine.into_iter()
-            .map(|(id, w)| {
-                let options: serde_json::Map<String, Value> = w
-                    .action
-                    .options()
-                    .iter()
-                    .filter_map(|key| {
-                        w.args
-                            .get(*key)
-                            .filter(|v| !v.is_null())
-                            .map(|v| ((*key).to_owned(), v.clone()))
-                    })
-                    .collect();
-                // A message's text is read as a prompt is (XST-006).
-                let text = match w.action {
-                    CrossAction::Message => w.args.get("text"),
-                    _ => w.args.get("prompt"),
-                };
-                json!({
-                    "id": id,
-                    "action": w.action.as_str(),
-                    "sandbox": {"id": w.target.id.as_str(), "slug": w.target.slug, "repository": label(&w.target)},
-                    "task": w.task.as_ref().map(|t| json!({"number": t.number, "title": t.title, "status": t.status})),
-                    "title": w.args.get("title"),
-                    "prompt": text,
-                    "options": options,
-                    "ends_at": rfc3339(w.ends_at),
+    /// their Superagent in `sid`, oldest first; a request's task as it is now (XST-006).
+    ///
+    /// # Errors
+    /// Store failures.
+    pub async fn superagent_requests(&self, ctx: &AuthContext, sid: &str) -> AppResult<Vec<Value>> {
+        let listed: Vec<(Value, Option<Named>)> = {
+            let waiting = self.cross_requests.lock();
+            let mut mine: Vec<(&String, &Waiting)> = waiting
+                .iter()
+                .filter(|(_, w)| w.user == ctx.user.id && w.source.as_str() == sid)
+                .collect();
+            mine.sort_by_key(|(id, w)| (w.ends_at, (*id).clone()));
+            mine.into_iter()
+                .map(|(id, w)| {
+                    let options: serde_json::Map<String, Value> = w
+                        .action
+                        .options()
+                        .iter()
+                        .filter_map(|key| {
+                            w.args
+                                .get(*key)
+                                .filter(|v| !v.is_null())
+                                .map(|v| ((*key).to_owned(), v.clone()))
+                        })
+                        .collect();
+                    // A message's text is read as a prompt is (XST-006).
+                    let text = match w.action {
+                        CrossAction::Message => w.args.get("text"),
+                        _ => w.args.get("prompt"),
+                    };
+                    let view = json!({
+                        "id": id,
+                        "action": w.action.as_str(),
+                        "sandbox": {"id": w.target.id.as_str(), "slug": w.target.slug, "repository": label(&w.target)},
+                        "task": null,
+                        "starts_now": w.starts_now,
+                        "title": w.args.get("title"),
+                        "prompt": text,
+                        "options": options,
+                        "ends_at": rfc3339(w.ends_at),
+                    });
+                    (view, w.task.clone())
                 })
-            })
-            .collect()
+                .collect()
+        };
+        let mut out = Vec::with_capacity(listed.len());
+        for (mut view, named) in listed {
+            if let Some(named) = named {
+                // Up to 4 minutes may have passed: the card names the task as it is now.
+                let now = self.deps.store.task(&named.id).await?;
+                let (title, status) = now
+                    .as_ref()
+                    .map_or((named.title.as_str(), named.status), |t| {
+                        (t.title.as_str(), t.status.as_str())
+                    });
+                view["task"] = json!({"number": named.number, "title": title, "status": status});
+            }
+            out.push(view);
+        }
+        Ok(out)
     }
 
     /// `POST /api/sandboxes/{sid}/superagent/requests/{id}` (XSR-006): the person approves
@@ -689,6 +720,57 @@ impl App {
         // The call may have ended meanwhile; the person still gets the answer.
         let _ = request.answer.send(answer.clone());
         answer
+    }
+
+    /// An update's start arguments as `task_update` will read them, checked before anyone is
+    /// asked (review round 1 of SPEC-442): a task that started is refused; `false` flags, nulls
+    /// and blank texts are dropped and texts trimmed, so the card shows exactly what runs; New
+    /// task's start checks run in the target. Answers whether it starts the task now.
+    async fn checked_update(
+        &self,
+        there: &ProjectCaller,
+        task: &TaskRecord,
+        args: &mut Value,
+    ) -> AppResult<bool> {
+        if !matches!(task.status, TaskStatus::Chained | TaskStatus::Prepared) {
+            return Err(AppError::Conflict(format!(
+                "task #{} has started (it is {}): only a task waiting to start changes how it starts",
+                task.number,
+                task.status.as_str()
+            )));
+        }
+        let Some(map) = args.as_object_mut() else {
+            return Ok(true);
+        };
+        map.retain(|key, value| match (key.as_str(), &*value) {
+            (_, Value::Null) | ("supertask" | "prepared", Value::Bool(false)) => false,
+            ("start_rule" | "start_at", Value::String(text)) => !text.trim().is_empty(),
+            _ => true,
+        });
+        for key in ["start_rule", "start_at"] {
+            if let Some(Value::String(text)) = map.get_mut(key) {
+                *text = text.trim().to_owned();
+            }
+        }
+        let after = match map.get("after_task") {
+            Some(number) => Some(self.after_task_arg(there, number).await?.id),
+            None => None,
+        };
+        let text = |key: &str| map.get(key).and_then(Value::as_str);
+        let flag = |key: &str| map.get(key) == Some(&Value::Bool(true));
+        let checked = self
+            .check_start_choice(
+                &there.sandbox,
+                StartFields {
+                    after_task_id: after.as_ref().map(TaskId::as_str),
+                    start_rule: text("start_rule"),
+                    supertask: flag("supertask"),
+                    prepared: flag("prepared"),
+                    start_at: text("start_at"),
+                },
+            )
+            .await?;
+        Ok(checked.after.is_none() && checked.rule.is_none() && checked.prepared.is_none())
     }
 
     /// Runs an approved request's same-sandbox tool in its target as `caller` (pinned there),

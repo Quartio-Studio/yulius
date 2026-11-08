@@ -71,9 +71,13 @@ person asks for prepared.
   `message`, `stop`), the task's number when it names one, the outcome and the caller; never the
   prompt or the message.
 - XST-006: `GET …/superagent/requests` gives each request its `action` and, for a request about a
-  task, the `task` (number, title, status); a message's text comes as `prompt`, an update's
-  arguments as `options`. The panel's card says what is asked: "Your Superagent asks to start #N
-  now / to change how #N starts / to send #N a message from you / to stop #N" in the target, with
+  task, the `task` (number, title, status as they are now); a message's text comes as `prompt`, an
+  update's arguments as `options`, exactly as they will run (`false` flags and blank texts are
+  dropped before asking), and `starts_now` says whether an update starts the task now (no start
+  option, or a supertask). An update that cannot apply (the task started, a start New task
+  refuses) is refused before anyone is asked. The panel's card says what is asked: "Your
+  Superagent asks to start #N now / to change how #N starts / to send #N a message from you / to
+  stop #N" in the target, with
   the task's title, and the button says it (**Start now**, **Change start**, **Send message**,
   **Stop task**). A message's text is shown and read as a prompt is (XSR-008: invisible
   characters named, the button waits until its end was on screen).

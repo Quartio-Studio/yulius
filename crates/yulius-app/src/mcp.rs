@@ -156,7 +156,7 @@ fn cockpit_only_tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "sandbox_task_update".into(),
-            description: "Ask the person to change how a task of another of their sandboxes that has not started yet starts, as task_update does here: none of after_task, start_rule, supertask, prepared or start_at starts it now (a prepared task that should be queued); after_task and start_rule name that sandbox's tasks. Use it instead of deleting and recreating a task. Nothing changes until the person approves this one request on the panel above your session: tell them it waits there. The call waits for their answer, a few minutes at most, and answers outcome approved (with the task), declined or unanswered (nothing changed). Audited in both sandboxes.".into(),
+            description: "Ask the person to change how a task of another of their sandboxes that has not started yet starts, as task_update does here: with none of after_task, start_rule, supertask, prepared or start_at it starts now (a prepared task that should have been queued), with supertask it starts now as a supertask; after_task and start_rule name that sandbox's tasks. Use it instead of deleting and recreating a task. Nothing changes until the person approves this one request on the panel above your session: tell them it waits there. The call waits for their answer, a few minutes at most, and answers outcome approved (with the task), declined or unanswered (nothing changed). Audited in both sandboxes.".into(),
             input_schema: schema(json!({
                 "sandbox": cross_task_ref["sandbox"],
                 "task_id": cross_task_ref["task_id"],
@@ -961,7 +961,9 @@ pub(crate) enum TaskToolResult {
 
 #[cfg(test)]
 mod tests {
-    use super::{COCKPIT_TOOLS, cockpit_tool_descriptors, cross_action, tool_descriptors};
+    use super::{
+        COCKPIT_TOOLS, CrossAction, cockpit_tool_descriptors, cross_action, tool_descriptors,
+    };
     use yulius_domain::briefing::YULIUS_TOOLS;
 
     #[test]
@@ -1024,6 +1026,16 @@ mod tests {
                 "sandbox_task_stop",
             ]
         );
+        // Each tool asks for its own action (review round 1).
+        for (name, action) in [
+            ("sandbox_task_create", CrossAction::Create),
+            ("sandbox_task_update", CrossAction::Update),
+            ("sandbox_task_message", CrossAction::Message),
+            ("sandbox_task_stop", CrossAction::Stop),
+        ] {
+            assert_eq!(cross_action(name), Some(action), "{name}");
+        }
+        assert_eq!(cross_action("sandbox_task_get"), None, "a read asks nobody");
         for name in [
             "sandbox_task_delete",
             "sandbox_task_archive",

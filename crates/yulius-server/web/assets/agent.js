@@ -473,18 +473,18 @@ const OPTION_LABELS = {
  */
 function askedFor(request) {
   const task = request.task ? `#${request.task.number}` : '';
-  const options = request.options || {};
   switch (request.action) {
+    // The server says whether the update starts the task now (a supertask does too).
     case 'update':
-      return Object.keys(options).length
-        ? { heading: `to change how ${task} starts in `, button: 'Change start', done: `Changed how ${task} starts` }
-        : { heading: `to start ${task} now in `, button: 'Start now', done: `Started ${task}` };
+      return request.starts_now
+        ? { heading: `to start ${task} now in `, button: 'Start now', done: `Started ${task}`, failed: `start ${task}`, declined: 'nothing was changed' }
+        : { heading: `to change how ${task} starts in `, button: 'Change start', done: `Changed how ${task} starts`, failed: `change how ${task} starts`, declined: 'nothing was changed' };
     case 'message':
-      return { heading: `to send ${task} a message from you in `, button: 'Send message', done: `Sent the message to ${task}`, text: 'Message' };
+      return { heading: `to send ${task} a message from you in `, button: 'Send message', done: `Sent the message to ${task}`, failed: `send ${task} the message`, declined: 'nothing was sent', text: 'Message' };
     case 'stop':
-      return { heading: `to stop ${task} in `, button: 'Stop task', done: `Stopped ${task}` };
+      return { heading: `to stop ${task} in `, button: 'Stop task', done: `Stopped ${task}`, failed: `stop ${task}`, declined: 'nothing was changed' };
     default:
-      return { heading: 'to start a task in ', button: 'Create task', text: 'Prompt' };
+      return { heading: 'to start a task in ', button: 'Create task', failed: 'create the task', declined: 'nothing was created', text: 'Prompt' };
   }
 }
 
@@ -604,10 +604,10 @@ function createRequests(ctx, sandbox, onCount) {
           const said = asked.done ? `${asked.done} in ${answer.sandbox || slug}.` : `Created #${answer.task.number} in ${answer.sandbox || slug}.`;
           toast(said, { kind: 'ok', action: { label: 'Open', run: () => ctx.navigate(to) } });
         } else if (!approve) {
-          toast(asked.done ? 'Declined: nothing was changed.' : 'Declined: nothing was created.', { kind: 'info' });
+          toast(`Declined: ${asked.declined}.`, { kind: 'info' });
         }
       } catch (err) {
-        errorToast(err, approve ? (asked.done ? `Couldn’t do it in ${slug}` : `Couldn’t create the task in ${slug}`) : 'Couldn’t decline');
+        errorToast(err, approve ? `Couldn’t ${asked.failed} in ${slug}` : 'Couldn’t decline');
       } finally {
         sending = false;
         update();

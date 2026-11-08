@@ -39,10 +39,14 @@ async fn approved(
     wait_for(
         "the request on the panel",
         Duration::from_secs(10),
-        || async { app.superagent_requests(person, source).len() == 1 },
+        || async {
+            app.superagent_requests(person, source)
+                .await
+                .is_ok_and(|listed| listed.len() == 1)
+        },
     )
     .await?;
-    let listed = app.superagent_requests(person, source);
+    let listed = app.superagent_requests(person, source).await?;
     let id = listed[0]["id"].as_str().ok_or("id")?;
     app.superagent_request_answer(person, source, id, true)
         .await?;
