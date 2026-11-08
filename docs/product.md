@@ -291,7 +291,9 @@ watching, steering and unblocking.
   previous one, "Roll back to this" on the others (agents roll dev back with
   `cd_rollback`), refuses rolling back past a release whose migration cannot be undone and says
   why, drills the rollback on dev after every deploy, and refuses a production deploy until that
-  drill passed for the commit it deploys. An environment that runs no deploy command (an empty one,
+  drill passed for the commit it deploys. When only that drill is missing, Deploy production
+  deploys dev at the commit first, waits for its drill and then deploys production by itself, or
+  says why production did not deploy (SPEC-438). An environment that runs no deploy command (an empty one,
   or a production that only promotes, as Yulius's own) needs no rollback, and the page says so and
   why; Yulius itself rolls back through its update, which restores the previous binary and database
   when the new build fails to start (its health check), or by a revert promoted again (SPEC-418).

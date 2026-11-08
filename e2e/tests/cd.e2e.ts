@@ -867,6 +867,32 @@ test('a needs_you decision reads Decide, and an action alone only To do', async 
   expect(await neededParts(browser)).toEqual([['To do', 'Deploy production on the CD page']]);
 });
 
+// Task #420 (SPEC-438, #1115): "Couldn't deploy production: … the last rollback drill of dev ran
+// at e83c627; deploy dev at this commit first". A production deploy whose rollback is unproven
+// only for its commit deploys dev first, says so, and waits for dev's drill; the page shows the
+// wait and offers no second deploy meanwhile.
+test('a production deploy proves its rollback on dev first', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/ci?section=cd'));
+  const prod = screen.getByRole('region', 'Production rollback');
+  await expect(prod.getByText(/^Production deploys wait: rollback is not proven for this commit/)).toBeVisible();
+  await browser.evaluate(() => { (window as unknown as { __yuliusMock: { cdProveOnDev: boolean } }).__yuliusMock.cdProveOnDev = true; });
+  await screen.getByRole('region', 'Production environment').getByRole('button', 'Deploy production…').click();
+  const confirm = screen.getByRole('dialog', 'Deploy production?');
+  await confirm.getByRole('textbox', 'Type studio to confirm').fill('studio');
+  await confirm.getByRole('button', 'Deploy production').click();
+  await expect(screen.getByText('Deploying dev first to prove the rollback: production deploys by itself once its rollback drill passes.')).toBeVisible();
+  // The view shows dev's deploy, which says what follows it.
+  const view = screen.getByRole('region', 'Deploy');
+  await expect(view.getByText(/by mkarp/)).toBeVisible();
+  expect(await axeViolations(browser)).toEqual([]);
+  await view.getByRole('link', 'All runs').click();
+  await expect(browser.locator('.item-card:has-text("deployed to prove the rollback of production: production deploys at 9f3c2a1 once this deploy\'s rollback drill passes (asked by mkarp)")')).toBeVisible();
+  await expect(prod.getByText('Production deploys at 9f3c2a1 once the rollback drill of dev passes (asked by mkarp).')).toBeVisible();
+  await expect(prod.getByText(/^Production deploys wait:/)).toBeHidden();
+  await expect(screen.getByRole('region', 'Production environment').getByRole('button', 'Deploy production…')).toBeDisabled();
+  expect(await axeViolations(browser)).toEqual([]);
+});
+
 // Task #397 (SPEC-415 RBK-040): each environment shows its rollback: whether it is proven, the
 // migrations line, the kept releases with the one deployed now, "Roll back to previous" and "Roll
 // back to this", and why a release behind a barrier cannot be gone back to. One click and a

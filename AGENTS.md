@@ -25,7 +25,9 @@ CD (deployment) is `[cd.dev]` (empty: no dev machine yet) and `[cd.prod]` (promo
 deploys nothing and only a person deploys production
 ([ADR-0110](docs/decisions/0110-only-a-person-deploys-production.md)). Every `[cd.*]` that deploys
 also has `rollback` and `migrations`; production deploys wait for a passed rollback drill on dev
-([ADR-0263](docs/decisions/0263-rollback-redeploys-a-kept-release-and-a-dev-drill-proves-it-before-production.md)).
+([ADR-0263](docs/decisions/0263-rollback-redeploys-a-kept-release-and-a-dev-drill-proves-it-before-production.md)),
+which a person's production deploy gets by deploying dev first
+([ADR-0282](docs/decisions/0282-a-production-deploy-proves-its-rollback-on-dev-first.md)).
 Yulius's own CD deploys nothing (promotion only), so it rolls back through its update
 ([ADR-0264](docs/decisions/0264-yulius-own-production-rolls-back-through-its-update-not-a-cd-command.md)). Every stage of tasks, CI and CD
 is measured as a span (the Dashboard's Pipeline tab; [ADR-0112](docs/decisions/0112-stages-are-spans-written-with-the-state-they-measure.md)):

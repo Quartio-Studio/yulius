@@ -17,6 +17,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-07
 
+- Deploy production proves its rollback on dev by itself (SPEC-438, ADR-0282, task #420, #1115).
+  A production deploy was refused with "rollback is not proven for this commit: the last rollback
+  drill of dev ran at e83c627; deploy dev at this commit first" whenever dev had moved past its
+  last drill, which agents' merges make the usual case. The person then had to deploy dev, wait
+  for its drill and click again before the next merge landed. Now, when only that drill is
+  missing, Deploy production deploys dev at the commit as the same person, waits for the drill and
+  then deploys production. If dev's deploy or drill fails, production does not deploy and its run
+  says why. The CD page and `cd_status` show the wait.
 - The Superagents use the project browser (SPEC-437, ADR-0281, task #419). A sandbox's Superagent
   answered "this session doesn't have the browser tools" when asked to sign in to a staff panel
   with a vault password. Now it drives its sandbox's browser as a task's agent does: it opens and

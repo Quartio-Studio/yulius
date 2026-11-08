@@ -181,7 +181,8 @@ example when it starts deploying for real), and record every change as a decisio
      - After every passed dev deploy Yulius drills the rollback by itself: back to the previous
        release, verify, forward to the new one, verify. A production table is proven by the
        drill of `dev` (`drill = "<name>"` names another dev-stage environment) at the commit it
-       deploys, so deploy dev first. The drill never touches production.
+       deploys; when only that drill is missing, a person's production deploy deploys dev first
+       and goes on once its drill passed. The drill never touches production.
      - The gate tests the rollback script: without `YULIUS_CD_RELEASE` it refuses (non-zero), and
        with `YULIUS_CD_RELEASE=<id> YULIUS_CD_DRY_RUN=1` it says what it would switch to and
        exits 0, changing nothing.
