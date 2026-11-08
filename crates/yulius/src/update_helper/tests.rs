@@ -86,6 +86,12 @@ printf '   Compiling yulius-domain v0.1.0\n' >&2
 printf '    Building [=>   ] 1/3: yulius-domain\r' >&2
 printf '    Building [==>  ] 2/3: yulius-app\r' >&2
 if [ -f "$(dirname "$0")/cargo.fail" ]; then printf 'error[E0425]: cannot find value `x`\n' >&2; exit 101; fi
+if [ "$(cat "$(dirname "$0")/cargo.hang" 2>/dev/null)" = "$YULIUS_BUILD_COMMIT" ]; then
+  sleep 300 &
+  echo $! > "$(dirname "$0")/cargo.child"
+  wait
+  exit 1
+fi
 mkdir -p "$CARGO_TARGET_DIR/release"
 printf '%s' "$YULIUS_BUILD_COMMIT" > "$CARGO_TARGET_DIR/release/yulius"
 printf '    Building [===> ] 3/3: yulius\r' >&2
@@ -155,12 +161,14 @@ esac"#,
     fn raw_request(&self, bytes: &[u8]) -> TestResult {
         let dir = self.args.data_dir.join("update");
         std::fs::create_dir_all(&dir)?;
-        let path = dir.join(REQUEST_FILE);
-        let _ = std::fs::remove_file(&path);
-        std::fs::write(&path, bytes)?;
+        // Written aside and renamed into place, as the server does: a running build never sees
+        // the request missing while it is replaced.
+        let staged = dir.join("request.json.new");
+        std::fs::write(&staged, bytes)?;
         if nix::unistd::getuid().is_root() {
-            nix::unistd::chown(&path, Some(nix::unistd::Uid::from_raw(65534)), None)?;
+            nix::unistd::chown(&staged, Some(nix::unistd::Uid::from_raw(65534)), None)?;
         }
+        std::fs::rename(&staged, dir.join(REQUEST_FILE))?;
         Ok(())
     }
 
@@ -222,6 +230,61 @@ esac"#,
         std::fs::write(staged.join("yulius"), commit)?;
         std::fs::write(staged.join("commit"), commit)?;
         Ok(())
+    }
+}
+
+/// Waits up to 30 s until `done` holds.
+fn wait_until(what: &str, mut done: impl FnMut() -> bool) -> TestResult {
+    let started = Instant::now();
+    while !done() {
+        if started.elapsed() > Duration::from_secs(30) {
+            return Err(format!("{what} did not happen within 30 s").into());
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    Ok(())
+}
+
+/// Whether process `pid` has ended (gone, or a zombie waiting to be reaped).
+fn ended(pid: &str) -> bool {
+    std::fs::read_to_string(format!("/proc/{pid}/stat")).map_or(true, |stat| {
+        stat.rsplit_once(") ")
+            .is_some_and(|(_, rest)| rest.starts_with('Z'))
+    })
+}
+
+/// The helper running in a thread while the fake cargo hangs on a build.
+struct HangingBuild {
+    /// The pid of the compiler (a `sleep` child of cargo).
+    compiler: String,
+    helper: std::thread::JoinHandle<Result<(), String>>,
+}
+
+impl HangingBuild {
+    /// Starts the helper on a build of `commit` that hangs, once its compiler runs.
+    fn start(env: &Env, id: &str, commit: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        std::fs::write(env.bin("cargo.hang"), commit)?;
+        env.request(id, HelperAction::Build, commit)?;
+        let args = env.args.clone();
+        let helper = std::thread::spawn(move || Helper::new(args).run());
+        let child = env.bin("cargo.child");
+        wait_until("the compiler start", || {
+            std::fs::read_to_string(&child).is_ok_and(|pid| !pid.trim().is_empty())
+        })?;
+        let compiler = std::fs::read_to_string(&child)?.trim().to_owned();
+        Ok(Self { compiler, helper })
+    }
+
+    /// Whether the build still runs: the helper and its compiler.
+    fn running(&self) -> bool {
+        !self.helper.is_finished() && !ended(&self.compiler)
+    }
+
+    /// Waits until the helper's run and the compiler ended.
+    fn ends(self) -> TestResult {
+        wait_until("the helper's end", || self.helper.is_finished())?;
+        self.helper.join().map_err(|_| "the helper panicked")??;
+        wait_until("the compiler's end", || ended(&self.compiler))
     }
 }
 
@@ -396,6 +459,82 @@ fn a_failed_build_reports_its_error_and_stages_nothing() -> TestResult {
     );
     assert!(!env.args.state_dir.join("staged").join("commit").exists());
     Ok(())
+}
+
+// #1117 (SPEC-439 CUB-001): a cancel removes the request; the build stops at once, with the
+// compilers cargo started, and nothing is staged.
+#[test]
+fn a_withdrawn_build_stops_with_its_compilers() -> TestResult {
+    let env = Env::new()?;
+    let build = HangingBuild::start(&env, "run-0005-build", &env.b)?;
+    std::fs::remove_file(env.args.data_dir.join("update").join(REQUEST_FILE))?;
+    build.ends()?;
+    let status: HelperStatus =
+        serde_json::from_slice(&std::fs::read(env.args.state_dir.join(STATUS_FILE))?)?;
+    assert_eq!(status.id, "run-0005-build");
+    assert_eq!(status.state, HelperState::Failed, "{status:?}");
+    assert_eq!(status.error.as_deref(), Some("The build was cancelled."));
+    assert!(!env.args.state_dir.join("staged").join("commit").exists());
+    Ok(())
+}
+
+// #1117 (SPEC-439 CUB-001): a new update replacing the request being built stops the old build,
+// and the same run builds the new one.
+#[test]
+fn a_replaced_build_stops_and_the_new_request_is_built() -> TestResult {
+    let env = Env::new()?;
+    let build = HangingBuild::start(&env, "run-0006-build", &env.b)?;
+    env.request("run-0007-build", HelperAction::Build, &env.c)?;
+    build.ends()?;
+    let status: HelperStatus =
+        serde_json::from_slice(&std::fs::read(env.args.state_dir.join(STATUS_FILE))?)?;
+    assert_eq!(status.id, "run-0007-build");
+    assert_eq!(status.state, HelperState::Done, "{status:?}");
+    let staged = env.args.state_dir.join("staged");
+    assert_eq!(std::fs::read_to_string(staged.join("commit"))?, env.c);
+    assert_eq!(
+        std::fs::read_to_string(env.bin("cargo.log"))?
+            .lines()
+            .count(),
+        2
+    );
+    Ok(())
+}
+
+// SPEC-439 CUB-001: the server writing the same request again (until the helper answers), or a
+// request file the helper cannot read, never stops a running build.
+#[test]
+fn a_rewritten_or_unreadable_request_does_not_stop_the_build() -> TestResult {
+    let env = Env::new()?;
+    let build = HangingBuild::start(&env, "run-0008-build", &env.b)?;
+    let path = env.args.data_dir.join("update").join(REQUEST_FILE);
+    let other = env.args.data_dir.join("other.json");
+    std::fs::write(&other, request_json(&[("id", "run-0009-build".into())]))?;
+    let oversized = request_json(&[
+        ("id", "run-0009-build".into()),
+        ("pad", "x".repeat(MAX_REQUEST_BYTES as usize).into()),
+    ]);
+    let changes: [(&str, &dyn Fn() -> TestResult); 3] = [
+        ("the same request written again", &|| {
+            env.request("run-0008-build", HelperAction::Build, &env.b)
+        }),
+        ("a link to another request", &|| {
+            std::fs::remove_file(&path)?;
+            symlink(&other, &path)?;
+            Ok(())
+        }),
+        ("an oversized other request", &|| {
+            env.raw_request(&oversized)
+        }),
+    ];
+    for (what, change) in changes {
+        change()?;
+        // Nothing happens to observe: three checks of the request pass meanwhile.
+        std::thread::sleep(WITHDRAWN_EVERY * 3);
+        assert!(build.running(), "{what} stopped the build");
+    }
+    std::fs::remove_file(&path)?;
+    build.ends()
 }
 
 #[test]

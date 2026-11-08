@@ -1519,7 +1519,12 @@ commits. Nothing updates by itself: a superadmin chooses **Update now** and conf
    cannot be frozen pauses at its next turn boundary instead (its Stop or `UserPromptSubmit` hook
    is held, as for a capacity pause), and while such a run is still in a turn nothing is frozen:
    the others freeze once it is held (or at once on **Continue without waiting**). A task still in a turn after 30 minutes cancels the update
-   (nothing changes); the superadmin can also **Continue without waiting** or **Cancel**. To check
+   (nothing changes); the superadmin can also **Continue without waiting** or **Cancel**. A cancel
+   while building stops the build: within about a second once it compiles (the helper sees its
+   request gone and kills cargo with every compiler it started), or before compiling starts when
+   it is still fetching; nothing is staged (ADR-0283). A cancel that lands while rustup installs a
+   new toolchain for the build can leave it half written: `rustup toolchain uninstall <version>`
+   (as root) repairs it, and the next build installs it again. To check
    a freeze on a host: `cat /sys/fs/cgroup/system.slice/yulius.service/sandboxes/*/agents/run-*/cgroup.events`
    (`sandboxes/*/run-*` without the `cpu` controller) shows `frozen 1` while the update restarts.
    A server that starts thaws every run group left frozen, but those of tasks a person paused

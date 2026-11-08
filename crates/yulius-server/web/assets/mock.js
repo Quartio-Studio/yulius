@@ -152,13 +152,15 @@ function seed(params) {
     // (main moved on and its install is rolled back), `helper=0` (no update helper), `jev=config`,
     // `deploying=1` (a CD run of studio's dev and an environment run of its dev-vm run when the build
     // is done: the update waits for them one step before it pauses tasks, SPEC-342), `deploying=drain`
-    // (a deploy still runs while tasks pause: the install waits for it, no Continue without waiting).
+    // (a deploy still runs while tasks pause: the install waits for it, no Continue without waiting),
+    // `build=hold` (the build stays compiling until it is cancelled, SPEC-439).
     update: {
       current: '68b4f5f2c1d0e9a8b7c6d5e4f3a2b1c0d9e8f7a6',
       offer: ['1', 'fail'].includes(params.get('update')) ? '9c1e7d3b5a2f4e6d8c0b1a3f5e7d9c2b4a6f8e0d' : null,
       fail: params.get('update') === 'fail',
       helper: params.get('helper') !== '0',
       deploying: params.get('deploying'),
+      build: params.get('build'),
       checkedAt: ['1', 'fail'].includes(params.get('update')) ? iso(10 * MIN) : null,
       run: null,
     },
@@ -4177,6 +4179,10 @@ function moveUpdate(db, state, patch = {}) {
 /** Walks a started update through its phases, like the server and helper do. */
 function runUpdate(db, id) {
   const live = () => db.update.run && db.update.run.id === id && UPDATE_STATES.includes(db.update.run.state);
+  if (db.update.build === 'hold') {
+    Object.assign(db.update.run, { step: 'compiling', progress: { done: 120, total: 340 }, message: 'Building the new version. Tasks keep working meanwhile.' });
+    return;
+  }
   const steps = 4;
   // A running deploy holds the update one more step after its build (SPEC-342).
   const wait = db.update.deploying === '1' ? UPDATE_STEP_MS : 0;
