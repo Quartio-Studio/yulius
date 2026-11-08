@@ -1178,7 +1178,18 @@ async fn a_moving_base_never_restarts_a_pre_check() -> TestResult {
     assert_eq!(pre_check.len(), 1, "{runs:?}");
     assert_eq!(pre_check[0].sha, head);
     assert!(pre_check[0].state.is_active(), "{runs:?}");
-    assert_eq!(f.wait(1, &worktree).await?["merge_armed"], true);
+    assert!(
+        f.train_runs(&app).await?.is_empty(),
+        "no merge candidate before its pre-check passed"
+    );
+    let state = f.wait(1, &worktree).await?;
+    assert_eq!(state["merge_armed"], true);
+    assert!(
+        state["merge_train"]
+            .as_str()
+            .is_some_and(|n| n.starts_with("Pull request #1 waits for its own Yulius CI run")),
+        "{state}"
+    );
 
     // The pre-check finishes, then the pull request lands on top of the moved base.
     f.settle(&app).await?;
