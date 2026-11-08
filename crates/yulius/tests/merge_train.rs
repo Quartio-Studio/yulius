@@ -1386,3 +1386,79 @@ async fn arming_the_same_head_again_keeps_its_place() -> TestResult {
     .await?;
     Ok(())
 }
+
+/// SPEC-441 MQ-007: every armed pull request says where it stands, in `yulius wait` and in
+/// `delivery_status`: one in the merge candidate under test, one green behind it waiting for the
+/// next candidate, and one whose agent is busy.
+#[tokio::test]
+async fn every_armed_pull_request_says_where_it_stands() -> TestResult {
+    let f = fixture().await?;
+    let app = f.h.app.clone();
+    let mut worktrees = Vec::new();
+    for (n, file) in [(1, "a.txt"), (2, "b.txt"), (3, "c.txt")] {
+        worktrees.push(f.task(n, &[(file, "x\n")]).await?);
+    }
+    f.arm(1, &worktrees[0]).await?;
+    f.record_passed(&app, 1, &git(&worktrees[0], &["rev-parse", "HEAD"])?)
+        .await?;
+    f.advance_dev("other.txt")?;
+    app.merge_armed(&f.sandbox).await;
+    let train = f.train_runs(&app).await?.first().cloned().ok_or("train")?;
+    assert_eq!(train.reference.key(), "train/1");
+    for n in [2, 3] {
+        f.arm(n, &worktrees[n as usize - 1]).await?;
+        f.record_passed(&app, n, &git(&worktrees[n as usize - 1], &["rev-parse", "HEAD"])?)
+            .await?;
+    }
+    f.h.store
+        .transition_task(
+            &TaskId::parse("t3")?,
+            None,
+            TaskStatus::Running,
+            Some(Activity::Working),
+            app.now(),
+        )
+        .await?;
+    app.merge_armed(&f.sandbox).await;
+    let note = |n: u32| {
+        let f = &f;
+        let worktree = worktrees[n as usize - 1].clone();
+        async move {
+            Ok::<_, Box<dyn std::error::Error>>(
+                f.wait(n, &worktree).await?["merge_train"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
+            )
+        }
+    };
+    let first = note(1).await?;
+    assert!(
+        first.contains("#1 is number 1 of 1 in merge train #1"),
+        "{first}"
+    );
+    let second = note(2).await?;
+    assert!(
+        second.starts_with("Pull request #2 passed its own run at")
+            && second.contains(&format!(
+                "it goes into the next merge candidate, after the one Yulius tests now (merge \
+                 candidate #1 (run {}))",
+                train.id
+            )),
+        "{second}"
+    );
+    let third = note(3).await?;
+    assert!(
+        third.contains("as soon as your turn ends with everything committed"),
+        "{third}"
+    );
+    let status = support::mcp_tool(&f.h, "tok-t2", "delivery_status", json!({})).await?;
+    let status = support::tool_text(&status);
+    assert!(
+        status["notes"]
+            .as_array()
+            .is_some_and(|notes| notes.iter().any(|n| n.as_str() == Some(second.as_str()))),
+        "{status}"
+    );
+    Ok(())
+}
