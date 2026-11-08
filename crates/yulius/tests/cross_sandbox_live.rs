@@ -10,7 +10,6 @@ use yulius_app::auth::AuthContext;
 use yulius_app::context::App;
 use yulius_app::coordination::{Channel, ProjectCaller};
 use yulius_app::cross_sandbox::CrossAction;
-use yulius_app::ports::store::AuditStore;
 use yulius_domain::ids::{SandboxId, TaskId};
 use yulius_domain::task::TaskStatus;
 use yulius_ptyhost::test_support::locate_fake_agent;
