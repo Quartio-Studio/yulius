@@ -1,11 +1,11 @@
 ---
 yulius-task: 73dd94db-e49b-4efb-8a86-41f06c0007e6
-status: in-progress
+status: done
 ---
 
 # SPEC-440: Agents ask for a copy of a production secret
 
-Status: in progress
+Status: implemented
 Date: 2026-11-08
 Owner: Yulius task #422
 Scope authorization: task #422 ("agent should be able to request copying the token"), with a
@@ -84,8 +84,8 @@ pastes the token by hand, and the production secret stays exclusive to productio
 - [x] The Secrets page shows a copy request with Allow copy and Dismiss
 - [x] ADR, architecture, API and product docs describe copy requests
 - [x] Independent review in a fresh session, round 1 findings fixed test-first
-- [ ] Independent review round 2 approves the exact head
-- [ ] Every gate green, docs and the changes log updated
+- [x] Independent review round 2 approves the exact head
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -130,3 +130,26 @@ pastes the token by hand, and the production secret stays exclusive to productio
 - **Rejected:** letting agents read production values for dev use (breaks ADR-0109); a copy that
   follows the source's rotations (a link between secrets nothing else has; a rotation of the copy is
   a person's, as for any agent secret).
+
+## Evidence
+
+- `scripts/dev ci` (full gate: check, lint, macOS build, nextest, doctests, deps) at `ddac67af`:
+  exit 0, 3215 tests passed, 16 skipped. The first run (at `18fdb4ab`) failed only
+  `ui_contract::every_api_call_of_the_ui_exists_in_the_router` (the page's `const url` template was
+  read as a GET); fixed by sending from the `post` call itself.
+- After the round-2 test: `cargo nextest … secrets_copy::` 3/3 passed; `scripts/dev lint` exit 0.
+  Mutation checks: dropping the copy-request clause of `secret_waits_for` fails both original
+  integration tests; dropping the `Configure` check of `answer_copy_request` fails
+  `copies_are_answered_only_where_and_by_whom_they_may_be`.
+- Store: `vault::tests::copy_requests_change_and_are_answered_only_as_seen` (compare-and-set, one
+  transaction, taken name and capacity keep the request, revoke and delete remove it).
+- e2e: `npx e2e run tests/secrets.e2e.ts` 30/30, including the live-change guard (a click on a
+  just-replaced Allow copy sends nothing) and the member view.
+- `scripts/dev security`: **disabled** ("Security scan disabled: Vidoc is turned off in Yulius");
+  nothing was scanned, so this is not a pass.
+- Independent review (fresh session, `om-code-review`): round 1 requested changes (2 major, 4
+  minor, 3 nits, all own code), each fixed test-first in `4261b42a`; round 2 approved on the code
+  with one minor (no test for the project write check with an instance administrator), fixed in
+  the following commit with a test that the mutation above fails.
+- Not tested: an end-to-end run with a real Claude task calling the tool against the live instance
+  (the MCP path is covered by the integration tests through `/mcp`).
