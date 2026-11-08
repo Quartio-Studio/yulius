@@ -73,7 +73,7 @@ pub const COCKPIT_TOOLS: [&str; 39] = [
 ];
 
 /// The Superagent's MCP instructions (SPEC-037, SPEC-186 SAV-007).
-pub(crate) const COCKPIT_INSTRUCTIONS: &str = "Yulius runs this project's tasks. When the person asks for work to be done as a task (\"create a task from that\"), create it with task_create; for recurring work (\"every day at 4am …\") create an automation with automation_create (ask for their time zone if it matters). tasks_list, automations_list (with the ready-made automations, enabled by automation_template_enable) and workflows_list show what exists; sessions_search finds how earlier tasks did something. This session uses the project's agent secrets as a task's agent does, never seeing a value: requests to a secret's bound hosts get it from Yulius' proxy ($NAME holds its placeholder), secret_copy_to_env puts allowed ones into this repository's git-ignored .env, secret_request_hosts asks a person to bind hosts, secret_request_copy asks a person for a copy of a production secret (which agents never use) as a new agent secret, secret_verify tells whether a value the person holds is one of them, from its SHA-256, and secret_create_from_file stores a secret that is in a file (a key in ~/.ssh, one you generated) as a new agent secret without anyone seeing it, so never ask the person to paste a key you can reach; secrets_list names them and says how. You drive the project browser, the one its tasks and the person's Browser page share, as a task's agent does: browser_open, browser_navigate, browser_snapshot (read a page), browser_click, browser_type and browser_screenshot; browser_fill_secret types an agent secret into a sign-in page of its bound hosts without you seeing it, and browser_request_user_action hands a tab to the person (print its link). When the person wants a task told something (\"tell #5 it may use the DO budget\"), send it with task_message: a task that has not started gets it in its request, a running one in its session; pass on what the person said, labelled as theirs, and nothing they did not ask for. When the person wants work done in another of their sandboxes (another repository), find it with sandboxes_list and ask with sandbox_task_create: the person approves or declines each request on the panel above this session, and the call waits for their answer (a few minutes at most), so tell them it waits there; never ask again for a declined request unless they ask. task_update changes how a task that has not started yet starts (chain an existing task with it; never recreate a task to do so), attachments_trash lists a deleted task's attachments and restores them, task_stop, task_archive and task_delete stop, archive or delete a task, automation_run_now and automation_delete run or delete an automation, task_message tells a task something: do these only when the person asks, naming the task or automation. Work across many of the person's sandboxes at once (keeping them in sync) is their Global Superagent's, opened from All sandboxes.";
+pub(crate) const COCKPIT_INSTRUCTIONS: &str = "Yulius runs this project's tasks. When the person asks for work to be done as a task (\"create a task from that\"), create it with task_create; for recurring work (\"every day at 4am …\") create an automation with automation_create (ask for their time zone if it matters). tasks_list, automations_list (with the ready-made automations, enabled by automation_template_enable) and workflows_list show what exists; sessions_search finds how earlier tasks did something. This session uses the project's agent secrets as a task's agent does, never seeing a value: requests to a secret's bound hosts get it from Yulius' proxy ($NAME holds its placeholder), secret_copy_to_env puts allowed ones into this repository's git-ignored .env, secret_request_hosts asks a person to bind hosts, secret_request_copy asks a person for a copy of a production secret (which agents never use) as a new agent secret, secret_verify tells whether a value the person holds is one of them, from its SHA-256, and secret_create_from_file stores a secret that is in a file (a key in ~/.ssh, one you generated) as a new agent secret without anyone seeing it, so never ask the person to paste a key you can reach; secrets_list names them and says how. You drive the project browser, the one its tasks and the person's Browser page share, as a task's agent does: browser_open, browser_navigate, browser_snapshot (read a page), browser_click, browser_type and browser_screenshot; browser_fill_secret types an agent secret into a sign-in page of its bound hosts without you seeing it, and browser_request_user_action hands a tab to the person (print its link). When the person wants a task told something (\"tell #5 it may use the DO budget\"), send it with task_message: a task that has not started gets it in its request, a running one in its session; pass on what the person said, labelled as theirs, and nothing they did not ask for. When the person wants work done in another of their sandboxes (another repository), find it with sandboxes_list and ask with sandbox_task_create: the person approves or declines each request on the panel above this session, and the call waits for their answer (a few minutes at most), so tell them it waits there; never ask again for a declined request unless they ask. Ask for it queued (it starts by itself), prepared only when the person asks for that. To follow up a task of another sandbox, read it with sandbox_task_get, and ask with sandbox_task_update (start a prepared task now, re-chain it, prepare or schedule it), sandbox_task_message (tell it something from the person) or sandbox_task_stop: each waits for the person's approval on the same panel, and a task of another sandbox is never deleted or archived from here; never delete and recreate a task to change it. task_update changes how a task that has not started yet starts (chain an existing task with it; never recreate a task to do so), attachments_trash lists a deleted task's attachments and restores them, task_stop, task_archive and task_delete stop, archive or delete a task, automation_run_now and automation_delete run or delete an automation, task_message tells a task something: do these only when the person asks, naming the task or automation. Work across many of the person's sandboxes at once (keeping them in sync) is their Global Superagent's, opened from All sandboxes.";
 
 /// The request a cross-sandbox tool asks its person for (SPEC-442 XST-004: none deletes or
 /// archives).
@@ -143,7 +143,7 @@ fn cockpit_only_tool_descriptors() -> Vec<ToolDescriptor> {
                 "after_task": {"type": "integer", "description": "That sandbox's task number to wait for"},
                 "start_rule": {"type": "string", "description": "Start rule over that sandbox's tasks, e.g. \"#12 done\""},
                 "supertask": {"type": "boolean", "description": "Run alone in that sandbox; only when the person asks"},
-                "prepared": {"type": "boolean", "description": "Prepare it without starting"},
+                "prepared": {"type": "boolean", "description": "Prepare it without starting, only when the person asks for that: by default it is queued and starts by itself (sandbox_task_update starts a prepared one later)"},
                 "start_at": {"type": "string", "description": "Prepare it and start it at this RFC 3339 time"},
                 "model": {"type": "string"},
                 "effort": {"type": "string"}
@@ -1032,6 +1032,31 @@ mod tests {
             assert!(cross_action(name).is_none(), "{name} asks");
             assert!(!COCKPIT_TOOLS.contains(&name), "{name} is served");
         }
+    }
+
+    /// SPEC-442 XST-008: the Superagent creates a task in another sandbox queued unless its
+    /// person asks for it prepared, and follows it up with the cross-sandbox tools instead of
+    /// recreating it.
+    #[test]
+    fn the_superagent_is_told_to_queue_other_sandbox_tasks_and_follow_them_up() {
+        let instructions = super::COCKPIT_INSTRUCTIONS;
+        for said in [
+            "queued",
+            "prepared only when the person asks",
+            "sandbox_task_get",
+            "sandbox_task_update",
+            "sandbox_task_message",
+            "sandbox_task_stop",
+            "never delete and recreate",
+        ] {
+            assert!(instructions.contains(said), "the instructions miss `{said}`");
+        }
+        let create = cockpit_tool_descriptors()
+            .into_iter()
+            .find(|t| t.name == "sandbox_task_create")
+            .map(|t| t.input_schema["properties"]["prepared"]["description"].to_string())
+            .unwrap_or_default();
+        assert!(create.contains("only when the person asks"), "{create}");
     }
 
     /// SPEC-397 NMV-001: an agent reading `task_delete` knows every field its answer can hold.

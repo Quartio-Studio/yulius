@@ -6,6 +6,15 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-08
 
+- The Superagent follows up the tasks it asked for in other sandboxes (SPEC-442, ADR-0286, task
+  #424). A Superagent that created a task in another sandbox prepared could not start it, re-chain
+  it or tell it anything: the person had to delete it and ask for a new one. Now
+  `sandbox_task_get` reads it, and `sandbox_task_update` (start it now, re-chain, prepare or
+  schedule), `sandbox_task_message` and `sandbox_task_stop` ask the person on the same panel as
+  `sandbox_task_create` ("Your Superagent asks to start #12 now in yulius": **Start now**). Each
+  change waits for its own click; nothing deletes or archives a task of another sandbox; every
+  answer is audited in both sandboxes. The Superagent is told to ask for such tasks queued unless
+  the person wants them prepared.
 - Agents ask for a copy of a production secret (SPEC-440, ADR-0284, task #422). A task that
   needed a dev token existing only as a production secret could only raise "Needs you: add an
   agent secret with the same value", and a person had to reveal, copy and paste it. Now the agent
