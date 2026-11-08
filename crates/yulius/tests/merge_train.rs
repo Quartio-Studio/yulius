@@ -511,7 +511,12 @@ impl Fixture {
         git(&clone, &["commit", "-q", "-m", file])?;
         git(
             &clone,
-            &["push", "-q", "origin", &format!("HEAD:{}", self.integration)],
+            &[
+                "push",
+                "-q",
+                "origin",
+                &format!("HEAD:{}", self.integration),
+            ],
         )?;
         Ok(())
     }
@@ -1109,8 +1114,10 @@ async fn a_merge_train_survives_a_restart() -> TestResult {
     f.settle(&second).await?;
     // #1 brought up to date and pushed, its merge waiting for GitHub.
     f.decide_until(&second, || async {
-        Ok(git(&f.origin, &["rev-parse", "feat/1-train"])? != armed_head
-            && f.trains_file(&second).contains("\"waiting_since\":1"))
+        Ok(
+            git(&f.origin, &["rev-parse", "feat/1-train"])? != armed_head
+                && f.trains_file(&second).contains("\"waiting_since\":1"),
+        )
     })
     .await?;
     assert!(!f.merged(&second, 1).await?);
@@ -1407,8 +1414,12 @@ async fn every_armed_pull_request_says_where_it_stands() -> TestResult {
     assert_eq!(train.reference.key(), "train/1");
     for n in [2, 3] {
         f.arm(n, &worktrees[n as usize - 1]).await?;
-        f.record_passed(&app, n, &git(&worktrees[n as usize - 1], &["rev-parse", "HEAD"])?)
-            .await?;
+        f.record_passed(
+            &app,
+            n,
+            &git(&worktrees[n as usize - 1], &["rev-parse", "HEAD"])?,
+        )
+        .await?;
     }
     f.h.store
         .transition_task(
@@ -1547,9 +1558,11 @@ async fn a_pinned_hand_merge_on_a_green_head_counts() -> TestResult {
     let status = support::mcp_tool(&f.h, "tok-t1", "delivery_status", json!({})).await?;
     let status = support::tool_text(&status);
     assert!(
-        status["notes"].as_array().is_some_and(|notes| notes
-            .iter()
-            .any(|n| n.as_str().is_some_and(|n| n.contains("counts as merged on green")))),
+        status["notes"]
+            .as_array()
+            .is_some_and(|notes| notes.iter().any(|n| n
+                .as_str()
+                .is_some_and(|n| n.contains("counts as merged on green")))),
         "{status}"
     );
 

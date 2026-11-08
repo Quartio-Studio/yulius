@@ -264,10 +264,7 @@ impl App {
             let sandbox = self.deps.store.sandbox(&ctx.task.sandbox_id).await;
             let counts = match (record.pr_number, sandbox) {
                 (Some(number), Ok(Some(sandbox))) => {
-                    format!(
-                        " {}",
-                        self.merged_note(&ctx.task, &sandbox, number).await
-                    )
+                    format!(" {}", self.merged_note(&ctx.task, &sandbox, number).await)
                 }
                 _ => String::new(),
             };

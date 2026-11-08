@@ -1345,13 +1345,25 @@ mod tests {
     #[test]
     fn a_merge_counts_by_its_heads_run() {
         use yulius_domain::ci::{GateResult, RunState};
-        let green = merged_text(7, "dev", "abcdef0123", GateResult::Run(Some(RunState::Passed)), true);
+        let green = merged_text(
+            7,
+            "dev",
+            "abcdef0123",
+            GateResult::Run(Some(RunState::Passed)),
+            true,
+        );
         assert!(
             green.starts_with("Pull request #7 is merged into `dev` at abcdef012, whose own Yulius CI run passed: it counts as merged on green Yulius CI, whoever merged it."),
             "{green}"
         );
         assert!(green.contains("end with your summary"), "{green}");
-        let red = merged_text(7, "dev", "abcdef0123", GateResult::Run(Some(RunState::Failed)), false);
+        let red = merged_text(
+            7,
+            "dev",
+            "abcdef0123",
+            GateResult::Run(Some(RunState::Failed)),
+            false,
+        );
         assert_eq!(
             red,
             "Pull request #7 is merged into `dev` at abcdef012, but Yulius CI did not pass at \

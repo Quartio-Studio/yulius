@@ -3973,7 +3973,11 @@ async fn an_armed_merge_behind_its_base_is_brought_up_to_date() -> TestResult {
     t.arm().await?;
     advance_base(f, "quartio", "landing.txt", "base version")?;
     f.h.app.merge_armed(&sandbox).await;
-    assert_eq!(git(&t.wt, &["rev-parse", "HEAD"])?, t.head, "checks still run");
+    assert_eq!(
+        git(&t.wt, &["rev-parse", "HEAD"])?,
+        t.head,
+        "checks still run"
+    );
     f.h.github.set_checks(&t.head, ChecksState::Success);
     f.h.app.merge_armed(&sandbox).await;
     let outcome = t.outcome().await?;
@@ -4009,7 +4013,11 @@ async fn an_armed_merge_is_kept_current_and_merged_on_green() -> TestResult {
     advance_base(f, "quartio", "other.txt", "unrelated")?;
     // Not while the head's own checks run (SPEC-441 MQ-001): only once they passed.
     f.h.app.merge_armed(&sandbox).await;
-    assert_eq!(git(&t.wt, &["rev-parse", "HEAD"])?, t.head, "checks still run");
+    assert_eq!(
+        git(&t.wt, &["rev-parse", "HEAD"])?,
+        t.head,
+        "checks still run"
+    );
     f.h.github.set_checks(&t.head, ChecksState::Success);
     f.h.app.merge_armed(&sandbox).await;
     let head = git(&t.wt, &["rev-parse", "HEAD"])?;
