@@ -1,11 +1,11 @@
 ---
 yulius-task: 97eaeae6-84e2-4a59-9b02-85351470a9bc
-status: in-progress
+status: done
 ---
 
 # SPEC-442: The Superagent manages tasks in its person's other sandboxes, each change approved
 
-Status: in-progress
+Status: done
 Date: 2026-11-08
 Owner: Yulius task #424
 Scope authorization: task #424 (`/goal`), requested by the owner through quartio-v2's
@@ -91,15 +91,15 @@ person asks for prepared.
 ## Plan
 
 - [x] Spec, ADR and plan for cross-sandbox task requests
-- [ ] A Superagent reads a task of another sandbox with sandbox_task_get
-- [ ] A Superagent starts or re-chains a task of another sandbox once its person approves
-- [ ] A Superagent messages or stops a task of another sandbox once its person approves
-- [ ] Every cross-sandbox answer is audited in both sandboxes
-- [ ] The Superagent panel shows start, change, message and stop requests
-- [ ] Instructions and docs: queued unless asked for prepared, the new tools named
-- [ ] Shown end to end: a prepared task in another sandbox started and messaged from a Superagent
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, changes log updated, delivered into dev
+- [x] A Superagent reads a task of another sandbox with sandbox_task_get
+- [x] A Superagent starts or re-chains a task of another sandbox once its person approves
+- [x] A Superagent messages or stops a task of another sandbox once its person approves
+- [x] Every cross-sandbox answer is audited in both sandboxes
+- [x] The Superagent panel shows start, change, message and stop requests
+- [x] Instructions and docs: queued unless asked for prepared, the new tools named
+- [x] Shown end to end: a prepared task in another sandbox started and messaged from a Superagent
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, changes log updated
 
 ## Acceptance criteria
 
@@ -148,3 +148,41 @@ person asks for prepared.
   click.
 - **Audit in both sandboxes**: the target's admins see who reached in, the source's what its
   Superagent did elsewhere.
+
+## Evidence
+
+- Tests written before the code: the integration tests did not compile without `CrossAction`
+  and `tool_sandbox_task_request`; the guidance test failed ("the instructions miss `queued`");
+  review round 1's tests failed before their fix (`an_update_card_says_whether_the_task_starts_now`,
+  `an_update_that_cannot_apply_is_refused_without_asking`, `the_card_names_the_task_as_it_is_now`).
+  Mutation check: without the source-side audit row, `every_cross_sandbox_answer_is_audited_in_both_sandboxes`
+  and `an_unanswered_change_is_audited_as_expired_in_both_sandboxes` fail.
+- AC-XST-1, AC-XST-2 (shown end to end): `cross_sandbox_live::a_prepared_task_of_another_sandbox_is_started_and_messaged_from_a_superagent`,
+  with real processes (supervisor, detached `yulius ptyhost`, fake agent): the Superagent of
+  `home` asks for a prepared task in `pool` (approved), starts it with `sandbox_task_update`
+  (approved; the agent answers its prompt, no second task), then messages it (approved;
+  typed as "Message from admin (through their Superagent):"); 3 audit rows in each sandbox,
+  none holding the message.
+- AC-XST-3..6: `cross_sandbox::` (29 tests: reads without asking; start, re-chain, message, stop
+  approved; declined changes nothing; refusals before asking, including updates that cannot
+  apply; refusal on approval and the personal-secret refusal audited `failed` in both
+  sandboxes; expiry and every answer audited in both; a task named twice; the card's current
+  task state), `cockpit::the_cross_sandbox_task_tools_over_the_mcp` (over `/mcp`: get, a stop
+  request, cancellation audited in both) and `cockpit::…` `sandbox_task_delete`/`_archive` are
+  unknown tools; `mcp::tests` (served set, action of each tool, no delete/archive, guidance).
+- AC-XST-7: `e2e/tests/superagent-requests.e2e.ts` 15/15 (`npx e2e run tests/superagent-requests.e2e.ts`).
+- `scripts/dev ci` at 16866429: exit 0 (repository contracts, fmt, clippy, macOS targets,
+  3233 tests passed, docs); the merge of `origin/dev` (a1268e51) was clean, then the affected
+  tests passed again (156/156).
+- `yulius security-scan`: "Security scan disabled" (Vidoc is off for this project): not run,
+  not passed.
+- Independent review (fresh session, read-only): round 1 REQUEST CHANGES (1 major: an update
+  card could say "change" while it starts the task now; 4 minor; 2 nits), all fixed test-first;
+  round 2 APPROVE at f6cbd7c9. Two nits left by decision: a card whose task was deleted while it
+  waits keeps the task's last title and status (approving it answers not found, nothing
+  changes), and stop and message requests are refused on approval, not before asking, when the
+  task ended meanwhile (XST-003 allows that; an update is checked earlier because its card
+  wording depends on it).
+- Not tested here: the live instance. The tools reach running Superagents after Yulius' own
+  update deploys this (their launch digest covers the tools and instructions); promotion to
+  `main` is a person's.
