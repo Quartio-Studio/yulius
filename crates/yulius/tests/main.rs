@@ -77,6 +77,7 @@ mod restart;
 mod run_metrics;
 mod sandbox_docker;
 mod secrets;
+mod secrets_copy;
 mod secrets_create;
 mod secrets_env;
 mod secrets_redaction;

@@ -6,7 +6,8 @@
 //! two-factor unlock. Agents never do.
 
 use yulius_contracts::api::secrets::{
-    AgentSecretInput, AgentSecretPatch, AgentSecretView, RevealRequest, SecretReveal,
+    AgentSecretInput, AgentSecretPatch, AgentSecretView, CopyRequestView, RevealRequest,
+    SecretReveal,
 };
 use yulius_domain::ids::SandboxId;
 use yulius_domain::permission::{AccessLevel, Action};
@@ -27,7 +28,7 @@ use zeroize::Zeroizing;
 /// Longest description.
 const MAX_DESCRIPTION: usize = 1000;
 /// Agent secrets that may reach one sandbox (its own, and global and personal ones switched on).
-const MAX_AGENT_SECRETS: usize = 200;
+pub(super) const MAX_AGENT_SECRETS: usize = 200;
 
 pub(super) fn description(text: Option<&str>) -> AppResult<String> {
     let text = text.unwrap_or_default().trim();
@@ -110,6 +111,8 @@ pub(super) struct Here {
     pub(super) enabled: bool,
     /// The scope of the secret of its name that wins there, when not itself.
     pub(super) shadowed_by: Option<&'static str>,
+    /// The copy an agent of the project asked for (SPEC-440).
+    pub(super) copy_request: Option<CopyRequestView>,
 }
 
 fn meta(name: &str, hosts: &[String], kind: Option<&str>, header: Option<&str>) -> AppResult<Meta> {
@@ -159,7 +162,7 @@ impl App {
         // (the list says where it is on).
         let here = Here {
             enabled: record.sandbox_id.is_some(),
-            shadowed_by: None,
+            ..Here::default()
         };
         self.agent_view_in(record, manage, here).await
     }
@@ -208,6 +211,7 @@ impl App {
             rotate_due: self.now().millis_since(record.value_updated_at) >= ROTATE_AFTER_MS,
             flattened,
             can_manage: manage,
+            copy_request: here.copy_request,
         })
     }
 
@@ -246,6 +250,7 @@ impl App {
             .cloned()
             .collect();
         let shadows = super::reach::shadowed(&reaching, super::Holder::Person(me));
+        let mut copies = store.vault_copy_requests(&sid).await?;
         let mut out = Vec::with_capacity(listed.len());
         for record in &listed {
             let manage = match record.scope() {
@@ -253,9 +258,20 @@ impl App {
                 AgentScope::Global => admin,
                 AgentScope::Personal(_) => true,
             };
+            // Answering also adds a project secret: write access to the project (SPEC-440).
+            let copy_request = copies
+                .iter()
+                .position(|c| c.secret_id == record.id)
+                .map(|at| {
+                    super::copies::copy_view(
+                        copies.swap_remove(at),
+                        manage && level >= AccessLevel::Write,
+                    )
+                });
             let here = Here {
                 enabled: record.sandbox_id.is_some() || on.contains(&record.id),
                 shadowed_by: shadows.get(&record.id).copied(),
+                copy_request,
             };
             out.push(self.agent_view_in(record, manage, here).await?);
         }
@@ -403,7 +419,7 @@ impl App {
         // Switched on for the sandbox it was added in (SCP-003).
         let here = Here {
             enabled: true,
-            shadowed_by: None,
+            ..Here::default()
         };
         self.agent_view_in(&record, true, here).await
     }
@@ -419,70 +435,81 @@ impl App {
         &self,
         new: NewAgentSecret<'_>,
     ) -> AppResult<VaultSecretRecord> {
-        let NewAgentSecret {
-            sandbox,
-            scope,
-            meta,
-            description,
-            payload,
-            by,
-            actor,
-            origin,
-            auto_allow,
-            env_files,
-        } = new;
-        let (sandbox_id, owner_id) = match &scope {
+        let record = self.new_agent_record(&new)?;
+        self.deps
+            .store
+            .vault_insert_agent(
+                &record,
+                new.sandbox,
+                (new.by, record.created_at),
+                MAX_AGENT_SECRETS,
+            )
+            .await?;
+        self.vault.bump();
+        self.audit_agent_created(&record, &new).await?;
+        Ok(record)
+    }
+
+    /// The row of a new agent secret, its payload sealed under a new id.
+    pub(super) fn new_agent_record(
+        &self,
+        new: &NewAgentSecret<'_>,
+    ) -> AppResult<VaultSecretRecord> {
+        let (sandbox_id, owner_id) = match &new.scope {
             AgentScope::Project(s) => (Some(s.clone()), None),
             AgentScope::Global => (None, None),
             AgentScope::Personal(owner) => (None, Some(owner.clone())),
         };
         let id = self.deps.crypto.new_id();
         let now = self.now();
-        let record = VaultSecretRecord {
+        Ok(VaultSecretRecord {
             id: id.clone(),
             section: VaultSection::Agent,
             sandbox_id,
             owner_id,
-            name: meta.name,
-            description,
-            hosts: meta.hosts,
-            injection: meta.injection.kind().into(),
-            header_name: match &meta.injection {
+            name: new.meta.name.clone(),
+            description: new.description.clone(),
+            hosts: new.meta.hosts.clone(),
+            injection: new.meta.injection.kind().into(),
+            header_name: match &new.meta.injection {
                 Injection::Header(name) => Some(name.clone()),
                 _ => None,
             },
-            fields: payload.fields(),
-            envelope: self.seal_payload(&id, VaultSection::Agent, payload)?,
-            created_by: by.to_owned(),
+            fields: new.payload.fields(),
+            envelope: self.seal_payload(&id, VaultSection::Agent, new.payload)?,
+            created_by: new.by.to_owned(),
             created_at: now,
-            updated_by: by.to_owned(),
+            updated_by: new.by.to_owned(),
             updated_at: now,
             value_updated_at: now,
             last_used_at: None,
             requested_hosts: Vec::new(),
             requested_by: None,
-            env_files: if env_files {
+            env_files: if new.env_files {
                 crate::ports::vault::EnvFiles::Allowed
             } else {
                 crate::ports::vault::EnvFiles::No
             },
             env_requested_by: None,
             cd_prod: false,
-            auto_allow,
-        };
-        self.deps
-            .store
-            .vault_insert_agent(&record, sandbox, (by, now), MAX_AGENT_SECRETS)
-            .await?;
-        self.vault.bump();
+            auto_allow: new.auto_allow,
+        })
+    }
+
+    /// Audits a stored new agent secret (`vault.agent.create`, `origin` appended to the detail).
+    pub(super) async fn audit_agent_created(
+        &self,
+        record: &VaultSecretRecord,
+        new: &NewAgentSecret<'_>,
+    ) -> AppResult<()> {
         self.vault_audit(
-            actor,
+            new.actor,
             "vault.agent.create",
-            Some(&id),
+            Some(&record.id),
             &format!(
                 "{} ({}) → {}{}{}",
                 record.name,
-                match scope {
+                match new.scope {
                     AgentScope::Project(_) => "this sandbox",
                     AgentScope::Global => "global",
                     AgentScope::Personal(_) => "personal",
@@ -497,20 +524,20 @@ impl App {
                 } else {
                     ""
                 },
-                origin.map(|o| format!(", {o}")).unwrap_or_default()
+                new.origin.map(|o| format!(", {o}")).unwrap_or_default()
             ),
         )
         .await?;
-        if env_files {
+        if new.env_files {
             self.vault_audit(
-                actor,
+                new.actor,
                 "vault.agent.env_allow",
-                Some(&id),
+                Some(&record.id),
                 &format!("{} → .env files (at creation)", record.name),
             )
             .await?;
         }
-        Ok(record)
+        Ok(())
     }
 
     pub(super) async fn agent_record(

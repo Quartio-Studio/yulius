@@ -16,6 +16,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   `yulius wait`, `delivery_status` and the task page. Arming the same head again keeps its
   place. Mergeable ones are decided every 20 seconds, and a merge made by hand at a head whose
   own run passed counts as merged on green.
+- Agents ask for a copy of a production secret (SPEC-440, ADR-0284, task #422). A task that
+  needed a dev token existing only as a production secret could only raise "Needs you: add an
+  agent secret with the same value", and a person had to reveal, copy and paste it. Now the agent
+  calls `secret_request_copy` with the copy's name and hosts; the production secret's card on the
+  Secrets page shows the request, and **Allow copy** (after the person's two-factor code) adds the
+  agent secret from the stored value, bound to those hosts, while the production secret stays
+  production's. The task waits flagged until the answer, and production refusals now name the
+  tool.
 - Cancelling an update acts at once (SPEC-439, ADR-0283, task #421, #1117). **Cancel update**
   during the build marked the update cancelled but left the release build compiling for minutes,
   so the server stayed busy and a restart or a new update waited behind it; the page kept saying

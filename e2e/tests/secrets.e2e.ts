@@ -1120,3 +1120,81 @@ test('members who only read a sandbox see its variables but cannot change them',
   await expect(screen.getByRole('button', 'Delete APP_REGION')).toBeDisabled();
   expect(await axeViolations(browser)).toEqual([]);
 });
+
+// Task #422 (SPEC-440): an agent asked for a copy of a production secret for its own work; a
+// person allows it on the production secret's card after their two-factor code, which adds the
+// copy bound to the host asked for, or dismisses it. A copy that changes while shown holds its
+// Allow copy off for a moment, as a host request's Allow (review of SPEC-440, finding 1).
+type Copying = { __yuliusMock: { askCopy(name: string, sandboxId: string, request: object): void; sent?: Record<string, number>; vault: { agent: any[] } }; drawnCopy?: { settling: boolean } | null };
+const COPY_POST = 'POST /api/sandboxes/sb_studio/agent-secrets/as_prodtoken/copy';
+
+test('a person allows the copy of a production secret an agent asked for', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/secrets?section=global', '&ambient=0'));
+  const prod = browser.locator('.item-card:has-text("PROD_API_TOKEN")');
+  await expect(prod.getByText(/production secret: agents never get it/)).toBeVisible();
+  await browser.evaluate(() => (window as unknown as Copying).__yuliusMock.askCopy('PROD_API_TOKEN', 'sb_studio', { name: 'OTHER_COPY', hosts: ['dev.example.test'], requested_by: 'alice’s Superagent', reason: '' }));
+  await expect(prod.getByText('alice’s Superagent asks for a copy for agents,')).toBeVisible();
+  const first = screen.getByRole('button', 'Copy PROD_API_TOKEN for agents as OTHER_COPY');
+  await expect.poll(() => first.getAttribute('aria-disabled')).toBe(null);
+
+  // Replaced under the person's pointer: the click on the new Allow copy, the moment it is drawn,
+  // sends nothing.
+  await browser.evaluate(() => {
+    const page = window as unknown as Copying;
+    page.drawnCopy = null;
+    const watch = new MutationObserver(() => {
+      const allow = document.querySelector<HTMLButtonElement>('button[aria-label="Copy PROD_API_TOKEN for agents as PROD_API_TOKEN_AGENT"]');
+      if (!allow) return;
+      watch.disconnect();
+      page.drawnCopy = { settling: allow.getAttribute('aria-disabled') === 'true' };
+      allow.click();
+    });
+    watch.observe(document.body, { childList: true, subtree: true });
+    page.__yuliusMock.askCopy('PROD_API_TOKEN', 'sb_studio', { name: 'PROD_API_TOKEN_AGENT', hosts: ['165-245-200-246.sslip.io'], requested_by: '#18', reason: 'run test-b1 rollouts on dev' });
+  });
+  await expect(prod.getByText('Task #18 asks for a copy for agents,')).toBeVisible();
+  expect(await browser.evaluate(() => (window as unknown as Copying).drawnCopy)).toEqual({ settling: true });
+  await expect(prod.getByText('The copy asked for changed while this page was open.')).toBeVisible();
+  await expect(prod.getByText('For: run test-b1 rollouts on dev')).toBeVisible();
+  await expect(prod.getByText(/Allowing adds a separate agent secret with this value/)).toBeVisible();
+  const allow = screen.getByRole('button', 'Copy PROD_API_TOKEN for agents as PROD_API_TOKEN_AGENT');
+  await expect.poll(() => allow.getAttribute('aria-disabled')).toBe(null);
+  expect(await browser.evaluate((key: string) => ((window as unknown as Copying).__yuliusMock.sent || {})[key] || 0, COPY_POST)).toBe(0);
+  expect(await axeViolations(browser)).toEqual([]);
+
+  // The copy needs the two-factor code; then it is a project secret bound to the host asked for.
+  await allow.click();
+  await setUpTwoFactor(screen, browser);
+  await expect(prod.getByText(/asks for a copy for agents/)).toBeHidden();
+  await screen.getByRole('radio', 'Project').click();
+  const copy = browser.locator('.item-card:has-text("PROD_API_TOKEN_AGENT")');
+  await expect(copy.getByText('165-245-200-246.sslip.io')).toBeVisible();
+  await expect(copy.getByText(/Copy of PROD_API_TOKEN for agents \(asked by #18/)).toBeVisible();
+  expect(await browser.evaluate(() => {
+    const vault = (window as unknown as Copying).__yuliusMock.vault;
+    const made = vault.agent.find((s: any) => s.name === 'PROD_API_TOKEN_AGENT');
+    const source = vault.agent.find((s: any) => s.id === 'as_prodtoken');
+    return { same: made.value === source.value, hosts: source.hosts, auto: made.auto_allow };
+  })).toEqual({ same: true, hosts: [], auto: false });
+
+  // Asked again and dismissed: nothing is added.
+  await screen.getByRole('radio', 'Global').click();
+  await browser.evaluate(() => (window as unknown as Copying).__yuliusMock.askCopy('PROD_API_TOKEN', 'sb_studio', { name: 'OTHER_COPY', hosts: ['dev.example.test'], requested_by: '#19', reason: '' }));
+  const dismiss = screen.getByRole('button', 'Dismiss the copy of PROD_API_TOKEN asked for');
+  await expect.poll(() => dismiss.getAttribute('aria-disabled')).toBe(null);
+  await dismiss.click();
+  await expect(prod.getByText(/asks for a copy for agents/)).toBeHidden();
+  expect(await browser.evaluate(() => (window as unknown as Copying).__yuliusMock.vault.agent.some((s: any) => s.name === 'OTHER_COPY'))).toBe(false);
+});
+
+// Review of SPEC-440 (finding 2): a member who cannot answer sees the request without its buttons.
+test('a member sees an agent’s copy request without Allow copy or Dismiss', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/secrets?section=global', '&role=member&ambient=0'));
+  const prod = browser.locator('.item-card:has-text("PROD_API_TOKEN")');
+  await expect(prod.getByText(/production secret: agents never get it/)).toBeVisible();
+  await browser.evaluate(() => (window as unknown as Copying).__yuliusMock.askCopy('PROD_API_TOKEN', 'sb_studio', { name: 'PROD_API_TOKEN_AGENT', hosts: ['dev.example.test'], requested_by: '#18', reason: '' }));
+  await expect(prod.getByText('Task #18 asks for a copy for agents,')).toBeVisible();
+  await expect(prod.getByText(/A person who manages this secret and this project’s secrets answers it/)).toBeVisible();
+  await expect(screen.getByRole('button', 'Copy PROD_API_TOKEN for agents as PROD_API_TOKEN_AGENT')).toBeHidden();
+  await expect(screen.getByRole('button', 'Dismiss the copy of PROD_API_TOKEN asked for')).toBeHidden();
+});

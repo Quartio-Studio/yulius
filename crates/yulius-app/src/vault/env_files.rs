@@ -395,6 +395,11 @@ impl App {
                 &format!("{} → production CD runs", record.name),
             )
             .await?;
+            // Its copy requests went with it: the tasks that asked work on (SPEC-440 CPY-007).
+            if !allow {
+                self.announce_request(&record);
+                self.settle_secret_waits(record.sandbox_id.as_ref()).await;
+            }
         }
         self.agent_view(&record, true).await
     }

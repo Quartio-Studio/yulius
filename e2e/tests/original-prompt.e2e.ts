@@ -365,7 +365,9 @@ test('an image the browser cannot draw says it could not be loaded', async ({ ap
 // SPEC-420 review round 2: the dialog closed while a picture is decoded keeps nothing of it (its
 // object URL is revoked) and opens no preview afterwards.
 test('a picture decoded after the dialog closed is dropped, not opened', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio/t/12'));
+  // Without the browser's sign-in request 5 s after the start (`browserask=0`): its toast is not
+  // this test's, and a slow machine reaches it before the end (#1120 CI run 2beeaf29).
+  await app.open(mock('/s/studio/t/12', '&browserask=0'));
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#12 Checkout API');
   const drafts = '/srv/yulius/sandboxes/sb_studio/attachments/drafts/usr_mkarp';
   await touchTask(browser, 'sb_studio', 12, { prompt: `See @'${drafts}/a.png' here.` });
