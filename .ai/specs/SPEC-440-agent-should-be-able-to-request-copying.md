@@ -75,7 +75,7 @@ pastes the token by hand, and the production secret stays exclusive to productio
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] Copy requests are stored per production secret and sandbox
+- [x] Copy requests are stored per production secret and sandbox
 - [ ] Agents and the Superagent ask for a copy with secret_request_copy and wait for a person
 - [ ] A person allows or dismisses a copy through the API, creating the agent secret
 - [ ] The Secrets page shows a copy request with Allow copy and Dismiss

@@ -6,7 +6,8 @@ use rusqlite::{OptionalExtension, Row, Transaction, params};
 use yulius_app::error::{AppError, AppResult};
 use yulius_app::ports::Envelope;
 use yulius_app::ports::vault::{
-    EnvFiles, TwoFactorRecord, VaultAuditEntry, VaultSecretRecord, VaultSection, VaultStore,
+    EnvFiles, TwoFactorRecord, VaultAuditEntry, VaultCopyRequest, VaultSecretRecord, VaultSection,
+    VaultStore,
 };
 use yulius_domain::ids::{SandboxId, UserId};
 use yulius_domain::time::Timestamp;
@@ -64,6 +65,19 @@ fn from_row(row: &Row<'_>) -> rusqlite::Result<VaultSecretRecord> {
         env_requested_by: row.get("env_requested_by")?,
         cd_prod: row.get::<_, i64>("cd_prod")? != 0,
         auto_allow: row.get::<_, i64>("auto_allow")? != 0,
+    })
+}
+
+fn copy_request(row: &Row<'_>) -> rusqlite::Result<VaultCopyRequest> {
+    let sandbox: String = row.get("sandbox_id")?;
+    Ok(VaultCopyRequest {
+        secret_id: row.get("secret_id")?,
+        sandbox_id: SandboxId::parse(&sandbox).map_err(|_| bad_column("sandbox id", &sandbox))?,
+        name: row.get("name")?,
+        hosts: json_list(row, "hosts")?,
+        requested_by: row.get("requested_by")?,
+        reason: row.get("reason")?,
+        asked_at: Timestamp(row.get("asked_at")?),
     })
 }
 
@@ -433,6 +447,111 @@ impl VaultStore for SqliteStore {
                 )
                 .map_err(db)?;
             Ok(changed == 1)
+        })
+        .await
+    }
+
+    async fn vault_copy_requests(&self, sandbox: &SandboxId) -> AppResult<Vec<VaultCopyRequest>> {
+        let sandbox = sandbox.as_str().to_owned();
+        self.call(move |c| {
+            let mut stmt = c
+                .prepare(
+                    "SELECT secret_id, sandbox_id, name, hosts, requested_by, reason, asked_at \
+                     FROM vault_copy_requests WHERE sandbox_id = ?1 ORDER BY secret_id",
+                )
+                .map_err(db)?;
+            let rows = stmt
+                .query_map([sandbox], copy_request)
+                .map_err(db)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(db)?;
+            Ok(rows)
+        })
+        .await
+    }
+
+    async fn vault_put_copy_request(
+        &self,
+        request: &VaultCopyRequest,
+        seen: Option<&VaultCopyRequest>,
+    ) -> AppResult<bool> {
+        let (r, seen) = (request.clone(), seen.cloned());
+        self.call(move |c| {
+            let changed = match seen {
+                // Only for a production secret that is still there.
+                None => c
+                    .execute(
+                        "INSERT INTO vault_copy_requests (secret_id, sandbox_id, name, hosts, \
+                         requested_by, reason, asked_at) SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7 \
+                         WHERE EXISTS (SELECT 1 FROM vault_secrets WHERE id = ?1 \
+                         AND section = 'agent' AND cd_prod = 1) \
+                         ON CONFLICT (secret_id, sandbox_id) DO NOTHING",
+                        params![
+                            r.secret_id,
+                            r.sandbox_id.as_str(),
+                            r.name,
+                            to_json(&r.hosts),
+                            r.requested_by,
+                            r.reason,
+                            r.asked_at.0,
+                        ],
+                    )
+                    .map_err(db)?,
+                Some(seen) => c
+                    .execute(
+                        "UPDATE vault_copy_requests SET name = ?3, hosts = ?4, requested_by = ?5, \
+                         reason = ?6, asked_at = ?7 WHERE secret_id = ?1 AND sandbox_id = ?2 \
+                         AND name = ?8 AND hosts = ?9 AND requested_by = ?10",
+                        params![
+                            r.secret_id,
+                            r.sandbox_id.as_str(),
+                            r.name,
+                            to_json(&r.hosts),
+                            r.requested_by,
+                            r.reason,
+                            r.asked_at.0,
+                            seen.name,
+                            to_json(&seen.hosts),
+                            seen.requested_by,
+                        ],
+                    )
+                    .map_err(db)?,
+            };
+            Ok(changed == 1)
+        })
+        .await
+    }
+
+    async fn vault_answer_copy_request(
+        &self,
+        seen: &VaultCopyRequest,
+        copy: Option<&VaultSecretRecord>,
+        cap: usize,
+    ) -> AppResult<bool> {
+        let (seen, copy) = (seen.clone(), copy.cloned());
+        self.call(move |c| {
+            let tx = c.transaction().map_err(db)?;
+            let removed = tx
+                .execute(
+                    "DELETE FROM vault_copy_requests WHERE secret_id = ?1 AND sandbox_id = ?2 \
+                     AND name = ?3 AND hosts = ?4",
+                    params![
+                        seen.secret_id,
+                        seen.sandbox_id.as_str(),
+                        seen.name,
+                        to_json(&seen.hosts),
+                    ],
+                )
+                .map_err(db)?;
+            if removed != 1 {
+                return Ok(false);
+            }
+            if let Some(copy) = copy {
+                ensure_room(&tx, seen.sandbox_id.as_str(), cap)?;
+                insert_row(&tx, &copy)?;
+            }
+            tx.commit().map_err(db)?;
+            Ok(true)
         })
         .await
     }
@@ -1428,6 +1547,125 @@ mod tests {
         let mut turned = seen.clone();
         turned.auto_allow = true;
         assert!(!store.vault_update(&turned, &seen).await?);
+        Ok(())
+    }
+
+    /// SPEC-440 CPY-002, CPY-004, CPY-007: a copy request is stored only for a production
+    /// secret, changes only from what was seen, is answered only as seen, and an allowed copy is
+    /// added in the transaction that removes it (a taken name keeps it); it goes with its secret.
+    #[tokio::test]
+    async fn copy_requests_change_and_are_answered_only_as_seen()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let store = store_with_sandboxes().await?;
+        let s1 = SandboxId::parse("s1")?;
+        let mut prod = record("p", VaultSection::Agent, Some("s1"), "PROD_TOKEN");
+        prod.hosts = Vec::new();
+        store.vault_insert(&prod).await?;
+        store
+            .vault_insert(&record("o", VaultSection::Agent, Some("s1"), "OTHER"))
+            .await?;
+        let asked = VaultCopyRequest {
+            secret_id: "p".into(),
+            sandbox_id: s1.clone(),
+            name: "PROD_TOKEN_AGENT".into(),
+            hosts: vec!["dev.example.com".into()],
+            requested_by: "#1".into(),
+            reason: "dev CI".into(),
+            asked_at: Timestamp(5),
+        };
+        assert!(
+            !store.vault_put_copy_request(&asked, None).await?,
+            "not a production secret yet"
+        );
+        assert!(store.vault_set_cd_prod("p", false, true).await?);
+        assert!(store.vault_put_copy_request(&asked, None).await?);
+        assert!(
+            !store.vault_put_copy_request(&asked, None).await?,
+            "one request per secret and sandbox"
+        );
+        let other = VaultCopyRequest {
+            secret_id: "o".into(),
+            ..asked.clone()
+        };
+        assert!(!store.vault_put_copy_request(&other, None).await?);
+        assert_eq!(store.vault_copy_requests(&s1).await?, vec![asked.clone()]);
+        assert!(
+            store
+                .vault_copy_requests(&SandboxId::parse("s2")?)
+                .await?
+                .is_empty()
+        );
+
+        // A second asker joins what waits; a stale read changes nothing.
+        let joined = VaultCopyRequest {
+            requested_by: "#1, #2".into(),
+            asked_at: Timestamp(6),
+            ..asked.clone()
+        };
+        assert!(store.vault_put_copy_request(&joined, Some(&asked)).await?);
+        assert!(!store.vault_put_copy_request(&joined, Some(&asked)).await?);
+
+        // An answer naming other hosts or another name than wait changes nothing.
+        let mut copy = record("c", VaultSection::Agent, Some("s1"), "PROD_TOKEN_AGENT");
+        copy.hosts = joined.hosts.clone();
+        for stale in [
+            VaultCopyRequest {
+                hosts: vec!["other.example.com".into()],
+                ..joined.clone()
+            },
+            VaultCopyRequest {
+                name: "ELSE".into(),
+                ..joined.clone()
+            },
+        ] {
+            assert!(
+                !store
+                    .vault_answer_copy_request(&stale, Some(&copy), CAP)
+                    .await?
+            );
+        }
+        assert!(store.vault_get("c").await?.is_none());
+
+        // A name taken meanwhile is a conflict and the request stays.
+        let mut taken = copy.clone();
+        taken.name = "OTHER".into();
+        let err = store
+            .vault_answer_copy_request(&joined, Some(&taken), CAP)
+            .await
+            .err()
+            .ok_or("a taken name was inserted")?;
+        assert!(matches!(err, AppError::Conflict(_)), "{err:?}");
+        assert_eq!(store.vault_copy_requests(&s1).await?.len(), 1);
+        // So does a full sandbox.
+        assert!(matches!(
+            store
+                .vault_answer_copy_request(&joined, Some(&copy), 2)
+                .await,
+            Err(AppError::Capacity(_))
+        ));
+        assert_eq!(store.vault_copy_requests(&s1).await?.len(), 1);
+
+        // Allowed: the copy is there and the request gone, the production secret unchanged.
+        assert!(
+            store
+                .vault_answer_copy_request(&joined, Some(&copy), CAP)
+                .await?
+        );
+        assert!(store.vault_copy_requests(&s1).await?.is_empty());
+        assert_eq!(
+            store.vault_get("c").await?.ok_or("copy")?.hosts,
+            joined.hosts
+        );
+        let source = store.vault_get("p").await?.ok_or("row")?;
+        assert!(source.cd_prod && source.hosts.is_empty());
+
+        // Dismissed: nothing is added; deleting the secret removes its requests.
+        assert!(store.vault_put_copy_request(&asked, None).await?);
+        assert!(store.vault_answer_copy_request(&asked, None, CAP).await?);
+        assert!(store.vault_copy_requests(&s1).await?.is_empty());
+        assert!(store.vault_put_copy_request(&asked, None).await?);
+        assert!(store.vault_delete("p").await?);
+        assert!(store.vault_copy_requests(&s1).await?.is_empty());
         Ok(())
     }
 
