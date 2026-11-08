@@ -158,5 +158,13 @@ pastes the token by hand, and the production secret stays exclusive to productio
   passed 18/18 under busy loops and 24/24 with random mock delays, failed deterministically when
   the edit was held until after a look, and is fixed in the test (it waits for the server to have
   the typing); `editor.e2e.ts` 34/34 after.
+- Yulius CI run `2beeaf29` at `b0f8cf1` (e2e ran 59 min against a usual 24): two other pre-existing
+  e2e tests raced the slow machine. `original-prompt` counted the mock's browser sign-in toast that
+  appears 5 s after the start (failure screen: that toast), so it opens with `browserask=0`, as
+  `notes` and `rail` do. `task-done`'s end-banner focus test focused the banner's button before the
+  terminal showed, and the terminal's focus requested on open then landed over it, as
+  `terminal-core.js` intends (failure screen: "Terminal input [focused]"), so it waits for the
+  terminal first. Both were read from the CI failure screens, not reproduced locally;
+  `original-prompt.e2e.ts` and `task-done.e2e.ts` 32/32 after.
 - Not tested: an end-to-end run with a real Claude task calling the tool against the live instance
   (the MCP path is covered by the integration tests through `/mcp`).
