@@ -6,6 +6,16 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-08
 
+- Merges no longer restart other pull requests' runs (SPEC-441, ADR-0285, task #423). In
+  quartio-v2, every merge into `dev` restarted the run of every armed pull request behind it,
+  so with 45 to 60 minute runs most were thrown away and about one pull request merged an hour.
+  Now, in every project, a pull request's own run always finishes. Once green, it merges at once
+  if it is up to date. Otherwise Yulius tests it once on top of the current integration branch,
+  together with any others waiting, and merges them in order. A red combination is halved until
+  the one that breaks is found and told why. Every armed pull request says where it stands in
+  `yulius wait`, `delivery_status` and the task page. Arming the same head again keeps its
+  place. Mergeable ones are decided every 20 seconds, and a merge made by hand at a head whose
+  own run passed counts as merged on green.
 - Agents ask for a copy of a production secret (SPEC-440, ADR-0284, task #422). A task that
   needed a dev token existing only as a production secret could only raise "Needs you: add an
   agent secret with the same value", and a person had to reveal, copy and paste it. Now the agent

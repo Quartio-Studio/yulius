@@ -5,7 +5,9 @@ status: done
 
 # SPEC-050: tasks run in parallel and finish without obstacles
 
-Status: done
+Status: done; DLV-203 amended by
+[SPEC-441](SPEC-441-merge-queue-for-every-sandbox-no-restart.md): only after the head's own run
+passed, and only where no merge candidate takes it
 Date: 2026-10-13
 Owner: the overnight coordination after the analysis of the `yulius` sandbox's task transcripts
 Scope authorization: user requests (F 2026-10-12):

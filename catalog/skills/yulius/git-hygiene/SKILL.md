@@ -41,7 +41,9 @@ stash@{n}`), check the result, then drop that entry only. Never stash or clear o
 
 - Bring your branch up to date by merging the integration branch into it
   (`git fetch origin && git merge origin/<integration>`). The final squash merge keeps the
-  integration branch linear anyway.
+  integration branch linear anyway. Do it before the review or for a conflict; once your pull
+  request's checks run, not merely because the integration branch moved: that restarts them,
+  and a merge queue (Yulius's) brings the branch up to date once they passed.
 - Never rewrite commits once they are pushed: no rebase, amend or force push (not even
   `--force-with-lease`). Yulius pushes your branch with a plain push, so a rewritten branch can no
   longer be pushed and your pull request stays on the old head. Before the first push you may
