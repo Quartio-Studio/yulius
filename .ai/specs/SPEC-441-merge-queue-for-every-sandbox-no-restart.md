@@ -1,11 +1,11 @@
 ---
 yulius-task: 50457a7b-0346-4616-bc3e-70c37de8b10b
-status: in-progress
+status: done
 ---
 
 # SPEC-441: A merge queue for every project: no restarts when the base moves
 
-Status: in progress
+Status: implemented
 Date: 2026-11-08
 Owner: Yulius task #423
 Scope authorization: the owner, via quartio-v2's main session: "prepare a task to yulius … it
@@ -94,8 +94,8 @@ merged on green.
 - [x] The same queue results for a second, minimal project
 - [x] Task guidance in the briefing and bundled skills
 - [x] Architecture, product and changes documents updated
-- [ ] Independent review findings answered test-first
-- [ ] Gates green and the evidence recorded
+- [x] Independent review findings answered test-first
+- [x] Gates green and the evidence recorded
 
 ## Acceptance criteria
 
@@ -157,3 +157,63 @@ merged on green.
 - **Green at the merged head is the fact that counts.** Who pressed merge does not change what
   was tested. Yulius reports the merged head and its run, and the goal text says such a merge
   counts.
+
+## Evidence
+
+- **Red first.** Each change was switched off in turn on committed code, its test was seen to
+  fail, and the change was restored with `git checkout`:
+  - DLV-203 before the checks again:
+    - `a_moving_base_never_restarts_a_pre_check` fails ("untouched": the head moved);
+    - `three_green_pull_requests_land_in_order_without_a_restart` fails (a pre-check superseded
+      and cancelled).
+  - Candidates admitting a pull request whose own run had not passed:
+    `a_moving_base_never_restarts_a_pre_check` fails ("no merge candidate before its pre-check
+    passed"). The three-PR test alone did not catch this, because its pre-checks happened to
+    finish first, so that assertion was added.
+  - The first member left free: `merge_train::tests::a_train_holds_every_member` fails.
+  - Re-arming the same head arming anew: `arming_the_same_head_again_keeps_its_place` fails.
+  - No check of a merged pull request in the pass: `a_pinned_hand_merge_on_a_green_head_counts`
+    fails (the merged pull request was held in a candidate, still armed).
+  - Deciding in store order instead of arm order: `armed_pull_requests_merge_together_on_one_run`
+    fails (#3 merged before #1).
+  - The old fast-pass predicate: `every_armed_pull_request_says_where_it_stands` fails (decidable
+    while a candidate runs), and `uncommitted_changes_leave_nothing_to_decide` was red before its
+    fix.
+  - `Step::Stop` instead of `Step::OneByOne`: `a_member_that_cannot_be_updated_goes_one_by_one`
+    fails ("not tested again": a second candidate run).
+  - `a_member_that_cannot_merge_is_told_instead_of_tested_again` passes either way, because the
+    same pass's one-by-one decision already tells the agent. It documents the outcome only.
+- **Gate.** `scripts/dev ci` passed at 54c5397e (exit 0):
+  - format, lint, the repository contracts (16 crates, 7 skills, links, unique decision numbers);
+  - 3,228 of 3,228 tests, 16 skipped;
+  - docs.
+
+  The run before it, at e456d60a, failed one test of 3,226:
+  `local_ci::the_security_job_and_the_others_never_cancel_each_other`. Its jobs did not reach
+  "running" within 60 s at a load average of about 40. That test involves no armed merge. It
+  passed alone three times (16 to 18 s), and the open issue #1079 tracks this flake. It passed in
+  the run at 54c5397e.
+- **Suites run on the way:**
+  - the 22 `merge_train` integration tests, across both test projects;
+  - `delivery`, `wait_cli`, `playground`, `local_ci`, `github_checks`, `agent_tools` and
+    `follow_up`: 168 passed. Four `delivery` DLV-203 tests were updated: the head's own checks
+    pass first, and the wait shows the queue note;
+  - the `yulius-app` and `yulius-domain` unit tests.
+- **Independent review.** Three rounds, by a fresh read-only subagent:
+  - round 1: 1 blocker (format), 2 majors (the fast pass's GitHub cost, missing tests), 7 minors;
+  - round 2: 1 major (no test failing without `OneByOne`), 3 minors;
+  - round 3: approved 54c5397e, conditional on this gate.
+
+  Every finding was fixed test-first, or documented: the re-arm window during a decision, under
+  Decisions.
+- **Security scan.** Vidoc is switched off for this project in Yulius: `yulius security-scan`
+  printed "Security scan disabled". Disabled, not passed.
+- **Could not be tested here:**
+  - Throughput on quartio-v2. Its repository is outside this sandbox's GitHub access, and the
+    change is not deployed yet: a person deploys Yulius. The request's figures are the baseline:
+    about one merge an hour and 6 to 8 hour queues, 2026-11-05 to 11-07. The figure after
+    needs quartio-v2's next busy day on the deployed build.
+  - The goal evaluator itself (Claude Code's `/goal`), which reads the transcript. The tests prove
+    the words a task now sees after a hand merge on a green head, and the definition of done
+    that names such a merge.
+
