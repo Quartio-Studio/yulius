@@ -163,7 +163,7 @@ person asks for prepared.
   (approved; the agent answers its prompt, no second task), then messages it (approved;
   typed as "Message from admin (through their Superagent):"); 3 audit rows in each sandbox,
   none holding the message.
-- AC-XST-3..6: `cross_sandbox::` (29 tests: reads without asking; start, re-chain, message, stop
+- AC-XST-3..6: `cross_sandbox::` (28 tests: reads without asking; start, re-chain, message, stop
   approved; declined changes nothing; refusals before asking, including updates that cannot
   apply; refusal on approval and the personal-secret refusal audited `failed` in both
   sandboxes; expiry and every answer audited in both; a task named twice; the card's current
