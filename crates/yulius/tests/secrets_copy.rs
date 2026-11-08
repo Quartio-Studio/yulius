@@ -24,6 +24,8 @@ const HOST: &str = "165-245-200-246.sslip.io";
 
 struct World {
     h: support::Harness,
+    /// The superadmin (an instance administrator).
+    admin: Creds,
     writer: Creds,
     /// alice in the web UI (a session, which a two-factor unlock needs).
     browser: Creds,
@@ -37,7 +39,7 @@ struct World {
 async fn world() -> Result<World, Box<dyn std::error::Error>> {
     let h = harness()?;
     // A set-up instance with GitHub sign-in, so alice also has a web session.
-    support::setup_superadmin_creds(&h).await?;
+    let admin = support::setup_superadmin_creds(&h).await?;
     support::configure_github_app(&h).await?;
     let writer = seed_github_user(&h, "u-alice", "alice").await?;
     let reader = seed_github_user(&h, "u-bob", "bob").await?;
@@ -89,6 +91,7 @@ async fn world() -> Result<World, Box<dyn std::error::Error>> {
     let browser = crate::secrets::admit_again(&h, "alice", 501).await?;
     Ok(World {
         h,
+        admin,
         writer,
         browser,
         reader,
@@ -138,6 +141,18 @@ async fn answer(
         &format!("/api/sandboxes/s1/agent-secrets/{}/copy", w.prod),
         Some(json!({"allow": allow, "name": name, "hosts": hosts})),
         creds,
+    )
+    .await
+}
+
+/// Allows the waiting copy of `N3_DEV_CI_TOKEN` through the project `sid`, unlocked.
+async fn answer_in(w: &World, sid: &str) -> Result<support::Resp, Box<dyn std::error::Error>> {
+    call(
+        &w.h.router,
+        Method::POST,
+        &format!("/api/sandboxes/{sid}/agent-secrets/{}/copy", w.prod),
+        Some(json!({"allow": true, "name": "N3_DEV_CI_TOKEN_AGENT", "hosts": [HOST]})),
+        &w.browser,
     )
     .await
 }
@@ -380,14 +395,15 @@ async fn copies_are_asked_for_production_secrets_and_dismissed() -> TestResult {
 
     // CPY-002: the same copy again adds the asker; another copy replaces the request.
     let (one, two) = (asker(&w, "t1").await?, asker(&w, "t2").await?);
-    ask(&w, TOKEN, copy_args(&[HOST])).await?;
-    let joined = ask(&w, TOKEN_2, copy_args(&[HOST])).await?;
+    // In any order, the same hosts are the same copy (review of SPEC-440, finding 6).
+    ask(&w, TOKEN, copy_args(&[HOST, "dev2.example.test"])).await?;
+    let joined = ask(&w, TOKEN_2, copy_args(&["dev2.example.test", HOST])).await?;
     assert_eq!(
         support::tool_text(&joined)["requested_by"],
         format!("{one}, {two}"),
         "{joined}"
     );
-    let again = ask(&w, TOKEN, copy_args(&[HOST])).await?;
+    let again = ask(&w, TOKEN, copy_args(&[HOST, "dev2.example.test"])).await?;
     assert_eq!(
         support::tool_text(&again)["requested_by"],
         format!("{one}, {two}"),
@@ -403,8 +419,19 @@ async fn copies_are_asked_for_production_secrets_and_dismissed() -> TestResult {
     );
     let seen = listed(&w, &w.writer).await?;
     assert_eq!(seen["copy_request"]["hosts"], json!(["dev.example.test"]));
-    // t1's request is gone with the replaced one: it works on once the store says so.
+    // t1's request is gone with the replaced one: it works on (review of SPEC-440, finding 5).
+    assert_eq!(activity(&w, "t1").await?, Some(Activity::Working));
     assert_eq!(activity(&w, "t2").await?, Some(Activity::NeedsAttention));
+    // Only those who may answer dismiss it (finding 3).
+    let reader = answer(
+        &w,
+        &w.reader,
+        false,
+        "N3_DEV_CI_TOKEN_AGENT",
+        &["dev.example.test"],
+    )
+    .await?;
+    assert_eq!(reader.status, StatusCode::FORBIDDEN, "{}", reader.body);
 
     // A dismissal needs no unlock and creates nothing.
     let dismissed = answer(
@@ -461,5 +488,129 @@ async fn copies_are_asked_for_production_secrets_and_dismissed() -> TestResult {
             .is_empty()
     );
     assert_eq!(activity(&w, "t1").await?, Some(Activity::Working));
+    Ok(())
+}
+
+/// Review of SPEC-440, findings 2 and 4: a request is answered only through its own project, by
+/// people who manage the secret and write to the project; a global production secret's request
+/// waits on the Global tab for an administrator; a secret no longer production's takes its
+/// requests with it, and the asking task works on.
+#[tokio::test]
+async fn copies_are_answered_only_where_and_by_whom_they_may_be() -> TestResult {
+    let w = world().await?;
+    seed_sandbox(&w.h, "s2", "web", "u-alice").await?;
+    w.h.github.set_perm("alice", "acme/web", perms("write"));
+    seed_sandbox(&w.h, "s3", "hidden", "u-alice").await?;
+    ask(&w, TOKEN, copy_args(&[HOST])).await?;
+    crate::secrets::enroll(&w.h, &w.browser).await?;
+    // Another project of alice's has no such request; one she cannot see does not exist.
+    let other = answer_in(&w, "s2").await?;
+    assert_eq!(other.status, StatusCode::CONFLICT, "{}", other.body);
+    let hidden = answer_in(&w, "s3").await?;
+    assert_eq!(hidden.status, StatusCode::NOT_FOUND, "{}", hidden.body);
+    for sid in ["s1", "s2"] {
+        let names: Vec<String> =
+            w.h.store
+                .vault_agent_in(&SandboxId::parse(sid)?)
+                .await?
+                .into_iter()
+                .map(|r| r.name)
+                .collect();
+        assert!(
+            !names.contains(&"N3_DEV_CI_TOKEN_AGENT".to_owned()),
+            "{sid}: {names:?}"
+        );
+    }
+
+    // Revoking production takes the request with it; Allow then finds nothing.
+    assert_eq!(activity(&w, "t1").await?, Some(Activity::NeedsAttention));
+    let revoked = call(
+        &w.h.router,
+        Method::POST,
+        &format!("/api/agent-secrets/{}/cd-prod", w.prod),
+        Some(json!({"allow": false})),
+        &w.writer,
+    )
+    .await?;
+    assert_eq!(revoked.status, StatusCode::OK, "{}", revoked.body);
+    assert!(
+        w.h.store
+            .vault_copy_requests(&SandboxId::parse("s1")?)
+            .await?
+            .is_empty()
+    );
+    assert_eq!(activity(&w, "t1").await?, Some(Activity::Working));
+    let gone = answer(&w, &w.browser, true, "N3_DEV_CI_TOKEN_AGENT", &[HOST]).await?;
+    assert_eq!(gone.status, StatusCode::CONFLICT, "{}", gone.body);
+
+    // A global production secret: its request waits on the Global tab, for an administrator.
+    let global = call(
+        &w.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/agent-secrets",
+        Some(
+            json!({"name": "ORG_DEPLOY_TOKEN", "value": OTHER, "scope": "instance",
+            "auto_allow": false}),
+        ),
+        &w.admin,
+    )
+    .await?;
+    assert_eq!(global.status, StatusCode::CREATED, "{}", global.body);
+    let gid = global.body["id"].as_str().ok_or("id")?.to_owned();
+    let production = call(
+        &w.h.router,
+        Method::POST,
+        &format!("/api/agent-secrets/{gid}/cd-prod"),
+        Some(json!({"allow": true})),
+        &w.admin,
+    )
+    .await?;
+    assert_eq!(production.status, StatusCode::OK, "{}", production.body);
+    let asked = ask(
+        &w,
+        TOKEN,
+        json!({"secret": "ORG_DEPLOY_TOKEN", "name": "ORG_DEPLOY_TOKEN_DEV", "hosts": [HOST]}),
+    )
+    .await?;
+    assert_ne!(asked["isError"], true, "{asked}");
+    assert!(
+        support::tool_text(&asked)["link"]
+            .as_str()
+            .is_some_and(|l| l.ends_with("/s/app/secrets?section=global")),
+        "{asked}"
+    );
+    let list = call(
+        &w.h.router,
+        Method::GET,
+        "/api/sandboxes/s1/agent-secrets",
+        None,
+        &w.writer,
+    )
+    .await?;
+    let seen = list
+        .body
+        .as_array()
+        .ok_or("list")?
+        .iter()
+        .find(|s| s["id"] == gid.as_str())
+        .ok_or("global secret")?;
+    assert_eq!(seen["copy_request"]["can_answer"], false, "{seen}");
+    let refused = call(
+        &w.h.router,
+        Method::POST,
+        &format!("/api/sandboxes/s1/agent-secrets/{gid}/copy"),
+        Some(json!({"allow": true, "name": "ORG_DEPLOY_TOKEN_DEV", "hosts": [HOST]})),
+        &w.browser,
+    )
+    .await?;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.body);
+    assert_eq!(
+        w.h.store
+            .vault_copy_requests(&SandboxId::parse("s1")?)
+            .await?
+            .len(),
+        1,
+        "the request still waits"
+    );
     Ok(())
 }

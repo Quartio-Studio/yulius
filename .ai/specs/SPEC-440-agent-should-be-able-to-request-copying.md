@@ -56,21 +56,24 @@ pastes the token by hand, and the production secret stays exclusive to productio
   {allow, name, hosts}`: `name` and `hosts` are what the person saw (409 unless they are exactly what
   waits). Needs manage rights on the production secret **and** on the sandbox's project secrets
   (write access). Allowing needs a fresh two-factor unlock (`reauth_required` otherwise, API tokens
-  refused, as a reveal); it creates a project secret of the sandbox named `name`, with the production
-  secret's value, user name and injection, bound to `hosts`, not set up by agents (`auto_allow`
+  refused, as a reveal) and the secret still to be a production secret (409); it creates a project
+  secret of the sandbox named `name`, with the production secret's value, injection, user name and
+  two-factor seed, bound to `hosts`, not set up by agents (`auto_allow`
   off), no `.env` allowance, described "Copy of SOURCE for agents (asked by …)", audited
   `vault.agent.create` (origin "copy of SOURCE, allowed by <login>") and
   `vault.agent.copy_allow`; dismissing audits `vault.agent.copy_dismiss`. The request is removed in
   the same transaction that adds the copy; a name taken meanwhile is a 409 and the request stays.
 - **CPY-005 The Secrets page shows it.** A production secret with a copy request for the open
   sandbox shows "Task #N asks for a copy for agents: NAME, sent to HOSTS" (and the reason) with
-  **Allow copy** (only for people who may answer) and **Dismiss**; Allow runs the two-factor unlock
-  when needed. The list updates live (`SecretsUpdated`).
+  **Allow copy** and **Dismiss** (only for people who may answer); Allow runs the two-factor unlock
+  when needed. The list updates live (`SecretsUpdated`); a copy that changes while shown holds
+  both buttons off for a moment and says so, as a changed host request does.
 - **CPY-006 Agents learn the way.** The production-secret refusal agents get names
   `secret_request_copy`; `secrets_list` and the tool descriptions say it.
 - **CPY-007 Nothing else changes for production.** The production secret keeps no hosts and no
   `.env` allowance; the copy is a separate secret (rotating one does not rotate the other); deleting
-  the production secret or the sandbox removes its requests.
+  the production secret or the sandbox, or revoking its production allowance, removes its requests
+  (and the asking tasks work on). A task whose request another asker replaced works on at once.
 
 ## Plan
 

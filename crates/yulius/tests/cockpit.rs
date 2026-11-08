@@ -3495,6 +3495,24 @@ async fn the_superagent_copies_allowed_secrets_into_its_repositorys_ignored_env(
     .await?;
     assert!(is_error, "{refused}");
     assert!(refused.to_string().contains("production"), "{refused}");
+    // SPEC-440: it asks for a copy of the production secret instead, as alice's Superagent.
+    let (copy_asked, is_error) = cockpit_tool(
+        &f,
+        &token,
+        "secret_request_copy",
+        json!({"secret": "PROD_KEY", "name": "PROD_KEY_DEV", "hosts": ["deploy.quartio.test"]}),
+    )
+    .await?;
+    assert!(!is_error, "{copy_asked}");
+    assert_eq!(
+        copy_asked["requested_by"], "alice's Superagent",
+        "{copy_asked}"
+    );
+    let copies = f.h.store.vault_copy_requests(&sid()).await?;
+    assert_eq!(copies.len(), 1, "{copies:?}");
+    assert_eq!(copies[0].requested_by, "alice's Superagent");
+    let asks = audited(&f, "vault.agent.copy_request").await?;
+    assert_eq!(asks[0]["actor"], "cockpit:alice", "{asks:?}");
     f.h.app.end_all_shells().await;
     Ok(())
 }

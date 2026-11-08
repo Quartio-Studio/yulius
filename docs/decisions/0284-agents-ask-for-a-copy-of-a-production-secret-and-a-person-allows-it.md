@@ -29,16 +29,18 @@ to request that copy itself.
   hosts replace the request. The task is flagged as needing a person until it is answered, as for
   a host request.
 - **A person allows or dismisses it** on the production secret's card
-  (`POST /api/sandboxes/{sid}/agent-secrets/{id}/copy {allow, name, hosts}`, answered only as seen).
-  Allowing needs manage rights on the production secret and write access to the project. It also
-  needs a fresh two-factor unlock, as a reveal does, and API tokens cannot allow. Then the copy is
+  (`POST /api/sandboxes/{sid}/agent-secrets/{id}/copy {allow, name, hosts}`, answered only as seen;
+  a request that changes while shown holds Allow copy off for a moment, as a host request does).
+  Either answer needs manage rights on the production secret and write access to the project.
+  Allowing also needs the secret still to be a production secret, and a fresh two-factor unlock, as a reveal does, and API tokens cannot allow. Then the copy is
   created from the stored value in the transaction that removes the request. It keeps the source's
-  injection and user name, is bound to the hosts asked for, is not set up by agents (`auto_allow`
+  injection, user name and two-factor seed, is bound to the hosts asked for, is not set up by agents (`auto_allow`
   off), has no `.env` allowance, and its description says whose copy it is. Audited
   `vault.agent.copy_request`, `vault.agent.copy_allow` / `vault.agent.copy_dismiss` and
   `vault.agent.create`.
 - **The production secret is unchanged.** It keeps no hosts and no `.env` allowance; the copy is
-  an ordinary agent secret that does not follow the source's rotations.
+  an ordinary agent secret that does not follow the source's rotations. Revoking its production
+  allowance removes its copy requests in the same transaction, and the asking tasks work on.
 
 ## Alternatives
 

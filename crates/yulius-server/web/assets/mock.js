@@ -3278,8 +3278,9 @@ route('POST', `/api/sandboxes/${ID}/agent-secrets/${ID}/copy`, ({ db, p, body })
   const seen = (body.hosts || []).map((h) => String(h).toLowerCase());
   if (body.name !== req.name || seen.length !== req.hosts.length || !req.hosts.every((h) => seen.includes(h))) fail(409, 'conflict', `an agent changed the request meanwhile: reload to see the copy that waits (${req.name} on ${req.hosts.join(', ')})`);
   const detail = `${secret.name} → ${req.name} on ${req.hosts.join(', ')} (asked by ${req.requested_by})`;
+  need(sandbox, 'write');
   if (body.allow) {
-    need(sandbox, 'write');
+    if (!secret.cd_prod) fail(409, 'conflict', `${secret.name} is no longer a production secret: dismiss the request; agents ask for its hosts instead`);
     const refused = needFresh(db);
     if (refused) return refused;
     if (vaultOf(db).agent.some((s) => s.name === req.name && s.scope === 'sandbox' && s.sandbox === sandbox.id)) fail(409, 'conflict', `an agent secret named ${req.name} already exists in this project`);
@@ -6114,6 +6115,14 @@ export function createMockTransport(params) {
     secret.requested_by = by;
     audit(db, 'vault.agent.request', secret.id, `${secret.name} → ${hosts.join(', ')}`);
     if (announce) db.announceSecrets(secret.sandbox);
+  };
+  // SPEC-440: an agent of `sandboxId` asks for a copy of a production secret (replacing one).
+  db.askCopy = (name, sandboxId, request) => {
+    const secret = vaultOf(db).agent.find((s) => s.name === name);
+    if (!secret.cd_prod) throw new Error('not a production secret'); // refused, as by the server
+    secret.copy_requests = { ...(secret.copy_requests || {}), [sandboxId]: request };
+    audit(db, 'vault.agent.copy_request', secret.id, `${secret.name} → ${request.name} on ${request.hosts.join(', ')}`);
+    db.announceSecrets(secret.sandbox);
   };
   db.announceSecrets = (sandboxId) => emit(db, { type: 'secrets.updated', sandbox_id: sandboxId });
   db.updateHolds = [];

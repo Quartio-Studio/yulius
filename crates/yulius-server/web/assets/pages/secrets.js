@@ -573,26 +573,36 @@ function agentProductionOnly(secret) {
 /**
  * The copy of a production secret an agent of this project asked for (SPEC-440): Allow copy adds
  * a separate agent secret of its value, bound to the hosts shown, after the person's two-factor
- * code; the answer names what is shown, so a request changed meanwhile is refused.
+ * code; the answer names what is shown, so a request changed meanwhile is refused. `changed`: the
+ * copy asked for is not the one this page showed before (a live update): its Allow copy stays off
+ * for a moment, as a host request's Allow does, so a click meant for the earlier one sends nothing.
  */
-function agentCopyRequest(ctx, sandbox, secret, act) {
+function agentCopyRequest(ctx, sandbox, secret, act, changed) {
   const copy = secret.copy_request;
   if (!copy) return [];
   const shown = { name: copy.name, hosts: [...copy.hosts] };
-  const url = `/api/sandboxes/${enc(sandbox.id)}/agent-secrets/${enc(secret.id)}/copy`;
-  const answer = (allow) => act(async () => {
+  let settling = changed;
+  const answer = (allow) => !settling && act(async () => {
     buttons.forEach((b) => { b.disabled = true; });
     try {
       const body = { allow, ...shown };
-      const saved = allow ? await withReauth(ctx, () => ctx.api.post(url, body)) : await ctx.api.post(url, body);
+      const send = () => ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/agent-secrets/${enc(secret.id)}/copy`, body);
+      const saved = allow ? await withReauth(ctx, send) : await send();
       // `null`: the person closed the code dialog; the request still waits.
       if (saved) toast(allow ? `Copied. Agents can use ${shown.name} on ${shown.hosts.join(', ')}.` : 'Dismissed.', { kind: 'ok' });
     } catch (error) { errorToast(error, allow ? 'Couldn’t copy' : 'Couldn’t dismiss'); }
   });
-  const buttons = [
-    copy.can_answer ? smallButton('Allow copy', `Copy ${secret.name} for agents as ${shown.name}`, () => answer(true), { class: 'btn-primary' }) : null,
-    secret.can_manage ? smallButton('Dismiss', `Dismiss the copy of ${secret.name} asked for`, () => answer(false)) : null,
-  ].filter(Boolean);
+  const buttons = copy.can_answer ? [
+    smallButton('Allow copy', `Copy ${secret.name} for agents as ${shown.name}`, () => answer(true), { class: 'btn-primary' }),
+    smallButton('Dismiss', `Dismiss the copy of ${secret.name} asked for`, () => answer(false)),
+  ] : [];
+  if (changed && buttons.length) {
+    buttons.forEach((b) => b.setAttribute('aria-disabled', 'true'));
+    setTimeout(() => {
+      settling = false;
+      buttons.forEach((b) => b.removeAttribute('aria-disabled'));
+    }, ALLOW_SETTLE_MS);
+  }
   const who = copy.requested_by.startsWith('#') ? `Task ${copy.requested_by}` : copy.requested_by;
   return [
     h('div', { class: 'row-wrap' },
@@ -602,9 +612,10 @@ function agentCopyRequest(ctx, sandbox, secret, act) {
       h('div', { class: 'chips' }, shown.hosts.map((name) => iconBadge('globe', hostText(name), 'warn', 'Requested host'))),
       buttons.length ? h('span', { class: 'row-wrap' }, buttons) : null),
     copy.reason ? h('span', { class: 'muted small' }, `For: ${copy.reason}`) : null,
+    changed ? h('span', { class: 'muted small' }, 'The copy asked for changed while this page was open.') : null,
     h('span', { class: 'muted small' }, copy.can_answer
       ? 'Allowing adds a separate agent secret with this value, after your two-factor code. This one stays production’s; the copy does not follow its rotations.'
-      : 'A person who manages this secret and this project’s secrets allows it.'),
+      : 'A person who manages this secret and this project’s secrets answers it.'),
   ].filter(Boolean);
 }
 
@@ -804,6 +815,16 @@ function mountAgents(ctx, sandbox, host, actions, scope = 'sandbox') {
     return drawn && now !== '' && now !== before;
   }
 
+  // The copy each card last showed (SPEC-440), the same way.
+  const shownCopies = new Map();
+  function changedCopy(secret) {
+    const copy = secret.copy_request;
+    const now = copy ? `${copy.name} ${copy.hosts.join(', ')}` : '';
+    const before = shownCopies.get(secret.id);
+    shownCopies.set(secret.id, now);
+    return drawn && now !== '' && now !== before;
+  }
+
   function render(secrets) {
     const view = draw(secrets);
     drawn = true;
@@ -832,7 +853,7 @@ function mountAgents(ctx, sandbox, host, actions, scope = 'sandbox') {
         ...agentHosts(ctx, secret, act, changedRequest(secret)),
         ...agentEnvFiles(ctx, secret, act),
         ...agentProductionOnly(secret),
-        ...agentCopyRequest(ctx, sandbox, secret, act),
+        ...agentCopyRequest(ctx, sandbox, secret, act, changedCopy(secret)),
         ...agentCdProd(ctx, secret, act),
         h('span', { class: 'muted small' }, [secret.injection !== 'none' ? secret.injection_text : null, secret.last_used_at ? `used ${relLong(secret.last_used_at)}` : 'not used yet', `changed ${relLong(secret.value_updated_at)}`].filter(Boolean).join(' · '))),
       controls: [

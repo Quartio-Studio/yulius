@@ -614,7 +614,8 @@ impl VaultStore for SqliteStore {
     async fn vault_set_cd_prod(&self, id: &str, from: bool, to: bool) -> AppResult<bool> {
         let id = id.to_owned();
         self.call(move |c| {
-            let changed = c
+            let tx = c.transaction().map_err(db)?;
+            let changed = tx
                 .execute(
                     "UPDATE vault_secrets SET cd_prod = ?3 \
                      WHERE id = ?1 AND section = 'agent' AND cd_prod = ?2 \
@@ -622,6 +623,15 @@ impl VaultStore for SqliteStore {
                     params![id, i64::from(from), i64::from(to)],
                 )
                 .map_err(db)?;
+            // No longer a production secret: nothing is copied from it (SPEC-440 CPY-007).
+            if changed == 1 && !to {
+                tx.execute(
+                    "DELETE FROM vault_copy_requests WHERE secret_id = ?1",
+                    params![id],
+                )
+                .map_err(db)?;
+            }
+            tx.commit().map_err(db)?;
             Ok(changed == 1)
         })
         .await
@@ -1658,6 +1668,12 @@ mod tests {
         );
         let source = store.vault_get("p").await?.ok_or("row")?;
         assert!(source.cd_prod && source.hosts.is_empty());
+
+        // No longer a production secret: its requests go with it (SPEC-440 CPY-007).
+        assert!(store.vault_put_copy_request(&asked, None).await?);
+        assert!(store.vault_set_cd_prod("p", true, false).await?);
+        assert!(store.vault_copy_requests(&s1).await?.is_empty());
+        assert!(store.vault_set_cd_prod("p", false, true).await?);
 
         // Dismissed: nothing is added; deleting the secret removes its requests.
         assert!(store.vault_put_copy_request(&asked, None).await?);

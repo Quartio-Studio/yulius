@@ -103,9 +103,9 @@ impl App {
             .into_iter()
             .find(|c| c.secret_id == source.id);
         // The same copy asked again adds the asker; another name or hosts replace the request.
-        let same = waiting
-            .as_ref()
-            .is_some_and(|w| w.name == name.as_str() && w.hosts == hosts);
+        let same = waiting.as_ref().is_some_and(|w| {
+            w.name == name.as_str() && same_hosts(&patterns(&w.hosts), &patterns(&hosts))
+        });
         let by = requester(
             waiting.as_ref().map(|w| w.requested_by.as_str()),
             same,
@@ -149,6 +149,10 @@ impl App {
         )
         .await?;
         self.flag_secret_wait(user, "a copy request").await?;
+        // Another copy replaced the one other tasks asked for: they no longer wait for it.
+        if waiting.is_some() && !same {
+            self.settle_secret_waits(Some(user.sandbox())).await;
+        }
         Ok(json!({
             "requested": request.name,
             "copy_of": source.name,
@@ -203,6 +207,9 @@ impl App {
                 request.hosts.join(", ")
             )));
         }
+        // Either answer settles a request of the project (CPY-004): write access to it, as
+        // adding a project secret on the Secrets page.
+        self.require(&ctx.user, &sid, Action::Configure).await?;
         let actor = Self::vault_actor(ctx);
         let detail = format!(
             "{} → {} on {} (asked by {})",
@@ -212,11 +219,19 @@ impl App {
             request.requested_by
         );
         if answer.allow {
-            // The copy is a project secret: as adding one on the Secrets page.
-            self.require(&ctx.user, &sid, Action::Configure).await?;
+            // A secret no longer production's is used as it is, never copied (CPY-007).
+            if !record.cd_prod {
+                return Err(AppError::Conflict(format!(
+                    "{} is no longer a production secret: dismiss the request; agents ask for its \
+                     hosts instead",
+                    record.name
+                )));
+            }
             if let Some(status) = self.fresh_or_status(ctx).await? {
                 return Ok(Revealed::ReauthRequired(status));
             }
+            // The value as read here: a rotation of the source between this read and the insert
+            // below leaves the copy at the earlier value, as a person copying it by hand would.
             let source: AgentPayload = self.open_payload(&record)?;
             let payload = AgentPayload {
                 username: source.username.clone(),
