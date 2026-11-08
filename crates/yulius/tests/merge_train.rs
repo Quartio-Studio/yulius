@@ -1500,3 +1500,76 @@ async fn a_green_current_pull_request_merges_on_the_next_pass() -> TestResult {
     assert_eq!(f.merges(), ["merge_pull #2 squash", "merge_pull #1 squash"]);
     Ok(())
 }
+
+/// SPEC-441 MQ-009: a merge made by hand, pinned to a head whose own Yulius CI run passed
+/// (`gh pr merge --match-head-commit`), ends the armed merge with an outcome that says it counts
+/// as merged on green Yulius CI, and `delivery_merge` and `delivery_status` say so too. A hand
+/// merge at a head that never passed is told that it does not count.
+#[tokio::test]
+async fn a_pinned_hand_merge_on_a_green_head_counts() -> TestResult {
+    let f = fixture().await?;
+    let app = f.h.app.clone();
+    let person = yulius_app::model::Secret("person-token".into());
+    let worktree = f.task(1, &[("a.txt", "x\n")]).await?;
+    f.arm(1, &worktree).await?;
+    let head = git(&worktree, &["rev-parse", "HEAD"])?;
+    f.record_passed(&app, 1, &head).await?;
+    app.deps
+        .github
+        .merge_pull(&person, "acme", "app", 1, "squash", &head)
+        .await?;
+    app.merge_armed(&f.sandbox).await;
+    let state = f.wait(1, &worktree).await?;
+    assert_eq!(state["merge_armed"], false, "{state}");
+    let outcome = state["merge_outcome"].as_str().unwrap_or_default();
+    assert!(
+        outcome.starts_with(&format!(
+            "Pull request #1 is merged into `dev` at {}, whose own Yulius CI run passed: it \
+             counts as merged on green Yulius CI, whoever merged it.",
+            &head[..9]
+        )),
+        "{outcome}"
+    );
+    let again = support::mcp_tool(
+        &f.h,
+        "tok-t1",
+        "delivery_merge",
+        json!({"reviewed_head": head, "review_summary": "approve"}),
+    )
+    .await?;
+    let again = support::tool_text(&again);
+    assert!(
+        again["next"]
+            .as_str()
+            .is_some_and(|n| n.contains("it counts as merged on green Yulius CI")),
+        "{again}"
+    );
+    let status = support::mcp_tool(&f.h, "tok-t1", "delivery_status", json!({})).await?;
+    let status = support::tool_text(&status);
+    assert!(
+        status["notes"].as_array().is_some_and(|notes| notes
+            .iter()
+            .any(|n| n.as_str().is_some_and(|n| n.contains("counts as merged on green")))),
+        "{status}"
+    );
+
+    // Without the ruleset, a head that never passed is merged by hand: it does not count.
+    f.h.github.strict.store(false, Ordering::SeqCst);
+    let second = f.task(2, &[("b.txt", "x\n")]).await?;
+    f.arm(2, &second).await?;
+    let red = git(&second, &["rev-parse", "HEAD"])?;
+    app.deps
+        .github
+        .merge_pull(&person, "acme", "app", 2, "squash", &red)
+        .await?;
+    app.merge_armed(&f.sandbox).await;
+    let outcome = f.wait(2, &second).await?["merge_outcome"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    assert!(
+        outcome.contains("but Yulius CI did not pass at that head (no run): it does not count"),
+        "{outcome}"
+    );
+    Ok(())
+}
