@@ -729,6 +729,50 @@ sequenceDiagram
     W-->>A: one line, then exits: Claude Code wakes the agent
 ```
 
+### The merge queue
+
+Every sandbox's armed merges go through one queue, with no setting
+([SPEC-441](../.ai/specs/SPEC-441-merge-queue-for-every-sandbox-no-restart.md),
+[decision 0285](decisions/0285-armed-pull-requests-merge-through-a-queue-that-never-restarts-a-run.md),
+amending the merge trains of [decision 0067](decisions/0067-armed-pull-requests-merge-in-trains.md)).
+A pass (`App::merge_armed`, one per sandbox at a time) runs at the end of every CI run, every 3
+minutes after the delivery reconcile, and every 20 seconds for a sandbox with something it can
+decide now (an armed head whose run passed, or a candidate whose run ended). It fetches the clone,
+then decides the armed merges in arm order:
+
+- a pull request's own run (its pre-check) always finishes: until it passed, Yulius neither
+  merges the integration branch into it nor puts it in a candidate, so a moving base never
+  supersedes it;
+- green and up to date: merged now;
+- green and behind: into the next merge candidate (`merge_train.rs`), the integration branch with
+  up to 8 such pull requests merged in, in arm order, tested by one run (`train/<n>+…`); on green
+  the members are brought up to date in their worktrees, the verdict recorded at each pushed head,
+  and merged in order;
+- a red candidate of n ≥ 2 is formed again from its first ⌈n/2⌉; a red one of one ends that armed
+  merge with the reason; an errored or cancelled one, a candidate that cannot be built, a pull
+  request that conflicts with the base alone, and projects without Yulius CI, with rebase merges
+  or automatic promotion go one by one (DLV-203 after the pre-check).
+
+Each kept decision leaves a sentence in the armed slot (`ArmedSlot::note`), which `yulius wait`
+(`merge_train`), `delivery_status` and the task page show. `delivery_merge` for an armed head
+keeps it and its place. A merge found made, by anyone, is judged by its head's own run: a passed
+run there counts as merged on green, and the outcome, `delivery_merge` and the delivery notes say
+so.
+
+```mermaid
+flowchart TD
+    A[armed head] --> P{own run passed?}
+    P -- running --> W[wait: the run finishes, never restarted]
+    P -- failed --> D[dropped: fix it]
+    P -- passed --> U{contains the integration branch?}
+    U -- yes --> M[merged now]
+    U -- no --> C[merge candidate: base + green pull requests, one run]
+    C -- passed --> L[each brought up to date, verdict recorded, merged in order]
+    C -- failed, n >= 2 --> H[first half again]
+    C -- failed, alone --> X[dropped: fails on the current base]
+    H --> C
+```
+
 ### Across a Yulius restart
 
 A restart or an update is invisible to a task's session

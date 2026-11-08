@@ -1,6 +1,8 @@
 # SPEC-084: armed pull requests merge in trains, tested once
 
-Status: implemented
+Status: implemented; amended by [SPEC-441](SPEC-441-merge-queue-for-every-sandbox-no-restart.md)
+(members need a passed run of their own, a train may have one member and holds all of them, a
+red train is bisected)
 Date: 2026-10-13
 Owner: engineer T (merge throughput round)
 Scope authorization: the person wants many agents at once without merges being rejected or

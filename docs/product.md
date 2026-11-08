@@ -228,6 +228,12 @@ watching, steering and unblocking.
   existing directory), in one new note of its own in that folder, named
   `YYYY-MM-DD-<task number>-<short-slug>.md`, so parallel pull requests never conflict on it; the
   briefing then quotes the newest notes as Recent changes (SPEC-363).
+- **Merge queue** (every sandbox, SPEC-441): a pull request's own CI run always finishes, however
+  often the integration branch moves; armed and green, it merges at once when up to date, else
+  Yulius tests it once on top of the current integration branch, together with the others
+  waiting (a merge candidate, halved when red), and merges them in order. Every armed pull
+  request says where it stands, and a merge at a head whose own Yulius CI run passed counts as
+  merged on green, whoever made it.
 - **Yulius CI**: the projects' only CI; it runs on the VM, no GitHub Actions. A job uses an agent
   secret only when the integration branch's `[[ci.jobs]]` entry names it (`secrets`) and the job
   runs that entry's command (a pull request's own job with another command gets none), as a
