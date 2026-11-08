@@ -11,6 +11,9 @@ sandboxes and can synchronise them"). Adds a second Superagent beside the one of
 sandbox Superagent's approved cross-sandbox requests) as it is, and reuses the tools of
 [0188](0188-remote-control-uses-scoped-personal-api-tokens.md) (the remote MCP).
 
+Extended by [0281](0281-the-superagents-use-the-project-browser.md): it is also served a
+project's browser tools, with `project`.
+
 Its message-only input is superseded by
 [0274](0274-the-global-superagent-takes-its-persons-keys.md): the person types into its terminal.
 

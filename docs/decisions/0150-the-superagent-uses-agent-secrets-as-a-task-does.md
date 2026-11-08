@@ -15,6 +15,9 @@ still apply. Amended by
 [0252](0252-the-egress-policy-checks-a-clients-run-on-every-request.md): the proxy checks that
 the Superagent's shell is running on every request, not only when it resolves its bearer.
 Refined by [0215](0215-a-key-block-s-public-header-lines-are-not-redaction-needles.md).
+Its "No browser" bullet is superseded by
+[0281](0281-the-superagents-use-the-project-browser.md): the Superagent drives the project browser,
+`browser_fill_secret` included.
 
 ## Context
 

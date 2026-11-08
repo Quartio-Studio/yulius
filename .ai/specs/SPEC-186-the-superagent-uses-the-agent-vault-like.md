@@ -68,7 +68,7 @@ what it is served gets the new tools and environment by itself.
 - SAV-003 (hosts): `secret_request_hosts` is served to the Superagent: the request is recorded as
   a task's is, asked by `<login>'s Superagent`, audited with the Superagent as actor; no task is
   flagged. A production secret is refused.
-- SAV-004 (browser): The Superagent has no project browser tools, so it is not served
+- SAV-004 (browser; superseded by SPEC-437 SAB-001, ADR-0281: the Superagent now drives the project browser): The Superagent has no project browser tools, so it is not served
   `browser_fill_secret`; sign-ins in the project browser stay a task's (the closest equivalent
   is a task).
 - SAV-005 (multi-line keys): A value that is a key block (it starts with `-----BEGIN `, its

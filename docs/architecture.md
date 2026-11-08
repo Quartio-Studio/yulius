@@ -276,11 +276,18 @@ DevTools socket, and a contained run (isolated or the fallback bubblewrap, each 
 namespace) cannot see its process, so no such agent or other sandbox can drive it. A process
 running as Yulius's user on the host, including an agent run without containment (host mode), or
 root could open the browser's `/proc/<pid>/fd`. Agents reach the browser through Yulius's browser
-tools, viewers through the viewer WebSocket.
+tools, viewers through the viewer WebSocket. The two Superagents drive it with the same tools: the
+sandbox Superagent its own sandbox's browser, the Global Superagent the browser of the project it
+names (`GLOBAL_ONLY_TOOLS`, `Action::Work` per call), both as a `SecretUser`, which says the
+sandbox, whose agent secrets `browser_fill_secret` resolves, the audit actor and the cursor label
+([SPEC-437](../.ai/specs/SPEC-437-add-browser-use-for-superagents.md),
+[decision 0281](decisions/0281-the-superagents-use-the-project-browser.md)).
 
 ```mermaid
 flowchart LR
   A["Agent (any containment)"] -->|"browser_* MCP tools"| Y["Yulius (BrowserManager, CdpClient)"]
+  S["Sandbox Superagent (ck_)"] -->|"browser_* on its sandbox"| Y
+  G["Global Superagent (gs_)"] -->|"browser_* with project"| Y
   V["Viewer"] -->|"viewer WebSocket"| Y
   Y -->|"fd 3: requests"| C["Sandbox Chromium"]
   C -->|"fd 4: responses, events"| Y
@@ -1287,7 +1294,8 @@ without a sandbox holder, the host's `/etc/shadow` and `/etc/gshadow` covered
 (`App::global_containment`); its bearer never crosses a sandbox's network.
 Its `gs_` bearer makes `App::mcp_handle` hand the call to the remote MCP (`remote_mcp_handle`) with
 a `RemoteCaller` for its person as an operate token, its `superagent` set: the remote tools but
-`WITHHELD_TOOLS` (the vault and variables, `cd_deploy`, `project_import`, `onboarding_*`), every
+`WITHHELD_TOOLS` (the vault and variables, `cd_deploy`, `project_import`, `onboarding_*`), plus a
+project's browser (`GLOBAL_ONLY_TOOLS`, which API tokens are not served), every
 project tool checked against the person's access at the call, the actor `superagent:<login>` on
 the Superagent channel, changes audited `remote.tool` with `via: global-superagent`, at most 120
 requests a minute. A removed host ends it, and the next `POST /api/superagent` leaves a host where
@@ -1316,7 +1324,7 @@ flowchart LR
   P -->|"pasted image: POST /api/superagent/attachments"| F["users/ID/superagent/attachments"]
   F -.->|"path pasted, read as an image"| G
   Y -->|"spawn, bwrap root users/ID/superagent"| G["Global Superagent: claude --tools '' --strict-mcp-config"]
-  G -->|"/mcp, gs_ bearer"| R["remote MCP tools minus WITHHELD_TOOLS (person's access per call)"]
+  G -->|"/mcp, gs_ bearer"| R["remote MCP tools minus WITHHELD_TOOLS, plus browser_* (person's access per call)"]
   R --> A["sandbox A: tasks, CI, files, pull requests"]
   R --> B["sandbox B: tasks, CI, files, pull requests"]
   H["host sandbox (oldest the person can work in)"] -.->|"registers the shell"| G
@@ -1399,7 +1407,8 @@ folder, a folder the agent cannot replace (`secret_source_root`): `repo` for the
 worktree's folders for a task, then the folders named, one at a time without following links, and
 the folder reached must be inside that work folder; Git checks run in the anchored work folder. A
 Superagent that swapped `repo` for a link is refused and nothing is written
-([SPEC-254](../.ai/specs/SPEC-254-superagent-secret-copy-to-env-follows-a.md), #635). It has no project browser, so no `browser_fill_secret`.
+([SPEC-254](../.ai/specs/SPEC-254-superagent-secret-copy-to-env-follows-a.md), #635). It drives the project browser as a task's agent does, `browser_fill_secret` included
+([decision 0281](decisions/0281-the-superagents-use-the-project-browser.md)).
 `secrets_list` gives it a task's records with its own guidance, and `secret_verify`, the
 Superagent's only (a matching candidate's hash must not reach a task transcript other members
 read), compares the SHA-256 of a value the person holds with the stored value and its variants (a
