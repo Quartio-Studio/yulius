@@ -98,6 +98,14 @@ branch is up to date with the integration branch. Features are squash-merged int
 integration branch; nobody else will press the button (in Yulius: `delivery_merge`, which
 refuses anything that is not green).
 
+Arm the merge as soon as the review approved the head, and never hold a green pull request back
+so as not to disturb another one's run. In Yulius a merge queue orders the merges: your pull
+request's own run always finishes, it merges the moment it is green and up to date, and when the
+integration branch moved since its run, Yulius tests it once on top of the current one (with the
+others waiting, as one merge candidate) and merges it on green. `yulius wait` says where yours
+stands. Do not arm the same head again, and do not merge the integration branch only because it
+moved: that restarts your own run. Merge it for a conflict you are told about.
+
 When a check fails, it is a defect until proven otherwise: reproduce it, fix the cause on the
 same branch, test first. Never rerun until green, never skip, never weaken a test or a gate.
 

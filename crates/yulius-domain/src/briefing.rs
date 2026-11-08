@@ -760,7 +760,8 @@ fn git_rules(input: &BriefingInput<'_>) -> String {
          {integration} or {production}, never `--no-verify`, never rewrite pushed commits (no \
          rebase, amend or force push: Yulius pushes plainly). Small conventional commits; nothing \
          unrelated, generated or secret. No `git stash`: this worktree is yours. Stay current by \
-         merging `origin/{integration}` and rerun the tests after a conflict. Numbered files \
+         merging `origin/{integration}` only for a conflict (it restarts your run); rerun the \
+         tests. Numbered files \
          (ADRs, migrations) take their number from `record_number`. One concern per pull request (about \
          400 changed lines outside tests); split bigger work into chained tasks.\n\
          - Before delivery, get an independent review in a fresh session (a read-only subagent \
@@ -770,15 +771,16 @@ fn git_rules(input: &BriefingInput<'_>) -> String {
          - When the work is ready (spec valid if needed, steps done, all committed), Yulius \
          pushes your branch and opens the pull request at the end of your turn or when you call \
          `delivery_merge`, and pushes later commits. CI runs on our own machines (`ci_status`). Once the review approved the exact \
-         head, call `delivery_merge`: on green it merges; while the checks run it arms the merge \
-         and Yulius merges when they pass. Fix failures on this branch, test-first. {checks}\n\
+         head, call `delivery_merge`: on green it merges, else it arms and the queue merges it in \
+         turn; never hold a green one back. Fix failures on this branch, test-first. \
+         {checks}\n\
          - To wait for checks, a merge or a person, start `yulius wait` with run_in_background \
          and end your turn. Never poll with `sleep`, `pgrep -f` loops or monitors, and never hide \
          an exit code behind `| tail`.\n\
          - Report a bug you confirm with `issue_create` unless an open issue tracks it (reference \
          it); for one met on the way, an unrelated flaky test or a leftover nit, say why it is \
          outside your change; a task told not to \
-         create issues never does, and comments or says it in its summary instead. After the \
+         create issues never does, and says so in its summary. After the \
          merge leave nothing stale (`repo_hygiene`, `repo_cleanup`).\n\
          - Delivery path ({preset} profile): {path}.\n\n",
         branch = code(&input.task.branch, 200),
@@ -1752,6 +1754,9 @@ mod tests {
             "No `git stash`",
             "Yulius pushes plainly",
             "merging `origin/",
+            // SPEC-441 MQ-011: the merge queue orders merges; nobody holds a green one back.
+            "only for a conflict (it restarts your run)",
+            "the queue merges it in turn; never hold a green one back",
             "no human acceptance step",
             "on green",
             "`delivery_merge`",
