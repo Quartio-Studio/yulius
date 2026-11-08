@@ -60,7 +60,8 @@ test('a superadmin restarts the server from the instance page', async ({ app, br
 });
 
 // #1117 (SPEC-439 CUB-003): a cancel shows its outcome from the cancel's own answer, at once,
-// with no further read of the update view (held here), and the Cancel button goes.
+// with no further read of the update view (held here), and the Cancel button goes; a read asked
+// before the cancel and answering after it does not bring the build back.
 test('cancelling an update shows its outcome from the cancel’s answer', async ({ app, browser, screen }) => {
   await app.open(mock('/admin/instance', '&update=1&build=hold'));
   await screen.getByRole('button', 'Update now…').click();
@@ -68,7 +69,9 @@ test('cancelling an update shows its outcome from the cancel’s answer', async 
   const cancel = screen.getByRole('button', 'Cancel update');
   await expect(cancel).toBeVisible();
   await expect.poll(() => browser.evaluate(() => document.body.innerText), { timeout: 5000 }).toMatch(/Building the new version/);
-  await updateMock(browser, (m) => { m.holdUpdateReads = true; });
+  // A read of the building update is on its way when the cancel is confirmed.
+  await updateMock(browser, (m) => { m.holdUpdateReads = true; m.announceUpdate(); });
+  await expect.poll(() => updateMock(browser, (m) => m.updateReads())).toBeGreaterThanOrEqual(1);
   await cancel.click();
   const dialog = screen.getByRole('dialog', /^Cancel the update\?$/);
   await expect(dialog.getByText(/The build stops, nothing is installed/)).toBeVisible();
@@ -76,11 +79,38 @@ test('cancelling an update shows its outcome from the cancel’s answer', async 
   await expect(dialog).toBeHidden();
   await expect(screen.getByText('The last update was cancelled')).toBeVisible();
   await expect(cancel).toBeHidden();
-  // The reads held meanwhile, older than the cancel's answer, do not bring the build back.
+  // Every held read answers now, the oldest (building) last: none replaces the cancel's answer.
+  const held = await updateMock(browser, (m) => m.updateReads());
   await updateMock(browser, (m) => { m.holdUpdateReads = false; while (m.updateReads()) m.releaseUpdate(); });
-  await expect.poll(() => updateMock(browser, (m) => m.updateReads())).toBe(0);
+  await expect.poll(() => updateMock(browser, (m) => m.updateReadsTaken)).toBe(held);
   await expect(screen.getByText('The last update was cancelled')).toBeVisible();
   await expect(cancel).toBeHidden();
+});
+
+// SPEC-439 CUB-003: while the cancel is on its way its button is busy and cannot be pressed
+// again; a cancel that fails says why and leaves the button usable.
+test('a cancel on its way is busy, and a failed one says why', async ({ app, browser, screen }) => {
+  await app.open(mock('/admin/instance', '&update=1&build=hold&holdpost=/api/admin/update/cancel'));
+  await screen.getByRole('button', 'Update now…').click();
+  await screen.getByRole('dialog', /to 9c1e7d3\?$/).getByRole('button', 'Update to 9c1e7d3').click();
+  const cancel = screen.getByRole('button', 'Cancel update');
+  await cancel.click();
+  await screen.getByRole('dialog', /^Cancel the update\?$/).getByRole('button', 'Cancel update').click();
+  await expect(cancel).toBeDisabled();
+  await expect(cancel).toHaveAttribute('aria-busy', 'true');
+  expect(await axeViolations(browser)).toEqual([]);
+  await browser.evaluate(() => (window as unknown as { __yuliusMock: { release: () => void } }).__yuliusMock.release());
+  await expect(screen.getByText('The last update was cancelled')).toBeVisible();
+
+  await app.open(mock('/admin/instance', '&update=1&build=hold&failpost=/api/admin/update/cancel'));
+  await screen.getByRole('button', 'Update now…').click();
+  await screen.getByRole('dialog', /to 9c1e7d3\?$/).getByRole('button', 'Update to 9c1e7d3').click();
+  const again = screen.getByRole('button', 'Cancel update');
+  await again.click();
+  await screen.getByRole('dialog', /^Cancel the update\?$/).getByRole('button', 'Cancel update').click();
+  await expect(screen.getByText(/Couldn’t cancel the update/)).toBeVisible();
+  await expect(again).toBeEnabled();
+  await expect(again).not.toHaveAttribute('aria-busy', 'true');
 });
 
 // SPEC-342 DPU-006: a deploy running when the build is done is waited for, named under the Build
