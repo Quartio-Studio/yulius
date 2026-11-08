@@ -752,8 +752,13 @@ impl Helper {
         let started = Instant::now();
         let mut checked = Instant::now();
         loop {
-            if let Some(status) = child.try_wait()? {
-                return Ok(BuildEnd::Exited(status));
+            match child.try_wait() {
+                Ok(Some(status)) => return Ok(BuildEnd::Exited(status)),
+                Ok(None) => {}
+                Err(err) => {
+                    kill_group(child);
+                    return Err(err);
+                }
             }
             let end = if started.elapsed() > BUILD_TIMEOUT {
                 Some(BuildEnd::TimedOut)
