@@ -1165,7 +1165,10 @@ async fn an_update_that_cannot_apply_is_refused_without_asking() -> TestResult {
     for (args, says) in [
         (json!({"number": queued}), "has started"),
         (json!({"number": number, "after_task": 99}), "#99"),
-        (json!({"number": number, "start_rule": "whenever"}), "expected a task"),
+        (
+            json!({"number": number, "start_rule": "whenever"}),
+            "expected a task",
+        ),
         (
             json!({"number": number, "after_task": queued, "start_rule": format!("#{queued} done")}),
             "not both",
