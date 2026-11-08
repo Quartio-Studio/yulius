@@ -46,7 +46,7 @@ pastes the token by hand, and the production secret stays exclusive to productio
   binding. Refused: a secret that is not a production secret (`Invalid`, pointing to
   `secret_request_hosts` / `secret_copy_to_env`), an unknown secret, a name already applying to the
   project (`Conflict`, as `secret_create_from_file`), the reserved `VIDOC_API_KEY`, no hosts.
-- **CPY-002 One request per secret and sandbox.** Asking again with the same name and hosts adds the
+- **CPY-002 One request per secret and sandbox.** Asking again with the same name and hosts (in any order) adds the
   asker (`#3, #7`); asking with another name or hosts replaces the request, asked by the new asker
   only. The result says what waits and gives the Secrets page link to print; the request is audited
   `vault.agent.copy_request` (`SOURCE → NAME on hosts (reason)`).
