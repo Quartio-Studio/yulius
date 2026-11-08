@@ -1787,3 +1787,62 @@ async fn an_errored_run_says_to_rerun_it() -> TestResult {
     );
     Ok(())
 }
+
+/// Review round 2, M3 (SPEC-441 MQ-005): a member whose branch cannot be brought up to date at
+/// its turn (here a stale `index.lock` in its worktree) ends the candidate and goes one by one,
+/// still armed and told where it stands; the same candidate is not formed and run again.
+#[tokio::test]
+async fn a_member_that_cannot_be_updated_goes_one_by_one() -> TestResult {
+    let f = fixture().await?;
+    let app = f.h.app.clone();
+    let worktree = f.task(1, &[("a.txt", "x\n")]).await?;
+    f.arm(1, &worktree).await?;
+    f.record_passed(&app, 1, &git(&worktree, &["rev-parse", "HEAD"])?)
+        .await?;
+    f.advance_dev("other.txt")?;
+    app.merge_armed(&f.sandbox).await;
+    assert_eq!(f.train_runs(&app).await?.len(), 1);
+    let lock = PathBuf::from(git(
+        &worktree,
+        &["rev-parse", "--path-format=absolute", "--git-path", "index.lock"],
+    )?);
+    std::fs::write(&lock, "")?;
+    f.settle(&app).await?;
+    for _ in 0..3 {
+        app.merge_armed(&f.sandbox).await;
+        f.settle(&app).await?;
+    }
+    assert_eq!(f.train_runs(&app).await?.len(), 1, "not tested again");
+    assert!(!f.trains_file(&app).contains("\"train\":{"), "ended");
+    let state = f.wait(1, &worktree).await?;
+    assert_eq!(state["merge_armed"], true, "{state}");
+    assert!(
+        state["merge_train"]
+            .as_str()
+            .is_some_and(|n| n.contains("is behind `dev`")),
+        "{state}"
+    );
+    std::fs::remove_file(&lock)?;
+    Ok(())
+}
+
+/// Review round 2, minor 1 (SPEC-441 MQ-008): an idle agent with uncommitted changes cannot be
+/// put in a candidate, so its green head behind the base gives the fast pass nothing to do until
+/// it commits.
+#[tokio::test]
+async fn uncommitted_changes_leave_nothing_to_decide() -> TestResult {
+    let f = fixture().await?;
+    let app = f.h.app.clone();
+    let sandbox = app.deps.store.sandbox(&f.sandbox).await?.ok_or("s1")?;
+    let worktree = f.task(1, &[("a.txt", "x\n")]).await?;
+    f.arm(1, &worktree).await?;
+    f.record_passed(&app, 1, &git(&worktree, &["rev-parse", "HEAD"])?)
+        .await?;
+    f.advance_dev("other.txt")?;
+    app.ci_sync_sandbox(&sandbox).await?;
+    std::fs::write(worktree.join("draft.txt"), "wip\n")?;
+    assert!(!app.decidable_in(&sandbox).await, "uncommitted");
+    std::fs::remove_file(worktree.join("draft.txt"))?;
+    assert!(app.decidable_in(&sandbox).await, "ready for a candidate");
+    Ok(())
+}
