@@ -392,7 +392,11 @@ watching, steering and unblocking.
   with `yulius secrets delete NAME` (SPEC-274). Agents add one themselves from a file they can reach (a key they generated, a key in
   `~/.ssh`): Yulius reads the file, so no one sees the value. The new secret has no hosts and no
   `.env` allowance until a person allows them, an existing name is never replaced, and the
-  Superagent asks before it does this on an uncontained server (SPEC-211).
+  Superagent asks before it does this on an uncontained server (SPEC-211). Agents never use a
+  production secret; when their work needs the same value (a dev CI token that exists only as a
+  production secret), they ask for a copy with its name and hosts, and a person allows it on the
+  production secret's card with **Allow copy** and their two-factor code: Yulius adds the copy
+  from the stored value, so nobody reveals or pastes it (SPEC-440).
 - **Updates**: Yulius updates itself from `main` without losing running work. The superadmin
   starts an update from the Update button beside their account button in the sidebar (SPEC-133).
   Once the new version is built, every task is frozen at once, mid-turn, and thawed after the

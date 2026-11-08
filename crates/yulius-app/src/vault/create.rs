@@ -176,6 +176,22 @@ pub(super) fn read_secret_file(
     Ok(Zeroizing::new(text.to_owned()))
 }
 
+/// The NAME of an agent secret an agent has made (from a file, or a copy it asks for, SPEC-440):
+/// valid, and never the reserved Vidoc key.
+pub(super) fn agent_made_name(name: &str) -> AppResult<SecretName> {
+    let name = SecretName::parse(name.trim()).map_err(invalid)?;
+    if name.as_str() == crate::vidoc_key::VIDOC_SECRET {
+        // A project secret of this name replaces the instance's Vidoc key for every run and CI
+        // job of the sandbox (ADR-0157): a person's choice, never an agent's.
+        return Err(AppError::Forbidden(format!(
+            "{VIDOC} is reserved: a project secret of that name replaces the instance's Vidoc key \
+             for this project, so only a person adds one, on the Secrets page",
+            VIDOC = crate::vidoc_key::VIDOC_SECRET
+        )));
+    }
+    Ok(name)
+}
+
 /// Removes `name` from `folder` (never a folder, never through a link).
 pub(super) fn remove_file(folder: &Folder, name: &str) -> AppResult<()> {
     unlinkat(&folder.fd, name, UnlinkatFlags::NoRemoveDir).map_err(os_error)
@@ -210,16 +226,7 @@ impl App {
     ) -> AppResult<Value> {
         let args: CreateArgs = serde_json::from_value(args.clone())
             .map_err(|e| AppError::Invalid(format!("invalid arguments: {e}")))?;
-        let name = SecretName::parse(args.name.trim()).map_err(invalid)?;
-        if name.as_str() == crate::vidoc_key::VIDOC_SECRET {
-            // A project secret of this name replaces the instance's Vidoc key for every run and
-            // CI job of the sandbox (ADR-0157): a person's choice, never an agent's.
-            return Err(AppError::Forbidden(format!(
-                "{VIDOC} is reserved: a project secret of that name replaces the instance's Vidoc \
-                 key for this project, so only a person adds one, on the Secrets page",
-                VIDOC = crate::vidoc_key::VIDOC_SECRET
-            )));
-        }
+        let name = agent_made_name(&args.name)?;
         let description = description(args.description.as_deref())?;
         let (root, parts) = source(&args.file)?;
         let (file_name, folders) = parts

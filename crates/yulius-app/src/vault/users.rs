@@ -248,8 +248,8 @@ impl App {
         Ok(())
     }
 
-    /// Whether a `.env` or host request of `task`'s agent still waits for a person: the task is
-    /// among its askers (`#N`, `#N in <slug>` for a secret of every sandbox).
+    /// Whether a `.env`, host or copy request (SPEC-440) of `task`'s agent still waits for a
+    /// person: the task is among its askers (`#N`, `#N in <slug>` for a secret of every sandbox).
     async fn secret_waits_for(&self, task: &TaskRecord) -> AppResult<bool> {
         let store = &self.deps.store;
         let records = store.vault_agent_in(&task.sandbox_id).await?;
@@ -261,6 +261,15 @@ impl App {
         } else {
             String::new()
         };
+        // A copy is asked for the task's own project: its askers carry no sandbox.
+        if store
+            .vault_copy_requests(&task.sandbox_id)
+            .await?
+            .iter()
+            .any(|c| super::requests::among_askers(Some(&c.requested_by), &me))
+        {
+            return Ok(true);
+        }
         Ok(records.iter().any(|record| {
             let asker = if record.sandbox_id.is_some() {
                 &me
