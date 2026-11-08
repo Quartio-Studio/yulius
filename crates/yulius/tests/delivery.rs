@@ -2707,6 +2707,8 @@ async fn the_changes_log_merges_by_union_in_any_repository() -> TestResult {
 
     // Without the attribute: on hold, the worktree left as it was.
     assert_eq!(arm_merge(&f, &agent, &head).await?["armed"], true);
+    // Brought up to date once its own checks passed (SPEC-441 MQ-001).
+    f.h.github.set_checks(&head, ChecksState::Success);
     f.h.app.merge_armed(&sandbox).await;
     assert_eq!(git(&wt, &["rev-parse", "HEAD"])?, head, "aborted");
     let held = wait_state(&f, &agent, &head).await?;
@@ -3761,11 +3763,20 @@ async fn a_wait_on_an_armed_merge_with_pending_checks_keeps_waiting() -> TestRes
     t.arm().await?;
     let first = t.wait(Value::Null).await?;
     assert_eq!(settled(&first, None)?, None, "{first}");
-    // Yulius looks at it, the checks still run: nothing changes, so the wait goes on.
+    // Yulius looks at it, the checks still run: it only says where the merge stands (SPEC-441
+    // MQ-007), which never ends the wait, and then nothing changes.
     f.h.app.merge_armed(&sandbox).await;
     let next = t.wait(first.clone()).await?;
-    assert_eq!(next, first, "unchanged until the server's wait times out");
+    assert!(
+        next["merge_train"]
+            .as_str()
+            .is_some_and(|n| n.contains("waits for its own Yulius CI run")),
+        "{next}"
+    );
     assert_eq!(settled(&next, Some(&first))?, None);
+    f.h.app.merge_armed(&sandbox).await;
+    let still = t.wait(next.clone()).await?;
+    assert_eq!(still, next, "unchanged until the server's wait times out");
     // Green: the merge happens and the wait says so.
     f.h.github.set_checks(&t.head, ChecksState::Success);
     f.h.app.merge_armed(&sandbox).await;
@@ -3957,9 +3968,17 @@ async fn an_armed_merge_behind_its_base_is_brought_up_to_date() -> TestResult {
     git(&t.wt, &["config", "user.name", "Bob"])?;
     git(&t.wt, &["config", "user.email", "bob@yulius.test"])?;
 
-    // A real conflict first: the base adds the same file differently.
+    // A real conflict first: the base adds the same file differently. The head's own checks
+    // finish first (SPEC-441 MQ-001).
     t.arm().await?;
     advance_base(f, "quartio", "landing.txt", "base version")?;
+    f.h.app.merge_armed(&sandbox).await;
+    assert_eq!(
+        git(&t.wt, &["rev-parse", "HEAD"])?,
+        t.head,
+        "checks still run"
+    );
+    f.h.github.set_checks(&t.head, ChecksState::Success);
     f.h.app.merge_armed(&sandbox).await;
     let outcome = t.outcome().await?;
     assert!(
@@ -3991,12 +4010,15 @@ async fn an_armed_merge_is_kept_current_and_merged_on_green() -> TestResult {
     git(&t.wt, &["config", "user.name", "Bob"])?;
     git(&t.wt, &["config", "user.email", "bob@yulius.test"])?;
     t.arm().await?;
-    let seen = f.h.store.task(&task).await?.ok_or("t1")?;
-    eprintln!(
-        "DEBUG status={:?} activity={:?}",
-        seen.status, seen.activity
-    );
     advance_base(f, "quartio", "other.txt", "unrelated")?;
+    // Not while the head's own checks run (SPEC-441 MQ-001): only once they passed.
+    f.h.app.merge_armed(&sandbox).await;
+    assert_eq!(
+        git(&t.wt, &["rev-parse", "HEAD"])?,
+        t.head,
+        "checks still run"
+    );
+    f.h.github.set_checks(&t.head, ChecksState::Success);
     f.h.app.merge_armed(&sandbox).await;
     let head = git(&t.wt, &["rev-parse", "HEAD"])?;
     assert_ne!(head, t.head, "Yulius merged the base in");
