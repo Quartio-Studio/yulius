@@ -151,5 +151,12 @@ pastes the token by hand, and the production secret stays exclusive to productio
   minor, 3 nits, all own code), each fixed test-first in `4261b42a`; round 2 approved on the code
   with one minor (no test for the project write check with an instance administrator), fixed in
   the following commit with a test that the mutation above fails.
+- Yulius CI run `2c199307` at `d967433`: quality passed, security skipped (Vidoc off), e2e failed
+  one pre-existing editor test (`taking the disk’s version of a file grown too large…`): its
+  `conflictOn` wrote the disk while the typed edit was on its way, and a look that reached the mock
+  first made the text "mine theirs" with no conflict (CI screenshot). Not caused by this change; it
+  passed 18/18 under busy loops and 24/24 with random mock delays, failed deterministically when
+  the edit was held until after a look, and is fixed in the test (it waits for the server to have
+  the typing); `editor.e2e.ts` 34/34 after.
 - Not tested: an end-to-end run with a real Claude task calling the tool against the live instance
   (the MCP path is covered by the integration tests through `/mcp`).
