@@ -20,7 +20,7 @@ type Asking = {
     askSuperagent: (source: string, request: unknown) => string;
     endSuperagentRequest: (source: string, id: string) => void;
     askBrowserSignIn: () => boolean;
-    tasks: { sandbox_id: string; title: string; prompt: string; status: string }[];
+    tasks: { sandbox_id: string; number: number; title: string; prompt: string; status: string }[];
   };
 };
 
@@ -298,4 +298,60 @@ test('a request while All sandboxes is in front marks the This sandbox tab', asy
   await browser.evaluate((r) => (window as unknown as Asking).__yuliusMock.endSuperagentRequest('sb_studio', r), id);
   await expect(screen.getByRole('group', 'Your Superagent asks to start a task in product')).toBeHidden();
   await expect(marker).toBeHidden();
+});
+
+/** The number of product's newest task. */
+const newest = (browser: Browser) => browser.evaluate(() => Math.max(...(window as unknown as Asking).__yuliusMock.tasks
+  .filter((t) => t.sandbox_id === 'sb_product').map((t) => t.number)));
+
+// SPEC-442 AC-XST-7: the same cards ask to start a task of another sandbox now, or to send it a
+// message from the person, which is read to its end as a prompt is.
+test('a prepared task of another sandbox is started and messaged from the Superagent', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/tasks'));
+  await openSuperagent(browser, screen);
+  await ask(browser, 'sb_studio', { sandbox: 'product', prompt: PROMPT, title: 'API client v2', options: { prepared: true } });
+  await screen.getByRole('button', 'Create task').click();
+  await expect(browser.locator('.toast:has-text("Created #")')).toBeVisible();
+  const created = await productTasks(browser);
+  const number = await newest(browser);
+  expect(created.at(-1)!.status).toBe('prepared');
+
+  await ask(browser, 'sb_studio', { sandbox: 'product', action: 'update', number });
+  const start = screen.getByRole('group', `Your Superagent asks to start #${number} now in product`);
+  await expect(start).toBeVisible();
+  await expect(start).toHaveText(/API client v2/);
+  await expect(start).toHaveText(/prepared/);
+  expect(await axeViolations(browser)).toEqual([]);
+  await screen.getByRole('button', 'Start now').click();
+  await expect(start).toBeHidden();
+  expect((await productTasks(browser)).at(-1)!.status).toBe('queued');
+  await expect(browser.locator(`.toast:has-text("Started #${number} in product")`)).toBeVisible();
+
+  const message = 'Use the v2 endpoints only.\nKeep v1 working.';
+  await ask(browser, 'sb_studio', { sandbox: 'product', action: 'message', number, prompt: message });
+  const card = screen.getByRole('group', `Your Superagent asks to send #${number} a message from you in product`);
+  await expect(card).toBeVisible();
+  expect(await browser.evaluate(() => document.querySelector('.agent-request-prompt')?.getAttribute('aria-label') ?? null)).toBe('Message');
+  expect(await browser.evaluate(() => document.querySelector('.agent-request-prompt')?.textContent ?? null)).toBe(message);
+  await screen.getByRole('button', 'Send message').click();
+  await expect(card).toBeHidden();
+  expect((await productTasks(browser)).at(-1)!.prompt).toContain('Use the v2 endpoints only.');
+});
+
+test('Decline on a stop request leaves the task of another sandbox as it was', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/tasks'));
+  await openSuperagent(browser, screen);
+  await ask(browser, 'sb_studio', { sandbox: 'product', prompt: PROMPT, title: 'API client v2' });
+  await screen.getByRole('button', 'Create task').click();
+  await expect(browser.locator('.toast:has-text("Created #")')).toBeVisible();
+  const number = await newest(browser);
+  const before = await productTasks(browser);
+
+  await ask(browser, 'sb_studio', { sandbox: 'product', action: 'stop', number });
+  const card = screen.getByRole('group', `Your Superagent asks to stop #${number} in product`);
+  await expect(card).toBeVisible();
+  await screen.getByRole('button', 'Decline').click();
+  await expect(card).toBeHidden();
+  await expect(browser.locator('.toast:has-text("Declined: nothing was changed.")')).toBeVisible();
+  expect(await productTasks(browser)).toEqual(before);
 });

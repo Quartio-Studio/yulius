@@ -467,6 +467,27 @@ const OPTION_LABELS = {
   effort: (v) => `Effort: ${v}`,
 };
 
+/**
+ * SPEC-442 XST-006: what each request asks, its card's heading (before the target) and button.
+ * A request about a task names it as `#N`.
+ */
+function askedFor(request) {
+  const task = request.task ? `#${request.task.number}` : '';
+  const options = request.options || {};
+  switch (request.action) {
+    case 'update':
+      return Object.keys(options).length
+        ? { heading: `to change how ${task} starts in `, button: 'Change start', done: `Changed how ${task} starts` }
+        : { heading: `to start ${task} now in `, button: 'Start now', done: `Started ${task}` };
+    case 'message':
+      return { heading: `to send ${task} a message from you in `, button: 'Send message', done: `Sent the message to ${task}`, text: 'Message' };
+    case 'stop':
+      return { heading: `to stop ${task} in `, button: 'Stop task', done: `Stopped ${task}` };
+    default:
+      return { heading: 'to start a task in ', button: 'Create task', text: 'Prompt' };
+  }
+}
+
 /** How long a new request's buttons wait before they take a click (one aimed at the terminal it pushed down). */
 const ARM_MS = 600;
 /** Characters a person cannot see that could hide or reorder a prompt's words: shown by their code. */
@@ -486,7 +507,9 @@ export function shownPrompt(text) {
  * SPEC-335 XSR-008: what the person's Superagent asks to start in another sandbox, above its
  * session. Nothing reaches that sandbox until the person presses Create task; each request is
  * answered once, and goes when the Superagent's call ends. Create task takes a click only once the
- * whole prompt was in view (scrolled to its end) and the card has been there a moment.
+ * whole prompt was in view (scrolled to its end) and the card has been there a moment. SPEC-442
+ * XST-006: the same cards ask to start, re-chain, message or stop a task there (Start now, Change
+ * start, Send message, Stop task); a message is read to its end as a prompt is.
  */
 function createRequests(ctx, sandbox, onCount) {
   const el = h('div', { class: 'agent-requests', hidden: true });
@@ -534,15 +557,17 @@ function createRequests(ctx, sandbox, onCount) {
     const options = Object.entries(request.options || {})
       .map(([key, value]) => (OPTION_LABELS[key] ? OPTION_LABELS[key](typeof value === 'string' ? shownText(value) : value) : null))
       .filter(Boolean);
-    const heading = `Your Superagent asks to start a task in ${slug}`;
-    // The prompt's last line: once it was on screen (not clipped by the prompt box, the list or the window), it was all read.
-    const end = h('span', { class: 'agent-request-end', 'aria-hidden': 'true' });
-    const prompt = h('pre', { class: 'agent-request-prompt', tabindex: '0', 'aria-label': 'Prompt' }, shownPrompt(request.prompt || ''), end);
-    const hint = h('div', { class: 'agent-request-hint', hidden: true }, 'Scroll to the end of the prompt to create the task.');
-    const create = h('button', { type: 'button', class: 'btn btn-sm btn-primary', disabled: true, onClick: () => respond(true) }, 'Create task');
+    const asked = askedFor(request);
+    const heading = `Your Superagent asks ${asked.heading}${slug}`;
+    // The text's last line: once it was on screen (not clipped by the text box, the list or the window), it was all read.
+    // A request with no text (a start or a stop) has nothing to read.
+    const end = asked.text ? h('span', { class: 'agent-request-end', 'aria-hidden': 'true' }) : null;
+    const prompt = asked.text ? h('pre', { class: 'agent-request-prompt', tabindex: '0', 'aria-label': asked.text }, shownPrompt(request.prompt || ''), end) : null;
+    const hint = h('div', { class: 'agent-request-hint', hidden: true }, `Scroll to the end of the ${asked.text === 'Message' ? 'message to send it' : 'prompt to create the task'}.`);
+    const create = h('button', { type: 'button', class: 'btn btn-sm btn-primary', disabled: true, onClick: () => respond(true) }, asked.button);
     const decline = h('button', { type: 'button', class: 'btn btn-sm', disabled: true, onClick: () => respond(false) }, 'Decline');
     let armed = false;
-    let read = false;
+    let read = !end;
     let sending = false;
     // Answered: the card only waits to go; it takes no second click.
     let done = false;
@@ -557,7 +582,7 @@ function createRequests(ctx, sandbox, onCount) {
         if (!read && entries.some((entry) => entry.isIntersecting)) { read = true; update(); }
       })
       : null;
-    if (seen) seen.observe(end);
+    if (seen && end) seen.observe(end);
     let timer = null;
     const arm = () => {
       clearTimeout(timer);
@@ -576,12 +601,13 @@ function createRequests(ctx, sandbox, onCount) {
         done = true;
         if (approve && answer && answer.task) {
           const to = `/s/${encodeURIComponent(answer.sandbox || slug)}/t/${answer.task.number}`;
-          toast(`Created #${answer.task.number} in ${answer.sandbox || slug}.`, { kind: 'ok', action: { label: 'Open', run: () => ctx.navigate(to) } });
+          const said = asked.done ? `${asked.done} in ${answer.sandbox || slug}.` : `Created #${answer.task.number} in ${answer.sandbox || slug}.`;
+          toast(said, { kind: 'ok', action: { label: 'Open', run: () => ctx.navigate(to) } });
         } else if (!approve) {
-          toast('Declined: nothing was created.', { kind: 'info' });
+          toast(asked.done ? 'Declined: nothing was changed.' : 'Declined: nothing was created.', { kind: 'info' });
         }
       } catch (err) {
-        errorToast(err, approve ? `Couldn’t create the task in ${slug}` : 'Couldn’t decline');
+        errorToast(err, approve ? (asked.done ? `Couldn’t do it in ${slug}` : `Couldn’t create the task in ${slug}`) : 'Couldn’t decline');
       } finally {
         sending = false;
         update();
@@ -592,8 +618,9 @@ function createRequests(ctx, sandbox, onCount) {
     return {
       el: h('section', { class: 'agent-request banner banner-warn small', role: 'group', 'aria-label': heading },
         h('div', { class: 'agent-request-head' }, icon('spark', { size: 16 }),
-          h('strong', null, 'Your Superagent asks to start a task in ', h('span', { class: 'agent-request-target' }, slug)),
+          h('strong', null, `Your Superagent asks ${asked.heading}`, h('span', { class: 'agent-request-target' }, slug)),
           target.repository ? h('span', { class: 'muted' }, ` (${target.repository})`) : null),
+        request.task ? h('div', { class: 'agent-request-title' }, `#${request.task.number} ${shownText(request.task.title || '')}`, h('span', { class: 'muted' }, ` · ${request.task.status}`)) : null,
         request.title ? h('div', { class: 'agent-request-title' }, shownText(request.title)) : null,
         prompt,
         options.length ? h('ul', { class: 'agent-request-options', 'aria-label': 'Start options' }, options.map((o) => h('li', null, o))) : null,
