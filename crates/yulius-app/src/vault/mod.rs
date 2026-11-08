@@ -12,6 +12,7 @@
 //! with the row's id and section as associated data; plaintexts are zeroed when dropped.
 
 mod agents;
+mod copies;
 mod create;
 mod env_files;
 pub(crate) mod holds;
@@ -211,7 +212,8 @@ impl From<StoredTeamPayload> for TeamPayload {
 /// Why a production secret refuses a use by agents (SPEC-134, round 2 M-B): one that production
 /// deploys get is never also copied into `.env` files or sent to hosts.
 pub(crate) const PRODUCTION_SECRET: &str = "this is a production secret: production deploys get it \
-and agents never do. Add a separate secret for agents";
+and agents never do. Add a separate secret for agents (an agent asks a person for one with \
+secret_request_copy)";
 
 /// Why `browser_fill_secret` refuses a personal secret (SPEC-245 RES-005).
 pub(crate) const PERSONAL_SECRET_BROWSER: &str = "a personal secret is never typed into the \

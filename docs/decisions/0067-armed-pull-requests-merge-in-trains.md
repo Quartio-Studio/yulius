@@ -4,7 +4,10 @@
 
 Accepted. Extends SPEC-011 (armed merges), SPEC-050 DLV-203/205 and
 [0048](0048-armed-merge-state-under-one-lock.md); specified in
-[SPEC-084](../../.ai/specs/SPEC-084-merge-trains.md).
+[SPEC-084](../../.ai/specs/SPEC-084-merge-trains.md). Amended by
+[0285](0285-armed-pull-requests-merge-through-a-queue-that-never-restarts-a-run.md): a train
+is the merge candidate of one or more pull requests whose own run passed, and a red one is
+bisected.
 
 ## Context
 

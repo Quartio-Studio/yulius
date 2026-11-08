@@ -16,8 +16,9 @@ use yulius_app::vault::Revealed;
 use yulius_app::vault::states::MAX_STATE_BYTES;
 use yulius_contracts::api::secrets::{
     AgentSecretInput, AgentSecretPatch, AgentSecretSwitch, AgentSecretView, AgentStateView,
-    CdProdAnswer, EnvFilesAnswer, HostRequestAnswer, ReauthPassword, ReauthStatus, RevealRequest,
-    TeamSecretInput, TeamSecretPatch, TeamSecretView, UnlockRequest, VaultActivity,
+    CdProdAnswer, CopyRequestAnswer, EnvFilesAnswer, HostRequestAnswer, ReauthPassword,
+    ReauthStatus, RevealRequest, TeamSecretInput, TeamSecretPatch, TeamSecretView, UnlockRequest,
+    VaultActivity,
 };
 use yulius_contracts::scrub::{FingerprintSet, RedactionReport};
 
@@ -67,6 +68,10 @@ pub fn public() -> Router<AppState> {
         )
         .route("/api/agent-secrets/{id}/reveal", post(agent_reveal))
         .route("/api/agent-secrets/{id}/request", post(agent_answer))
+        .route(
+            "/api/sandboxes/{sid}/agent-secrets/{id}/copy",
+            post(agent_copy_answer),
+        )
         .route("/api/agent-secrets/{id}/env", post(agent_env_answer))
         .route(
             "/api/agent-secrets/{id}/cd-prod",
@@ -300,6 +305,17 @@ async fn agent_answer(
     Json(answer): Json<HostRequestAnswer>,
 ) -> ApiResult<Json<AgentSecretView>> {
     Ok(Json(app.answer_host_request(&ctx, &id, &answer).await?))
+}
+
+async fn agent_copy_answer(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path((sid, id)): Path<(String, String)>,
+    Json(answer): Json<CopyRequestAnswer>,
+) -> Result<Response, ApiError> {
+    Ok(revealed(
+        app.answer_copy_request(&ctx, &sid, &id, &answer).await?,
+    ))
 }
 
 async fn agent_env_answer(

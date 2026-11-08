@@ -1,30 +1,34 @@
-//! Merge trains (SPEC-084, ADR-0067): when two or more armed pull requests wait, Yulius tests
-//! them together and merges them one after another on that one verdict.
+//! Merge trains (SPEC-084, ADR-0067), the merge candidates of the merge queue (SPEC-441,
+//! ADR-0285): armed pull requests whose own run passed but whose base moved since are tested
+//! together on top of the integration branch and merged one after another on that one verdict.
 //!
-//! Under a strict "up to date" rule only one pull request can merge per CI run: each merge puts
-//! every other armed one behind, Yulius merges the integration branch into it (DLV-203) and CI
-//! runs again (F 2026-10-13: 96 such updates in two days, 44% of the CI time kept).
+//! Under a strict "up to date" rule a pull request merges only with its base in its head. Moving
+//! the head of one whose own run still goes restarts that run (F 2026-11-07: with 45 to 60 minute
+//! runs, most runs were thrown away), so a pull request joins a train only once its own run (its
+//! pre-check) passed, and only when it is behind its base: a green one that is up to date merges
+//! alone, at once.
 //!
-//! A train is built in Yulius's clone, exactly as the merges will happen: the integration branch
-//! is merged into each armed head in arm order (the repository's merge drivers apply), each
-//! result landing as the profile's merge method lands it, so the train's last commit has the
-//! tree the integration branch has once every member merged. A head that conflicts is left out.
-//! Yulius CI runs once on that commit (reference `train/<numbers>`, never published on GitHub).
+//! A train (1 to [`MAX_MEMBERS`] members, in arm order) is built in Yulius's clone, exactly as the
+//! merges will happen: the integration branch is merged into each armed head in arm order (the
+//! repository's merge drivers apply), each result landing as the profile's merge method lands it,
+//! so the train's last commit has the tree the integration branch has once every member merged. A
+//! head that conflicts is left out. Yulius CI runs once on that commit (reference
+//! `train/<numbers>`, never published on GitHub).
 //!
-//! While it runs, the members after the first (and any left out) are held: not brought up to
-//! date (that would only start runs the train makes useless), not merged on their own; the
-//! first stays in the one-by-one flow. When it passes, the train
-//! merges them in order: it brings each up to date as DLV-203 does, checks that the result has
-//! exactly the tree the train predicted, records the train's verdict at that head (published as
-//! `yulius/ci`, so GitHub's own rules are met without a new run), waits until GitHub shows the
-//! new head and merges it through the normal merge path with all its gates. The integration
-//! branch must have the predicted tree before each step.
+//! Every member (and any left out) is held while the train lives: not brought up to date, not
+//! merged on its own. When the run passes, the train merges them in order: it brings each up to
+//! date as DLV-203 does, checks that the result has exactly the tree the train predicted, records
+//! the train's verdict at that head (published as `yulius/ci`, so GitHub's own rules are met
+//! without a new run), waits until GitHub shows the new head and merges it through the normal
+//! merge path with all its gates. A member whose agent is busy at its turn is waited for, within
+//! [`WAIT_LIMIT_MS`]. The integration branch must have the predicted tree before each step.
 //!
-//! Anything unexpected dissolves the train and every member goes back to the one-by-one flow:
-//! a red, errored or cancelled run (its members then merge one by one until armed again), the
-//! integration branch moving another way, a member re-armed, busy, changed or refused, a tree
-//! that differs, GitHub not catching up within [`WAIT_LIMIT_MS`]. A train can only make merging
-//! faster, never stop it.
+//! A failed run is bisected: a train of two or more is formed again from its first half, and a
+//! failed train of one ends that armed merge, saying why. Anything else unexpected dissolves the
+//! train: an errored or cancelled run, or a member that cannot merge for a reason of its own,
+//! sends those members one by one (DLV-203 after their own run passed); the integration branch
+//! moving another way, a member re-armed or moved on, or GitHub not catching up within
+//! [`WAIT_LIMIT_MS`] lets the train form again.
 //!
 //! State: `<data>/merge-trains.json` (one train per sandbox, written whole and renamed into
 //! place), the CI run in the store and the commits in the clone; so a restart picks the train up
@@ -86,6 +90,10 @@ struct SandboxTrains {
     /// The input (base and heads) of the last build that formed no train: not built again.
     #[serde(default)]
     unformed: Option<String>,
+    /// Most members of the next train while a red one is bisected (SPEC-441 MQ-004): the first
+    /// half of the last red train's; none once a train passed.
+    #[serde(default)]
+    limit: Option<usize>,
 }
 
 impl SandboxTrains {
@@ -145,11 +153,10 @@ struct LeftOut {
 /// How a merge train holds an armed pull request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Hold {
-    /// Not in a train, or first in one under test: the one-by-one flow as before.
+    /// Not in a train: it merges when green and up to date, or waits for the next train.
     Free,
-    /// In a train, after the first while it is tested, or any once it passed: the train brings
-    /// it up to date and merges it. Or left out of one: the ones armed before it go first, and
-    /// it waits until the train is over.
+    /// In a train (SPEC-441 MQ-003): the train brings it up to date and merges it. Or left out
+    /// of one: the ones armed before it go first, and it waits until the train is over.
     Held,
 }
 
@@ -161,6 +168,9 @@ enum Step {
     Wait,
     /// The train is dissolved, for this reason.
     Stop(String),
+    /// The train is dissolved, for a reason of this member's own: it goes one by one, where it
+    /// is told what stops it, instead of being tested again in the same train (SPEC-441 MQ-005).
+    OneByOne(String),
 }
 
 /// An armed pull request that could join a train.
@@ -174,13 +184,14 @@ fn hold_of(train: Option<&Train>, task: &str) -> Hold {
     let Some(train) = train else {
         return Hold::Free;
     };
-    if train.left_out.iter().any(|left| left.task == task) {
-        return Hold::Held;
-    }
-    match train.members.iter().position(|m| m.task == task) {
-        None => Hold::Free,
-        Some(0) if !train.merging => Hold::Free,
-        Some(_) => Hold::Held,
+    // Every member waits for the train: none can merge alone (it is behind its base), and
+    // bringing one up to date would only move the head the train tested (SPEC-441 MQ-003).
+    if train.left_out.iter().any(|left| left.task == task)
+        || train.members.iter().any(|m| m.task == task)
+    {
+        Hold::Held
+    } else {
+        Hold::Free
     }
 }
 
@@ -323,6 +334,38 @@ impl App {
         note_of(state.train.as_ref()?, task.id.as_str())
     }
 
+    /// Whether `sandbox` has a merge train whose run is still queued or running.
+    pub(crate) fn train_running(&self, sandbox: &SandboxRecord) -> bool {
+        self.read_trains(&sandbox.id)
+            .train
+            .is_some_and(|train| !train.merging)
+    }
+
+    /// Whether `sandbox`'s merge train has a run that is no longer queued or running: the next
+    /// pass merges its members or dissolves it.
+    pub(crate) async fn train_run_ended(&self, sandbox: &SandboxRecord) -> bool {
+        let Some(train) = self.read_trains(&sandbox.id).train else {
+            return false;
+        };
+        !matches!(
+            self.deps.store.ci_run(&train.run).await,
+            Ok(Some(run)) if run.state.is_active()
+        )
+    }
+
+    /// The merge candidate `task`'s sandbox tests now, when `task` is not in it: "merge candidate
+    /// #a, #b (run R)" (SPEC-441 MQ-007).
+    pub(crate) fn train_running_note(&self, task: &TaskRecord) -> Option<String> {
+        let train = self.read_trains(&task.sandbox_id).train?;
+        (hold_of(Some(&train), task.id.as_str()) == Hold::Free).then(|| {
+            format!(
+                "merge candidate {} (run {})",
+                listed(&numbers(&train.members)),
+                train.run
+            )
+        })
+    }
+
     /// Forms `sandbox`'s merge train or advances it: the start of every [`App::merge_armed`]
     /// pass, which holds the sandbox's pass lock (one at a time).
     pub(crate) async fn run_merge_train(self: &Arc<Self>, sandbox_id: &SandboxId) {
@@ -336,6 +379,13 @@ impl App {
         if sandbox.removed_at.is_some() || sandbox.is_playground() {
             return;
         }
+        // Decided on the integration branch as it is now: a merge a moment ago (by this pass or
+        // a person) leaves the others behind it (SPEC-441 MQ-003).
+        if self.armed_in(sandbox_id).await
+            && let Err(err) = self.dlv_refresh_clone(&sandbox).await
+        {
+            tracing::warn!(sandbox = %sandbox.slug, error = %err, "a merge pass could not fetch");
+        }
         let mut state = self.read_trains(sandbox_id);
         let before = state.clone();
         state.train = match state.train.take() {
@@ -345,6 +395,16 @@ impl App {
         if state != before {
             self.write_trains(sandbox_id, &state);
         }
+    }
+
+    /// Whether a task of `sandbox` has an armed merge (being decided or not).
+    pub(crate) async fn armed_in(&self, sandbox: &SandboxId) -> bool {
+        let Ok(tasks) = self.deps.store.tasks(sandbox, false).await else {
+            return false;
+        };
+        tasks
+            .iter()
+            .any(|task| self.armed_now(&task.id) != ArmedNow::None)
     }
 
     async fn train_audit(&self, sandbox: &SandboxRecord, action: &str, detail: &str) {
@@ -413,9 +473,18 @@ impl App {
                 }
                 Some(train)
             }
-            RunState::Passed => self.drive_train(sandbox, train).await,
+            RunState::Passed => {
+                state.limit = None;
+                self.drive_train(sandbox, state, train).await
+            }
+            RunState::Failed => {
+                self.bisect(sandbox, state, &train).await;
+                None
+            }
             other => {
-                // Red: its members merge one by one, tested on their own, until armed again.
+                // Errored or cancelled, which says nothing about the members: they merge one by
+                // one, each brought up to date after its own run passed, until armed again.
+                state.limit = None;
                 state
                     .held_back
                     .extend(train.members.iter().map(|m| (m.task.clone(), m.armed_at)));
@@ -428,6 +497,78 @@ impl App {
                 None
             }
         }
+    }
+
+    /// A train whose run failed (SPEC-441 MQ-004): of two or more members, the next train takes
+    /// the first half; a member alone passed its own run but fails on top of the integration
+    /// branch, so its armed merge ends, saying so.
+    async fn bisect(&self, sandbox: &SandboxRecord, state: &mut SandboxTrains, train: &Train) {
+        if train.members.len() > 1 {
+            let half = train.members.len().div_ceil(2);
+            state.limit = Some(half);
+            self.dissolve(
+                sandbox,
+                train,
+                &format!("its CI run failed; the first {half} are tested again without the rest"),
+            )
+            .await;
+            return;
+        }
+        state.limit = None;
+        self.dissolve(sandbox, train, "its CI run failed").await;
+        let Some(member) = train.members.first() else {
+            return;
+        };
+        let Ok(task) = TaskId::parse(&member.task) else {
+            return;
+        };
+        let Some(deciding) = self.take_armed(&task) else {
+            return;
+        };
+        let integration = delivery_profile(sandbox).integration_branch;
+        let verdict = if deciding.merge.armed_at == member.armed_at {
+            Verdict::Decided(format!(
+                "The merge you armed was dropped: pull request #{} passed its own run at {}, but \
+                 merged into the current `{integration}` it fails (merge candidate run {}). Read \
+                 why with `ci_status`, merge `origin/{integration}` into your branch, fix it \
+                 test-first, get the review of the new head and call `delivery_merge` again.",
+                member.pr,
+                short(&member.head),
+                train.run
+            ))
+        } else {
+            Verdict::Keep(deciding.merge.clone())
+        };
+        self.finish_armed(&task, &deciding, verdict).await;
+    }
+
+    /// Whether merge candidates (trains) decide `sandbox`'s armed merges (SPEC-441 MQ-005): it
+    /// has Yulius CI, lands by squash or merge commit and does not promote automatically.
+    async fn candidates_apply(&self, sandbox: &SandboxRecord) -> bool {
+        let profile = delivery_profile(sandbox);
+        self.config.ci.enabled
+            && sandbox.removed_at.is_none()
+            && !sandbox.is_playground()
+            // A promotion after each merge would ship states between the members (never tested).
+            && !profile.auto_promote
+            && profile.merge != MergeMethod::Rebase
+            && self.ci_gate(sandbox).await.gate.is_some()
+    }
+
+    /// Whether `task`'s armed merge, green and behind its base, goes one by one (Yulius brings it
+    /// up to date, DLV-203, and that head's own run decides) instead of into a merge candidate
+    /// (SPEC-441 MQ-005).
+    pub(crate) async fn one_by_one(
+        &self,
+        sandbox: &SandboxRecord,
+        task: &TaskRecord,
+        armed: &ArmedMerge,
+    ) -> bool {
+        !self.candidates_apply(sandbox).await
+            || self
+                .read_trains(&sandbox.id)
+                .held_back
+                .contains(&(task.id.to_string(), armed.armed_at))
     }
 
     /// Why a train under test no longer predicts what will merge, if it does not.
@@ -475,6 +616,7 @@ impl App {
     async fn drive_train(
         self: &Arc<Self>,
         sandbox: &SandboxRecord,
+        state: &mut SandboxTrains,
         mut train: Train,
     ) -> Option<Train> {
         train.merging = true;
@@ -515,6 +657,12 @@ impl App {
                 Step::Merged => train.waiting_since = None,
                 Step::Wait => return self.train_waits(sandbox, train).await,
                 Step::Stop(reason) => {
+                    self.dissolve(sandbox, &train, &reason).await;
+                    return None;
+                }
+                Step::OneByOne(reason) => {
+                    let member = &train.members[index];
+                    state.held_back.push((member.task.clone(), member.armed_at));
                     self.dissolve(sandbox, &train, &reason).await;
                     return None;
                 }
@@ -602,9 +750,14 @@ impl App {
     ) -> (Verdict, Step) {
         let member = &train.members[index];
         let armed = deciding.merge.clone();
-        let keep = |armed: ArmedMerge, reason: String| (Verdict::Keep(armed), Step::Stop(reason));
+        // Most stops are this member's own: it goes one by one, where it is told why.
+        let keep =
+            |armed: ArmedMerge, reason: String| (Verdict::Keep(armed), Step::OneByOne(reason));
         if armed.armed_at != member.armed_at {
-            return keep(armed, format!("#{} was armed again", member.pr));
+            return (
+                Verdict::Keep(armed),
+                Step::Stop(format!("#{} was armed again", member.pr)),
+            );
         }
         let (Some(worktree), Some(branch)) =
             (task.worktree_path.as_deref(), task.branch.as_deref())
@@ -615,8 +768,10 @@ impl App {
         let idle = task.status == TaskStatus::Running
             && task.activity.is_some_and(Activity::is_idle)
             && self.background_shells_of(&task.id).unwrap_or(0) == 0;
+        // A busy agent's turn ends soon: the train waits for it (bounded, TRN-006) instead of
+        // throwing its passed run away (SPEC-441 MQ-003).
         if !idle || self.deps.git.has_changes(worktree).await.unwrap_or(true) {
-            return keep(armed, format!("the agent of #{} is busy", member.pr));
+            return (Verdict::Keep(armed), Step::Wait);
         }
         let at = self
             .deps
@@ -627,7 +782,10 @@ impl App {
             .and_then(|log| log.into_iter().next())
             .map(|commit| commit.sha);
         if at.as_deref() != Some(armed.head.as_str()) {
-            return keep(armed, format!("#{} moved on", member.pr));
+            return (
+                Verdict::Keep(armed),
+                Step::Stop(format!("#{} moved on", member.pr)),
+            );
         }
         let profile = delivery_profile(sandbox);
         let integration = profile.integration_branch.clone();
@@ -951,15 +1109,15 @@ impl App {
         false
     }
 
-    /// Forms a train from the armed pull requests waiting now, if two or more can go together.
+    /// Forms a train from the armed pull requests waiting now whose own run passed and whose base
+    /// moved since (SPEC-441 MQ-003), if any, at most the bisection's limit of them.
     async fn form_train(
         &self,
         sandbox: &SandboxRecord,
         state: &mut SandboxTrains,
     ) -> Option<Train> {
         let profile = delivery_profile(sandbox);
-        // A promotion after each merge would ship states between the members (never tested).
-        if profile.auto_promote {
+        if !self.candidates_apply(sandbox).await {
             return None;
         }
         let landing = match profile.merge {
@@ -1006,18 +1164,18 @@ impl App {
                     .await,
                 Ok(true)
             );
+            let passed = checks == GateResult::Run(Some(RunState::Passed));
             // One that can merge right now goes first, on its own: a train waits for it.
-            if up_to_date && checks == GateResult::Run(Some(RunState::Passed)) {
+            if up_to_date && passed {
                 return None;
             }
-            if matches!(
-                checks,
-                GateResult::Run(Some(
-                    RunState::Failed | RunState::Error | RunState::Cancelled
-                ))
-            ) || state
-                .held_back
-                .contains(&(task.id.to_string(), armed.armed_at))
+            // Only one whose own run passed (its pre-check finishes first, SPEC-441 MQ-001) and
+            // is behind its base.
+            if !passed
+                || up_to_date
+                || state
+                    .held_back
+                    .contains(&(task.id.to_string(), armed.armed_at))
                 || !self.train_ready(&task, &armed).await
             {
                 continue;
@@ -1025,8 +1183,9 @@ impl App {
             candidates.push(Candidate { task, armed, pr });
         }
         state.held_back.retain(|entry| still_armed.contains(entry));
-        let candidates = in_arm_order(candidates, |c| (c.armed.armed_at, c.task.number));
-        if candidates.len() < 2 {
+        let mut candidates = in_arm_order(candidates, |c| (c.armed.armed_at, c.task.number));
+        candidates.truncate(state.limit.unwrap_or(MAX_MEMBERS).max(1));
+        if candidates.is_empty() {
             return None;
         }
         let heads: Vec<String> = candidates.iter().map(|c| c.armed.head.clone()).collect();
@@ -1034,11 +1193,34 @@ impl App {
         if state.unformed.as_deref() == Some(key.as_str()) {
             return None;
         }
+        // One merged meanwhile (by hand) is not tested again: GitHub says so before a build, and
+        // its own decision then says what the merge counts as (SPEC-441 MQ-009).
+        let mut open = Vec::with_capacity(candidates.len());
+        for candidate in candidates {
+            if self.pull_open(sandbox, candidate.pr).await {
+                open.push(candidate);
+            }
+        }
+        let candidates = open;
+        if candidates.is_empty() {
+            return None;
+        }
+        let heads: Vec<String> = candidates.iter().map(|c| c.armed.head.clone()).collect();
+        let key = format!("{base}:{}", heads.join(","));
         let ci_dir = self.ci_dir(&sandbox.id);
         // Readied through handles: Git checks out in it by its path (SPEC-367).
+        // A train that cannot be built leaves its candidates to the one-by-one flow.
+        let one_by_one = |state: &mut SandboxTrains, key: String| {
+            state.unformed = Some(key);
+            state.held_back.extend(
+                candidates
+                    .iter()
+                    .map(|c| (c.task.id.to_string(), c.armed.armed_at)),
+            );
+        };
         if let Err(err) = self.ci_checkout_ready(&sandbox.id, &[], "train").await {
             tracing::warn!(sandbox = %sandbox.slug, error = %err, "a merge train could not be built");
-            state.unformed = Some(key);
+            one_by_one(state, key);
             return None;
         }
         let built = match self
@@ -1057,7 +1239,7 @@ impl App {
             Ok(built) => built,
             Err(err) => {
                 tracing::warn!(sandbox = %sandbox.slug, error = %err, "a merge train could not be built");
-                state.unformed = Some(key);
+                one_by_one(state, key);
                 return None;
             }
         };
@@ -1079,8 +1261,10 @@ impl App {
                 }),
             }
         }
-        if members.len() < 2 {
-            state.unformed = Some(key);
+        // Every one conflicts with the integration branch itself: one by one, where Yulius
+        // names the files to resolve (DLV-203).
+        if members.is_empty() {
+            one_by_one(state, key);
             return None;
         }
         // Its own CI when the members changed it, as for a pull request (CI-110).
@@ -1167,6 +1351,23 @@ impl App {
         })
     }
 
+    /// Whether GitHub shows pull request `pr` open; `true` when it cannot be read (the merge
+    /// path asks again).
+    async fn pull_open(&self, sandbox: &SandboxRecord, pr: u64) -> bool {
+        let Ok(token) = self.dlv_installation_token(sandbox).await else {
+            return true;
+        };
+        match self
+            .deps
+            .github
+            .get_pull(&token, &sandbox.repo_owner, &sandbox.repo_name, pr)
+            .await
+        {
+            Ok(pull) => !pull.merged && pull.state == "open",
+            Err(_) => true,
+        }
+    }
+
     /// Whether `task` could be brought up to date now, as DLV-203 requires: running and idle
     /// with nothing running in the background, nothing uncommitted, at the armed head.
     async fn train_ready(&self, task: &TaskRecord, armed: &ArmedMerge) -> bool {
@@ -1248,12 +1449,13 @@ mod tests {
         }
     }
 
-    /// TRN-004: under test only the first member is free; once it passed the train merges all.
+    /// SPEC-441 MQ-003 (was TRN-004): under test and once it passed, the train holds every member,
+    /// the first too; others are free.
     #[test]
-    fn a_train_holds_the_members_after_the_first_while_it_runs() {
+    fn a_train_holds_every_member() {
         let mut train = train();
         assert_eq!(hold_of(None, "a"), Hold::Free);
-        assert_eq!(hold_of(Some(&train), "a"), Hold::Free);
+        assert_eq!(hold_of(Some(&train), "a"), Hold::Held);
         assert_eq!(hold_of(Some(&train), "b"), Hold::Held);
         assert_eq!(
             hold_of(Some(&train), "d"),
@@ -1324,6 +1526,7 @@ mod tests {
             train: Some(train()),
             held_back: vec![("a".to_owned(), 1)],
             unformed: None,
+            limit: Some(2),
         };
         let text = serde_json::to_string(&state)?;
         assert_eq!(serde_json::from_str::<SandboxTrains>(&text)?, state);

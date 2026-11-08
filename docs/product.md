@@ -228,6 +228,12 @@ watching, steering and unblocking.
   existing directory), in one new note of its own in that folder, named
   `YYYY-MM-DD-<task number>-<short-slug>.md`, so parallel pull requests never conflict on it; the
   briefing then quotes the newest notes as Recent changes (SPEC-363).
+- **Merge queue** (every sandbox, SPEC-441): a pull request's own CI run always finishes, however
+  often the integration branch moves; armed and green, it merges at once when up to date, else
+  Yulius tests it once on top of the current integration branch, together with the others
+  waiting (a merge candidate, halved when red), and merges them in order. Every armed pull
+  request says where it stands, and a merge at a head whose own Yulius CI run passed counts as
+  merged on green, whoever made it.
 - **Yulius CI**: the projects' only CI; it runs on the VM, no GitHub Actions. A job uses an agent
   secret only when the integration branch's `[[ci.jobs]]` entry names it (`secrets`) and the job
   runs that entry's command (a pull request's own job with another command gets none), as a
@@ -392,7 +398,11 @@ watching, steering and unblocking.
   with `yulius secrets delete NAME` (SPEC-274). Agents add one themselves from a file they can reach (a key they generated, a key in
   `~/.ssh`): Yulius reads the file, so no one sees the value. The new secret has no hosts and no
   `.env` allowance until a person allows them, an existing name is never replaced, and the
-  Superagent asks before it does this on an uncontained server (SPEC-211).
+  Superagent asks before it does this on an uncontained server (SPEC-211). Agents never use a
+  production secret; when their work needs the same value (a dev CI token that exists only as a
+  production secret), they ask for a copy with its name and hosts, and a person allows it on the
+  production secret's card with **Allow copy** and their two-factor code: Yulius adds the copy
+  from the stored value, so nobody reveals or pastes it (SPEC-440).
 - **Updates**: Yulius updates itself from `main` without losing running work. The superadmin
   starts an update from the Update button beside their account button in the sidebar (SPEC-133).
   Once the new version is built, every task is frozen at once, mid-turn, and thawed after the

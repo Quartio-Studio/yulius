@@ -94,6 +94,26 @@ pub struct VaultSecretRecord {
     pub auto_allow: bool,
 }
 
+/// A copy of a production secret an agent asked for (SPEC-440 CPY-001): a new project secret of
+/// `sandbox_id` named `name`, bound to `hosts`, waiting for a person. One per secret and sandbox.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VaultCopyRequest {
+    /// The production secret to copy.
+    pub secret_id: String,
+    /// The project the copy is for (the asker's).
+    pub sandbox_id: SandboxId,
+    /// NAME of the copy.
+    pub name: String,
+    /// Hosts the copy is bound to (parsed and normalized).
+    pub hosts: Vec<String>,
+    /// Who asks (`#3, #7`, `<login>'s Superagent`).
+    pub requested_by: String,
+    /// What the last asker needs it for (one line, may be empty).
+    pub reason: String,
+    /// When it was asked last.
+    pub asked_at: Timestamp,
+}
+
 /// Where an agent secret belongs (SPEC-245 SCP-001).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentScope {
@@ -273,6 +293,26 @@ pub trait VaultStore: Send + Sync {
         by: &str,
         at: Timestamp,
     ) -> AppResult<bool>;
+    /// The copy requests for `sandbox` (SPEC-440), by secret.
+    async fn vault_copy_requests(&self, sandbox: &SandboxId) -> AppResult<Vec<VaultCopyRequest>>;
+    /// Stores `request` for its secret and sandbox when the one stored still is `seen` (`None`:
+    /// none is; compare and set on name, hosts and askers); `false` otherwise or when the secret
+    /// is gone.
+    async fn vault_put_copy_request(
+        &self,
+        request: &VaultCopyRequest,
+        seen: Option<&VaultCopyRequest>,
+    ) -> AppResult<bool>;
+    /// Answers a copy request in one transaction: removes it while its name and hosts still are
+    /// `seen`'s and, with `copy`, inserts that agent secret of `seen.sandbox_id` as
+    /// [`Self::vault_insert_agent`] does (`Capacity` at `cap`, `Conflict` for a taken name: the
+    /// request then stays). `false`, and nothing changes, when the request changed or is gone.
+    async fn vault_answer_copy_request(
+        &self,
+        seen: &VaultCopyRequest,
+        copy: Option<&VaultSecretRecord>,
+        cap: usize,
+    ) -> AppResult<bool>;
     /// Binds the hosts an agent asked for of a secret it sets up itself (SPEC-216 SSA-002):
     /// `hosts` replace its bindings and `requested` its waiting request, only while they still
     /// are `bound` and `waiting` and the secret still has `auto_allow`; `false` otherwise.
@@ -294,7 +334,8 @@ pub trait VaultStore: Send + Sync {
     /// Sets whether production CD runs get the agent secret `id` (SPEC-134) when it still is
     /// `from` (compare and set) and, to allow it, agents can use it in no way: they do not set
     /// it up themselves (`auto_allow`, SPEC-216 SSA-004), copy it into `.env` files or have hosts
-    /// it is bound to (SPEC-134 round 2 M-B, SPEC-262 VTR-001); `false` otherwise.
+    /// it is bound to (SPEC-134 round 2 M-B, SPEC-262 VTR-001); `false` otherwise. Revoking it
+    /// removes the copies agents asked of it, in the same transaction (SPEC-440 CPY-007).
     async fn vault_set_cd_prod(&self, id: &str, from: bool, to: bool) -> AppResult<bool>;
     /// The secrets that applied to every sandbox when schema version 35 was reached and are not
     /// assigned to sandboxes yet (SPEC-216 SCO-004).

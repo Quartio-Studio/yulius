@@ -208,6 +208,26 @@ pub struct AgentSecretView {
     pub flattened: bool,
     /// Whether the caller may change or delete it.
     pub can_manage: bool,
+    /// A production secret: the copy an agent of the listed project asked for (SPEC-440), in a
+    /// project's list only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub copy_request: Option<CopyRequestView>,
+}
+
+/// A copy of a production secret an agent asked for (SPEC-440): a new project secret `name`,
+/// bound to `hosts`, waiting for a person.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CopyRequestView {
+    /// NAME of the copy.
+    pub name: String,
+    /// The hosts the copy would be sent to.
+    pub hosts: Vec<String>,
+    /// Who asks (`#3, #7`, `alice's Superagent`).
+    pub requested_by: String,
+    /// What the last asker needs it for (may be empty).
+    pub reason: String,
+    /// Whether the caller may allow it: they manage the secret and the project's secrets.
+    pub can_answer: bool,
 }
 
 /// Create body.
@@ -292,6 +312,19 @@ pub struct HostRequestAnswer {
     pub allow: bool,
     /// The requested hosts the person saw: the answer is refused (409) unless they are exactly
     /// what waits, so a host asked for meanwhile is never allowed unseen.
+    pub hosts: Vec<String>,
+}
+
+/// `POST /api/sandboxes/{sid}/agent-secrets/{id}/copy` body (SPEC-440): answers the copy of a
+/// production secret an agent of the project asked for.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CopyRequestAnswer {
+    /// `true`: the copy is created, bound to `hosts`; `false`: the request is dismissed.
+    pub allow: bool,
+    /// The copy's NAME the person saw: 409 unless it is what waits.
+    pub name: String,
+    /// The hosts the person saw, in any order: 409 unless they are exactly what waits.
     pub hosts: Vec<String>,
 }
 

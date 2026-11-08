@@ -370,6 +370,10 @@ test('the end banner names the limit once the task’s details arrive after it',
 test('the end banner keeps keyboard focus when the task’s details are read again', async ({ app, browser }) => {
   await app.open(mock('/s/studio/t/3'));
   await expect(browser.locator('.taskview .term-banner')).toContainText('the sandbox hit its process limit while it ran');
+  // The terminal shown first: the focus asked for on open lands as it shows, over a button
+  // (terminal-core.js), which a slow machine did after this test focused the banner's
+  // (#1120 CI run 2beeaf29).
+  await expect.poll(() => browser.evaluate(() => document.querySelector('.taskview .term-host') !== null && document.querySelector('.taskview .term-pending') === null)).toBe(true);
   const label = await browser.evaluate(() => {
     const button = document.querySelector<HTMLButtonElement>('.taskview .term-banner button');
     if (!button) return null;

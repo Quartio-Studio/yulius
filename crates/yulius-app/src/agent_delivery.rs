@@ -203,7 +203,7 @@ impl App {
                     Ok(json!({"merged": true, "delivery": view}))
                 }
                 crate::delivery::playground::PlaygroundMerge::Testing(state, note) => {
-                    self.arm_merge(&ctx.task, &head, &summary);
+                    self.arm_merge(&ctx.task, &head, reviewed, &summary);
                     self.agent_audit(
                         ctx,
                         "delivery.agent.merge_armed",
@@ -260,13 +260,24 @@ impl App {
                 || "this task's pull request".to_owned(),
                 |n| format!("pull request #{n}"),
             );
+            // Whoever merged it, what counts is whether its head passed (SPEC-441 MQ-009).
+            let sandbox = self.deps.store.sandbox(&ctx.task.sandbox_id).await;
+            let counts = match (record.pr_number, sandbox) {
+                (Some(number), Ok(Some(sandbox))) => {
+                    format!(
+                        " {}",
+                        self.merged_note(&ctx.task, &sandbox, number, false).await
+                    )
+                }
+                _ => String::new(),
+            };
             return Ok(json!({
                 "merged": true,
                 "armed": false,
                 "next": format!(
                     "{pull} is already merged and this head adds nothing to it: there is nothing \
-                     to deliver. Commit new work on this branch and Yulius opens a new pull request \
-                     for it."
+                     to deliver.{counts} Commit new work on this branch and Yulius opens a new pull \
+                     request for it."
                 ),
             }));
         }
@@ -321,8 +332,19 @@ impl App {
             }
             other => {
                 // Still running (or not known yet): Yulius merges this exact head by itself once
-                // its checks pass (SPEC-011), so the agent never polls for them.
-                self.arm_merge(&ctx.task, &head, &summary);
+                // its checks pass (SPEC-011), so the agent never polls for them. Armed already:
+                // it keeps its place (SPEC-441 MQ-006).
+                if !self.arm_merge(&ctx.task, &head, reviewed, &summary) {
+                    return Ok(json!({
+                        "merged": false,
+                        "armed": true,
+                        "checks": other,
+                        "next": "This head is armed already and keeps its place in the merge \
+                                 queue: Yulius merges it as soon as it can, and `yulius wait` says \
+                                 where it stands. Start `yulius wait` with run_in_background and \
+                                 end your turn; do not call delivery_merge again for this head.",
+                    }));
+                }
                 self.agent_audit(
                     ctx,
                     "delivery.agent.merge_armed",
@@ -347,7 +369,7 @@ impl App {
             // GitHub could not take the pull request's new title for now (SPEC-069 BPL-008):
             // armed, so Yulius merges this head on its next pass.
             Err(MergeFailure::Later(err)) => {
-                self.arm_merge(&ctx.task, &head, &summary);
+                self.arm_merge(&ctx.task, &head, reviewed, &summary);
                 self.agent_audit(
                     ctx,
                     "delivery.agent.merge_armed",

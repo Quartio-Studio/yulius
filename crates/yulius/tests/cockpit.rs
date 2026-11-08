@@ -1651,6 +1651,7 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
             "sandboxes_list",
             "secret_copy_to_env",
             "secret_create_from_file",
+            "secret_request_copy",
             "secret_request_hosts",
             "secret_verify",
             "secrets_list",
@@ -3015,6 +3016,7 @@ async fn the_superagent_lists_its_sandboxs_agent_secrets_without_values() -> Tes
         "secret_verify",
         "secret_copy_to_env",
         "secret_request_hosts",
+        "secret_request_copy",
         "secret_create_from_file",
         // The project browser, as a task's agent has it (SPEC-437 SAB-001).
         "browser_fill_secret",
@@ -3493,6 +3495,24 @@ async fn the_superagent_copies_allowed_secrets_into_its_repositorys_ignored_env(
     .await?;
     assert!(is_error, "{refused}");
     assert!(refused.to_string().contains("production"), "{refused}");
+    // SPEC-440: it asks for a copy of the production secret instead, as alice's Superagent.
+    let (copy_asked, is_error) = cockpit_tool(
+        &f,
+        &token,
+        "secret_request_copy",
+        json!({"secret": "PROD_KEY", "name": "PROD_KEY_DEV", "hosts": ["deploy.quartio.test"]}),
+    )
+    .await?;
+    assert!(!is_error, "{copy_asked}");
+    assert_eq!(
+        copy_asked["requested_by"], "alice's Superagent",
+        "{copy_asked}"
+    );
+    let copies = f.h.store.vault_copy_requests(&sid()).await?;
+    assert_eq!(copies.len(), 1, "{copies:?}");
+    assert_eq!(copies[0].requested_by, "alice's Superagent");
+    let asks = audited(&f, "vault.agent.copy_request").await?;
+    assert_eq!(asks[0]["actor"], "cockpit:alice", "{asks:?}");
     f.h.app.end_all_shells().await;
     Ok(())
 }

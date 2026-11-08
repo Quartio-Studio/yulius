@@ -3013,7 +3013,7 @@ function vaultOf(db) {
 }
 
 // The server's refusal of an agents' use of a production secret (vault/mod.rs, SPEC-134).
-const PRODUCTION_SECRET = 'this is a production secret: production deploys get it and agents never do. Add a separate secret for agents';
+const PRODUCTION_SECRET = 'this is a production secret: production deploys get it and agents never do. Add a separate secret for agents (an agent asks a person for one with secret_request_copy)';
 const INJECTION_TEXT = { bearer: 'Authorization: Bearer <value>', basic: 'Authorization: Basic <username:value>', none: 'no header (agents send the placeholder)' };
 
 function teamView(s) {
@@ -3049,7 +3049,13 @@ function agentShadow(db, s, sandbox) {
 function agentView(db, s, sandbox) {
   const admin = Boolean(db.me.user.is_instance_admin || db.me.user.is_superadmin);
   const manage = s.scope === 'instance' ? admin : s.scope === 'personal' ? s.owner === db.me.user.login : RANK[sandbox.access] >= RANK.write;
-  return { id: s.id, name: s.name, description: s.description, scope: s.scope, enabled: agentOn(s, sandbox), shadowed_by: agentShadow(db, s, sandbox), hosts: s.hosts, requested_hosts: s.requested_hosts, requested_by: s.requested_by, env_files: s.env_files || 'no', env_requested_by: s.env_requested_by || null, cd_prod: Boolean(s.cd_prod), auto_allow: Boolean(s.auto_allow), injection: s.injection, header_name: s.header_name, injection_text: s.injection === 'header' ? `${s.header_name}: <value>` : INJECTION_TEXT[s.injection], placeholder: `yulius-secret-${s.name}`, has_username: Boolean(s.username), has_totp: false, created_by: s.created_by, updated_at: s.updated_at, value_updated_at: s.value_updated_at, last_used_at: s.last_used_at, rotate_due: false, flattened: manage && flattenedKey(s.value), can_manage: manage };
+  return { id: s.id, name: s.name, description: s.description, scope: s.scope, enabled: agentOn(s, sandbox), shadowed_by: agentShadow(db, s, sandbox), hosts: s.hosts, requested_hosts: s.requested_hosts, requested_by: s.requested_by, env_files: s.env_files || 'no', env_requested_by: s.env_requested_by || null, cd_prod: Boolean(s.cd_prod), auto_allow: Boolean(s.auto_allow), injection: s.injection, header_name: s.header_name, injection_text: s.injection === 'header' ? `${s.header_name}: <value>` : INJECTION_TEXT[s.injection], placeholder: `yulius-secret-${s.name}`, has_username: Boolean(s.username), has_totp: false, created_by: s.created_by, updated_at: s.updated_at, value_updated_at: s.value_updated_at, last_used_at: s.last_used_at, rotate_due: false, flattened: manage && flattenedKey(s.value), can_manage: manage, ...copyRequestOf(s, sandbox, manage) };
+}
+
+/** The copy of a production secret an agent of `sandbox` asked for (SPEC-440), as the list shows it. */
+function copyRequestOf(s, sandbox, manage) {
+  const req = s.copy_requests && s.copy_requests[sandbox.id];
+  return req ? { copy_request: { ...req, can_answer: manage && RANK[sandbox.access] >= RANK.write } } : {};
 }
 
 function reauthStatus(db) {
@@ -3259,6 +3265,32 @@ route('POST', `/api/agent-secrets/${ID}/request`, ({ db, p, body }) => {
   secret.requested_hosts = [];
   secret.requested_by = null;
   audit(db, body.allow ? 'vault.agent.allow' : 'vault.agent.dismiss', secret.id, `${secret.name} → ${asked.join(', ')}`);
+  return agentView(db, secret, sandbox);
+});
+// SPEC-440: a person allows (after the two-factor code) or dismisses the copy an agent asked for.
+route('POST', `/api/sandboxes/${ID}/agent-secrets/${ID}/copy`, ({ db, p, body }) => {
+  const sandbox = sandboxOf(db, p[0]);
+  const secret = agentSecret(db, p[1]);
+  const view = agentView(db, secret, sandbox);
+  if (!view.can_manage) fail(403, 'forbidden', 'only people who manage this secret answer its requests');
+  const req = view.copy_request;
+  if (!req) fail(409, 'conflict', 'no copy of this secret waits for this project');
+  const seen = (body.hosts || []).map((h) => String(h).toLowerCase());
+  if (body.name !== req.name || seen.length !== req.hosts.length || !req.hosts.every((h) => seen.includes(h))) fail(409, 'conflict', `an agent changed the request meanwhile: reload to see the copy that waits (${req.name} on ${req.hosts.join(', ')})`);
+  const detail = `${secret.name} → ${req.name} on ${req.hosts.join(', ')} (asked by ${req.requested_by})`;
+  need(sandbox, 'write');
+  if (body.allow) {
+    if (!secret.cd_prod) fail(409, 'conflict', `${secret.name} is no longer a production secret: dismiss the request; agents ask for its hosts instead`);
+    const refused = needFresh(db);
+    if (refused) return refused;
+    if (vaultOf(db).agent.some((s) => s.name === req.name && s.scope === 'sandbox' && s.sandbox === sandbox.id)) fail(409, 'conflict', `an agent secret named ${req.name} already exists in this project`);
+    const now = new Date().toISOString();
+    const copy = { id: `as_${db.nextId++}`, sandbox: sandbox.id, scope: 'sandbox', name: req.name, description: `Copy of ${secret.name} for agents (asked by ${req.requested_by}${req.reason ? `: ${req.reason}` : ''})`, hosts: [...req.hosts], injection: secret.injection, header_name: secret.header_name, username: secret.username, value: secret.value, created_by: db.me.user.login, updated_at: now, value_updated_at: now, last_used_at: null, requested_hosts: [], requested_by: null, env_files: 'no', env_requested_by: null, auto_allow: false };
+    vaultOf(db).agent.push(copy);
+    audit(db, 'vault.agent.create', copy.id, `${copy.name} → ${copy.hosts.join(', ')}, copy of ${secret.name}`);
+  }
+  delete secret.copy_requests[sandbox.id];
+  audit(db, body.allow ? 'vault.agent.copy_allow' : 'vault.agent.copy_dismiss', secret.id, detail);
   return agentView(db, secret, sandbox);
 });
 route('POST', `/api/agent-secrets/${ID}/env`, ({ db, p, body }) => {
@@ -6083,6 +6115,14 @@ export function createMockTransport(params) {
     secret.requested_by = by;
     audit(db, 'vault.agent.request', secret.id, `${secret.name} → ${hosts.join(', ')}`);
     if (announce) db.announceSecrets(secret.sandbox);
+  };
+  // SPEC-440: an agent of `sandboxId` asks for a copy of a production secret (replacing one).
+  db.askCopy = (name, sandboxId, request) => {
+    const secret = vaultOf(db).agent.find((s) => s.name === name);
+    if (!secret.cd_prod) throw new Error('not a production secret'); // refused, as by the server
+    secret.copy_requests = { ...(secret.copy_requests || {}), [sandboxId]: request };
+    audit(db, 'vault.agent.copy_request', secret.id, `${secret.name} → ${request.name} on ${request.hosts.join(', ')}`);
+    db.announceSecrets(secret.sandbox);
   };
   db.announceSecrets = (sandboxId) => emit(db, { type: 'secrets.updated', sandbox_id: sandboxId });
   db.updateHolds = [];

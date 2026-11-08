@@ -554,7 +554,7 @@ fn pr_wire_state(pull: &GhPull) -> &'static str {
 /// The checks word of a pull request head from Yulius CI's run there, when the project has Yulius
 /// CI: an errored run is `error` (the run could not happen: disk, a timeout, the host), not a
 /// failure of the code (S5, F 2026-10-13: infrastructure errors read "checks failing · Needs you").
-fn ci_checks_word(gate: yulius_domain::ci::GateResult) -> Option<&'static str> {
+pub(crate) fn ci_checks_word(gate: yulius_domain::ci::GateResult) -> Option<&'static str> {
     use yulius_domain::ci::{GateResult, RunState};
     match gate {
         GateResult::NotConfigured => None,
@@ -1748,6 +1748,19 @@ impl App {
         let observed = self
             .dlv_observe(&sandbox, task, &profile, token.as_ref())
             .await?;
+        // Where an armed merge stands, and what a merge counts as (SPEC-441 MQ-007, MQ-009).
+        if let Some(note) = self.merge_queue_note(task) {
+            notes.push(note);
+        }
+        if let Some(pull) = observed.pr.as_ref().filter(|pull| pull.merged) {
+            notes.push(crate::agent_wait::merged_text(
+                pull.number,
+                &profile.integration_branch,
+                &pull.head_sha,
+                self.ci_gate_result(&sandbox, &pull.head_sha).await,
+                false,
+            ));
+        }
         // Checks are read only for an open pull request, so this is empty otherwise.
         let access = self
             .dlv_checks_access(&sandbox, &observed.checks_unreadable, user)

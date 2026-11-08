@@ -1019,6 +1019,7 @@ test('the file in front shows what others write on disk, with the cursor on its 
   expect(await editorText(browser)).toBe(ON_DISK);
 });
 
+type LiveText = { __yuliusMock: { liveDoc(path: string): { text: string } | null } };
 type HeldSaves = { __yuliusMock: { live: { holdSaves: boolean; saves: { path: string }[] }; releaseSaves(): void } };
 const holdSaves = (browser: Browser) => browser.evaluate(() => { (window as unknown as HeldSaves).__yuliusMock.live.holdSaves = true; });
 const editorStatus = (browser: Browser) => browser.evaluate(() => document.querySelector('.ed-status')?.textContent ?? '');
@@ -1033,6 +1034,10 @@ async function conflictOn(app: { open(url: string): Promise<void> }, browser: Br
   await holdSaves(browser);
   await typeMine(browser);
   await expect.poll(() => editorText(browser)).toBe(`mine ${ON_DISK}`);
+  // The server has the person's typing before the disk moves: a look that reached it first would
+  // take the disk's text as the saved one and the typing would land on it ("mine theirs"), no
+  // conflict (#422 CI run 2c199307, reproduced by holding the edit until after a look).
+  await expect.poll(() => browser.evaluate(() => (window as unknown as LiveText).__yuliusMock.liveDoc('notes.txt')?.text ?? null)).toBe(`mine ${ON_DISK}`);
   await disk(browser);
   await expect.poll(() => editorStatus(browser), { timeout: LOOKS_MS }).toMatch(/(Changed|Deleted) on disk/);
   await browser.evaluate(() => (window as unknown as HeldSaves).__yuliusMock.releaseSaves());

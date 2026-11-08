@@ -28,7 +28,7 @@ fn schema(properties: Value, required: &[&str]) -> Value {
 /// does (SPEC-178, SPEC-186 SAV-002, SAV-003, ADR-0150, SPEC-437 SAB-001, ADR-0281), messaging
 /// tasks for its person (SPEC-230, ADR-0178), and asking its person to start a task in another
 /// of their sandboxes (SPEC-335, ADR-0227). Everything else belongs to a task.
-pub const COCKPIT_TOOLS: [&str; 34] = [
+pub const COCKPIT_TOOLS: [&str; 35] = [
     "tasks_list",
     "task_get",
     "task_create",
@@ -51,6 +51,7 @@ pub const COCKPIT_TOOLS: [&str; 34] = [
     "secret_verify",
     "secret_copy_to_env",
     "secret_request_hosts",
+    "secret_request_copy",
     "secret_create_from_file",
     "sandboxes_list",
     "sandbox_task_create",
@@ -66,7 +67,7 @@ pub const COCKPIT_TOOLS: [&str; 34] = [
 ];
 
 /// The Superagent's MCP instructions (SPEC-037, SPEC-186 SAV-007).
-pub(crate) const COCKPIT_INSTRUCTIONS: &str = "Yulius runs this project's tasks. When the person asks for work to be done as a task (\"create a task from that\"), create it with task_create; for recurring work (\"every day at 4am …\") create an automation with automation_create (ask for their time zone if it matters). tasks_list, automations_list (with the ready-made automations, enabled by automation_template_enable) and workflows_list show what exists; sessions_search finds how earlier tasks did something. This session uses the project's agent secrets as a task's agent does, never seeing a value: requests to a secret's bound hosts get it from Yulius' proxy ($NAME holds its placeholder), secret_copy_to_env puts allowed ones into this repository's git-ignored .env, secret_request_hosts asks a person to bind hosts, secret_verify tells whether a value the person holds is one of them, from its SHA-256, and secret_create_from_file stores a secret that is in a file (a key in ~/.ssh, one you generated) as a new agent secret without anyone seeing it, so never ask the person to paste a key you can reach; secrets_list names them and says how. You drive the project browser, the one its tasks and the person's Browser page share, as a task's agent does: browser_open, browser_navigate, browser_snapshot (read a page), browser_click, browser_type and browser_screenshot; browser_fill_secret types an agent secret into a sign-in page of its bound hosts without you seeing it, and browser_request_user_action hands a tab to the person (print its link). When the person wants a task told something (\"tell #5 it may use the DO budget\"), send it with task_message: a task that has not started gets it in its request, a running one in its session; pass on what the person said, labelled as theirs, and nothing they did not ask for. When the person wants work done in another of their sandboxes (another repository), find it with sandboxes_list and ask with sandbox_task_create: the person approves or declines each request on the panel above this session, and the call waits for their answer (a few minutes at most), so tell them it waits there; never ask again for a declined request unless they ask. task_update changes how a task that has not started yet starts (chain an existing task with it; never recreate a task to do so), attachments_trash lists a deleted task's attachments and restores them, task_stop, task_archive and task_delete stop, archive or delete a task, automation_run_now and automation_delete run or delete an automation, task_message tells a task something: do these only when the person asks, naming the task or automation. Work across many of the person's sandboxes at once (keeping them in sync) is their Global Superagent's, opened from All sandboxes.";
+pub(crate) const COCKPIT_INSTRUCTIONS: &str = "Yulius runs this project's tasks. When the person asks for work to be done as a task (\"create a task from that\"), create it with task_create; for recurring work (\"every day at 4am …\") create an automation with automation_create (ask for their time zone if it matters). tasks_list, automations_list (with the ready-made automations, enabled by automation_template_enable) and workflows_list show what exists; sessions_search finds how earlier tasks did something. This session uses the project's agent secrets as a task's agent does, never seeing a value: requests to a secret's bound hosts get it from Yulius' proxy ($NAME holds its placeholder), secret_copy_to_env puts allowed ones into this repository's git-ignored .env, secret_request_hosts asks a person to bind hosts, secret_request_copy asks a person for a copy of a production secret (which agents never use) as a new agent secret, secret_verify tells whether a value the person holds is one of them, from its SHA-256, and secret_create_from_file stores a secret that is in a file (a key in ~/.ssh, one you generated) as a new agent secret without anyone seeing it, so never ask the person to paste a key you can reach; secrets_list names them and says how. You drive the project browser, the one its tasks and the person's Browser page share, as a task's agent does: browser_open, browser_navigate, browser_snapshot (read a page), browser_click, browser_type and browser_screenshot; browser_fill_secret types an agent secret into a sign-in page of its bound hosts without you seeing it, and browser_request_user_action hands a tab to the person (print its link). When the person wants a task told something (\"tell #5 it may use the DO budget\"), send it with task_message: a task that has not started gets it in its request, a running one in its session; pass on what the person said, labelled as theirs, and nothing they did not ask for. When the person wants work done in another of their sandboxes (another repository), find it with sandboxes_list and ask with sandbox_task_create: the person approves or declines each request on the panel above this session, and the call waits for their answer (a few minutes at most), so tell them it waits there; never ask again for a declined request unless they ask. task_update changes how a task that has not started yet starts (chain an existing task with it; never recreate a task to do so), attachments_trash lists a deleted task's attachments and restores them, task_stop, task_archive and task_delete stop, archive or delete a task, automation_run_now and automation_delete run or delete an automation, task_message tells a task something: do these only when the person asks, naming the task or automation. Work across many of the person's sandboxes at once (keeping them in sync) is their Global Superagent's, opened from All sandboxes.";
 
 /// Who calls the MCP server.
 enum McpCaller {
@@ -483,6 +484,16 @@ fn secret_tool_descriptors() -> Vec<ToolDescriptor> {
             }), &["secret", "hosts"]),
         },
         ToolDescriptor {
+            name: "secret_request_copy".into(),
+            description: "Ask a person for a copy of a production secret as a new agent secret of this project (SPEC-440), when agent work needs its value: e.g. a dev CI token that exists only as a production secret. Agents never use a production secret itself (secret_request_hosts, secret_copy_to_env and browser_fill_secret refuse it). Name the production secret, a new NAME (e.g. N3_DEV_CI_TOKEN_AGENT) and the hosts the copy is sent to; nothing is created until a person who manages both allows it on the Secrets page: print the returned link for them, go on with other work, and use the copy once secrets_list shows it. You never see the value; the copy does not follow later rotations of the production secret.".into(),
+            input_schema: schema(json!({
+                "secret": {"type": "string", "description": "NAME of the production secret, from secrets_list or the refusal you got"},
+                "name": {"type": "string", "description": "NAME for the copy: A-Z, 0-9 and _, starting with a letter, not taken in this project"},
+                "hosts": {"type": "array", "items": {"type": "string"}, "description": "Hosts the copy is sent to, like api.example.com, *.example.com or api.example.com:8443"},
+                "reason": {"type": "string", "description": "What you need it for (short), shown to the person and recorded in the secrets activity"}
+            }), &["secret", "name", "hosts"]),
+        },
+        ToolDescriptor {
             name: "secret_copy_to_env".into(),
             description: "Copy agent secrets' real values into a git-ignored dotenv file of the folder you work in (a task's worktree, the Superagent's repository; default .env) and their names into the .env.example beside it (SPEC-129), for code that runs outside Yulius' proxy (a deployed app, a deploy script). You never see the values, so never write or edit those lines yourself: you would write [secret:NAME]. A person allows each secret once: until then nothing is written and the result gives the Secrets page link to print. Refused unless Git ignores the file and does not track it.".into(),
             input_schema: schema(json!({
@@ -705,6 +716,10 @@ impl App {
                     self.tool_secret_request_hosts(SecretUser::Superagent(caller), &args)
                         .await
                 }
+                McpCaller::Cockpit(caller) if name == "secret_request_copy" => {
+                    self.tool_secret_request_copy(SecretUser::Superagent(caller), &args)
+                        .await
+                }
                 McpCaller::Cockpit(caller) => {
                     match self
                         .browser_tool(SecretUser::Superagent(caller), name, &args)
@@ -767,6 +782,10 @@ impl App {
             }
             "secret_copy_to_env" => {
                 self.tool_secret_copy_to_env(SecretUser::Task(ctx), &args)
+                    .await
+            }
+            "secret_request_copy" => {
+                self.tool_secret_request_copy(SecretUser::Task(ctx), &args)
                     .await
             }
             "secret_create_from_file" => {
