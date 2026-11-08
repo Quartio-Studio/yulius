@@ -1748,6 +1748,19 @@ impl App {
         let observed = self
             .dlv_observe(&sandbox, task, &profile, token.as_ref())
             .await?;
+        // Where an armed merge stands, and what a merge counts as (SPEC-441 MQ-007, MQ-009).
+        if let Some(note) = self.merge_queue_note(task) {
+            notes.push(note);
+        }
+        if let Some(pull) = observed.pr.as_ref().filter(|pull| pull.merged) {
+            notes.push(crate::agent_wait::merged_text(
+                pull.number,
+                &profile.integration_branch,
+                &pull.head_sha,
+                self.ci_gate_result(&sandbox, &pull.head_sha).await,
+                false,
+            ));
+        }
         // Checks are read only for an open pull request, so this is empty otherwise.
         let access = self
             .dlv_checks_access(&sandbox, &observed.checks_unreadable, user)

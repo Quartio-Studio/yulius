@@ -68,6 +68,11 @@ pub(crate) struct ArmedSlot {
     outcome: Option<MergeOutcome>,
     /// Raised by every arm and clear: a decision taken in an older generation is superseded.
     generation: u64,
+    /// Where the armed merge stands, in one sentence, as its last decision left it (SPEC-441
+    /// MQ-007).
+    note: Option<String>,
+    /// The sentence the decision in progress wrote, kept by [`Self::finish`] for its generation.
+    pending_note: Option<String>,
 }
 
 /// A decision in progress: the merge taken out of the slot, and the generation it was armed in.
@@ -93,6 +98,7 @@ impl ArmedSlot {
         self.generation += 1;
         self.merge = Some(merge);
         self.outcome = None;
+        self.note = None;
     }
 
     /// Nothing is armed any more (merged at once by `delivery_merge`); a decision in progress is
@@ -100,6 +106,7 @@ impl ArmedSlot {
     fn clear(&mut self) {
         self.generation += 1;
         self.merge = None;
+        self.note = None;
     }
 
     /// Takes the armed merge out to decide it; it still reads as armed until [`Self::finish`].
@@ -116,6 +123,7 @@ impl ArmedSlot {
     /// merge was armed (or cleared) meanwhile. Returns whether the armed merge changed (to save).
     fn finish(&mut self, deciding: &Deciding, verdict: Verdict) -> bool {
         self.deciding = self.deciding.saturating_sub(1);
+        let note = self.pending_note.take();
         if self.generation != deciding.generation {
             return false;
         }
@@ -123,9 +131,11 @@ impl ArmedSlot {
             Verdict::Keep(merge) => {
                 let changed = merge != deciding.merge;
                 self.merge = Some(merge);
+                self.note = note;
                 changed
             }
             Verdict::Decided(text) => {
+                self.note = None;
                 self.outcome = Some(MergeOutcome {
                     head: deciding.merge.head.clone(),
                     text,
@@ -135,11 +145,14 @@ impl ArmedSlot {
         }
     }
 
-    /// Whether a merge is armed (counting one being decided), and how the last one ended.
-    fn view(&self) -> (bool, Option<MergeOutcome>) {
+    /// Whether a merge is armed (counting one being decided), how the last one ended, and where
+    /// an armed one stands.
+    fn view(&self) -> (bool, Option<MergeOutcome>, Option<String>) {
+        let armed = self.merge.is_some() || self.deciding > 0;
         (
-            self.merge.is_some() || self.deciding > 0,
+            armed,
             self.outcome.clone(),
+            self.note.clone().filter(|_| armed),
         )
     }
 }
@@ -230,16 +243,22 @@ impl WaitState {
 
 impl App {
     /// Arms a merge of `head` for when its checks pass (`delivery_merge` while they still run).
-    pub(crate) fn arm_merge(&self, task: &TaskRecord, head: &str, summary: &str) {
+    /// The same head armed already stays armed as it was, with its place in the queue (SPEC-441
+    /// MQ-006: arming it again took it out of its merge train); returns `false` then.
+    pub(crate) fn arm_merge(&self, task: &TaskRecord, head: &str, summary: &str) -> bool {
+        let runtime = self.runtime(&task.id);
+        let mut slot = lock_slot(&runtime);
+        if slot.merge.as_ref().is_some_and(|armed| armed.head == head) {
+            return false;
+        }
         let merge = ArmedMerge {
             head: head.to_owned(),
             summary: summary.to_owned(),
             armed_at: self.now().0,
         };
-        let runtime = self.runtime(&task.id);
-        let mut slot = lock_slot(&runtime);
         self.save_armed(&task.id, Some(&merge));
         slot.arm(merge);
+        true
     }
 
     /// Nothing is armed for `task` any more: `delivery_merge` merged it at once.
@@ -341,6 +360,19 @@ impl App {
         }
     }
 
+    /// Where `task`'s armed merge stands (SPEC-441 MQ-007): its merge train's note, else the
+    /// sentence its last decision left; `None` when nothing is armed.
+    pub(crate) fn merge_queue_note(&self, task: &TaskRecord) -> Option<String> {
+        let (armed, _, note) = lock_slot(&self.runtime(&task.id)).view();
+        armed.then(|| self.train_note(task).or(note)).flatten()
+    }
+
+    /// Records where `task`'s armed merge stands, for the decision in progress (SPEC-441
+    /// MQ-007): kept when that decision keeps the merge armed.
+    fn note_armed(&self, task: &TaskId, text: String) {
+        lock_slot(&self.runtime(task)).pending_note = Some(text);
+    }
+
     /// Forgets how an earlier armed merge ended (a new `delivery_merge` call answers for itself).
     pub(crate) fn forget_merge_outcome(&self, task: &TaskRecord) {
         lock_slot(&self.runtime(&task.id)).outcome = None;
@@ -437,9 +469,15 @@ impl App {
         let pass = self.armed_pass(sandbox);
         let _pass = pass.lock().await;
         self.run_merge_train(sandbox).await;
-        let Ok(tasks) = self.deps.store.tasks(sandbox, false).await else {
+        let Ok(mut tasks) = self.deps.store.tasks(sandbox, false).await else {
             return;
         };
+        // In the order they were armed (SPEC-441 MQ-002): of two that can merge now, the one
+        // armed first goes first.
+        tasks.sort_by_cached_key(|task| match self.armed_now(&task.id) {
+            ArmedNow::Armed(merge) => (merge.armed_at, task.number),
+            ArmedNow::None | ArmedNow::Deciding => (i64::MAX, task.number),
+        });
         for task in tasks {
             // Taken while it is decided, so a CI end and the delivery loop never merge twice; it
             // reads as armed for `yulius wait` until the decision ends, in one step (WAI-003).
@@ -495,6 +533,16 @@ impl App {
                     .review_covers(task, std::path::Path::new(worktree), &armed.head, now)
                     .await
             {
+                self.note_armed(
+                    &task.id,
+                    format!(
+                        "Your branch moved from {} to {} only through clean merges of the \
+                         integration branch: the merge stays armed, and the run at {} decides.",
+                        short(&armed.head),
+                        short(now),
+                        short(now)
+                    ),
+                );
                 return Verdict::Keep(ArmedMerge {
                     head: now.to_owned(),
                     ..armed
@@ -543,13 +591,24 @@ impl App {
             return Verdict::Keep(armed);
         };
         let Some(pr) = view.pr.as_ref() else {
+            self.note_armed(
+                &task.id,
+                "Yulius cannot read this task's pull request right now; it tries again on its \
+                 next pass."
+                    .to_owned(),
+            );
             return Verdict::Keep(armed);
         };
+        // Merged already, by anyone: what counts is whether its head passed (SPEC-441 MQ-009).
+        if pr.state == "merged" {
+            return Verdict::Decided(self.merged_note(task, &sandbox, pr.number).await);
+        }
         // SPEC-084 TRN-004: a merge train that holds this pull request brings it up to date and
-        // merges it itself.
+        // merges it itself (its note says where it stands).
         if self.train_hold(task) == crate::merge_train::Hold::Held {
             return Verdict::Keep(armed);
         }
+        let integration = pr.base.clone();
         let require_checks = crate::delivery::delivery_profile(&sandbox).require_checks;
         let green = pr.checks == "success" || (pr.checks == "none" && !require_checks);
         if pr.checks == "failure" {
@@ -565,6 +624,26 @@ impl App {
         // supersede it (SPEC-441 MQ-001; every merge into the base restarted every armed pull
         // request's run, F 2026-11-07).
         if !green {
+            self.note_armed(
+                &task.id,
+                format!(
+                    "Pull request #{} waits for its own Yulius CI run at {} ({}). Yulius never \
+                     restarts it when `{integration}` moves; once it passes, Yulius merges the \
+                     pull request, or first tests it on top of the current `{integration}`.",
+                    pr.number,
+                    short(&armed.head),
+                    pr.checks
+                ),
+            );
+            return Verdict::Keep(armed);
+        }
+        // Green but behind its base: the next merge candidate tests it on top of the base
+        // (SPEC-441 MQ-003), unless it goes one by one.
+        if self.behind_integration(task, &sandbox).await
+            && !self.one_by_one(&sandbox, task, &armed).await
+        {
+            let note = self.candidate_wait_note(task, &armed, pr.number).await;
+            self.note_armed(&task.id, note);
             return Verdict::Keep(armed);
         }
         // DLV-203, once the pre-check passed: a branch behind its base is brought up to date, so
@@ -573,6 +652,16 @@ impl App {
         match self.keep_armed_current(task, &sandbox).await {
             Current::Unchanged => {}
             Current::Moved(head) => {
+                self.note_armed(
+                    &task.id,
+                    format!(
+                        "Yulius merged `{integration}` into pull request #{} (now at {}) after \
+                         its own run passed: the run at that head decides, and Yulius merges it \
+                         once it passes. The merge stays armed.",
+                        pr.number,
+                        short(&head)
+                    ),
+                );
                 return Verdict::Keep(ArmedMerge {
                     head,
                     summary: armed.summary,
@@ -586,6 +675,14 @@ impl App {
         // Still behind its base (its agent was busy, so it was not brought up to date): it waits
         // instead of being refused as behind and dropped (SPEC-084 TRN-011).
         if self.behind_integration(task, &sandbox).await {
+            self.note_armed(
+                &task.id,
+                format!(
+                    "Pull request #{} passed its own run but is behind `{integration}`: Yulius \
+                     brings it up to date once your turn ends with everything committed.",
+                    pr.number
+                ),
+            );
             return Verdict::Keep(armed);
         }
         let number = pr.number;
@@ -626,7 +723,17 @@ impl App {
             }
             // GitHub could not take the pull request's new title for now: armed until the next
             // pass (SPEC-069 BPL-008).
-            Err(MergeFailure::Later(_)) => Verdict::Keep(armed),
+            Err(MergeFailure::Later(err)) => {
+                self.note_armed(
+                    &task.id,
+                    format!(
+                        "Pull request #{number} passed and is up to date, but GitHub could not \
+                         take the merge just now ({}); Yulius tries again on its next pass.",
+                        err.public_message()
+                    ),
+                );
+                Verdict::Keep(armed)
+            }
             Err(MergeFailure::Refused(err)) => Verdict::Decided(format!(
                 "The merge you armed was refused: the checks of pull request #{number} \
                  passed at {}, but {}. Fix that (`delivery_status` says what is missing) \
@@ -828,6 +935,80 @@ impl App {
         )
     }
 
+    /// Why a green armed pull request behind its base is not in a merge candidate yet, in one
+    /// sentence (SPEC-441 MQ-007).
+    async fn candidate_wait_note(&self, task: &TaskRecord, armed: &ArmedMerge, pr: u64) -> String {
+        use yulius_domain::task::{Activity, TaskStatus};
+        let lead = format!(
+            "Pull request #{pr} passed its own run at {}, but the integration branch moved since:",
+            short(&armed.head)
+        );
+        let idle = task.status == TaskStatus::Running
+            && task.activity.is_some_and(Activity::is_idle)
+            && self.background_shells_of(&task.id).unwrap_or(0) == 0;
+        let dirty = match task.worktree_path.as_deref() {
+            Some(worktree) => self
+                .deps
+                .git
+                .has_changes(std::path::Path::new(worktree))
+                .await
+                .unwrap_or(true),
+            None => true,
+        };
+        if !idle || dirty {
+            return format!(
+                "{lead} Yulius tests it on top of the current integration branch as soon as your \
+                 turn ends with everything committed, and merges that branch in for you then. \
+                 Do not merge it yourself for this."
+            );
+        }
+        match self.train_running_note(task) {
+            Some(other) => format!(
+                "{lead} it goes into the next merge candidate, after the one Yulius tests now \
+                 ({other})."
+            ),
+            None => format!(
+                "{lead} it goes into a merge candidate on Yulius's next pass, which tests it on \
+                 top of the current integration branch."
+            ),
+        }
+    }
+
+    /// What a merge of `task`'s pull request `number` counts as (SPEC-441 MQ-009): the merged
+    /// head and whether its own Yulius CI run passed there, whoever merged it.
+    pub(crate) async fn merged_note(
+        &self,
+        task: &TaskRecord,
+        sandbox: &crate::model::SandboxRecord,
+        number: u64,
+    ) -> String {
+        let integration = crate::delivery::delivery_profile(sandbox).integration_branch;
+        let head = match self.task_github_token(task, sandbox).await {
+            Ok(token) => self
+                .deps
+                .github
+                .get_pull(&token, &sandbox.repo_owner, &sandbox.repo_name, number)
+                .await
+                .ok()
+                .map(|pull| pull.head_sha),
+            Err(_) => None,
+        };
+        let Some(head) = head else {
+            return format!(
+                "Pull request #{number} is merged into `{integration}`. Yulius could not read its \
+                 merged head from GitHub, so whether its own Yulius CI run passed there is not \
+                 known yet: `delivery_status` says it once GitHub answers."
+            );
+        };
+        merged_text(
+            number,
+            &integration,
+            &head,
+            self.ci_gate_result(sandbox, &head).await,
+            true,
+        )
+    }
+
     /// The state `yulius wait` compares (local records only).
     ///
     /// # Errors
@@ -861,7 +1042,7 @@ impl App {
             .await?
             .map_or_else(|| "none".to_owned(), |record| record.stage.encode());
         // One read of the slot: the outcome and whether a merge is armed agree (WAI-003).
-        let (merge_armed, outcome) = lock_slot(&self.runtime(&task.id)).view();
+        let (merge_armed, outcome, note) = lock_slot(&self.runtime(&task.id)).view();
         let push_problem = self
             .runtime(&task.id)
             .push_problem
@@ -901,7 +1082,7 @@ impl App {
             merge_outcome: outcome.map(|o| o.text),
             push_problem,
             merge_train: if merge_armed {
-                self.train_note(task)
+                self.train_note(task).or(note)
             } else {
                 None
             },
@@ -945,6 +1126,51 @@ impl App {
     }
 }
 
+/// What a merge of pull request `number` into `integration` at `head` counts as, from Yulius
+/// CI's result there (SPEC-441 MQ-009): merged on green when its own run passed, whoever merged
+/// it. With `next`, what the agent does now follows.
+pub(crate) fn merged_text(
+    number: u64,
+    integration: &str,
+    head: &str,
+    gate: yulius_domain::ci::GateResult,
+    next: bool,
+) -> String {
+    use yulius_domain::ci::{GateResult, RunState};
+    let at = format!(
+        "Pull request #{number} is merged into `{integration}` at {}",
+        short(head)
+    );
+    let finish = "Finish what the delivery profile still asks for this stage \
+                  (`delivery_status`), then end with your summary. Do not promote unless the \
+                  task asks for it.";
+    let (fact, then) = match gate {
+        GateResult::Run(Some(RunState::Passed | RunState::Skipped)) => (
+            format!(
+                "{at}, whose own Yulius CI run passed: it counts as merged on green Yulius CI, \
+                 whoever merged it."
+            ),
+            finish.to_owned(),
+        ),
+        GateResult::NotConfigured => (
+            format!("{at}; the project has no Yulius CI, so no run had to pass."),
+            finish.to_owned(),
+        ),
+        GateResult::Run(state) => (
+            format!(
+                "{at}, but Yulius CI did not pass at that head ({}): it does not count as merged \
+                 on green.",
+                state.map_or("no run", RunState::as_str)
+            ),
+            format!(
+                "Read `ci_status` for `{integration}`, and fix what fails test-first on this \
+                 branch: Yulius opens a new pull request for it."
+            ),
+        ),
+    };
+    if next { format!("{fact} {then}") } else { fact }
+}
+
 /// The task's [`ArmedSlot`], also after a panic elsewhere held it (its values stay consistent:
 /// each change is one assignment or a whole method).
 fn lock_slot(runtime: &crate::supervisor::TaskRuntime) -> std::sync::MutexGuard<'_, ArmedSlot> {
@@ -984,19 +1210,19 @@ mod tests {
     fn a_decision_ends_in_one_step() -> Result<(), &'static str> {
         let mut slot = ArmedSlot::default();
         slot.arm(merge("aaa"));
-        assert_eq!(slot.view(), (true, None));
+        assert_eq!(slot.view(), (true, None, None));
         let deciding = slot.take().ok_or("armed")?;
-        assert_eq!(slot.view(), (true, None), "armed while it is decided");
+        assert_eq!(slot.view(), (true, None, None), "armed while it is decided");
         assert!(slot.take().is_none(), "decided once at a time");
         assert!(slot.finish(&deciding, Verdict::Decided("dropped".to_owned())));
         let outcome = MergeOutcome {
             head: "aaa".to_owned(),
             text: "dropped".to_owned(),
         };
-        assert_eq!(slot.view(), (false, Some(outcome)));
+        assert_eq!(slot.view(), (false, Some(outcome), None));
         // Arming again forgets it.
         slot.arm(merge("bbb"));
-        assert_eq!(slot.view(), (true, None));
+        assert_eq!(slot.view(), (true, None, None));
         Ok(())
     }
 
@@ -1010,7 +1236,7 @@ mod tests {
             !slot.finish(&deciding, Verdict::Keep(merge("aaa"))),
             "unchanged"
         );
-        assert_eq!(slot.view(), (true, None));
+        assert_eq!(slot.view(), (true, None, None));
         let deciding = slot.take().ok_or("armed")?;
         assert!(slot.finish(&deciding, Verdict::Keep(merge("ccc"))), "moved");
         assert_eq!(slot.merge, Some(merge("ccc")));
@@ -1031,15 +1257,64 @@ mod tests {
             slot.arm(merge("bbb"));
             assert!(!slot.finish(&deciding, verdict.clone()), "nothing to save");
             assert_eq!(slot.merge, Some(merge("bbb")));
-            assert_eq!(slot.view(), (true, None));
+            assert_eq!(slot.view(), (true, None, None));
 
             let mut slot = ArmedSlot::default();
             slot.arm(merge("aaa"));
             let deciding = slot.take().ok_or("armed")?;
             slot.clear();
             assert!(!slot.finish(&deciding, verdict));
-            assert_eq!(slot.view(), (false, None));
+            assert_eq!(slot.view(), (false, None, None));
         }
         Ok(())
+    }
+
+    /// SPEC-441 MQ-007: the sentence a decision wrote stays while that decision keeps the merge
+    /// armed, goes with its outcome or a newer arm, and a superseded decision's is dropped.
+    #[test]
+    fn a_decision_leaves_where_the_merge_stands() -> Result<(), &'static str> {
+        let mut slot = ArmedSlot::default();
+        slot.arm(merge("aaa"));
+        let deciding = slot.take().ok_or("armed")?;
+        slot.pending_note = Some("waits for its own run".to_owned());
+        slot.finish(&deciding, Verdict::Keep(merge("aaa")));
+        assert_eq!(slot.view().2.as_deref(), Some("waits for its own run"));
+        // The next decision writes nothing: the old sentence is not kept.
+        let deciding = slot.take().ok_or("armed")?;
+        slot.finish(&deciding, Verdict::Keep(merge("aaa")));
+        assert_eq!(slot.view().2, None);
+
+        let deciding = slot.take().ok_or("armed")?;
+        slot.pending_note = Some("in a candidate".to_owned());
+        slot.finish(&deciding, Verdict::Decided("merged".to_owned()));
+        assert_eq!(slot.view().2, None, "decided");
+
+        slot.arm(merge("bbb"));
+        let deciding = slot.take().ok_or("armed")?;
+        slot.pending_note = Some("stale".to_owned());
+        slot.arm(merge("ccc"));
+        slot.finish(&deciding, Verdict::Keep(merge("bbb")));
+        assert_eq!(slot.view().2, None, "superseded");
+        Ok(())
+    }
+
+    /// SPEC-441 MQ-009: a merge counts as on green by its head's own run, whoever made it.
+    #[test]
+    fn a_merge_counts_by_its_heads_run() {
+        use yulius_domain::ci::{GateResult, RunState};
+        let green = merged_text(7, "dev", "abcdef0123", GateResult::Run(Some(RunState::Passed)), true);
+        assert!(
+            green.starts_with("Pull request #7 is merged into `dev` at abcdef012, whose own Yulius CI run passed: it counts as merged on green Yulius CI, whoever merged it."),
+            "{green}"
+        );
+        assert!(green.contains("end with your summary"), "{green}");
+        let red = merged_text(7, "dev", "abcdef0123", GateResult::Run(Some(RunState::Failed)), false);
+        assert_eq!(
+            red,
+            "Pull request #7 is merged into `dev` at abcdef012, but Yulius CI did not pass at \
+             that head (failed): it does not count as merged on green."
+        );
+        let none = merged_text(7, "dev", "abcdef0123", GateResult::Run(None), false);
+        assert!(none.contains("(no run)"), "{none}");
     }
 }

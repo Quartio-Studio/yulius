@@ -404,9 +404,12 @@ impl DoneDefinition {
                 self.integration_environments.join(", ")
             )
         };
+        // Whoever merged, a merge at a head whose own Yulius CI run passed counts (SPEC-441
+        // MQ-009: a pinned hand merge failed the goal forever, F 2026-11-07).
         format!(
-            "Done = repository changes merged into {} on green Yulius CI{deploy}, or work needing \
-             no change reported; {SUMMARY}; never promote to {} unless asked.",
+            "Done = repository changes merged into {} on green Yulius CI (by delivery_merge, or \
+             by anyone at a head whose own Yulius CI run passed){deploy}, or work needing no \
+             change reported; {SUMMARY}; never promote to {} unless asked.",
             self.integration_branch, self.production_branch
         )
     }
@@ -442,7 +445,11 @@ impl DoneDefinition {
              from `{integration}`); write the spec first where the repository's rules ask for one; \
              implement with tests; get the independent review of the exact head; merge into \
              `{integration}` with `delivery_merge` on green Yulius CI (while the checks still \
-             run, Yulius merges by itself once they pass)."
+             run, Yulius merges by itself once they pass). Call it as soon as the review approved \
+             the head and never hold a green pull request back for another task's run: Yulius's \
+             merge queue orders the merges and never restarts a run when `{integration}` moves. \
+             A merge made by anyone at a head whose own Yulius CI run passed counts as merged on \
+             green; Yulius says so."
         );
         if !self.integration_environments.is_empty() {
             let envs = self
@@ -1212,6 +1219,29 @@ mod tests {
         assert!(file.contains("Then deploy to `dev` with `delivery_deploy`"));
         assert!(file.contains("**Never promote to `main`**"));
         assert!(file.contains("`yulius wait` with `run_in_background`"));
+    }
+
+    /// SPEC-441 MQ-009, MQ-011: a merge by anyone at a head whose own Yulius CI run passed
+    /// counts; tasks merge as soon as the review approved and never hold a green one back.
+    #[test]
+    fn a_green_head_counts_whoever_merged_it() {
+        let short = done(&[]).short();
+        assert!(
+            short.contains(
+                "on green Yulius CI (by delivery_merge, or by anyone at a head whose own Yulius CI \
+                 run passed)"
+            ),
+            "{short}"
+        );
+        let full = done(&[]).full();
+        assert!(
+            full.contains("never hold a green pull request back for another task's run"),
+            "{full}"
+        );
+        assert!(
+            full.contains("A merge made by anyone at a head whose own Yulius CI run passed counts"),
+            "{full}"
+        );
     }
 
     /// SPEC-099 PLY-006, SPEC-163 PCI-007: a playground's tasks merge into its own `dev` with
