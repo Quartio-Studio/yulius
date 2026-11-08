@@ -2732,7 +2732,7 @@ its lost-run limit as `error` (`dlv_expire_lost_run`, as a read does) instead of
 
 A cancel removes the request file, and a new update replaces it: the helper checks every 500 ms
 while cargo builds and, once its request is withdrawn, kills cargo's process group (cargo and its
-compilers), so a cancelled build frees the host at once (SPEC-439, ADR-0283).
+compilers), so a cancelled build frees the host within about a second (SPEC-439, ADR-0283).
 
 ```mermaid
 sequenceDiagram

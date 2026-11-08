@@ -79,10 +79,15 @@ test('cancelling an update shows its outcome from the cancel’s answer', async 
   await expect(dialog).toBeHidden();
   await expect(screen.getByText('The last update was cancelled')).toBeVisible();
   await expect(cancel).toBeHidden();
-  // Every held read answers now, the oldest (building) last: none replaces the cancel's answer.
+  // The read asked before the cancel (building) answers first: it does not replace the cancel's
+  // answer. Then the rest.
+  await updateMock(browser, (m) => { const oldest = m.updateHolds.shift(); if (oldest) oldest(); });
+  await expect.poll(() => updateMock(browser, (m) => m.updateReadsTaken)).toBe(1);
+  await expect(screen.getByText('The last update was cancelled')).toBeVisible();
+  await expect(cancel).toBeHidden();
   const held = await updateMock(browser, (m) => m.updateReads());
   await updateMock(browser, (m) => { m.holdUpdateReads = false; while (m.updateReads()) m.releaseUpdate(); });
-  await expect.poll(() => updateMock(browser, (m) => m.updateReadsTaken)).toBe(held);
+  await expect.poll(() => updateMock(browser, (m) => m.updateReadsTaken)).toBe(held + 1);
   await expect(screen.getByText('The last update was cancelled')).toBeVisible();
   await expect(cancel).toBeHidden();
 });
@@ -393,6 +398,7 @@ type UpdateMock = {
   update: { offer: string | null };
   holdUpdateReads: boolean;
   updateReads: () => number;
+  updateHolds: (() => void)[];
   updateReadsTaken: number;
   releaseUpdate: () => void;
   announceUpdate: () => void;

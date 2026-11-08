@@ -44,7 +44,12 @@ cargo alone, leaving its `rustc` processes running.
 
 ## Consequences
 
-- A cancel frees the host within about a second, and a new update or a restart starts at once.
+- A cancel frees the host within about a second once cargo runs (a cancel while fetching stops the
+  build before cargo starts), and a new update or a restart starts at once.
+- cargo goes through rustup, which installs a toolchain `rust-toolchain.toml` names on the first
+  build after a bump; a cancel then can leave that toolchain half written under `/root/.rustup`
+  (before, only the 2-hour bound could). `rustup toolchain uninstall <version>` repairs it
+  (operations.md, Updates).
 - The helper reads the request file twice a second while it builds; it parses only the `id` of a
   file that passes the same ownership and size checks as the request itself.
 - A cancelled build leaves cargo's target directory as an interrupted build does; the next build

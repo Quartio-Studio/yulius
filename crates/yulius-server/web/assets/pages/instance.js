@@ -245,6 +245,8 @@ export function mountInstancePage(ctx) {
       cancelling = false;
       render(ctx.updates.view());
       errorToast(error, `Couldn’t cancel the ${what}`);
+      // It may have moved on meanwhile (a 409): show where it is now.
+      ctx.updates.refresh();
     }
   }
 
