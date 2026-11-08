@@ -1082,3 +1082,56 @@ async fn a_merge_train_survives_a_restart() -> TestResult {
     assert!(!f.trains_file(&third).contains("\"train\":{"), "train over");
     Ok(())
 }
+
+/// SPEC-441 MQ-001: the integration branch moving while an armed pull request's own run (its
+/// pre-check) is queued or running changes nothing: Yulius does not merge the base into it, so
+/// the run is not superseded. Once that run passed, the pull request lands on top of the moved
+/// base.
+#[tokio::test]
+async fn a_moving_base_never_restarts_a_pre_check() -> TestResult {
+    let f = fixture().await?;
+    let app = f.h.app.clone();
+    let worktree = f.task(1, &[("a.txt", "x\n")]).await?;
+    let sandbox = app.deps.store.sandbox(&f.sandbox).await?.ok_or("s1")?;
+    app.ci_sync_sandbox(&sandbox).await?;
+    f.arm(1, &worktree).await?;
+    let head = git(&worktree, &["rev-parse", "HEAD"])?;
+    // Another pull request merged meanwhile; Yulius's CI round fetched it.
+    f.advance_dev("other.txt")?;
+    app.ci_sync_sandbox(&sandbox).await?;
+    app.merge_armed(&f.sandbox).await;
+    app.ci_sync_sandbox(&sandbox).await?;
+    assert_eq!(git(&worktree, &["rev-parse", "HEAD"])?, head, "untouched");
+    assert_eq!(git(&f.origin, &["rev-parse", "feat/1-train"])?, head);
+    let runs = f.runs(&app).await?;
+    let pre_check: Vec<&CiRunRecord> = runs
+        .iter()
+        .filter(|r| r.reference == CiRef::PullRequest(1))
+        .collect();
+    assert_eq!(pre_check.len(), 1, "{runs:?}");
+    assert_eq!(pre_check[0].sha, head);
+    assert!(pre_check[0].state.is_active(), "{runs:?}");
+    assert_eq!(f.wait(1, &worktree).await?["merge_armed"], true);
+
+    // The pre-check finishes, then the pull request lands on top of the moved base.
+    f.settle(&app).await?;
+    f.decide_until(&app, || async {
+        app.ci_sync_sandbox(&sandbox).await?;
+        f.settle(&app).await?;
+        f.merged(&app, 1).await
+    })
+    .await?;
+    let runs = f.runs(&app).await?;
+    assert!(
+        runs.iter().all(|r| r.state != RunState::Cancelled),
+        "nothing cancelled: {runs:?}"
+    );
+    let first = runs
+        .iter()
+        .find(|r| r.reference == CiRef::PullRequest(1) && r.sha == head)
+        .ok_or("pre-check")?;
+    assert_eq!(first.state, RunState::Passed, "{first:?}");
+    let dev = git(&f.origin, &["show", "dev:other.txt"])?;
+    assert_eq!(dev, "other");
+    Ok(())
+}

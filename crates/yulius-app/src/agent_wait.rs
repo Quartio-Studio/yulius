@@ -550,8 +550,26 @@ impl App {
         if self.train_hold(task) == crate::merge_train::Hold::Held {
             return Verdict::Keep(armed);
         }
-        // DLV-203: a branch behind its base is brought up to date first, so the run that decides
-        // is on what would be merged and GitHub's up-to-date rule never refuses it.
+        let require_checks = crate::delivery::delivery_profile(&sandbox).require_checks;
+        let green = pr.checks == "success" || (pr.checks == "none" && !require_checks);
+        if pr.checks == "failure" {
+            return Verdict::Decided(format!(
+                "The merge you armed was dropped: the checks of pull request #{} failed at \
+                 {}. Read why with `ci_status`, fix it test-first, get the review of the new \
+                 head and call `delivery_merge` again.",
+                pr.number,
+                short(&armed.head)
+            ));
+        }
+        // Its own run (the pre-check) finishes on its own head: moving the head now would only
+        // supersede it (SPEC-441 MQ-001; every merge into the base restarted every armed pull
+        // request's run, F 2026-11-07).
+        if !green {
+            return Verdict::Keep(armed);
+        }
+        // DLV-203, once the pre-check passed: a branch behind its base is brought up to date, so
+        // the run that decides is on what would be merged and GitHub's up-to-date rule never
+        // refuses it.
         match self.keep_armed_current(task, &sandbox).await {
             Current::Unchanged => {}
             Current::Moved(head) => {
@@ -564,20 +582,6 @@ impl App {
             Current::Conflict(text) => {
                 return Verdict::Decided(text);
             }
-        }
-        let require_checks = crate::delivery::delivery_profile(&sandbox).require_checks;
-        let green = pr.checks == "success" || (pr.checks == "none" && !require_checks);
-        if pr.checks == "failure" {
-            return Verdict::Decided(format!(
-                "The merge you armed was dropped: the checks of pull request #{} failed at \
-                 {}. Read why with `ci_status`, fix it test-first, get the review of the new \
-                 head and call `delivery_merge` again.",
-                pr.number,
-                short(&armed.head)
-            ));
-        }
-        if !green {
-            return Verdict::Keep(armed);
         }
         // Still behind its base (its agent was busy, so it was not brought up to date): it waits
         // instead of being refused as behind and dropped (SPEC-084 TRN-011).
