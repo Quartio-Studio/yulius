@@ -860,6 +860,7 @@ CdEnvironment = {"name": "dev|prod|<name>", "label": "dev|production|<name>", "s
                  "rollback": CdRollback}
 CdRollback = {"command": "<rollback>"|null (not configured), "migrations", "drill_environment",
               "drill": CdRun|null (its newest drill), "blocked": "<why a production deploy is refused>"|null,
+              "waiting": "<the production deploy waiting for dev's deploy and drill, SPEC-438>"|null,
               "not_needed": "<why it needs no rollback: no deploy command, SPEC-418>"|null,
               "parts": [{"name": ""|"<part>", "current", "previous" (what "Roll back to previous" goes to),
                          "releases": [{"release", "commit", "deployed_at", "requested_by", "current",
@@ -923,6 +924,16 @@ the sandbox's agent secrets (an id that held one is ignored). `drill` must name 
 production-stage deploy whose table has a `deploy` is refused (`conflict`, audited
 `cd.refused`) until the table has `rollback` and the newest drill of its `drill` environment passed
 at a commit with the tree being deployed (with `promote`: the integration commit promoted).
+A person's production deploy refused only for that (the newest drill is missing or ran at another
+tree, none runs, the drill environment has `deploy` and `rollback` at the integration head, whose
+tree is the one production deploys, and its newest deploy is of another commit) deploys the drill
+environment instead, as that person, detached from the request:
+the answer is that dev run, whose note says production follows (SPEC-438). Once that deploy and
+its drill passed, Yulius starts the production deploy as the person (access read again, the
+confirmed commit as `expect`); otherwise an ended production run in `error` with reason
+"production did not deploy: <why>" is recorded and audited `cd.refused`. While it waits, the
+production rollback's `waiting` says so and another production deploy is refused with it; a
+restart forgets the wait.
 
 ## Stages (pipeline measurements)
 
@@ -1207,6 +1218,11 @@ resolves to nothing, the run gets the server without that variable or token.
 - Agents print `<public_url>/s/<slug>/browser?tab=<tab_id>` (returned by the
   `browser_request_user_action` MCP tool, which also marks the task `needs_attention` and
   publishes `browser.action_requested`); the web UI opens the browser panel on that tab.
+  The Superagent (`ck_`) is served the nine `browser_*` tools on its sandbox's browser, the Global
+  Superagent (`gs_`) the same with a required `project` (write access to it; not served to API
+  tokens); from either, `browser_request_user_action` flags no task (`task_id: null`) and the
+  viewers' cursor reads `<login>'s Superagent` / `<login>'s Global Superagent` (SPEC-437,
+  ADR-0281).
 - Built-in editor (write; EDT-001..004). `root` is `sandbox` (default, the repository) or
   `task:<task id>` (that task's worktree); `path` is relative (normal components only; `.git`
   is refused, 403; a path leading outside the folder, also through symbolic links, is 403).
@@ -1458,7 +1474,7 @@ resolves to nothing, the run gets the server without that variable or token.
 | GET | `/api/update` | signed in | → `UpdateView` (below): the build and a running update's `phase` for everyone; the offered update, the last check, whether the helper is installed and the current or last run for the superadmin (OPS-006..OPS-009, SPEC-002 ADR-18) |
 | POST | `/api/admin/update/check` | superadmin | reads `main` now (a check younger than 30 s is reused, also one that ended while this one waited for it) → `UpdateView` |
 | POST | `/api/admin/update` | superadmin | `{"commit","confirm":true}` → 202 `UpdateView`: installs exactly that commit, which must be the offered head of `main`; 422 without `confirm` or for a malformed commit, 409 without an installed helper, while an update runs, or for any other commit |
-| POST | `/api/admin/update/cancel` | superadmin | while building or pausing tasks: nothing is installed, paused tasks go on → `UpdateView`; 409 otherwise |
+| POST | `/api/admin/update/cancel` | superadmin | while building or pausing tasks: the build stops (ADR-0283), nothing is installed, paused tasks go on → `UpdateView`; 409 otherwise |
 | POST | `/api/admin/update/proceed` | superadmin | while pausing tasks: restart without waiting for tasks still in a turn → `UpdateView`; 409 otherwise |
 | POST | `/api/admin/restart` | superadmin | `{"confirm":true}` → 202 `UpdateView`: restarts the server with the build it runs, as an update without building or installing: tasks pause (frozen), the helper's `restart` stops, starts and checks that build, tasks resume; its run has `"restart": true`; 422 without `confirm`, 409 without an installed helper or a known build, or while a run is open (SPEC-432) |
 | GET | `/api/admin/jev` | superadmin | → `JevKeyView` (never the key) |
@@ -1847,7 +1863,8 @@ task; other hooks answer as usual.
   literal `\n` is written as its file in single quotes, SPEC-186); every MCP result is
   redacted. The Superagent (`ck_` token, SPEC-186) is served `secrets_list`,
   `secret_request_hosts` and `secret_copy_to_env` too (its copies go to the sandbox repository,
-  its asks read `<login>'s Superagent`, its actor is `cockpit:<login>`), not `browser_fill_secret`;
+  its asks read `<login>'s Superagent`, its actor is `cockpit:<login>`), and `browser_fill_secret`,
+  as is the Global Superagent with `project` (actor `superagent:<login>`, SPEC-437);
   the egress proxy accepts its bearer as `yulius:ck_…`. A personal secret is sent only by the
   egress proxy: `browser_fill_secret` and `secret_copy_to_env` refuse it (403) and a
   `${secret:NAME}` reference never resolves to it

@@ -4,8 +4,40 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-08
+
+- Cancelling an update acts at once (SPEC-439, ADR-0283, task #421, #1117). **Cancel update**
+  during the build marked the update cancelled but left the release build compiling for minutes,
+  so the server stayed busy and a restart or a new update waited behind it; the page kept saying
+  "Updating" with a clickable Cancel until it read the view again. Now the update helper notices
+  within half a second that its request is gone and stops the build with every compiler it
+  started (or does not start compiling when the cancel comes while it fetches), and the instance
+  page shows "The last update was cancelled" as soon as the server answers, its button busy
+  meanwhile.
+
 ## 2026-11-07
 
+- Deploy production proves its rollback on dev by itself (SPEC-438, ADR-0282, task #420, #1115).
+  A production deploy was refused with "rollback is not proven for this commit: the last rollback
+  drill of dev ran at e83c627; deploy dev at this commit first" whenever dev had moved past its
+  last drill, which agents' merges make the usual case. The person then had to deploy dev, wait
+  for its drill and click again before the next merge landed. Now, when only that drill is
+  missing, Deploy production deploys dev at the commit as the same person, waits for the drill and
+  then deploys production. If dev's deploy or drill fails, production does not deploy and its run
+  says why. The CD page and `cd_status` show the wait.
+- The Superagents use the project browser (SPEC-437, ADR-0281, task #419). A sandbox's Superagent
+  answered "this session doesn't have the browser tools" when asked to sign in to a staff panel
+  with a vault password. Now it drives its sandbox's browser as a task's agent does: it opens and
+  reads pages, clicks, types, takes screenshots, signs in with `browser_fill_secret` (only on the
+  secret's hosts, never seeing the value) and hands a tab to the person with a link. The reading
+  tools run without asking. The Global Superagent does the same in any project it names (write
+  access needed); a person's own API-token agent is not given these tools. Viewers see the cursor
+  as "alice's Superagent" or "alice's Global Superagent". Open Superagents restart once idle to
+  get the tools.
+- The Editor's Keep mine no longer gets lost when pressed while the person's last typing is still
+  on its way to the server (found as a flaky e2e test on PR #1114, about 1 run in 20 under load):
+  the save waited for the typing and then ran without Keep mine's force, so the conflict refused
+  it and nothing was written. It now writes once the typing lands.
 - Yulius no longer restarts a healthy Yulius MCP server (SPEC-436, ADR-0280, task #418, #1108).
   Idle sessions showed `/mcp reconnect yulius` → "Successfully reconnected to yulius" again and
   again: Claude Code's logs show the server never dropped, and Yulius's reconnect watch (ADR-0276)

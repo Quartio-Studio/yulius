@@ -40,6 +40,7 @@ mod exec;
 mod findings;
 pub mod hygiene;
 pub(crate) mod playground;
+mod prove;
 mod rollback;
 mod tools;
 
@@ -272,6 +273,9 @@ pub struct CiState {
     running_jobs: Mutex<HashMap<SandboxId, u32>>,
     /// Executing runs: their cancellation (the reason, once cancelled).
     executing: Mutex<HashMap<String, watch::Sender<Option<String>>>>,
+    /// Production deploys waiting for the dev deploy and drill that prove their rollback
+    /// (SPEC-438).
+    pub(crate) production_waits: Mutex<Vec<prove::ProductionWait>>,
     /// Lanes in use (`<sandbox>/<lane>` for an executing run) and whole-sandbox claims
     /// (`<sandbox>`, disk upkeep).
     busy: Mutex<HashSet<String>>,

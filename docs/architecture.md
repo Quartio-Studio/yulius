@@ -276,11 +276,18 @@ DevTools socket, and a contained run (isolated or the fallback bubblewrap, each 
 namespace) cannot see its process, so no such agent or other sandbox can drive it. A process
 running as Yulius's user on the host, including an agent run without containment (host mode), or
 root could open the browser's `/proc/<pid>/fd`. Agents reach the browser through Yulius's browser
-tools, viewers through the viewer WebSocket.
+tools, viewers through the viewer WebSocket. The two Superagents drive it with the same tools: the
+sandbox Superagent its own sandbox's browser, the Global Superagent the browser of the project it
+names (`GLOBAL_ONLY_TOOLS`, `Action::Work` per call), both as a `SecretUser`, which says the
+sandbox, whose agent secrets `browser_fill_secret` resolves, the audit actor and the cursor label
+([SPEC-437](../.ai/specs/SPEC-437-add-browser-use-for-superagents.md),
+[decision 0281](decisions/0281-the-superagents-use-the-project-browser.md)).
 
 ```mermaid
 flowchart LR
   A["Agent (any containment)"] -->|"browser_* MCP tools"| Y["Yulius (BrowserManager, CdpClient)"]
+  S["Sandbox Superagent (ck_)"] -->|"browser_* on its sandbox"| Y
+  G["Global Superagent (gs_)"] -->|"browser_* with project"| Y
   V["Viewer"] -->|"viewer WebSocket"| Y
   Y -->|"fd 3: requests"| C["Sandbox Chromium"]
   C -->|"fd 4: responses, events"| Y
@@ -1287,7 +1294,8 @@ without a sandbox holder, the host's `/etc/shadow` and `/etc/gshadow` covered
 (`App::global_containment`); its bearer never crosses a sandbox's network.
 Its `gs_` bearer makes `App::mcp_handle` hand the call to the remote MCP (`remote_mcp_handle`) with
 a `RemoteCaller` for its person as an operate token, its `superagent` set: the remote tools but
-`WITHHELD_TOOLS` (the vault and variables, `cd_deploy`, `project_import`, `onboarding_*`), every
+`WITHHELD_TOOLS` (the vault and variables, `cd_deploy`, `project_import`, `onboarding_*`), plus a
+project's browser (`GLOBAL_ONLY_TOOLS`, which API tokens are not served), every
 project tool checked against the person's access at the call, the actor `superagent:<login>` on
 the Superagent channel, changes audited `remote.tool` with `via: global-superagent`, at most 120
 requests a minute. A removed host ends it, and the next `POST /api/superagent` leaves a host where
@@ -1316,7 +1324,7 @@ flowchart LR
   P -->|"pasted image: POST /api/superagent/attachments"| F["users/ID/superagent/attachments"]
   F -.->|"path pasted, read as an image"| G
   Y -->|"spawn, bwrap root users/ID/superagent"| G["Global Superagent: claude --tools '' --strict-mcp-config"]
-  G -->|"/mcp, gs_ bearer"| R["remote MCP tools minus WITHHELD_TOOLS (person's access per call)"]
+  G -->|"/mcp, gs_ bearer"| R["remote MCP tools minus WITHHELD_TOOLS, plus browser_* (person's access per call)"]
   R --> A["sandbox A: tasks, CI, files, pull requests"]
   R --> B["sandbox B: tasks, CI, files, pull requests"]
   H["host sandbox (oldest the person can work in)"] -.->|"registers the shell"| G
@@ -1399,7 +1407,8 @@ folder, a folder the agent cannot replace (`secret_source_root`): `repo` for the
 worktree's folders for a task, then the folders named, one at a time without following links, and
 the folder reached must be inside that work folder; Git checks run in the anchored work folder. A
 Superagent that swapped `repo` for a link is refused and nothing is written
-([SPEC-254](../.ai/specs/SPEC-254-superagent-secret-copy-to-env-follows-a.md), #635). It has no project browser, so no `browser_fill_secret`.
+([SPEC-254](../.ai/specs/SPEC-254-superagent-secret-copy-to-env-follows-a.md), #635). It drives the project browser as a task's agent does, `browser_fill_secret` included
+([decision 0281](decisions/0281-the-superagents-use-the-project-browser.md)).
 `secrets_list` gives it a task's records with its own guidance, and `secret_verify`, the
 Superagent's only (a matching candidate's hash must not reach a task transcript other members
 read), compares the SHA-256 of a value the person holds with the stored value and its variants (a
@@ -1800,7 +1809,15 @@ branch's verified head. Which release is previous, kept or behind a barrier is
 (`App::cd_start_drill`; back to the previous release and forward, `drill_steps`), and a
 production-stage deploy asks `App::cd_rollback_gate` (`yulius_domain::rollback::production_gate`)
 before any secret or promotion: rollback configured, and the newest drill passed at the tree it
-deploys. An environment whose table has no `deploy` and no `rollback` (empty, or a production that
+deploys. A person's production deploy refused only for that proof, where the drill environment can
+deploy the same tree (`yulius_domain::rollback::dev_can_prove`, `App::cd_dev_proof`), deploys that
+environment instead as the same person (`App::cd_start_or_prove`,
+`crates/yulius-app/src/ci/prove.rs`;
+[SPEC-438](../.ai/specs/SPEC-438-something-is-fucked-up-with-deployment-f.md),
+[decision 0282](decisions/0282-a-production-deploy-proves-its-rollback-on-dev-first.md)). The
+production deploy waits in memory (`CiState::production_waits`) for that deploy and the drill it
+starts, then starts as the person with the commit they confirmed; a wait that ends otherwise
+records an ended production run in `error` saying why. An environment whose table has no `deploy` and no `rollback` (empty, or a production that
 only promotes) needs no rollback: `mark_rollback_not_needed`
 (`crates/yulius-app/src/ci/rollback.rs`) sets its `not_needed` reason once per CD overview, which
 `cd_status` and the CD page show, unless a production-stage environment with a deploy command drills
@@ -1817,6 +1834,8 @@ flowchart LR
   D1["dev deploy passes"] -->|"::yulius-release v2"| REL["cd_releases (per env, stage, part)"]
   D1 --> DR["drill on dev: rollback v1, verify, rollback v2, verify"]
   DR -->|"passed at commit X"| GATE{"production deploy of X's tree"}
+  GATE -->|"no drill of this tree: a person's deploy"| D1
+  DR -->|"passed: the waiting production deploy goes on"| PROD
   NOCFG["no rollback in [cd.prod]"] -->|"refused"| GATE
   GATE -->|"proven"| PROD["production deploy"]
   REL --> RB["Roll back to previous / to this (CD page, cd_rollback on dev)"]
@@ -2720,6 +2739,10 @@ from its request (`App::run_detached`), the permit moved with it, so a client th
 leaves a run `running` with no executor (SPEC-347, ADR-0233); an environment-run start does the
 same (SPEC-348, ADR-0235). The wait (and the instance page's view of it) ends an environment run past
 its lost-run limit as `error` (`dlv_expire_lost_run`, as a read does) instead of waiting for it.
+
+A cancel removes the request file, and a new update replaces it: the helper checks every 500 ms
+while cargo builds and, once its request is withdrawn, kills cargo's process group (cargo and its
+compilers), so a cancelled build frees the host within about a second (SPEC-439, ADR-0283).
 
 ```mermaid
 sequenceDiagram

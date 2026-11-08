@@ -145,6 +145,8 @@ export function mountInstancePage(ctx) {
   const leftovers = leftoversCard(ctx);
   frame.body.append(updatesCard, docker.el, leftovers.el, keySettingsCard(ctx, 'jev'), keySettingsCard(ctx, 'vidoc'));
 
+  /** Whether a cancel is on its way to the server (its button is busy, SPEC-439). */
+  let cancelling = false;
   /** The run outcome last rendered; `undefined` before the first render. */
   let shownOutcome;
 
@@ -187,7 +189,9 @@ export function mountInstancePage(ctx) {
           run.can_proceed && run.tasks && run.tasks.waiting.length
             ? h('button', { type: 'button', class: 'btn btn-sm', onClick: () => proceed() }, 'Continue without waiting')
             : null,
-          run.can_cancel ? h('button', { type: 'button', class: 'btn btn-sm', onClick: () => cancel(run) }, run.restart ? 'Cancel restart' : 'Cancel update') : null)));
+          run.can_cancel
+            ? h('button', { type: 'button', class: ['btn', 'btn-sm', cancelling && 'busy'], disabled: cancelling, 'aria-busy': cancelling ? 'true' : null, onClick: () => cancel(run) }, run.restart ? 'Cancel restart' : 'Cancel update')
+            : null)));
     } else if (available) {
       const shown = available.commits.slice(0, 12);
       parts.push(h('div', { class: 'update-offer' },
@@ -228,13 +232,21 @@ export function mountInstancePage(ctx) {
 
   async function cancel(run) {
     const what = run && run.restart ? 'restart' : 'update';
-    const message = what === 'restart' ? 'Nothing restarts, and paused tasks continue at once.' : 'Nothing is installed, and paused tasks continue at once.';
+    const message = what === 'restart' ? 'Nothing restarts, and paused tasks continue at once.' : 'The build stops, nothing is installed, and paused tasks continue at once.';
     if (!(await confirmDialog({ title: `Cancel the ${what}?`, message, confirmLabel: `Cancel ${what}`, danger: true }))) return;
+    cancelling = true;
+    render(ctx.updates.view());
     try {
-      await ctx.api.post('/api/admin/update/cancel', {});
-      await ctx.updates.refresh();
+      // The answer is the cancelled run: shown at once, not after another read (SPEC-439).
+      const view = await ctx.api.post('/api/admin/update/cancel', {});
+      cancelling = false;
+      ctx.updates.apply(view);
     } catch (error) {
+      cancelling = false;
+      render(ctx.updates.view());
       errorToast(error, `Couldn’t cancel the ${what}`);
+      // It may have moved on meanwhile (a 409): show where it is now.
+      ctx.updates.refresh();
     }
   }
 

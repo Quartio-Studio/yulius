@@ -452,6 +452,18 @@ pub fn production_gate(target: &CdTarget, drill: Option<&DrillSeen>) -> Option<S
     }
 }
 
+/// Whether a deploy of the drill environment at the commit being deployed could prove a refused
+/// production deploy's rollback (SPEC-438 PDF-001): rollback is configured, and the newest drill
+/// is missing or ran at another tree. A failed drill at the same tree needs a fix first; a running
+/// drill is waited for.
+#[must_use]
+pub fn dev_can_prove(target: &CdTarget, drill: Option<&DrillSeen>) -> bool {
+    target.stage == CdStage::Prod
+        && target.deploy.is_some()
+        && target.rollback.is_some()
+        && drill.is_none_or(|seen| !seen.same_tree)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -744,6 +756,42 @@ mod tests {
             ..target
         };
         assert!(production_gate(&named, None).is_some_and(|why| why.contains("drill of staging")));
+    }
+
+    /// SPEC-438 PDF-001/005: a dev deploy can prove only a missing drill or one at another tree.
+    #[test]
+    fn a_dev_deploy_proves_only_a_drill_of_another_tree() {
+        let seen = |passed, same_tree| DrillSeen {
+            passed,
+            sha: "a".repeat(40),
+            same_tree,
+        };
+        let target = prod(Some("deploy.sh"), Some("rollback.sh"));
+        assert!(dev_can_prove(&target, None), "no drill yet");
+        assert!(
+            dev_can_prove(&target, Some(&seen(true, false))),
+            "an older commit"
+        );
+        assert!(
+            dev_can_prove(&target, Some(&seen(false, false))),
+            "an older commit's drill failed: a new one may pass"
+        );
+        assert!(
+            !dev_can_prove(&target, Some(&seen(false, true))),
+            "this tree's drill failed: fix it first"
+        );
+        assert!(!dev_can_prove(&target, Some(&seen(true, true))), "proven");
+        assert!(
+            !dev_can_prove(&prod(Some("deploy.sh"), None), None),
+            "rollback not configured"
+        );
+        assert!(!dev_can_prove(&prod(None, None), None), "promotion only");
+        let dev = CdTarget {
+            deploy: Some("d".into()),
+            rollback: Some("r".into()),
+            ..CdTarget::new("dev", CdStage::Dev)
+        };
+        assert!(!dev_can_prove(&dev, None), "dev is not gated");
     }
 
     /// Review H2: a release deployed again keeps the barrier of its earlier deploy; the drill

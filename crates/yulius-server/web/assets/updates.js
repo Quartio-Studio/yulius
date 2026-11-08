@@ -201,6 +201,19 @@ export function createUpdateBanner(ctx) {
     if (!destroyed && view && view.phase) timer = setTimeout(refresh, POLL_MS);
   }
 
+  /** Shows `fresh`, the answer to read `asked`, unless a newer one is shown already (#502). */
+  function accept(fresh, asked) {
+    if (asked < shown) return;
+    shown = asked;
+    view = fresh;
+    if (loadedCommit === undefined) loadedCommit = (view.current && view.current.commit) || null;
+    render();
+    notify();
+    for (const fn of [...listeners]) {
+      try { fn(view); } catch (error) { console.error('update listener failed', error); }
+    }
+  }
+
   async function refresh() {
     // A playground's guest reads no instance state (SPEC-410): the banner stays empty.
     if (ctx.guest && ctx.guest()) return;
@@ -210,18 +223,18 @@ export function createUpdateBanner(ctx) {
     try {
       const fresh = await ctx.api.get('/api/update');
       if (destroyed || !fresh) return;
-      if (asked < shown) return;
-      shown = asked;
-      view = fresh;
-      if (loadedCommit === undefined) loadedCommit = (view.current && view.current.commit) || null;
-      render();
-      notify();
-      for (const fn of [...listeners]) {
-        try { fn(view); } catch (error) { console.error('update listener failed', error); }
-      }
+      accept(fresh, asked);
     } catch {
       // Unreachable while restarting: try again shortly.
     }
+    schedule();
+  }
+
+  /** Shows the view an action answered with (a cancel, SPEC-439) at once, newer than any read
+   * still on its way. */
+  function apply(fresh) {
+    if (destroyed || !fresh) return;
+    accept(fresh, ++reads);
     schedule();
   }
 
@@ -235,6 +248,7 @@ export function createUpdateBanner(ctx) {
   return {
     el,
     refresh,
+    apply,
     /** The last view (or null). */
     view: () => view,
     /** Whether the server is restarting for an update (the connection banner says so). */

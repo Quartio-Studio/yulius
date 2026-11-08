@@ -338,6 +338,16 @@ async fn the_public_mcp_takes_only_personal_agent_tokens() -> TestResult {
     assert!(error && said.contains("read-only"), "{said}");
     let (error, said, _) = remote(&w, &operate, "no_such_tool", json!({})).await?;
     assert!(error && said.contains("unknown tool"), "{said}");
+    // A project's shared browser is the Global Superagent's only (SPEC-437 SAB-002).
+    assert!(!all.iter().any(|n| n.starts_with("browser_")), "{all:?}");
+    let (error, said, _) = remote(
+        &w,
+        &operate,
+        "browser_tabs",
+        json!({"project": "acme/fixture"}),
+    )
+    .await?;
+    assert!(error && said.contains("unknown tool"), "{said}");
     Ok(())
 }
 

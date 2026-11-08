@@ -3,7 +3,8 @@
 //!
 //! One browser per sandbox ([`App::browser_profile_dir`] keeps its profile, so logins persist
 //! per sandbox). Viewers need write access; agents reach the browser of their task's sandbox
-//! through their task token. `browser_request_user_action` marks the task `needs_attention`,
+//! through their task token, a person's Superagent its sandbox's and a Global Superagent the
+//! named project's (SPEC-437). `browser_request_user_action` marks a task `needs_attention`,
 //! publishes `browser.action_requested` and returns a link that opens the browser panel on the
 //! tab.
 
@@ -24,10 +25,10 @@ use yulius_domain::task::Activity;
 
 use crate::auth::AuthContext;
 use crate::context::App;
-use crate::coordination::AgentContext;
 use crate::error::{AppError, AppResult};
-use crate::mcp::MAX_RESULT_BYTES;
+use crate::mcp::{MAX_RESULT_BYTES, TaskToolResult};
 use crate::ports::browser::{BrowserFailure, BrowserFailureKind, BrowserSession};
+use crate::vault::SecretUser;
 
 /// Base64 budget of a screenshot inside one MCP result (the rest is JSON framing and text).
 pub const SCREENSHOT_RESULT_BUDGET: usize = MAX_RESULT_BYTES - 4 * 1024;
@@ -38,6 +39,12 @@ pub struct BrowserGrant {
     /// The sandbox.
     pub sandbox_id: SandboxId,
 }
+
+/// The browser tools that only read: a Global Superagent's calls of them are not audited
+/// (SPEC-437); the harness's `COCKPIT_READ_ONLY_TOOLS` lets the Superagent run the same ones
+/// without asking.
+pub(crate) const READING_TOOLS: [&str; 3] =
+    ["browser_tabs", "browser_snapshot", "browser_screenshot"];
 
 /// The browser tool descriptors served by `tools/list` (SPEC-002 §7.4).
 #[must_use]
@@ -151,13 +158,37 @@ impl App {
         reads_removed(&self.deps.store.sandbox(sandbox).await)
     }
 
-    async fn agent_browser(&self, ctx: &AgentContext) -> AppResult<Arc<dyn BrowserSession>> {
-        Ok(self.browser_session(&ctx.task.sandbox_id).await?)
+    async fn agent_browser(&self, user: SecretUser<'_>) -> AppResult<Arc<dyn BrowserSession>> {
+        Ok(self.browser_session(user.sandbox()).await?)
     }
 
-    /// The label viewers see on the agent's cursor (BRW-007).
-    fn agent_label(ctx: &AgentContext) -> String {
-        format!("#{} {}", ctx.task.number, ctx.task.harness.display_name())
+    /// The browser tool `name` for `user`, a task's agent or a Superagent; `None` when `name` is
+    /// not one.
+    pub(crate) async fn browser_tool(
+        &self,
+        user: SecretUser<'_>,
+        name: &str,
+        args: &Value,
+    ) -> Option<TaskToolResult> {
+        Some(TaskToolResult::Value(match name {
+            "browser_tabs" => self.tool_browser_tabs(user, args).await,
+            "browser_open" => self.tool_browser_open(user, args).await,
+            "browser_navigate" => self.tool_browser_navigate(user, args).await,
+            "browser_click" => self.tool_browser_click(user, args).await,
+            "browser_type" => self.tool_browser_type(user, args).await,
+            "browser_snapshot" => self.tool_browser_snapshot(user, args).await,
+            // Returns a complete result with an image item (size-bounded by the tool itself).
+            "browser_screenshot" => {
+                return Some(TaskToolResult::Complete(
+                    self.tool_browser_screenshot(user, args).await,
+                ));
+            }
+            "browser_request_user_action" => {
+                self.tool_browser_request_user_action(user, args).await
+            }
+            "browser_fill_secret" => self.tool_browser_fill_secret(user, args).await,
+            _ => return None,
+        }))
     }
 
     /// The sandbox's listening dev-server ports (its assigned port range, probed on loopback).
@@ -200,54 +231,54 @@ impl App {
     /// `browser_tabs`.
     pub(crate) async fn tool_browser_tabs(
         &self,
-        ctx: &AgentContext,
+        user: SecretUser<'_>,
         args: &Value,
     ) -> AppResult<Value> {
         let _: TabsParams = parse_args(args)?;
-        let browser = self.agent_browser(ctx).await?;
+        let browser = self.agent_browser(user).await?;
         to_value(&browser.tool_tabs())
     }
 
     /// `browser_open`.
     pub(crate) async fn tool_browser_open(
         &self,
-        ctx: &AgentContext,
+        user: SecretUser<'_>,
         args: &Value,
     ) -> AppResult<Value> {
         let params: OpenParams = parse_args(args)?;
-        let browser = self.agent_browser(ctx).await?;
+        let browser = self.agent_browser(user).await?;
         let result = browser.tool_open(&params).await?;
-        browser.agent_activity(&result.tab.id, None, "open", &Self::agent_label(ctx));
+        browser.agent_activity(&result.tab.id, None, "open", &user.label());
         to_value(&result)
     }
 
     /// `browser_navigate`.
     pub(crate) async fn tool_browser_navigate(
         &self,
-        ctx: &AgentContext,
+        user: SecretUser<'_>,
         args: &Value,
     ) -> AppResult<Value> {
         let params: NavigateParams = parse_args(args)?;
-        let browser = self.agent_browser(ctx).await?;
+        let browser = self.agent_browser(user).await?;
         let result = browser.tool_navigate(&params).await?;
-        browser.agent_activity(&params.tab_id, None, "navigate", &Self::agent_label(ctx));
+        browser.agent_activity(&params.tab_id, None, "navigate", &user.label());
         to_value(&result)
     }
 
     /// `browser_click`.
     pub(crate) async fn tool_browser_click(
         &self,
-        ctx: &AgentContext,
+        user: SecretUser<'_>,
         args: &Value,
     ) -> AppResult<Value> {
         let params: ClickParams = parse_args(args)?;
-        let browser = self.agent_browser(ctx).await?;
+        let browser = self.agent_browser(user).await?;
         let result = browser.tool_click(&params).await?;
         browser.agent_activity(
             &params.tab_id,
             Some((result.x, result.y)),
             "click",
-            &Self::agent_label(ctx),
+            &user.label(),
         );
         to_value(&result)
     }
@@ -255,40 +286,44 @@ impl App {
     /// `browser_type`.
     pub(crate) async fn tool_browser_type(
         &self,
-        ctx: &AgentContext,
+        user: SecretUser<'_>,
         args: &Value,
     ) -> AppResult<Value> {
         let params: TypeParams = parse_args(args)?;
-        let browser = self.agent_browser(ctx).await?;
+        let browser = self.agent_browser(user).await?;
         let result = browser.tool_type(&params).await?;
-        browser.agent_activity(&params.tab_id, None, "type", &Self::agent_label(ctx));
+        browser.agent_activity(&params.tab_id, None, "type", &user.label());
         to_value(&result)
     }
 
     /// `browser_snapshot`.
     pub(crate) async fn tool_browser_snapshot(
         &self,
-        ctx: &AgentContext,
+        user: SecretUser<'_>,
         args: &Value,
     ) -> AppResult<Value> {
         let params: SnapshotParams = parse_args(args)?;
-        let browser = self.agent_browser(ctx).await?;
+        let browser = self.agent_browser(user).await?;
         to_value(&browser.tool_snapshot(&params).await?)
     }
 
     /// `browser_screenshot` as a complete MCP `tools/call` result: an image content item that
     /// fits the 256 KiB result cap (PNG, or a JPEG of lower quality and scale), plus a text item
     /// with the scale. When nothing fits, an error text points to `browser_snapshot`.
-    pub(crate) async fn tool_browser_screenshot(&self, ctx: &AgentContext, args: &Value) -> Value {
-        match self.browser_screenshot(ctx, args).await {
+    pub(crate) async fn tool_browser_screenshot(
+        &self,
+        user: SecretUser<'_>,
+        args: &Value,
+    ) -> Value {
+        match self.browser_screenshot(user, args).await {
             Ok(value) => value,
             Err(err) => text_result(err.public_message(), true),
         }
     }
 
-    async fn browser_screenshot(&self, ctx: &AgentContext, args: &Value) -> AppResult<Value> {
+    async fn browser_screenshot(&self, user: SecretUser<'_>, args: &Value) -> AppResult<Value> {
         let params: ScreenshotParams = parse_args(args)?;
-        let browser = self.agent_browser(ctx).await?;
+        let browser = self.agent_browser(user).await?;
         let shot = match browser
             .tool_screenshot(&params, SCREENSHOT_RESULT_BUDGET)
             .await
@@ -319,27 +354,29 @@ impl App {
         }))
     }
 
-    /// `browser_request_user_action`: highlights the tab for viewers, marks the task
-    /// `needs_attention`, publishes `browser.action_requested` and returns the link to print
-    /// (AC-BRW-3).
+    /// `browser_request_user_action`: highlights the tab for viewers, marks a task
+    /// `needs_attention` (a Superagent's person is in front of it: nothing is flagged, SPEC-437
+    /// SAB-005), publishes `browser.action_requested` and returns the link to print (AC-BRW-3).
     pub(crate) async fn tool_browser_request_user_action(
         &self,
-        ctx: &AgentContext,
+        user: SecretUser<'_>,
         args: &Value,
     ) -> AppResult<Value> {
         let params: RequestUserActionParams = parse_args(args)?;
         params
             .validate()
             .map_err(|err| AppError::Invalid(err.to_string()))?;
-        let browser = self.agent_browser(ctx).await?;
-        let request =
-            browser.request_user_action(&params.tab_id, &params.reason, Some(&ctx.task.id))?;
+        let browser = self.agent_browser(user).await?;
+        let task = user.task().map(|task| task.id.clone());
+        let request = browser.request_user_action(&params.tab_id, &params.reason, task.as_ref())?;
         let store = &self.deps.store;
-        let task = store.task(&ctx.task.id).await?.ok_or(AppError::NotFound)?;
-        self.set_task_activity(&task, Activity::NeedsAttention)
-            .await?;
+        if let Some(task) = &task {
+            let task = store.task(task).await?.ok_or(AppError::NotFound)?;
+            self.set_task_activity(&task, Activity::NeedsAttention)
+                .await?;
+        }
         let sandbox = store
-            .sandbox(&task.sandbox_id)
+            .sandbox(user.sandbox())
             .await?
             .ok_or(AppError::NotFound)?;
         self.events.publish(
