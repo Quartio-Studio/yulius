@@ -407,6 +407,9 @@ const ACTIONS = {
   'vault.agent.allow': 'allowed hosts of',
   'vault.agent.dismiss': 'dismissed hosts of',
   'vault.agent.auto_allow': 'bound hosts of',
+  'vault.agent.copy_request': 'asked for a copy of',
+  'vault.agent.copy_allow': 'allowed a copy of',
+  'vault.agent.copy_dismiss': 'dismissed a copy of',
   'vault.agent.auto_allow_on': 'let agents set up',
   'vault.agent.auto_allow_off': 'stopped agents setting up',
   'vault.team.assign': 'gave a sandbox its copy of',
@@ -565,6 +568,44 @@ function agentProductionOnly(secret) {
   if (!secret.cd_prod || (!secret.requested_hosts.length && secret.env_files !== 'asked')) return [];
   const text = 'This is a production secret: agents never get it.';
   return [h('span', { class: 'muted small' }, secret.can_manage ? `${text} Dismiss the request, or add a separate secret for agents.` : text)];
+}
+
+/**
+ * The copy of a production secret an agent of this project asked for (SPEC-440): Allow copy adds
+ * a separate agent secret of its value, bound to the hosts shown, after the person's two-factor
+ * code; the answer names what is shown, so a request changed meanwhile is refused.
+ */
+function agentCopyRequest(ctx, sandbox, secret, act) {
+  const copy = secret.copy_request;
+  if (!copy) return [];
+  const shown = { name: copy.name, hosts: [...copy.hosts] };
+  const url = `/api/sandboxes/${enc(sandbox.id)}/agent-secrets/${enc(secret.id)}/copy`;
+  const answer = (allow) => act(async () => {
+    buttons.forEach((b) => { b.disabled = true; });
+    try {
+      const body = { allow, ...shown };
+      const saved = allow ? await withReauth(ctx, () => ctx.api.post(url, body)) : await ctx.api.post(url, body);
+      // `null`: the person closed the code dialog; the request still waits.
+      if (saved) toast(allow ? `Copied. Agents can use ${shown.name} on ${shown.hosts.join(', ')}.` : 'Dismissed.', { kind: 'ok' });
+    } catch (error) { errorToast(error, allow ? 'Couldn’t copy' : 'Couldn’t dismiss'); }
+  });
+  const buttons = [
+    copy.can_answer ? smallButton('Allow copy', `Copy ${secret.name} for agents as ${shown.name}`, () => answer(true), { class: 'btn-primary' }) : null,
+    secret.can_manage ? smallButton('Dismiss', `Dismiss the copy of ${secret.name} asked for`, () => answer(false)) : null,
+  ].filter(Boolean);
+  const who = copy.requested_by.startsWith('#') ? `Task ${copy.requested_by}` : copy.requested_by;
+  return [
+    h('div', { class: 'row-wrap' },
+      h('span', { class: 'small' }, `${who} asks for a copy for agents,`),
+      iconBadge('key', shown.name, 'warn', 'Name of the copy'),
+      h('span', { class: 'small' }, 'sent to'),
+      h('div', { class: 'chips' }, shown.hosts.map((name) => iconBadge('globe', hostText(name), 'warn', 'Requested host'))),
+      buttons.length ? h('span', { class: 'row-wrap' }, buttons) : null),
+    copy.reason ? h('span', { class: 'muted small' }, `For: ${copy.reason}`) : null,
+    h('span', { class: 'muted small' }, copy.can_answer
+      ? 'Allowing adds a separate agent secret with this value, after your two-factor code. This one stays production’s; the copy does not follow its rotations.'
+      : 'A person who manages this secret and this project’s secrets allows it.'),
+  ].filter(Boolean);
 }
 
 /** How long an Allow whose hosts just changed stays off (Firefox waits as long on security prompts). */
@@ -791,6 +832,7 @@ function mountAgents(ctx, sandbox, host, actions, scope = 'sandbox') {
         ...agentHosts(ctx, secret, act, changedRequest(secret)),
         ...agentEnvFiles(ctx, secret, act),
         ...agentProductionOnly(secret),
+        ...agentCopyRequest(ctx, sandbox, secret, act),
         ...agentCdProd(ctx, secret, act),
         h('span', { class: 'muted small' }, [secret.injection !== 'none' ? secret.injection_text : null, secret.last_used_at ? `used ${relLong(secret.last_used_at)}` : 'not used yet', `changed ${relLong(secret.value_updated_at)}`].filter(Boolean).join(' · '))),
       controls: [

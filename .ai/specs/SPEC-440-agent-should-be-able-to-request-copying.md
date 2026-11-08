@@ -78,7 +78,7 @@ pastes the token by hand, and the production secret stays exclusive to productio
 - [x] Copy requests are stored per production secret and sandbox
 - [x] Agents and the Superagent ask for a copy with secret_request_copy and wait for a person
 - [x] A person allows or dismisses a copy through the API, creating the agent secret
-- [ ] The Secrets page shows a copy request with Allow copy and Dismiss
+- [x] The Secrets page shows a copy request with Allow copy and Dismiss
 - [ ] ADR, architecture, API and product docs describe copy requests
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
