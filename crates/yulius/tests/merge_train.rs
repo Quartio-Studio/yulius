@@ -1804,7 +1804,12 @@ async fn a_member_that_cannot_be_updated_goes_one_by_one() -> TestResult {
     assert_eq!(f.train_runs(&app).await?.len(), 1);
     let lock = PathBuf::from(git(
         &worktree,
-        &["rev-parse", "--path-format=absolute", "--git-path", "index.lock"],
+        &[
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-path",
+            "index.lock",
+        ],
     )?);
     std::fs::write(&lock, "")?;
     f.settle(&app).await?;

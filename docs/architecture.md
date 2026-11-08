@@ -752,8 +752,8 @@ then decides the armed merges in arm order:
 - a red candidate of n ≥ 2 is formed again from its first ⌈n/2⌉; a red one of one ends that armed
   merge with the reason; a member busy at its turn is waited for (15 minutes at most); an errored
   or cancelled one, a member that cannot merge for a reason of its own, a candidate that cannot
-  be built, a pull request that conflicts with the base alone, and projects without Yulius CI, with rebase merges
-  or automatic promotion go one by one (DLV-203 after the pre-check).
+  be built, a pull request that conflicts with the base alone, and projects without Yulius CI,
+  with rebase merges or automatic promotion go one by one (DLV-203 after the pre-check).
 
 Each kept decision leaves a sentence in the armed slot (`ArmedSlot::note`), which `yulius wait`
 (`merge_train`), `delivery_status` and the task page show. `delivery_merge` for an armed head

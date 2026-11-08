@@ -84,16 +84,18 @@ merged on green.
 ## Plan
 
 - [x] Write the spec and the ADR for the merge queue
-- [ ] Pre-checks finish: no base merge into an armed pull request before its run passed
-- [ ] Merge candidates of one or more green pull requests, every member held, busy members waited for
-- [ ] A red candidate is bisected and a lone breaking pull request told why
-- [ ] An armed merge keeps its place when armed again and follows Yulius's base merges
-- [ ] Every armed pull request says where it stands in wait, delivery_status and the task page
-- [ ] A fast armed pass merges a green current pull request within a minute
-- [ ] A merge on a green head counts for the goal, whoever made it
-- [ ] The same queue results for a second, minimal project
-- [ ] Task guidance in the briefing and bundled skills
-- [ ] Architecture, product and changes documents updated, gates green, independent review answered
+- [x] Pre-checks finish: no base merge into an armed pull request before its run passed
+- [x] Merge candidates of one or more green pull requests, every member held, busy members waited for
+- [x] A red candidate is bisected and a lone breaking pull request told why
+- [x] An armed merge keeps its place when armed again and follows Yulius's base merges
+- [x] Every armed pull request says where it stands in wait, delivery_status and the task page
+- [x] A fast armed pass merges a green current pull request within a minute
+- [x] A merge on a green head counts for the goal, whoever made it
+- [x] The same queue results for a second, minimal project
+- [x] Task guidance in the briefing and bundled skills
+- [x] Architecture, product and changes documents updated
+- [ ] Independent review findings answered test-first
+- [ ] Gates green and the evidence recorded
 
 ## Acceptance criteria
 
@@ -144,7 +146,11 @@ merged on green.
   request passed alone and fails on the current base. Its agent must change something, so the armed
   merge ends and says why. Larger red candidates halve until one passes or one is proven.
 - **Same head, same place.** Re-arming the same head is a no-op that keeps `armed_at`. It used to
-  reset the queue position and dissolve trains.
+  reset the queue position and dissolve trains. One window is left: while a pass is deciding the
+  merge (it is taken out of the slot for seconds), `delivery_merge` for the same head arms it
+  anew, as before (WAI-002), with a new `armed_at`. That takes it out of a candidate it is in.
+  Closing it means keeping the head being decided in the slot. That is not worth the
+  complexity while a decision lasts seconds and agents are told not to arm an armed head again.
 - **A fast pass, not a shorter delivery round.** The 3-minute round reconciles every delivery with
   GitHub. The 20-second pass only looks at sandboxes with a decidable armed merge (local records),
   so GitHub calls grow with the merges that can happen, not with the open pull requests.

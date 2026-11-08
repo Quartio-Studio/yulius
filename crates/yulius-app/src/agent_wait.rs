@@ -405,10 +405,12 @@ impl App {
     }
 
     /// Whether a pass could decide something in `sandbox` now, from Yulius's own records and its
-    /// clone: a merge candidate whose run ended, or an armed head whose own run passed that is up
-    /// to date (merge it) or, with no candidate under test, whose agent is idle (put it in one,
-    /// or bring it up to date). A green head waiting for a candidate under test or for its busy
-    /// agent is not: a pass then would only fetch and ask GitHub again (review M1).
+    /// clone: a merge candidate whose run ended, or an armed head of an open pull request whose
+    /// own run passed that is up to date (merge it) or, with no candidate under test, whose agent
+    /// is idle with everything committed at that head (put it in one, or bring it up to date). A
+    /// green head waiting for a candidate under test, for its busy agent or for a commit is not:
+    /// a pass then would only fetch and ask GitHub again (review M1). Public for the fast pass's
+    /// integration tests.
     pub async fn decidable_in(&self, sandbox: &crate::model::SandboxRecord) -> bool {
         use yulius_domain::ci::{GateResult, RunState};
         use yulius_domain::task::{Activity, TaskStatus};
@@ -434,6 +436,13 @@ impl App {
             ) {
                 continue;
             }
+            let open = matches!(
+                self.deps.store.delivery(&task.id).await,
+                Ok(Some(record)) if record.stage == yulius_domain::delivery::DeliveryStage::PrOpen
+            );
+            if !open {
+                continue;
+            }
             let current = matches!(
                 self.deps
                     .git
@@ -441,16 +450,29 @@ impl App {
                     .await,
                 Ok(true)
             );
+            if current && self.train_hold(&task) == crate::merge_train::Hold::Free {
+                return true;
+            }
             let idle = task.status == TaskStatus::Running
                 && task.activity.is_some_and(Activity::is_idle)
                 && self.background_shells_of(&task.id).unwrap_or(0) == 0;
-            if (current && self.train_hold(&task) == crate::merge_train::Hold::Free)
-                || (!candidate_running && idle)
-            {
+            if !candidate_running && idle && self.at_clean_head(&task, &armed.head).await {
                 return true;
             }
         }
         false
+    }
+
+    /// Whether `task`'s worktree is at `head` with nothing uncommitted.
+    async fn at_clean_head(&self, task: &TaskRecord, head: &str) -> bool {
+        let Some(worktree) = task.worktree_path.as_deref().map(std::path::Path::new) else {
+            return false;
+        };
+        !self.deps.git.has_changes(worktree).await.unwrap_or(true)
+            && matches!(
+                self.deps.git.log(worktree, "HEAD", 1).await,
+                Ok(log) if log.first().is_some_and(|commit| commit.sha == head)
+            )
     }
 
     /// Forgets how an earlier armed merge ended (a new `delivery_merge` call answers for itself).
