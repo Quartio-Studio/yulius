@@ -11,6 +11,7 @@ use yulius_domain::vault::redact::redact_text;
 
 use crate::context::App;
 use crate::coordination::{AgentContext, ProjectCaller};
+use crate::cross_sandbox::CrossAction;
 use crate::error::{AppError, AppResult};
 use crate::manage::TaskChange;
 use crate::shells::COCKPIT_TOKEN_PREFIX;
@@ -26,9 +27,10 @@ fn schema(properties: Value, required: &[&str]) -> Value {
 /// The tools a Cockpit is served: managing the project's tasks and automations (SPEC-037
 /// MGT-006, SPEC-066 MGT-012), using its agent vault and the project browser as a task's agent
 /// does (SPEC-178, SPEC-186 SAV-002, SAV-003, ADR-0150, SPEC-437 SAB-001, ADR-0281), messaging
-/// tasks for its person (SPEC-230, ADR-0178), and asking its person to start a task in another
-/// of their sandboxes (SPEC-335, ADR-0227). Everything else belongs to a task.
-pub const COCKPIT_TOOLS: [&str; 35] = [
+/// tasks for its person (SPEC-230, ADR-0178), and asking its person to start, change, message or
+/// stop a task in another of their sandboxes (SPEC-335, ADR-0227, SPEC-442, ADR-0286). Everything
+/// else belongs to a task.
+pub const COCKPIT_TOOLS: [&str; 39] = [
     "tasks_list",
     "task_get",
     "task_create",
@@ -55,6 +57,10 @@ pub const COCKPIT_TOOLS: [&str; 35] = [
     "secret_create_from_file",
     "sandboxes_list",
     "sandbox_task_create",
+    "sandbox_task_get",
+    "sandbox_task_update",
+    "sandbox_task_message",
+    "sandbox_task_stop",
     "browser_tabs",
     "browser_open",
     "browser_navigate",
@@ -68,6 +74,18 @@ pub const COCKPIT_TOOLS: [&str; 35] = [
 
 /// The Superagent's MCP instructions (SPEC-037, SPEC-186 SAV-007).
 pub(crate) const COCKPIT_INSTRUCTIONS: &str = "Yulius runs this project's tasks. When the person asks for work to be done as a task (\"create a task from that\"), create it with task_create; for recurring work (\"every day at 4am …\") create an automation with automation_create (ask for their time zone if it matters). tasks_list, automations_list (with the ready-made automations, enabled by automation_template_enable) and workflows_list show what exists; sessions_search finds how earlier tasks did something. This session uses the project's agent secrets as a task's agent does, never seeing a value: requests to a secret's bound hosts get it from Yulius' proxy ($NAME holds its placeholder), secret_copy_to_env puts allowed ones into this repository's git-ignored .env, secret_request_hosts asks a person to bind hosts, secret_request_copy asks a person for a copy of a production secret (which agents never use) as a new agent secret, secret_verify tells whether a value the person holds is one of them, from its SHA-256, and secret_create_from_file stores a secret that is in a file (a key in ~/.ssh, one you generated) as a new agent secret without anyone seeing it, so never ask the person to paste a key you can reach; secrets_list names them and says how. You drive the project browser, the one its tasks and the person's Browser page share, as a task's agent does: browser_open, browser_navigate, browser_snapshot (read a page), browser_click, browser_type and browser_screenshot; browser_fill_secret types an agent secret into a sign-in page of its bound hosts without you seeing it, and browser_request_user_action hands a tab to the person (print its link). When the person wants a task told something (\"tell #5 it may use the DO budget\"), send it with task_message: a task that has not started gets it in its request, a running one in its session; pass on what the person said, labelled as theirs, and nothing they did not ask for. When the person wants work done in another of their sandboxes (another repository), find it with sandboxes_list and ask with sandbox_task_create: the person approves or declines each request on the panel above this session, and the call waits for their answer (a few minutes at most), so tell them it waits there; never ask again for a declined request unless they ask. task_update changes how a task that has not started yet starts (chain an existing task with it; never recreate a task to do so), attachments_trash lists a deleted task's attachments and restores them, task_stop, task_archive and task_delete stop, archive or delete a task, automation_run_now and automation_delete run or delete an automation, task_message tells a task something: do these only when the person asks, naming the task or automation. Work across many of the person's sandboxes at once (keeping them in sync) is their Global Superagent's, opened from All sandboxes.";
+
+/// The request a cross-sandbox tool asks its person for (SPEC-442 XST-004: none deletes or
+/// archives).
+fn cross_action(name: &str) -> Option<CrossAction> {
+    match name {
+        "sandbox_task_create" => Some(CrossAction::Create),
+        "sandbox_task_update" => Some(CrossAction::Update),
+        "sandbox_task_message" => Some(CrossAction::Message),
+        "sandbox_task_stop" => Some(CrossAction::Stop),
+        _ => None,
+    }
+}
 
 /// Who calls the MCP server.
 enum McpCaller {
@@ -102,6 +120,11 @@ pub fn cockpit_tool_descriptors() -> Vec<ToolDescriptor> {
 /// ADR-0178): a person speaks to their tasks, tasks do not prompt each other; and the other
 /// sandboxes of its person (SPEC-335, ADR-0227), which only the person lets it reach.
 fn cockpit_only_tool_descriptors() -> Vec<ToolDescriptor> {
+    let cross_task_ref = json!({
+        "sandbox": {"type": "string", "description": "The sandbox's slug (or owner/name) from sandboxes_list; not this one"},
+        "task_id": {"type": "string", "description": "Task id"},
+        "number": {"type": "integer", "description": "Task number within that sandbox"}
+    });
     vec![
         ToolDescriptor {
             name: "sandboxes_list".into(),
@@ -125,6 +148,40 @@ fn cockpit_only_tool_descriptors() -> Vec<ToolDescriptor> {
                 "model": {"type": "string"},
                 "effort": {"type": "string"}
             }), &["sandbox", "prompt"]),
+        },
+        ToolDescriptor {
+            name: "sandbox_task_get".into(),
+            description: "Read a task of another of the person's sandboxes (from sandboxes_list), as task_get does here: its state, prompt and steps, e.g. to follow up a task you asked for with sandbox_task_create. Only reads: nobody is asked.".into(),
+            input_schema: schema(cross_task_ref.clone(), &["sandbox"]),
+        },
+        ToolDescriptor {
+            name: "sandbox_task_update".into(),
+            description: "Ask the person to change how a task of another of their sandboxes that has not started yet starts, as task_update does here: none of after_task, start_rule, supertask, prepared or start_at starts it now (a prepared task that should be queued); after_task and start_rule name that sandbox's tasks. Use it instead of deleting and recreating a task. Nothing changes until the person approves this one request on the panel above your session: tell them it waits there. The call waits for their answer, a few minutes at most, and answers outcome approved (with the task), declined or unanswered (nothing changed). Audited in both sandboxes.".into(),
+            input_schema: schema(json!({
+                "sandbox": cross_task_ref["sandbox"],
+                "task_id": cross_task_ref["task_id"],
+                "number": cross_task_ref["number"],
+                "after_task": {"type": "integer", "description": "That sandbox's task number to wait for"},
+                "start_rule": {"type": "string", "description": "Start rule over that sandbox's tasks, e.g. \"#12 done\""},
+                "supertask": {"type": "boolean", "description": "Start now as a supertask; only when the person asks"},
+                "prepared": {"type": "boolean", "description": "Wait until the person presses Start now"},
+                "start_at": {"type": "string", "description": "Prepared, starting by itself at this RFC 3339 time"}
+            }), &["sandbox"]),
+        },
+        ToolDescriptor {
+            name: "sandbox_task_message".into(),
+            description: "Ask the person to send a task of another of their sandboxes a message from them, as task_message does here: a task that has not started gets it added to its request, a running one typed into its session, labelled as the person's. Nothing is sent until the person approves this one request on the panel above your session, where they read the message in full: tell them it waits there. The call waits for their answer, a few minutes at most, and answers outcome approved (with delivered: queued or sent), declined or unanswered (nothing sent). Audited in both sandboxes.".into(),
+            input_schema: schema(json!({
+                "sandbox": cross_task_ref["sandbox"],
+                "task_id": cross_task_ref["task_id"],
+                "number": cross_task_ref["number"],
+                "text": {"type": "string", "description": "The message, as the person would type it (at most 64 KiB)"}
+            }), &["sandbox", "text"]),
+        },
+        ToolDescriptor {
+            name: "sandbox_task_stop".into(),
+            description: "Ask the person to stop a task of another of their sandboxes, as task_stop does here: a waiting task is cancelled, a running one interrupted. Nothing stops until the person approves this one request on the panel above your session: tell them it waits there. The call waits for their answer, a few minutes at most. Deleting or archiving a task of another sandbox is not possible from here: the person does it on that sandbox's Tasks page. Audited in both sandboxes.".into(),
+            input_schema: schema(cross_task_ref, &["sandbox"]),
         },
         ToolDescriptor {
             name: "task_message".into(),
@@ -697,9 +754,12 @@ impl App {
                 McpCaller::Cockpit(caller) if name == "sandboxes_list" => {
                     self.tool_sandboxes_list(caller).await
                 }
-                McpCaller::Cockpit(caller) if name == "sandbox_task_create" => {
+                McpCaller::Cockpit(caller) if name == "sandbox_task_get" => {
+                    self.tool_sandbox_task_get(caller, &args).await
+                }
+                McpCaller::Cockpit(caller) if let Some(action) = cross_action(name) => {
                     let call = crate::cross_sandbox::call_key(caller, rpc_id);
-                    self.cross_task_request(caller, &args, call).await
+                    self.cross_task_request(caller, action, &args, call).await
                 }
                 McpCaller::Cockpit(_) if name == "secret_verify" => {
                     self.tool_secret_verify(&project, &args).await
@@ -901,7 +961,7 @@ pub(crate) enum TaskToolResult {
 
 #[cfg(test)]
 mod tests {
-    use super::{COCKPIT_TOOLS, cockpit_tool_descriptors, tool_descriptors};
+    use super::{COCKPIT_TOOLS, cockpit_tool_descriptors, cross_action, tool_descriptors};
     use yulius_domain::briefing::YULIUS_TOOLS;
 
     #[test]
@@ -925,7 +985,14 @@ mod tests {
             .into_iter()
             .map(|t| t.name)
             .collect();
-        for name in ["sandboxes_list", "sandbox_task_create"] {
+        for name in [
+            "sandboxes_list",
+            "sandbox_task_create",
+            "sandbox_task_get",
+            "sandbox_task_update",
+            "sandbox_task_message",
+            "sandbox_task_stop",
+        ] {
             assert!(
                 !task_tools.iter().any(|t| t == name),
                 "a task gets `{name}`"
@@ -934,6 +1001,36 @@ mod tests {
                 superagent.iter().any(|t| t == name),
                 "`{name}` is not served"
             );
+        }
+    }
+
+    /// SPEC-442 XST-004 (AC-XST-4): another sandbox's tasks are read, created, started or
+    /// re-chained, messaged and stopped, never deleted, archived or restored.
+    #[test]
+    fn no_tool_deletes_or_archives_a_task_of_another_sandbox() {
+        let cross: Vec<String> = cockpit_tool_descriptors()
+            .into_iter()
+            .map(|t| t.name)
+            .filter(|n| n.starts_with("sandbox"))
+            .collect();
+        assert_eq!(
+            cross,
+            [
+                "sandboxes_list",
+                "sandbox_task_create",
+                "sandbox_task_get",
+                "sandbox_task_update",
+                "sandbox_task_message",
+                "sandbox_task_stop",
+            ]
+        );
+        for name in [
+            "sandbox_task_delete",
+            "sandbox_task_archive",
+            "sandbox_task_restore",
+        ] {
+            assert!(cross_action(name).is_none(), "{name} asks");
+            assert!(!COCKPIT_TOOLS.contains(&name), "{name} is served");
         }
     }
 

@@ -1648,6 +1648,10 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
             "browser_tabs",
             "browser_type",
             "sandbox_task_create",
+            "sandbox_task_get",
+            "sandbox_task_message",
+            "sandbox_task_stop",
+            "sandbox_task_update",
             "sandboxes_list",
             "secret_copy_to_env",
             "secret_create_from_file",
@@ -1672,6 +1676,13 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
         cockpit_tool(&f, &token, "steps_set", json!({"steps": ["x"]})).await?;
     assert!(is_error, "{refused}");
     assert!(refused.to_string().contains("unknown tool"), "{refused}");
+    // SPEC-442 AC-XST-4: nothing deletes or archives a task of another sandbox.
+    for name in ["sandbox_task_delete", "sandbox_task_archive"] {
+        let (refused, is_error) =
+            cockpit_tool(&f, &token, name, json!({"sandbox": "x", "number": 1})).await?;
+        assert!(is_error, "{refused}");
+        assert!(refused.to_string().contains("unknown tool"), "{refused}");
+    }
 
     // A task for alice (MGT-001, MGT-007).
     let (created, is_error) = cockpit_tool(
