@@ -611,7 +611,11 @@ async fn task_in(
     login: &str,
     args: Value,
 ) -> Result<(TaskId, u64), Error> {
-    let user = if login == "bob" { &w.bob_id } else { &w.alice_id };
+    let user = if login == "bob" {
+        &w.bob_id
+    } else {
+        &w.alice_id
+    };
     let created =
         w.h.app
             .tool_task_create(&superagent(sandbox, user, login)?, &args)
@@ -665,8 +669,7 @@ async fn the_superagent_reads_a_task_of_another_sandbox_without_asking() -> Test
         json!({"prompt": "Update the API client", "title": "API client", "prepared": true}),
     )
     .await?;
-    let (docs_task, docs_number) =
-        task_in(&w, "s3", "bob", json!({"prompt": "Docs work"})).await?;
+    let (docs_task, docs_number) = task_in(&w, "s3", "bob", json!({"prompt": "Docs work"})).await?;
     let caller = superagent("s1", &w.alice_id, "alice")?;
     for named in [
         json!({"sandbox": "website", "number": number}),
@@ -682,7 +685,10 @@ async fn the_superagent_reads_a_task_of_another_sandbox_without_asking() -> Test
     assert!(requests(&w, &w.alice, "s1").await?.is_empty(), "not asked");
     for (args, says) in [
         (json!({"sandbox": "studio", "number": 1}), "task_get"),
-        (json!({"sandbox": "docs", "number": docs_number}), "not found"),
+        (
+            json!({"sandbox": "docs", "number": docs_number}),
+            "not found",
+        ),
         (json!({"sandbox": "secret", "number": 1}), "not found"),
         (json!({"sandbox": "website", "number": 99}), "not found"),
         (
@@ -730,7 +736,11 @@ async fn an_approved_start_starts_a_prepared_task_of_another_sandbox() -> TestRe
     assert_eq!(request["task"]["title"], "API client", "{request}");
     assert_eq!(request["task"]["status"], "prepared", "{request}");
     assert_eq!(request["options"], json!({}), "{request}");
-    assert_eq!(status_of(&w, &id).await?, TaskStatus::Prepared, "not before");
+    assert_eq!(
+        status_of(&w, &id).await?,
+        TaskStatus::Prepared,
+        "not before"
+    );
     let (_, outcome) = answer_the_one(&w, call_, true).await?;
     assert_eq!(outcome["outcome"], "approved", "{outcome}");
     assert_eq!(outcome["sandbox"], "website", "{outcome}");
@@ -745,8 +755,13 @@ async fn an_approved_start_starts_a_prepared_task_of_another_sandbox() -> TestRe
 async fn an_approved_update_rechains_a_task_of_another_sandbox() -> TestResult {
     let w = world(60_000).await?;
     let (_, first) = task_in(&w, "s2", "alice", json!({"prompt": "First"})).await?;
-    let (id, number) =
-        task_in(&w, "s2", "alice", json!({"prompt": "Second", "prepared": true})).await?;
+    let (id, number) = task_in(
+        &w,
+        "s2",
+        "alice",
+        json!({"prompt": "Second", "prepared": true}),
+    )
+    .await?;
     let call_ = ask_to(
         &w,
         CrossAction::Update,
@@ -764,8 +779,13 @@ async fn an_approved_update_rechains_a_task_of_another_sandbox() -> TestResult {
 #[tokio::test]
 async fn approved_messages_and_stops_reach_the_task_of_another_sandbox() -> TestResult {
     let w = world(60_000).await?;
-    let (id, number) =
-        task_in(&w, "s2", "alice", json!({"prompt": "Update it", "prepared": true})).await?;
+    let (id, number) = task_in(
+        &w,
+        "s2",
+        "alice",
+        json!({"prompt": "Update it", "prepared": true}),
+    )
+    .await?;
     let text = "Use the v2 endpoints only.\nKeep v1 working.";
     let call_ = ask_to(
         &w,
@@ -800,8 +820,13 @@ async fn approved_messages_and_stops_reach_the_task_of_another_sandbox() -> Test
 #[tokio::test]
 async fn a_declined_change_changes_nothing() -> TestResult {
     let w = world(60_000).await?;
-    let (id, number) =
-        task_in(&w, "s2", "alice", json!({"prompt": "Update it", "prepared": true})).await?;
+    let (id, number) = task_in(
+        &w,
+        "s2",
+        "alice",
+        json!({"prompt": "Update it", "prepared": true}),
+    )
+    .await?;
     let before = w.h.store.task(&id).await?.ok_or("task")?;
     for (action, args) in [
         (
@@ -832,10 +857,14 @@ async fn a_declined_change_changes_nothing() -> TestResult {
 #[tokio::test]
 async fn what_cannot_be_changed_is_refused_without_asking() -> TestResult {
     let w = world(60_000).await?;
-    let (_, number) =
-        task_in(&w, "s2", "alice", json!({"prompt": "Update it", "prepared": true})).await?;
-    let (docs_task, docs_number) =
-        task_in(&w, "s3", "bob", json!({"prompt": "Docs work"})).await?;
+    let (_, number) = task_in(
+        &w,
+        "s2",
+        "alice",
+        json!({"prompt": "Update it", "prepared": true}),
+    )
+    .await?;
+    let (docs_task, docs_number) = task_in(&w, "s3", "bob", json!({"prompt": "Docs work"})).await?;
     let caller = superagent("s1", &w.alice_id, "alice")?;
     let long = "x".repeat(70 * 1024);
     for (action, args, says) in [
@@ -896,7 +925,10 @@ async fn what_cannot_be_changed_is_refused_without_asking() -> TestResult {
             "cannot see",
         ),
     ] {
-        let refused = w.h.app.tool_sandbox_task_request(&caller, action, &args).await;
+        let refused =
+            w.h.app
+                .tool_sandbox_task_request(&caller, action, &args)
+                .await;
         let err = refused
             .err()
             .ok_or_else(|| format!("{action:?} {args} was asked"))?;
@@ -915,8 +947,13 @@ async fn what_cannot_be_changed_is_refused_without_asking() -> TestResult {
 #[tokio::test]
 async fn an_approval_refused_by_the_target_is_the_answer() -> TestResult {
     let w = world(60_000).await?;
-    let (id, number) =
-        task_in(&w, "s2", "alice", json!({"prompt": "Update it", "prepared": true})).await?;
+    let (id, number) = task_in(
+        &w,
+        "s2",
+        "alice",
+        json!({"prompt": "Update it", "prepared": true}),
+    )
+    .await?;
     let call_ = ask_to(
         &w,
         CrossAction::Update,
@@ -943,7 +980,10 @@ async fn an_approval_refused_by_the_target_is_the_answer() -> TestResult {
     assert!(call_.await?.is_err());
     assert!(matches!(status_of(&w, &id).await?, TaskStatus::Stopped(_)));
     let rows = audited(&w, "s2").await?;
-    assert_eq!(rows.last().map(|r| r["outcome"].clone()), Some(json!("failed")));
+    assert_eq!(
+        rows.last().map(|r| r["outcome"].clone()),
+        Some(json!("failed"))
+    );
     Ok(())
 }
 
@@ -952,8 +992,13 @@ async fn an_approval_refused_by_the_target_is_the_answer() -> TestResult {
 #[tokio::test]
 async fn every_cross_sandbox_answer_is_audited_in_both_sandboxes() -> TestResult {
     let w = world(60_000).await?;
-    let (id, number) =
-        task_in(&w, "s2", "alice", json!({"prompt": "Update it", "prepared": true})).await?;
+    let (id, number) = task_in(
+        &w,
+        "s2",
+        "alice",
+        json!({"prompt": "Update it", "prepared": true}),
+    )
+    .await?;
     let secret_words = "Rotate the payment keys";
     let call_ = ask_to(
         &w,
@@ -1015,8 +1060,13 @@ async fn every_cross_sandbox_answer_is_audited_in_both_sandboxes() -> TestResult
 #[tokio::test]
 async fn an_unanswered_change_is_audited_as_expired_in_both_sandboxes() -> TestResult {
     let w = world(300).await?;
-    let (id, number) =
-        task_in(&w, "s2", "alice", json!({"prompt": "Update it", "prepared": true})).await?;
+    let (id, number) = task_in(
+        &w,
+        "s2",
+        "alice",
+        json!({"prompt": "Update it", "prepared": true}),
+    )
+    .await?;
     let outcome = ask_to(
         &w,
         CrossAction::Update,

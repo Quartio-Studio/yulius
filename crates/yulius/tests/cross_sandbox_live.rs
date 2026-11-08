@@ -36,9 +36,11 @@ async fn approved(
         tokio::spawn(async move { app.tool_sandbox_task_request(&caller, action, &args).await })
     };
     let source = caller.sandbox.as_str();
-    wait_for("the request on the panel", Duration::from_secs(10), || async {
-        app.superagent_requests(person, source).len() == 1
-    })
+    wait_for(
+        "the request on the panel",
+        Duration::from_secs(10),
+        || async { app.superagent_requests(person, source).len() == 1 },
+    )
     .await?;
     let listed = app.superagent_requests(person, source);
     let id = listed[0]["id"].as_str().ok_or("id")?;

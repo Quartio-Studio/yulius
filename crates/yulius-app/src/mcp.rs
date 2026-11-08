@@ -1049,7 +1049,10 @@ mod tests {
             "sandbox_task_stop",
             "never delete and recreate",
         ] {
-            assert!(instructions.contains(said), "the instructions miss `{said}`");
+            assert!(
+                instructions.contains(said),
+                "the instructions miss `{said}`"
+            );
         }
         let create = cockpit_tool_descriptors()
             .into_iter()

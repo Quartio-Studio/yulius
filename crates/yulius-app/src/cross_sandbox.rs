@@ -152,7 +152,13 @@ impl CrossAction {
 }
 
 /// The start options `sandbox_task_update` shows when set (XST-006).
-const UPDATE_OPTIONS: [&str; 5] = ["after_task", "start_rule", "supertask", "prepared", "start_at"];
+const UPDATE_OPTIONS: [&str; 5] = [
+    "after_task",
+    "start_rule",
+    "supertask",
+    "prepared",
+    "start_at",
+];
 
 /// The task a request is about, as its card names it.
 #[derive(Clone)]
@@ -418,7 +424,9 @@ impl App {
         args: &Value,
     ) -> AppResult<Value> {
         let parsed: CrossTaskRef = parse(args)?;
-        let (_, target) = self.cross_target(caller, &parsed.sandbox, "task_get").await?;
+        let (_, target) = self
+            .cross_target(caller, &parsed.sandbox, "task_get")
+            .await?;
         let there = pinned(caller, &target);
         self.tool_task_get(&there, &without_sandbox(args)).await
     }
