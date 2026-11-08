@@ -83,7 +83,8 @@ pastes the token by hand, and the production secret stays exclusive to productio
 - [x] A person allows or dismisses a copy through the API, creating the agent secret
 - [x] The Secrets page shows a copy request with Allow copy and Dismiss
 - [x] ADR, architecture, API and product docs describe copy requests
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] Independent review in a fresh session, round 1 findings fixed test-first
+- [ ] Independent review round 2 approves the exact head
 - [ ] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
