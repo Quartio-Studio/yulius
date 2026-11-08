@@ -2212,7 +2212,22 @@ route('POST', `/api/sandboxes/${ID}/cd/${ID}/deploy`, async ({ db, p, body }) =>
   const also = others.length ? `. Also, a person who manages ${others.join(', ')} allows ${others.length === 1 ? 'it' : 'them'} for production deploys` : '';
   if (used.length) fail(409, 'conflict', `nothing ran: agents use ${used.join(', ')} (copies into .env files or hosts the proxy sends ${it} to), so production deploys never get ${it} and nobody can allow ${it} for them. Production names a separate secret of its own in [cd.${name}] secrets of yulius.toml, added on the Secrets page (${ORIGIN}/s/${encodeURIComponent(sandbox.slug)}/secrets?section=agents); or a person first revokes the .env copies and hosts of ${used.join(', ')}${also}`);
   if (env.secrets.some((s) => s.state !== 'ready')) fail(409, 'conflict', `nothing ran: a person who manages ${env.secrets.filter((s) => s.state !== 'ready').map((s) => s.name).join(', ')} allows using it outside the proxy on the Secrets page`);
+  // A production deploy waiting for its proof on dev refuses another at once (SPEC-438).
+  const rb = env.rollback || {};
+  if (prod && rb.waiting) fail(409, 'conflict', `nothing ran: ${rb.waiting}`);
   if (cd.runs.some((r) => r.environment === name && progressCd(r, db.cdRunMs).state === 'running')) fail(409, 'conflict', `a deploy to ${env.label} is running`);
+  // SPEC-438: production whose rollback is unproven for its commit deploys dev first and waits for
+  // its drill (a test opts in with `__yuliusMock.cdProveOnDev`; the seed's production is blocked).
+  if (prod && db.cdProveOnDev && rb.blocked) {
+    const dev = cd.environments.find((e) => e.name === (rb.drill_environment || 'dev'));
+    const login = db.me.user.login;
+    const at = String(env.promote ? env.promotes_from : env.head).slice(0, 7);
+    db.nextId += 1;
+    const proving = cdRun(`cd_${db.nextId}`, dev.name, dev.branch, dev.head, 'running', 0, login, { stage: 'dev', note: `deployed to prove the rollback of production: production deploys at ${at} once this deploy's rollback drill passes (asked by ${login})` });
+    cd.runs.unshift(proving);
+    rb.waiting = `Production deploys at ${at} once the rollback drill of ${dev.name} passes (asked by ${login})`;
+    return cdSummary(proving);
+  }
   db.nextId += 1;
   const run = cdRun(`cd_${db.nextId}`, name, env.branch, env.head || '0000000', 'running', 0, db.me.user.login, { stage: env.stage, ...(prod && env.promote ? { note: `promoted the integration branch to '${env.branch}'` } : {}) });
   cd.runs.unshift(run);
