@@ -554,7 +554,7 @@ fn pr_wire_state(pull: &GhPull) -> &'static str {
 /// The checks word of a pull request head from Yulius CI's run there, when the project has Yulius
 /// CI: an errored run is `error` (the run could not happen: disk, a timeout, the host), not a
 /// failure of the code (S5, F 2026-10-13: infrastructure errors read "checks failing · Needs you").
-fn ci_checks_word(gate: yulius_domain::ci::GateResult) -> Option<&'static str> {
+pub(crate) fn ci_checks_word(gate: yulius_domain::ci::GateResult) -> Option<&'static str> {
     use yulius_domain::ci::{GateResult, RunState};
     match gate {
         GateResult::NotConfigured => None,

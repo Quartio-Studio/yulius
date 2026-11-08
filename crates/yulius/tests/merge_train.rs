@@ -24,7 +24,7 @@ use yulius_app::ci::CiRunRecord;
 use yulius_app::context::App;
 use yulius_app::merge_train::MERGE_TRAINS_FILE;
 use yulius_app::model::{AttemptRecord, LaunchKind, Sealed, TaskOrigin, TaskRecord};
-use yulius_app::ports::store::TaskStore;
+use yulius_app::ports::store::{TaskStore, UserStore};
 use yulius_domain::ci::{CiRef, RunState};
 use yulius_domain::delivery::DeliveryStage;
 use yulius_domain::harness::Harness;
@@ -524,6 +524,11 @@ impl Fixture {
     /// Records a passed run of pull request `n` at `head` with its `yulius/ci` status published,
     /// as if it had run (no run ends, so no pass starts by itself).
     async fn record_passed(&self, app: &App, n: u32, head: &str) -> TestResult {
+        self.record_run(app, n, head, RunState::Passed).await
+    }
+
+    /// As [`Self::record_passed`], ended in `state`.
+    async fn record_run(&self, app: &App, n: u32, head: &str, state: RunState) -> TestResult {
         let now = app.now();
         app.deps
             .store
@@ -534,10 +539,10 @@ impl Fixture {
                     reference: CiRef::PullRequest(u64::from(n)),
                     sha: head.to_owned(),
                     source: yulius_domain::ci::GateSource::ProjectConfig,
-                    state: RunState::Passed,
+                    state,
                     reason: None,
                     requested_by: "yulius".into(),
-                    status_for: Some(RunState::Passed),
+                    status_for: Some(state),
                     status_note: None,
                     status_attempts: 1,
                     queued_at: now,
@@ -550,7 +555,12 @@ impl Fixture {
         self.h.github.statuses.lock().map_err(|_| "lock")?.push((
             head.to_owned(),
             yulius_app::ports::github::NewCommitStatus {
-                state: "success".into(),
+                state: if state == RunState::Passed {
+                    "success"
+                } else {
+                    "error"
+                }
+                .into(),
                 context: yulius_domain::ci::STATUS_CONTEXT.into(),
                 description: "Passed".into(),
                 target_url: None,
@@ -1064,6 +1074,27 @@ async fn an_armed_merge_follows_the_agents_own_clean_merge_of_dev() -> TestResul
     git(&worktree, &["merge", "-q", "--no-edit", "origin/dev"])?;
     let merged = git(&worktree, &["rev-parse", "HEAD"])?;
     assert_ne!(merged, armed);
+    // Armed again with the head its review covered, before any pass: the place is kept and the
+    // merge follows the new head (SPEC-441 MQ-006).
+    let (_, armed_at) = saved_armed(&app, 1)?.ok_or("armed")?;
+    f.h.clock.0.fetch_add(1000, Ordering::SeqCst);
+    // Its plan is recorded, so Yulius pushes the new head.
+    support::mcp_tool(
+        &f.h,
+        "tok-t1",
+        "steps_set",
+        json!({"steps": [{"title": "Make the change", "status": "done"}]}),
+    )
+    .await?;
+    let again = support::mcp_tool(
+        &f.h,
+        "tok-t1",
+        "delivery_merge",
+        json!({"reviewed_head": armed, "review_summary": "approve"}),
+    )
+    .await?;
+    assert_eq!(support::tool_text(&again)["armed"], true, "{again}");
+    assert_eq!(saved_armed(&app, 1)?, Some((merged.clone(), armed_at)));
 
     app.merge_armed(&f.sandbox).await;
     let state = f.wait(1, &worktree).await?;
@@ -1463,6 +1494,10 @@ async fn every_armed_pull_request_says_where_it_stands() -> TestResult {
         third.contains("as soon as your turn ends with everything committed"),
         "{third}"
     );
+    // Nothing here can be decided before the candidate's run ends: the fast pass leaves the
+    // sandbox alone (review M1: it fetched and asked GitHub every 20 seconds for an hour).
+    let sandbox = app.deps.store.sandbox(&f.sandbox).await?.ok_or("s1")?;
+    assert!(!app.decidable_in(&sandbox).await);
     let status = support::mcp_tool(&f.h, "tok-t2", "delivery_status", json!({})).await?;
     let status = support::tool_text(&status);
     assert!(
@@ -1583,6 +1618,172 @@ async fn a_pinned_hand_merge_on_a_green_head_counts() -> TestResult {
     assert!(
         outcome.contains("but Yulius CI did not pass at that head (no run): it does not count"),
         "{outcome}"
+    );
+    Ok(())
+}
+
+/// Review M2 (SPEC-441 MQ-004/MQ-005): a candidate whose run was cancelled (or errored) says
+/// nothing about its members, so they go one by one: each brought up to date after its own run
+/// passed, that head's run decides, and it merges. No second candidate forms from them.
+#[tokio::test]
+async fn a_cancelled_candidate_sends_its_members_one_by_one() -> TestResult {
+    let f = fixture().await?;
+    let app = f.h.app.clone();
+    let sandbox = app.deps.store.sandbox(&f.sandbox).await?.ok_or("s1")?;
+    let mut worktrees = Vec::new();
+    for (n, file) in [(1, "a.txt"), (2, "b.txt")] {
+        worktrees.push(f.task(n, &[(file, "x\n")]).await?);
+    }
+    for (n, worktree) in (1..).zip(&worktrees) {
+        f.arm(n, worktree).await?;
+        f.record_passed(&app, n, &git(worktree, &["rev-parse", "HEAD"])?)
+            .await?;
+    }
+    f.advance_dev("other.txt")?;
+    app.merge_armed(&f.sandbox).await;
+    let train = f.train_runs(&app).await?.first().cloned().ok_or("train")?;
+    let cancelled = call(
+        &f.h.router,
+        Method::POST,
+        &format!("/api/sandboxes/s1/ci/runs/{}/cancel", train.id),
+        None,
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(cancelled.status, StatusCode::OK, "{}", cancelled.body);
+    f.decide_until(&app, || async {
+        app.ci_sync_sandbox(&sandbox).await?;
+        f.settle(&app).await?;
+        Ok(f.merged(&app, 1).await? && f.merged(&app, 2).await?)
+    })
+    .await?;
+    assert_eq!(f.train_runs(&app).await?.len(), 1, "no second candidate");
+    let executed = f.executed(&app).await?;
+    let own = executed
+        .iter()
+        .filter(|r| matches!(r.reference, CiRef::PullRequest(_)))
+        .count();
+    assert!(
+        own >= 1,
+        "brought up to date, its own run decided: {executed:?}"
+    );
+    Ok(())
+}
+
+/// Review M2 (SPEC-441 MQ-003): a member whose agent is busy when a passed candidate reaches it
+/// is waited for, not dropped from the candidate; it merges once its agent is idle. A member
+/// busy beyond the bound (`WAIT_LIMIT_MS`) ends the candidate and stays armed.
+#[tokio::test]
+async fn a_busy_member_of_a_passed_candidate_is_waited_for() -> TestResult {
+    let f = fixture().await?;
+    let app = f.h.app.clone();
+    let busy = |n: u32, activity: Activity| {
+        let f = &f;
+        async move {
+            f.h.store
+                .transition_task(
+                    &TaskId::parse(&format!("t{n}"))?,
+                    None,
+                    TaskStatus::Running,
+                    Some(activity),
+                    f.h.app.now(),
+                )
+                .await?;
+            Ok::<_, Box<dyn std::error::Error>>(())
+        }
+    };
+    for n in [1u32, 2] {
+        let worktree = f.task(n, &[(&format!("f{n}.txt"), "x\n")]).await?;
+        f.arm(n, &worktree).await?;
+        f.record_passed(&app, n, &git(&worktree, &["rev-parse", "HEAD"])?)
+            .await?;
+        f.advance_dev(&format!("other-{n}.txt"))?;
+        app.merge_armed(&f.sandbox).await;
+        assert_eq!(f.train_runs(&app).await?.len(), n as usize);
+        busy(n, Activity::Working).await?;
+        f.settle(&app).await?;
+        app.merge_armed(&f.sandbox).await;
+        assert!(!f.merged(&app, n).await?);
+        assert!(
+            f.trains_file(&app).contains("\"waiting_since\""),
+            "waits: {}",
+            f.trains_file(&app)
+        );
+        if n == 1 {
+            busy(1, Activity::Waiting).await?;
+            f.decide_until(&app, || async { f.merged(&app, 1).await })
+                .await?;
+        }
+    }
+    // #2's agent stays busy beyond the bound: the candidate ends, the merge stays armed.
+    f.h.clock.0.fetch_add(
+        yulius_app::merge_train::WAIT_LIMIT_MS + 1000,
+        Ordering::SeqCst,
+    );
+    app.merge_armed(&f.sandbox).await;
+    assert!(!f.trains_file(&app).contains("\"train\":{"), "ended");
+    assert!(!f.merged(&app, 2).await?);
+    let state = f
+        .wait(2, &app.config.data_dir.join("sandboxes/s1/worktrees/t2"))
+        .await?;
+    assert_eq!(state["merge_armed"], true, "{state}");
+    Ok(())
+}
+
+/// Review minor 1 (SPEC-441 MQ-005): a member that cannot merge at its turn for a reason of its
+/// own (here its owner can no longer act) goes one by one, where it is told why, instead of
+/// the same candidate being formed and run again.
+#[tokio::test]
+async fn a_member_that_cannot_merge_is_told_instead_of_tested_again() -> TestResult {
+    let f = fixture().await?;
+    let app = f.h.app.clone();
+    let worktree = f.task(1, &[("a.txt", "x\n")]).await?;
+    f.arm(1, &worktree).await?;
+    f.record_passed(&app, 1, &git(&worktree, &["rev-parse", "HEAD"])?)
+        .await?;
+    f.advance_dev("other.txt")?;
+    app.merge_armed(&f.sandbox).await;
+    assert_eq!(f.train_runs(&app).await?.len(), 1);
+    f.settle(&app).await?;
+    f.h.store
+        .update_user_flags(&UserId::parse("u-alice")?, Some(Some(app.now())), None)
+        .await?;
+    f.decide_until(&app, || async {
+        Ok(f.wait(1, &worktree).await?["merge_armed"] == false)
+    })
+    .await?;
+    let outcome = f.wait(1, &worktree).await?["merge_outcome"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    assert!(outcome.contains("owner can no longer act"), "{outcome}");
+    app.merge_armed(&f.sandbox).await;
+    assert_eq!(f.train_runs(&app).await?.len(), 1, "not tested again");
+    Ok(())
+}
+
+/// Review minor 3 (SPEC-441 MQ-007): an armed head whose own run errored says so and how to go
+/// on, instead of "waits for its own run", which would never come.
+#[tokio::test]
+async fn an_errored_run_says_to_rerun_it() -> TestResult {
+    let f = fixture().await?;
+    let app = f.h.app.clone();
+    let worktree = f.task(1, &[("a.txt", "x\n")]).await?;
+    f.arm(1, &worktree).await?;
+    f.record_run(
+        &app,
+        1,
+        &git(&worktree, &["rev-parse", "HEAD"])?,
+        RunState::Error,
+    )
+    .await?;
+    app.merge_armed(&f.sandbox).await;
+    let state = f.wait(1, &worktree).await?;
+    assert_eq!(state["merge_armed"], true, "{state}");
+    let note = state["merge_train"].as_str().unwrap_or_default();
+    assert!(
+        note.contains("ended in error") && note.contains("`ci_rerun`"),
+        "{note}"
     );
     Ok(())
 }

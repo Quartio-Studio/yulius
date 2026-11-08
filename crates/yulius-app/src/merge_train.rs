@@ -1,30 +1,34 @@
-//! Merge trains (SPEC-084, ADR-0067): when two or more armed pull requests wait, Yulius tests
-//! them together and merges them one after another on that one verdict.
+//! Merge trains (SPEC-084, ADR-0067), the merge candidates of the merge queue (SPEC-441,
+//! ADR-0285): armed pull requests whose own run passed but whose base moved since are tested
+//! together on top of the integration branch and merged one after another on that one verdict.
 //!
-//! Under a strict "up to date" rule only one pull request can merge per CI run: each merge puts
-//! every other armed one behind, Yulius merges the integration branch into it (DLV-203) and CI
-//! runs again (F 2026-10-13: 96 such updates in two days, 44% of the CI time kept).
+//! Under a strict "up to date" rule a pull request merges only with its base in its head. Moving
+//! the head of one whose own run still goes restarts that run (F 2026-11-07: with 45 to 60 minute
+//! runs, most runs were thrown away), so a pull request joins a train only once its own run (its
+//! pre-check) passed, and only when it is behind its base: a green one that is up to date merges
+//! alone, at once.
 //!
-//! A train is built in Yulius's clone, exactly as the merges will happen: the integration branch
-//! is merged into each armed head in arm order (the repository's merge drivers apply), each
-//! result landing as the profile's merge method lands it, so the train's last commit has the
-//! tree the integration branch has once every member merged. A head that conflicts is left out.
-//! Yulius CI runs once on that commit (reference `train/<numbers>`, never published on GitHub).
+//! A train (1 to [`MAX_MEMBERS`] members, in arm order) is built in Yulius's clone, exactly as the
+//! merges will happen: the integration branch is merged into each armed head in arm order (the
+//! repository's merge drivers apply), each result landing as the profile's merge method lands it,
+//! so the train's last commit has the tree the integration branch has once every member merged. A
+//! head that conflicts is left out. Yulius CI runs once on that commit (reference
+//! `train/<numbers>`, never published on GitHub).
 //!
-//! While it runs, the members after the first (and any left out) are held: not brought up to
-//! date (that would only start runs the train makes useless), not merged on their own; the
-//! first stays in the one-by-one flow. When it passes, the train
-//! merges them in order: it brings each up to date as DLV-203 does, checks that the result has
-//! exactly the tree the train predicted, records the train's verdict at that head (published as
-//! `yulius/ci`, so GitHub's own rules are met without a new run), waits until GitHub shows the
-//! new head and merges it through the normal merge path with all its gates. The integration
-//! branch must have the predicted tree before each step.
+//! Every member (and any left out) is held while the train lives: not brought up to date, not
+//! merged on its own. When the run passes, the train merges them in order: it brings each up to
+//! date as DLV-203 does, checks that the result has exactly the tree the train predicted, records
+//! the train's verdict at that head (published as `yulius/ci`, so GitHub's own rules are met
+//! without a new run), waits until GitHub shows the new head and merges it through the normal
+//! merge path with all its gates. A member whose agent is busy at its turn is waited for, within
+//! [`WAIT_LIMIT_MS`]. The integration branch must have the predicted tree before each step.
 //!
-//! Anything unexpected dissolves the train and every member goes back to the one-by-one flow:
-//! a red, errored or cancelled run (its members then merge one by one until armed again), the
-//! integration branch moving another way, a member re-armed, busy, changed or refused, a tree
-//! that differs, GitHub not catching up within [`WAIT_LIMIT_MS`]. A train can only make merging
-//! faster, never stop it.
+//! A failed run is bisected: a train of two or more is formed again from its first half, and a
+//! failed train of one ends that armed merge, saying why. Anything else unexpected dissolves the
+//! train: an errored or cancelled run, or a member that cannot merge for a reason of its own,
+//! sends those members one by one (DLV-203 after their own run passed); the integration branch
+//! moving another way, a member re-armed or moved on, or GitHub not catching up within
+//! [`WAIT_LIMIT_MS`] lets the train form again.
 //!
 //! State: `<data>/merge-trains.json` (one train per sandbox, written whole and renamed into
 //! place), the CI run in the store and the commits in the clone; so a restart picks the train up
@@ -164,6 +168,9 @@ enum Step {
     Wait,
     /// The train is dissolved, for this reason.
     Stop(String),
+    /// The train is dissolved, for a reason of this member's own: it goes one by one, where it
+    /// is told what stops it, instead of being tested again in the same train (SPEC-441 MQ-005).
+    OneByOne(String),
 }
 
 /// An armed pull request that could join a train.
@@ -327,6 +334,13 @@ impl App {
         note_of(state.train.as_ref()?, task.id.as_str())
     }
 
+    /// Whether `sandbox` has a merge train whose run is still queued or running.
+    pub(crate) fn train_running(&self, sandbox: &SandboxRecord) -> bool {
+        self.read_trains(&sandbox.id)
+            .train
+            .is_some_and(|train| !train.merging)
+    }
+
     /// Whether `sandbox`'s merge train has a run that is no longer queued or running: the next
     /// pass merges its members or dissolves it.
     pub(crate) async fn train_run_ended(&self, sandbox: &SandboxRecord) -> bool {
@@ -461,7 +475,7 @@ impl App {
             }
             RunState::Passed => {
                 state.limit = None;
-                self.drive_train(sandbox, train).await
+                self.drive_train(sandbox, state, train).await
             }
             RunState::Failed => {
                 self.bisect(sandbox, state, &train).await;
@@ -470,6 +484,7 @@ impl App {
             other => {
                 // Errored or cancelled, which says nothing about the members: they merge one by
                 // one, each brought up to date after its own run passed, until armed again.
+                state.limit = None;
                 state
                     .held_back
                     .extend(train.members.iter().map(|m| (m.task.clone(), m.armed_at)));
@@ -601,6 +616,7 @@ impl App {
     async fn drive_train(
         self: &Arc<Self>,
         sandbox: &SandboxRecord,
+        state: &mut SandboxTrains,
         mut train: Train,
     ) -> Option<Train> {
         train.merging = true;
@@ -641,6 +657,12 @@ impl App {
                 Step::Merged => train.waiting_since = None,
                 Step::Wait => return self.train_waits(sandbox, train).await,
                 Step::Stop(reason) => {
+                    self.dissolve(sandbox, &train, &reason).await;
+                    return None;
+                }
+                Step::OneByOne(reason) => {
+                    let member = &train.members[index];
+                    state.held_back.push((member.task.clone(), member.armed_at));
                     self.dissolve(sandbox, &train, &reason).await;
                     return None;
                 }
@@ -728,9 +750,14 @@ impl App {
     ) -> (Verdict, Step) {
         let member = &train.members[index];
         let armed = deciding.merge.clone();
-        let keep = |armed: ArmedMerge, reason: String| (Verdict::Keep(armed), Step::Stop(reason));
+        // Most stops are this member's own: it goes one by one, where it is told why.
+        let keep =
+            |armed: ArmedMerge, reason: String| (Verdict::Keep(armed), Step::OneByOne(reason));
         if armed.armed_at != member.armed_at {
-            return keep(armed, format!("#{} was armed again", member.pr));
+            return (
+                Verdict::Keep(armed),
+                Step::Stop(format!("#{} was armed again", member.pr)),
+            );
         }
         let (Some(worktree), Some(branch)) =
             (task.worktree_path.as_deref(), task.branch.as_deref())
@@ -755,7 +782,10 @@ impl App {
             .and_then(|log| log.into_iter().next())
             .map(|commit| commit.sha);
         if at.as_deref() != Some(armed.head.as_str()) {
-            return keep(armed, format!("#{} moved on", member.pr));
+            return (
+                Verdict::Keep(armed),
+                Step::Stop(format!("#{} moved on", member.pr)),
+            );
         }
         let profile = delivery_profile(sandbox);
         let integration = profile.integration_branch.clone();
@@ -1079,7 +1109,8 @@ impl App {
         false
     }
 
-    /// Forms a train from the armed pull requests waiting now, if two or more can go together.
+    /// Forms a train from the armed pull requests waiting now whose own run passed and whose base
+    /// moved since (SPEC-441 MQ-003), if any, at most the bisection's limit of them.
     async fn form_train(
         &self,
         sandbox: &SandboxRecord,
@@ -1162,6 +1193,20 @@ impl App {
         if state.unformed.as_deref() == Some(key.as_str()) {
             return None;
         }
+        // One merged meanwhile (by hand) is not tested again: GitHub says so before a build, and
+        // its own decision then says what the merge counts as (SPEC-441 MQ-009).
+        let mut open = Vec::with_capacity(candidates.len());
+        for candidate in candidates {
+            if self.pull_open(sandbox, candidate.pr).await {
+                open.push(candidate);
+            }
+        }
+        let candidates = open;
+        if candidates.is_empty() {
+            return None;
+        }
+        let heads: Vec<String> = candidates.iter().map(|c| c.armed.head.clone()).collect();
+        let key = format!("{base}:{}", heads.join(","));
         let ci_dir = self.ci_dir(&sandbox.id);
         // Readied through handles: Git checks out in it by its path (SPEC-367).
         // A train that cannot be built leaves its candidates to the one-by-one flow.
@@ -1304,6 +1349,23 @@ impl App {
             waiting_since: None,
             formed_at: self.now().0,
         })
+    }
+
+    /// Whether GitHub shows pull request `pr` open; `true` when it cannot be read (the merge
+    /// path asks again).
+    async fn pull_open(&self, sandbox: &SandboxRecord, pr: u64) -> bool {
+        let Ok(token) = self.dlv_installation_token(sandbox).await else {
+            return true;
+        };
+        match self
+            .deps
+            .github
+            .get_pull(&token, &sandbox.repo_owner, &sandbox.repo_name, pr)
+            .await
+        {
+            Ok(pull) => !pull.merged && pull.state == "open",
+            Err(_) => true,
+        }
     }
 
     /// Whether `task` could be brought up to date now, as DLV-203 requires: running and idle

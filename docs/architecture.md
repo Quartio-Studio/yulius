@@ -737,7 +737,8 @@ Every sandbox's armed merges go through one queue, with no setting
 amending the merge trains of [decision 0067](decisions/0067-armed-pull-requests-merge-in-trains.md)).
 A pass (`App::merge_armed`, one per sandbox at a time) runs at the end of every CI run, every 3
 minutes after the delivery reconcile, and every 20 seconds for a sandbox with something it can
-decide now (an armed head whose run passed, or a candidate whose run ended). It fetches the clone,
+decide now (a candidate whose run ended, or an armed head whose run passed that is up to date or,
+with no candidate under test, whose agent is idle). It fetches the clone,
 then decides the armed merges in arm order:
 
 - a pull request's own run (its pre-check) always finishes: until it passed, Yulius neither
@@ -749,8 +750,9 @@ then decides the armed merges in arm order:
   the members are brought up to date in their worktrees, the verdict recorded at each pushed head,
   and merged in order;
 - a red candidate of n ≥ 2 is formed again from its first ⌈n/2⌉; a red one of one ends that armed
-  merge with the reason; an errored or cancelled one, a candidate that cannot be built, a pull
-  request that conflicts with the base alone, and projects without Yulius CI, with rebase merges
+  merge with the reason; a member busy at its turn is waited for (15 minutes at most); an errored
+  or cancelled one, a member that cannot merge for a reason of its own, a candidate that cannot
+  be built, a pull request that conflicts with the base alone, and projects without Yulius CI, with rebase merges
   or automatic promotion go one by one (DLV-203 after the pre-check).
 
 Each kept decision leaves a sentence in the armed slot (`ArmedSlot::note`), which `yulius wait`

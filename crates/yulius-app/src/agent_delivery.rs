@@ -203,7 +203,7 @@ impl App {
                     Ok(json!({"merged": true, "delivery": view}))
                 }
                 crate::delivery::playground::PlaygroundMerge::Testing(state, note) => {
-                    self.arm_merge(&ctx.task, &head, &summary);
+                    self.arm_merge(&ctx.task, &head, reviewed, &summary);
                     self.agent_audit(
                         ctx,
                         "delivery.agent.merge_armed",
@@ -264,7 +264,10 @@ impl App {
             let sandbox = self.deps.store.sandbox(&ctx.task.sandbox_id).await;
             let counts = match (record.pr_number, sandbox) {
                 (Some(number), Ok(Some(sandbox))) => {
-                    format!(" {}", self.merged_note(&ctx.task, &sandbox, number).await)
+                    format!(
+                        " {}",
+                        self.merged_note(&ctx.task, &sandbox, number, false).await
+                    )
                 }
                 _ => String::new(),
             };
@@ -331,7 +334,7 @@ impl App {
                 // Still running (or not known yet): Yulius merges this exact head by itself once
                 // its checks pass (SPEC-011), so the agent never polls for them. Armed already:
                 // it keeps its place (SPEC-441 MQ-006).
-                if !self.arm_merge(&ctx.task, &head, &summary) {
+                if !self.arm_merge(&ctx.task, &head, reviewed, &summary) {
                     return Ok(json!({
                         "merged": false,
                         "armed": true,
@@ -366,7 +369,7 @@ impl App {
             // GitHub could not take the pull request's new title for now (SPEC-069 BPL-008):
             // armed, so Yulius merges this head on its next pass.
             Err(MergeFailure::Later(err)) => {
-                self.arm_merge(&ctx.task, &head, &summary);
+                self.arm_merge(&ctx.task, &head, reviewed, &summary);
                 self.agent_audit(
                     ctx,
                     "delivery.agent.merge_armed",

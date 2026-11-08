@@ -242,19 +242,34 @@ impl WaitState {
 }
 
 impl App {
-    /// Arms a merge of `head` for when its checks pass (`delivery_merge` while they still run).
-    /// The same head armed already stays armed as it was, with its place in the queue (SPEC-441
-    /// MQ-006: arming it again took it out of its merge train); returns `false` then.
-    pub(crate) fn arm_merge(&self, task: &TaskRecord, head: &str, summary: &str) -> bool {
+    /// Arms a merge of `head` for when its checks pass (`delivery_merge` while they still run),
+    /// the independent review having approved `reviewed` (`head`, or an ancestor of it through
+    /// clean merges of the integration branch only). The same head armed already stays armed as
+    /// it was, with its place in the queue (SPEC-441 MQ-006: arming it again took it out of its
+    /// merge train); returns `false` then. A merge armed at `reviewed` follows `head` with its
+    /// place.
+    pub(crate) fn arm_merge(
+        &self,
+        task: &TaskRecord,
+        head: &str,
+        reviewed: &str,
+        summary: &str,
+    ) -> bool {
         let runtime = self.runtime(&task.id);
         let mut slot = lock_slot(&runtime);
         if slot.merge.as_ref().is_some_and(|armed| armed.head == head) {
             return false;
         }
+        let reviewed = reviewed.to_ascii_lowercase();
+        let armed_at = slot
+            .merge
+            .as_ref()
+            .filter(|armed| reviewed.len() >= 7 && armed.head.starts_with(&reviewed))
+            .map_or_else(|| self.now().0, |armed| armed.armed_at);
         let merge = ArmedMerge {
             head: head.to_owned(),
             summary: summary.to_owned(),
-            armed_at: self.now().0,
+            armed_at,
         };
         self.save_armed(&task.id, Some(&merge));
         slot.arm(merge);
@@ -389,26 +404,48 @@ impl App {
         }
     }
 
-    /// Whether a pass could decide something in `sandbox` now: an armed head whose own run passed
-    /// (merge it, or put it in a candidate), or a merge candidate whose run ended.
-    async fn decidable_in(&self, sandbox: &crate::model::SandboxRecord) -> bool {
+    /// Whether a pass could decide something in `sandbox` now, from Yulius's own records and its
+    /// clone: a merge candidate whose run ended, or an armed head whose own run passed that is up
+    /// to date (merge it) or, with no candidate under test, whose agent is idle (put it in one,
+    /// or bring it up to date). A green head waiting for a candidate under test or for its busy
+    /// agent is not: a pass then would only fetch and ask GitHub again (review M1).
+    pub async fn decidable_in(&self, sandbox: &crate::model::SandboxRecord) -> bool {
         use yulius_domain::ci::{GateResult, RunState};
+        use yulius_domain::task::{Activity, TaskStatus};
         if self.train_run_ended(sandbox).await {
             return true;
         }
         let Ok(tasks) = self.deps.store.tasks(&sandbox.id, false).await else {
             return false;
         };
+        let repo = self.sandbox_repo(&sandbox.id);
+        let integration = format!(
+            "origin/{}",
+            crate::delivery::delivery_profile(sandbox).integration_branch
+        );
+        let candidate_running = self.train_running(sandbox);
         for task in tasks {
-            // Held by a candidate under test: only its run's end (which starts a pass) moves it.
-            if self.train_hold(&task) == crate::merge_train::Hold::Held {
+            let ArmedNow::Armed(armed) = self.armed_now(&task.id) else {
+                continue;
+            };
+            if !matches!(
+                self.ci_gate_result(sandbox, &armed.head).await,
+                GateResult::Run(Some(RunState::Passed | RunState::Skipped))
+            ) {
                 continue;
             }
-            if let ArmedNow::Armed(armed) = self.armed_now(&task.id)
-                && matches!(
-                    self.ci_gate_result(sandbox, &armed.head).await,
-                    GateResult::Run(Some(RunState::Passed | RunState::Skipped))
-                )
+            let current = matches!(
+                self.deps
+                    .git
+                    .is_ancestor(&repo, &integration, &armed.head)
+                    .await,
+                Ok(true)
+            );
+            let idle = task.status == TaskStatus::Running
+                && task.activity.is_some_and(Activity::is_idle)
+                && self.background_shells_of(&task.id).unwrap_or(0) == 0;
+            if (current && self.train_hold(&task) == crate::merge_train::Hold::Free)
+                || (!candidate_running && idle)
             {
                 return true;
             }
@@ -630,6 +667,11 @@ impl App {
                 .merge_armed_playground(task, &auth, &sandbox, armed)
                 .await;
         }
+        // SPEC-084 TRN-004: a merge train that holds this pull request brings it up to date and
+        // merges it itself (its note says where it stands); nothing to ask GitHub meanwhile.
+        if self.train_hold(task) == crate::merge_train::Hold::Held {
+            return Verdict::Keep(armed);
+        }
         let Ok(view) = self.task_delivery(&auth, &id).await else {
             return Verdict::Keep(armed);
         };
@@ -644,17 +686,17 @@ impl App {
         };
         // Merged already, by anyone: what counts is whether its head passed (SPEC-441 MQ-009).
         if pr.state == "merged" {
-            return Verdict::Decided(self.merged_note(task, &sandbox, pr.number).await);
-        }
-        // SPEC-084 TRN-004: a merge train that holds this pull request brings it up to date and
-        // merges it itself (its note says where it stands).
-        if self.train_hold(task) == crate::merge_train::Hold::Held {
-            return Verdict::Keep(armed);
+            return Verdict::Decided(self.merged_note(task, &sandbox, pr.number, true).await);
         }
         let integration = pr.base.clone();
         let require_checks = crate::delivery::delivery_profile(&sandbox).require_checks;
-        let green = pr.checks == "success" || (pr.checks == "none" && !require_checks);
-        if pr.checks == "failure" {
+        // With Yulius CI, its run at the armed head decides: GitHub may still show an older head
+        // whose run passed, and the base must not be merged into one whose run still goes.
+        let checks =
+            crate::delivery::ci_checks_word(self.ci_gate_result(&sandbox, &armed.head).await)
+                .map_or_else(|| pr.checks.clone(), str::to_owned);
+        let green = checks == "success" || (checks == "none" && !require_checks);
+        if checks == "failure" {
             return Verdict::Decided(format!(
                 "The merge you armed was dropped: the checks of pull request #{} failed at \
                  {}. Read why with `ci_status`, fix it test-first, get the review of the new \
@@ -667,17 +709,24 @@ impl App {
         // supersede it (SPEC-441 MQ-001; every merge into the base restarted every armed pull
         // request's run, F 2026-11-07).
         if !green {
-            self.note_armed(
-                &task.id,
+            let note = if checks == "error" {
                 format!(
-                    "Pull request #{} waits for its own Yulius CI run at {} ({}). Yulius never \
-                     restarts it when `{integration}` moves; once it passes, Yulius merges the \
-                     pull request, or first tests it on top of the current `{integration}`.",
+                    "The own Yulius CI run of pull request #{} at {} ended in error (it could not \
+                     run: disk, a time limit, the host), which is not a failure of the code: \
+                     rerun it with `ci_rerun`, and Yulius merges once it passes.",
                     pr.number,
-                    short(&armed.head),
-                    pr.checks
-                ),
-            );
+                    short(&armed.head)
+                )
+            } else {
+                format!(
+                    "Pull request #{} waits for its own Yulius CI run at {} ({checks}). Yulius \
+                     never restarts it when `{integration}` moves; once it passes, Yulius merges \
+                     the pull request, or first tests it on top of the current `{integration}`.",
+                    pr.number,
+                    short(&armed.head)
+                )
+            };
+            self.note_armed(&task.id, note);
             return Verdict::Keep(armed);
         }
         // Green but behind its base: the next merge candidate tests it on top of the base
@@ -1024,6 +1073,7 @@ impl App {
         task: &TaskRecord,
         sandbox: &crate::model::SandboxRecord,
         number: u64,
+        next: bool,
     ) -> String {
         let integration = crate::delivery::delivery_profile(sandbox).integration_branch;
         let head = match self.task_github_token(task, sandbox).await {
@@ -1048,7 +1098,7 @@ impl App {
             &integration,
             &head,
             self.ci_gate_result(sandbox, &head).await,
-            true,
+            next,
         )
     }
 
@@ -1198,6 +1248,16 @@ pub(crate) fn merged_text(
         GateResult::NotConfigured => (
             format!("{at}; the project has no Yulius CI, so no run had to pass."),
             finish.to_owned(),
+        ),
+        GateResult::Run(Some(state @ (RunState::Queued | RunState::Running))) => (
+            format!(
+                "{at}, whose own Yulius CI run is still {}: it counts as merged on green once \
+                 that run passes.",
+                state.as_str()
+            ),
+            "Wait for that run with `yulius wait` (run_in_background), then end with your \
+             summary."
+                .to_owned(),
         ),
         GateResult::Run(state) => (
             format!(
