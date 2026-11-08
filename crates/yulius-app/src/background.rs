@@ -22,6 +22,13 @@ const USAGE_FIRST: Duration = Duration::from_secs(2 * 60);
 const USAGE_EVERY: Duration = Duration::from_secs(2 * 60);
 /// Delivery reconciliation with GitHub (pull requests merged or closed outside Yulius, #35).
 const DELIVERY_EVERY: Duration = Duration::from_secs(3 * 60);
+/// How often armed merges that can be decided now are decided (SPEC-441 MQ-008): an armed,
+/// green, mergeable pull request merges within a minute.
+const DECIDABLE_EVERY: Duration = Duration::from_secs(20);
+// At least twice a minute, and more often than the delivery round (checked when compiling).
+const _: () = assert!(
+    DECIDABLE_EVERY.as_secs() <= 30 && DECIDABLE_EVERY.as_secs() < DELIVERY_EVERY.as_secs()
+);
 impl App {
     /// Reconciles the runs recorded live before this start, then starts the metrics recount
     /// (SPEC-091 RCT-004, SPEC-143 RDM-003): once the runs that did not survive the restart have
@@ -100,6 +107,18 @@ impl App {
                 app.merge_armed_everywhere().await;
             }
         });
+        // Armed merges that can be decided now, between CI run ends and delivery rounds: a
+        // passed train waiting for GitHub, or a green head (SPEC-441 MQ-008).
+        let app = Arc::clone(self);
+        tokio::spawn(async move {
+            let mut every = tokio::time::interval(DECIDABLE_EVERY);
+            every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            every.tick().await;
+            loop {
+                every.tick().await;
+                app.merge_decidable_everywhere().await;
+            }
+        });
         // Yulius-run CI and repository hygiene (SPEC-002 ADR-21).
         self.start_ci();
         self.start_disk_upkeep();
@@ -117,3 +136,4 @@ impl App {
         });
     }
 }
+

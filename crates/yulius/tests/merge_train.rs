@@ -1462,3 +1462,41 @@ async fn every_armed_pull_request_says_where_it_stands() -> TestResult {
     );
     Ok(())
 }
+
+/// SPEC-441 MQ-002, MQ-008: an armed pull request that is green and up to date merges on the
+/// fast pass (every 20 seconds, with no CI run ending), even while a merge candidate of another
+/// is under test; that candidate's base moved, so it is formed again on the new base. A pass over
+/// a sandbox with nothing decidable does nothing.
+#[tokio::test]
+async fn a_green_current_pull_request_merges_on_the_next_pass() -> TestResult {
+    let f = fixture().await?;
+    let app = f.h.app.clone();
+    let first = f.task(1, &[("a.txt", "x\n")]).await?;
+    f.arm(1, &first).await?;
+    f.record_passed(&app, 1, &git(&first, &["rev-parse", "HEAD"])?)
+        .await?;
+    f.advance_dev("other.txt")?;
+    app.merge_armed(&f.sandbox).await;
+    let stale = f.train_runs(&app).await?.first().cloned().ok_or("train")?;
+    // #2 starts from the moved base; its run passes while #1's candidate is under test.
+    let second = f.task(2, &[("b.txt", "x\n")]).await?;
+    f.arm(2, &second).await?;
+    // Nothing decidable yet (#2's run has not passed): the fast pass does nothing.
+    let writes = f.h.github.writes().len();
+    app.merge_decidable_everywhere().await;
+    assert_eq!(f.h.github.writes().len(), writes);
+    f.record_passed(&app, 2, &git(&second, &["rev-parse", "HEAD"])?)
+        .await?;
+    app.merge_decidable_everywhere().await;
+    assert_eq!(f.merges(), ["merge_pull #2 squash"]);
+    // The stale candidate makes way for one on the new base, and #1 lands on it.
+    f.decide_until(&app, || async {
+        f.settle(&app).await?;
+        f.merged(&app, 1).await
+    })
+    .await?;
+    let ended = app.deps.store.ci_run(&stale.id).await?.ok_or("run")?;
+    assert_eq!(ended.state, RunState::Cancelled, "{ended:?}");
+    assert_eq!(f.merges(), ["merge_pull #2 squash", "merge_pull #1 squash"]);
+    Ok(())
+}

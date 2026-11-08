@@ -327,6 +327,18 @@ impl App {
         note_of(state.train.as_ref()?, task.id.as_str())
     }
 
+    /// Whether `sandbox`'s merge train has a run that is no longer queued or running: the next
+    /// pass merges its members or dissolves it.
+    pub(crate) async fn train_run_ended(&self, sandbox: &SandboxRecord) -> bool {
+        let Some(train) = self.read_trains(&sandbox.id).train else {
+            return false;
+        };
+        !matches!(
+            self.deps.store.ci_run(&train.run).await,
+            Ok(Some(run)) if run.state.is_active()
+        )
+    }
+
     /// The merge candidate `task`'s sandbox tests now, when `task` is not in it: "merge candidate
     /// #a, #b (run R)" (SPEC-441 MQ-007).
     pub(crate) fn train_running_note(&self, task: &TaskRecord) -> Option<String> {

@@ -373,6 +373,49 @@ impl App {
         lock_slot(&self.runtime(task)).pending_note = Some(text);
     }
 
+    /// The fast pass (SPEC-441 MQ-008): a merge pass over each sandbox with an armed merge that
+    /// can be decided now, read from Yulius's own records only. A sandbox whose pass is held is
+    /// decided by whoever holds it.
+    pub async fn merge_decidable_everywhere(self: &Arc<Self>) {
+        let Ok(sandboxes) = self.deps.store.sandboxes().await else {
+            return;
+        };
+        for sandbox in sandboxes.iter().filter(|s| s.removed_at.is_none()) {
+            if !self.decidable_in(sandbox).await || self.armed_pass(&sandbox.id).try_lock().is_err()
+            {
+                continue;
+            }
+            self.merge_armed(&sandbox.id).await;
+        }
+    }
+
+    /// Whether a pass could decide something in `sandbox` now: an armed head whose own run passed
+    /// (merge it, or put it in a candidate), or a merge candidate whose run ended.
+    async fn decidable_in(&self, sandbox: &crate::model::SandboxRecord) -> bool {
+        use yulius_domain::ci::{GateResult, RunState};
+        if self.train_run_ended(sandbox).await {
+            return true;
+        }
+        let Ok(tasks) = self.deps.store.tasks(&sandbox.id, false).await else {
+            return false;
+        };
+        for task in tasks {
+            // Held by a candidate under test: only its run's end (which starts a pass) moves it.
+            if self.train_hold(&task) == crate::merge_train::Hold::Held {
+                continue;
+            }
+            if let ArmedNow::Armed(armed) = self.armed_now(&task.id)
+                && matches!(
+                    self.ci_gate_result(sandbox, &armed.head).await,
+                    GateResult::Run(Some(RunState::Passed | RunState::Skipped))
+                )
+            {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Forgets how an earlier armed merge ended (a new `delivery_merge` call answers for itself).
     pub(crate) fn forget_merge_outcome(&self, task: &TaskRecord) {
         lock_slot(&self.runtime(&task.id)).outcome = None;
