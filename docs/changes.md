@@ -11,8 +11,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   so the server stayed busy and a restart or a new update waited behind it; the page kept saying
   "Updating" with a clickable Cancel until it read the view again. Now the update helper notices
   within half a second that its request is gone and stops the build with every compiler it
-  started (or does not start compiling when the cancel comes while it fetches), and the instance page shows "The last update was cancelled" as soon as the server
-  answers, its button busy meanwhile.
+  started (or does not start compiling when the cancel comes while it fetches), and the instance
+  page shows "The last update was cancelled" as soon as the server answers, its button busy
+  meanwhile.
 
 ## 2026-11-07
 
