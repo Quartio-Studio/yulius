@@ -41,7 +41,7 @@ struct Merged {
     waiting: Vec<String>,
 }
 
-fn patterns(stored: &[String]) -> Vec<HostPattern> {
+pub(super) fn patterns(stored: &[String]) -> Vec<HostPattern> {
     stored
         .iter()
         .filter_map(|h| HostPattern::parse(h).ok())
@@ -419,7 +419,7 @@ impl App {
 }
 
 /// Whether two lists name the same hosts, in any order.
-fn same_hosts(a: &[HostPattern], b: &[HostPattern]) -> bool {
+pub(super) fn same_hosts(a: &[HostPattern], b: &[HostPattern]) -> bool {
     a.len() == b.len() && a.iter().all(|h| b.contains(h))
 }
 

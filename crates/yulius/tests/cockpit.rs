@@ -1651,6 +1651,7 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
             "sandboxes_list",
             "secret_copy_to_env",
             "secret_create_from_file",
+            "secret_request_copy",
             "secret_request_hosts",
             "secret_verify",
             "secrets_list",
@@ -3015,6 +3016,7 @@ async fn the_superagent_lists_its_sandboxs_agent_secrets_without_values() -> Tes
         "secret_verify",
         "secret_copy_to_env",
         "secret_request_hosts",
+        "secret_request_copy",
         "secret_create_from_file",
         // The project browser, as a task's agent has it (SPEC-437 SAB-001).
         "browser_fill_secret",

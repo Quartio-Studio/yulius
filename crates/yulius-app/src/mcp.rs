@@ -28,7 +28,7 @@ fn schema(properties: Value, required: &[&str]) -> Value {
 /// does (SPEC-178, SPEC-186 SAV-002, SAV-003, ADR-0150, SPEC-437 SAB-001, ADR-0281), messaging
 /// tasks for its person (SPEC-230, ADR-0178), and asking its person to start a task in another
 /// of their sandboxes (SPEC-335, ADR-0227). Everything else belongs to a task.
-pub const COCKPIT_TOOLS: [&str; 34] = [
+pub const COCKPIT_TOOLS: [&str; 35] = [
     "tasks_list",
     "task_get",
     "task_create",
@@ -51,6 +51,7 @@ pub const COCKPIT_TOOLS: [&str; 34] = [
     "secret_verify",
     "secret_copy_to_env",
     "secret_request_hosts",
+    "secret_request_copy",
     "secret_create_from_file",
     "sandboxes_list",
     "sandbox_task_create",
@@ -483,6 +484,16 @@ fn secret_tool_descriptors() -> Vec<ToolDescriptor> {
             }), &["secret", "hosts"]),
         },
         ToolDescriptor {
+            name: "secret_request_copy".into(),
+            description: "Ask a person for a copy of a production secret as a new agent secret of this project (SPEC-440), when agent work needs its value: e.g. a dev CI token that exists only as a production secret. Agents never use a production secret itself (secret_request_hosts, secret_copy_to_env and browser_fill_secret refuse it). Name the production secret, a new NAME (e.g. N3_DEV_CI_TOKEN_AGENT) and the hosts the copy is sent to; nothing is created until a person who manages both allows it on the Secrets page: print the returned link for them, go on with other work, and use the copy once secrets_list shows it. You never see the value; the copy does not follow later rotations of the production secret.".into(),
+            input_schema: schema(json!({
+                "secret": {"type": "string", "description": "NAME of the production secret, from secrets_list or the refusal you got"},
+                "name": {"type": "string", "description": "NAME for the copy: A-Z, 0-9 and _, starting with a letter, not taken in this project"},
+                "hosts": {"type": "array", "items": {"type": "string"}, "description": "Hosts the copy is sent to, like api.example.com, *.example.com or api.example.com:8443"},
+                "reason": {"type": "string", "description": "What you need it for (short), shown to the person and recorded in the secrets activity"}
+            }), &["secret", "name", "hosts"]),
+        },
+        ToolDescriptor {
             name: "secret_copy_to_env".into(),
             description: "Copy agent secrets' real values into a git-ignored dotenv file of the folder you work in (a task's worktree, the Superagent's repository; default .env) and their names into the .env.example beside it (SPEC-129), for code that runs outside Yulius' proxy (a deployed app, a deploy script). You never see the values, so never write or edit those lines yourself: you would write [secret:NAME]. A person allows each secret once: until then nothing is written and the result gives the Secrets page link to print. Refused unless Git ignores the file and does not track it.".into(),
             input_schema: schema(json!({
@@ -705,6 +716,10 @@ impl App {
                     self.tool_secret_request_hosts(SecretUser::Superagent(caller), &args)
                         .await
                 }
+                McpCaller::Cockpit(caller) if name == "secret_request_copy" => {
+                    self.tool_secret_request_copy(SecretUser::Superagent(caller), &args)
+                        .await
+                }
                 McpCaller::Cockpit(caller) => {
                     match self
                         .browser_tool(SecretUser::Superagent(caller), name, &args)
@@ -767,6 +782,10 @@ impl App {
             }
             "secret_copy_to_env" => {
                 self.tool_secret_copy_to_env(SecretUser::Task(ctx), &args)
+                    .await
+            }
+            "secret_request_copy" => {
+                self.tool_secret_request_copy(SecretUser::Task(ctx), &args)
                     .await
             }
             "secret_create_from_file" => {

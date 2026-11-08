@@ -234,7 +234,7 @@ async fn team_secrets_are_shared_and_reveals_need_a_two_factor_code() -> TestRes
 }
 
 /// The current code of a base32 `seed` at the test clock's time, `steps` periods away.
-fn code_at(
+pub(crate) fn code_at(
     h: &support::Harness,
     seed: &str,
     steps: i64,
@@ -263,7 +263,7 @@ fn wrong_code(h: &support::Harness, seed: &str) -> Result<String, Box<dyn std::e
         .ok_or("no wrong code")?)
 }
 
-async fn unlock(
+pub(crate) async fn unlock(
     h: &support::Harness,
     creds: &Creds,
     code: &str,
@@ -279,7 +279,10 @@ async fn unlock(
 }
 
 /// Sets up and confirms two-factor for `creds`; returns the seed.
-async fn enroll(h: &support::Harness, creds: &Creds) -> Result<String, Box<dyn std::error::Error>> {
+pub(crate) async fn enroll(
+    h: &support::Harness,
+    creds: &Creds,
+) -> Result<String, Box<dyn std::error::Error>> {
     let setup = call(&h.router, Method::POST, "/api/auth/two-factor", None, creds).await?;
     assert_eq!(setup.status, StatusCode::CREATED, "{}", setup.body);
     let seed = setup.body["secret"].as_str().ok_or("secret")?.to_owned();
@@ -1002,7 +1005,7 @@ async fn members_confirm_with_a_new_github_sign_in() -> TestResult {
 }
 
 /// The GitHub sign-in of an already admitted user (a new session).
-async fn admit_again(
+pub(crate) async fn admit_again(
     h: &support::Harness,
     login: &str,
     id: u64,
