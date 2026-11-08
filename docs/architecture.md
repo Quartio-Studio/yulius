@@ -1539,6 +1539,34 @@ serving, `App::assign_vault_scopes` (`vault/scopes.rs`) re-seals each into a cop
 replaces it in one transaction (`vault_assign`), audited `vault.team.assign` by `yulius`. Agent
 secrets have their own scopes (below).
 
+### Copies of production secrets
+
+Since SPEC-440 ([decision 0284](decisions/0284-agents-ask-for-a-copy-of-a-production-secret-and-a-person-allows-it.md))
+an agent whose work needs a production secret's value (a dev CI token that exists only as a
+production secret) asks for a copy with `secret_request_copy {secret, name, hosts, reason?}`
+(`vault/copies.rs`). The request is a row of `vault_copy_requests` (one per secret and project,
+names and hosts only, cascading with both); it flags the task as a host request does, and
+`settle_secret_waits` counts it among the task's waiting requests. The production secret's card
+shows it to the project's people; one who manages the secret and writes to the project allows it
+after a fresh two-factor unlock (`answer_copy_request`), and the store removes the request and
+inserts the copy, sealed under its own id, in one transaction (`vault_answer_copy_request`). The
+copy is an ordinary project secret bound to the hosts asked for, with `auto_allow` off; the
+production secret never changes.
+
+```mermaid
+sequenceDiagram
+    participant A as Agent
+    participant App as Yulius (vault)
+    participant P as Person (Secrets page)
+    A->>App: secret_request_copy(N3_DEV_CI_TOKEN, N3_DEV_CI_TOKEN_AGENT, [host])
+    App-->>A: waiting, link (task flagged)
+    P->>App: Allow copy {name, hosts as seen}
+    App-->>P: reauth_required (no fresh unlock)
+    P->>App: two-factor code, Allow copy again
+    App->>App: open source payload, seal copy, remove request + insert copy (one transaction)
+    App-->>A: task works on; secrets_list shows the copy bound to host
+```
+
 ## Agent secret scopes
 
 Since SPEC-245 ([decision 0186](decisions/0186-agent-secrets-are-project-global-or-personal.md))

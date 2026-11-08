@@ -1361,8 +1361,8 @@ resolves to nothing, the run gets the server without that variable or token.
     `attachments_trash` (SPEC-396), `automation_create`,
     `automations_list`, `automation_update`, `automation_delete`, `automation_run_now`,
     `automation_template_enable`, `workflows_list`, `sessions_search`, `session_read` and the vault
-    tools `secrets_list`, `secret_verify`, `secret_copy_to_env`, `secret_request_hosts` and
-    `secret_create_from_file`, and `sandboxes_list` and `sandbox_task_create` (SPEC-335)
+    tools `secrets_list`, `secret_verify`, `secret_copy_to_env`, `secret_request_hosts`,
+    `secret_request_copy` (SPEC-440) and `secret_create_from_file`, and `sandboxes_list` and `sandbox_task_create` (SPEC-335)
     (`COCKPIT_TOOLS`), acting
     for its owner (SPEC-066); on an uncontained server Claude Code asks the person before every
     tool that is not read-only, on a contained one it bypasses approvals (SPEC-208).
@@ -1723,6 +1723,7 @@ after an unlock.
 | PUT | `/api/sandboxes/{sid}/agent-secrets/{id}/enabled` | `{enabled: bool}` → `AgentSecret`: switches a global secret (instance administrators, 403 otherwise) or the caller's own personal one (needs work access on the project) on or off for the project; 422 for a project secret; 429 past 200 secrets reaching the project. Audited `vault.agent.enable` / `vault.agent.disable` |
 | PATCH | `/api/agent-secrets/{id}` | any of `name, description, hosts, injection, header_name, username, value, auto_allow`, and `expect_hosts` (the bound hosts the person saw: 409 unless they still are; required with `hosts` while `auto_allow` is on) → `AgentSecret` (`value` replaces it, with the create rules: 422 for a flattened key; `""` clears `username`). 409 when `auto_allow` is turned on for a production secret (`cd_prod`), and when its hosts or `auto_allow` changed since it was read (reload). Audited `vault.agent.update`, and `vault.agent.auto_allow_on` / `_off` |
 | DELETE | `/api/agent-secrets/{id}` | → 204 |
+| POST | `/api/sandboxes/{sid}/agent-secrets/{id}/copy` | `{allow: bool, name, hosts: [..]}` → `AgentSecret` (the production secret, as the project's list shows it): answers the copy an agent of the project asked for with `secret_request_copy` (SPEC-440). `name` and `hosts` are what the person saw (409 unless they are what waits; 409 when nothing waits). Needs manage rights on the secret (403/404); allowing also needs write access to the project and a fresh two-factor unlock (403 `reauth_required` with `reauth`, as a reveal; API tokens 403). Allowing adds the project secret `name` with the production secret's value, injection and user name, bound to `hosts`, `auto_allow` off and no `.env` allowance, in the transaction that removes the request (409 for a name taken meanwhile, the request stays); dismissing removes it. Audited (`vault.agent.copy_allow` with `vault.agent.create`, `vault.agent.copy_dismiss`). A project's list (`GET /api/sandboxes/{sid}/agent-secrets`) shows a waiting copy as the secret's `copy_request: {name, hosts, requested_by, reason, can_answer}` |
 | POST | `/api/agent-secrets/{id}/request` | `{allow: bool, hosts: [..]}` → `AgentSecret`: answers the hosts an agent asked for with `secret_request_hosts` (SPEC-121): `true` binds them, `false` dismisses them; the request is cleared either way, in one step with the bindings. `hosts` are the requested hosts the person saw, in any order: 409 unless they are exactly what waits (a host asked for meanwhile is never allowed unseen), and 409 when nothing waits or the bindings changed meanwhile; 422 when allowing would bind more than 16 hosts (the request stays). People who manage it (403 for readers, 404 without access). Audited (`vault.agent.allow` / `vault.agent.dismiss`) |
 | POST | `/api/agent-secrets/{id}/env` | `{allow: bool, env_files, env_requested_by?}` → `AgentSecret`: whether agents (every task of each project it reaches: its own, or those a global secret is switched on for) may copy the value into git-ignored `.env` files with `secret_copy_to_env` (SPEC-129). `true` answers an agent's request (`env_files` `asked` → `allowed`); `false` dismisses it or revokes an allowance (→ `no`; copies already written stay). `env_files` and `env_requested_by` are what the person saw: 409 unless they still hold, and when there is nothing to answer; 422 for an unknown `env_files`; 409 when allowing a personal or a production secret. People who manage it (403 for readers, 404 without access). Audited (`vault.agent.env_allow` / `vault.agent.env_dismiss` / `vault.agent.env_revoke`) |
 | POST | `/api/agent-secrets/{id}/reveal` | `{purpose?, fields?: ["value","notes"]}` → `{value, notes}` (`value` as stored, but a key block stored with literal `\n` as its key file with real line breaks, ADR-0275; `notes` = the description, led by a stored user name and, for older secrets, `Two-factor seed: …`) for people who manage it, after an unlock (403 `reauth_required` otherwise; 403 for readers, 404 without access). Audited (`vault.agent.reveal` / `vault.agent.copy`) |
@@ -1856,6 +1857,11 @@ task; other hooks answer as usual.
   allows, audited `vault.agent.request`, flags the task as needing a person; binds nothing,
   unless the secret has `auto_allow`: then the hosts are bound at once, answered as `bound`,
   audited `vault.agent.auto_allow`, SPEC-216),
+  `secret_request_copy {secret, name, hosts, reason?}` (SPEC-440: asks for a new project secret
+  `name` of a production secret's value, bound to `hosts`; stores a request a person allows, one
+  per secret and project, audited `vault.agent.copy_request`, flags the task as needing a person;
+  refused for a secret that is not a production secret, a name that applies already and
+  `VIDOC_API_KEY`; `secrets_list` says `production: true` of production secrets),
   and `secret_copy_to_env {secrets, path?: ".env", reason?}` (SPEC-129: writes the values of
   secrets a person allowed into an ignored, untracked dotenv file of the task's worktree and
   their names into `.env.example`, audited `vault.agent.env`; a secret not yet allowed is asked
