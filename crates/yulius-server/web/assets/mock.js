@@ -3548,7 +3548,10 @@ route('POST', `/api/sandboxes/${ID}/cockpit/restart`, async ({ db, p }) => {
 });
 // What the person's Superagent asks them to approve (SPEC-335): a test asks with
 // `__yuliusMock.askSuperagent('sb_studio', { sandbox: 'product', prompt, title, options })`; an
-// approval creates the task in that sandbox, as the server's `task_create` would.
+// approval creates the task in that sandbox, as the server's `task_create` would. SPEC-442: with
+// `action` ('update', 'message', 'stop') and `number`, it asks about that sandbox's task #number;
+// an approval starts it (an update without options), adds the message (`prompt`) to its request
+// or stops it.
 const superagentRequests = (db, sid) => (db.superagentRequests || []).filter((r) => r.source === sid);
 // A test can hold the reads (`__yuliusMock.holdList = promise`): an answered card then stays on screen.
 route('GET', `/api/sandboxes/${ID}/superagent/requests`, async ({ db, p }) => {
@@ -3565,6 +3568,17 @@ route('POST', `/api/sandboxes/${ID}/superagent/requests/${ID}`, async ({ db, p, 
   if (!body.approve) return { outcome: 'declined' };
   const target = db.sandboxes.find((s) => s.id === request.view.sandbox.id);
   if (!target || !['write', 'admin'].includes(target.access)) fail(404, 'not_found', 'not found');
+  if (request.view.task) {
+    const task = db.tasks.find((t) => t.sandbox_id === target.id && t.number === request.view.task.number);
+    if (!task) fail(404, 'not_found', 'not found');
+    if (request.view.action === 'update' && request.view.starts_now) task.status = 'queued';
+    if (request.view.action === 'message') task.prompt = `${task.prompt}\n\nMessage from ${db.me.user.login}:\n${request.view.prompt}`;
+    if (request.view.action === 'stop') task.status = 'stopped_cancelled';
+    task.updated_at = new Date().toISOString();
+    recount(db);
+    emit(db, { type: 'task.updated', task: summary(task) });
+    return { outcome: 'approved', sandbox: target.slug, task: { task_id: task.id, number: task.number, title: task.title, status: task.status } };
+  }
   const number = Math.max(0, ...db.tasks.filter((t) => t.sandbox_id === target.id).map((t) => t.number)) + 1;
   const title = request.view.title || request.view.prompt.split('\n')[0].slice(0, 60);
   const id = `tsk_${target.id.slice(3)}_${number}`;
@@ -6178,11 +6192,15 @@ export function createMockTransport(params) {
     return true;
   };
   // The person's Superagent in `source` asks to start a task in another sandbox (SPEC-335).
-  db.askSuperagent = (source, { sandbox, prompt, title = null, options = {} }) => {
+  db.askSuperagent = (source, { sandbox, prompt = null, title = null, options = {}, action = 'create', number = null, startsNow = null }) => {
     const target = db.sandboxes.find((s) => s.slug === sandbox);
+    const task = number === null ? null : db.tasks.find((t) => t.sandbox_id === target.id && t.number === number);
     db.nextId += 1;
     const view = {
-      id: `xr_${db.nextId}`, sandbox: { id: target.id, slug: target.slug, repository: `${target.repo.owner}/${target.repo.name}` },
+      id: `xr_${db.nextId}`, action, sandbox: { id: target.id, slug: target.slug, repository: `${target.repo.owner}/${target.repo.name}` },
+      task: task ? { number: task.number, title: task.title, status: task.status } : null,
+      // As the server says it: an update with no start option (or a supertask) starts the task now.
+      starts_now: action === 'update' && (startsNow ?? !Object.keys(options).length),
       title, prompt, options, ends_at: new Date(Date.now() + 4 * MIN).toISOString(),
     };
     db.superagentRequests = [...(db.superagentRequests || []), { source, view }];
