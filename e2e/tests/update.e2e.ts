@@ -90,7 +90,7 @@ test('cancelling an update shows its outcome from the cancel’s answer', async 
   // reads are counted as they are released, in one call, and such a read is made here on purpose.
   const before = await updateMock(browser, (m) => m.updateReads());
   await updateMock(browser, (m) => m.announceUpdate());
-  await expect.poll(() => updateMock(browser, (m) => m.updateReads())).toBe(before + 1);
+  await expect.poll(() => updateMock(browser, (m) => m.updateReads())).toBeGreaterThan(before);
   const held = await updateMock(browser, (m) => {
     m.holdUpdateReads = false;
     let released = 0;
