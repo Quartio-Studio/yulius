@@ -147,20 +147,6 @@ fn a_task_with_no_wait_is_told_each_event_once() -> TestResult {
             .store
             .transition_ci_job(&job.id, &[RunState::Failed], RunState::Failed, &ended)
             .await?;
-        // A permission prompt or question waits for a person: nothing is typed over it.
-        let activity = app.deps.store.task(&id).await?.ok_or("task")?.activity;
-        app.deps
-            .store
-            .set_activity(&id, Some(Activity::NeedsAttention), app.now())
-            .await?;
-        assert!(
-            watch(&app, &bounds, &id).await?.is_none(),
-            "a person must act first"
-        );
-        app.deps
-            .store
-            .set_activity(&id, activity, app.now())
-            .await?;
         let typed = typed_within(&app, &bounds, &id)
             .await?
             .ok_or("the failure was not typed")?;
@@ -186,6 +172,21 @@ fn a_task_with_no_wait_is_told_each_event_once() -> TestResult {
         git(&repo, &["fetch", "-q", "origin"])?;
         let (green, job) = run(&sandbox, "r2", &head, RunState::Passed, None, 2);
         app.deps.store.insert_ci_run(&green, &[job]).await?;
+        // A permission prompt or question waits for a person: nothing is typed over it, though
+        // the session takes input (it was just typed into).
+        let activity = app.deps.store.task(&id).await?.ok_or("task")?.activity;
+        app.deps
+            .store
+            .set_activity(&id, Some(Activity::NeedsAttention), app.now())
+            .await?;
+        assert!(
+            watch(&app, &bounds, &id).await?.is_none(),
+            "a person must act first"
+        );
+        app.deps
+            .store
+            .set_activity(&id, activity, app.now())
+            .await?;
         let typed = typed_within(&app, &bounds, &id)
             .await?
             .ok_or("the conflict was not typed")?;
