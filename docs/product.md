@@ -234,6 +234,13 @@ watching, steering and unblocking.
   waiting (a merge candidate, halved when red), and merges them in order. Every armed pull
   request says where it stands, and a merge at a head whose own Yulius CI run passed counts as
   merged on green, whoever made it.
+- **Pull request notices** (every sandbox, SPEC-444): Yulius types what happens to a task's open
+  pull request into its session within a minute, with the next step: a red run (failing jobs and
+  tests, where to read the log), a conflict, a dropped or refused merge, the merge, why a green
+  head is not merging, and "Hands off" while a merge candidate holds it. A quiet session gets a
+  check-in, a pull request without progress for an hour is told and shown as stalled on the task
+  list, `yulius wait` never ends on a fixed limit while its run is under way, and merging by hand
+  is refused with the reason.
 - **Yulius CI**: the projects' only CI; it runs on the VM, no GitHub Actions. A job uses an agent
   secret only when the integration branch's `[[ci.jobs]]` entry names it (`secrets`) and the job
   runs that entry's command (a pull request's own job with another command gets none), as a

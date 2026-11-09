@@ -449,7 +449,9 @@ impl DoneDefinition {
              the head and never hold a green pull request back for another task's run: Yulius's \
              merge queue orders the merges and never restarts a run when `{integration}` moves. \
              A merge made by anyone at a head whose own Yulius CI run passed counts as merged on \
-             green; Yulius says so."
+             green; Yulius says so. Yulius types every event of your pull request into this \
+             session with the next step (a red run, a conflict, a dropped merge, the merge): \
+             follow it, keep your hands off while it says so, and never merge by hand."
         );
         if !self.integration_environments.is_empty() {
             let envs = self
@@ -545,8 +547,9 @@ pub fn request_markdown(
     out.push_str(
         "\n\n## Waiting\n\nWhen only Yulius CI or a person can move the task forward, start \
          `yulius wait` with `run_in_background` and end your turn: it returns when the checks at \
-         your head finish, your delivery changes or a merge you armed is decided. Never poll with \
-         `sleep`, `pgrep -f` or monitor loops.\n",
+         your head finish, your delivery changes or a merge you armed is decided. Yulius also \
+         types every event of your open pull request into this session, so no wait has to run \
+         to hear it. Never poll with `sleep`, `pgrep -f` or monitor loops.\n",
     );
     out
 }
@@ -1240,6 +1243,12 @@ mod tests {
         );
         assert!(
             full.contains("A merge made by anyone at a head whose own Yulius CI run passed counts"),
+            "{full}"
+        );
+        // SPEC-444 PRN-012: Yulius tells the task what happens to its pull request.
+        assert!(
+            full.contains("Yulius types every event of your pull request into this session")
+                && full.contains("never merge by hand"),
             "{full}"
         );
     }

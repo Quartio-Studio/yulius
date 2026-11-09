@@ -686,7 +686,8 @@ sequenceDiagram
 
 Yulius has no messages for now ([SPEC-028](../.ai/specs/SPEC-028-delete-message-mechanism-for-now-until-w.md),
 [decision 0023](decisions/0023-no-messages-until-delivery-is-reliable.md)): nothing is stored for
-an agent, injected by a hook or typed into its session. An agent pulls what it needs: it waits
+an agent, injected by a hook or typed into its session, except what happens to its open pull
+request ([Pull request notices](#pull-request-notices)). An agent pulls the rest: it waits
 with `yulius wait` in a background shell, which Claude Code wakes it from, and reads
 `ci_status` and `delivery_status`. The armed merge's outcome is kept in memory for the wait,
 with the armed merge and its decisions in progress under one lock: a merge armed again while an
@@ -775,6 +776,49 @@ flowchart TD
     H --> C
 ```
 
+### Pull request notices
+
+A task hears what happens to its pull request without a wait running
+([SPEC-444](../.ai/specs/SPEC-444-tasks-always-notice-what-happens-to-thei.md),
+[decision 0287](decisions/0287-yulius-types-what-happens-to-a-tasks-pull-request-into-its-session.md);
+amends the "nothing is typed" rule above for a task with an open pull request). Every 20 seconds
+the pull request watch (`pr_watch.rs`) looks at each running, unpaused task whose delivery is
+`pr_open`, from Yulius's own records and clone (its pull request's newest run, a merge candidate
+run holding it, the armed slot, the train, a merge of its head into `origin/<integration>` with
+the merge drivers, cached per head and integration commit), and types into its session, as one
+bracketed paste through `type_into_session`:
+
+- a red run at its head (each failed job, its exit code and up to 5 failing test names read from
+  the kept failures, and the `ci_status` run and job), or one that errored;
+- a red merge candidate of two or more holding it, with "do not re-arm, merge or push";
+- a conflict with the integration branch, once per head;
+- how its armed merge ended (the slot's outcome), and its merge (`merged_text`), after which the
+  watch is over for it;
+- a green head that is not merging: no merge armed, where the armed merge stands, or, held by a
+  candidate, "Hands off".
+
+Each event has a key, typed once and kept in `<data>/pr-notices.json`. A session idle for 45
+minutes with nothing typed gets a check-in with the pull request's state; a pull request with no
+progress for 60 minutes (no run of its head or candidate queued, started or ended, no delivery or
+armed-merge change, no event typed) while its CI is idle is told once and carries `pr_stalled` on
+its task summary, which the task list shows ("· PR stalled") until it moves. `yulius wait` has no
+limit while a run at its head is queued or running, a merge is armed or a deploy runs, and with a
+merge armed it ends on its head's failure. The PreToolUse guard refuses `gh pr merge` and
+`gh api -X PUT …/pulls/N/merge` with the reason.
+
+```mermaid
+flowchart LR
+    R[CI runs, deliveries, armed slot, train, clone] --> W[pull request watch, every 20 s]
+    W --> K{new event key?}
+    K -- yes --> T[typed into the session with the next step]
+    K -- no --> Q{quiet 45 min / no progress 60 min?}
+    Q -- quiet --> C[check-in]
+    Q -- stalled --> S[told once, pr_stalled on the task list]
+    T --> F[(pr-notices.json)]
+    C --> F
+    S --> F
+```
+
 ### Across a Yulius restart
 
 A restart or an update is invisible to a task's session
@@ -789,7 +833,8 @@ A restart or an update is invisible to a task's session
   - A `tools/call` cut after Yulius read it answers that it may have taken effect.
   - Claude Code spawns `CLAUDE_CODE_SHELL_PREFIX` itself as a stdio server's program, so the prefix
     is one path, `<run>/scrub-exec`.
-- **`yulius wait`** keeps asking until its own deadline.
+- **`yulius wait`** keeps asking until its own deadline (none while what it waits for is under
+  way, SPEC-444).
 - **The wake.** Yulius writes `<data>/alive-at` every 30 s.
   - From 90 s after a start has reattached the runs until about 10 minutes after, every 30 s.
   - It types "Yulius is back; continue" once into each live, idle, Running task whose last turn

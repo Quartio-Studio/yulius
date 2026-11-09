@@ -6,6 +6,17 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-09
 
+- Tasks hear what happens to their pull request (SPEC-444, ADR-0287, task #426). In quartio-v2 on
+  2026-11-08, tasks sat 10 to 60 minutes after a red run, a conflict or a green pull request that
+  was not merging, until someone nudged them: their only channel was a `yulius wait` they had to
+  keep alive, and Claude Code's check-ins had paused. Now Yulius types each event into the task's
+  session within 20 seconds, with the next step: a red run on its head or on a merge candidate
+  holding it (failing jobs and tests, the `ci_status` run), a conflict with the integration
+  branch, a dropped or refused armed merge, its merge, why a green head is not merging, and
+  "Hands off" while a candidate holds it. A session quiet for 45 minutes gets a check-in; a pull
+  request without progress for an hour is told and reads "PR stalled" on the task list.
+  `yulius wait` no longer ends after 90 minutes while its run is queued, and ends when an armed
+  head fails. `gh pr merge` is refused with the reason.
 - A failed update check says why and is retried within minutes (SPEC-443, #1124, task #425).
   During GitHub's API incident of 2026-11-08, Settings → Instance → Updates read "GitHub could not
   be reached." and kept it until the next hourly check. Every failure read like that: a timeout,

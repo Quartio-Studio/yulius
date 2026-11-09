@@ -773,9 +773,9 @@ fn git_rules(input: &BriefingInput<'_>) -> String {
          head, call `delivery_merge`: on green it merges, else it arms and the queue merges in \
          turn: never hold a green one back. Fix failures on this branch, test-first. \
          {checks}\n\
-         - To wait for checks, a merge or a person, start `yulius wait` with run_in_background \
-         and end your turn. Never poll with `sleep`, `pgrep -f` loops or monitors, and never hide \
-         an exit code behind `| tail`.\n\
+         - Yulius types your PR's events with the next step (obey \"Hands off\"). To wait, \
+         start `yulius wait` with run_in_background and end your turn; never poll (`sleep`, \
+         `pgrep -f`) or hide an exit code behind `| tail`.\n\
          - Report a bug you confirm with `issue_create` unless an open issue tracks it (reference \
          it); for one met on the way, an unrelated flaky test or a leftover nit, say why it is \
          outside your change; a task told not to \
@@ -1756,6 +1756,8 @@ mod tests {
             // SPEC-441 MQ-011: the merge queue orders merges; nobody holds a green one back.
             "only for a conflict; rerun the tests",
             "the queue merges in turn: never hold a green one back",
+            // SPEC-444 PRN-012: Yulius tells the task; it keeps its hands off when told.
+            "Yulius types your PR's events with the next step (obey \"Hands off\")",
             "no human acceptance step",
             "on green",
             "`delivery_merge`",
