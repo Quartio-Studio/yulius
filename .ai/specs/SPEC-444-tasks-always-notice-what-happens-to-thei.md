@@ -157,6 +157,9 @@ the sandbox's task list.
   - Unit `pr_watch::tests` (10): each message's words, once per key, saved state, check-ins,
     stalls (CI idle, no CI, agent working, a turn just closed), the person-must-act hold, green
     reasons.
+  - `delivery::work_committed_after_the_merge_opens_a_new_pull_request` now also checks that a
+    follow-up opened at the end of a turn starts without the merged one's outcome; it failed
+    before the fix with "Yulius merged pull request #2 …" (see the live check).
   - `wait_cli::tests::an_armed_wait_ends_on_its_heads_failure` failed before the fix;
     `a_queued_run_never_times_out` covers `limit_line`; `restart::a_wait_rides_out_a_restart` now
     expects the "No Yulius CI run at … after 1 min" line.
@@ -166,7 +169,8 @@ the sandbox's task list.
     `request::tests` for the guidance; e2e `task-done` "a task whose pull request stalled".
 - **Gate.** `scripts/dev ci` passed at 8a61b12e (exit 0): format, lint, macOS targets, repository
   contracts, 3,270 tests passed, 16 skipped, docs. An earlier gate at fb90e7a2 was stopped
-  (superseded by review fixes, and cargo had run beside it).
+  (superseded by review fixes, and cargo had run beside it). After the live check, the gate
+  passed again at 6a18fa72 (exit 0): 3,270 tests passed, 16 skipped, advisories ok.
 - **E2E.** `npx e2e run` at 8a61b12e: 75 files passed, 1 skipped; 877 tests passed, 1 skipped
   (`task-done` alone: 21 passed).
 - **Independent review.** Four rounds by a fresh read-only subagent:
@@ -183,19 +187,37 @@ the sandbox's task list.
   (expected 1 held update read taken, got 2): a page read arrived between counting the held reads
   and releasing them. Reproduced every time by making that read on purpose; fixed in the test by
   counting while releasing in one call (its own commit); the file passed 3 runs of 3.
+- **A flaky e2e test quarantined.** Run 111529fd at c3e59f04 (follow-up #1135) failed only
+  `editor.e2e.ts` "a folder chosen while the worktrees are read …", the flake open as #1087
+  (third sighting; this change touches no web code). It is skipped with that reason until #1087
+  is fixed; the file passed locally with it skipped (33 passed, 1 skipped).
 - **Security scan.** `yulius security-scan`: "Security scan disabled" (Vidoc is turned off for
   this project in Yulius). Disabled, not passed.
 - **Live check on the instance** (main 4d9aebc4, which holds this change), with this task's own
   Claude Code session and no `yulius wait` running:
   - Red run: follow-up pull request #1134 carried one test failing on purpose (head 87b442e2,
     merge armed). Run 533de2e1 failed `quality` at about 15:56:00 UTC on 2026-11-09; at 15:56:15
-    Yulius typed "Its Yulius CI run 533de2e1-… at 87b442e25 failed: `quality` exited 1 (failing
-    tests: yulius-domain ci::failures::tests::spec_444_red_run_on_purpose). Read the log with
-    `ci_status` …, fix it test-first …" and "The merge you armed was dropped …". The test was then
-    reverted.
-  - Conflict and merge: pending (a follow-up records them).
+    Yulius typed "Yulius, about your pull request #1134: - Its Yulius CI run 533de2e1-… at
+    87b442e25 failed: `quality` exited 1 (failing tests: yulius-domain
+    ci::failures::tests::spec_444_red_run_on_purpose). Read the log with `ci_status` …, fix it
+    test-first …" and "The merge you armed was dropped …". The test was then reverted.
+  - A real red run: run b59c60f8 at 0b3259db failed `cargo deny` on RUSTSEC-2026-0459 at about
+    16:17 UTC; the notice ("… failed: `quality` exited 1. Read the log …" and the dropped merge)
+    was in the session before 16:18:24. Fixed with `rusqlite` 0.41.
+  - Merge: #1134 merged into `dev` at 16:47:06 UTC (67b14683); at 16:47:18 the session read
+    "Pull request #1134 is merged into `dev` at 7172b6aed, whose own Yulius CI run passed … Do
+    not promote unless the task asks for it."
+  - Conflict: follow-up #1135 rewrote these lines, which `dev` took from #1134's squash. It
+    opened at 16:47:56 UTC, its own run started by 16:48:38, and at about 16:49:00 the session
+    read "Its head dcc276e40 conflicts with `dev` as Yulius last fetched it, so it cannot merge.
+    Merge it in: `git fetch origin && git merge origin/dev`, resolve the conflicts, … Never
+    rebase or force-push." Resolved by that merge.
+  - A bug the live check found: #1135's first notice repeated how #1134's armed merge ended
+    ("Yulius merged pull request #1134 …"): the armed slot keeps how the last merge ended until
+    the next arm, past its pull request. Fixed test-first: a merged task's follow-up delivery
+    forgets it (a first fix in the watch alone was reviewed out: a refused paste brought it
+    back).
 - **Could not be tested here:**
-  - Paused check-ins: this session runs under a `/goal` whose evaluator never paused its
-    check-ins, so the live check had no wait running but did not have paused check-ins. The
-    integration test covers a session nothing else wakes.
+  - Paused check-ins: this session runs under a `/goal` whose check-ins never paused, so they
+    were not live-tested; the integration test covers a session nothing else wakes.
   - quartio-v2 itself: outside this sandbox's access.

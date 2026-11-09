@@ -4314,9 +4314,23 @@ async fn work_committed_after_the_merge_opens_a_new_pull_request() -> TestResult
         f.h.github.writes()
     );
 
-    // The same through the merge call alone, at the end of a goal task's turn.
+    // How #2's armed merge ended belongs to #2: a follow-up opened at the end of a turn starts
+    // without it, so nothing tells #3 that #2 merged (SPEC-444 live check, #1135).
+    let merged = wait_state(&f, &agent, &fix).await?;
+    assert!(
+        merged["merge_outcome"]
+            .as_str()
+            .is_some_and(|text| text.contains("#2")),
+        "{merged}"
+    );
     commit_file(&wt, "fix2.txt", "again", "Second fix after the merge")?;
     let fix2 = git(&wt, &["rev-parse", "HEAD"])?;
+    f.h.app.auto_open_pr(&t1).await;
+    assert_eq!(f.delivery("t1").await?["pr"]["number"], 3);
+    let fresh = wait_state(&f, &agent, &fix2).await?;
+    assert_eq!(fresh["merge_outcome"], Value::Null, "{fresh}");
+
+    // The merge call arms the follow-up opened at the end of the turn.
     f.h.github.set_checks(&fix2, ChecksState::Pending);
     let again = arm_merge(&f, &agent, &fix2).await?;
     assert_eq!(again["armed"], true, "{again}");
