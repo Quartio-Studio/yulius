@@ -58,7 +58,8 @@ enum Command {
     /// In a task's session: wait until the Yulius CI checks at this commit finish, the task's
     /// delivery moves or an armed merge is decided (start it in the background and end the turn).
     Wait {
-        /// Give up after this many minutes.
+        /// Give up after this many minutes, only while nothing it waits for is under way (no
+        /// run at the head queued or running, no armed merge, no deploy).
         #[arg(long, default_value_t = 90)]
         minutes: u64,
     },

@@ -374,7 +374,11 @@ async fn a_wait_rides_out_a_restart() -> TestResult {
     let said = out.text();
     assert_eq!(code, 0, "{said}");
     assert!(said.contains("Yulius is back."), "{said}");
-    assert!(said.contains("Still waiting after"), "{said}");
+    // No run at its head: the limit ends it, saying why (SPEC-444 PRN-010).
+    assert!(
+        said.contains("No Yulius CI run at ababababa after 1 min"),
+        "{said}"
+    );
     assert_eq!(
         said.matches("cannot be reached").count(),
         1,
