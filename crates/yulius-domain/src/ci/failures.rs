@@ -186,6 +186,59 @@ impl FailureScanner {
     }
 }
 
+/// The names of the failing tests in output [`FailureScanner::finish`] kept, in order, each once:
+/// nextest's `FAIL [   0.1s] (1/4) crate tests::bad` as `crate tests::bad`, libtest's
+/// `---- tests::bad stdout ----` as `tests::bad` (SPEC-444 PRN-002). Only the blocks' headers are
+/// read: the first line and lines after an empty one, at the margin.
+#[must_use]
+pub fn failed_test_names(kept: &str) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    let mut starts_block = true;
+    for line in kept.lines() {
+        let header = std::mem::replace(&mut starts_block, line.is_empty());
+        if !header {
+            continue;
+        }
+        let name = libtest_header(line).or_else(|| kept_nextest_name(line));
+        if let Some(name) = name.map(str::trim).filter(|n| !n.is_empty())
+            && !names.iter().any(|known| known == name)
+        {
+            names.push(name.to_owned());
+        }
+    }
+    names
+}
+
+/// The test a kept nextest header names (`FAIL [   0.1s] (1/4) crate name` at the margin).
+fn kept_nextest_name(line: &str) -> Option<&str> {
+    if line.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let (status, rest) = line.split_once('[')?;
+    let status = status.trim_end();
+    let capitals = status.starts_with(|c: char| c.is_ascii_uppercase())
+        && status
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '-' || c == ' ');
+    if !capitals || !nextest_failed(status) {
+        return None;
+    }
+    let (duration, rest) = rest.split_once(']')?;
+    if !duration
+        .trim_start()
+        .trim_start_matches('>')
+        .starts_with(|c: char| c.is_ascii_digit())
+    {
+        return None;
+    }
+    let rest = rest.trim_start();
+    let rest = match rest.strip_prefix('(') {
+        Some(counted) => counted.split_once(')')?.1,
+        None => rest,
+    };
+    Some(rest.trim())
+}
+
 /// A nextest status line's status (`FAIL`, `PASS`, `SIGSEGV`, `TRY 2 FAIL`…): capitals
 /// right-aligned to 12 columns before a bracketed duration such as `[   0.547s]` or `[>30.000s]`.
 /// A test's own output is indented by 4, so a status line it printed does not line up.
@@ -337,6 +390,29 @@ error: test run failed
         assert!(scan(&[crash]).is_some_and(|k| k.contains("boom")));
         let timeout = "     TIMEOUT [ 120.0s] (1/1) a hang\n  stdout ───\n    waiting\n";
         assert!(scan(&[timeout]).is_some_and(|k| k.contains("waiting")));
+    }
+
+    /// SPEC-444 PRN-002: the names of the failing tests, from what the scanner kept.
+    #[test]
+    fn failing_test_names_are_read_from_the_kept_headers() {
+        let kept = scan(&[NEXTEST]).unwrap_or_default();
+        assert_eq!(
+            failed_test_names(&kept),
+            vec!["nt tests::bad2".to_owned(), "nt tests::bad".to_owned()]
+        );
+        let libtest = "running 1 test\ntest bad ... FAILED\n\nfailures:\n\n\
+                       ---- tests::bad stdout ----\nFAIL [ 1.0s] printed by the test\n\n\
+                       failures:\n    tests::bad\n\ntest result: FAILED. 0 passed; 1 failed\n";
+        let kept = scan(&[libtest]).unwrap_or_default();
+        assert_eq!(failed_test_names(&kept), vec!["tests::bad".to_owned()]);
+        let retried = "TRY 2 FAIL [   0.5s] (1/1) a retried\n  stderr ───\n    again\n\n\
+                       SIGSEGV [>30.000s] a crashed\n  stderr ───\n    boom\n\n\
+                       [yulius] 3 more failing tests' output not kept\n";
+        assert_eq!(
+            failed_test_names(retried),
+            vec!["a retried".to_owned(), "a crashed".to_owned()]
+        );
+        assert!(failed_test_names("").is_empty());
     }
 
     #[test]

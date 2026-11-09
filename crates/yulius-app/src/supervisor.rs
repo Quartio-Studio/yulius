@@ -258,6 +258,11 @@ pub struct TaskRuntime {
     pub(crate) mcp_pinged_ms: AtomicI64,
     /// The `/mcp reconnect yulius` typed since its Yulius MCP was last heard (MCR-003).
     pub(crate) mcp_reconnects: Mutex<crate::mcp_watch::Reconnects>,
+    /// Why its pull request is stalled, while it is (SPEC-444 PRN-009): the task list shows it.
+    pub(crate) pr_stalled: Mutex<Option<String>>,
+    /// The last head and integration commit pair whose conflict was checked, and whether they
+    /// conflict (PRN-004).
+    pub(crate) pr_conflict: Mutex<Option<(String, bool)>>,
     /// Background work the transcript says the session started and no notification ended yet:
     /// Monitor streams and background agents by Claude Code's task id (SPEC-079 BGW-002).
     pub(crate) launches: Mutex<std::collections::BTreeMap<String, crate::finish::Launch>>,
@@ -403,6 +408,8 @@ impl TaskRuntime {
             mcp_seen_ms: AtomicI64::new(0),
             mcp_pinged_ms: AtomicI64::new(0),
             mcp_reconnects: Mutex::new(crate::mcp_watch::Reconnects::default()),
+            pr_stalled: Mutex::new(None),
+            pr_conflict: Mutex::new(None),
             background_shells: AtomicI64::new(-1),
             limits_at_start: Mutex::new(None),
             background_waits: AtomicI64::new(-1),
