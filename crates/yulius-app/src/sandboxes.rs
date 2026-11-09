@@ -167,7 +167,7 @@ impl App {
     /// Tasks with a pending request for a person to act: in the sandbox's browser (BRW-004),
     /// read from its tabs (none while the browser does not run: its requests went with it), or
     /// through `needs_you` (SPEC-134 CDT-004).
-    async fn browser_requests(&self, sandbox: &SandboxId) -> HashSet<String> {
+    pub(crate) async fn browser_requests(&self, sandbox: &SandboxId) -> HashSet<String> {
         let mut requested: HashSet<String> = match self.deps.browser.running(sandbox).await {
             Some(session) => session
                 .tabs()

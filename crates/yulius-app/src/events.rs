@@ -73,3 +73,66 @@ impl EventBus {
         self.tx.subscribe()
     }
 }
+
+/// What a person may see, decided once per sandbox until [`Reach::forget`] (SPEC-002 §7.8).
+#[derive(Debug, Default)]
+pub struct Reach {
+    visible: std::collections::HashMap<SandboxId, bool>,
+    writable: std::collections::HashMap<SandboxId, bool>,
+}
+
+impl Reach {
+    /// Forgets the decisions: access is decided again (a re-check, a lag).
+    pub fn forget(&mut self) {
+        self.visible.clear();
+        self.writable.clear();
+    }
+}
+
+impl crate::context::App {
+    /// Whether `user`'s event stream carries `envelope`: the one rule of `WS /api/events` and of
+    /// the notifications sent to a person's chat (SPEC-444 TGC-021). Admin-only events reach
+    /// instance administrators, a person's own events only them, a sandbox's events its viewers
+    /// (its writers for `writers_only`), and a playground guest no instance-wide event.
+    pub async fn envelope_reaches(
+        &self,
+        user: &crate::model::UserRecord,
+        envelope: &Envelope,
+        reach: &mut Reach,
+    ) -> bool {
+        if envelope.admin_only && !(user.is_superadmin || user.is_instance_admin) {
+            return false;
+        }
+        // A person's own event (their notepad, SPEC-103) reaches no one else.
+        if envelope.user.as_ref().is_some_and(|id| *id != user.id) {
+            return false;
+        }
+        let Some(sandbox) = &envelope.sandbox else {
+            // A playground's guest gets only their playground's events and their own (GST-004).
+            return !(envelope.writers_only || (self.is_guest(user) && envelope.user.is_none()));
+        };
+        let visible = match reach.visible.get(sandbox) {
+            Some(v) => *v,
+            None => {
+                let ok = self.can_view(user, sandbox).await;
+                reach.visible.insert(sandbox.clone(), ok);
+                ok
+            }
+        };
+        if !visible {
+            return false;
+        }
+        // What the editor shows (who has which file open) is for those who may open it.
+        if !envelope.writers_only {
+            return true;
+        }
+        match reach.writable.get(sandbox) {
+            Some(v) => *v,
+            None => {
+                let ok = self.can_work_in(user, sandbox).await;
+                reach.writable.insert(sandbox.clone(), ok);
+                ok
+            }
+        }
+    }
+}

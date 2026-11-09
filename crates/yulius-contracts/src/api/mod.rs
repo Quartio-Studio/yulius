@@ -24,6 +24,7 @@ pub mod skills;
 pub mod stages;
 pub mod status;
 pub mod tasks;
+pub mod telegram;
 pub mod updates;
 pub mod variables;
 pub mod workflows;

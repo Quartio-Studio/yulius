@@ -13,6 +13,7 @@ import { showShortcuts, SHEET_KEYS } from '../shortcuts.js';
 import { THEME_CHOICES, themeChoice, setThemeChoice } from '../theme.js';
 import { BRAND } from '../brand.js';
 import { agentTokensBody } from './apitokens.js';
+import { telegramBotCard, telegramLink } from '../telegram.js';
 
 function section(iconName, title, description, ...content) {
   return h('section', { class: 'settings-section' },
@@ -114,9 +115,13 @@ export function mountSettingsPage(ctx) {
       row('key', 'Keyboard shortcuts', `Every shortcut in one list (${SHEET_KEYS})`, h('button', { type: 'button', class: 'btn btn-sm', onClick: showShortcuts }, 'Show')),
       row('target', 'Single-key shortcuts', 'On the Tasks page: / to search, j and k to move, . for a task’s menu', keysToggle),
       row('terminal', 'Terminal screen reader support', 'Lets screen readers read terminal output; applies to terminals opened next', screenReaderToggle)),
-    section('bell', 'Notifications', 'kept in this browser',
-      row('bell', 'Desktop notifications', desktopNote, desktopToggle),
-      row('clock', 'Notification history', notifCount, clearButton)),
+    section('bell', 'Notifications', null,
+      row('bell', 'Desktop notifications', h('span', null, desktopNote, ' · kept in this browser'), desktopToggle),
+      row('clock', 'Notification history', h('span', null, notifCount, ' · kept in this browser'), clearButton),
+      // The personal Telegram channel (SPEC-444 TGC-010): sent by the server, so no tab is needed.
+      h('div', { class: 'settings-row telegram-row' },
+        h('span', { class: 'settings-row-icon' }, icon('bell', { size: 16 })),
+        h('div', { class: 'settings-row-text' }, h('div', null, 'Telegram'), h('div', { class: 'muted xs' }, 'Sent by this server to your own chat'), telegramLink(ctx)))),
     section('book', 'Help', null,
       row('code', 'Design system', 'For developers: colours, type, components and themes in one place', open('/design', 'the design system'))),
   );
@@ -137,7 +142,9 @@ export function mountSettingsPage(ctx) {
         superadmin ? tile('github', 'GitHub connection', 'The GitHub App and its installations', '/admin/github') : null,
         superadmin ? tile('download', 'Instance', 'Version, updates, the Jev and Vidoc keys', '/admin/instance') : null,
         tile('plug', 'MCP for every sandbox', 'Tool servers attached in every sandbox', slug ? `/s/${slug}/mcp?scope=instance` : null),
-        tile('book', 'Skills for every sandbox', 'Skills available in every sandbox', slug ? `/s/${slug}/skills?source=instance` : null))));
+        tile('book', 'Skills for every sandbox', 'Skills available in every sandbox', slug ? `/s/${slug}/skills?source=instance` : null))),
+      // The instance's Telegram bot (SPEC-444 TGC-001).
+      telegramBotCard(ctx));
   }
 
   return { el: frame.el };

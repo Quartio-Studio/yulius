@@ -29,6 +29,7 @@ mod skills;
 mod stages;
 mod status;
 mod tasks;
+mod telegram;
 mod terminal;
 mod updates;
 mod uploads;
@@ -246,6 +247,13 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
         )
         .route("/api/admin/jev/adopt", post(updates::adopt_jev))
         .route("/api/admin/jev/test", post(updates::test_jev))
+        // The personal Telegram channel's bot (SPEC-444 TGC-001).
+        .route(
+            "/api/admin/telegram",
+            get(telegram::bot)
+                .put(telegram::set_bot)
+                .delete(telegram::remove_bot),
+        )
         // The instance Vidoc key (SPEC-195 VDK-002).
         .route(
             "/api/admin/vidoc",
@@ -408,6 +416,13 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
             "/api/sandboxes/{sid}/notes/presence",
             put(notes::sandbox_presence),
         )
+        // The caller's own Telegram chat (SPEC-444 TGC-010..TGC-020).
+        .route(
+            "/api/me/telegram",
+            get(telegram::me).delete(telegram::unlink),
+        )
+        .route("/api/me/telegram/link", post(telegram::link))
+        .route("/api/me/telegram/choices", put(telegram::choices))
         // The caller's own notepad, the same in every sandbox (SPEC-103).
         .route(
             "/api/me/notes",

@@ -102,6 +102,7 @@ mod task_ownership;
 mod task_pause;
 mod task_prompt;
 mod task_transcript;
+mod telegram;
 mod terminal_ws;
 mod trusted_proxy;
 mod ui_contract;

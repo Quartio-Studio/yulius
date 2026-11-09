@@ -28,6 +28,7 @@ mod sessions;
 mod skills;
 mod spans;
 mod tasks;
+mod telegram;
 mod updates;
 mod users;
 mod variables;
@@ -125,6 +126,8 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0048_ci_job_limit_and_wait.sql"),
     // Schema version 49 (SPEC-440).
     include_str!("migrations/0049_vault_copy_requests.sql"),
+    // Schema version 50 (SPEC-444).
+    include_str!("migrations/0050_telegram_channel.sql"),
 ];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
