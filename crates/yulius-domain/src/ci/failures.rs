@@ -487,4 +487,11 @@ error: test run failed
         assert!(kept.len() < MAX_LINE_BYTES + 200, "{}", kept.len());
         assert!(kept.contains('…'));
     }
+
+    /// SPEC-444 real-sandbox check: fails on purpose so the task is woken by a red run; reverted
+    /// before the merge.
+    #[test]
+    fn spec_444_red_run_on_purpose() {
+        assert_eq!(1 + 1, 3, "SPEC-444: this run fails on purpose");
+    }
 }
