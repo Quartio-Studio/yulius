@@ -154,7 +154,7 @@ the sandbox's task list.
     fail it: dropping the person-must-act hold, and dropping it from the merge notice (review
     rounds 1 and 2). An earlier form of the hold check passed vacuously because the session did not
     take input yet; it was moved to a pass after a typed message.
-  - Unit `pr_watch::tests` (12): each message's words, once per key, saved state, check-ins,
+  - Unit `pr_watch::tests` (10): each message's words, once per key, saved state, check-ins,
     stalls (CI idle, no CI, agent working, a turn just closed), the person-must-act hold, green
     reasons.
   - `wait_cli::tests::an_armed_wait_ends_on_its_heads_failure` failed before the fix;
