@@ -65,6 +65,15 @@ pub enum Observed {
         /// limit from one in a conversation's history (SPEC-074 SUP-002).
         at: Option<Timestamp>,
     },
+    /// The provider refused the session's credential for good: the subscription was cancelled
+    /// or downgraded ("Your organization has disabled Claude subscription access for Claude
+    /// Code"), its sign-in was revoked, or billing failed. Unlike a usage limit it never resets.
+    AccessLost {
+        /// Provider text describing the refusal (shortened).
+        message: String,
+        /// When Claude Code recorded it (the record's `timestamp`), if parseable.
+        at: Option<Timestamp>,
+    },
     /// The agent finished a turn. Claude emits this for each line of an `end_turn` message, so
     /// consumers treat it idempotently; the Stop hook remains the authoritative turn boundary.
     TurnComplete {

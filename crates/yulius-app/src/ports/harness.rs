@@ -218,6 +218,14 @@ pub enum Observation {
         /// When the CLI recorded it, if known (tells a new limit from history, SPEC-074).
         at: Option<Timestamp>,
     },
+    /// The provider refused the session's credential for good (a cancelled or downgraded
+    /// subscription, a revoked sign-in, a billing failure): the subscription needs a new sign-in.
+    AccessLost {
+        /// Provider text.
+        message: String,
+        /// When the CLI recorded it, if known.
+        at: Option<Timestamp>,
+    },
 }
 
 /// Accumulated usage of one attempt, from its transcript lines alone, so reading them again after
