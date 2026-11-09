@@ -786,12 +786,13 @@ the pull request watch (`pr_watch.rs`) looks at each running, unpaused task whos
 `pr_open`, from Yulius's own records and clone (its pull request's newest run, a merge candidate
 run holding it, the armed slot, the train, a merge of its head into `origin/<integration>` with
 the merge drivers, cached per head and integration commit), and types into its session, as one
-bracketed paste through `type_into_session`:
+bracketed paste through `type_into_session`, cleaned of control characters and never while a
+person must act first (a prompt on screen, `needs_you`):
 
 - a red run at its head (each failed job, its exit code and up to 5 failing test names read from
   the kept failures, and the `ci_status` run and job), or one that errored;
 - a red merge candidate of two or more holding it, with "do not re-arm, merge or push";
-- a conflict with the integration branch, once per head;
+- a conflict with the integration branch (checked in the task's worktree), once per head;
 - how its armed merge ended (the slot's outcome), and its merge (`merged_text`), after which the
   watch is over for it;
 - a green head that is not merging: no merge armed, where the armed merge stands, or, held by a
@@ -800,7 +801,8 @@ bracketed paste through `type_into_session`:
 Each event has a key, typed once and kept in `<data>/pr-notices.json`. A session idle for 45
 minutes with nothing typed gets a check-in with the pull request's state; a pull request with no
 progress for 60 minutes (no run of its head or candidate queued, started or ended, no delivery or
-armed-merge change, no event typed) while its CI is idle is told once and carries `pr_stalled` on
+armed-merge change, no event typed) while its CI is idle, its agent's turn is closed and the
+project has Yulius CI is told once and carries `pr_stalled` on
 its task summary, which the task list shows ("· PR stalled") until it moves. `yulius wait` has no
 limit while a run at its head is queued or running, a merge is armed or a deploy runs, and with a
 merge armed it ends on its head's failure. The PreToolUse guard refuses `gh pr merge` and
