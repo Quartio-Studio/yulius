@@ -147,8 +147,17 @@ pub fn decide(facts: &PrFacts, told: &Told, bounds: &WatchBounds) -> (Option<Str
     let mut next = if told.pr == facts.pr {
         told.clone()
     } else {
+        // How an armed merge ended, already there when a pull request is first seen, is about an
+        // earlier one (an arm and its run take minutes, a watch pass seconds): known, not told.
+        let keys = facts
+            .events
+            .iter()
+            .filter(|event| event.kind == "outcome")
+            .map(|event| (event.kind.to_owned(), event.key.clone()))
+            .collect();
         Told {
             pr: facts.pr,
+            keys,
             progress: facts.progress.clone(),
             progress_ms: facts.now_ms,
             ..Told::default()
@@ -1168,6 +1177,35 @@ mod tests {
             Some("Yulius, about your pull request #7: merged 7.")
         );
         assert_eq!(decide(&merged, &told, &bounds).0, None);
+    }
+
+    /// The live check (pull request #1135): how the last armed merge ended stays in the slot
+    /// after that pull request merged; a follow-up pull request is not told it as its own.
+    #[test]
+    fn an_earlier_pull_requests_merge_outcome_is_not_told_to_the_next() {
+        let bounds = WatchBounds::default();
+        let told = Told {
+            pr: 7,
+            ..Told::default()
+        };
+        let next = PrFacts {
+            pr: 8,
+            ..facts(vec![event("outcome", "abc:1"), event("conflict", "def")])
+        };
+        let (text, told) = decide(&next, &told, &bounds);
+        assert_eq!(
+            text.as_deref(),
+            Some("Yulius, about your pull request #8: conflict def.")
+        );
+        // A later outcome, of a merge armed on this pull request, is told.
+        let later = PrFacts {
+            pr: 8,
+            ..facts(vec![event("outcome", "def:2"), event("conflict", "def")])
+        };
+        assert_eq!(
+            decide(&later, &told, &bounds).0.as_deref(),
+            Some("Yulius, about your pull request #8: outcome def:2.")
+        );
     }
 
     /// PRN-007: what was told is saved and read back, so a restart repeats nothing.
