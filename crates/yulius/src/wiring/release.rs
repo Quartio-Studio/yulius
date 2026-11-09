@@ -43,10 +43,18 @@ impl GitHubReleases {
     /// # Errors
     /// When the HTTP client cannot be built.
     pub fn with_api(api: String, https_only: bool) -> Result<Self, String> {
+        Self::with_deadline(api, https_only, TIMEOUT)
+    }
+
+    /// A source for another API base whose requests end after `timeout` (tests).
+    ///
+    /// # Errors
+    /// When the HTTP client cannot be built.
+    pub fn with_deadline(api: String, https_only: bool, timeout: Duration) -> Result<Self, String> {
         let _ = rustls::crypto::ring::default_provider().install_default();
         let http = reqwest::Client::builder()
             .user_agent(concat!("yulius/", env!("CARGO_PKG_VERSION")))
-            .timeout(TIMEOUT)
+            .timeout(timeout)
             .https_only(https_only)
             .redirect(reqwest::redirect::Policy::none())
             .build()
@@ -332,12 +340,6 @@ mod tests {
             source.compare(None, None).await,
             Err(SourceError::RateLimited)
         );
-        let (url, _) = server(vec![("/commits/main".into(), 500, "{}".into())]).await?;
-        let source = GitHubReleases::with_api(url, false)?;
-        assert_eq!(
-            source.compare(None, None).await,
-            Err(SourceError::Unavailable)
-        );
         let (url, _) = server(vec![(
             "/commits/main".into(),
             200,
@@ -348,6 +350,48 @@ mod tests {
         assert_eq!(
             source.compare(None, None).await,
             Err(SourceError::Invalid("head"))
+        );
+        Ok(())
+    }
+
+    /// SPEC-443 UCF-001: a GitHub that answers late or with a server error is told apart from one
+    /// that cannot be reached at all.
+    #[tokio::test]
+    async fn failures_say_whether_github_answered() -> TestResult {
+        // Accepts and never answers.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let silent = format!("http://{}", listener.local_addr()?);
+        tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((socket, _)) = listener.accept().await {
+                held.push(socket);
+            }
+        });
+        let source = GitHubReleases::with_deadline(silent, false, Duration::from_millis(200))?;
+        let failed = source.compare(None, None).await;
+        assert_eq!(failed, Err(SourceError::TimedOut));
+        assert_eq!(
+            failed.err().map(|e| e.to_string()).as_deref(),
+            Some("GitHub did not answer in time")
+        );
+
+        let (url, _) = server(vec![("/commits/main".into(), 502, "{}".into())]).await?;
+        let source = GitHubReleases::with_api(url, false)?;
+        let failed = source.compare(None, None).await;
+        assert_eq!(failed, Err(SourceError::Status(502)));
+        assert_eq!(
+            failed.err().map(|e| e.to_string()).as_deref(),
+            Some("GitHub answered with an error (HTTP 502)")
+        );
+
+        // A port nobody listens on any more.
+        let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let url = format!("http://{}", closed.local_addr()?);
+        drop(closed);
+        let source = GitHubReleases::with_api(url, false)?;
+        assert_eq!(
+            source.compare(None, None).await,
+            Err(SourceError::Unavailable)
         );
         Ok(())
     }

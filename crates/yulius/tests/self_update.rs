@@ -225,6 +225,52 @@ async fn a_newer_main_is_offered_to_superadmins_only() -> TestResult {
     Ok(())
 }
 
+/// #1124 (SPEC-443 UCF-002): a failed automatic check is tried again 5 minutes later, so the
+/// warning of a GitHub outage clears by itself; a successful one waits the hour.
+#[tokio::test]
+async fn a_failed_automatic_check_is_retried_within_minutes() -> TestResult {
+    let h = harness()?;
+    let admin = setup_superadmin_creds(&h).await?;
+    configure_github_app(&h).await?;
+    let source = FakeSource::behind();
+    *source.result.lock().map_err(|_| "lock")? = Err(SourceError::TimedOut);
+    let mut hourly = services(OLD, &source, &FakeHelper::installed());
+    hourly.check_every = Some(Duration::from_secs(3600));
+    assert!(h.app.set_updates(hourly));
+    let compares = || source.tokens.lock().map(|t| t.len()).unwrap_or_default();
+
+    let _ = h.app.update_round().await;
+    assert_eq!(compares(), 1, "the first automatic check");
+    let r = call(&h.router, Method::GET, "/api/update", None, &admin).await?;
+    assert_eq!(r.body["check"]["error"], "GitHub did not answer in time.");
+    advance(&h, 4 * 60_000);
+    let _ = h.app.update_round().await;
+    assert_eq!(compares(), 1, "not again before 5 minutes");
+    advance(&h, 60_000);
+    let _ = h.app.update_round().await;
+    assert_eq!(compares(), 2, "a failed check is retried 5 minutes later");
+
+    // GitHub answers again: the warning is gone and the next check is an hour away.
+    *source.result.lock().map_err(|_| "lock")? = FakeSource::behind()
+        .result
+        .lock()
+        .map_err(|_| "lock")?
+        .clone();
+    advance(&h, 5 * 60_000);
+    let _ = h.app.update_round().await;
+    assert_eq!(compares(), 3);
+    let r = call(&h.router, Method::GET, "/api/update", None, &admin).await?;
+    assert!(r.body["check"]["error"].is_null(), "{}", r.body);
+    assert_eq!(r.body["available"]["commit"], NEW);
+    advance(&h, 59 * 60_000);
+    let _ = h.app.update_round().await;
+    assert_eq!(compares(), 3, "a successful check waits the hour");
+    advance(&h, 60_000);
+    let _ = h.app.update_round().await;
+    assert_eq!(compares(), 4);
+    Ok(())
+}
+
 /// #502 (SPEC-226 UPC-001): a "Check now" sent while another check compares (two tabs opening
 /// the instance page) waits for it and reuses its result: one compare for both.
 #[tokio::test]
