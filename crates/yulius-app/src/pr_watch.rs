@@ -476,10 +476,12 @@ impl App {
                     }
                 }
             };
+            // A merged pull request is no stall, also before its notice could be typed.
+            let merged = facts.events.iter().any(|event| event.kind == "merged");
             let stalled = next
                 .stalled
                 .clone()
-                .filter(|_| !next.keys.contains_key("merged"));
+                .filter(|_| !merged && !next.keys.contains_key("merged"));
             let changed = {
                 let mut shown = runtime
                     .pr_stalled

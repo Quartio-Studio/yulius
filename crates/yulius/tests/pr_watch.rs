@@ -253,6 +253,11 @@ fn a_task_with_no_wait_is_told_each_event_once() -> TestResult {
             watch(&app, &bounds, &id).await?.is_none(),
             "a person must act first"
         );
+        assert_eq!(
+            app.pr_stalled(&id),
+            None,
+            "a merged pull request is no stall"
+        );
         app.deps
             .store
             .set_activity(&id, activity, app.now())

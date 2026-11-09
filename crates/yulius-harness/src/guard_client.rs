@@ -98,7 +98,17 @@ pub fn hand_merge(command: &str) -> bool {
             flag.strip_prefix('-')
                 .is_some_and(|flags| !flags.starts_with('-') && flags.contains('c'))
         };
-        if index > 0 && shell_flag(&words[index - 1]) && hand_merge(word) {
+        let shell = |name: &str| {
+            matches!(
+                name.rsplit('/').next(),
+                Some("bash" | "sh" | "zsh" | "dash")
+            )
+        };
+        if index > 1
+            && shell_flag(&words[index - 1])
+            && shell(&words[index - 2])
+            && hand_merge(word)
+        {
             return true;
         }
         // `gh` as the command, not an argument (`echo gh pr merge`): at the start, after a
@@ -347,6 +357,9 @@ mod tests {
             // Review round 1: `gh` as an argument, not a command.
             "echo gh pr merge 1",
             "grep -rn gh pr merge docs",
+            // Review round 3: `-c` of another command than a shell.
+            "grep -c 'gh pr merge' docs/x.md",
+            "rg -ic 'gh pr merge 1' .",
         ] {
             assert!(!hand_merge(command), "{command}");
         }
