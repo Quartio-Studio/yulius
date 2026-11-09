@@ -172,6 +172,56 @@ export function continueTask(ctx, task) {
   return taskPost(ctx, task, 'continue', () => ctx.api.post(`/api/tasks/${enc(task.id)}/continue`, {}), `Continuing #${task.number}…`);
 }
 
+/** Why a subscription cannot take a task a person moves (SPEC-447 MOV-002), or null. */
+function cannotTake(account) {
+  if (['relogin', 'error', 'pending_login'].includes(account.status)) return 'Needs a new sign-in';
+  const usage = account.usage || {};
+  const full = [usage.primary, usage.secondary].some((w) => w && Number(w.used_percent) >= 100);
+  return full ? 'At its usage limit' : null;
+}
+
+/** "5 h 40% · week 12%", or that the use is not known yet. */
+function useLine(account) {
+  const usage = account.usage || {};
+  const pct = (w) => (w && Number.isFinite(w.used_percent) ? `${Math.round(w.used_percent)}%` : null);
+  const five = pct(usage.primary);
+  const week = pct(usage.secondary);
+  return five || week ? [five && `5 h ${five}`, week && `week ${week}`].filter(Boolean).join(' · ') : 'Use not known yet';
+}
+
+/**
+ * "Run on…" (SPEC-447 MOV-001): every Claude subscription with its use, the task's own marked and
+ * one that cannot take it disabled with why. A running or waiting task moves to the choice in its
+ * session; an ended one continues there.
+ */
+export async function openSubscriptionMenu(ctx, anchor, task) {
+  let accounts;
+  try {
+    const status = await ctx.api.get('/api/status');
+    accounts = (status.accounts || []).filter((a) => a.id && a.provider === 'anthropic');
+  } catch (error) {
+    errorToast(error, 'Couldn’t read the subscriptions');
+    return;
+  }
+  const moving = task.status === 'running' || task.status === 'waiting_capacity';
+  openMenu(anchor, [
+    { header: moving ? `Run #${task.number} on…` : `Continue #${task.number} on…` },
+    ...accounts.map((account) => {
+      const current = account.label === task.account_label;
+      const why = current ? null : cannotTake(account);
+      return {
+        label: account.label,
+        description: current ? 'Runs on it now' : why || useLine(account),
+        disabled: current || Boolean(why),
+        onSelect: () => (moving
+          ? taskPost(ctx, task, 'move', () => ctx.api.post(`/api/tasks/${enc(task.id)}/switch`, { account_id: account.id }), `#${task.number} moves to ${account.label}…`)
+          : taskPost(ctx, task, 'continue', () => ctx.api.post(`/api/tasks/${enc(task.id)}/continue`, { account_id: account.id }), `Continuing #${task.number} on ${account.label}…`)),
+      };
+    }),
+    accounts.length ? null : { label: 'No Claude subscription yet', disabled: true, description: 'An instance administrator adds one in Subscriptions' },
+  ]);
+}
+
 /** Ask the task's owner for control: the task would act on GitHub as you (SPEC-070). */
 export function requestControl(ctx, task) {
   return taskPost(ctx, task, 'ask for control of', () => ctx.api.post(`/api/tasks/${enc(task.id)}/control-request`), `Asked for control of #${task.number}`);

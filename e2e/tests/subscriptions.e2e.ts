@@ -36,14 +36,38 @@ test('the subscriptions page shows the pool capacity and nothing to manage but a
   expect(await axeViolations(browser)).toEqual([]);
 });
 
-test('tasks are subscription-agnostic: no account choice or account in the task view', async ({ app, browser, screen }) => {
+test('a task shows its subscription and a person runs it on another (SPEC-447 MOV-001, MOV-004)', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12'));
-  await browser.locator('.taskview .stepstrip-main [aria-label="Task actions"]').click();
-  await expect(screen.getByRole('menuitem', /^Stop/)).toBeVisible();
-  await expect(screen.getByRole('menuitem', /Switch account/)).toBeHidden();
-  await browser.keyboard.press('Escape');
-  // The subscription the task runs on shows only in Task details.
-  await expect(browser.locator('.taskview .stepstrip-main')).not.toHaveText(/Claude #2/);
+  const chip = browser.locator('.taskview .stepstrip-main button.account-chip');
+  await expect(chip).toHaveText('Claude #2');
+  await chip.click();
+  await expect(screen.getByText('Run #12 on…')).toBeVisible();
+  // Its own is marked, one needing a sign-in says why; the others show their use.
+  await expect(screen.getByRole('menuitem', /^Claude #2\s*Runs on it now/)).toHaveAttribute('aria-disabled', 'true');
+  await expect(screen.getByRole('menuitem', /^Claude #3\s*Needs a new sign-in/)).toHaveAttribute('aria-disabled', 'true');
+  await expect(screen.getByRole('menuitem', /^Claude #4\s*5 h 12% · week 33%/)).toBeVisible();
+  expect(await axeViolations(browser)).toEqual([]);
+  await screen.getByRole('menuitem', /^Claude #4/).click();
+  await expect(screen.getByText('#12 moves to Claude #4…')).toBeVisible();
+  await expect(chip).toHaveText('Claude #4');
+});
+
+test('the Tasks list says which subscription each task runs on (SPEC-447 MOV-004)', async ({ app, browser }) => {
+  await app.open(mock('/s/studio/tasks'));
+  await expect(browser.locator('.tl-row:has-text("Checkout API") .tl-status')).toContainText('on Claude #2');
+});
+
+test('a refused subscription says why, and one in use is removed with its tasks moved (SPEC-447 MOV-003, MOV-005)', async ({ app, browser, screen }) => {
+  await app.open(mock('/admin/accounts'));
+  await expect(screen.getByText('Claude refused it: Your organization has disabled Claude subscription access for Claude Code. Sign in again.')).toBeVisible();
+  const remove = browser.locator('.card:has-text("team@example.com") button:has-text("Remove")');
+  await expect(remove).toBeEnabled();
+  await remove.click();
+  await expect(screen.getByText(/The 3 tasks on it move to another subscription in the same session, or wait for one\./)).toBeVisible();
+  await screen.getByRole('button', 'Remove').last().click();
+  await expect(screen.getByText('Subscription Claude #2 removed.')).toBeVisible();
+  await app.open(mock('/s/studio/t/12'));
+  await expect(browser.locator('.taskview .stepstrip-main button.account-chip')).not.toHaveText('Claude #2');
 });
 
 test('a task paused because no subscription has capacity left says so with the reset time, outside Needs you', async ({ app, screen }) => {

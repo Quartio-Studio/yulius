@@ -430,6 +430,9 @@ export function taskActions(task, access, pr, me) {
     startNow: write && chained,
     schedule: write && prepared,
     continue: write && ended && !task.archived,
+    // Run on another subscription (SPEC-447 MOV-001): a running or waiting task moves in its
+    // session, an ended one continues there; a person's pause is resumed first (PER-005).
+    move: write && !task.archived && ((['running', 'waiting_capacity'].includes(task.status) && !(task.pause && task.pause.by === 'person')) || ended),
     deliver: write && !task.archived,
     feedback: allows(access, 'read'),
     // A finished task (Done by the one rule of taskInfo: goal achieved, or plan complete with its

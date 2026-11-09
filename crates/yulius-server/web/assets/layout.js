@@ -599,7 +599,9 @@ export function accountUsage(account, { foldable = false, open = false, rename =
   const usageNote = Boolean(account.last_error) && account.last_error.startsWith('usage:') && !['relogin', 'error'].includes(account.status);
   const body = h('div', { class: 'account-body' },
     account.last_error && usageNote ? h('div', { class: 'account-note' }, icon('clock', { size: 13 }), h('span', null, account.last_error.slice('usage:'.length).trim())) : null,
-    account.last_error && !usageNote ? h('div', { class: 'account-error' }, icon('warn', { size: 13 }), h('span', null, account.last_error)) : null,
+    // Claude refusing a subscription (cancelled, downgraded, revoked) marks it for a new sign-in
+    // with Claude's words, said as why (SPEC-447 MOV-005).
+    account.last_error && !usageNote ? h('div', { class: 'account-error' }, icon('warn', { size: 13 }), h('span', null, account.status === 'relogin' ? `Claude refused it: ${account.last_error.trim().replace(/\.$/, '')}. Sign in again.` : account.last_error)) : null,
     usageRow(usage.primary, '5-hour window'),
     usageRow(usage.secondary, 'This week'),
     // Per-model weekly caps, when the plan has them (they bind only tasks of that model).
@@ -912,7 +914,7 @@ export function createSidebar(ctx) {
     row.el.dataset.group = info.group;
     row.el.dataset.tone = info.tone;
     const owner = otherOwner(task, ctx.store.state.me?.user?.login);
-    row.link.title = `Task #${task.number} ${task.title} — ${info.label}${info.detail ? `: ${info.detail}` : ''}${row.pr && !info.label.includes(`PR #${row.pr.number}`) ? ` · PR #${row.pr.number}` : ''}${task.branch ? ` · ${task.branch}` : ''}${owner ? ` · owned by @${owner}` : ''} · ${row.time.text}`;
+    row.link.title = `Task #${task.number} ${task.title} — ${info.label}${info.detail ? `: ${info.detail}` : ''}${row.pr && !info.label.includes(`PR #${row.pr.number}`) ? ` · PR #${row.pr.number}` : ''}${task.branch ? ` · ${task.branch}` : ''}${task.account_label ? ` · on ${task.account_label}` : ''}${owner ? ` · owned by @${owner}` : ''} · ${row.time.text}`;
     row.owner.hidden = !owner;
     row.owner.textContent = owner ? initials(owner).toUpperCase() : '';
     if (owner) row.owner.title = `@${owner} owns this task`;

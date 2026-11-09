@@ -67,7 +67,7 @@ pub struct StatusAccount {
     pub status: String,
     /// Usage snapshot (unknown windows are `null`).
     pub usage: AccountUsageView,
-    /// Id (instance administrators only).
+    /// Id, for everyone signed in: a person names it to move a task to it (SPEC-447 MOV-004).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
     /// Last error (instance administrators only).
