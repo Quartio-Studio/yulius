@@ -85,8 +85,18 @@ test('cancelling an update shows its outcome from the cancel’s answer', async 
   await expect.poll(() => updateMock(browser, (m) => m.updateReadsTaken)).toBe(1);
   await expect(screen.getByText('The last update was cancelled')).toBeVisible();
   await expect(cancel).toBeHidden();
-  const held = await updateMock(browser, (m) => m.updateReads());
-  await updateMock(browser, (m) => { m.holdUpdateReads = false; while (m.updateReads()) m.releaseUpdate(); });
+  // Another read of the page may arrive before the rest is released (CI run ea691b6c, 2026-11-09:
+  // one came between counting the held reads and releasing them, which released two): the held
+  // reads are counted as they are released, in one call, and such a read is made here on purpose.
+  const before = await updateMock(browser, (m) => m.updateReads());
+  await updateMock(browser, (m) => m.announceUpdate());
+  await expect.poll(() => updateMock(browser, (m) => m.updateReads())).toBeGreaterThan(before);
+  const held = await updateMock(browser, (m) => {
+    m.holdUpdateReads = false;
+    let released = 0;
+    while (m.updateReads()) { m.releaseUpdate(); released += 1; }
+    return released;
+  });
   await expect.poll(() => updateMock(browser, (m) => m.updateReadsTaken)).toBe(held + 1);
   await expect(screen.getByText('The last update was cancelled')).toBeVisible();
   await expect(cancel).toBeHidden();

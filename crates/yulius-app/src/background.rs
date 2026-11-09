@@ -63,6 +63,8 @@ impl App {
             app.schedule_outage_wakes(outage);
             // Sessions whose Yulius MCP Claude Code dropped are reconnected (SPEC-432 MCR-003).
             app.start_mcp_watch(outage.started);
+            // Tasks hear what happens to their pull request (SPEC-444 PRN-001).
+            app.start_pr_watch();
             // Merges armed before the restart stay armed (DLV-205), and one whose checks passed
             // meanwhile merges now (SPEC-358 MSB-008).
             app.resume_armed_merges().await;

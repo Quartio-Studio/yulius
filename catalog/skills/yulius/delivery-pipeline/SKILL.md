@@ -106,6 +106,15 @@ others waiting, as one merge candidate) and merges it on green. `yulius wait` sa
 stands. Do not arm the same head again, and do not merge the integration branch only because it
 moved: that restarts your own run. Merge it for a conflict you are told about.
 
+Yulius tells your session what happens to your open pull request, without a wait running: a red
+run on its head or on a merge candidate holding it (the failing jobs and tests, and where to read
+the log), a conflict with the integration branch, an armed merge dropped or refused and why, its
+merge, why a green head is not merging yet, a check-in when the session has been quiet for a
+while, and a pull request that made no progress for an hour. Each message ends with the next step.
+When it says "Hands off" (a merge candidate holds your pull request), do not arm again, merge the
+integration branch or push: that takes it out of the candidate. Never merge by hand (`gh pr
+merge` is refused): the queue merges, and `delivery_status` says why it has not yet.
+
 When a check fails, it is a defect until proven otherwise: reproduce it, fix the cause on the
 same branch, test first. Never rerun until green, never skip, never weaken a test or a gate.
 

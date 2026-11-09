@@ -48,7 +48,7 @@ pub fn run_with(
     pace: Pace,
     env: &dyn Fn(&str) -> Option<String>,
 ) -> i32 {
-    let deadline = Instant::now() + pace.total;
+    let mut deadline = Instant::now() + pace.total;
     let minutes = pace.total.as_secs().div_ceil(60);
     let Some(first) = ask(out, head, None, 0, pace, deadline, env) else {
         return 1;
@@ -62,13 +62,13 @@ pub fn run_with(
     let mut since = first;
     loop {
         if Instant::now() >= deadline {
-            let _ = writeln!(
-                out,
-                "Still waiting after {minutes} min: {}. Start `yulius wait` again, or look at \
-                 `ci_status`.",
-                describe(&since)
-            );
-            return 0;
+            if let Some(line) = limit_line(&since, minutes) {
+                let _ = writeln!(out, "{line}");
+                return 0;
+            }
+            // Something it waits for is under way: no limit (SPEC-444 PRN-010). The next span
+            // still bounds an outage of Yulius.
+            deadline = Instant::now() + pace.total;
         }
         let Some(next) = ask(
             out,
@@ -149,6 +149,23 @@ pub fn settled(now: &WaitState, before: Option<&WaitState>) -> Option<String> {
             before.stage, now.stage
         ));
     }
+    // The run at the head of an armed merge failed: that merge cannot happen, so the wait ends
+    // now instead of waiting for its decision (SPEC-444 PRN-010; quartio-v2 #118, 2026-11-08).
+    if now.checks == "failed"
+        && now.merge_armed
+        && before.is_none_or(|before| before.checks != "failed")
+    {
+        return Some(format!(
+            "The checks at {} failed{}: the merge you armed cannot happen. Read why with \
+             `ci_status`, fix it test-first, get the review of the new head and call \
+             `delivery_merge` again.",
+            short(&now.head),
+            now.checks_detail
+                .as_deref()
+                .map(|d| format!(" ({d})"))
+                .unwrap_or_default()
+        ));
+    }
     // CI could not run at this head (disk, a timeout, the host): not the code. An armed merge
     // stays armed and happens once a run passes (S5).
     if now.checks == "error" && before.is_none_or(|before| before.checks != "error") {
@@ -192,6 +209,33 @@ pub fn settled(now: &WaitState, before: Option<&WaitState>) -> Option<String> {
         );
     }
     None
+}
+
+/// The line a wait ends with at its limit (`minutes`), or `None` while something it waits for is
+/// under way (a run at its head queued or running, an armed merge, a deploy): then it has no
+/// limit (SPEC-444 PRN-010; a wait ended after 90 min with its run still queued, quartio-v2 #121).
+#[must_use]
+pub fn limit_line(state: &WaitState, minutes: u64) -> Option<String> {
+    let under_way = matches!(state.checks.as_str(), "queued" | "running")
+        || state.merge_armed
+        || state.cd_state.as_deref() == Some("running");
+    if under_way {
+        return None;
+    }
+    Some(if state.checks == "none" {
+        format!(
+            "No Yulius CI run at {} after {minutes} min: was this head pushed? End your turn \
+             with everything committed so Yulius pushes it, or read `delivery_status`. Yulius \
+             also tells this task by itself when its pull request moves.",
+            short(&state.head)
+        )
+    } else {
+        format!(
+            "Still waiting after {minutes} min: {}. Read `delivery_status`; Yulius also tells \
+             this task by itself when its pull request moves.",
+            describe(state)
+        )
+    })
 }
 
 fn describe(state: &WaitState) -> String {
@@ -521,6 +565,58 @@ mod tests {
         let line = settled(&refused, Some(&state("none"))).unwrap_or_default();
         assert!(line.starts_with("Yulius could not push"), "{line}");
         assert!(settled(&refused, Some(&refused)).is_none(), "already said");
+    }
+
+    /// SPEC-444 PRN-010: nothing under way ends a wait at its limit, never a run that is queued
+    /// or running, an armed merge or a deploy; the last line says why.
+    #[test]
+    fn a_queued_run_never_times_out() {
+        for under_way in [
+            state("queued"),
+            state("running"),
+            WaitState {
+                merge_armed: true,
+                ..state("passed")
+            },
+            WaitState {
+                cd_run: Some("r1".into()),
+                cd_state: Some("running".into()),
+                ..state("passed")
+            },
+        ] {
+            assert_eq!(limit_line(&under_way, 90), None, "{under_way:?}");
+        }
+        let line = limit_line(&state("none"), 90).unwrap_or_default();
+        assert!(
+            line.starts_with("No Yulius CI run at 012345678 after 90 min: was this head pushed?")
+                && line.contains("Yulius also tells this task"),
+            "{line}"
+        );
+    }
+
+    /// SPEC-444 PRN-010 (quartio-v2 #118, 2026-11-08): a wait on an armed merge ends when the run
+    /// at its own head fails, once.
+    #[test]
+    fn an_armed_wait_ends_on_its_heads_failure() {
+        let armed = WaitState {
+            merge_armed: true,
+            ..state("running")
+        };
+        let failed = WaitState {
+            merge_armed: true,
+            checks_detail: Some("websites exited 1".into()),
+            ..state("failed")
+        };
+        for before in [Some(&armed), None] {
+            let line = settled(&failed, before).unwrap_or_default();
+            assert!(
+                line.starts_with("The checks at 012345678 failed (websites exited 1): the merge you armed cannot happen.")
+                    && line.contains("`ci_status`")
+                    && line.contains("`delivery_merge` again"),
+                "{line}"
+            );
+        }
+        assert!(settled(&failed, Some(&failed)).is_none(), "said once");
     }
 
     #[test]

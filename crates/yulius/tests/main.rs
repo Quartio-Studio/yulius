@@ -65,6 +65,7 @@ mod playground;
 mod playground_guests;
 mod playground_move;
 mod pool_supervision;
+mod pr_watch;
 mod prepared;
 mod preview;
 mod production_branch;
