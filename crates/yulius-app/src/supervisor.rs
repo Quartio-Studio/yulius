@@ -979,9 +979,16 @@ impl App {
                     .ok_or(AppError::NotFound)?,
             )),
             (Decision::Wait { .. }, _) => Ok(None),
-            (Decision::Stay, reason) => Err(AppError::Capacity(format!(
-                "the requested account cannot take the task right now ({reason:?})"
-            ))),
+            (Decision::Stay, reason) => {
+                let label = match requested {
+                    Some(id) => self.deps.store.account(id).await?.map(|a| a.label),
+                    None => None,
+                };
+                Err(AppError::Capacity(refused_choice(
+                    label.as_deref(),
+                    &reason,
+                )))
+            }
         }
     }
 
@@ -1280,7 +1287,12 @@ impl App {
             } else {
                 PauseKind::Start
             };
-            self.pause_task(&task.id, kind, None, None).await?;
+            // A resume's text (a held prompt a move carried, SPEC-447) is typed when it starts.
+            let continuation = match &start {
+                RunStart::Resume { prompt } => prompt.clone(),
+                _ => None,
+            };
+            self.pause_task(&task.id, kind, None, continuation).await?;
             return Ok(());
         };
         let credential = self.open_credential(&account)?;
@@ -4101,13 +4113,25 @@ impl App {
                 runtime.end_turn(self.now());
                 runtime.at_limit.store(true, Ordering::SeqCst);
                 runtime.limit_resets_at.store(0, Ordering::SeqCst);
+                let mut refused = None;
                 if let Some(account) = &attempt.account_id {
+                    refused = match self.deps.store.account(account).await {
+                        Ok(Some(record)) => Some(record.label),
+                        _ => None,
+                    };
                     self.record_access_lost(account, &message).await;
                 }
                 let app = self.clone();
                 let tid = task_id.clone();
                 let account = attempt.account_id.clone();
-                tokio::spawn(async move { app.rotate(&tid, account, Trigger::LimitReached).await });
+                tokio::spawn(async move {
+                    app.rotate(&tid, account, Trigger::LimitReached).await;
+                    // Said in one line, with a Needs you when nothing is left (SPEC-447 MOV-006).
+                    if let Some(label) = refused {
+                        let left = crate::moves::Left::Refused { label, message };
+                        app.tell_left(&tid, &left).await;
+                    }
+                });
             }
             Observation::UserTurn { at, wake } => {
                 if let Some(at) = at {
@@ -4316,8 +4340,30 @@ fn make_home(sandbox_dir: &Path) -> AppResult<()> {
 
 /// Whether a switch for `reason` interrupts the turn before ending the run: a person's switch
 /// and a hand-over may come mid-turn (SPEC-332), automatic switches come while the agent is idle.
+/// Why a person's choice of subscription cannot take the task, in one plain sentence naming it
+/// (SPEC-447 MOV-002).
+fn refused_choice(label: Option<&str>, reason: &rotation::DecisionReason) -> String {
+    use rotation::{DecisionReason, Refusal};
+    let name = label.unwrap_or("That subscription");
+    match reason {
+        DecisionReason::ManualRefused(Refusal::UnknownAccount) => {
+            "That subscription no longer exists.".into()
+        }
+        DecisionReason::ManualRefused(Refusal::Unavailable) => {
+            format!("{name} needs a new sign-in, so it cannot take the task.")
+        }
+        DecisionReason::ManualRefused(Refusal::Exhausted) => {
+            format!("{name} is at its usage limit, so it cannot take the task until it resets.")
+        }
+        DecisionReason::ManualRefused(Refusal::ProviderMismatch) => {
+            format!("{name} is not a Claude subscription, so it cannot take the task.")
+        }
+        _ => "No other subscription can take the task right now.".into(),
+    }
+}
+
 fn interrupts_first(reason: &str) -> bool {
-    matches!(reason, "manual" | "handover")
+    matches!(reason, "manual" | "handover" | "removed")
 }
 
 #[cfg(test)]

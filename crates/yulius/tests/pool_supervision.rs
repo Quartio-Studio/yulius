@@ -284,7 +284,10 @@ pub(crate) async fn seed(
     Ok((sandbox.id, user.id))
 }
 
-async fn add_account(app: &App, id: &str) -> Result<AccountId, Box<dyn std::error::Error>> {
+pub(crate) async fn add_account(
+    app: &App,
+    id: &str,
+) -> Result<AccountId, Box<dyn std::error::Error>> {
     let account = AccountId::parse(id)?;
     app.deps
         .store
@@ -362,7 +365,7 @@ pub(crate) async fn task(app: &App, id: &TaskId) -> Result<TaskRecord, Box<dyn s
     Ok(app.deps.store.task(id).await?.ok_or("task vanished")?)
 }
 
-async fn has_status(app: &App, id: &TaskId, status: TaskStatus) -> bool {
+pub(crate) async fn has_status(app: &App, id: &TaskId, status: TaskStatus) -> bool {
     task(app, id).await.is_ok_and(|t| t.status == status)
 }
 

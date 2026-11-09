@@ -92,6 +92,7 @@ mod skills_mcp;
 mod stages;
 mod start_change;
 mod strays;
+mod subscription_moves;
 mod subscription_pool;
 mod superagent_browser;
 mod supertask;

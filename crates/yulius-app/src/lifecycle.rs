@@ -2,7 +2,6 @@
 //! (SPEC-001 TSK-001..008, HRN-002, ROT-007).
 
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 
 use yulius_contracts::api::tasks::{ContinueTask, CreateTask, TaskSummary};
 use yulius_domain::auto_choice::AUTO;
@@ -506,10 +505,11 @@ impl App {
         self.task_summary(&task).await
     }
 
-    /// `POST /api/tasks/{tid}/switch`: manual account switch of a running task (ROT-007).
+    /// `POST /api/tasks/{tid}/switch`: a person moves a running or waiting task to the
+    /// subscription they choose, or the pool's best other one (SPEC-447 MOV-001, ROT-007).
     ///
     /// # Errors
-    /// `Conflict` when not running.
+    /// `Conflict` when not running or waiting, `Capacity` when the subscription cannot take it.
     pub async fn switch_task(
         self: &Arc<Self>,
         ctx: &AuthContext,
@@ -522,28 +522,9 @@ impl App {
         if self.is_paused_by_person(&task.id).await {
             return Err(AppError::Conflict("Resume the task first.".into()));
         }
-        // A turn a usage limit cut goes on past the limit, with nothing typed (SPEC-034): at a
-        // `limit` pause, or left at the limit by a refused automatic switch (SPEC-072 LRS-002).
-        let at_limit = matches!(
-            self.deps.store.open_pause(&task.id).await?,
-            Some(pause) if pause.kind == crate::model::PauseKind::Limit
-        ) || self.runtime(&task.id).at_limit.load(Ordering::SeqCst);
-        if at_limit {
-            self.switch_after_limit(&task.id, account, "manual").await?;
-        } else if self.held_opening(&task.id).await {
-            // The session never took its first message: a fresh one types it with its images
-            // (SPEC-068 OPN-003).
-            let start = crate::supervisor::RunStart::Fresh { prompt: None };
-            self.switch_with(&task.id, account, "manual", start).await?;
-        } else {
-            self.switch_task_now(
-                &task.id,
-                account,
-                "manual",
-                Some("Continue the task exactly where you left off.".into()),
-            )
-            .await?;
-        }
+        // Where the task stands decides how it goes on (SPEC-447 MOV-001): past a limit, its first
+        // message again, a held prompt, or the cut turn told to go on.
+        self.move_task(&task.id, account, "manual").await?;
         let task = self
             .deps
             .store
