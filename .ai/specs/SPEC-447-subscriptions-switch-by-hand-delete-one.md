@@ -40,14 +40,15 @@ Confirmed against `dev` at 770c2412.
   stop or switch them first" while a task that is not Done has a live run on it (ROT-009,
   SPEC-057 SUB-003), and the Subscriptions card disables Remove.
 - **"Resumed on the old subscription".** Every launch picks its subscription through
-  `choose_account`, from the stored accounts only, so a Continue after a removal already starts on
-  another subscription: the owner's sequence reproduced on 770c2412 continues on the one left
-  (`subscription_moves::a_continued_task_never_runs_on_its_deleted_subscription`). What the owner
-  saw is explained by the rest: before #1138 the lapsed subscription was not recognised, so the
-  pool could still place tasks on it, a removal refused while a task held it left the process on
-  the removed credential, the resumed session replays the old refusal in its terminal, and nothing
-  said which subscription a task ran on. This spec closes every such path: a removal ends every
-  run on it, and nothing names a removed subscription as a task's.
+  `choose_account`, from the stored accounts only, so a Continue after a removal starts on another
+  subscription: the owner's sequence (stop, remove, continue) run on 770c2412 continues on the one
+  left (`subscription_moves::a_continued_task_never_runs_on_its_deleted_subscription` passed before
+  any change). The exact path the owner saw could not be reproduced from the code. What could keep
+  a removed subscription in use was a run that outlived the removal: before this change a run on a
+  removed subscription was never ended by it (a refused removal left it running; a held process of
+  a waiting task kept its credential), and nothing showed which subscription a task ran on, so a
+  resumed session showing the old refusal looked the same. This spec ends every run on a removed
+  subscription and shows each task's subscription, so the question can no longer arise unseen.
 - **Moves are silent.** A switch says "↻ Yulius continues this session on another Claude
   subscription…" (ROT-007: notices never name accounts), so nothing said that a subscription was
   refused or removed, or that a task waits because none is left.
