@@ -4330,7 +4330,7 @@ async fn work_committed_after_the_merge_opens_a_new_pull_request() -> TestResult
     let fresh = wait_state(&f, &agent, &fix2).await?;
     assert_eq!(fresh["merge_outcome"], Value::Null, "{fresh}");
 
-    // The merge call arms the follow-up it opened, at the end of a goal task's turn.
+    // The merge call arms the follow-up opened at the end of the turn.
     f.h.github.set_checks(&fix2, ChecksState::Pending);
     let again = arm_merge(&f, &agent, &fix2).await?;
     assert_eq!(again["armed"], true, "{again}");
