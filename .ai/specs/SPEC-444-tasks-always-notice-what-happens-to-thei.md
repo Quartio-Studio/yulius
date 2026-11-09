@@ -185,9 +185,17 @@ the sandbox's task list.
   counting while releasing in one call (its own commit); the file passed 3 runs of 3.
 - **Security scan.** `yulius security-scan`: "Security scan disabled" (Vidoc is turned off for
   this project in Yulius). Disabled, not passed.
+- **Live check on the instance** (main 4d9aebc4, which holds this change), with this task's own
+  Claude Code session and no `yulius wait` running:
+  - Red run: follow-up pull request #1134 carried one test failing on purpose (head 87b442e2,
+    merge armed). Run 533de2e1 failed `quality` at about 15:56:00 UTC on 2026-11-09; at 15:56:15
+    Yulius typed "Its Yulius CI run 533de2e1-… at 87b442e25 failed: `quality` exited 1 (failing
+    tests: yulius-domain ci::failures::tests::spec_444_red_run_on_purpose). Read the log with
+    `ci_status` …, fix it test-first …" and "The merge you armed was dropped …". The test was then
+    reverted.
+  - Conflict and merge: pending (a follow-up records them).
 - **Could not be tested here:**
-  - A real sandbox with a real Claude Code session whose check-ins Claude Code paused: this change
-    is not deployed (a person deploys Yulius). The integration test drives the same path (a live
-    session, `type_into_session`, no wait running) with a fake agent; with the 20 s watch, an event
-    reaches the session within a minute.
+  - Paused check-ins: this session runs under a `/goal` whose evaluator never paused its
+    check-ins, so the live check had no wait running but did not have paused check-ins. The
+    integration test covers a session nothing else wakes.
   - quartio-v2 itself: outside this sandbox's access.
