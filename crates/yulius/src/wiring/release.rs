@@ -74,7 +74,7 @@ impl GitHubReleases {
         if let Some(token) = token {
             request = request.bearer_auth(token.expose());
         }
-        let mut response = request.send().await.map_err(|_| SourceError::Unavailable)?;
+        let mut response = request.send().await.map_err(|e| failure(&e))?;
         let status = response.status();
         let limited = response
             .headers()
@@ -87,14 +87,10 @@ impl GitHubReleases {
             404 if path.contains("/compare/") => return Ok(None),
             403 | 429 if limited || status.as_u16() == 429 => return Err(SourceError::RateLimited),
             401 | 403 | 404 => return Err(SourceError::NoAccess),
-            _ => return Err(SourceError::Unavailable),
+            code => return Err(SourceError::Status(code)),
         }
         let mut bytes = Vec::new();
-        while let Some(chunk) = response
-            .chunk()
-            .await
-            .map_err(|_| SourceError::Unavailable)?
-        {
+        while let Some(chunk) = response.chunk().await.map_err(|e| failure(&e))? {
             if bytes.len() + chunk.len() > MAX_BODY {
                 return Err(SourceError::Invalid("body"));
             }
@@ -103,6 +99,15 @@ impl GitHubReleases {
         serde_json::from_slice(&bytes)
             .map(Some)
             .map_err(|_| SourceError::Invalid("json"))
+    }
+}
+
+/// A request that got no (whole) answer: past its deadline, or no connection.
+fn failure(error: &reqwest::Error) -> SourceError {
+    if error.is_timeout() {
+        SourceError::TimedOut
+    } else {
+        SourceError::Unavailable
     }
 }
 

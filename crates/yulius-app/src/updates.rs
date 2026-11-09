@@ -45,6 +45,8 @@ use crate::ports::updates::{ReleaseSource, ReleaseState, SourceError, UpdateHelp
 
 /// Automatic checks of `main`.
 pub const CHECK_EVERY: Duration = Duration::from_secs(3600);
+/// The next automatic check after a failed one, when the interval is longer (SPEC-443).
+pub const CHECK_RETRY_AFTER: Duration = Duration::from_secs(300);
 /// The first automatic check after a start.
 pub const FIRST_CHECK_AFTER: Duration = Duration::from_secs(60);
 /// "Check now" reuses a check younger than this.
@@ -673,8 +675,14 @@ impl App {
         if let Some(every) = services.check_every {
             let due = self.updates.next_check_ms.load(Ordering::SeqCst);
             if now >= due {
-                self.check_releases(None).await;
-                let next = now.saturating_add(i64::try_from(every.as_millis()).unwrap_or(i64::MAX));
+                // A failed check (GitHub down or slow) is tried again within minutes, so its
+                // warning clears by itself once GitHub answers (SPEC-443 UCF-002).
+                let wait = if self.check_releases(None).await {
+                    every
+                } else {
+                    every.min(CHECK_RETRY_AFTER)
+                };
+                let next = now.saturating_add(i64::try_from(wait.as_millis()).unwrap_or(i64::MAX));
                 self.updates.next_check_ms.store(next, Ordering::SeqCst);
             }
             let left = self.updates.next_check_ms.load(Ordering::SeqCst) - now;
@@ -737,19 +745,19 @@ impl App {
 
     /// Reads `main` now and caches the result; tells viewers when the offered update changed.
     /// With `reuse_within`, a result stored meanwhile (by the check this one waited for) that is
-    /// younger than that many milliseconds is kept instead.
-    async fn check_releases(&self, reuse_within: Option<i64>) {
+    /// younger than that many milliseconds is kept instead. False when the check failed.
+    async fn check_releases(&self, reuse_within: Option<i64>) -> bool {
         let Some(services) = self.update_services() else {
-            return;
+            return true;
         };
         let Some(source) = services.source.clone() else {
-            return;
+            return true;
         };
         let _guard = self.updates.checking.lock().await;
         if let Some(gap) = reuse_within
             && self.last_check_within(gap)
         {
-            return;
+            return true;
         }
         let mut outcome: Option<(Result<ReleaseState, SourceError>, &'static str)> = None;
         for (token, via) in self.release_tokens(services).await {
@@ -763,7 +771,7 @@ impl App {
             }
         }
         let Some((result, via)) = outcome else {
-            return;
+            return true;
         };
         let result = result.map_err(|err| match err {
             SourceError::NoAccess => format!(
@@ -775,8 +783,9 @@ impl App {
             other => format!("{other}."),
         });
         if let Err(err) = &result {
-            tracing::info!(error = %err, "update check failed");
+            tracing::info!(error = %err, via, "update check failed");
         }
+        let ok = result.is_ok();
         let offered = |r: &Result<ReleaseState, String>| {
             r.as_ref()
                 .ok()
@@ -785,7 +794,7 @@ impl App {
         };
         let changed = {
             let Ok(mut slot) = self.updates.check.lock() else {
-                return;
+                return ok;
             };
             let before = slot.as_ref().and_then(|s| offered(&s.result));
             let after = offered(&result);
@@ -799,6 +808,7 @@ impl App {
         if changed {
             self.publish_update(None);
         }
+        ok
     }
 
     fn publish_update(&self, phase: Option<&str>) {
