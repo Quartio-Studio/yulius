@@ -39,7 +39,8 @@ itself once GitHub answers again.
 | ID | Requirement | Evidence |
 | --- | --- | --- |
 | UCF-001 | A request that runs past its deadline is `SourceError::TimedOut`, shown as "GitHub did not answer in time"; an unexpected HTTP status is `SourceError::Status(n)`, shown as "GitHub answered with an error (HTTP n)"; only a request that got no answer at all stays `Unavailable` ("GitHub could not be reached"). | `release.rs` `failures_say_whether_github_answered` |
-| UCF-002 | After a failed automatic check, the next one runs `CHECK_RETRY_AFTER` (5 minutes) later, never later than the configured interval; after a successful one, the configured interval later (hourly). | `self_update.rs` `a_failed_automatic_check_is_retried_within_minutes` |
+| UCF-002 | After any failed check (automatic, "Check now" or the page's own check on opening), the next automatic one runs at most `CHECK_RETRY_AFTER` (5 minutes) later, never later than the configured interval; after a successful one, or a rate limit (retrying into it only fails again), the configured interval later (hourly). | `self_update.rs` `a_failed_automatic_check_is_retried_within_minutes`, `a_failed_check_now_brings_the_automatic_check_closer`, `a_rate_limit_waits_the_interval_and_a_short_interval_stays` |
+| UCF-003 | A check whose failure starts, changes or ends is published (`update.updated`) even when the offered update stays the same, so an open page shows and clears the warning without a reload. | `self_update.rs` `a_failed_and_a_recovered_check_are_published` |
 
 ## Plan
 

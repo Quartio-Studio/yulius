@@ -389,11 +389,32 @@ mod tests {
             Some("GitHub answered with an error (HTTP 502)")
         );
 
-        // A port nobody listens on any more.
-        let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-        let url = format!("http://{}", closed.local_addr()?);
-        drop(closed);
-        let source = GitHubReleases::with_api(url, false)?;
+        // Starts an answer and stalls in its body.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let stalling = format!("http://{}", listener.local_addr()?);
+        tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = vec![0u8; 16 * 1024];
+                let _ = socket.read(&mut buf).await;
+                let _ = socket
+                    .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 100\r\n\r\n{\"sha\"")
+                    .await;
+                held.push(socket);
+            }
+        });
+        let source = GitHubReleases::with_deadline(stalling, false, Duration::from_millis(300))?;
+        assert_eq!(source.compare(None, None).await, Err(SourceError::TimedOut));
+
+        // Closes every connection without a word.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let closing = format!("http://{}", listener.local_addr()?);
+        tokio::spawn(async move {
+            while let Ok((socket, _)) = listener.accept().await {
+                drop(socket);
+            }
+        });
+        let source = GitHubReleases::with_api(closing, false)?;
         assert_eq!(
             source.compare(None, None).await,
             Err(SourceError::Unavailable)

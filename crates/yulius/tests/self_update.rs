@@ -25,11 +25,13 @@ use yulius_app::context::App;
 use yulius_app::ports::session::RunFreeze;
 use yulius_app::ports::store::{TaskStore, UserStore as _};
 use yulius_app::ports::store_ext::AutomationStore as _;
-use yulius_app::ports::updates::SourceError;
+use yulius_app::ports::updates::{ReleaseState, SourceError};
 use yulius_app::supervisor::RunStart;
+use yulius_contracts::events::UiEvent;
 use yulius_contracts::update::{HelperAction, HelperState};
 use yulius_domain::ids::TaskId;
 use yulius_domain::task::{Activity, TaskStatus};
+use yulius_domain::update::Relation;
 
 const WORKING: &str = "update-token-working-0123456789abcdef";
 const IDLE: &str = "update-token-idle-0123456789abcdefgh";
@@ -225,19 +227,37 @@ async fn a_newer_main_is_offered_to_superadmins_only() -> TestResult {
     Ok(())
 }
 
-/// #1124 (SPEC-443 UCF-002): a failed automatic check is tried again 5 minutes later, so the
-/// warning of a GitHub outage clears by itself; a successful one waits the hour.
-#[tokio::test]
-async fn a_failed_automatic_check_is_retried_within_minutes() -> TestResult {
+/// An instance built from [`OLD`] that checks `main` by itself every `minutes`, with its source.
+async fn checking_every(
+    minutes: u64,
+) -> Result<(Harness, Creds, Arc<FakeSource>), Box<dyn std::error::Error>> {
     let h = harness()?;
     let admin = setup_superadmin_creds(&h).await?;
     configure_github_app(&h).await?;
     let source = FakeSource::behind();
-    *source.result.lock().map_err(|_| "lock")? = Err(SourceError::TimedOut);
-    let mut hourly = services(OLD, &source, &FakeHelper::installed());
-    hourly.check_every = Some(Duration::from_secs(3600));
-    assert!(h.app.set_updates(hourly));
-    let compares = || source.tokens.lock().map(|t| t.len()).unwrap_or_default();
+    let mut services = services(OLD, &source, &FakeHelper::installed());
+    services.check_every = Some(Duration::from_secs(minutes * 60));
+    assert!(h.app.set_updates(services));
+    Ok((h, admin, source))
+}
+
+fn answer(source: &FakeSource, result: Result<ReleaseState, SourceError>) -> TestResult {
+    *source.result.lock().map_err(|_| "lock")? = result;
+    Ok(())
+}
+
+fn compares(source: &FakeSource) -> usize {
+    source.tokens.lock().map(|t| t.len()).unwrap_or_default()
+}
+
+/// #1124 (SPEC-443 UCF-002): a failed automatic check is tried again 5 minutes later, so the
+/// warning of a GitHub outage clears by itself; a successful one waits the hour.
+#[tokio::test]
+async fn a_failed_automatic_check_is_retried_within_minutes() -> TestResult {
+    let (h, admin, source) = checking_every(60).await?;
+    let behind = source.result.lock().map_err(|_| "lock")?.clone();
+    answer(&source, Err(SourceError::TimedOut))?;
+    let compares = || compares(&source);
 
     let _ = h.app.update_round().await;
     assert_eq!(compares(), 1, "the first automatic check");
@@ -251,11 +271,7 @@ async fn a_failed_automatic_check_is_retried_within_minutes() -> TestResult {
     assert_eq!(compares(), 2, "a failed check is retried 5 minutes later");
 
     // GitHub answers again: the warning is gone and the next check is an hour away.
-    *source.result.lock().map_err(|_| "lock")? = FakeSource::behind()
-        .result
-        .lock()
-        .map_err(|_| "lock")?
-        .clone();
+    answer(&source, behind)?;
     advance(&h, 5 * 60_000);
     let _ = h.app.update_round().await;
     assert_eq!(compares(), 3);
@@ -268,6 +284,106 @@ async fn a_failed_automatic_check_is_retried_within_minutes() -> TestResult {
     advance(&h, 60_000);
     let _ = h.app.update_round().await;
     assert_eq!(compares(), 4);
+    Ok(())
+}
+
+/// SPEC-443 UCF-002: a failed "Check now" (or the check of a page opening) also brings the next
+/// automatic check to 5 minutes away, since its warning replaced the offer for everyone.
+#[tokio::test]
+async fn a_failed_check_now_brings_the_automatic_check_closer() -> TestResult {
+    let (h, admin, source) = checking_every(60).await?;
+    let _ = h.app.update_round().await;
+    assert_eq!(compares(&source), 1);
+    let behind = source.result.lock().map_err(|_| "lock")?.clone();
+    answer(&source, Err(SourceError::Status(502)))?;
+    advance(&h, 31_000);
+    let r = call(
+        &h.router,
+        Method::POST,
+        "/api/admin/update/check",
+        None,
+        &admin,
+    )
+    .await?;
+    assert_eq!(compares(&source), 2);
+    assert_eq!(
+        r.body["check"]["error"],
+        "GitHub answered with an error (HTTP 502)."
+    );
+    assert!(
+        r.body["available"].is_null(),
+        "the failure replaced the offer"
+    );
+    answer(&source, behind)?;
+    advance(&h, 5 * 60_000);
+    let _ = h.app.update_round().await;
+    assert_eq!(
+        compares(&source),
+        3,
+        "retried 5 minutes after the failed Check now"
+    );
+    let r = call(&h.router, Method::GET, "/api/update", None, &admin).await?;
+    assert_eq!(r.body["available"]["commit"], NEW);
+    Ok(())
+}
+
+/// SPEC-443 UCF-003: a check that fails, and one that succeeds again, are published even when
+/// the offer stays the same (here none: the build is `main`), so an open page shows and clears
+/// the warning without a reload.
+#[tokio::test]
+async fn a_failed_and_a_recovered_check_are_published() -> TestResult {
+    let (h, _admin, source) = checking_every(60).await?;
+    let up_to_date = Ok(ReleaseState {
+        head: OLD.into(),
+        relation: Relation::UpToDate,
+        commits: Vec::new(),
+    });
+    answer(&source, up_to_date.clone())?;
+    let mut rx = h.app.events.subscribe();
+    let mut published = move || {
+        let mut n = 0;
+        while let Ok(envelope) = rx.try_recv() {
+            n += usize::from(matches!(envelope.event, UiEvent::UpdateChanged { .. }));
+        }
+        n
+    };
+    let _ = h.app.update_round().await;
+    assert_eq!(published(), 0, "nothing offered before or after");
+    answer(&source, Err(SourceError::TimedOut))?;
+    advance(&h, 60 * 60_000);
+    let _ = h.app.update_round().await;
+    assert_eq!(published(), 1, "the failure is published");
+    advance(&h, 5 * 60_000);
+    let _ = h.app.update_round().await;
+    assert_eq!(published(), 0, "the same failure again changes nothing");
+    answer(&source, up_to_date)?;
+    advance(&h, 5 * 60_000);
+    let _ = h.app.update_round().await;
+    assert_eq!(compares(&source), 4);
+    assert_eq!(published(), 1, "the recovery is published");
+    Ok(())
+}
+
+/// SPEC-443 UCF-002: a rate limit is waited out (the next check keeps the interval), and an
+/// interval shorter than 5 minutes is kept after a failure.
+#[tokio::test]
+async fn a_rate_limit_waits_the_interval_and_a_short_interval_stays() -> TestResult {
+    let (h, _admin, source) = checking_every(60).await?;
+    answer(&source, Err(SourceError::RateLimited))?;
+    let _ = h.app.update_round().await;
+    advance(&h, 5 * 60_000);
+    let _ = h.app.update_round().await;
+    assert_eq!(compares(&source), 1, "no retry into a rate limit");
+    advance(&h, 55 * 60_000);
+    let _ = h.app.update_round().await;
+    assert_eq!(compares(&source), 2);
+
+    let (h, _admin, source) = checking_every(2).await?;
+    answer(&source, Err(SourceError::TimedOut))?;
+    let _ = h.app.update_round().await;
+    advance(&h, 2 * 60_000);
+    let _ = h.app.update_round().await;
+    assert_eq!(compares(&source), 2, "never later than the interval");
     Ok(())
 }
 
