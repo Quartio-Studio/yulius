@@ -189,13 +189,19 @@ the sandbox's task list.
   Claude Code session and no `yulius wait` running:
   - Red run: follow-up pull request #1134 carried one test failing on purpose (head 87b442e2,
     merge armed). Run 533de2e1 failed `quality` at about 15:56:00 UTC on 2026-11-09; at 15:56:15
-    Yulius typed "Its Yulius CI run 533de2e1-… at 87b442e25 failed: `quality` exited 1 (failing
-    tests: yulius-domain ci::failures::tests::spec_444_red_run_on_purpose). Read the log with
-    `ci_status` …, fix it test-first …" and "The merge you armed was dropped …". The test was then
-    reverted.
-  - Conflict and merge: pending (a follow-up records them).
+    Yulius typed "Yulius, about your pull request #1134: - Its Yulius CI run 533de2e1-… at
+    87b442e25 failed: `quality` exited 1 (failing tests: yulius-domain
+    ci::failures::tests::spec_444_red_run_on_purpose). Read the log with `ci_status` …, fix it
+    test-first …" and "The merge you armed was dropped …". The test was then reverted.
+  - A real red run: run b59c60f8 at 0b3259db failed `cargo deny` on RUSTSEC-2026-0459 at about
+    16:17 UTC; the notice ("… failed: `quality` exited 1. Read the log …" and the dropped merge)
+    was in the session before 16:18:24. Fixed with `rusqlite` 0.41.
+  - Merge: #1134 merged into `dev` at 16:47:06 UTC (67b14683); at 16:47:18 the session read
+    "Pull request #1134 is merged into `dev` at 7172b6aed, whose own Yulius CI run passed … Do
+    not promote unless the task asks for it."
+  - Conflict: this follow-up rewrites these lines, which `dev` took from #1134's squash, so its
+    pull request conflicts with `dev`; the notice is recorded after it.
 - **Could not be tested here:**
-  - Paused check-ins: this session runs under a `/goal` whose evaluator never paused its
-    check-ins, so the live check had no wait running but did not have paused check-ins. The
-    integration test covers a session nothing else wakes.
+  - Paused check-ins: this session runs under a `/goal` whose check-ins never paused, so they
+    were not live-tested; the integration test covers a session nothing else wakes.
   - quartio-v2 itself: outside this sandbox's access.
