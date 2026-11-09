@@ -93,15 +93,26 @@ pub fn self_matching_pattern(command: &str) -> Option<(String, String)> {
 pub fn hand_merge(command: &str) -> bool {
     let words = split_words(command);
     words.iter().enumerate().any(|(index, word)| {
-        // A shell's command string (`bash -c '…'`) is a command of its own.
-        if index > 0 && words[index - 1] == "-c" && hand_merge(word) {
+        // A shell's command string (`bash -c '…'`, `bash -lc '…'`) is a command of its own.
+        let shell_flag = |flag: &str| {
+            flag.strip_prefix('-')
+                .is_some_and(|flags| !flags.starts_with('-') && flags.contains('c'))
+        };
+        if index > 0 && shell_flag(&words[index - 1]) && hand_merge(word) {
             return true;
         }
         // `gh` as the command, not an argument (`echo gh pr merge`): at the start, after a
-        // separator, or after `sudo`/`env`/`command`.
+        // separator, `sudo`/`env`/`command`, an environment assignment (`GH_TOKEN=x gh`) or a
+        // command substitution (`$(gh`).
         let at_command = index == 0
             || words.get(index - 1).is_some_and(|before| {
-                is_separator(before) || matches!(before.as_str(), "sudo" | "env" | "command")
+                is_separator(before)
+                    || matches!(before.as_str(), "sudo" | "env" | "command")
+                    || before.ends_with('$')
+                    || before.split_once('=').is_some_and(|(name, _)| {
+                        !name.is_empty()
+                            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                    })
             });
         if !at_command || word.rsplit('/').next() != Some("gh") {
             return false;
@@ -319,6 +330,10 @@ mod tests {
             "gh api -f merge_method=squash -X PUT repos/o/r/pulls/1/merge",
             "bash -c 'gh pr merge 1 --squash'",
             "sudo gh pr merge 1",
+            // Review round 2: an environment prefix, a command substitution, `bash -lc`.
+            "GH_TOKEN=x gh pr merge 1",
+            "out=$(gh pr merge 1)",
+            "bash -lc 'gh pr merge 1'",
         ] {
             assert!(hand_merge(command), "{command}");
         }

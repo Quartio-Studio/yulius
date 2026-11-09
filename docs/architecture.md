@@ -801,8 +801,8 @@ person must act first (a prompt on screen, `needs_you`):
 Each event has a key, typed once and kept in `<data>/pr-notices.json`. A session idle for 45
 minutes with nothing typed gets a check-in with the pull request's state; a pull request with no
 progress for 60 minutes (no run of its head or candidate queued, started or ended, no delivery or
-armed-merge change, no event typed) while its CI is idle, its agent's turn is closed and the
-project has Yulius CI is told once and carries `pr_stalled` on
+armed-merge change, no event typed) while its CI is idle, its agent's turn closed 5 minutes ago and
+the project has Yulius CI is told once and carries `pr_stalled` on
 its task summary, which the task list shows ("· PR stalled") until it moves. `yulius wait` has no
 limit while a run at its head is queued or running, a merge is armed or a deploy runs, and with a
 merge armed it ends on its head's failure. The PreToolUse guard refuses `gh pr merge` and
