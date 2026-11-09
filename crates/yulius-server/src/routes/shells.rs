@@ -126,7 +126,7 @@ pub async fn superagent_requests(
     Auth(ctx): Auth,
     Path(sid): Path<String>,
 ) -> ApiResult<Json<Vec<serde_json::Value>>> {
-    Ok(Json(app.superagent_requests(&ctx, &sid)))
+    Ok(Json(app.superagent_requests(&ctx, &sid).await?))
 }
 
 /// The person's answer to one request.

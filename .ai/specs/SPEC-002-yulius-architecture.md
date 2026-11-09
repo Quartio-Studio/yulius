@@ -1973,8 +1973,9 @@ listener through `yulius mcp`, a stdio bridge that lives as long as the session 
 Yulius never read through its outage (SPEC-358, ADR-0244). A Cockpit's `ck_…` bearer (SPEC-037,
 ADR-0029) connects over HTTP, resolves to its owner and sandbox and is served only
 `COCKPIT_TOOLS` (`mcp.rs`): the task, automation, workflow and session tools, `attachments_trash`,
-`task_message`, the vault tools it shares with tasks, `secret_verify`, `sandboxes_list` and
-`sandbox_task_create`. Protocol versions
+`task_message`, the vault tools it shares with tasks, `secret_verify`, `sandboxes_list`,
+`sandbox_task_create`, `sandbox_task_get`, `sandbox_task_update`, `sandbox_task_message` and
+`sandbox_task_stop`. Protocol versions
 accepted: 2025-06-18, 2025-03-26. Body ≤ 1 MiB; tool results ≤ 256 KiB.
 
 | Tool | Purpose (requirements) |
@@ -1991,6 +1992,7 @@ accepted: 2025-06-18, 2025-03-26. Body ≤ 1 MiB; tool results ≤ 256 KiB.
 | `attachments_trash` | Deleted tasks' attachments, kept 7 days; `restore` moves one entry's files into a task (`into`, by default the caller's own) (SPEC-396, ADR-0253) |
 | `task_message` | The Cockpit only: a person's message to a task, queued into its request or typed into its running session (SPEC-230, ADR-0178) |
 | `sandboxes_list`, `sandbox_task_create` | The Cockpit only: the person's other sandboxes, and a task there once the person approves the request (SPEC-335, ADR-0227) |
+| `sandbox_task_get`, `sandbox_task_update`, `sandbox_task_message`, `sandbox_task_stop` | The Cockpit only: read a task of another sandbox, and start or re-chain, message or stop it once the person approves each request; no delete or archive (SPEC-442, ADR-0286) |
 | `task_stop`, `task_archive`, `task_delete` | The UI's stop, archive and delete of another task of the project, for the person the caller acts for, audited with the caller; never the caller's own task (SPEC-066 MGT-008..010) |
 | `automation_create`, `automations_list`, `automation_update` | Prompt-created automations (AUT-002); `automations_list` also lists the ready-made ones (`ready_made`, SPEC-066 AUT-012) |
 | `automation_delete`, `automation_run_now`, `automation_template_enable` | The Automations page's delete, Run now and Enable of a ready-made automation, audited with the caller (SPEC-066 MGT-011, AUT-012) |

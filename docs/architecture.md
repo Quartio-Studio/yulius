@@ -1259,8 +1259,9 @@ It manages the project through the Yulius MCP server
 ([SPEC-037](../.ai/specs/SPEC-037-i-got-something-like-this-tasks-and-cock.md),
 [decision 0029](decisions/0029-cockpit-manages-through-mcp.md)). Its bearer (`ck_…`) is derived
 from the shell's persisted host token, and it is served `COCKPIT_TOOLS`: the task, automation, workflow and session tools,
-`attachments_trash`, `task_message`, the vault tools (below) and `sandboxes_list` /
-`sandbox_task_create` for its person's other sandboxes. Those tools act for a person (`ProjectCaller`, which names its
+`attachments_trash`, `task_message`, the vault tools (below) and `sandboxes_list`,
+`sandbox_task_create`, `sandbox_task_get`, `sandbox_task_update`, `sandbox_task_message` and
+`sandbox_task_stop` for its person's other sandboxes. Those tools act for a person (`ProjectCaller`, which names its
 `Channel`: task agent, Superagent or remote MCP): the Cockpit's owner, the remote MCP token's
 person, or a task's owner when a task's agent calls them. `task_create` takes the same path as
 New task; `task_update` is the UI's change of a waiting task's start (SPEC-126, SPEC-396);
@@ -1297,7 +1298,14 @@ requests, announced by `superagent.requests` to that person only. An answer need
 session (`AuthContext::is_browser`): no API token approves, so an agent holding one cannot answer
 its own request. Approval runs `tool_task_create` with a `ProjectCaller` for the target, exactly
 as shown, in a task of its own (a cancelled page loses nothing), and its result goes to the
-waiting call; audited `superagent.cross_task`.
+waiting call; audited `superagent.cross_task` in both sandboxes.
+The same requests follow a task there up
+([SPEC-442](../.ai/specs/SPEC-442-a-session-can-manage-the-tasks-it-asks-f.md),
+[decision 0286](decisions/0286-the-superagent-changes-tasks-in-other-sandboxes-on-its-persons-approval.md)):
+each carries a `CrossAction` (`Create`, `Update`, `Message`, `Stop`; there is no delete or archive)
+and, but for a create, the task it names, resolved in the target before anyone is asked; an
+approval runs `tool_task_update`, `tool_task_message` or `tool_task_change(Stop)` there instead.
+`sandbox_task_get` only reads (`tool_task_get` in the target) and asks nobody.
 
 ```mermaid
 sequenceDiagram
@@ -1305,13 +1313,14 @@ sequenceDiagram
   participant Y as Yulius (cross_requests)
   participant P as Person (A's Superagent panel)
   participant B as Sandbox B
-  S->>Y: sandbox_task_create {sandbox: B, prompt}
+  S->>Y: sandbox_task_create {sandbox: B, prompt}, or sandbox_task_update / _message / _stop {sandbox: B, number}
   Y-->>P: superagent.requests (to that person only)
   P->>Y: GET …/superagent/requests (full prompt, options)
   alt Create task (browser session)
     P->>Y: POST …/requests/{id} {approve: true}
-    Y->>B: task_create as the person (access rechecked)
+    Y->>B: task_create / task_update / task_message / task_stop as the person (access rechecked)
     Y-->>S: approved + task
+    Y->>Y: audit superagent.cross_task in A and B
   else Decline
     P->>Y: POST …/requests/{id} {approve: false}
     Y-->>S: declined, nothing created

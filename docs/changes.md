@@ -4,8 +4,27 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-09
+
+- A failed update check says why and is retried within minutes (SPEC-443, #1124, task #425).
+  During GitHub's API incident of 2026-11-08, Settings → Instance → Updates read "GitHub could not
+  be reached." and kept it until the next hourly check. Every failure read like that: a timeout,
+  GitHub's own HTTP error and a missing connection. Now the banner says which ("GitHub did not
+  answer in time", "GitHub answered with an error (HTTP 502)"), and after a failed check
+  (automatic, Check now or the page's own) the next one comes 5 minutes later instead of an hour;
+  an open page shows the warning and its end without a reload.
+
 ## 2026-11-08
 
+- The Superagent follows up the tasks it asked for in other sandboxes (SPEC-442, ADR-0286, task
+  #424). A Superagent that created a task in another sandbox prepared could not start it, re-chain
+  it or tell it anything: the person had to delete it and ask for a new one. Now
+  `sandbox_task_get` reads it, and `sandbox_task_update` (start it now, re-chain, prepare or
+  schedule), `sandbox_task_message` and `sandbox_task_stop` ask the person on the same panel as
+  `sandbox_task_create` ("Your Superagent asks to start #12 now in yulius": **Start now**). Each
+  change waits for its own click; nothing deletes or archives a task of another sandbox; every
+  answer is audited in both sandboxes. The Superagent is told to ask for such tasks queued unless
+  the person wants them prepared.
 - Merges no longer restart other pull requests' runs (SPEC-441, ADR-0285, task #423). In
   quartio-v2, every merge into `dev` restarted the run of every armed pull request behind it,
   so with 45 to 60 minute runs most were thrown away and about one pull request merged an hour.

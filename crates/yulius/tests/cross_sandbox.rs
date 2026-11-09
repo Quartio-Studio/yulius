@@ -1,6 +1,7 @@
 //! Tasks the Superagent starts in its person's other sandboxes (SPEC-335): `sandboxes_list`
 //! names where it may ask, `sandbox_task_create` waits for the person's answer, and only the
-//! person, from a browser session, approves or declines each request.
+//! person, from a browser session, approves or declines each request. SPEC-442: the same requests
+//! start, re-chain, message and stop a task of another sandbox; `sandbox_task_get` only reads.
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -11,11 +12,13 @@ use serde_json::{Value, json};
 use yulius_app::auth::AuthContext;
 use yulius_app::context::App;
 use yulius_app::coordination::{Channel, ProjectCaller};
+use yulius_app::cross_sandbox::CrossAction;
 use yulius_app::error::AppResult;
 use yulius_app::model::TaskOrigin;
 use yulius_app::ports::store::{AuditStore, TaskStore, UserStore};
 use yulius_contracts::events::UiEvent;
 use yulius_domain::ids::{SandboxId, TaskId, UserId};
+use yulius_domain::task::TaskStatus;
 
 use crate::support::{
     self, Creds, Harness, TestResult, add_sandbox, admit_and_sign_in, call, configure_github_app,
@@ -598,4 +601,715 @@ fn the_relays_idle_floor_outlasts_the_longest_superagent_call() {
         yulius_sandbox::relay::IDLE_FLOOR
     );
     assert_eq!(yulius_egress::IDLE_FLOOR, yulius_sandbox::relay::IDLE_FLOOR);
+}
+
+/// A task that `login`'s Superagent of `sandbox` created there, with `args` (queued: no session
+/// starts in this world), as (id, number).
+async fn task_in(
+    w: &World,
+    sandbox: &str,
+    login: &str,
+    args: Value,
+) -> Result<(TaskId, u64), Error> {
+    let user = if login == "bob" {
+        &w.bob_id
+    } else {
+        &w.alice_id
+    };
+    let created =
+        w.h.app
+            .tool_task_create(&superagent(sandbox, user, login)?, &args)
+            .await?;
+    let id = TaskId::parse(created["task"]["task_id"].as_str().ok_or("task_id")?)?;
+    Ok((id, created["task"]["number"].as_u64().ok_or("number")?))
+}
+
+/// Starts a cross-sandbox `action` request as alice's Superagent in studio; it waits for her
+/// answer.
+fn ask_to(
+    w: &World,
+    action: CrossAction,
+    args: Value,
+) -> Result<tokio::task::JoinHandle<AppResult<Value>>, Error> {
+    let app: Arc<App> = w.h.app.clone();
+    let caller = superagent("s1", &w.alice_id, "alice")?;
+    Ok(tokio::spawn(async move {
+        app.tool_sandbox_task_request(&caller, action, &args).await
+    }))
+}
+
+async fn status_of(w: &World, id: &TaskId) -> Result<TaskStatus, Error> {
+    Ok(w.h.store.task(id).await?.ok_or("task")?.status)
+}
+
+/// Answers alice's one waiting request in studio and returns the waiting call's outcome.
+async fn answer_the_one(
+    w: &World,
+    call_: tokio::task::JoinHandle<AppResult<Value>>,
+    approve: bool,
+) -> Result<(Value, Value), Error> {
+    let request = waiting(w, 1).await?.remove(0);
+    let id = request["id"].as_str().ok_or("id")?;
+    let answered = answer(w, &w.alice, "s1", id, approve).await?;
+    assert_eq!(answered.status, StatusCode::OK, "{:?}", answered.body);
+    let outcome = call_.await??;
+    Ok((request, outcome))
+}
+
+/// SPEC-442 XST-001 (AC-XST-6): the Superagent reads a task of another sandbox its person can
+/// work in, without asking; its own sandbox, a sandbox its person only reads and a task of
+/// another sandbox are refused.
+#[tokio::test]
+async fn the_superagent_reads_a_task_of_another_sandbox_without_asking() -> TestResult {
+    let w = world(60_000).await?;
+    let (id, number) = task_in(
+        &w,
+        "s2",
+        "alice",
+        json!({"prompt": "Update the API client", "title": "API client", "prepared": true}),
+    )
+    .await?;
+    let (docs_task, docs_number) = task_in(&w, "s3", "bob", json!({"prompt": "Docs work"})).await?;
+    let caller = superagent("s1", &w.alice_id, "alice")?;
+    for named in [
+        json!({"sandbox": "website", "number": number}),
+        json!({"sandbox": "Quartio-Studio/website", "task_id": id.as_str()}),
+    ] {
+        let got = w.h.app.tool_sandbox_task_get(&caller, &named).await?;
+        assert_eq!(got["number"], json!(number), "{got}");
+        assert_eq!(got["title"], "API client", "{got}");
+        assert_eq!(got["status"], "prepared", "{got}");
+        assert_eq!(got["prompt"], "Update the API client", "{got}");
+        assert!(got["steps_list"].is_array(), "{got}");
+    }
+    assert!(requests(&w, &w.alice, "s1").await?.is_empty(), "not asked");
+    for (args, says) in [
+        (json!({"sandbox": "studio", "number": 1}), "task_get"),
+        (
+            json!({"sandbox": "docs", "number": docs_number}),
+            "not found",
+        ),
+        (json!({"sandbox": "secret", "number": 1}), "not found"),
+        (json!({"sandbox": "website", "number": 99}), "not found"),
+        (
+            json!({"sandbox": "website", "task_id": docs_task.as_str()}),
+            "not found",
+        ),
+        (json!({"sandbox": "website"}), "task_id"),
+        (
+            json!({"sandbox": "website", "number": number, "colour": "red"}),
+            "colour",
+        ),
+    ] {
+        let refused = w.h.app.tool_sandbox_task_get(&caller, &args).await;
+        let err = refused.err().ok_or_else(|| format!("{args} was read"))?;
+        assert!(
+            err.public_message().contains(says),
+            "{args}: {}",
+            err.public_message()
+        );
+    }
+    Ok(())
+}
+
+/// SPEC-442 XST-002, XST-003, XST-006 (AC-XST-1): a prepared task of another sandbox is started
+/// now through `sandbox_task_update` once the person approves the card that says so.
+#[tokio::test]
+async fn an_approved_start_starts_a_prepared_task_of_another_sandbox() -> TestResult {
+    let w = world(60_000).await?;
+    let (id, number) = task_in(
+        &w,
+        "s2",
+        "alice",
+        json!({"prompt": "Update the API client", "title": "API client", "prepared": true}),
+    )
+    .await?;
+    let call_ = ask_to(
+        &w,
+        CrossAction::Update,
+        json!({"sandbox": "website", "number": number}),
+    )?;
+    let request = waiting(&w, 1).await?.remove(0);
+    assert_eq!(request["action"], "update", "{request}");
+    assert_eq!(request["sandbox"]["slug"], "website", "{request}");
+    assert_eq!(request["task"]["number"], json!(number), "{request}");
+    assert_eq!(request["task"]["title"], "API client", "{request}");
+    assert_eq!(request["task"]["status"], "prepared", "{request}");
+    assert_eq!(request["options"], json!({}), "{request}");
+    assert_eq!(
+        status_of(&w, &id).await?,
+        TaskStatus::Prepared,
+        "not before"
+    );
+    let (_, outcome) = answer_the_one(&w, call_, true).await?;
+    assert_eq!(outcome["outcome"], "approved", "{outcome}");
+    assert_eq!(outcome["sandbox"], "website", "{outcome}");
+    assert_eq!(outcome["task"]["number"], json!(number), "{outcome}");
+    assert_eq!(status_of(&w, &id).await?, TaskStatus::Queued);
+    Ok(())
+}
+
+/// SPEC-442 XST-002: `sandbox_task_update` re-chains a task of another sandbox after another of
+/// that sandbox's tasks, as `task_update` does there.
+#[tokio::test]
+async fn an_approved_update_rechains_a_task_of_another_sandbox() -> TestResult {
+    let w = world(60_000).await?;
+    let (_, first) = task_in(&w, "s2", "alice", json!({"prompt": "First"})).await?;
+    let (id, number) = task_in(
+        &w,
+        "s2",
+        "alice",
+        json!({"prompt": "Second", "prepared": true}),
+    )
+    .await?;
+    let call_ = ask_to(
+        &w,
+        CrossAction::Update,
+        json!({"sandbox": "website", "number": number, "after_task": first}),
+    )?;
+    let (request, outcome) = answer_the_one(&w, call_, true).await?;
+    assert_eq!(request["options"]["after_task"], json!(first), "{request}");
+    assert_eq!(outcome["outcome"], "approved", "{outcome}");
+    assert_eq!(status_of(&w, &id).await?, TaskStatus::Chained);
+    Ok(())
+}
+
+/// SPEC-442 XST-002, XST-003: a message to a task of another sandbox that has not started is
+/// added to its request as the person's; a stop cancels a waiting task.
+#[tokio::test]
+async fn approved_messages_and_stops_reach_the_task_of_another_sandbox() -> TestResult {
+    let w = world(60_000).await?;
+    let (id, number) = task_in(
+        &w,
+        "s2",
+        "alice",
+        json!({"prompt": "Update it", "prepared": true}),
+    )
+    .await?;
+    let text = "Use the v2 endpoints only.\nKeep v1 working.";
+    let call_ = ask_to(
+        &w,
+        CrossAction::Message,
+        json!({"sandbox": "website", "number": number, "text": text}),
+    )?;
+    let (request, outcome) = answer_the_one(&w, call_, true).await?;
+    assert_eq!(request["action"], "message", "{request}");
+    assert_eq!(request["prompt"], text, "the whole message is shown");
+    assert_eq!(outcome["outcome"], "approved", "{outcome}");
+    assert_eq!(outcome["delivered"], "queued", "{outcome}");
+    let prompt = w.h.store.task(&id).await?.ok_or("task")?.prompt;
+    assert!(prompt.contains("Use the v2 endpoints only."), "{prompt}");
+    assert!(prompt.contains("alice"), "labelled as hers: {prompt}");
+
+    let call_ = ask_to(
+        &w,
+        CrossAction::Stop,
+        json!({"sandbox": "website", "task_id": id.as_str()}),
+    )?;
+    let (request, outcome) = answer_the_one(&w, call_, true).await?;
+    assert_eq!(request["action"], "stop", "{request}");
+    assert_eq!(outcome["outcome"], "approved", "{outcome}");
+    assert!(
+        matches!(status_of(&w, &id).await?, TaskStatus::Stopped(_)),
+        "stopped"
+    );
+    Ok(())
+}
+
+/// SPEC-442 AC-XST-3: a declined start, message or stop changes nothing.
+#[tokio::test]
+async fn a_declined_change_changes_nothing() -> TestResult {
+    let w = world(60_000).await?;
+    let (id, number) = task_in(
+        &w,
+        "s2",
+        "alice",
+        json!({"prompt": "Update it", "prepared": true}),
+    )
+    .await?;
+    let before = w.h.store.task(&id).await?.ok_or("task")?;
+    for (action, args) in [
+        (
+            CrossAction::Update,
+            json!({"sandbox": "website", "number": number}),
+        ),
+        (
+            CrossAction::Message,
+            json!({"sandbox": "website", "number": number, "text": "Hurry"}),
+        ),
+        (
+            CrossAction::Stop,
+            json!({"sandbox": "website", "number": number}),
+        ),
+    ] {
+        let call_ = ask_to(&w, action, args)?;
+        let (_, outcome) = answer_the_one(&w, call_, false).await?;
+        assert_eq!(outcome["outcome"], "declined", "{outcome}");
+        let after = w.h.store.task(&id).await?.ok_or("task")?;
+        assert_eq!(after.status, TaskStatus::Prepared, "{action:?}");
+        assert_eq!(after.prompt, before.prompt, "{action:?}");
+    }
+    Ok(())
+}
+
+/// SPEC-442 XST-002: what cannot be asked about a task of another sandbox is refused at once,
+/// and nothing waits.
+#[tokio::test]
+async fn what_cannot_be_changed_is_refused_without_asking() -> TestResult {
+    let w = world(60_000).await?;
+    let (_, number) = task_in(
+        &w,
+        "s2",
+        "alice",
+        json!({"prompt": "Update it", "prepared": true}),
+    )
+    .await?;
+    let (docs_task, docs_number) = task_in(&w, "s3", "bob", json!({"prompt": "Docs work"})).await?;
+    let caller = superagent("s1", &w.alice_id, "alice")?;
+    let long = "x".repeat(70 * 1024);
+    for (action, args, says) in [
+        (
+            CrossAction::Update,
+            json!({"sandbox": "studio", "number": 1}),
+            "task_update",
+        ),
+        (
+            CrossAction::Stop,
+            json!({"sandbox": "docs", "number": docs_number}),
+            "not found",
+        ),
+        (
+            CrossAction::Stop,
+            json!({"sandbox": "website", "number": 99}),
+            "not found",
+        ),
+        (
+            CrossAction::Stop,
+            json!({"sandbox": "website", "task_id": docs_task.as_str()}),
+            "not found",
+        ),
+        (CrossAction::Stop, json!({"sandbox": "website"}), "task_id"),
+        (
+            CrossAction::Stop,
+            json!({"sandbox": "website", "number": number, "prompt": "x"}),
+            "prompt",
+        ),
+        (
+            CrossAction::Update,
+            json!({"sandbox": "website", "number": number, "text": "x"}),
+            "text",
+        ),
+        (
+            CrossAction::Message,
+            json!({"sandbox": "website", "number": number}),
+            "text",
+        ),
+        (
+            CrossAction::Message,
+            json!({"sandbox": "website", "number": number, "text": "  "}),
+            "empty",
+        ),
+        (
+            CrossAction::Message,
+            json!({"sandbox": "website", "number": number, "text": long}),
+            "longer",
+        ),
+        (
+            CrossAction::Message,
+            json!({"sandbox": "website", "number": number, "text": "Go\u{202E}now"}),
+            "cannot see",
+        ),
+        (
+            CrossAction::Update,
+            json!({"sandbox": "website", "number": number, "start_rule": "#1\u{200D} done"}),
+            "cannot see",
+        ),
+    ] {
+        let refused =
+            w.h.app
+                .tool_sandbox_task_request(&caller, action, &args)
+                .await;
+        let err = refused
+            .err()
+            .ok_or_else(|| format!("{action:?} {args} was asked"))?;
+        assert!(
+            err.public_message().contains(says),
+            "{action:?} {args}: {}",
+            err.public_message()
+        );
+    }
+    assert!(requests(&w, &w.alice, "s1").await?.is_empty());
+    Ok(())
+}
+
+/// SPEC-442 XST-003: the approval's refusal is the answer: a task that started meanwhile is not
+/// changed, and the call says why.
+#[tokio::test]
+async fn an_approval_refused_by_the_target_is_the_answer() -> TestResult {
+    let w = world(60_000).await?;
+    let (id, number) = task_in(
+        &w,
+        "s2",
+        "alice",
+        json!({"prompt": "Update it", "prepared": true}),
+    )
+    .await?;
+    let call_ = ask_to(
+        &w,
+        CrossAction::Update,
+        json!({"sandbox": "website", "number": number, "start_rule": "#1 done"}),
+    )?;
+    let request = waiting(&w, 1).await?.remove(0);
+    // Meanwhile it was stopped on the target's Tasks page.
+    w.h.app
+        .tool_task_change(
+            &superagent("s2", &w.alice_id, "alice")?,
+            &json!({"task_id": id.as_str()}),
+            yulius_app::manage::TaskChange::Stop,
+        )
+        .await?;
+    let refused = answer(
+        &w,
+        &w.alice,
+        "s1",
+        request["id"].as_str().ok_or("id")?,
+        true,
+    )
+    .await?;
+    assert!(!refused.status.is_success(), "{:?}", refused.body);
+    assert!(call_.await?.is_err());
+    assert!(matches!(status_of(&w, &id).await?, TaskStatus::Stopped(_)));
+    // Review round 1: in both sandboxes.
+    for sandbox in ["s2", "s1"] {
+        let rows = audited(&w, sandbox).await?;
+        let last = rows.last().ok_or("no audit")?;
+        assert_eq!(last["outcome"], "failed", "{sandbox}: {last}");
+        assert_eq!(last["action"], "update", "{sandbox}: {last}");
+    }
+    Ok(())
+}
+
+/// SPEC-442 XST-005 (AC-XST-5): every answer is in the audit of both sandboxes, with the action
+/// and the task, never the message.
+#[tokio::test]
+async fn every_cross_sandbox_answer_is_audited_in_both_sandboxes() -> TestResult {
+    let w = world(60_000).await?;
+    let (id, number) = task_in(
+        &w,
+        "s2",
+        "alice",
+        json!({"prompt": "Update it", "prepared": true}),
+    )
+    .await?;
+    let secret_words = "Rotate the payment keys";
+    let call_ = ask_to(
+        &w,
+        CrossAction::Message,
+        json!({"sandbox": "website", "number": number, "text": secret_words}),
+    )?;
+    answer_the_one(&w, call_, true).await?;
+    let call_ = ask_to(
+        &w,
+        CrossAction::Stop,
+        json!({"sandbox": "website", "task_id": id.as_str()}),
+    )?;
+    answer_the_one(&w, call_, false).await?;
+    let call_ = ask_to(
+        &w,
+        CrossAction::Update,
+        json!({"sandbox": "website", "number": number}),
+    )?;
+    answer_the_one(&w, call_, true).await?;
+    let call_ = ask(&w, json!({"sandbox": "website", "prompt": secret_words}))?;
+    answer_the_one(&w, call_, false).await?;
+
+    let expected = [
+        ("message", "approved"),
+        ("stop", "declined"),
+        ("update", "approved"),
+        ("create", "declined"),
+    ];
+    let target = audited(&w, "s2").await?;
+    let source = audited(&w, "s1").await?;
+    for (rows, side, other) in [
+        (&target, "from_sandbox", "s1"),
+        (&source, "to_sandbox", "s2"),
+    ] {
+        let seen: Vec<(&str, &str)> = rows
+            .iter()
+            .map(|r| {
+                (
+                    r["action"].as_str().unwrap_or_default(),
+                    r["outcome"].as_str().unwrap_or_default(),
+                )
+            })
+            .collect();
+        assert_eq!(seen, expected, "{side}: {rows:?}");
+        for row in rows {
+            assert_eq!(row[side], other, "{row}");
+            assert_eq!(row["via"], "cockpit", "{row}");
+            assert!(!row.to_string().contains(secret_words), "{row}");
+        }
+        for row in &rows[..3] {
+            assert_eq!(row["task"], json!(number), "{row}");
+        }
+    }
+    Ok(())
+}
+
+/// SPEC-442 XST-005: an unanswered change is audited `expired` in both sandboxes, and the task is
+/// as it was.
+#[tokio::test]
+async fn an_unanswered_change_is_audited_as_expired_in_both_sandboxes() -> TestResult {
+    let w = world(300).await?;
+    let (id, number) = task_in(
+        &w,
+        "s2",
+        "alice",
+        json!({"prompt": "Update it", "prepared": true}),
+    )
+    .await?;
+    let outcome = ask_to(
+        &w,
+        CrossAction::Update,
+        json!({"sandbox": "website", "number": number}),
+    )?
+    .await??;
+    assert_eq!(outcome["outcome"], "unanswered", "{outcome}");
+    assert_eq!(status_of(&w, &id).await?, TaskStatus::Prepared);
+    for sandbox in ["s1", "s2"] {
+        let rows = audited(&w, sandbox).await?;
+        assert_eq!(rows.len(), 1, "{sandbox}: {rows:?}");
+        assert_eq!(rows[0]["outcome"], "expired");
+        assert_eq!(rows[0]["action"], "update");
+    }
+    Ok(())
+}
+
+/// Review round 1 (major): the card says whether an update starts the task now, from the
+/// arguments that will run. `false` flags and blank texts mean nothing, as `task_update` reads
+/// them, so they are dropped before anyone is asked; a supertask starts now too.
+#[tokio::test]
+async fn an_update_card_says_whether_the_task_starts_now() -> TestResult {
+    let w = world(60_000).await?;
+    let (_, first) = task_in(&w, "s2", "alice", json!({"prompt": "First"})).await?;
+    let (id, number) = task_in(
+        &w,
+        "s2",
+        "alice",
+        json!({"prompt": "Second", "prepared": true}),
+    )
+    .await?;
+    for (args, options, starts_now) in [
+        (
+            json!({"prepared": false, "supertask": false, "start_rule": "  ", "start_at": ""}),
+            json!({}),
+            true,
+        ),
+        (json!({"supertask": true}), json!({"supertask": true}), true),
+        (
+            json!({"after_task": first, "start_rule": " "}),
+            json!({"after_task": first}),
+            false,
+        ),
+        (
+            json!({"start_rule": format!("  #{first} done ")}),
+            json!({"start_rule": format!("#{first} done")}),
+            false,
+        ),
+    ] {
+        let mut asked = args.clone();
+        asked["sandbox"] = json!("website");
+        asked["number"] = json!(number);
+        let call_ = ask_to(&w, CrossAction::Update, asked)?;
+        let request = waiting(&w, 1).await?.remove(0);
+        assert_eq!(request["options"], options, "{args}: {request}");
+        assert_eq!(request["starts_now"], starts_now, "{args}: {request}");
+        let declined = answer(
+            &w,
+            &w.alice,
+            "s1",
+            request["id"].as_str().ok_or("id")?,
+            false,
+        )
+        .await?;
+        assert_eq!(declined.status, StatusCode::OK);
+        call_.await??;
+    }
+    // What the card showed is what runs: approving the blank one starts the task now.
+    let call_ = ask_to(
+        &w,
+        CrossAction::Update,
+        json!({"sandbox": "website", "number": number, "prepared": false, "start_rule": " "}),
+    )?;
+    let (_, outcome) = answer_the_one(&w, call_, true).await?;
+    assert_eq!(outcome["outcome"], "approved", "{outcome}");
+    assert_eq!(status_of(&w, &id).await?, TaskStatus::Queued);
+    Ok(())
+}
+
+/// Review round 1: an update that cannot apply is refused before anyone is asked, as the
+/// target's `task_update` would refuse it, so no card is sure to fail.
+#[tokio::test]
+async fn an_update_that_cannot_apply_is_refused_without_asking() -> TestResult {
+    let w = world(60_000).await?;
+    let (_, queued) = task_in(&w, "s2", "alice", json!({"prompt": "Queued"})).await?;
+    let (_, number) = task_in(
+        &w,
+        "s2",
+        "alice",
+        json!({"prompt": "Prepared", "prepared": true}),
+    )
+    .await?;
+    let caller = superagent("s1", &w.alice_id, "alice")?;
+    for (args, says) in [
+        (json!({"number": queued}), "has started"),
+        (json!({"number": number, "after_task": 99}), "#99"),
+        (
+            json!({"number": number, "start_rule": "whenever"}),
+            "expected a task",
+        ),
+        (
+            json!({"number": number, "after_task": queued, "start_rule": format!("#{queued} done")}),
+            "not both",
+        ),
+        (
+            json!({"number": number, "start_at": "2001-01-01T00:00:00Z"}),
+            "start",
+        ),
+        (
+            json!({"number": number, "start_at": "tomorrow"}),
+            "start_at",
+        ),
+        (
+            json!({"number": number, "prepared": true, "supertask": true}),
+            "prepared",
+        ),
+    ] {
+        let mut asked = args.clone();
+        asked["sandbox"] = json!("website");
+        let refused =
+            w.h.app
+                .tool_sandbox_task_request(&caller, CrossAction::Update, &asked)
+                .await;
+        let err = refused.err().ok_or_else(|| format!("{args} was asked"))?;
+        assert!(
+            err.public_message().contains(says),
+            "{args}: {}",
+            err.public_message()
+        );
+    }
+    assert!(requests(&w, &w.alice, "s1").await?.is_empty());
+    Ok(())
+}
+
+/// Review round 1: the card names the task as it is now, not as it was when the Superagent
+/// asked: a stop card of a task that started meanwhile says so.
+#[tokio::test]
+async fn the_card_names_the_task_as_it_is_now() -> TestResult {
+    let w = world(60_000).await?;
+    let (id, number) = task_in(
+        &w,
+        "s2",
+        "alice",
+        json!({"prompt": "Prepared", "prepared": true}),
+    )
+    .await?;
+    let call_ = ask_to(
+        &w,
+        CrossAction::Stop,
+        json!({"sandbox": "website", "number": number}),
+    )?;
+    assert_eq!(waiting(&w, 1).await?[0]["task"]["status"], "prepared");
+    // Started on the target's Tasks page meanwhile.
+    w.h.app
+        .tool_task_update(
+            &superagent("s2", &w.alice_id, "alice")?,
+            &json!({"task_id": id.as_str()}),
+        )
+        .await?;
+    assert_eq!(waiting(&w, 1).await?[0]["task"]["status"], "queued");
+    call_.abort();
+    Ok(())
+}
+
+/// Review round 1: a request naming a task twice (`number` and another task's `task_id`) acts on
+/// the task its card names, the one `number` names, as `task_get` reads it.
+#[tokio::test]
+async fn a_task_named_twice_is_the_one_its_card_names() -> TestResult {
+    let w = world(60_000).await?;
+    let (a, a_number) = task_in(
+        &w,
+        "s2",
+        "alice",
+        json!({"prompt": "A", "title": "A", "prepared": true}),
+    )
+    .await?;
+    let (b, _) = task_in(
+        &w,
+        "s2",
+        "alice",
+        json!({"prompt": "B", "title": "B", "prepared": true}),
+    )
+    .await?;
+    let call_ = ask_to(
+        &w,
+        CrossAction::Update,
+        json!({"sandbox": "website", "number": a_number, "task_id": b.as_str()}),
+    )?;
+    let (request, outcome) = answer_the_one(&w, call_, true).await?;
+    assert_eq!(request["task"]["title"], "A", "{request}");
+    assert_eq!(outcome["task"]["number"], json!(a_number), "{outcome}");
+    assert_eq!(status_of(&w, &a).await?, TaskStatus::Queued);
+    assert_eq!(status_of(&w, &b).await?, TaskStatus::Prepared);
+    Ok(())
+}
+
+/// SPEC-442 XST-003 (review round 1): a message to another person's task that holds their
+/// personal secrets is refused on approval, as `task_message` refuses it, and audited `failed`
+/// in both sandboxes.
+#[tokio::test]
+async fn a_message_to_a_task_holding_its_owners_personal_secrets_is_refused() -> TestResult {
+    let w = world(60_000).await?;
+    let (id, number) = task_in(
+        &w,
+        "s2",
+        "bob",
+        json!({"prompt": "Bob's work", "prepared": true}),
+    )
+    .await?;
+    let added = call(
+        &w.h.router,
+        Method::POST,
+        "/api/sandboxes/s2/agent-secrets",
+        Some(json!({"scope": "personal", "name": "BOB_TOKEN", "value": "bob-personal-token-5ec7", "hosts": ["api.bob.test"], "injection": "bearer"})),
+        &w.bob,
+    )
+    .await?;
+    assert_eq!(added.status, StatusCode::CREATED, "{:?}", added.body);
+    let before = w.h.store.task(&id).await?.ok_or("task")?.prompt;
+    let call_ = ask_to(
+        &w,
+        CrossAction::Message,
+        json!({"sandbox": "website", "number": number, "text": "Use BOB_TOKEN"}),
+    )?;
+    let request = waiting(&w, 1).await?.remove(0);
+    let refused = answer(
+        &w,
+        &w.alice,
+        "s1",
+        request["id"].as_str().ok_or("id")?,
+        true,
+    )
+    .await?;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{:?}", refused.body);
+    assert!(call_.await?.is_err());
+    assert_eq!(w.h.store.task(&id).await?.ok_or("task")?.prompt, before);
+    for sandbox in ["s2", "s1"] {
+        let rows = audited(&w, sandbox).await?;
+        assert_eq!(rows.len(), 1, "{sandbox}: {rows:?}");
+        assert_eq!(rows[0]["outcome"], "failed");
+        assert_eq!(rows[0]["action"], "message");
+    }
+    Ok(())
 }

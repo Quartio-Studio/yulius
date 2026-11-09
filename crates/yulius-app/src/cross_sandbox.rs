@@ -5,7 +5,12 @@
 //!   [`MAX_WAITING`] per person and sandbox, for at most [`CROSS_REQUEST_WAIT`], and ends with the
 //!   call (answered, unanswered, or dropped) (XSR-002..004);
 //! - only that person, from a browser session, approves or declines it; an approval creates the
-//!   task as `task_create` would in the target, exactly as shown (XSR-005, XSR-006).
+//!   task as `task_create` would in the target, exactly as shown (XSR-005, XSR-006);
+//! - the same requests start, re-chain, message and stop a task of another sandbox
+//!   (`sandbox_task_update`, `sandbox_task_message`, `sandbox_task_stop`, SPEC-442 XST-002..004),
+//!   running the same-sandbox tool in the target on approval; never a delete or an archive;
+//! - `sandbox_task_get` only reads, without asking (XST-001);
+//! - every answer is audited in both sandboxes (XST-005).
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -15,8 +20,9 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::oneshot;
 use yulius_contracts::events::UiEvent;
-use yulius_domain::ids::{SandboxId, UserId};
+use yulius_domain::ids::{SandboxId, TaskId, UserId};
 use yulius_domain::permission::Action;
+use yulius_domain::task::TaskStatus;
 use yulius_domain::time::Timestamp;
 
 use crate::auth::{AuthContext, rfc3339};
@@ -24,8 +30,10 @@ use crate::context::App;
 use crate::coordination::{Channel, ProjectCaller};
 use crate::error::{AppError, AppResult};
 use crate::lifecycle::MAX_PROMPT_BYTES;
-use crate::manage::tool_detail;
-use crate::model::SandboxRecord;
+use crate::manage::{TaskChange, tool_detail};
+use crate::model::{SandboxRecord, TaskRecord};
+use crate::start_change::StartFields;
+use crate::task_message::MAX_MESSAGE_BYTES;
 
 /// How long a request waits for its person: below the 300 s within which Node's HTTP client,
 /// which MCP clients commonly run on, wants the answer's headers (ADR-0227).
@@ -55,6 +63,125 @@ struct CrossTaskArgs {
     effort: Option<String>,
 }
 
+/// What `sandbox_task_get` and `sandbox_task_stop` take: the sandbox and the task.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code, reason = "checked here, read by `agent_task_ref`")]
+struct CrossTaskRef {
+    sandbox: String,
+    task_id: Option<String>,
+    number: Option<u64>,
+}
+
+/// What `sandbox_task_update` takes: the task and `task_update`'s start arguments.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code, reason = "checked here, read by `tool_task_update`")]
+struct CrossUpdateArgs {
+    sandbox: String,
+    task_id: Option<String>,
+    number: Option<u64>,
+    after_task: Option<u64>,
+    start_rule: Option<String>,
+    supertask: Option<bool>,
+    prepared: Option<bool>,
+    start_at: Option<String>,
+}
+
+/// What `sandbox_task_message` takes: the task and the message.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code, reason = "checked here, read by `tool_task_message`")]
+struct CrossMessageArgs {
+    sandbox: String,
+    task_id: Option<String>,
+    number: Option<u64>,
+    text: String,
+}
+
+/// What a request asks for in another sandbox (SPEC-442 XST-004): there is no delete, archive
+/// or restore, so none can be asked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CrossAction {
+    /// `sandbox_task_create`: a new task.
+    Create,
+    /// `sandbox_task_update`: how a task that has not started starts (or start it now).
+    Update,
+    /// `sandbox_task_message`: a message from the person.
+    Message,
+    /// `sandbox_task_stop`.
+    Stop,
+}
+
+impl CrossAction {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Create => "create",
+            Self::Update => "update",
+            Self::Message => "message",
+            Self::Stop => "stop",
+        }
+    }
+
+    /// The tool that does it in the caller's own sandbox.
+    fn own_tool(self) -> &'static str {
+        match self {
+            Self::Create => "task_create",
+            Self::Update => "task_update",
+            Self::Message => "task_message",
+            Self::Stop => "task_stop",
+        }
+    }
+
+    /// What did not happen when the request was not approved.
+    fn nothing(self) -> &'static str {
+        match self {
+            Self::Create => "nothing was created",
+            Self::Update => "the task was not changed",
+            Self::Message => "nothing was sent",
+            Self::Stop => "the task was not stopped",
+        }
+    }
+
+    /// The start options its card shows when set (XSR-005).
+    fn options(self) -> &'static [&'static str] {
+        match self {
+            Self::Create => &OPTIONS,
+            Self::Update => &UPDATE_OPTIONS,
+            Self::Message | Self::Stop => &[],
+        }
+    }
+}
+
+/// The start options `sandbox_task_update` shows when set (XST-006).
+const UPDATE_OPTIONS: [&str; 5] = [
+    "after_task",
+    "start_rule",
+    "supertask",
+    "prepared",
+    "start_at",
+];
+
+/// The task a request is about, as its card names it.
+#[derive(Clone)]
+struct Named {
+    id: TaskId,
+    number: u32,
+    title: String,
+    status: &'static str,
+}
+
+impl Named {
+    fn of(task: &TaskRecord) -> Self {
+        Self {
+            id: task.id.clone(),
+            number: task.number,
+            title: task.title.clone(),
+            status: task.status.as_str(),
+        }
+    }
+}
+
 /// The start options a request shows when set (XSR-005).
 const OPTIONS: [&str; 9] = [
     "workflow",
@@ -73,7 +200,12 @@ struct Waiting {
     user: UserId,
     source: SandboxId,
     target: SandboxRecord,
-    /// `task_create`'s arguments, without `sandbox`.
+    action: CrossAction,
+    /// The task it is about (all but a create), named by its id in `args`.
+    task: Option<Named>,
+    /// An update that starts the task now (XST-006).
+    starts_now: bool,
+    /// The same-sandbox tool's arguments, without `sandbox`.
     args: Value,
     actor: String,
     detail: Value,
@@ -197,6 +329,29 @@ fn unreported(target: &SandboxRecord) -> AppError {
     ))
 }
 
+/// A request's arguments as its tool takes them.
+fn parse<T: serde::de::DeserializeOwned>(args: &Value) -> AppResult<T> {
+    serde_json::from_value(args.clone())
+        .map_err(|err| AppError::Invalid(format!("invalid arguments: {err}")))
+}
+
+/// The same-sandbox tool's arguments: a request's, without `sandbox`.
+fn without_sandbox(args: &Value) -> Value {
+    let mut args = args.clone();
+    if let Some(map) = args.as_object_mut() {
+        map.remove("sandbox");
+    }
+    args
+}
+
+/// The Superagent's caller, acting in `target` for the same person.
+fn pinned(caller: &ProjectCaller, target: &SandboxRecord) -> ProjectCaller {
+    ProjectCaller {
+        sandbox: target.id.clone(),
+        ..caller.clone()
+    }
+}
+
 fn label(sandbox: &SandboxRecord) -> String {
     if sandbox.is_playground() {
         "playground".to_owned()
@@ -243,14 +398,78 @@ impl App {
         caller: &ProjectCaller,
         args: &Value,
     ) -> AppResult<Value> {
-        self.cross_task_request(caller, args, None).await
+        self.cross_task_request(caller, CrossAction::Create, args, None)
+            .await
     }
 
-    /// [`App::tool_sandbox_task_create`] for the MCP call `call` ([`call_key`]), which its
+    /// `sandbox_task_create`, `sandbox_task_update`, `sandbox_task_message` or
+    /// `sandbox_task_stop` (SPEC-442 XST-002, XST-003): asks the Superagent's person for `action`
+    /// in another of their sandboxes and waits for the answer.
+    ///
+    /// # Errors
+    /// As [`App::tool_sandbox_task_create`]; `NotFound` for a task not in that sandbox, and on
+    /// approval the errors of the same-sandbox tool.
+    pub async fn tool_sandbox_task_request(
+        &self,
+        caller: &ProjectCaller,
+        action: CrossAction,
+        args: &Value,
+    ) -> AppResult<Value> {
+        self.cross_task_request(caller, action, args, None).await
+    }
+
+    /// `sandbox_task_get` (SPEC-442 XST-001): `task_get` of a task in another sandbox its
+    /// person can work in. It only reads: nobody is asked.
+    ///
+    /// # Errors
+    /// `Invalid` arguments or its own sandbox, `NotFound` for a sandbox the person cannot work
+    /// in or a task not in it.
+    pub async fn tool_sandbox_task_get(
+        &self,
+        caller: &ProjectCaller,
+        args: &Value,
+    ) -> AppResult<Value> {
+        let parsed: CrossTaskRef = parse(args)?;
+        let (_, target) = self
+            .cross_target(caller, &parsed.sandbox, "task_get")
+            .await?;
+        let there = pinned(caller, &target);
+        self.tool_task_get(&there, &without_sandbox(args)).await
+    }
+
+    /// The other sandbox `reference` names, once the Superagent's person may work in it, and
+    /// that person.
+    async fn cross_target(
+        &self,
+        caller: &ProjectCaller,
+        reference: &str,
+        own_tool: &str,
+    ) -> AppResult<(crate::model::UserRecord, SandboxRecord)> {
+        if caller.channel != Channel::Superagent || caller.task.is_some() {
+            return Err(AppError::Forbidden(
+                "only a Superagent asks for this".into(),
+            ));
+        }
+        let target = self.sandbox_by_reference(reference).await?;
+        if target.id == caller.sandbox {
+            return Err(AppError::Invalid(format!(
+                "that is this sandbox: use {own_tool}"
+            )));
+        }
+        let user = self.manage_authority(caller).await?;
+        // A sandbox the person only reads is as unknown as one they cannot see.
+        self.require(&user, &target.id, Action::Work)
+            .await
+            .map_err(|_| AppError::NotFound)?;
+        Ok((user, target))
+    }
+
+    /// [`App::tool_sandbox_task_request`] for the MCP call `call` ([`call_key`]), which its
     /// client's `notifications/cancelled` ends ([`App::cancel_cross_request`]).
     pub(crate) async fn cross_task_request(
         &self,
         caller: &ProjectCaller,
+        action: CrossAction,
         args: &Value,
         call: Option<String>,
     ) -> AppResult<Value> {
@@ -259,32 +478,56 @@ impl App {
                 "only a Superagent asks for this".into(),
             ));
         }
-        let parsed: CrossTaskArgs = serde_json::from_value(args.clone())
-            .map_err(|err| AppError::Invalid(format!("invalid arguments: {err}")))?;
-        if parsed.prompt.trim().is_empty() {
-            return Err(AppError::Invalid("the prompt is empty".into()));
-        }
+        let reference = match action {
+            CrossAction::Create => {
+                let parsed: CrossTaskArgs = parse(args)?;
+                if parsed.prompt.trim().is_empty() {
+                    return Err(AppError::Invalid("the prompt is empty".into()));
+                }
+                if parsed.prompt.len() > MAX_PROMPT_BYTES {
+                    return Err(AppError::Invalid(format!(
+                        "the prompt is longer than {MAX_PROMPT_BYTES} bytes"
+                    )));
+                }
+                parsed.sandbox
+            }
+            CrossAction::Update => parse::<CrossUpdateArgs>(args)?.sandbox,
+            CrossAction::Message => {
+                let parsed: CrossMessageArgs = parse(args)?;
+                if parsed.text.trim().is_empty() {
+                    return Err(AppError::Invalid("the message is empty".into()));
+                }
+                if parsed.text.len() > MAX_MESSAGE_BYTES {
+                    return Err(AppError::Invalid(format!(
+                        "the message is longer than {} KiB",
+                        MAX_MESSAGE_BYTES / 1024
+                    )));
+                }
+                parsed.sandbox
+            }
+            CrossAction::Stop => parse::<CrossTaskRef>(args)?.sandbox,
+        };
         check_visible(args)?;
-        if parsed.prompt.len() > MAX_PROMPT_BYTES {
-            return Err(AppError::Invalid(format!(
-                "the prompt is longer than {MAX_PROMPT_BYTES} bytes"
-            )));
-        }
-        let target = self.sandbox_by_reference(&parsed.sandbox).await?;
-        if target.id == caller.sandbox {
-            return Err(AppError::Invalid(
-                "that is this sandbox: create the task with task_create".into(),
-            ));
-        }
-        let user = self.manage_authority(caller).await?;
-        // A sandbox the person only reads is as unknown as one they cannot see.
-        self.require(&user, &target.id, Action::Work)
-            .await
-            .map_err(|_| AppError::NotFound)?;
-        let mut task_args = args.clone();
-        if let Some(map) = task_args.as_object_mut() {
-            map.remove("sandbox");
-        }
+        let (user, target) = self
+            .cross_target(caller, &reference, action.own_tool())
+            .await?;
+        let mut task_args = without_sandbox(args);
+        let mut starts_now = false;
+        let task = if action == CrossAction::Create {
+            None
+        } else {
+            let there = pinned(caller, &target);
+            let task = self.agent_task_ref(&there, &task_args).await?;
+            // The approval acts on the task the card names, by its id.
+            if let Some(map) = task_args.as_object_mut() {
+                map.remove("number");
+                map.insert("task_id".into(), json!(task.id.as_str()));
+            }
+            if action == CrossAction::Update {
+                starts_now = self.checked_update(&there, &task, &mut task_args).await?;
+            }
+            Some(Named::of(&task))
+        };
         let id = self.deps.crypto.new_id();
         let wait = Duration::from_millis(self.config.cross_request_wait_ms);
         let (tx, rx) = oneshot::channel();
@@ -305,6 +548,9 @@ impl App {
                     user: user.id.clone(),
                     source: caller.sandbox.clone(),
                     target: target.clone(),
+                    action,
+                    task: task.clone(),
+                    starts_now,
                     args: task_args,
                     actor: caller.actor.clone(),
                     detail: caller.detail.clone(),
@@ -328,10 +574,11 @@ impl App {
             Settled::Answered(answer) => answer,
             Settled::Unanswered => {
                 self.announce_cross_requests(&user.id, &caller.sandbox);
-                self.audit_cross(caller, &target, "expired").await;
+                self.audit_cross(caller, &target, action, task.as_ref(), "expired")
+                    .await;
                 Ok(json!({
                     "outcome": "unanswered",
-                    "note": "Nobody answered in time: nothing was created. Ask again when the person is here.",
+                    "note": format!("Nobody answered in time: {}. Ask again when the person is here.", action.nothing()),
                 }))
             }
             Settled::Lost => Err(unreported(&target)),
@@ -339,36 +586,66 @@ impl App {
     }
 
     /// `GET /api/sandboxes/{sid}/superagent/requests` (XSR-005): the caller's own requests of
-    /// their Superagent in `sid`, oldest first.
-    #[must_use]
-    pub fn superagent_requests(&self, ctx: &AuthContext, sid: &str) -> Vec<Value> {
-        let waiting = self.cross_requests.lock();
-        let mut mine: Vec<(&String, &Waiting)> = waiting
-            .iter()
-            .filter(|(_, w)| w.user == ctx.user.id && w.source.as_str() == sid)
-            .collect();
-        mine.sort_by_key(|(id, w)| (w.ends_at, (*id).clone()));
-        mine.into_iter()
-            .map(|(id, w)| {
-                let options: serde_json::Map<String, Value> = OPTIONS
-                    .iter()
-                    .filter_map(|key| {
-                        w.args
-                            .get(*key)
-                            .filter(|v| !v.is_null())
-                            .map(|v| ((*key).to_owned(), v.clone()))
-                    })
-                    .collect();
-                json!({
-                    "id": id,
-                    "sandbox": {"id": w.target.id.as_str(), "slug": w.target.slug, "repository": label(&w.target)},
-                    "title": w.args.get("title"),
-                    "prompt": w.args.get("prompt"),
-                    "options": options,
-                    "ends_at": rfc3339(w.ends_at),
+    /// their Superagent in `sid`, oldest first; a request's task as it is now (XST-006).
+    ///
+    /// # Errors
+    /// Store failures.
+    pub async fn superagent_requests(&self, ctx: &AuthContext, sid: &str) -> AppResult<Vec<Value>> {
+        let listed: Vec<(Value, Option<Named>)> = {
+            let waiting = self.cross_requests.lock();
+            let mut mine: Vec<(&String, &Waiting)> = waiting
+                .iter()
+                .filter(|(_, w)| w.user == ctx.user.id && w.source.as_str() == sid)
+                .collect();
+            mine.sort_by_key(|(id, w)| (w.ends_at, (*id).clone()));
+            mine.into_iter()
+                .map(|(id, w)| {
+                    let options: serde_json::Map<String, Value> = w
+                        .action
+                        .options()
+                        .iter()
+                        .filter_map(|key| {
+                            w.args
+                                .get(*key)
+                                .filter(|v| !v.is_null())
+                                .map(|v| ((*key).to_owned(), v.clone()))
+                        })
+                        .collect();
+                    // A message's text is read as a prompt is (XST-006).
+                    let text = match w.action {
+                        CrossAction::Message => w.args.get("text"),
+                        _ => w.args.get("prompt"),
+                    };
+                    let view = json!({
+                        "id": id,
+                        "action": w.action.as_str(),
+                        "sandbox": {"id": w.target.id.as_str(), "slug": w.target.slug, "repository": label(&w.target)},
+                        "task": null,
+                        "starts_now": w.starts_now,
+                        "title": w.args.get("title"),
+                        "prompt": text,
+                        "options": options,
+                        "ends_at": rfc3339(w.ends_at),
+                    });
+                    (view, w.task.clone())
                 })
-            })
-            .collect()
+                .collect()
+        };
+        let mut out = Vec::with_capacity(listed.len());
+        for (mut view, named) in listed {
+            if let Some(named) = named {
+                // Up to 4 minutes may have passed: the card names the task as it is now.
+                let now = self.deps.store.task(&named.id).await?;
+                let (title, status) = now
+                    .as_ref()
+                    .map_or((named.title.as_str(), named.status), |t| {
+                        (t.title.as_str(), t.status.as_str())
+                    });
+                view["task"] = json!({"number": named.number, "title": title, "status": status});
+            }
+            out.push(view);
+        }
+        Ok(out)
     }
 
     /// `POST /api/sandboxes/{sid}/superagent/requests/{id}` (XSR-006): the person approves
@@ -420,34 +697,124 @@ impl App {
             ..caller.clone()
         };
         let (outcome, answer) = if approve {
-            let created = self.tool_task_create(&caller, &request.args).await;
-            let audited = if created.is_ok() {
-                "approved"
-            } else {
-                "failed"
-            };
-            let outcome = created.map(|created| {
-                json!({
-                    "outcome": "approved",
-                    "sandbox": request.target.slug,
-                    "task": created["task"],
-                    "note": format!("The person approved: the task is on the Tasks page of {}.", request.target.slug),
-                })
-            });
-            (audited, outcome)
+            let done = self.run_approved(&caller, &request).await;
+            let audited = if done.is_ok() { "approved" } else { "failed" };
+            (audited, done)
         } else {
             (
                 "declined",
                 Ok(json!({
                     "outcome": "declined",
-                    "note": "The person declined: nothing was created. Do not ask again unless they ask.",
+                    "note": format!("The person declined: {}. Do not ask again unless they ask.", request.action.nothing()),
                 })),
             )
         };
-        self.audit_cross(&source, &request.target, outcome).await;
+        self.audit_cross(
+            &source,
+            &request.target,
+            request.action,
+            request.task.as_ref(),
+            outcome,
+        )
+        .await;
         // The call may have ended meanwhile; the person still gets the answer.
         let _ = request.answer.send(answer.clone());
         answer
+    }
+
+    /// An update's start arguments as `task_update` will read them, checked before anyone is
+    /// asked (review round 1 of SPEC-442): a task that started is refused; `false` flags, nulls
+    /// and blank texts are dropped and texts trimmed, so the card shows exactly what runs; New
+    /// task's start checks run in the target. Answers whether it starts the task now.
+    async fn checked_update(
+        &self,
+        there: &ProjectCaller,
+        task: &TaskRecord,
+        args: &mut Value,
+    ) -> AppResult<bool> {
+        if !matches!(task.status, TaskStatus::Chained | TaskStatus::Prepared) {
+            return Err(AppError::Conflict(format!(
+                "task #{} has started (it is {}): only a task waiting to start changes how it starts",
+                task.number,
+                task.status.as_str()
+            )));
+        }
+        let Some(map) = args.as_object_mut() else {
+            return Ok(true);
+        };
+        map.retain(|key, value| match (key.as_str(), &*value) {
+            (_, Value::Null) | ("supertask" | "prepared", Value::Bool(false)) => false,
+            ("start_rule" | "start_at", Value::String(text)) => !text.trim().is_empty(),
+            _ => true,
+        });
+        for key in ["start_rule", "start_at"] {
+            if let Some(Value::String(text)) = map.get_mut(key) {
+                *text = text.trim().to_owned();
+            }
+        }
+        let after = match map.get("after_task") {
+            Some(number) => Some(self.after_task_arg(there, number).await?.id),
+            None => None,
+        };
+        let text = |key: &str| map.get(key).and_then(Value::as_str);
+        let flag = |key: &str| map.get(key) == Some(&Value::Bool(true));
+        let checked = self
+            .check_start_choice(
+                &there.sandbox,
+                StartFields {
+                    after_task_id: after.as_ref().map(TaskId::as_str),
+                    start_rule: text("start_rule"),
+                    supertask: flag("supertask"),
+                    prepared: flag("prepared"),
+                    start_at: text("start_at"),
+                },
+            )
+            .await?;
+        Ok(checked.after.is_none() && checked.rule.is_none() && checked.prepared.is_none())
+    }
+
+    /// Runs an approved request's same-sandbox tool in its target as `caller` (pinned there),
+    /// with exactly the arguments its card showed (XSR-006, XST-003).
+    async fn run_approved(
+        self: &Arc<Self>,
+        caller: &ProjectCaller,
+        request: &Waiting,
+    ) -> AppResult<Value> {
+        let slug = &request.target.slug;
+        let args = &request.args;
+        let (done, note) = match request.action {
+            CrossAction::Create => (
+                self.tool_task_create(caller, args).await?,
+                format!("The person approved: the task is on the Tasks page of {slug}."),
+            ),
+            CrossAction::Update => (
+                self.tool_task_update(caller, args).await?,
+                format!("The person approved: the task's start was changed in {slug}."),
+            ),
+            CrossAction::Message => {
+                let sent = self.tool_task_message(caller, args).await?;
+                let note = format!(
+                    "The person approved: {}",
+                    sent["note"].as_str().unwrap_or("the message went out.")
+                );
+                (sent, note)
+            }
+            CrossAction::Stop => (
+                self.tool_task_change(caller, args, TaskChange::Stop)
+                    .await?,
+                format!("The person approved: the task was stopped in {slug}."),
+            ),
+        };
+        let mut outcome = json!({
+            "outcome": "approved",
+            "sandbox": slug,
+            "task": done["task"],
+            "note": note,
+        });
+        if let Some(delivered) = done.get("delivered") {
+            outcome["delivered"] = delivered.clone();
+        }
+        Ok(outcome)
     }
 
     /// A Superagent's client cancelled the MCP call `rpc_id` (Esc in Claude Code, a client
@@ -472,10 +839,17 @@ impl App {
             return;
         };
         self.announce_cross_requests(&request.user, &request.source);
-        self.audit_cross(caller, &request.target, "cancelled").await;
+        self.audit_cross(
+            caller,
+            &request.target,
+            request.action,
+            request.task.as_ref(),
+            "cancelled",
+        )
+        .await;
         let _ = request.answer.send(Ok(json!({
             "outcome": "cancelled",
-            "note": "The call was cancelled: nothing was created.",
+            "note": format!("The call was cancelled: {}.", request.action.nothing()),
         })));
     }
 
@@ -488,25 +862,41 @@ impl App {
         );
     }
 
-    /// Audits an answer (XSR-009): never the prompt.
-    async fn audit_cross(&self, caller: &ProjectCaller, target: &SandboxRecord, outcome: &str) {
-        let detail = tool_detail(
-            caller,
-            &json!({"from_sandbox": caller.sandbox.as_str(), "outcome": outcome}),
-        );
-        if let Err(err) = self
-            .deps
-            .store
-            .audit(
-                self.now(),
-                &caller.actor,
-                "superagent.cross_task",
-                Some(target.id.as_str()),
-                Some(&detail),
-            )
-            .await
-        {
-            tracing::warn!(error = %err, "cross-sandbox request audit failed");
+    /// Audits an answer in both sandboxes (XSR-009, XST-005): on the target with the source,
+    /// on the source with the target; never the prompt or the message.
+    async fn audit_cross(
+        &self,
+        source: &ProjectCaller,
+        target: &SandboxRecord,
+        action: CrossAction,
+        task: Option<&Named>,
+        outcome: &str,
+    ) {
+        let mut about = json!({"action": action.as_str(), "outcome": outcome});
+        if let Some(task) = task {
+            about["task"] = json!(task.number);
+        }
+        let sides = [
+            (target.id.as_str(), "from_sandbox", source.sandbox.as_str()),
+            (source.sandbox.as_str(), "to_sandbox", target.id.as_str()),
+        ];
+        for (sandbox, side, other) in sides {
+            let mut extra = about.clone();
+            extra[side] = json!(other);
+            if let Err(err) = self
+                .deps
+                .store
+                .audit(
+                    self.now(),
+                    &source.actor,
+                    "superagent.cross_task",
+                    Some(sandbox),
+                    Some(&tool_detail(source, &extra)),
+                )
+                .await
+            {
+                tracing::warn!(error = %err, "cross-sandbox request audit failed");
+            }
         }
     }
 }
