@@ -10,8 +10,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   During GitHub's API incident of 2026-11-08, Settings → Instance → Updates read "GitHub could not
   be reached." and kept it until the next hourly check. Every failure read like that: a timeout,
   GitHub's own HTTP error and a missing connection. Now the banner says which ("GitHub did not
-  answer in time", "GitHub answered with an error (HTTP 502)"), and a failed automatic check is
-  tried again 5 minutes later instead of an hour.
+  answer in time", "GitHub answered with an error (HTTP 502)"), and after a failed check
+  (automatic, Check now or the page's own) the next one comes 5 minutes later instead of an hour;
+  an open page shows the warning and its end without a reload.
 
 ## 2026-11-08
 

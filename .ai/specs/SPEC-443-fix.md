@@ -45,7 +45,7 @@ itself once GitHub answers again.
 ## Plan
 
 - [x] Reproduce the defect and find its root cause
-- [ ] Write the fix spec and the regression test that fails
+- [x] Write the fix spec and the regression test that fails
 - [ ] Fix the cause until the regression test and every gate pass
 - [ ] Independent review in a fresh session, findings fixed test-first
 
@@ -54,27 +54,40 @@ itself once GitHub answers again.
 - A compare that hangs past the client's deadline reads "GitHub did not answer in time."; a 502
   reads "GitHub answered with an error (HTTP 502)."; a refused connection reads "GitHub could not
   be reached.".
-- With hourly checks, a failed check is followed by another 5 minutes later; once one succeeds,
-  the next is an hour later.
+- With hourly checks, a failed check (automatic or "Check now") is followed by another 5 minutes
+  later; once one succeeds, or after a rate limit, the next is an hour later.
+- An open Instance page shows a failure and its end as they happen.
 
 ## Test plan
 
 - Regression (unit, `wiring/release.rs`): a local server that never answers (with a short
-  deadline), one answering 502, and a closed port give the three typed errors. It fails today: all
-  three are `Unavailable`.
+  deadline) and one answering 502 give `TimedOut` and `Status(502)` (fails today: both are
+  `Unavailable`); a body that stalls is `TimedOut` and a connection closed without an answer stays
+  `Unavailable`.
 - Regression (integration, `tests/self_update.rs`): an instance with hourly checks and a fake
   source that fails: `update_round` checks, the fake clock moves 5 minutes, `update_round` checks
   again (fails today: the next check is an hour away); then a success moves the next check to an
-  hour later.
+  hour later. Review round 1 added: a failed "Check now" brings the automatic check to 5 minutes
+  away, a failure and its recovery are published with no offer change, a rate limit keeps the
+  hour, and a 2-minute interval stays 2 minutes after a failure.
 - What else the cause touches: only the update check reads `SourceError`; the retry only shortens
-  the wait after a failure, so a healthy instance makes no extra GitHub calls, and a lasting
-  failure costs 12 calls an hour (the authenticated limit is 5000).
+  the wait after a failure, so a healthy instance makes no extra GitHub calls. A lasting failure
+  costs 12 checks an hour of up to 3 requests each; an anonymous instance (60 requests an hour) can
+  afford that, and a rate limit itself is never retried early.
 - Gates: `scripts/dev check`, `scripts/dev lint`, `scripts/dev test`, `scripts/dev security`.
 
 ## Decisions
 
-- Retry after every failure, not only after the transient ones: a refused credential or an
-  unreadable answer can also be fixed on GitHub's side, a check every 5 minutes is cheap, and one
-  rule is easier to state on the page. No backoff beyond the fixed 5 minutes: the interval is
-  already far below any rate limit.
+- Retry after every failure but a rate limit: a refused credential or an unreadable answer can
+  also be fixed on GitHub's side and a check every 5 minutes is cheap, while retrying into a rate
+  limit only fails again (GitHub asks clients to wait it out). No backoff beyond the fixed
+  5 minutes.
+- The retry belongs to every failed check, not only the automatic ones: a failed "Check now" or
+  page-open check replaces the offer for every superadmin, so it must clear by itself as well
+  (review round 1). The automatic loop sets its next check before checking; a failure only ever
+  brings it closer (`fetch_min`).
+- A change of the failure is published like a change of the offer: clients read the view again
+  only on `update.updated`, and an up-to-date server's offer never changes (review round 1).
 - No UI change: the banner shows the server's message, which now carries the reason.
+- A 3xx (redirects are off) reads "GitHub answered with an error (HTTP 301)": GitHub moves a
+  renamed repository that way, which is still a reason the check failed; left as is (review nit).

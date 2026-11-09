@@ -1497,10 +1497,11 @@ its bridges may be an older build that does not ping; those are left alone (ADR-
 
 Yulius updates itself from `main` of **Quartio-Studio/yulius** (SPEC-001 OPS-006..OPS-009,
 SPEC-002 ADR-18). It knows the commit it was built from (`yulius version`, and
-`GET /internal/version` on the internal listener) and checks `main` every hour (5 minutes after a
-failed check) and whenever a superadmin opens **Settings → Instance** (SPEC-149). A failed check
-says whether GitHub did not answer in time, answered with an error (HTTP n, as during a GitHub
-outage) or could not be reached at all, and clears by itself once GitHub answers (SPEC-443). Superadmins get a
+`GET /internal/version` on the internal listener) and checks `main` every hour and whenever a
+superadmin opens **Settings → Instance** (SPEC-149). A failed check says whether GitHub did not
+answer in time, answered with an error (HTTP n, as during a GitHub outage) or could not be
+reached at all; the next check then comes 5 minutes later (an hour after a rate limit), and an
+open page shows its result without a reload (SPEC-443). Superadmins get a
 notification and a banner, "Update available: …", and **Settings → Instance** lists the new
 commits. Nothing updates by itself: a superadmin chooses **Update now** and confirms. Then:
 
