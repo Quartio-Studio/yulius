@@ -132,7 +132,10 @@ fn a_task_with_no_wait_is_told_each_event_once() -> TestResult {
         // A red run at the head, with no wait running: told within one pass.
         let failures = "FAIL [   0.2s] (3/9) app tests::bad\n  stderr ───\n    boom\n\n";
         let (red, job) = run(&sandbox, "r1", &head, RunState::Failed, Some(failures), 1);
-        app.deps.store.insert_ci_run(&red, std::slice::from_ref(&job)).await?;
+        app.deps
+            .store
+            .insert_ci_run(&red, std::slice::from_ref(&job))
+            .await?;
         // A job's failing tests are recorded with its end, as a real run's are.
         let ended = yulius_app::ci::CiJobUpdate {
             exit_code: Some(100),
