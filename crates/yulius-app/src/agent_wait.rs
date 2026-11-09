@@ -475,6 +475,13 @@ impl App {
             )
     }
 
+    /// Whether `task` has a merge armed (or being decided), and how the last one ended: its
+    /// head and the line for the agent (SPEC-444 PRN-005).
+    pub(crate) fn armed_view(&self, task: &TaskId) -> (bool, Option<(String, String)>) {
+        let (armed, outcome, _) = lock_slot(&self.runtime(task)).view();
+        (armed, outcome.map(|o| (o.head, o.text)))
+    }
+
     /// Forgets how an earlier armed merge ended (a new `delivery_merge` call answers for itself).
     pub(crate) fn forget_merge_outcome(&self, task: &TaskRecord) {
         lock_slot(&self.runtime(&task.id)).outcome = None;

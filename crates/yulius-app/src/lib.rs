@@ -65,6 +65,7 @@ pub mod outage;
 mod pause;
 pub mod playground;
 pub mod ports;
+pub mod pr_watch;
 pub mod prepared;
 pub mod pressure;
 pub mod preview;

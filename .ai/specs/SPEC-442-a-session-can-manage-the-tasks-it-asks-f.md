@@ -100,6 +100,7 @@ person asks for prepared.
 - [x] Shown end to end: a prepared task in another sandbox started and messaged from a Superagent
 - [x] Independent review in a fresh session, findings fixed test-first
 - [x] Every gate green, changes log updated
+- [x] Live evidence: quartio-v2's session read and messaged this task
 
 ## Acceptance criteria
 
@@ -183,6 +184,12 @@ person asks for prepared.
   changes), and stop and message requests are refused on approval, not before asking, when the
   task ended meanwhile (XST-003 allows that; an update is checked earlier because its card
   wording depends on it).
-- Not tested here: the live instance. The tools reach running Superagents after Yulius' own
-  update deploys this (their launch digest covers the tools and instructions); promotion to
-  `main` is a person's.
+- Live, on the instance (commit 457c87da, promotion #1127, contains the merge 8fc69d15),
+  2026-11-09: the main session of the quartio-v2 sandbox read this task (yulius #424) with
+  `sandbox_task_get` (about 08:05, its full state with 10/10 steps, no approval asked), then sent
+  it a message with `sandbox_task_message` after the owner approved it on the panel; it was typed
+  into this task's session as "Message from MrFishPL (through their Superagent):".
+- Not checked live: the two `superagent.cross_task` audit rows of that message. No route or tool
+  reads the audit from a task session; that each answer lands in both sandboxes' audits is
+  proven by the integration tests above. A live start of a prepared task was not repeated on the
+  instance (`cross_sandbox_live` shows it with real processes).

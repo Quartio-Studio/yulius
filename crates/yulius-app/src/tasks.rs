@@ -257,6 +257,9 @@ impl App {
             not_started,
             awaits_start_onboarding,
             pause: self.pause_view(task).await,
+            pr_stalled: (task.status == TaskStatus::Running)
+                .then(|| self.pr_stalled(&task.id))
+                .flatten(),
         })
     }
 

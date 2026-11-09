@@ -148,6 +148,10 @@ pub struct TaskSummary {
     /// Null otherwise; a capacity pause is the `waiting_capacity` status.
     #[serde(default)]
     pub pause: Option<TaskPause>,
+    /// Its open pull request made no progress for an hour while its CI was idle (SPEC-444
+    /// PRN-009): what Yulius told the task, in one sentence. Null otherwise.
+    #[serde(default)]
+    pub pr_stalled: Option<String>,
 }
 
 /// Why a task's live run is paused (SPEC-191 PAU-001).
