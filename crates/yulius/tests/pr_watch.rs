@@ -189,6 +189,34 @@ fn a_task_with_no_wait_is_told_each_event_once() -> TestResult {
         echoed(&app, &id, "Never rebase or force-push").await?;
         assert!(watch(&app, &bounds, &id).await?.is_none(), "told once");
 
+        // Nothing moves while CI is idle: stalled (PRN-009), told once and shown with the task.
+        let stalling = WatchBounds {
+            stall_after_ms: 0,
+            ..WatchBounds::default()
+        };
+        assert_eq!(app.pr_stalled(&id), None);
+        let typed = typed_within(&app, &stalling, &id)
+            .await?
+            .ok_or("the stall was not typed")?;
+        assert!(
+            typed.starts_with(
+                "Yulius, about your pull request #7: It has made no progress for 0 min"
+            ),
+            "{typed}"
+        );
+        let task = app.deps.store.task(&id).await?.ok_or("task")?;
+        let shown = app
+            .task_summary(&task)
+            .await?
+            .pr_stalled
+            .unwrap_or_default();
+        assert!(
+            shown.starts_with("Pull request #7 has made no progress for 0 min: Its head"),
+            "{shown}"
+        );
+        echoed(&app, &id, "It has made no progress").await?;
+        assert!(watch(&app, &stalling, &id).await?.is_none(), "told once");
+
         // Merged (by anyone): said once, then the watch is over.
         let merged = DeliveryRecord {
             stage: DeliveryStage::MergedIntegration,
@@ -215,6 +243,11 @@ fn a_task_with_no_wait_is_told_each_event_once() -> TestResult {
         )
         .await?;
         assert!(watch(&app, &bounds, &id).await?.is_none(), "told once");
+        assert_eq!(
+            app.pr_stalled(&id),
+            None,
+            "a merged pull request is no stall"
+        );
         stop(&app, &id).await?;
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;

@@ -134,6 +134,27 @@ test('an agent that answered with nothing open is not your turn', async ({ app, 
   expect(lines).toEqual({ answered: 'Agent answered — nothing asked of you', unfinished: 'Agent replied — your turn', midPlan: 'Agent replied — your turn' });
 });
 
+// SPEC-444 PRN-009 (task #426, quartio-v2 2026-11-08: green pull requests sat 30 to 60 minutes with
+// nobody noticing): a task whose open pull request made no progress for an hour shows it on the task
+// list and in its header, in the attention tone, with what Yulius told it; its group stays.
+test('a task whose pull request stalled says so on the task list', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await firstShown(screen.getByRole('heading', { level: 1 }), '#12 Checkout API');
+  await touchStudioTask(browser, 12, { activity: 'waiting', yulius_wait: true });
+  await expect(browser.locator('.strip-status')).toHaveText(/Waiting for checks or merge/);
+
+  const why = 'Pull request #12 has made no progress for 61 min: The merge is armed.';
+  await touchStudioTask(browser, 12, { pr_stalled: why });
+  await expect(browser.locator('.strip-status')).toHaveText(/Waiting for checks or merge · PR stalled/);
+  await expect(browser.locator('.strip-status')).toHaveAttribute('data-tone', 'attention');
+  await expect(browser.locator('.task-row .task-mark .glyph[aria-label*="PR stalled"]')).toHaveCount(1);
+  await expect(screen.getByRole('region', 'Working').getByRole('link', /Checkout API/)).toBeVisible();
+
+  // The pull request moved: the stall is gone.
+  await touchStudioTask(browser, 12, { pr_stalled: null });
+  await expect(browser.locator('.strip-status')).not.toHaveText(/PR stalled/);
+});
+
 // SPEC-130 DMD-003 (#474, task #109 on 2026-10-14: "this is done but pr isnt purple"): its plan was
 // complete and its pull request's checks green, but its agent still waited in `yulius wait` for
 // the merge it had armed. Not Done before that merge: it goes on by itself.

@@ -473,6 +473,8 @@ function summary(task) {
     awaits_start_onboarding: task.status === 'closed' && task.neverRan === true && task.awaitsStart === true,
     // Why its live run is paused (SPEC-191 PAU-001): an update holds it, or a person paused it.
     pause: (task.status === 'running' || task.status === 'switching') && task.pause ? { ...task.pause } : null,
+    // Its open pull request made no progress for an hour (SPEC-444 PRN-009).
+    pr_stalled: task.status === 'running' ? task.pr_stalled ?? null : null,
   };
 }
 

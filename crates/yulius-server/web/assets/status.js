@@ -318,6 +318,14 @@ export function supertaskLine(task) {
  * act.
  */
 export function taskInfo(task, actionRequests, pr) {
+  const info = taskInfoOf(task, actionRequests, pr);
+  // Its open pull request made no progress for an hour while its CI was idle (SPEC-444 PRN-009):
+  // Yulius told the task; the list shows it until the pull request moves. Its group stays.
+  if (task.pr_stalled && !info.paused && info.group !== 'ended') return { ...info, tone: 'attention', label: `${info.label} · PR stalled`, detail: task.pr_stalled, stalled: true };
+  return info;
+}
+
+function taskInfoOf(task, actionRequests, pr) {
   const info = statusInfo(task);
   // A paused run does nothing until it resumes: that is what it shows (SPEC-191).
   if (info.paused) return info;
