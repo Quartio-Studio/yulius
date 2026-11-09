@@ -97,6 +97,15 @@ pub struct PrFacts {
     pub quiet_since_ms: i64,
     /// It may get a check-in: it does not wait for a person, its goal is not achieved.
     pub check_ins: bool,
+    /// A person must act first (a permission prompt or question on screen, `needs_you`): nothing
+    /// is typed, as the paste would answer it (review M1).
+    pub person_must_act: bool,
+    /// The agent's turn is open: it works, which is no stall.
+    pub working: bool,
+    /// The project has Yulius CI: without it no run ever comes, which is no stall (review M2).
+    pub has_ci: bool,
+    /// The pull request's head, from its newest run (empty when none).
+    pub head: String,
 }
 
 /// What the watch told one task, as saved.
@@ -119,6 +128,10 @@ pub struct Told {
     /// While stalled: the sentence the task list shows (PRN-009).
     #[serde(default)]
     pub stalled: Option<String>,
+    /// The pull request's head as its newest run last showed it: its run is read by commit once
+    /// it is out of the runs read per pass (review minor 2).
+    #[serde(default)]
+    pub head: String,
 }
 
 /// Decides what to type to a task (one message, or nothing) and what it was told afterwards.
@@ -135,10 +148,16 @@ pub fn decide(facts: &PrFacts, told: &Told, bounds: &WatchBounds) -> (Option<Str
             ..Told::default()
         }
     };
+    if !facts.head.is_empty() {
+        next.head.clone_from(&facts.head);
+    }
     if next.progress != facts.progress {
         next.progress.clone_from(&facts.progress);
         next.progress_ms = facts.now_ms;
         next.stalled = None;
+    }
+    if facts.person_must_act {
+        return (None, next);
     }
     let new: Vec<&Event> = facts
         .events
@@ -156,7 +175,12 @@ pub fn decide(facts: &PrFacts, told: &Told, bounds: &WatchBounds) -> (Option<Str
         return (Some(message(facts.pr, &texts)), next);
     }
     let still = facts.now_ms.saturating_sub(next.progress_ms);
-    if !facts.ci_busy && next.stalled.is_none() && still >= bounds.stall_after_ms {
+    if facts.has_ci
+        && !facts.ci_busy
+        && !facts.working
+        && next.stalled.is_none()
+        && still >= bounds.stall_after_ms
+    {
         let minutes = still / 60_000;
         let sentence = format!(
             "Pull request #{} has made no progress for {minutes} min: {}",
@@ -246,8 +270,9 @@ fn red_run_text(run: &CiRunRecord, jobs: &[CiJobRecord]) -> String {
     );
     format!(
         "Its Yulius CI run {} at {} failed: {}. Read the log with {log}, fix it test-first on \
-         this branch, commit and end your turn so Yulius pushes; the queue takes it again once \
-         a run passes.",
+         this branch, commit and end your turn so Yulius pushes; a failed run drops an armed \
+         merge, so once the new head passed and its review approved it, call `delivery_merge` \
+         again.",
         run.id,
         short(&run.sha),
         failed_jobs(jobs)
@@ -400,8 +425,18 @@ impl App {
                 None
             };
             let Some(facts) = facts else {
-                // Not watched now (no open pull request, paused, not running): what it was told
-                // stays while its pull request may come back.
+                // Not watched now (no open pull request, paused, not running): no stall shows
+                // (review minor 3), and what it was told stays while its pull request may come
+                // back.
+                let cleared = runtime
+                    .pr_stalled
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take()
+                    .is_some();
+                if cleared {
+                    self.publish_task(&task.id).await;
+                }
                 if told.pr > 0 {
                     kept.insert(task.id.as_str().to_owned(), told);
                 }
@@ -411,6 +446,9 @@ impl App {
             let next = match text {
                 None => next,
                 Some(text) => {
+                    // Job names, reasons and test names come from the project: no control
+                    // character may end the paste early (review minor 4).
+                    let text = crate::task_message::clean_message(&text);
                     let paste = format!("\x1b[200~{text}\x1b[201~");
                     match self.type_into_session(&task, paste.as_bytes()).await {
                         Ok(()) => {
@@ -419,13 +457,14 @@ impl App {
                             next
                         }
                         // Not ready for input, or a person is typing: the next pass tries again.
+                        // The pull request it saw open is kept, so its merge is still told.
                         Err(AppError::Conflict(why)) => {
                             tracing::debug!(task = %task.id, why, "a pull request notice waits");
-                            told
+                            untold(told, &next)
                         }
                         Err(err) => {
                             tracing::warn!(task = %task.id, error = %err, "could not tell the task about its pull request");
-                            told
+                            untold(told, &next)
                         }
                     }
                 }
@@ -493,6 +532,9 @@ impl App {
         told: &Told,
         runs: &mut BTreeMap<String, Vec<CiRunRecord>>,
     ) -> Option<PrFacts> {
+        // The slot before the delivery: a merge decided in between then reads as merged, never
+        // as "no merge armed" on an open pull request (review minor 8).
+        let (armed, outcome) = self.armed_view(&task.id);
         let record = self.deps.store.delivery(&task.id).await.ok()??;
         let pr = record.pr_number?;
         let sandbox = self.deps.store.sandbox(&task.sandbox_id).await.ok()??;
@@ -505,7 +547,7 @@ impl App {
             if told.pr != pr || told.keys.contains_key("merged") {
                 return None;
             }
-            let text = self.merged_note(task, &sandbox, pr, true).await;
+            let text = self.merged_text_once(task, &sandbox, pr).await?;
             return Some(PrFacts {
                 now_ms,
                 pr,
@@ -532,13 +574,26 @@ impl App {
             runs.insert(sandbox.id.as_str().to_owned(), read);
         }
         let sandbox_runs = runs.get(sandbox.id.as_str()).map_or(&[][..], Vec::as_slice);
-        let own = sandbox_runs
+        let mut own = sandbox_runs
             .iter()
-            .find(|run| run.reference == CiRef::PullRequest(pr));
+            .find(|run| run.reference == CiRef::PullRequest(pr))
+            .cloned();
+        if own.is_none() && !told.head.is_empty() {
+            own = self
+                .deps
+                .store
+                .ci_runs_for_sha(&sandbox.id, &told.head)
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .find(|run| run.reference == CiRef::PullRequest(pr));
+        }
+        let own = own.as_ref();
+        // A candidate older than the pull request's own newest run is about an earlier head.
         let candidate = sandbox_runs
             .iter()
-            .find(|run| matches!(&run.reference, CiRef::Train(members) if members.contains(&pr)));
-        let (armed, outcome) = self.armed_view(&task.id);
+            .find(|run| matches!(&run.reference, CiRef::Train(members) if members.contains(&pr)))
+            .filter(|run| own.is_none_or(|own| run.queued_at >= own.queued_at));
         let hold = self.train_hold(task);
         let mut events = Vec::new();
         let told_key = |kind: &str, key: &str| told.keys.get(kind).is_some_and(|k| k == key);
@@ -641,8 +696,10 @@ impl App {
             .turn_closed_ms
             .load(Ordering::SeqCst)
             .max(runtime.spawned_ms.load(Ordering::SeqCst));
-        let check_ins = !runtime.goal_achieved.load(Ordering::SeqCst)
-            && matches!(self.deps.store.task_needs_you(&task.id).await, Ok(None));
+        let needs_you = !matches!(self.deps.store.task_needs_you(&task.id).await, Ok(None));
+        let check_ins = !runtime.goal_achieved.load(Ordering::SeqCst) && !needs_you;
+        let has_ci = self.config.ci.enabled
+            && (own.is_some() || self.ci_gate(&sandbox).await.gate.is_some());
         Some(PrFacts {
             now_ms,
             pr,
@@ -653,13 +710,48 @@ impl App {
             idle,
             quiet_since_ms,
             check_ins,
+            person_must_act: needs_you
+                || task.activity == Some(yulius_domain::task::Activity::NeedsAttention),
+            working: runtime.turn_in_progress(),
+            has_ci,
+            head: own.map(|run| run.sha.clone()).unwrap_or_default(),
         })
+    }
+
+    /// The merge notice of `task`'s pull request `pr` (`merged_text`), read from GitHub once and
+    /// kept until it is typed (review minor 7: not a GitHub call every pass).
+    async fn merged_text_once(
+        &self,
+        task: &TaskRecord,
+        sandbox: &SandboxRecord,
+        pr: u64,
+    ) -> Option<String> {
+        let runtime = self.existing_runtime(&task.id)?;
+        let kept = runtime
+            .pr_merged_note
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .filter(|(number, _)| *number == pr);
+        if let Some((_, text)) = kept {
+            return Some(text);
+        }
+        let text = self.merged_note(task, sandbox, pr, true).await;
+        *runtime
+            .pr_merged_note
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((pr, text.clone()));
+        Some(text)
     }
 
     /// Whether `head` conflicts with the integration branch as Yulius's clone last fetched it,
     /// with the repository's merge drivers (PRN-004); cached per head and integration commit.
     async fn conflicts(&self, task: &TaskRecord, sandbox: &SandboxRecord, head: &str) -> bool {
-        let repo = self.sandbox_repo(&sandbox.id);
+        // In the task's worktree, as delivery's own check: the merge drivers of the clone's old
+        // checkout could be stale (review minor 11).
+        let Some(repo) = task.worktree_path.as_deref().map(std::path::PathBuf::from) else {
+            return false;
+        };
         let integration = format!("origin/{}", delivery_profile(sandbox).integration_branch);
         let Ok(Some(base)) = self.deps.git.resolve_commit(&repo, &integration).await else {
             return false;
@@ -689,6 +781,22 @@ impl App {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((pair, conflicts));
         conflicts
+    }
+}
+
+/// What a task was told after a pass whose message could not be typed: as before, but about the
+/// pull request that pass saw (so its merge is told even if nothing was typed yet).
+fn untold(told: Told, next: &Told) -> Told {
+    if told.pr == next.pr {
+        told
+    } else {
+        Told {
+            pr: next.pr,
+            progress: next.progress.clone(),
+            progress_ms: next.progress_ms,
+            head: next.head.clone(),
+            ..Told::default()
+        }
     }
 }
 
@@ -851,6 +959,8 @@ mod tests {
             idle: true,
             quiet_since_ms: 10 * MIN,
             check_ins: true,
+            has_ci: true,
+            ..PrFacts::default()
         }
     }
 
@@ -873,7 +983,8 @@ mod tests {
              tests::t1, app tests::t2, app tests::t3, app tests::t4, app tests::t5 and 2 more); \
              `websites` exited 1. Read the log with `ci_status` with run_id r1 and job \
              `quality`, fix it test-first on this branch, commit and end your turn so Yulius \
-             pushes; the queue takes it again once a run passes."
+             pushes; a failed run drops an armed merge, so once the new head passed and its \
+             review approved it, call `delivery_merge` again."
         );
         let errored = RunState::Error;
         let text = errored_run_text(&CiRunRecord {
@@ -1094,6 +1205,74 @@ mod tests {
         ] {
             assert_eq!(decide(&quiet, &told, &bounds).0, None, "{quiet:?}");
         }
+    }
+
+    /// Review M1: nothing is typed while a person must act (a permission prompt, a dialog,
+    /// `needs_you`): the paste would answer it. The event waits, untold, until they did.
+    #[test]
+    fn nothing_is_typed_while_a_person_must_act() {
+        let bounds = WatchBounds::default();
+        let blocked = PrFacts {
+            person_must_act: true,
+            ..facts(vec![event("run", "r1")])
+        };
+        let (text, told) = decide(&blocked, &Told::default(), &bounds);
+        assert_eq!(text, None);
+        assert!(told.keys.is_empty(), "still to tell");
+        let stalled = PrFacts {
+            now_ms: 500 * MIN,
+            ci_busy: false,
+            ..blocked.clone()
+        };
+        assert_eq!(
+            decide(&stalled, &told, &bounds).0,
+            None,
+            "no stall typed either"
+        );
+        assert!(
+            decide(&facts(vec![event("run", "r1")]), &told, &bounds)
+                .0
+                .is_some()
+        );
+    }
+
+    /// Review M2 and minor 6: without Yulius CI no run ever comes, so nothing stalls for lack of
+    /// one; and an agent working on it (a turn open) is no stall.
+    #[test]
+    fn no_stall_without_ci_or_while_the_agent_works() {
+        let bounds = WatchBounds::default();
+        let quiet = |minutes: i64| PrFacts {
+            now_ms: minutes * MIN,
+            ci_busy: false,
+            idle: false,
+            ..facts(Vec::new())
+        };
+        let (_, told) = decide(&quiet(10), &Told::default(), &bounds);
+        assert_eq!(
+            decide(
+                &PrFacts {
+                    has_ci: false,
+                    ..quiet(200)
+                },
+                &told,
+                &bounds
+            )
+            .0,
+            None
+        );
+        assert_eq!(
+            decide(
+                &PrFacts {
+                    working: true,
+                    ..quiet(200)
+                },
+                &told,
+                &bounds
+            )
+            .0,
+            None
+        );
+        assert!(decide(&quiet(200), &told, &bounds).0.is_some());
     }
 
     /// PRN-009: an hour without progress while CI is idle stalls it, once, until progress; a run

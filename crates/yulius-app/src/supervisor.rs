@@ -263,6 +263,8 @@ pub struct TaskRuntime {
     /// The last head and integration commit pair whose conflict was checked, and whether they
     /// conflict (PRN-004).
     pub(crate) pr_conflict: Mutex<Option<(String, bool)>>,
+    /// The merge notice of its pull request, read from GitHub once until typed (PRN-005).
+    pub(crate) pr_merged_note: Mutex<Option<(u64, String)>>,
     /// Background work the transcript says the session started and no notification ended yet:
     /// Monitor streams and background agents by Claude Code's task id (SPEC-079 BGW-002).
     pub(crate) launches: Mutex<std::collections::BTreeMap<String, crate::finish::Launch>>,
@@ -410,6 +412,7 @@ impl TaskRuntime {
             mcp_reconnects: Mutex::new(crate::mcp_watch::Reconnects::default()),
             pr_stalled: Mutex::new(None),
             pr_conflict: Mutex::new(None),
+            pr_merged_note: Mutex::new(None),
             background_shells: AtomicI64::new(-1),
             limits_at_start: Mutex::new(None),
             background_waits: AtomicI64::new(-1),

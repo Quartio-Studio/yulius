@@ -14,6 +14,7 @@ use yulius_domain::ci::{CiRef, GateSource, RunState};
 use yulius_domain::delivery::DeliveryStage;
 use yulius_domain::ids::{SandboxId, TaskId};
 use yulius_domain::resources::Need;
+use yulius_domain::task::Activity;
 
 use crate::pool_supervision::{build_tuned, new_task, runtime, screen, seed, stop, temp, wait_for};
 
@@ -145,6 +146,20 @@ fn a_task_with_no_wait_is_told_each_event_once() -> TestResult {
         app.deps
             .store
             .transition_ci_job(&job.id, &[RunState::Failed], RunState::Failed, &ended)
+            .await?;
+        // A permission prompt or question waits for a person: nothing is typed over it.
+        let activity = app.deps.store.task(&id).await?.ok_or("task")?.activity;
+        app.deps
+            .store
+            .set_activity(&id, Some(Activity::NeedsAttention), app.now())
+            .await?;
+        assert!(
+            watch(&app, &bounds, &id).await?.is_none(),
+            "a person must act first"
+        );
+        app.deps
+            .store
+            .set_activity(&id, activity, app.now())
             .await?;
         let typed = typed_within(&app, &bounds, &id)
             .await?
