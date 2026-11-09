@@ -93,7 +93,17 @@ pub fn self_matching_pattern(command: &str) -> Option<(String, String)> {
 pub fn hand_merge(command: &str) -> bool {
     let words = split_words(command);
     words.iter().enumerate().any(|(index, word)| {
-        if word.rsplit('/').next() != Some("gh") {
+        // A shell's command string (`bash -c '…'`) is a command of its own.
+        if index > 0 && words[index - 1] == "-c" && hand_merge(word) {
+            return true;
+        }
+        // `gh` as the command, not an argument (`echo gh pr merge`): at the start, after a
+        // separator, or after `sudo`/`env`/`command`.
+        let at_command = index == 0
+            || words.get(index - 1).is_some_and(|before| {
+                is_separator(before) || matches!(before.as_str(), "sudo" | "env" | "command")
+            });
+        if !at_command || word.rsplit('/').next() != Some("gh") {
             return false;
         }
         let args: Vec<&str> = words
@@ -110,7 +120,7 @@ pub fn hand_merge(command: &str) -> bool {
                 continue;
             }
             if arg.starts_with('-') {
-                skip_value = matches!(*arg, "-R" | "--repo" | "-X" | "--method");
+                skip_value = !arg.contains('=') && GH_VALUE_OPTIONS.contains(arg);
                 continue;
             }
             plain.push(*arg);
@@ -133,6 +143,29 @@ pub fn hand_merge(command: &str) -> bool {
         }
     })
 }
+
+/// `gh` options followed by a value (so the value is not read as a subcommand or path).
+const GH_VALUE_OPTIONS: &[&str] = &[
+    "-R",
+    "--repo",
+    "-X",
+    "--method",
+    "-H",
+    "--header",
+    "-f",
+    "--raw-field",
+    "-F",
+    "--field",
+    "-q",
+    "--jq",
+    "-t",
+    "--template",
+    "--input",
+    "--hostname",
+    "-p",
+    "--preview",
+    "--cache",
+];
 
 fn is_separator(word: &str) -> bool {
     matches!(
@@ -281,6 +314,11 @@ mod tests {
             "cd /w && /usr/bin/gh -R acme/app pr merge 12",
             "gh api -X PUT repos/acme/app/pulls/12/merge -f merge_method=squash",
             "gh api --method=PUT /repos/acme/app/pulls/12/merge",
+            // Review round 1: options with values before the path, a nested shell.
+            "gh api -H 'Accept: application/vnd.github+json' -X PUT repos/o/r/pulls/1/merge",
+            "gh api -f merge_method=squash -X PUT repos/o/r/pulls/1/merge",
+            "bash -c 'gh pr merge 1 --squash'",
+            "sudo gh pr merge 1",
         ] {
             assert!(hand_merge(command), "{command}");
         }
@@ -291,6 +329,9 @@ mod tests {
             "gh api repos/acme/app/pulls/12/merge",
             "git merge --no-edit origin/dev",
             "gh pr list --search merge",
+            // Review round 1: `gh` as an argument, not a command.
+            "echo gh pr merge 1",
+            "grep -rn gh pr merge docs",
         ] {
             assert!(!hand_merge(command), "{command}");
         }

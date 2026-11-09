@@ -58,7 +58,7 @@ the sandbox's task list.
 
 | ID | Requirement | Evidence |
 | --- | --- | --- |
-| PRN-001 | **A watch, not a wait.** Every 20 seconds Yulius looks at each running task whose delivery has an open pull request, from its own records and its clone only (no GitHub request, except reading the merged head once for the merge notice). What needs the task is typed into its session as one bracketed paste starting "Yulius, about your pull request #N:", whatever the session's check-ins or waits. A session that cannot take input now (a person typed in the last minute, not started, paused or held by an update, another message being typed) gets it on a later pass. | `pr_watch::tests`; `pr_watch::a_task_with_no_wait_is_told_each_event_once` |
+| PRN-001 | **A watch, not a wait.** Every 20 seconds Yulius looks at each running task whose delivery has an open pull request, from its own records and its clone only (no GitHub request, except reading the merged head once for the merge notice). What needs the task is typed into its session as one bracketed paste starting "Yulius, about your pull request #N:", whatever the session's check-ins or waits. A session that cannot take input now (a person typed in the last minute, not started, paused or held by an update, another message being typed) gets it on a later pass, and so does one where a person must act first (a permission prompt or question on screen, an open `needs_you`): the paste would answer it. The pasted text is cleaned of control characters. | `pr_watch::tests`; `pr_watch::a_task_with_no_wait_is_told_each_event_once` |
 | PRN-002 | **A red run.** A failed run at the pull request's head names each failed job with its exit code, up to 5 failing test names per job, and where to read the log (`ci_status` with the run id and job), then: fix it test-first on this branch. A run that errored says it could not run (not the code), that Yulius reruns it once by itself, else `ci_rerun`. | `pr_watch::tests::a_red_run_names_jobs_tests_and_the_log` |
 | PRN-003 | **A red merge candidate.** A failed run of a merge candidate holding the pull request says so with its jobs and tests, that Yulius bisects it and tells the pull request that breaks it, and to keep hands off meanwhile. | `pr_watch::tests::a_red_candidate_says_hands_off` |
 | PRN-004 | **A conflict.** When the pull request's head conflicts with the integration branch as Yulius's clone last fetched it (Git's merge with the repository's merge drivers), the task is told once per head: merge the integration branch in with `git merge`, resolve, rerun the tests, commit, end the turn; never rebase or force-push. | `pr_watch::a_task_with_no_wait_is_told_each_event_once` |
@@ -66,7 +66,7 @@ the sandbox's task list.
 | PRN-006 | **Green but not merging, and when to keep hands off.** A head whose own run passed and that is not merging now is said once per reason: not armed (get the review of that head and call `delivery_merge`), or where the armed merge stands (SPEC-441 MQ-007). While a merge candidate holds it, the message ends "Hands off: do not re-arm, merge `<integration>` or push to this branch; Yulius merges it in order when the run passes." | `pr_watch::tests::green_says_why_and_hands_off_in_a_candidate` |
 | PRN-007 | **Each event once.** Each event has a key (its run, head, outcome or pull request); what was typed is kept in `<data>/pr-notices.json`, so a restart does not repeat it. Several new events of one pass go in one message. A task whose pull request was never seen open by the watch is not told it merged. | `pr_watch::tests::each_event_is_typed_once`; `pr_watch::tests::state_survives_a_restart` |
 | PRN-008 | **Check-ins do not pause.** While the pull request is open and not merged, a session that has been idle with nothing typed into it and no turn for 45 minutes gets a check-in: the pull request's state in one line and what to do (often: nothing, end the turn). Not while the task waits for a person (`needs_you`) or its goal is achieved. | `pr_watch::tests::a_quiet_session_gets_a_check_in` |
-| PRN-009 | **Stall detector.** A pull request with no progress for 60 minutes (no run of its head or of a candidate holding it queued, started or ended; no delivery or armed-merge change; no event typed) while no such run is queued or running, is stalled: the task is told once per stall, with its state and next step, and its task summary carries `pr_stalled` (the sentence), shown on the sandbox's task list until progress. | `pr_watch::tests::a_pull_request_without_progress_stalls`; `pr_watch::a_task_with_no_wait_is_told_each_event_once`; e2e `task-done` ("a task whose pull request stalled") |
+| PRN-009 | **Stall detector.** A pull request with no progress for 60 minutes (no run of its head or of a candidate holding it queued, started or ended; no delivery or armed-merge change; no event typed) while no such run is queued or running, the agent's turn is not open and the project has Yulius CI, is stalled: the task is told once per stall, with its state and next step, and its task summary carries `pr_stalled` (the sentence), shown on the sandbox's task list until progress. | `pr_watch::tests::a_pull_request_without_progress_stalls`; `pr_watch::a_task_with_no_wait_is_told_each_event_once`; e2e `task-done` ("a task whose pull request stalled") |
 | PRN-010 | **Waits never end silently.** `yulius wait` has no time limit while the run at its head is queued or running, a merge is armed or a deploy runs; `--minutes` (90) bounds only a wait with no run at its head, and its last line says why ("no Yulius CI run at … after 90 min: was the head pushed?"). A wait with a merge armed ends when the run at its head fails or errors. | `wait_cli::tests::a_queued_run_never_times_out`; `wait_cli::tests::an_armed_wait_ends_on_its_heads_failure` |
 | PRN-011 | **Merging by hand is refused.** The PreToolUse guard denies `gh pr merge` and a `gh api` call to a pull request's `/merge`, saying Yulius merges through `delivery_merge` and its queue, that `delivery_status` and Yulius's messages say why a green pull request is not merging, and that a hand merge does not end the goal's delivery. | `guard_client::tests::hand_merges_are_refused` |
 | PRN-012 | **Tasks are told.** The briefing (within its budget), the definition of done and the bundled `delivery-pipeline` skill say that Yulius types every event of the task's pull request into its session with the next step, that no wait has to be kept alive for it, and to obey "Hands off". | `briefing::tests`; `request::tests` |
@@ -106,10 +106,10 @@ the sandbox's task list.
 - Integration (`crates/yulius/tests/pr_watch.rs`): a live fake-agent task with real repositories
   and the production Git adapter, a pull request record and CI records: one watch pass types the
   failure, a commit on the integration branch that conflicts is typed, the merge is typed, and the
-  session echoes each once; a person typing defers it.
+  session echoes each once; a task that needs a person (a prompt on screen) is typed nothing.
 - Unit (`wait_cli::tests`): the no-limit rule and the armed wait on a failed head.
 - Unit (`guard_client::tests`): hand merges denied, other `gh` calls allowed.
-- Web: `status.test.js` for the stalled label; the e2e suite for the task list.
+- Web: the e2e suite (`task-done`) for the stalled label in the header and on the task list.
 
 ## Decisions
 
@@ -126,6 +126,21 @@ the sandbox's task list.
   with its wording; 45 quiet minutes with an open pull request is the fact that matters, and a
   typed message also resumes Claude Code's own check-ins.
 - **Stall excludes check-ins.** A check-in is not progress, or the stall would never come.
+- **Once per head and reason, not per wording** (review round 1, minor 5). The armed note's
+  wording changes with the agent's activity (busy or idle) and each pass; keying on it would type
+  a new message every time the agent's turn, which a message starts, changes it: a loop. A green
+  head is told once per head and kind (not armed, armed, held); a later change of the note is
+  seen in `yulius wait`, `delivery_status` and the stall.
+- **Not typed over a person's prompt** (review M1). `type_into_session` refuses only a person's
+  recent typing; a permission prompt or question would take the paste and its Enter as an answer,
+  so the watch holds events while the task needs attention or a person.
+- **The guard is a nudge, not a boundary** (review minor 9). It refuses `gh pr merge` and
+  `gh api -X PUT …/pulls/N/merge` where `gh` is the command (also inside `bash -c`), not `curl`
+  or a script that calls them; GitHub's ruleset and Yulius's merge gate stay the boundary.
+- **Known limits.** The failing test count can undercount tests whose output was not kept (the
+  scanner keeps 32 KiB per job). On the first pass after a deploy, every open pull request is told
+  its current state once. Check-ins continue every 45 quiet minutes while the pull request is open
+  (ADR-0287 accepts the cost).
 - See ADR-0287 for the alternatives.
 
 ## Evidence
