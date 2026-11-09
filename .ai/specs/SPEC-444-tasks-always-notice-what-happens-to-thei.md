@@ -169,7 +169,8 @@ the sandbox's task list.
     `request::tests` for the guidance; e2e `task-done` "a task whose pull request stalled".
 - **Gate.** `scripts/dev ci` passed at 8a61b12e (exit 0): format, lint, macOS targets, repository
   contracts, 3,270 tests passed, 16 skipped, docs. An earlier gate at fb90e7a2 was stopped
-  (superseded by review fixes, and cargo had run beside it).
+  (superseded by review fixes, and cargo had run beside it). After the live check, the gate
+  passed again at 6a18fa72 (exit 0): 3,270 tests passed, 16 skipped, advisories ok.
 - **E2E.** `npx e2e run` at 8a61b12e: 75 files passed, 1 skipped; 877 tests passed, 1 skipped
   (`task-done` alone: 21 passed).
 - **Independent review.** Four rounds by a fresh read-only subagent:
