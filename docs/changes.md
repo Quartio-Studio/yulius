@@ -6,6 +6,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-09
 
+- A follow-up pull request no longer inherits how the merged one's armed merge ended, so it is
+  not told that merge as its own news (SPEC-444 live check, task #426).
+- `rusqlite` 0.41 (bundled SQLite 3.54.1 via `libsqlite3-sys` 0.39.1) for RUSTSEC-2026-0459,
+  which failed `cargo deny` on every pull request (task #426).
 - Tasks hear what happens to their pull request (SPEC-444, ADR-0287, task #426). In quartio-v2 on
   2026-11-08, tasks sat 10 to 60 minutes after a red run, a conflict or a green pull request that
   was not merging, until someone nudged them: their only channel was a `yulius wait` they had to

@@ -1311,7 +1311,9 @@ test('another person’s worktree saves nothing, offers no writing menu items an
 // Review of SPEC-340: the folder list arriving while "Switch folder?" is asked must not turn the
 // answer into a switch to the folder already open. Asked now only for a file whose unsaved text met
 // a change on disk (SPEC-411).
-test('a folder chosen while the worktrees are read switches to it once the question is answered', async ({ app, browser, screen }) => {
+// Quarantined: under a loaded CI run the typed text sometimes never marks the tab modified
+// (#1087; seen on PRs #1086, #1095 and #1135). Unskip with its fix.
+test('a folder chosen while the worktrees are read switches to it once the question is answered', { skip: 'flaky under CI load: #1087' }, async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12', '&hold=/api/sandboxes/sb_studio/files/roots'));
   await screen.getByRole('button', /^Show tools/).click();
   await screen.getByRole('button', 'Editor').click();

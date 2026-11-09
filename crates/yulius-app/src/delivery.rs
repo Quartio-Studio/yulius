@@ -2892,6 +2892,9 @@ impl App {
                 ),
             )
             .await;
+            // How the merged pull request's armed merge ended is that pull request's: the new
+            // one starts without it (SPEC-444 live check, #1135).
+            self.forget_merge_outcome(&task);
         }
         // The task's owner pushes and authors the pull request (their GitHub account, as if
         // they had pressed Deliver…, F 2026-10-11); without a usable token the App does.
