@@ -1,11 +1,11 @@
 ---
 yulius-task: 995d4b13-efa4-44af-b3a7-32794e7d4b6c
-status: in-progress
+status: done
 ---
 
 # SPEC-444: Tasks always hear what happens to their pull request
 
-Status: in progress
+Status: implemented
 Date: 2026-11-09
 Owner: Yulius task #426
 Scope authorization: the owner, verbatim: "spawn a task in yulius to make it notice failures etc".
@@ -81,8 +81,8 @@ the sandbox's task list.
 - [x] yulius wait never ends silently and an armed wait ends on its head's failure
 - [x] Merging by hand is refused with the reason
 - [x] Briefing, skill and documents say Yulius tells the task
-- [ ] Independent review findings answered test-first
-- [ ] Gates green and the evidence recorded
+- [x] Independent review findings answered test-first
+- [x] Gates green and the evidence recorded
 
 ## Acceptance criteria
 
@@ -145,4 +145,44 @@ the sandbox's task list.
 
 ## Evidence
 
-To be recorded.
+- **Tests first.** Each behaviour change has a test that failed without it:
+  - `pr_watch::a_task_with_no_wait_is_told_each_event_once` (integration: a live fake-agent task,
+    real repositories, the production Git adapter, no `yulius wait`): one watch pass types the red
+    run (job, exit code, failing test, `ci_status` run and job), the conflict with `dev` together
+    with the green head's "no merge is armed", the stall (shown by `task_summary().pr_stalled`) and
+    the merge, each once, and nothing while the task needs a person. Two mutations were seen to
+    fail it: dropping the person-must-act hold, and dropping it from the merge notice (review
+    rounds 1 and 2). An earlier form of the hold check passed vacuously because the session did not
+    take input yet; it was moved to a pass after a typed message.
+  - Unit `pr_watch::tests` (12): each message's words, once per key, saved state, check-ins,
+    stalls (CI idle, no CI, agent working, a turn just closed), the person-must-act hold, green
+    reasons.
+  - `wait_cli::tests::an_armed_wait_ends_on_its_heads_failure` failed before the fix;
+    `a_queued_run_never_times_out` covers `limit_line`; `restart::a_wait_rides_out_a_restart` now
+    expects the "No Yulius CI run at … after 1 min" line.
+  - `guard_client::tests::hand_merges_are_refused`: the reviewer's cases (option values, `bash
+    -c`/`-lc`, `NAME=value gh`, `$(gh …)`, `grep -c`) failed before each fix.
+  - `failures::tests::failing_test_names_are_read_from_the_kept_headers`; `briefing::tests` and
+    `request::tests` for the guidance; e2e `task-done` "a task whose pull request stalled".
+- **Gate.** `scripts/dev ci` passed at 8a61b12e (exit 0): format, lint, macOS targets, repository
+  contracts, 3,270 tests passed, 16 skipped, docs. An earlier gate at fb90e7a2 was stopped
+  (superseded by review fixes, and cargo had run beside it).
+- **E2E.** `npx e2e run` at 8a61b12e: 75 files passed, 1 skipped; 877 tests passed, 1 skipped
+  (`task-done` alone: 21 passed).
+- **Independent review.** Four rounds by a fresh read-only subagent:
+  - round 1 (fb90e7a2): 2 majors (typing over a prompt a person must answer; wrong stall and advice
+    without Yulius CI), 11 minors, nits; all fixed test-first or recorded under Decisions;
+  - round 2 (7ccb1935): 1 major (the merge notice bypassed the hold), 4 minors; fixed;
+  - round 3 (e156d448): approved, 1 new minor (`grep -c` refused) and a nit (stall label on a
+    merged pull request); both fixed test-first;
+  - round 4: approved 8a61b12e. Left as documented: `bash -l -c` passes the guard (a nudge, not a
+    boundary); no dedicated test for the dropped/refused outcome event as built from the slot, nor
+    for "a pull request never seen open is not told it merged" (both read by the reviewer).
+- **Security scan.** `yulius security-scan`: "Security scan disabled" (Vidoc is turned off for
+  this project in Yulius). Disabled, not passed.
+- **Could not be tested here:**
+  - A real sandbox with a real Claude Code session whose check-ins Claude Code paused: this change
+    is not deployed (a person deploys Yulius). The integration test drives the same path (a live
+    session, `type_into_session`, no wait running) with a fake agent; with the 20 s watch, an event
+    reaches the session within a minute.
+  - quartio-v2 itself: outside this sandbox's access.
