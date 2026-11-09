@@ -154,10 +154,12 @@ the sandbox's task list.
     fail it: dropping the person-must-act hold, and dropping it from the merge notice (review
     rounds 1 and 2). An earlier form of the hold check passed vacuously because the session did not
     take input yet; it was moved to a pass after a typed message.
-  - Unit `pr_watch::tests` (11): each message's words, once per key, saved state, check-ins,
+  - Unit `pr_watch::tests` (10): each message's words, once per key, saved state, check-ins,
     stalls (CI idle, no CI, agent working, a turn just closed), the person-must-act hold, green
-    reasons, and `an_earlier_pull_requests_merge_outcome_is_not_told_to_the_next` (failed before
-    its fix; see the live check).
+    reasons.
+  - `delivery::work_committed_after_the_merge_opens_a_new_pull_request` now also checks that a
+    follow-up opened at the end of a turn starts without the merged one's outcome; it failed
+    before the fix with "Yulius merged pull request #2 …" (see the live check).
   - `wait_cli::tests::an_armed_wait_ends_on_its_heads_failure` failed before the fix;
     `a_queued_run_never_times_out` covers `limit_line`; `restart::a_wait_rides_out_a_restart` now
     expects the "No Yulius CI run at … after 1 min" line.
@@ -206,8 +208,10 @@ the sandbox's task list.
     Merge it in: `git fetch origin && git merge origin/dev`, resolve the conflicts, … Never
     rebase or force-push." Resolved by that merge.
   - A bug the live check found: #1135's first notice repeated how #1134's armed merge ended
-    ("Yulius merged pull request #1134 …"), which the armed slot still held. Fixed test-first:
-    an outcome already there when the watch first sees a pull request is known, not told.
+    ("Yulius merged pull request #1134 …"): the armed slot keeps how the last merge ended until
+    the next arm, past its pull request. Fixed test-first: a merged task's follow-up delivery
+    forgets it (a first fix in the watch alone was reviewed out: a refused paste brought it
+    back).
 - **Could not be tested here:**
   - Paused check-ins: this session runs under a `/goal` whose check-ins never paused, so they
     were not live-tested; the integration test covers a session nothing else wakes.
