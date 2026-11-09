@@ -178,6 +178,11 @@ the sandbox's task list.
   - round 4: approved 8a61b12e. Left as documented: `bash -l -c` passes the guard (a nudge, not a
     boundary); no dedicated test for the dropped/refused outcome event as built from the slot, nor
     for "a pull request never seen open is not told it merged" (both read by the reviewer).
+- **An unrelated flaky e2e test.** CI run ea691b6c at 20aa33ef failed one e2e test outside this
+  change, `update.e2e.ts` "cancelling an update shows its outcome from the cancel's answer"
+  (expected 1 held update read taken, got 2): a page read arrived between counting the held reads
+  and releasing them. Reproduced every time by making that read on purpose; fixed in the test by
+  counting while releasing in one call (its own commit); the file passed 3 runs of 3.
 - **Security scan.** `yulius security-scan`: "Security scan disabled" (Vidoc is turned off for
   this project in Yulius). Disabled, not passed.
 - **Could not be tested here:**
