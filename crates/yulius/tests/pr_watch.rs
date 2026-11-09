@@ -208,6 +208,7 @@ fn a_task_with_no_wait_is_told_each_event_once() -> TestResult {
         // Nothing moves while CI is idle: stalled (PRN-009), told once and shown with the task.
         let stalling = WatchBounds {
             stall_after_ms: 0,
+            stall_quiet_ms: 0,
             ..WatchBounds::default()
         };
         assert_eq!(app.pr_stalled(&id), None);
@@ -242,6 +243,19 @@ fn a_task_with_no_wait_is_told_each_event_once() -> TestResult {
         app.deps
             .store
             .transition_delivery(&DeliveryStage::PrOpen, &merged)
+            .await?;
+        // Not over a prompt that waits for a person either (review round 2).
+        app.deps
+            .store
+            .set_activity(&id, Some(Activity::NeedsAttention), app.now())
+            .await?;
+        assert!(
+            watch(&app, &bounds, &id).await?.is_none(),
+            "a person must act first"
+        );
+        app.deps
+            .store
+            .set_activity(&id, activity, app.now())
             .await?;
         let typed = typed_within(&app, &bounds, &id)
             .await?

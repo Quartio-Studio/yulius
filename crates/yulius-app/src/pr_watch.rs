@@ -37,6 +37,9 @@ pub const WATCH_EVERY: Duration = Duration::from_secs(20);
 pub const CHECK_IN_AFTER_MS: i64 = 45 * 60 * 1000;
 /// A pull request without progress this long (ms) while its CI is idle is stalled.
 pub const STALL_AFTER_MS: i64 = 60 * 60 * 1000;
+/// A stall waits this long (ms) after the agent's last turn closed: the push and the run that
+/// turn's end starts take a moment (review round 2).
+pub const STALL_QUIET_MS: i64 = 5 * 60 * 1000;
 /// The file in the data directory that keeps what each task was told across restarts.
 pub const PR_NOTICES_FILE: &str = "pr-notices.json";
 /// Runs of a sandbox read per pass, newest first.
@@ -54,6 +57,8 @@ pub struct WatchBounds {
     pub check_in_after_ms: i64,
     /// Time (ms) without progress before a stall.
     pub stall_after_ms: i64,
+    /// Time (ms) after the agent's last turn closed before a stall.
+    pub stall_quiet_ms: i64,
 }
 
 impl Default for WatchBounds {
@@ -61,6 +66,7 @@ impl Default for WatchBounds {
         Self {
             check_in_after_ms: CHECK_IN_AFTER_MS,
             stall_after_ms: STALL_AFTER_MS,
+            stall_quiet_ms: STALL_QUIET_MS,
         }
     }
 }
@@ -178,6 +184,7 @@ pub fn decide(facts: &PrFacts, told: &Told, bounds: &WatchBounds) -> (Option<Str
     if facts.has_ci
         && !facts.ci_busy
         && !facts.working
+        && facts.now_ms.saturating_sub(facts.quiet_since_ms) >= bounds.stall_quiet_ms
         && next.stalled.is_none()
         && still >= bounds.stall_after_ms
     {
@@ -542,6 +549,11 @@ impl App {
             return None;
         }
         let now_ms = self.now().0;
+        // A person must act first (a prompt on screen, `needs_you`): nothing is typed, the merge
+        // notice included (review M1, round 2).
+        let needs_you = !matches!(self.deps.store.task_needs_you(&task.id).await, Ok(None));
+        let person_must_act =
+            needs_you || task.activity == Some(yulius_domain::task::Activity::NeedsAttention);
         if past_merge(&record.stage) {
             // Merged: said once, to a task the watch saw with it open (PRN-005, PRN-007).
             if told.pr != pr || told.keys.contains_key("merged") {
@@ -557,6 +569,7 @@ impl App {
                     text,
                 }],
                 progress: told.progress.clone(),
+                person_must_act,
                 ..PrFacts::default()
             });
         }
@@ -689,17 +702,20 @@ impl App {
             record.stage.encode(),
             if armed { "armed" } else { "" }
         );
-        let status = status_text(own, armed, hold, queue_note.as_deref(), &integration);
+        let has_ci = self.config.ci.enabled
+            && (own.is_some() || self.ci_gate(&sandbox).await.gate.is_some());
+        let status = if has_ci {
+            status_text(own, armed, hold, queue_note.as_deref(), &integration)
+        } else {
+            no_ci_status(armed)
+        };
         let runtime = self.existing_runtime(&task.id)?;
         let idle = !runtime.turn_in_progress() && self.typed_recently(&task.id).is_none();
         let quiet_since_ms = runtime
             .turn_closed_ms
             .load(Ordering::SeqCst)
             .max(runtime.spawned_ms.load(Ordering::SeqCst));
-        let needs_you = !matches!(self.deps.store.task_needs_you(&task.id).await, Ok(None));
         let check_ins = !runtime.goal_achieved.load(Ordering::SeqCst) && !needs_you;
-        let has_ci = self.config.ci.enabled
-            && (own.is_some() || self.ci_gate(&sandbox).await.gate.is_some());
         Some(PrFacts {
             now_ms,
             pr,
@@ -710,8 +726,7 @@ impl App {
             idle,
             quiet_since_ms,
             check_ins,
-            person_must_act: needs_you
-                || task.activity == Some(yulius_domain::task::Activity::NeedsAttention),
+            person_must_act,
             working: runtime.turn_in_progress(),
             has_ci,
             head: own.map(|run| run.sha.clone()).unwrap_or_default(),
@@ -829,6 +844,19 @@ fn green_said(
             ),
         )),
         (true, Hold::Free, None) => None,
+    }
+}
+
+/// Where a pull request stands in a project without Yulius CI: no run ever comes (review M2).
+fn no_ci_status(armed: bool) -> String {
+    if armed {
+        "This project has no Yulius CI, so no run comes: the merge is armed and Yulius decides it \
+         on its next pass; `delivery_status` says what it waits for. Never merge by hand."
+            .to_owned()
+    } else {
+        "This project has no Yulius CI, so no run comes: once the independent review approved \
+         its head, call `delivery_merge`; `delivery_status` says what else the merge needs."
+            .to_owned()
     }
 }
 
@@ -1079,6 +1107,10 @@ mod tests {
         );
         assert!(queued.contains("is queued: nothing to do"), "{queued}");
         assert!(status_text(None, false, Hold::Free, None, "dev").starts_with("No Yulius CI run"));
+        // Review round 2: without Yulius CI no run comes, and the words say so.
+        assert!(no_ci_status(false).contains("has no Yulius CI"));
+        assert!(no_ci_status(false).contains("call `delivery_merge`"));
+        assert!(no_ci_status(true).contains("Yulius decides it"));
     }
 
     /// PRN-001, PRN-007: new events go in one message; each key is typed once, a new key of the
@@ -1272,6 +1304,12 @@ mod tests {
             .0,
             None
         );
+        // Review round 2: a turn that just closed (its push and run still to come) is no stall.
+        let just_closed = PrFacts {
+            quiet_since_ms: 199 * MIN,
+            ..quiet(200)
+        };
+        assert_eq!(decide(&just_closed, &told, &bounds).0, None);
         assert!(decide(&quiet(200), &told, &bounds).0.is_some());
     }
 
