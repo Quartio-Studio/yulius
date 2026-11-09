@@ -79,7 +79,7 @@ the sandbox's task list.
 - [x] A green head that cannot merge says why, with hands off in a merge candidate
 - [x] Quiet sessions get a check-in and a stalled pull request is told and shown on the task list
 - [x] yulius wait never ends silently and an armed wait ends on its head's failure
-- [ ] Merging by hand is refused with the reason
+- [x] Merging by hand is refused with the reason
 - [ ] Briefing, skill and documents say Yulius tells the task
 - [ ] Independent review findings answered test-first
 - [ ] Gates green and the evidence recorded

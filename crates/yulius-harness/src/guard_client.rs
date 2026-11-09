@@ -8,6 +8,9 @@
 //! task looks busy for hours) and `pkill -f` kills the agent's own shell. Every task's transcript
 //! of 2026-10-11/12 had such loops. A pattern anchored with `^` or using the bracket trick
 //! (`[s]cripts/dev ci`) does not match itself and passes.
+//!
+//! A merge by hand (`gh pr merge`, `gh api -X PUT …/pulls/N/merge`) is refused too, with why
+//! (SPEC-444 PRN-011): Yulius merges through `delivery_merge` and its queue.
 
 use std::io::{Read, Write};
 
@@ -83,6 +86,54 @@ pub fn self_matching_pattern(command: &str) -> Option<(String, String)> {
     None
 }
 
+/// Whether `command` merges a pull request by hand (SPEC-444 PRN-011): `gh pr merge`, or
+/// `gh api` with method `PUT` on a pull request's `/merge`. Yulius merges through
+/// `delivery_merge` and its queue; a hand merge does not end the task's delivery.
+#[must_use]
+pub fn hand_merge(command: &str) -> bool {
+    let words = split_words(command);
+    words.iter().enumerate().any(|(index, word)| {
+        if word.rsplit('/').next() != Some("gh") {
+            return false;
+        }
+        let args: Vec<&str> = words
+            .iter()
+            .skip(index + 1)
+            .take_while(|arg| !is_separator(arg))
+            .map(String::as_str)
+            .collect();
+        // The subcommand words, without options and their values (`-R owner/repo`).
+        let mut plain = Vec::new();
+        let mut skip_value = false;
+        for arg in &args {
+            if std::mem::take(&mut skip_value) {
+                continue;
+            }
+            if arg.starts_with('-') {
+                skip_value = matches!(*arg, "-R" | "--repo" | "-X" | "--method");
+                continue;
+            }
+            plain.push(*arg);
+        }
+        match plain.as_slice() {
+            ["pr", "merge", ..] => true,
+            ["api", path, ..] => {
+                let merge_path =
+                    path.trim_end_matches('/').ends_with("/merge") && path.contains("pulls/");
+                let put = args.windows(2).any(|pair| {
+                    matches!(pair[0], "-X" | "--method") && pair[1].eq_ignore_ascii_case("PUT")
+                }) || args.iter().any(|arg| {
+                    arg.strip_prefix("--method=")
+                        .or_else(|| arg.strip_prefix("-X"))
+                        .is_some_and(|method| method.eq_ignore_ascii_case("PUT"))
+                });
+                merge_path && put
+            }
+            _ => false,
+        }
+    })
+}
+
 fn is_separator(word: &str) -> bool {
     matches!(
         word,
@@ -129,7 +180,8 @@ fn split_words(command: &str) -> Vec<String> {
 }
 
 /// The hook: denies a Bash command whose `pgrep -f`/`pkill -f` matches itself, with the way to
-/// wait instead; prints nothing otherwise. Always exits 0.
+/// wait instead, and a merge by hand (SPEC-444 PRN-011), with why; prints nothing otherwise.
+/// Always exits 0.
 pub fn pre_tool_use(input: &mut dyn Read, output: &mut dyn Write) -> i32 {
     let mut body = Vec::new();
     if input.take(MAX_INPUT_BYTES).read_to_end(&mut body).is_err() {
@@ -144,16 +196,24 @@ pub fn pre_tool_use(input: &mut dyn Read, output: &mut dyn Write) -> i32 {
     let Some(command) = event["tool_input"]["command"].as_str() else {
         return 0;
     };
-    let Some((tool, pattern)) = self_matching_pattern(command) else {
+    let reason = if hand_merge(command) {
+        "Yulius refused this command: Merging by hand is refused. Yulius merges your pull request \
+         through `delivery_merge` and its merge queue, in order, on green Yulius CI; a hand merge \
+         skips that and does not end your goal's delivery. If a green pull request is not \
+         merging, `delivery_status` says why, and Yulius tells this session when it moves: \
+         arm it once with `delivery_merge` and end your turn."
+            .to_owned()
+    } else if let Some((tool, pattern)) = self_matching_pattern(command) {
+        format!(
+            "Yulius refused this command: `{tool} -f '{pattern}'` runs inside `bash -c`, whose \
+             own command line contains '{pattern}', so it always finds itself (a wait on it \
+             never ends, and pkill kills this shell). Wait on a PID instead (`cmd & pid=$!; wait \
+             $pid`), anchor the pattern (`^…`) or use the bracket trick (`[x]yz`); for checks or \
+             a merge, start `yulius wait` with run_in_background and end your turn."
+        )
+    } else {
         return 0;
     };
-    let reason = format!(
-        "Yulius refused this command: `{tool} -f '{pattern}'` runs inside `bash -c`, whose own \
-         command line contains '{pattern}', so it always finds itself (a wait on it never ends, \
-         and pkill kills this shell). Wait on a PID instead (`cmd & pid=$!; wait $pid`), anchor \
-         the pattern (`^…`) or use the bracket trick (`[x]yz`); for checks or a merge, \
-         start `yulius wait` with run_in_background and end your turn."
-    );
     let answer = serde_json::json!({
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
@@ -209,6 +269,45 @@ mod tests {
         ] {
             assert_eq!(self_matching_pattern(command), None, "{command}");
         }
+    }
+
+    /// SPEC-444 PRN-011 (quartio-v2 #116, #96 planned it; #111's goal got stuck for good): a
+    /// merge by hand is refused with why, other `gh` calls are not.
+    #[test]
+    fn hand_merges_are_refused() {
+        for command in [
+            "gh pr merge 12 --squash",
+            "gh pr merge --squash --match-head-commit abc 12",
+            "cd /w && /usr/bin/gh -R acme/app pr merge 12",
+            "gh api -X PUT repos/acme/app/pulls/12/merge -f merge_method=squash",
+            "gh api --method=PUT /repos/acme/app/pulls/12/merge",
+        ] {
+            assert!(hand_merge(command), "{command}");
+        }
+        for command in [
+            "gh pr view 12 --json mergeable",
+            "gh pr checks 12",
+            "echo 'gh pr merge 12'",
+            "gh api repos/acme/app/pulls/12/merge",
+            "git merge --no-edit origin/dev",
+            "gh pr list --search merge",
+        ] {
+            assert!(!hand_merge(command), "{command}");
+        }
+        let mut out = Vec::new();
+        let event = serde_json::json!({
+            "tool_name": "Bash",
+            "tool_input": {"command": "gh pr merge 12 --squash"}
+        });
+        pre_tool_use(&mut event.to_string().as_bytes(), &mut out);
+        let denied = String::from_utf8(out).unwrap_or_default();
+        assert!(
+            denied.contains("\"permissionDecision\":\"deny\"")
+                && denied.contains("Merging by hand is refused")
+                && denied.contains("delivery_merge")
+                && denied.contains("delivery_status"),
+            "{denied}"
+        );
     }
 
     #[test]
