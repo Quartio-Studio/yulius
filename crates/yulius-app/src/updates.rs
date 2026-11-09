@@ -45,6 +45,8 @@ use crate::ports::updates::{ReleaseSource, ReleaseState, SourceError, UpdateHelp
 
 /// Automatic checks of `main`.
 pub const CHECK_EVERY: Duration = Duration::from_secs(3600);
+/// The next automatic check after a failed one, when the interval is longer (SPEC-443).
+pub const CHECK_RETRY_AFTER: Duration = Duration::from_secs(300);
 /// The first automatic check after a start.
 pub const FIRST_CHECK_AFTER: Duration = Duration::from_secs(60);
 /// "Check now" reuses a check younger than this.
@@ -673,9 +675,10 @@ impl App {
         if let Some(every) = services.check_every {
             let due = self.updates.next_check_ms.load(Ordering::SeqCst);
             if now >= due {
-                self.check_releases(None).await;
+                // Set before the check, which brings it closer when it fails.
                 let next = now.saturating_add(i64::try_from(every.as_millis()).unwrap_or(i64::MAX));
                 self.updates.next_check_ms.store(next, Ordering::SeqCst);
+                self.check_releases(None).await;
             }
             let left = self.updates.next_check_ms.load(Ordering::SeqCst) - now;
             return Duration::from_millis(u64::try_from(left.max(1_000)).unwrap_or(1_000))
@@ -737,7 +740,9 @@ impl App {
 
     /// Reads `main` now and caches the result; tells viewers when the offered update changed.
     /// With `reuse_within`, a result stored meanwhile (by the check this one waited for) that is
-    /// younger than that many milliseconds is kept instead.
+    /// younger than that many milliseconds is kept instead. A failed check, whoever asked for it,
+    /// brings the next automatic one to at most [`CHECK_RETRY_AFTER`] away, so its warning clears
+    /// by itself once GitHub answers again; a rate limit is waited out (SPEC-443 UCF-002).
     async fn check_releases(&self, reuse_within: Option<i64>) {
         let Some(services) = self.update_services() else {
             return;
@@ -765,6 +770,16 @@ impl App {
         let Some((result, via)) = outcome else {
             return;
         };
+        if let (Err(err), Some(every)) = (&result, services.check_every)
+            && *err != SourceError::RateLimited
+        {
+            let wait = every.min(CHECK_RETRY_AFTER);
+            let soon = self
+                .now()
+                .0
+                .saturating_add(i64::try_from(wait.as_millis()).unwrap_or(i64::MAX));
+            self.updates.next_check_ms.fetch_min(soon, Ordering::SeqCst);
+        }
         let result = result.map_err(|err| match err {
             SourceError::NoAccess => format!(
                 "Cannot read {}/{}: install the GitHub App on it (Contents: read) or set \
@@ -775,7 +790,7 @@ impl App {
             other => format!("{other}."),
         });
         if let Err(err) = &result {
-            tracing::info!(error = %err, "update check failed");
+            tracing::info!(error = %err, via, "update check failed");
         }
         let offered = |r: &Result<ReleaseState, String>| {
             r.as_ref()
@@ -788,13 +803,16 @@ impl App {
                 return;
             };
             let before = slot.as_ref().and_then(|s| offered(&s.result));
+            let failed_before = slot.as_ref().and_then(|s| s.result.as_ref().err().cloned());
             let after = offered(&result);
+            // A warning that starts, changes or ends is shown at once, too (UCF-003).
+            let failed_after = result.as_ref().err().cloned();
             *slot = Some(CheckSnapshot {
                 at: self.now(),
                 via,
                 result,
             });
-            before != after
+            before != after || failed_before != failed_after
         };
         if changed {
             self.publish_update(None);

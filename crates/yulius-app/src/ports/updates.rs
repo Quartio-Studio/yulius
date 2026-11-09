@@ -39,8 +39,12 @@ pub enum SourceError {
     NoAccess,
     /// GitHub's rate limit; retry later.
     RateLimited,
-    /// Network failure, timeout or a server error.
+    /// No answer at all (no connection, DNS or TLS failure, the connection cut).
     Unavailable,
+    /// No answer within the request's deadline.
+    TimedOut,
+    /// GitHub answered with an unexpected HTTP status (a 5xx while it is degraded).
+    Status(u16),
     /// An answer outside the expected shape (the failed check).
     Invalid(&'static str),
 }
@@ -51,6 +55,8 @@ impl std::fmt::Display for SourceError {
             Self::NoAccess => f.write_str("GitHub refused access to the repository"),
             Self::RateLimited => f.write_str("GitHub's rate limit was reached"),
             Self::Unavailable => f.write_str("GitHub could not be reached"),
+            Self::TimedOut => f.write_str("GitHub did not answer in time"),
+            Self::Status(code) => write!(f, "GitHub answered with an error (HTTP {code})"),
             Self::Invalid(what) => write!(f, "GitHub's answer was not understood ({what})"),
         }
     }
