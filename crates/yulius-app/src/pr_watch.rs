@@ -448,6 +448,20 @@ impl App {
             }
             kept.insert(task.id.as_str().to_owned(), next);
         }
+        // A task not live this pass (a session switching, a capacity pause) keeps what it was
+        // told while it is not resting: its next run is not told it all again.
+        for (id, told) in &saved {
+            if kept.contains_key(id) {
+                continue;
+            }
+            let Ok(task_id) = TaskId::parse(id) else {
+                continue;
+            };
+            if matches!(self.deps.store.task(&task_id).await, Ok(Some(task)) if !task.status.is_resting())
+            {
+                kept.insert(id.clone(), told.clone());
+            }
+        }
         if kept != saved {
             self.save_notices(&path, &kept);
         }
@@ -594,36 +608,14 @@ impl App {
             own.is_some_and(|run| matches!(run.state, RunState::Passed | RunState::Skipped));
         let queue_note = self.merge_queue_note(task);
         if let (true, Some(head)) = (green, &head) {
-            let (class, text) = match (armed, hold) {
-                (false, _) => ("unarmed", unarmed_text(head)),
-                (true, Hold::Held) => (
-                    "held",
-                    format!(
-                        "{} {}",
-                        queue_note.clone().map_or_else(
-                            || "A merge candidate holds it.".to_owned(),
-                            |note| upper_first(&note)
-                        ),
-                        hands_off(&integration)
-                    ),
-                ),
-                (true, Hold::Free) => (
-                    "armed",
-                    format!(
-                        "Its head {} passed and the merge is armed, but it has not merged yet: {} \
-                         Nothing to do unless that says so; Yulius tells you when it moves.",
-                        short(head),
-                        queue_note.clone().unwrap_or_else(|| {
-                            "Yulius decides it on its next pass.".to_owned()
-                        })
-                    ),
-                ),
-            };
-            events.push(Event {
-                kind: "green",
-                key: format!("{head}:{class}"),
-                text,
-            });
+            let said = green_said(head, armed, hold, queue_note.as_deref(), &integration);
+            if let Some((class, text)) = said {
+                events.push(Event {
+                    kind: "green",
+                    key: format!("{head}:{class}"),
+                    text,
+                });
+            }
         }
         let ci_busy = own.is_some_and(|run| run.state.is_active())
             || candidate.is_some_and(|run| run.state.is_active());
@@ -697,6 +689,38 @@ impl App {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((pair, conflicts));
         conflicts
+    }
+}
+
+/// What a green head that is not merging says (PRN-006): the kind of reason and the words; none
+/// for an armed, free one no merge pass kept yet (the next pass, within 20 s, may merge it).
+fn green_said(
+    head: &str,
+    armed: bool,
+    hold: Hold,
+    note: Option<&str>,
+    integration: &str,
+) -> Option<(&'static str, String)> {
+    match (armed, hold, note) {
+        (false, _, _) => Some(("unarmed", unarmed_text(head))),
+        (true, Hold::Held, note) => Some((
+            "held",
+            format!(
+                "{} {}",
+                note.map_or_else(|| "A merge candidate holds it.".to_owned(), upper_first),
+                hands_off(integration)
+            ),
+        )),
+        (true, Hold::Free, Some(note)) => Some((
+            "armed",
+            format!(
+                "Its head {} passed and the merge is armed, but it has not merged yet: {} \
+                 Nothing to do unless that says so; Yulius tells you when it moves.",
+                short(head),
+                upper_first(note)
+            ),
+        )),
+        (true, Hold::Free, None) => None,
     }
 }
 
@@ -900,6 +924,31 @@ mod tests {
                      it in order when the run passes."
                 ),
             "{held}"
+        );
+        // An armed, free head no pass kept yet says nothing: the next pass may merge it.
+        assert_eq!(
+            green_said("0123456789", true, Hold::Free, None, "dev"),
+            None
+        );
+        let (class, text) =
+            green_said("0123456789", true, Hold::Held, Some(note), "dev").unwrap_or_default();
+        assert_eq!(class, "held");
+        assert!(text.ends_with("when the run passes."), "{text}");
+        let (class, _) =
+            green_said("0123456789", false, Hold::Free, None, "dev").unwrap_or_default();
+        assert_eq!(class, "unarmed");
+        let (class, text) = green_said(
+            "0123456789",
+            true,
+            Hold::Free,
+            Some("pull request #7 is behind `dev`."),
+            "dev",
+        )
+        .unwrap_or_default();
+        assert_eq!(class, "armed");
+        assert!(
+            text.contains("not merged yet: Pull request #7 is behind `dev`."),
+            "{text}"
         );
         let behind = status_text(
             Some(&green),
