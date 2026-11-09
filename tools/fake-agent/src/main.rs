@@ -8,7 +8,7 @@
 //! fake-agent [--mode echo|flood|ignore-term|fork-child|exit-early|sleep]
 //!            [--bytes N] [--code N] [--seconds N] [--ignore-term]
 //!            [--session-id ID] [--transcript PATH [--transcript-kind claude]]
-//!            [--limit-after N] [--report-env NAME]... [--tui]
+//!            [--limit-after N [--access-lost]] [--report-env NAME]... [--tui]
 //!            [--hooks YULIUS_EXE] [--goal-background SECONDS]
 //!            [--goal-agent SECONDS [--goal-agent-interim SECONDS]]
 //!            [--goal-monitor SECONDS [--goal-monitor-ends]] [--goal-verdict met|failed|none]
@@ -46,7 +46,8 @@
 //! (`--transcript-kind claude`, the only kind). `--limit-after N` prints
 //! `LIMIT REACHED` and appends a usage-limit record after N turns, shaped like Claude Code
 //! 2.1.292's (`apiError: "usage_limit_reached"`, `resetsAt` one hour ahead); later turns only repeat
-//! `LIMIT REACHED`. With `--limit-continues-ms MS` the agent then continues the cut turn by itself
+//! `LIMIT REACHED`. With `--access-lost` that record is instead the refusal of a lapsed
+//! subscription, shaped like Claude Code 2.1.311's (`error: "oauth_org_not_allowed"`, 403). With `--limit-continues-ms MS` the agent then continues the cut turn by itself
 //! like Claude Code's "continuing automatically" at the reset (#276): MS later it appends a hidden
 //! `isMeta` prompt and an assistant `tool_use` record and prints `CONTINUED`, and MS after that it
 //! appends the answer ending the turn and prints `DONE continued`; with
@@ -249,6 +250,7 @@ struct Options {
     prompt: Option<String>,
     limit_continues_ms: Option<u64>,
     limit_continues_answer_only: bool,
+    access_lost: bool,
     idle_compact_ms: Option<u64>,
     trust_prompt: bool,
 }
@@ -303,6 +305,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
         prompt: None,
         limit_continues_ms: None,
         limit_continues_answer_only: false,
+        access_lost: false,
         idle_compact_ms: None,
         trust_prompt: false,
     };
@@ -426,6 +429,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
                 options.limit_continues_ms = Some(ms.min(MAX_WORK_MS));
             }
             "--limit-continues-answer-only" => options.limit_continues_answer_only = true,
+            "--access-lost" => options.access_lost = true,
             "--prompt" => options.prompt = Some(args.next().ok_or("--prompt needs a text")?),
             other => return Err(format!("unknown argument {other:?}")),
         }
@@ -1015,6 +1019,31 @@ impl Transcript {
             "model": "<synthetic>",
             "content": [{"type": "text",
                 "text": "You've hit your session limit · resets in 1 hour"}],
+            "stop_reason": "stop_sequence",
+            "usage": {"input_tokens": 0, "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0, "output_tokens": 0}
+        });
+        self.last_uuid = Some(uuid);
+        self.append(&[record])
+    }
+
+    /// The refusal of a lapsed subscription (Claude Code 2.1.311).
+    fn access_lost(&mut self) -> io::Result<()> {
+        let timestamp = rfc3339(now_ms());
+        let uuid = format!("fake-{}-access-lost", self.session_id);
+        let mut record = self.claude_envelope("assistant", &uuid, &timestamp);
+        record["isApiErrorMessage"] = json!(true);
+        record["error"] = json!("oauth_org_not_allowed");
+        record["apiErrorStatus"] = json!(403);
+        record["apiErrorCode"] = json!("oauth_not_allowed_for_organization");
+        record["message"] = json!({
+            "id": format!("msg_fake_access_lost_{}", self.turns),
+            "type": "message",
+            "role": "assistant",
+            "model": "<synthetic>",
+            "content": [{"type": "text",
+                "text": "Your organization has disabled Claude subscription access for Claude \
+                         Code · Use an Anthropic API key instead, or ask your admin to enable access"}],
             "stop_reason": "stop_sequence",
             "usage": {"input_tokens": 0, "cache_creation_input_tokens": 0,
                 "cache_read_input_tokens": 0, "output_tokens": 0}
@@ -1971,7 +2000,11 @@ fn echo_message(
         if let Some(transcript) = transcript
             && let Ok(mut t) = transcript.lock()
         {
-            t.limit()?;
+            if options.access_lost {
+                t.access_lost()?;
+            } else {
+                t.limit()?;
+            }
         }
         if let (Some(ms), Some(transcript)) = (options.limit_continues_ms, transcript) {
             continue_after_limit(

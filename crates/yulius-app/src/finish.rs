@@ -177,7 +177,10 @@ impl TranscriptFacts {
                 self.goal_unfinished = goal_unfinished(*outcome);
                 self.fold_goal(*outcome);
             }
-            Observation::LimitReached { .. } => self.limit_pending = true,
+            // A refused subscription cuts the turn like a limit: the task goes on elsewhere.
+            Observation::LimitReached { .. } | Observation::AccessLost { .. } => {
+                self.limit_pending = true;
+            }
             Observation::Session { .. }
             | Observation::CompactFailed
             | Observation::BackgroundStarted { .. }

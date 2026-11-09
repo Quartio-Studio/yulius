@@ -454,6 +454,9 @@ impl TranscriptWatch for Watch {
                         window_minutes,
                         at,
                     }),
+                    Observed::AccessLost { message, at } => {
+                        out.push(Observation::AccessLost { message, at });
+                    }
                     Observed::AssistantMessage { .. } | Observed::Malformed => {}
                 }
             }

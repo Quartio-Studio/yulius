@@ -39,6 +39,24 @@ const LIMIT_PHRASES: [&str; 5] = [
     "weekly limit",
 ];
 
+/// `error` values of an API error record that say the credential itself no longer works (Claude
+/// Code 2.1.311: a lapsed subscription is `oauth_org_not_allowed`, 403).
+const ACCESS_ERRORS: [&str; 3] = [
+    "oauth_org_not_allowed",
+    "authentication_failed",
+    "billing_error",
+];
+
+/// HTTP statuses of an API error record that refuse the credential: unauthorized, forbidden.
+const ACCESS_STATUSES: [u64; 2] = [401, 403];
+
+/// Lower-case phrases of the same refusals, for records that carry only text.
+const ACCESS_PHRASES: [&str; 3] = [
+    "disabled claude subscription access",
+    "oauth token has been revoked",
+    "invalid api key",
+];
+
 /// The five-hour session window and the weekly window, in minutes.
 const SESSION_WINDOW_MINUTES: u32 = 5 * 60;
 const WEEKLY_WINDOW_MINUTES: u32 = 7 * 24 * 60;
@@ -474,6 +492,18 @@ fn observe_assistant(record: &Map<String, Value>) -> Vec<Observed> {
         if let Some(limit) = structured_limit(record, &text) {
             return vec![recorded_at(limit, at)];
         }
+        // A sub-agent shares the session's credential, so its refusal is the session's too.
+        if access_lost(record, &text) {
+            let message = if text.trim().is_empty() {
+                "the subscription's access was refused"
+            } else {
+                text.trim()
+            };
+            return vec![Observed::AccessLost {
+                message: shorten(message, LIMIT_MESSAGE_BYTES),
+                at,
+            }];
+        }
         if prompt_too_long(record, &text) {
             // A sub-agent's full context is its own; the session goes on.
             return if bool_of(record, "isSidechain") {
@@ -587,6 +617,18 @@ fn structured_limit(record: &Map<String, Value>, text: &str) -> Option<Observed>
         window_minutes,
         at: None,
     })
+}
+
+/// Whether an API error record says the session's credential no longer works: by its `error`
+/// code, its HTTP status (`apiErrorStatus`) or, for records with text only, its wording.
+fn access_lost(record: &Map<String, Value>, text: &str) -> bool {
+    if str_of(record, "error").is_some_and(|e| ACCESS_ERRORS.contains(&e))
+        || u64_of(record, "apiErrorStatus").is_some_and(|s| ACCESS_STATUSES.contains(&s))
+    {
+        return true;
+    }
+    let lower = text.to_lowercase();
+    ACCESS_PHRASES.iter().any(|p| lower.contains(p))
 }
 
 /// Recognizes Claude usage-limit error text such as `Claude AI usage limit reached|1760000000`
@@ -1172,6 +1214,46 @@ mod tests {
             "message": {"role": "user", "content": [{"type": "text", "text": text}]}
         })
         .to_string()
+    }
+
+    /// A lapsed subscription, as Claude Code 2.1.311 records it (synthetic ids): the credential
+    /// is refused for good, which is not a usage limit.
+    #[test]
+    fn a_refused_subscription_is_access_lost() {
+        let lapsed = r#"{"isSidechain":false,"type":"assistant","timestamp":"2026-11-09T20:40:56.255Z","error":"oauth_org_not_allowed","isApiErrorMessage":true,"apiErrorStatus":403,"apiErrorCode":"oauth_not_allowed_for_organization","message":{"model":"<synthetic>","role":"assistant","stop_reason":"stop_sequence","content":[{"type":"text","text":"Your organization has disabled Claude subscription access for Claude Code · Use an Anthropic API key instead, or ask your admin to enable access"}]}}"#;
+        assert_eq!(
+            observe_line(lapsed),
+            vec![Observed::AccessLost {
+                message: "Your organization has disabled Claude subscription access for Claude Code · Use an Anthropic API key instead, or ask your admin to enable access".into(),
+                at: parse_rfc3339("2026-11-09T20:40:56.255Z"),
+            }]
+        );
+        // By status alone, and by wording alone.
+        let unauthorized = r#"{"type":"assistant","isApiErrorMessage":true,"apiErrorStatus":401,"message":{"model":"<synthetic>","content":[]}}"#;
+        assert!(matches!(
+            observe_line(unauthorized).as_slice(),
+            [Observed::AccessLost { message, at: None }] if message == "the subscription's access was refused"
+        ));
+        let worded = r#"{"type":"assistant","isApiErrorMessage":true,"message":{"model":"<synthetic>","content":[{"type":"text","text":"API Error: OAuth token has been revoked"}]}}"#;
+        assert!(matches!(
+            observe_line(worded).as_slice(),
+            [Observed::AccessLost { .. }]
+        ));
+        // A usage limit stays a limit, an overloaded API is neither, and the agent quoting the
+        // text in an answer is not an error record.
+        let limit = r#"{"type":"assistant","isApiErrorMessage":true,"error":"rate_limit","apiError":"usage_limit_reached","apiErrorStatus":429,"message":{"model":"<synthetic>","content":[]}}"#;
+        assert!(matches!(
+            observe_line(limit).as_slice(),
+            [Observed::LimitReached { .. }]
+        ));
+        let overloaded = r#"{"type":"assistant","isApiErrorMessage":true,"error":"server_error","apiErrorStatus":529,"message":{"model":"<synthetic>","content":[{"type":"text","text":"API Error: Overloaded"}]}}"#;
+        assert!(observe_line(overloaded).is_empty());
+        let quoted = r#"{"type":"assistant","message":{"id":"m1","model":"claude-opus-5-5","content":[{"type":"text","text":"It said: Your organization has disabled Claude subscription access for Claude Code"}],"usage":{"input_tokens":1,"output_tokens":1}}}"#;
+        assert!(
+            !observe_line(quoted)
+                .iter()
+                .any(|o| matches!(o, Observed::AccessLost { .. }))
+        );
     }
 
     /// The record Claude Code 2.1.292 writes (synthetic values): structure wins over wording.

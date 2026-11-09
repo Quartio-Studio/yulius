@@ -3764,7 +3764,23 @@ impl App {
 
     /// Account usage update from transcripts or providers.
     pub(crate) async fn record_account_usage(&self, account: &AccountId, usage: &AccountUsage) {
-        let status = if usage.limit_in_effect(self.now()) {
+        // A reading never makes a subscription that needs a new sign-in usable again: a
+        // cancelled one can still report usage (or a late transcript line can), and only a
+        // sign-in proves it works.
+        let needs_sign_in = match self.deps.store.account(account).await {
+            Ok(Some(record))
+                if matches!(
+                    record.status,
+                    AccountStatus::Relogin | AccountStatus::PendingLogin
+                ) =>
+            {
+                Some(record.status)
+            }
+            _ => None,
+        };
+        let status = if let Some(status) = needs_sign_in {
+            status
+        } else if usage.limit_in_effect(self.now()) {
             AccountStatus::Limited
         } else {
             AccountStatus::Ok
@@ -3791,6 +3807,27 @@ impl App {
                     .store(true, Ordering::SeqCst);
             }
         }
+    }
+
+    /// A subscription the provider refused for good: it needs a new sign-in, with the provider's
+    /// text as its error. The pool no longer places tasks on it, the usage round skips it, and
+    /// paused tasks are reconsidered for the subscriptions left.
+    pub(crate) async fn record_access_lost(&self, account: &AccountId, message: &str) {
+        if let Err(err) = self
+            .deps
+            .store
+            .set_account_state(
+                account,
+                AccountStatus::Relogin,
+                None,
+                Some(message),
+                self.now(),
+            )
+            .await
+        {
+            tracing::error!(error = %err, "could not mark a refused subscription");
+        }
+        self.capacity_changed();
     }
 
     fn start_watcher(self: &Arc<Self>, task_id: &TaskId, attempt: &AttemptRecord) {
@@ -3984,10 +4021,12 @@ impl App {
                 // Turns, the goal and a usage limit are applied once, as the replay's final
                 // state: a limit that a later turn overtook (Claude Code continued by itself) is
                 // history (SPEC-072 LRS-001).
-                if let Some(limit) = observations
-                    .into_iter()
-                    .rfind(|o| matches!(o, Observation::LimitReached { .. }))
-                {
+                if let Some(limit) = observations.into_iter().rfind(|o| {
+                    matches!(
+                        o,
+                        Observation::LimitReached { .. } | Observation::AccessLost { .. }
+                    )
+                }) {
                     replayed_limit = Some(limit);
                 }
                 if w.caught_up() {
@@ -4048,6 +4087,23 @@ impl App {
                 runtime
                     .limit_resets_at
                     .store(resets_at.map_or(0, |t| t.0), Ordering::SeqCst);
+                let app = self.clone();
+                let tid = task_id.clone();
+                let account = attempt.account_id.clone();
+                tokio::spawn(async move { app.rotate(&tid, account, Trigger::LimitReached).await });
+            }
+            Observation::AccessLost { message, .. } => {
+                // The subscription no longer works (cancelled, downgraded, revoked): it needs a
+                // new sign-in, so nothing is placed on it again and its usage is no longer read
+                // back to `ok`. The cut turn then moves on like a limit's, to the next working
+                // subscription, or the task waits for one.
+                tracing::warn!(task = %task_id, %message, "subscription access refused");
+                runtime.end_turn(self.now());
+                runtime.at_limit.store(true, Ordering::SeqCst);
+                runtime.limit_resets_at.store(0, Ordering::SeqCst);
+                if let Some(account) = &attempt.account_id {
+                    self.record_access_lost(account, &message).await;
+                }
                 let app = self.clone();
                 let tid = task_id.clone();
                 let account = attempt.account_id.clone();

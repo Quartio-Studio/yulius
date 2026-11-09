@@ -1641,6 +1641,89 @@ fn a_turn_interrupted_by_a_limit_resumes_without_a_typed_continue() -> TestResul
     Ok(())
 }
 
+/// A subscription that stops working mid-task (cancelled, so Claude Code answers "Your
+/// organization has disabled Claude subscription access", 403) needs a new sign-in: the task
+/// moves on to the working subscription by itself, in the same session and past the refused
+/// turn, like at a usage limit, and is not finished by it. A later usage reading of the refused
+/// subscription leaves it out of the pool.
+#[test]
+fn a_refused_subscription_moves_the_task_to_a_working_one() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let agent = FakeAgentOptions {
+            transcript: true,
+            limit_after: Some(1),
+            access_lost: true,
+            ..FakeAgentOptions::default()
+        };
+        let app = build_with(&data, &fake, probe.clone(), agent)?;
+        let (sandbox, user) = seed(&app, &data, &["a-first", "b-second"]).await?;
+        // The task starts on a-first; b-second has room again by the time a-first is refused.
+        probe.set("b-second", usage(99.0, 4 * HOUR, 30.0, 100));
+        refresh(&app, &user, "b-second").await?;
+        let id = new_task(&app, &sandbox, &user, "Refused").await?;
+        wait_for("the run", Duration::from_secs(30), || {
+            let app = app.clone();
+            let id = id.clone();
+            async move { screen(&app, &id).contains("FAKE-AGENT READY") }
+        })
+        .await?;
+        let first = app.deps.store.attempts(&id).await?;
+        assert_eq!(
+            first[0].account_id.as_ref().map(AccountId::as_str),
+            Some("a-first")
+        );
+        probe.set("b-second", usage(0.0, 5 * HOUR, 30.0, 100));
+        refresh(&app, &user, "b-second").await?;
+
+        app.send_input(&id, b"hello\r").await?;
+        wait_for("the move to b-second", Duration::from_secs(60), || async {
+            let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
+            attempts.len() == 2 && attempts[1].state == yulius_domain::task::AttemptState::Live
+        })
+        .await?;
+        let attempts = app.deps.store.attempts(&id).await?;
+        assert_eq!(
+            attempts[1].account_id.as_ref().map(AccountId::as_str),
+            Some("b-second")
+        );
+        assert_eq!(
+            attempts[0].provider_session_id, attempts[1].provider_session_id,
+            "the same session"
+        );
+        let problems = limit_resume_problems(Path::new(&attempts[1].run_dir), &data);
+        assert!(problems.is_empty(), "{problems:?}");
+        assert!(
+            has_status(&app, &id, TaskStatus::Running).await,
+            "the refused turn does not end the task"
+        );
+
+        let refused = AccountId::parse("a-first")?;
+        let record = app.deps.store.account(&refused).await?.ok_or("account")?;
+        assert_eq!(record.status, AccountStatus::Relogin);
+        assert!(
+            record
+                .last_error
+                .as_deref()
+                .is_some_and(|e| e.contains("disabled Claude subscription access")),
+            "{:?}",
+            record.last_error
+        );
+        // Its usage still answers: that does not make it usable again.
+        probe.set("a-first", usage(0.0, 5 * HOUR, 0.0, 100));
+        let _ = refresh(&app, &user, "a-first").await;
+        let record = app.deps.store.account(&refused).await?.ok_or("account")?;
+        assert_eq!(record.status, AccountStatus::Relogin);
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// SPEC-034: a turn the limit cut on the only subscription resumes when that subscription
 /// recovers, on the same subscription, past the limit: a native resume of the same session with
 /// no prompt, and nothing typed into the paused process (it used to get "Continue.").
