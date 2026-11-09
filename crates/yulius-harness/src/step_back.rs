@@ -58,14 +58,18 @@ impl Line<'_> {
             })
     }
 
-    /// The error record of a usage limit, recognised like the transcript observer does.
+    /// The error record of a usage limit or of a refused subscription, recognised like the
+    /// transcript observer does: the turn either cut is redone on the next subscription.
     fn limit(&self) -> bool {
         self.kind() == Some("assistant")
             && !self.sidechain()
             && !self.answered()
-            && observe_line(self.raw)
-                .iter()
-                .any(|o| matches!(o, Observed::LimitReached { .. }))
+            && observe_line(self.raw).iter().any(|o| {
+                matches!(
+                    o,
+                    Observed::LimitReached { .. } | Observed::AccessLost { .. }
+                )
+            })
     }
 
     fn uuid(&self) -> Option<&str> {

@@ -6,6 +6,15 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-09
 
+- A subscription that stops working moves its task to a working one (ROT-010, task #428's
+  emergency fix). In quartio-v2 on 2026-11-09 a cancelled subscription answered every turn with
+  "Your organization has disabled Claude subscription access for Claude Code" (403,
+  `oauth_org_not_allowed`); Yulius did not recognise it, so task #132 kept failing and new tasks
+  (#427, #428) were placed on it and closed after one line. Now that refusal (also a 401, a
+  revoked sign-in or a billing error) marks the subscription as needing a new sign-in, which takes
+  it out of the pool and out of the usage round, and the cut turn moves on like at a usage limit:
+  to the next working subscription in the same session, or the task waits for one. A usage
+  reading never makes such a subscription usable again; only signing it in does.
 - A follow-up pull request no longer inherits how the merged one's armed merge ended, so it is
   not told that merge as its own news (SPEC-444 live check, task #426).
 - `rusqlite` 0.41 (bundled SQLite 3.54.1 via `libsqlite3-sys` 0.39.1) for RUSTSEC-2026-0459,

@@ -25,6 +25,9 @@ pub struct FakeAgentOptions {
     pub limit_continues_ms: Option<u64>,
     /// The continuation is only the answer ending the turn (`--limit-continues-answer-only`).
     pub limit_continues_answer_only: bool,
+    /// The record after `limit_after` turns is a lapsed subscription's refusal, not a usage
+    /// limit (`--access-lost`).
+    pub access_lost: bool,
     /// Draw full screen like Claude Code (`--tui`), redrawing on every resize.
     pub tui: bool,
     /// Run Claude Code's hooks through `yulius hook` like the real CLI (`--hooks`).
@@ -190,6 +193,9 @@ impl HarnessPort for FakeAgentHarness {
         }
         if self.options.limit_continues_answer_only {
             argv.push("--limit-continues-answer-only".into());
+        }
+        if self.options.access_lost {
+            argv.push("--access-lost".into());
         }
         if self.options.tui {
             argv.push("--tui".into());
