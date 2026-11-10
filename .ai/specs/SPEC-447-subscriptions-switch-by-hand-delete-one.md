@@ -1,11 +1,11 @@
 ---
 yulius-task: 21d6ddc4-37f2-4832-bdeb-07002470f502
-status: in-progress
+status: done
 ---
 
 # SPEC-447: Move a task to another subscription, remove one in use, never reuse a removed one
 
-Status: in progress
+Status: implemented
 Date: 2026-11-10
 Owner: Yulius task #429
 Scope authorization: the owner, verbatim (2026-11-09): "i just canceled subscription and didnt pay
@@ -76,7 +76,7 @@ Confirmed against `dev` at 770c2412.
 - [x] The Subscriptions card says why Claude refused one and removal is always offered
 - [x] Docs, product spec and changes
 - [x] Review round 1 fixes: removal races, paused tasks, Needs you
-- [ ] Gates green and independent review approved
+- [x] Gates green and independent review approved
 
 ## Acceptance criteria
 
@@ -135,4 +135,34 @@ Confirmed against `dev` at 770c2412.
 
 ## Evidence
 
-(Filled in at the end.)
+- The owner's sequence (stop, remove, Continue) on 770c2412, before any change:
+  `subscription_moves::a_continued_task_never_runs_on_its_deleted_subscription` passed, so it was
+  not the path that reused the removed subscription; the races the review found were (see
+  Decisions), each reproduced by a failing test first.
+- `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^subscription_moves::/)'`: 12
+  passed (AC-1..AC-5, the refusal notices with `--access-lost`, the launch race at
+  `AccountChosen`, a removal during a switch and during a move to the removed one at
+  `SwitchDecided`, a person's pause, a request already open). Before the fixes each new test
+  failed for the expected reason (409 on removal, `Capacity` naming no subscription, no notice or
+  Needs you, the run left on `a-first`, "the task was stopped during the switch", "That
+  subscription no longer exists." on a move, Continue on a removed id starting elsewhere).
+- `cargo test -p yulius-domain --lib rotation::`: 14 passed (a person's choice at 99 % honoured).
+- `pool_supervision::a_refused_subscription_moves_the_task_to_a_working_one` now also asserts the
+  refusal's text survives a usage reading; `supervision::` removal tests and
+  `accounts::account_crud_permissions_usage_and_removal_in_use` updated to the new contract;
+  `analytics::` asserts members get ids.
+- `scripts/dev ci` at ee170146: exit 0, nextest 3284 passed, 16 skipped (fmt, clippy `-D warnings`,
+  macOS clippy, deps, doctests and the repository check included).
+- e2e: the full suite at 90a43841 ran 873 passed, 5 failed: the new chip's colour contrast (a
+  `<button>` kept the browser's grey), the strip's chip order, and the Status panel taking any
+  `id` as an administrator's (emails shown to members). All fixed in ee170146; the four affected
+  files (`subscriptions`, `subscription-names`, `responsive`, `archive`) then ran 60 passed.
+- Independent review (fresh session, read-only, skill `om-code-review`): three rounds of findings,
+  all fixed (Decisions), then APPROVE for 770c2412..90a43841; the UI fix ee170146 was reviewed
+  again before delivery.
+- `yulius security-scan`: **disabled** (Vidoc is turned off in Yulius for this project), not run,
+  not passed.
+- Not tested: a Done session whose close fails (it now moves or stops; no deterministic way to make
+  a close fail); a removal while a task is `starting` with its run already recorded (covered by the
+  retry path, not by a test); the menu's "Waits on it" entry (the mock sends no `account_id`); the
+  live instance (the owner's real lapsed subscription) — only the fake agent's `--access-lost`.
