@@ -738,6 +738,9 @@ impl App {
         if pid == 0 {
             return;
         }
+        // Strays are seen when the probe was asked: time passing while it runs counts toward the
+        // bound (#1110).
+        let asked = self.now().0;
         let host = Arc::clone(&self.deps.session_host);
         let probe = tokio::task::spawn_blocking(move || host.background_probe(pid));
         let Ok(Ok(Some(found))) =
@@ -753,7 +756,7 @@ impl App {
             crate::finish::sort_strays(
                 &mut seen_strays,
                 found.strays,
-                self.now().0,
+                asked,
                 self.config.stray_reap_after_ms,
             )
         };

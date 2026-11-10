@@ -6,6 +6,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-10
 
+- An idle Superagent's leftover processes count their two hours from when the probe that found
+  them was asked, not from when its answer was read (SPEC-449, #1110). Under the gate's load
+  `cockpit::an_idle_superagents_strays_are_reaped_after_the_bound` moved its clock between the
+  two, the strays were first seen two hours late, and they were never reaped; a regression test
+  moves the clock inside the probe.
 - A person is never stuck on a subscription (SPEC-447, task #429). Each task shows the subscription
   it runs on (its strip, the Tasks list), and "Run #N on…" moves a running or waiting task to the
   one they choose in the same session, or continues an ended task there; a choice above the pool's
