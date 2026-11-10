@@ -40,24 +40,36 @@ inside the box. The class of defect is caught by a test, not one screenshot at a
   you line made the page scroll sideways by 33 px at 390 px, and the New task button's shortcut
   hint (`Ctrl+Shift+O`, a `nowrap` button) ran 25 px out of the button in the 200 px sidebar used
   below 1024 px. The sidebar can also be dragged to 200 px at any width (UI-044).
+- **Review round 1 (what the first fix broke).** The first fix set `overflow-wrap: anywhere` on
+  `body`. It lowers every min-content width, so in a tight row short labels broke mid-word: the
+  200 px sidebar's group names ("Done" over four lines, out of its 32 px head), the pipeline
+  filters, the automation runs table. The sweep, with the word check added, fails 18 of 21 tests
+  on that version. Done's Archive all also ran 40 px out of its head at 768 px, before any change.
 
 ## Requirements
 
-- **TXT-001 Long words wrap.** Text in the app wraps a word that does not fit its line, at any
-  character if it has to, so neither the text nor the flex or grid item holding it is wider than
-  its box. Text meant to stay on one line keeps doing so: `white-space: nowrap` with an ellipsis,
+- **TXT-001 Long words wrap, short ones do not break.** A word longer than its box breaks inside
+  it, and no element's min-content width changes, so a layout where text fits is unchanged and a
+  word of at most 12 characters is never broken across lines. Free text that is a flex item and
+  may hold a URL (the board card's line, the task overview's state) may shrink below its longest
+  word. Text meant to stay on one line keeps doing so: `white-space: nowrap` with an ellipsis,
   code and terminal views, and scrolling areas are unchanged.
 - **TXT-002 The board card.** On the Git page, a board card whose label holds a long URL keeps the
   whole label inside the card at 1440, 768 and 390 px, the status icon beside its first line.
 - **TXT-003 A guard for the class.** An e2e sweep gives the mock's tasks a long URL in a
   `needs_you` action and a long unbroken word in a title, opens every page of the responsive suite
   at 1440, 768 and 390 px, and fails when any visible text runs out of the nearest box drawn
-  around it (border on both sides or a background), or when the page scrolls sideways. Text an
-  ancestor clips or scrolls first is intended and does not count. A page that shows the long text
-  (Git, Tasks, the task view, the task overview) is measured only once it does.
+  around it (a visible border on both sides or a background), a box runs out of the next box
+  around it, the page or the window scrolls sideways, or a word of at most 12 characters is broken
+  across lines. Contents an ancestor clips or scrolls first are intended and do not count. Pages
+  are measured once loaded (no skeleton) and after two animation frames; a page that shows the
+  long text (Git, Tasks, the task view, the task overview) only once it does. The pages are those
+  of `responsive.e2e.ts` plus the task view.
 - **TXT-004 The New task button.** Its text stays inside it at every sidebar width: the shortcut
   hint gives way when the sidebar is too narrow and shows when it is wide; the button's tooltip
   still names the shortcut.
+- **TXT-005 Archive all.** In a narrow task list (the 200 px sidebar) Done's Archive all keeps its
+  icon inside the group head and its name for screen readers; a wide list shows its label.
 
 ## Plan
 
@@ -76,27 +88,31 @@ inside the box. The class of defect is caught by a test, not one screenshot at a
 
 ## Test plan
 
-- `e2e/tests/text-fits.e2e.ts`: the sweep (TXT-003) over the 17 pages of `responsive.e2e.ts`; a
-  check that the board card's label is inside the card, wraps and has its icon on the first line
-  (TXT-002); the New task button at the sidebar's narrowest and widest (TXT-004). They fail on
-  the old code (test first).
-- Mutation check: without the base rule the Git, task overview and board card tests fail again.
+- `e2e/tests/text-fits.e2e.ts`: the sweep (TXT-003) over the 17 pages of `responsive.e2e.ts` and
+  the task view; a check that the board card's label is inside the card, wraps and has its icon
+  centred on the first line's rect (TXT-002); the New task button at every sidebar width from 200
+  to 296 px in the splitter's steps, and at its widest (TXT-004); Archive all at 768 and 1440 px
+  (TXT-005). They fail on the old code (test first).
+- Mutation checks: without the two `anywhere` rules the Git, task overview and board card tests
+  fail; with `anywhere` on `body` (round 1's first fix) 18 of 21 fail.
 - Full e2e suite and `scripts/dev ci` (the web assets are embedded in the server).
 
 ## Decisions
 
-- **One base rule, not another per-class rule.** `body { overflow-wrap: anywhere }` is inherited
-  by everything, so new elements are covered without remembering it. `anywhere` rather than
-  `break-word`, because only `anywhere` lowers the min-content width that keeps a flex item (the
-  board card's line) wider than its box. Text that must stay on one line is `nowrap` already and
-  is unaffected. See [ADR-0289](../../docs/decisions/0289-long-words-wrap-by-default-and-a-sweep-keeps-text-inside-its-box.md).
-- **The sweep's box is the nearest ancestor with a border on both sides or a background.** That is
-  what a person sees as "the box". A clipping or scrolling ancestor ends the search: an ellipsis
-  or a wide table's scroll is intended. Since `.page` itself scrolls, the sweep also fails on a
-  page that scrolls sideways (as `responsive.e2e.ts` does), which is how the task overview's case
-  shows.
-- **The shortcut hint gives way to a container query on the sidebar's top, not a media query.**
-  The sidebar can be dragged to 200 px at any window width, so the window's width does not say
-  whether the hint fits. The hint hides below 240 px (it needs about 226 px).
-- **The existing per-class `overflow-wrap` rules stay.** They are redundant now, but removing ~40
-  rules is churn with no change in behavior.
+- **`break-word` as the base, `anywhere` only for free text in a flex row.** `body {
+  overflow-wrap: break-word }` breaks a word longer than its box and changes no min-content width,
+  so nothing that fits today moves. Only `anywhere` lets a flex item shrink below its URL, and on
+  `body` it broke short labels everywhere (review round 1), so it is set on the two items that
+  hold free text (`.dl-card-line`, `.gt-state`). See
+  [ADR-0289](../../docs/decisions/0289-long-words-wrap-by-default-and-a-sweep-keeps-text-inside-its-box.md).
+- **The sweep checks both directions.** Text past its box catches the reported class; a short
+  word broken across lines catches the opposite (wrapping that squeezes a label). A box is the
+  nearest ancestor with a visible border on both sides or a background, which is what a person
+  sees as one; each box is also checked against the next one around it, up to the first that clips
+  or scrolls (an ellipsis or a wide table is intended). Vertical overflow allows a glyph's
+  half-leading over a tight line-height.
+- **Container queries, not media queries, for the sidebar.** The sidebar can be dragged to 200 px
+  at any window width, so the window's width does not say whether the New task hint (hidden under
+  a 240 px sidebar top; it needs about 226 px) or the Archive all label (hidden under a 250 px
+  task list) fits. The hidden Archive all label stays readable to screen readers, like `.sr-only`.
+- **The existing per-class `overflow-wrap` rules stay.** Each is an element's own choice.

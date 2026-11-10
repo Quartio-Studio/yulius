@@ -9,47 +9,64 @@ one chip the same way.
 ## Context
 
 A Git board card showed "Needs you: … at https://console.typesafe.ai/settings/billing, then tell
-task #145", and the URL ran past the card's border. A word breaks only at spaces unless
-`overflow-wrap` allows more, and in a flex or grid row the item holding the text is never narrower
-than its longest word (`min-width: auto`). Nothing in the stylesheet allowed more for the page, so
-each element showing a URL, a path or an identifier had to opt in. About forty rules had added
-`overflow-wrap: anywhere` to one class each, every one after a report like this one, and the next
-new element started without it. The layout checks (`responsive.e2e.ts`) look for overlapping
-controls and a page that scrolls sideways, and the mock's texts are short words, so none of them
-saw text leave its own box.
+task #145", and the URL ran past the card's border. Two things combine here:
+
+- A word breaks only at spaces unless `overflow-wrap` allows more, and the stylesheet set nothing
+  for the page.
+- In a flex or grid row, the item holding the text is never narrower than its longest word
+  (`min-width: auto`, the min-content width).
+
+About forty rules each add `overflow-wrap: anywhere` to one class, every one after a report like
+this one, and the next new element started without one. The layout checks (`responsive.e2e.ts`)
+look for overlapping controls and a page that scrolls sideways. The mock's texts are short words,
+so nothing saw text leave its own box.
 
 ## Decision
 
-- **One base rule.** `body` sets `overflow-wrap: anywhere`, inherited by every element. A word that
-  does not fit its line breaks where it must, and the flex or grid item holding it can shrink
-  below that word, so the row stays inside its box. Text meant to stay on one line is unchanged:
-  `white-space: nowrap` (buttons, ellipsis rows), `pre`, the terminal and the editors do not wrap.
-  The existing per-class rules stay; they are now redundant but harmless.
+- **`break-word` as the base.** `body` sets `overflow-wrap: break-word`, which every element
+  inherits. A word longer than its box breaks inside it. Min-content widths are unchanged, so no
+  box gets narrower than its words, and a layout where text fits is unchanged.
+- **`anywhere` only where free text is a flex item.** The board card's status line
+  (`.dl-card-line`) and the task overview's state (`.gt-state`) opt into `overflow-wrap:
+  anywhere`, so their text item can shrink below its URL. The board card's icon sits beside the
+  first line.
 - **A sweep for the class.** `e2e/tests/text-fits.e2e.ts` gives the mock's tasks a long URL in a
-  Needs you request and a long unbroken word in a title, opens every page of the responsive suite
-  at 1440, 768 and 390 px, and fails when a visible text node runs past the nearest ancestor that
-  draws a box (a border on both sides or a background), or when the page scrolls sideways. A box
-  that clips or scrolls (an ellipsis, a wide table) holds its text on purpose and ends the search.
-- **Fixed where the sweep found more.** The board card's status icon sits on its label's first
-  line, and the New task button's shortcut hint gives way when the sidebar is under 240 px wide
-  (200 px below 1024 px, or dragged so), by a container query on the sidebar's top; the button's
-  tooltip still names it.
+  Needs you request and a long word in a title. It opens the responsive suite's pages and the task
+  view at 1440, 768 and 390 px, after loading and two animation frames, and fails on any of:
+  - visible text past the nearest ancestor with a visible border or a background;
+  - such a box past the next box around it;
+  - the page or the window scrolling sideways;
+  - a word of at most 12 characters broken across lines.
+
+  A box that clips or scrolls holds its contents on purpose and ends the search. The last check
+  guards the opposite failure: wrapping that squeezes labels.
+- **What the sweep found besides the card is fixed too.**
+  - The New task button's shortcut hint hides when the sidebar's top is under 240 px
+    (a container query, since the sidebar can be dragged to 200 px at any window width).
+  - Done's Archive all keeps only its icon when the task list is under 250 px, and keeps its
+    name for screen readers.
+  - The Tasks list's column names stay on one line.
 
 ## Alternatives
 
-- **`overflow-wrap: break-word` as the base.** It breaks an overflowing word inside a block, but
-  does not lower the min-content width, so a flex row such as the board card's line still grows
-  past its box. Rejected: it misses the reported case.
-- **Another per-class rule.** The fix for this card alone is one line, but it is the forty-first
-  such line and leaves the class open. Rejected.
-- **`word-break: break-all`.** It breaks every word at the line's end, even words that would fit
-  on the next line. Rejected: it makes ordinary prose harder to read.
+- **`overflow-wrap: anywhere` on `body`.** This was the first version of this change. The sweep's
+  word check and the independent review showed that it lowers every min-content width. Short
+  labels then broke mid-word wherever a row was tight: the 200 px sidebar's group names ("Done"
+  over four lines, spilling out of its head), the pipeline filters, and table cells that used to
+  scroll. Rejected.
+- **Another per-class rule.** It would fix the one card and leave the class open. Rejected,
+  although the two flex-row rules are per-class: the sweep is what keeps the class closed.
+- **`word-break: break-all`.** It breaks every word at the end of a line, even a word that fits
+  on the next line. Rejected.
 
 ## Consequences
 
-- When a box is too narrow for a word, the word breaks inside it rather than running out of it.
-  A single-word label squeezed by its siblings in a flex row may now break mid-word instead of
-  pushing past its row; the responsive suite's overlap checks and this sweep pass with it.
-- A new element showing user or agent text needs no rule of its own, and the sweep catches one
-  that still escapes (for example through `nowrap`) on the swept pages.
-- The sweep adds under a minute of e2e time (17 pages, 3 widths, about 2 s each page).
+- A long word in a block of text breaks inside its box. A long word in a flex or grid item still
+  widens the item unless that item opts into `anywhere`. The sweep finds such a case on the swept
+  pages when the mock shows long text there; the long text reaches the Git page, Tasks, the task
+  view and the task overview.
+- Text that previously ran a little past a box that was too narrow, harmlessly, now breaks inside
+  it. The Tasks column names hit this and were made `nowrap`. Other cases outside the swept pages
+  may need the same.
+- The existing per-class `anywhere` rules stay, each on purpose for its own element.
+- The sweep adds about a minute of e2e time: 18 pages at 3 widths, about 2 s each.
