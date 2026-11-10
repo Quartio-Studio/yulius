@@ -961,7 +961,7 @@ export function createSidebar(ctx) {
         shape = '';
         renderTasks();
       }
-    } }, icon('archive', { size: 14 }), 'Archive all');
+    } }, icon('archive', { size: 14 }), h('span', { class: 'task-group-action-label' }, 'Archive all'));
     return button;
   }
 

@@ -14,9 +14,10 @@ body {
   font: var(--fs)/var(--lh) var(--font);
   -webkit-font-smoothing: antialiased;
   overflow: hidden;
-  /* A word longer than its line (a URL, a path) breaks inside its box, and a flex or grid item
-     holding it can shrink below that word (SPEC-449, ADR-0289). nowrap text keeps its ellipsis. */
-  overflow-wrap: anywhere;
+  /* A word longer than its box (a URL, a path) breaks inside it. break-word, not anywhere: no box
+     gets narrower than its words, so short labels never break; a flex item holding free text
+     opts into anywhere (SPEC-449, ADR-0289). */
+  overflow-wrap: break-word;
 }
 button, input, select, textarea { font: inherit; color: inherit; }
 a { color: var(--accent-fg); text-decoration: none; } /* link text: the text-safe accent (4.5:1) */
@@ -415,6 +416,8 @@ button.task-group-head:hover { color: var(--text); }
 /* Done's "Archive all" (SPEC-062) sits after the count; it reads as a button, not a heading. */
 .task-group-action { margin-right: -8px; text-transform: none; letter-spacing: normal; font-weight: 500; }
 .task-group-action[aria-disabled="true"] { opacity: 0.4; cursor: progress; }
+/* A narrow list (a 200 px sidebar) keeps Archive all's icon; its name stays for screen readers (SPEC-449). */
+@container tasks (width < 250px) { .task-group-action-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; } }
 /* Working's "Show as a graph" (SPEC-164): an icon after the count. */
 .task-group-graph { width: 24px; height: 24px; margin-left: 4px; color: var(--muted); }
 /* Sidebar task rows: one compact line — state icon on the nav icons' axis, pull request, title on
@@ -783,7 +786,7 @@ body.resizing iframe, body.resizing canvas { pointer-events: none; }
 /* Phones: the title takes its own line above the buttons instead of breaking inside words. */
 @media (max-width: 767px) { .gt-title-row { flex-wrap: wrap; } .gt-title { flex-basis: 100%; } }
 .gt-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; color: var(--text-2); font-size: var(--fs-sm); line-height: var(--lh-sm); }
-.gt-state { display: inline-flex; align-items: center; gap: 6px; }
+.gt-state { display: inline-flex; align-items: center; gap: 6px; min-width: 0; overflow-wrap: anywhere; }
 .gt-branch { display: inline-flex; align-items: center; gap: 4px; height: var(--control-sm); padding: 0 8px; border: 1px solid var(--border-strong); border-radius: var(--radius-full); color: var(--text); font-size: var(--fs-xs); line-height: var(--lh-xs); }
 .gt-stat { font-family: var(--font-mono); font-size: var(--fs-sm); line-height: var(--lh-sm); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .gt-add { color: var(--ok-fg); }
@@ -1800,6 +1803,8 @@ summary { cursor: pointer; }
 .tl-row:hover, .tl-row:focus-within { background: var(--surface-hover); }
 .tl-columns { height: var(--control-xl); border-bottom: 1px solid var(--border); color: var(--muted); font-size: var(--fs-xs); line-height: var(--lh-xs); font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
 .tl-columns > :first-child { padding-left: 20px; }
+/* A column's name stays one word: "Created" is wider than its 48 px column (SPEC-449). */
+.tl-columns > span { white-space: nowrap; }
 .tl-columns > :nth-child(5), .tl-columns > :nth-child(7), .tl-columns > :nth-child(8) { text-align: right; }
 .tl-link, .skeleton-tl-link { display: flex; align-items: center; gap: 12px; min-width: 0; height: 52px; padding: 0 0 0 16px; color: var(--text); text-decoration: none; }
 .tl-link:hover { text-decoration: none; }
@@ -1978,7 +1983,7 @@ a.dl-task:hover { text-decoration: underline; }
 .dl-card-title { display: flex; align-items: flex-start; gap: 8px; font-weight: 500; }
 .dl-card-title .dl-task { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .dl-dot { flex: none; width: 8px; height: 8px; margin-top: 6px; border-radius: 50%; background: var(--warn); }
-.dl-card-line { display: flex; align-items: flex-start; gap: 2px; color: var(--text-2); font-size: var(--fs-sm); line-height: var(--lh-sm); }
+.dl-card-line { display: flex; align-items: flex-start; gap: 2px; overflow-wrap: anywhere; color: var(--text-2); font-size: var(--fs-sm); line-height: var(--lh-sm); }
 /* A label that wraps keeps its icon beside its first line (SPEC-449). */
 .dl-card-line > .glyph { flex: none; height: var(--lh-sm); }
 .dl-card-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
