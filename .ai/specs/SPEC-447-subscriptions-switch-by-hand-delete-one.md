@@ -125,6 +125,11 @@ Confirmed against `dev` at 770c2412.
   no deterministic test, see Evidence); the retry's deadline uses `tokio::time::Instant`. Left as
   is: a person's pause arriving between the paused check and the move is ended by the move (a
   window of one store read; the pause path itself is unchanged).
+- **Review round 3 (request changes, one minor), fixed:** with round 2's fallback, Continue with a
+  removed or unknown `account_id` started on the pool's choice unsaid; `continue_task` now refuses
+  it up front ("That subscription no longer exists.", asserted in
+  `a_continued_task_never_runs_on_its_deleted_subscription`), and `docs/api.md`'s `/continue` row
+  no longer calls `account_id` an override the UI never sends.
 - **Notices name the subscriptions** for refusals and removals only (amends ROT-007): the owner
   asked to be told; routine pool moves stay silent about names.
 

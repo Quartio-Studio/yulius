@@ -109,6 +109,23 @@ fn a_continued_task_never_runs_on_its_deleted_subscription() -> TestResult {
         let ctx = ctx(&app, &user).await?;
         stop(&app, &id).await?;
         app.delete_account(&ctx, "a-first").await?;
+        // Asked for by name, the removed one is refused, saying so (MOV-002).
+        let named = app
+            .continue_task(
+                &ctx,
+                id.as_str(),
+                &ContinueTask {
+                    account_id: Some("a-first".into()),
+                },
+            )
+            .await;
+        match named {
+            Err(yulius_app::error::AppError::Capacity(text)) => {
+                assert!(text.contains("no longer exists"), "{text}");
+            }
+            other => return Err(format!("expected a refusal, got {other:?}").into()),
+        }
+        assert_eq!(run_accounts(&app, &id).await.len(), 1, "nothing started");
         app.continue_task(&ctx, id.as_str(), &ContinueTask { account_id: None })
             .await?;
         live_run(&app, &id, 2).await?;

@@ -476,6 +476,15 @@ impl App {
             .await?;
         self.ensure_agent_account(task.harness.provider()).await?;
         let account = parse_account(req)?;
+        // A subscription asked for by name must still exist: "Continue on…" never lands elsewhere
+        // unsaid (SPEC-447 MOV-002).
+        if let Some(id) = &account
+            && self.deps.store.account(id).await?.is_none()
+        {
+            return Err(AppError::Capacity(
+                "That subscription no longer exists.".into(),
+            ));
+        }
         // A person continues it: whatever its agent asked a person before is past (SPEC-134).
         self.end_needs_you(&task.id).await;
         if task.archived_at.is_some() {
