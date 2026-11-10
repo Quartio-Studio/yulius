@@ -79,7 +79,7 @@ function textOutside(browser: Browser) {
 }
 
 /** Waits until the page's loading placeholders are gone, so the sweep reads its content. */
-const loaded = (browser: Browser) => expect.poll(() => browser.evaluate(() => document.querySelectorAll('#main .skeleton').length),
+const loaded = (browser: Browser) => expect.poll(() => browser.evaluate(() => document.querySelectorAll('#main :is(.skeleton, .skeleton-bar)').length),
   { message: 'the page finished loading' }).toBe(0);
 
 type Touching = Window & { __yuliusMock: { touchTask(sandbox: string, number: number, changes: object): void } };
@@ -95,16 +95,27 @@ const giveLongText = (browser: Browser) => browser.evaluate(([action, title]) =>
   m.touchTask('sb_studio', 11, { title });
 }, [URL_ACTION, LONG_TITLE]);
 
-// SPEC-449 TXT-003: the pages of responsive.e2e.ts and the task view, at a wide window, a tablet
-// and a phone. The
-// last field is the long text the page shows once it has redrawn (measured only after that); the
-// other pages are swept with their own mock content.
+/**
+ * Opens `path` with the long text already given: from the Tasks page, then in the app, so a page
+ * that reads a task only when it opens (a task's Git review) shows it too.
+ */
+async function openWithLongText(app: { open(url: string): Promise<unknown> }, browser: Browser, path: string) {
+  await app.open(mock('/s/studio/tasks'));
+  await expect.poll(() => browser.evaluate(() => document.querySelector('h1')?.textContent)).toBe('Tasks');
+  await giveLongText(browser);
+  await browser.evaluate((to) => { location.hash = to; }, path);
+}
+
+// SPEC-449 TXT-003: the pages of responsive.e2e.ts, the task view and a task's Git review, at a
+// wide window, a tablet and a phone. The last field is the long text the page shows once it has
+// redrawn (measured only after that); the other pages are swept with their own mock content.
 const pages = [
   ['git', '/s/studio/git', 'Git', 'console.typesafe'],
   ['tasks', '/s/studio/tasks', 'Tasks', 'PaymentIntentConfirmation'],
   ['home', '/', 'Sandboxes', null],
   ['task', '/s/studio/t/12', null, 'console.typesafe'],
   ['task overview', '/s/studio/tasks/12', '#12 Checkout API', 'console.typesafe'],
+  ['task review', '/s/studio/git/t/12', '#12 Checkout API', 'console.typesafe'],
   ['dashboard', '/s/studio/dashboard', 'Dashboard', null],
   ['sessions', '/s/studio/sessions', 'Sessions', null],
   ['CI', '/s/studio/ci', 'CI/CD', null],
@@ -122,11 +133,10 @@ const pages = [
 
 for (const [name, path, heading, shows] of pages) {
   test(`the ${name} page keeps long text inside its boxes at 1440, 768 and 390 px`, async ({ app, browser, screen }) => {
-    await app.open(mock(path));
+    await openWithLongText(app, browser, path);
     if (heading) await expect(screen.getByRole('heading', { level: 1 })).toHaveText(heading);
     else await expect(browser.locator('.task-row:has-text("Checkout API")').first()).toBeVisible();
     await loaded(browser);
-    await giveLongText(browser);
     if (shows) {
       await expect.poll(() => browser.evaluate((text) => (document.querySelector('#main')?.textContent || '').includes(text), shows),
         { message: `the ${name} page shows ${shows}` }).toBe(true);
@@ -138,31 +148,45 @@ for (const [name, path, heading, shows] of pages) {
   });
 }
 
+/**
+ * Where the label of the first `selector` holding `text` lies: inside `box` (its nearest such
+ * ancestor), over several lines, and its status icon centred on the first line.
+ */
+const iconAndLines = (browser: Browser, selector: string, box: string) => browser.evaluate(([sel, outer]) => {
+  const el = [...document.querySelectorAll(sel)].find((l) => l.textContent?.includes('Needs you: Add TypeSafe'));
+  if (!el) return null;
+  const card = el.closest(outer)!.getBoundingClientRect();
+  const icon = el.querySelector('svg, .icon')!.getBoundingClientRect();
+  const range = document.createRange();
+  range.selectNodeContents(el.lastChild!);
+  const lines = [...range.getClientRects()].filter((r) => r.width > 0);
+  const first = lines[0];
+  const middle = icon.top + icon.height / 2;
+  return {
+    inside: Math.max(...lines.map((r) => r.right)) <= card.right + 1,
+    wraps: new Set(lines.map((r) => Math.round(r.top))).size > 1,
+    iconOnFirstLine: middle > first.top && middle < first.bottom,
+  };
+}, [selector, box]);
+
 // SPEC-449 TXT-002: the board card's label wraps inside the card with its icon beside its first line.
 test('a Git board card wraps a long Needs you line inside the card, its icon on the first line', async ({ app, browser, screen }) => {
   await browser.setViewport({ width: 1440, height: 900 });
   await app.open(mock('/s/studio/git'));
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Git');
   await giveLongText(browser);
-  const line = browser.locator('.dl-card-line:has-text("Needs you: Add TypeSafe API credits")');
-  await expect(line).toBeVisible();
-  const placed = () => browser.evaluate(() => {
-    const el = [...document.querySelectorAll('.dl-card-line')].find((l) => l.textContent?.includes('Needs you: Add TypeSafe'))!;
-    const card = el.closest('.dl-card-task')!.getBoundingClientRect();
-    const icon = el.querySelector('svg, .icon')!.getBoundingClientRect();
-    const range = document.createRange();
-    range.selectNodeContents(el.lastChild!);
-    const lines = [...range.getClientRects()].filter((r) => r.width > 0);
-    const first = lines[0];
-    const middle = icon.top + icon.height / 2;
-    return {
-      inside: Math.max(...lines.map((r) => r.right)) <= card.right + 1,
-      wraps: new Set(lines.map((r) => Math.round(r.top))).size > 1,
-      iconOnFirstLine: middle > first.top && middle < first.bottom,
-    };
-  });
-  await expect.poll(placed).toEqual({ inside: true, wraps: true, iconOnFirstLine: true });
+  await expect.poll(() => iconAndLines(browser, '.dl-card-line', '.dl-card-task')).toEqual({ inside: true, wraps: true, iconOnFirstLine: true });
 });
+
+// Review round 2: the task's state line (overview and Git review) wraps the same way on a phone.
+for (const [name, path] of [['overview', '/s/studio/tasks/12'], ['Git review', '/s/studio/git/t/12']] as const) {
+  test(`the task ${name} wraps a long Needs you state on a phone, its icon on the first line`, async ({ app, browser, screen }) => {
+    await browser.setViewport({ width: 390, height: 844 });
+    await openWithLongText(app, browser, path);
+    await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#12 Checkout API');
+    await expect.poll(() => iconAndLines(browser, '.gt-state', '.page')).toEqual({ inside: true, wraps: true, iconOnFirstLine: true });
+  });
+}
 
 // The sweep's finding: the sidebar is 200 px below 1024 px and can be dragged as narrow anywhere
 // (UI-044), and the New task button's shortcut hint ran out of it. It gives way when there is no
