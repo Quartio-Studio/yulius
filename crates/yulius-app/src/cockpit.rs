@@ -174,8 +174,8 @@ pub(crate) enum Seat {
     Global,
 }
 
-/// The model family the Cockpit runs: the default model, Opus 5.5, so its weekly Opus cap binds
-/// (SPEC-023).
+/// The model family the Cockpit runs: the default model's, Fable 5.2, which no per-model weekly
+/// cap binds (SPEC-023).
 fn cockpit_family() -> ModelFamily {
     ModelFamily::of(Some(yulius_domain::harness::DEFAULT_CLAUDE_MODEL))
 }
@@ -358,7 +358,7 @@ impl App {
         record: &SandboxRecord,
         global: bool,
     ) -> AppResult<ShellInfo> {
-        // The Cockpit runs the default model, Opus 5.5: its weekly Opus cap binds (SPEC-023).
+        // The Cockpit runs the default model, Fable 5.2: no per-model weekly cap binds (SPEC-023).
         let account = self
             .pool_account(Provider::Anthropic, cockpit_family())
             .await?;
