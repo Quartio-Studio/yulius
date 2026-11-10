@@ -466,9 +466,9 @@ pub fn build_app(args: &ServeArgs) -> Result<Arc<App>, String> {
             yulius_github::GitHubConfig::github_com().map_err(|e| e.to_string())?,
         )?),
         session_host: Arc::new(PtySessionHost::new(config.yulius_exe.clone())),
-        harness: Arc::new(HarnessAdapter::new(
-            config.yulius_exe.clone(),
-            config.internal_url.clone(),
+        harness: Arc::new(codex_cli(
+            HarnessAdapter::new(config.yulius_exe.clone(), config.internal_url.clone()),
+            &args.data_dir,
         )),
         git: Arc::new(GitAdapter::new("git")),
         system: Arc::new(SysinfoProbe::new()),
@@ -485,6 +485,33 @@ pub fn build_app(args: &ServeArgs) -> Result<Arc<App>, String> {
     Ok(app)
 }
 
+/// `adapter` with the pinned Codex CLI provided from `<data>/codex-cli` (SPEC-451 CLI-001).
+fn codex_cli(adapter: HarnessAdapter, data_dir: &std::path::Path) -> HarnessAdapter {
+    match crate::wiring::codex_cli::CodexCli::new(data_dir.join("codex-cli")) {
+        Ok(cli) => adapter.with_codex_cli(Arc::new(cli)),
+        Err(error) => {
+            tracing::warn!(%error, "the Codex CLI cannot be provided; Codex runs use the host's codex");
+            adapter
+        }
+    }
+}
+
+/// Installs the provided Codex CLI in the background when Codex accounts exist, so the first
+/// Codex task does not wait for it (SPEC-451 CLI-001).
+fn warm_codex_cli(app: &Arc<App>) {
+    let app = Arc::clone(app);
+    tokio::spawn(async move {
+        let codex = app.deps.store.accounts().await.is_ok_and(|accounts| {
+            accounts
+                .iter()
+                .any(|a| a.provider == yulius_domain::harness::Provider::OpenAi)
+        });
+        if codex && let Err(error) = app.deps.harness.provide_codex(true).await {
+            tracing::warn!(%error, "the Codex CLI is not ready; the next Codex start tries again");
+        }
+    });
+}
+
 /// Runs the server until SIGINT/SIGTERM.
 pub async fn serve(args: ServeArgs) -> Result<(), String> {
     let _ = rustls::crypto::ring::default_provider().install_default();
@@ -497,6 +524,7 @@ pub async fn serve(args: ServeArgs) -> Result<(), String> {
         return Err("the internal listener must bind a loopback address".into());
     }
     let app = build_app(&args)?;
+    warm_codex_cli(&app);
     // An update in progress keeps every task paused from the first hook call (ADR-18).
     app.restore_update_hold().await;
     // The runs people paused stay paused across the restart (SPEC-191 PER-003).

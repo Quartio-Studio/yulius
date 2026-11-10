@@ -2,7 +2,9 @@
 
 Yulius is Quartio's Rust coding-agent workspace, inspired by Cezar and Open Mercato
 Cloud: a self-hosted orchestrator of native Claude Code sessions that enforces
-engineering discipline. The accepted product brief is
+engineering discipline, and native Codex sessions as a second harness (proposed to reverse
+`F 2026-10-08`: [SPEC-451](.ai/specs/SPEC-451-codex-returns-as-a-second-harness.md), ADR-0290).
+The accepted product brief is
 [SPEC-001](.ai/specs/SPEC-001-yulius-product.md); architecture and runtime contracts are
 [SPEC-002](.ai/specs/SPEC-002-yulius-architecture.md); source tracing is
 [SPEC-003](.ai/specs/SPEC-003-traceability.md). SPEC-002 choices are engineering

@@ -110,10 +110,10 @@ async fn write_users_delete_resting_tasks_with_their_records() -> TestResult {
     Ok(())
 }
 
-/// Yulius runs Claude Code only (F 2026-10-08): no harness choice on tasks and no setting for
-/// harness switching.
+/// Yulius runs Codex beside Claude Code (SPEC-451 CDX-001): a task may name either harness,
+/// another harness is refused, and there is still no setting for harness switching.
 #[tokio::test]
-async fn tasks_run_claude_code_only() -> TestResult {
+async fn tasks_run_claude_code_or_codex() -> TestResult {
     let h = harness()?;
     let alice = seed_github_user(&h, "u-alice", "alice").await?;
     seed_sandbox(&h, "s1", "fixture", "u-alice").await?;
@@ -122,15 +122,63 @@ async fn tasks_run_claude_code_only() -> TestResult {
         &h.router,
         Method::POST,
         "/api/sandboxes/s1/tasks",
+        Some(json!({"prompt": "x", "harness": "codex", "prepared": true})),
+        &alice,
+    )
+    .await?;
+    assert_eq!(codex.status, StatusCode::CREATED, "{:?}", codex.body);
+    assert_eq!(codex.body["harness"], "codex");
+    // A Claude model is not Codex's (SPEC-451): refused before the task exists.
+    let claude_model = call(
+        &h.router,
+        Method::POST,
+        "/api/sandboxes/s1/tasks",
+        Some(json!({"prompt": "x", "harness": "codex", "model": "claude-opus-5-5", "prepared": true})),
+        &alice,
+    )
+    .await?;
+    assert_eq!(
+        claude_model.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{:?}",
+        claude_model.body
+    );
+    // A Codex task that would start needs a Codex account, and says so (SPEC-246 CLA-002).
+    let unaccounted = call(
+        &h.router,
+        Method::POST,
+        "/api/sandboxes/s1/tasks",
         Some(json!({"prompt": "x", "harness": "codex"})),
         &alice,
     )
     .await?;
     assert_eq!(
-        codex.status,
+        unaccounted.status,
+        StatusCode::CONFLICT,
+        "{:?}",
+        unaccounted.body
+    );
+    assert!(
+        unaccounted
+            .body
+            .to_string()
+            .contains("no Codex account is connected"),
+        "{:?}",
+        unaccounted.body
+    );
+    let other = call(
+        &h.router,
+        Method::POST,
+        "/api/sandboxes/s1/tasks",
+        Some(json!({"prompt": "x", "harness": "opencode"})),
+        &alice,
+    )
+    .await?;
+    assert_eq!(
+        other.status,
         StatusCode::UNPROCESSABLE_ENTITY,
         "{:?}",
-        codex.body
+        other.body
     );
     let settings = call(&h.router, Method::GET, "/api/admin/settings", None, &alice).await?;
     assert_eq!(settings.status, StatusCode::NOT_FOUND);

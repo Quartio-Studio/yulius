@@ -43,7 +43,7 @@ fn build_with(data: &Path, fake: Option<&Path>) -> Result<Arc<App>, Box<dyn std:
     build_full(data, fake, FakeAgentOptions::default(), 8)
 }
 
-fn build_full(
+pub(crate) fn build_full(
     data: &Path,
     fake: Option<&Path>,
     agent: FakeAgentOptions,
@@ -54,7 +54,7 @@ fn build_full(
     })
 }
 
-fn build_tuned(
+pub(crate) fn build_tuned(
     data: &Path,
     fake: Option<&Path>,
     agent: FakeAgentOptions,
@@ -124,7 +124,7 @@ fn git(dir: &Path, args: &[&str]) -> TestResult {
 }
 
 /// Bare origin with one commit on `main`, cloned as the sandbox repository.
-fn seed_repo(data: &Path, sandbox: &SandboxId) -> TestResult {
+pub(crate) fn seed_repo(data: &Path, sandbox: &SandboxId) -> TestResult {
     seed_repo_with(data, sandbox, &[])
 }
 
@@ -161,7 +161,9 @@ fn seed_repo_with(data: &Path, sandbox: &SandboxId, files: &[(&str, &str)]) -> T
     Ok(())
 }
 
-async fn seed_records(app: &App) -> Result<(SandboxId, UserId), Box<dyn std::error::Error>> {
+pub(crate) async fn seed_records(
+    app: &App,
+) -> Result<(SandboxId, UserId), Box<dyn std::error::Error>> {
     let store = &app.deps.store;
     let user = UserRecord {
         id: UserId::parse("u-admin")?,
@@ -215,7 +217,7 @@ async fn seed_records(app: &App) -> Result<(SandboxId, UserId), Box<dyn std::err
     Ok((sandbox.id, user.id))
 }
 
-async fn wait_for<F, Fut>(what: &str, timeout: Duration, mut check: F) -> TestResult
+pub(crate) async fn wait_for<F, Fut>(what: &str, timeout: Duration, mut check: F) -> TestResult
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = bool>,
@@ -230,7 +232,7 @@ where
     Err(format!("timed out waiting for {what}").into())
 }
 
-async fn task(app: &App, id: &TaskId) -> Result<TaskRecord, Box<dyn std::error::Error>> {
+pub(crate) async fn task(app: &App, id: &TaskId) -> Result<TaskRecord, Box<dyn std::error::Error>> {
     Ok(app.deps.store.task(id).await?.ok_or("task vanished")?)
 }
 
@@ -272,11 +274,11 @@ async fn create_task(
     Ok(record.id)
 }
 
-async fn screen_contains(app: &App, id: &TaskId, needle: &str) -> bool {
+pub(crate) async fn screen_contains(app: &App, id: &TaskId, needle: &str) -> bool {
     app.runtime(id).hub.screen_text().contains(needle)
 }
 
-fn runtime() -> Result<tokio::runtime::Runtime, std::io::Error> {
+pub(crate) fn runtime() -> Result<tokio::runtime::Runtime, std::io::Error> {
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()

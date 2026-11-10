@@ -1378,6 +1378,32 @@ impl HarnessPort for RecordingHarness {
         self.inner
             .recount(harness, sandbox_home, worktree, session_id, from, until)
     }
+    fn find_codex_rollout(&self, dir: &Path, session: &str) -> AppResult<Option<PathBuf>> {
+        self.inner.find_codex_rollout(dir, session)
+    }
+    fn discover_codex_session(
+        &self,
+        dir: &Path,
+        worktree: &Path,
+        since: Timestamp,
+    ) -> AppResult<Option<(String, PathBuf)>> {
+        self.inner.discover_codex_session(dir, worktree, since)
+    }
+    fn codex_auth_problem(&self, auth_json: &[u8]) -> Option<String> {
+        self.inner.codex_auth_problem(auth_json)
+    }
+    fn codex_import_problem(&self, auth_json: &[u8]) -> Option<String> {
+        self.inner.codex_import_problem(auth_json)
+    }
+    fn codex_api_key_auth(&self, api_key: &str) -> Option<Vec<u8>> {
+        self.inner.codex_api_key_auth(api_key)
+    }
+    fn codex_auth_replaces(&self, fresh: &[u8], stored: &[u8], now: Timestamp) -> bool {
+        self.inner.codex_auth_replaces(fresh, stored, now)
+    }
+    fn codex_login_config(&self) -> Vec<u8> {
+        self.inner.codex_login_config()
+    }
     fn login_argv(&self, harness: yulius_domain::harness::Harness) -> Vec<String> {
         self.inner.login_argv(harness)
     }

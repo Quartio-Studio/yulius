@@ -259,9 +259,11 @@ Claude-only decision of the next day, and where each item landed. Later follow-u
 | 86 | (2026-10-12, `F 2026-10-12`, task #39, a screenshot of the "Add team secret" dialog: Title, Address, User name, Password, Notes, Two-factor seed) "It should be only value title notes. 2FA should be per wallet and should be mandatory. The same for the agents but without 2FA for agents ofc. But for human to read them, 2FA should also be mandatory (but they should be able to read actually)". | VLT-001, VLT-002, VLT-006 changed, VLT-003 withdrawn, AC-VLT-1/2/5 (SPEC-040, ADR-0042) |
 | 87 | (2026-10-14, task #77, a screenshot of the Git page with a spinner and "Loading delivery…") "Instead of loading we want floating loading fields in all places". | UI-050 changed (SPEC-092, ADR-0073) |
 | 88 | (2026-10-14, task #83, a screenshot of the terminal's "Mouse: select text · send to app" chip) "this is weird af, delete it. default should be sending things to the terminal". | UI-019 (changed), AC-UI-11 (SPEC-098, ADR-0079) |
+| 89 | (2026-11-10, `P 2026-11-10 Codex`, proposed, an external contribution) Codex returns as a second harness, as `F 2026-10-08` allowed ("if Codex gets better, we'll support it"): checked against Codex CLI 0.167.0, pinned and provided by Yulius; a task keeps its harness; no provider switching or translation. In force only once the founders merge SPEC-451. | TSK-001/003, ROT-001/004, AC-ROT-8 (proposed; SPEC-451, ADR-0290) |
 
 ## Changelog
 
+- 2026-11-10: the proposed return of Codex (§6 item 89, SPEC-451; proposed, not yet a founder decision).
 - 2026-10-14: loading shows shimmering fields everywhere, never a spinner with "Loading…" (§6 item 87, task #77, UI-050; SPEC-092).
 - 2026-10-12: messages removed altogether (§6 item 85, F 2026-10-12; COM-005 withdrawn, SPEC-028).
 - 2026-10-11: disk upkeep — a switch checks the new start first, a quota refusal re-measures, Yulius prunes build caches and ended tasks' worktrees (NFR-008/009, ROT-014; SPEC-008).

@@ -4,11 +4,12 @@
 //! persist the input together with the returned [`Decision`] and [`DecisionReason`] for audit
 //! (ROT-011).
 //!
-//! Every connected Claude subscription is one member of a pool; there are no manual priorities
-//! (F 2026-10-10). Rotation stays within the task's provider: Yulius runs only Claude Code
-//! (F 2026-10-08). A **candidate** is a healthy account of that provider that is below
-//! [`THRESHOLD`] in every window binding the task (5-hour, weekly and the weekly cap of the
-//! task's model family) and has no usage limit in effect. Candidates are ranked by:
+//! Every connected subscription is one member of its provider's pool; there are no manual
+//! priorities (F 2026-10-10). Rotation stays within the task's provider: a task never changes
+//! harness, so a Codex task moves only between Codex subscriptions (SPEC-451 CDX-009). A
+//! **candidate** is a healthy account of that provider that is below [`THRESHOLD`] in every
+//! window binding the task (5-hour, weekly and the weekly cap of the task's model family) and has
+//! no usage limit in effect. Candidates are ranked by:
 //!
 //! 1. [`Tier`]: known headroom of at least [`MIN_ROOM`] points, then unknown usage (never
 //!    treated as zero, but not evidence of exhaustion either — and a subscription nobody uses is

@@ -96,6 +96,9 @@ pub struct InstanceInfo {
     /// Whether a Claude account is usable, so agents can start (SPEC-246 CLA-001).
     #[serde(default)]
     pub claude_connected: bool,
+    /// Whether a Codex account is usable, so Codex tasks can start (SPEC-451 CDX-014).
+    #[serde(default)]
+    pub codex_connected: bool,
     /// Whether the instance has a Vidoc key and Vidoc is on for it, so new projects scan by default
     /// (SPEC-338 VOF-004, SPEC-356 VIO-005).
     #[serde(default)]

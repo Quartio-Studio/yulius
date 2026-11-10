@@ -106,7 +106,12 @@ pub struct CapacityState {
     /// The Claude accounts' state at the last resume pass (usable, every one to sign in again,
     /// none): when it changes, the paused tasks are shown again, so their `waits_for_account`
     /// follows (SPEC-246 CLA-004).
-    accounts_seen: Mutex<Option<crate::account_gate::AgentAccounts>>,
+    accounts_seen: Mutex<
+        Option<(
+            crate::account_gate::AgentAccounts,
+            crate::account_gate::AgentAccounts,
+        )>,
+    >,
 }
 
 /// A window of Claude Code's status line input as a usage window of `minutes`; `None` without a
@@ -302,10 +307,12 @@ impl App {
                 crate::account_gate::AgentAccounts::Usable
             };
             self.runtime(task_id).hub.notice(
-                crate::account_gate::waiting_notice(accounts).unwrap_or(
-                    "Yulius paused this task: no subscription has capacity left. It continues by \
-                     itself.",
-                ),
+                crate::account_gate::waiting_notice(accounts, task.harness.provider())
+                    .unwrap_or_else(|| {
+                        "Yulius paused this task: no subscription has capacity left. It \
+                         continues by itself."
+                            .to_owned()
+                    }),
             );
         }
         self.publish_task(task_id).await;
@@ -499,15 +506,18 @@ impl App {
         if holding { wait.min(HOLD_CHECK) } else { wait }
     }
 
-    /// Shows the paused tasks again when a Claude account became usable or stopped being usable
-    /// since the last pass: whether each waits for an account or for capacity changed with it.
+    /// Shows the paused tasks again when a Claude or Codex account became usable or stopped being
+    /// usable since the last pass: whether each waits for an account or for capacity changed with
+    /// it.
     async fn republish_when_accounts_change(&self, pauses: &[PauseRecord]) {
-        let Ok(now) = self
-            .agent_accounts(yulius_domain::harness::Provider::Anthropic)
-            .await
-        else {
+        use yulius_domain::harness::Provider;
+        let (Ok(claude), Ok(codex)) = (
+            self.agent_accounts(Provider::Anthropic).await,
+            self.agent_accounts(Provider::OpenAi).await,
+        ) else {
             return;
         };
+        let now = (claude, codex);
         let changed = self
             .capacity
             .accounts_seen
@@ -784,6 +794,7 @@ impl App {
             accounts.push(CapacityAccount {
                 label: record.label.clone(),
                 email: if admin { record.email.clone() } else { None },
+                provider: record.provider.as_str().to_owned(),
                 status: record.status.as_str().to_owned(),
                 usage: usage_view(&usage),
                 available: is_available,
@@ -832,16 +843,23 @@ impl App {
                 .count(),
         )
         .unwrap_or(u32::MAX);
+        // With nothing available, work resumes when the first subscription of any provider does
+        // (SPEC-451: Codex subscriptions are a pool of their own).
         let resumes_at = (available == 0)
             .then(|| {
-                rotation::available_again(&RotationInput {
-                    current: None,
-                    task_provider: yulius_domain::harness::Provider::Anthropic,
-                    family: ModelFamily::Any,
-                    accounts: views.clone(),
-                    now,
-                    threshold,
-                })
+                yulius_domain::harness::Harness::ALL
+                    .iter()
+                    .filter_map(|harness| {
+                        rotation::available_again(&RotationInput {
+                            current: None,
+                            task_provider: harness.provider(),
+                            family: ModelFamily::Any,
+                            accounts: views.clone(),
+                            now,
+                            threshold,
+                        })
+                    })
+                    .min()
             })
             .flatten();
         Ok(CapacityView {

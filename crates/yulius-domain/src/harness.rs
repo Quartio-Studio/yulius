@@ -30,12 +30,15 @@ pub fn is_compact_command(text: &str) -> bool {
         .is_some_and(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
 }
 
-/// A coding-agent CLI Yulius can run as a task. Yulius runs only Claude Code
-/// (F 2026-10-08); another harness needs a variant here and an adapter (SPEC-001 TSK-003).
+/// A coding-agent CLI Yulius can run as a task (SPEC-001 TSK-003). Claude Code, and Codex
+/// again (SPEC-451, ADR-0290; proposed to reverse F 2026-10-08). A new harness needs a variant
+/// here and an adapter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Harness {
     /// Anthropic Claude Code CLI.
     ClaudeCode,
+    /// OpenAI Codex CLI.
+    Codex,
 }
 
 /// The subscription provider behind a harness; accounts belong to providers.
@@ -43,30 +46,34 @@ pub enum Harness {
 pub enum Provider {
     /// Anthropic (Claude subscriptions).
     Anthropic,
+    /// OpenAI (ChatGPT subscriptions or API keys, used by Codex).
+    OpenAi,
 }
 
 /// Unknown or unsupported harness or provider text.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("unsupported harness or provider: {0} (Yulius runs Claude Code only)")]
+#[error("unsupported harness or provider: {0} (Yulius runs Claude Code and Codex)")]
 pub struct UnknownHarness(pub String);
 
 impl Harness {
     /// All supported harnesses.
-    pub const ALL: [Self; 1] = [Self::ClaudeCode];
+    pub const ALL: [Self; 2] = [Self::ClaudeCode, Self::Codex];
 
     /// The provider whose accounts this harness uses.
     #[must_use]
     pub fn provider(self) -> Provider {
         match self {
             Self::ClaudeCode => Provider::Anthropic,
+            Self::Codex => Provider::OpenAi,
         }
     }
 
-    /// Stable wire name (`claude`).
+    /// Stable wire name (`claude` or `codex`).
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
             Self::ClaudeCode => "claude",
+            Self::Codex => "codex",
         }
     }
 
@@ -75,16 +82,18 @@ impl Harness {
     pub fn display_name(self) -> &'static str {
         match self {
             Self::ClaudeCode => "Claude Code",
+            Self::Codex => "Codex",
         }
     }
 
     /// Parses a wire name.
     ///
     /// # Errors
-    /// Returns [`UnknownHarness`] for anything other than `claude`.
+    /// Returns [`UnknownHarness`] for anything other than `claude` or `codex`.
     pub fn parse(text: &str) -> Result<Self, UnknownHarness> {
         match text {
             "claude" => Ok(Self::ClaudeCode),
+            "codex" => Ok(Self::Codex),
             other => Err(UnknownHarness(other.to_owned())),
         }
     }
@@ -96,24 +105,27 @@ impl Provider {
     pub fn harness(self) -> Harness {
         match self {
             Self::Anthropic => Harness::ClaudeCode,
+            Self::OpenAi => Harness::Codex,
         }
     }
 
-    /// Stable wire name (`anthropic`).
+    /// Stable wire name (`anthropic` or `openai`).
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Anthropic => "anthropic",
+            Self::OpenAi => "openai",
         }
     }
 
     /// Parses a wire name.
     ///
     /// # Errors
-    /// Returns [`UnknownHarness`] for anything other than `anthropic`.
+    /// Returns [`UnknownHarness`] for anything other than `anthropic` or `openai`.
     pub fn parse(text: &str) -> Result<Self, UnknownHarness> {
         match text {
             "anthropic" => Ok(Self::Anthropic),
+            "openai" => Ok(Self::OpenAi),
             other => Err(UnknownHarness(other.to_owned())),
         }
     }
@@ -182,10 +194,14 @@ mod tests {
         }
     }
 
+    /// SPEC-451 CDX-001: Codex and its provider are accepted again; others stay unsupported.
     #[test]
-    fn other_harnesses_are_unsupported() {
-        assert!(Harness::parse("codex").is_err());
-        assert!(Provider::parse("openai").is_err());
+    fn codex_is_a_harness_and_other_harnesses_are_unsupported() {
+        assert_eq!(Harness::parse("codex"), Ok(Harness::Codex));
+        assert_eq!(Provider::parse("openai"), Ok(Provider::OpenAi));
+        assert_eq!(Harness::Codex.provider(), Provider::OpenAi);
+        assert_eq!(Harness::Codex.display_name(), "Codex");
         assert!(Harness::parse("opencode").is_err());
+        assert!(Provider::parse("google").is_err());
     }
 }

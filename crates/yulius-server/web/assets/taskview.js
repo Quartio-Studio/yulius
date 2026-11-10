@@ -18,11 +18,11 @@ import { mentionOf, parsePrompt } from './promptparts.js';
 import { relLong, dateTime, whenLabel } from './format.js';
 import { readJson, writeJson } from './store.js';
 import { href } from './router.js';
-import { findModel, findEffort, modelMenuItems, effortMenuItems, MODEL_PREF_KEY, EFFORT_PREF_KEY } from './models.js';
+import { findModel, findEffort, modelFields, modelMenuItems, effortMenuItems, MODEL_PREF_KEY, EFFORT_PREF_KEY } from './models.js';
 import { randomQuote } from './quotes.js';
 import { brandSmoke } from './brandfx.js';
 import { BRAND } from './brand.js';
-import { claudeConnected, connectClaudeStep } from './claude.js';
+import { claudeConnected, codexConnected, connectClaudeStep } from './claude.js';
 import { isPhone } from './theme.js';
 import { draftFor, saveDraft, clearDraft, attachToDraft, onDraftChange } from './drafts.js';
 
@@ -1499,7 +1499,8 @@ export function mountComposer(ctx, sandbox) {
     el.classList.toggle('gated', preparing);
     if (!write) items.push(h('div', { class: 'banner' }, icon('lock'), h('span', { class: 'banner-text' }, 'Read-only (GitHub: read). You can watch tasks but not start them.')));
     // A task needs an agent: without a Claude account the composer says so first (SPEC-246).
-    else if (!connected && !preparing) items.push(connectClaudeStep(me, 'Tasks start once one is usable.'));
+    // Codex tasks start on a Codex account alone (SPEC-451 CDX-014): no Claude step then.
+    else if (!connected && !codexConnected(me) && !preparing) items.push(connectClaudeStep(me, 'Tasks start once one is usable.'));
     setChildren(banner, items);
     startButton.disabled = !write;
     prompt.disabled = !write;
@@ -1655,10 +1656,7 @@ export function mountComposer(ctx, sandbox) {
     if (title) body.title = title;
     if (workflowId) body.workflow_id = workflowId;
     const found = findModel(modelId);
-    if (found) {
-      body.model = found.model.id;
-      if (found.provider.harness !== 'claude') body.harness = found.provider.harness;
-    }
+    Object.assign(body, modelFields(modelId));
     if (effortId && !(found && found.model.effort === false)) body.effort = effortId;
     return body;
   }

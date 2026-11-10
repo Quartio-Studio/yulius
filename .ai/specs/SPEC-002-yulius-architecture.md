@@ -55,7 +55,8 @@ flowchart LR
 Principles:
 
 1. **Agents are real CLIs in PTYs.** Yulius never re-implements an agent; it launches, observes
-   and resumes native Claude Code sessions (SPEC-001 HRN-001, P(5); Codex deferred, F 2026-10-08).
+   and resumes native Claude Code sessions (SPEC-001 HRN-001, P(5); Codex deferred, F 2026-10-08;
+   native Codex sessions proposed again, [SPEC-451](SPEC-451-codex-returns-as-a-second-harness.md)).
 2. **Sessions outlive the web server.** Each run is owned by a detached `ptyhost` process; the
    server reattaches after restart (NFR-001).
 3. **GitHub is the authority** for repositories and permissions (ACC-007), with one exception:
@@ -2548,8 +2549,8 @@ edited `wf-quick-task` stays as a custom workflow. Each retirement is audited (`
 | ID | Risk | Mitigation |
 | --- | --- | --- |
 | R-01 | Undocumented transcript formats change. | Version-pinned parsers, unknown-record tolerance, live smoke per CLI upgrade. |
-| R-02 | Closed (F 2026-10-08): Codex refresh-token rotation (Codex removed). | — |
-| R-03 | Closed (F 2026-10-08): Codex hook configuration semantics (Codex removed). | — |
+| R-02 | Closed (F 2026-10-08): Codex refresh-token rotation (Codex removed). Reopened if SPEC-451 is accepted (proposed): one Codex account running in two sandboxes holds two copies of a rotating refresh token. | Proposed (SPEC-451 CDX-006): a run's `auth.json` goes back to the vault only as a genuine refresh of the same sign-in, a newer copy in the sandbox is kept at launch; not verified live. |
+| R-03 | Closed (F 2026-10-08): Codex hook configuration semantics (Codex removed). Proposed (SPEC-451): hooks in the run's `CODEX_HOME`. | Proposed (SPEC-451 CDX-007): Codex CLI 0.167.0 pinned, hooks trusted with `--dangerously-bypass-hook-trust`, its `hooks.json` parsed by the real CLI; payloads of the live TUI not verified. |
 | R-04 | Claude usage percentage not available for setup tokens (confirmed: the usage endpoint answers 403 without `user:profile`). | Readings from the running sessions' status line (ADR-17 "Where the readings come from"); reactive switching on limit errors; an idle subscription keeps its last reading until its windows reset; unknown usage ranks last. |
 | R-14 | Claude Code's handling of a hook held for days is not verified live (ADR-17). | The CLI timeout is written explicitly; the hook client fails open first; a reported limit still pauses the task as `limit`. Open: a live smoke of a held Stop hook. |
 | R-05 | Browser video on phones and slow links. | Flow control by the viewer's acknowledgements, bitrate and frame-rate tiers following the slowest viewer, keyframes on demand, skip to a fresh keyframe per viewer (ADR-15, F 2026-10-10). Open: per-viewer tiers (the slowest viewer sets the shared stream). |
@@ -2559,7 +2560,7 @@ edited `wf-quick-task` stays as a custom workflow. Each retirement is audited (`
 | R-09 | Delivery environment commands ran with the server's privileges outside containment, in a clone whose `.git` and the sandbox home are agent-writable (repository-local Git config such as filter drivers, tools reading `HOME`; #656). | Closed (SPEC-219, ADR-0175): a run takes its commit from origin into a mirror only Yulius writes, writes its tree into its own directory with a fresh `HOME` and runs through the process host in CD's containment; nothing of it reads the sandbox clone. |
 | R-10 | The MCP server connection test makes the server connect to a user-supplied URL (SSRF). | Mitigated: the host is resolved and the client pinned to the checked addresses; link-local (cloud metadata), unspecified, multicast and broadcast targets are refused for everyone; loopback and private networks only for instance administrators; no redirects; 5 s bound; only tool names or a short error are returned. |
 | R-11 | Concurrent Claude processes in one sandbox share `.claude.json`; a running Claude may rewrite the file between Yulius' trust merge and a new launch. | Merge immediately before spawn; the window is short. Live verification of concurrent launches pending. |
-| R-12 | Closed (F 2026-10-08): Codex releases without `--no-daemon` (Codex removed). | — |
+| R-12 | Closed (F 2026-10-08): Codex releases without `--no-daemon` (Codex removed). | Proposed (SPEC-451 CLI-001): only the pinned 0.167.0 release, which has `--no-daemon`, reaches a run (its sha512 in the source). |
 | R-15 | Agent secrets: a manipulated agent can still misuse a credential on its bound hosts, make a bound host echo it transformed, confirm guesses of a weak value through redaction, or read a filled field over raw CDP (R-07, closed by ADR-0191); the end-to-end Claude Code behaviour of the shell prefix and `updatedToolOutput` is read from the 2.1.292 bundle, not exercised live. | Host binding, the 8-character minimum, values agents never read (since SPEC-040 a manager's session together with their authenticator can read one: the lockout after 10 wrong codes and the audit bound that), audit of every use; ADR-20 lists the threats. Open: a live smoke with Claude Code. Raw CDP is closed (R-07, ADR-0191). |
 | R-13 | The server's own Git (worktree creation, commits, status and readiness checks, fetch, delivery pushes) runs outside containment in the sandbox repository and worktrees, whose Git directories agents can write (#54). | Every server-side Git command runs with repository hooks off (`core.hooksPath=/dev/null`), fsmonitor off and `ext::` refused; agents' own Git still runs hooks, so the pre-push guard applies to them. Open (#54 part B): repository-local configuration that runs programs or redirects remotes (filter, diff and merge drivers, credential helpers, URL rewriting) — read-only Git config in containment or a Yulius-owned mirror. |
 
@@ -2605,7 +2606,7 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 | Operator CLI (AC-OPS-3) | `cli.rs`: `yulius backup` consistent copy, refuses an existing destination; `yulius doctor` fails on a too-long data dir. |
 | Hooks, briefing, discipline (COM-004, DSC-003) | `crates/yulius/tests/agent_hooks.rs` over the internal HTTP listener. |
 | Live Claude Code 2.1.292 | `tests/live_claude.rs` (opt-in): hooks fire, Yulius MCP `steps_set` with the task bearer token, session id and transcript path as predicted. `supervision.rs::real_claude_tui_reaches_the_prompt_inside_ptyhost` (opt-in): the real TUI in the real ptyhost reaches its prompt without first-run screens. |
-| Codex | Removed (F 2026-10-08); creating a Codex task or account is refused (`task_delete.rs`, `accounts.rs`, `automations.rs`). |
+| Codex | Removed (F 2026-10-08); creating a Codex task or account is refused (`task_delete.rs`, `accounts.rs`, `automations.rs`). Proposed (SPEC-451): accepted, with a Codex task's launch, rollout, rotation, resume, write-back, hooks, import and the provided CLI covered by `codex.rs`, `codex_cli.rs`, `accounts.rs`, `agent_hooks.rs` and `yulius-harness` tests (synthetic Codex 0.167 rollouts). |
 | Real adapters | `tests/git_adapter.rs` (real git); GitHub adapter unit-tested against recorded HTTP (no real App configured). |
 | Areas | `accounts.rs`, `analytics.rs`, `automations.rs`, `skills_mcp.rs`, `delivery.rs`, `projects.rs`, `import_server.rs`, `browser.rs`, `editor.rs`, `shells.rs`, `http_auth.rs`, `mcp_coordination.rs`. |
 | UI in a real browser (2026-10-07) | Headless Google Chrome (isolated profile, CDP driver) against a temporary local `yulius serve`: setup wizard with both non-recoverable confirmations, workspace shell (thin sandbox tab row, sidebar without Settings, no top usage bar, "not contained" badge), GitHub connection page and manifest endpoint (real adapter: org form URL with state, callback URLs, permissions), users/accounts pages, status panel with live machine metrics. Task views through the UI's mock backend served by the real server: step strip, xterm terminal, browser panel with per-sandbox tabs and a user-action tab, phone layout (390×844) with quick-input bar whose input reaches the terminal. No console errors. Sandbox-backed pages with real data need a GitHub App (not exercised). The UI/API contract is enforced by `ui_contract.rs`. |
@@ -2628,6 +2629,12 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 | Not exercised | Real GitHub App/OAuth, deployment (out of scope). Linux results: see the container runs below. `yulius onboard` against a deployed instance with real `~/.claude` stores. |
 
 ## 15. Changelog
+
+- 2026-11-10 (proposed, SPEC-451, ADR-0290; not yet a founder decision): Codex returns as a second
+  harness: a Codex adapter in `yulius-harness` (launch plan, rollout observation, login, write-back
+  rule), per-(sandbox, account) Codex homes, Codex hooks through `yulius hook codex`, the Codex
+  usage probe, and the pinned Codex CLI installed into `<data>/codex-cli`; R-02, R-03 and R-12
+  answered as proposed; ADR-06 (no translation) unchanged.
 
 - 2026-10-21 (task #238, #626; SPEC-252, ADR-0191): the sandbox Chromium speaks DevTools over
   `--remote-debugging-pipe` and has no DevTools port; R-07 closed; ADR-09's CDP-capable MCPs and

@@ -15,6 +15,14 @@
 //! (`account.email`), the request Claude Code itself makes after a `setup-token` exchange
 //! (SPEC-244, ADR-0185). It may answer 403 for the same missing scope; that is a definite
 //! "unknown", never retried for the same sign-in.
+//!
+//! Codex accounts (SPEC-451 CDX-008): a ChatGPT sign-in's windows come from
+//! `GET https://chatgpt.com/backend-api/wham/usage` (the access token of its `auth.json`,
+//! `ChatGPT-Account-Id`; `rate_limit.primary_window` / `secondary_window` with `used_percent`,
+//! `limit_window_seconds` and `reset_at` in epoch seconds, as Codex CLI 0.167 reads them), and its
+//! email from the `id_token`'s claims. Read-only: tokens are never refreshed here (Codex rotates
+//! refresh tokens; its runs refresh them and Yulius writes them back). An API-key account has no
+//! plan windows: its runs report the rate limits.
 
 use std::time::Duration;
 
@@ -23,9 +31,20 @@ use serde_json::Value;
 use yulius_app::model::Secret;
 use yulius_app::ports::usage::{UsageFailure, UsageFailureKind, UsageProbe, plausible_email};
 use yulius_domain::harness::Provider;
+use yulius_domain::time::Timestamp;
 use yulius_domain::usage::{AccountUsage, UsageWindow};
 
+fn now() -> Timestamp {
+    Timestamp(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX)),
+    )
+}
+
 const CLAUDE_API: &str = "https://api.anthropic.com";
+const CODEX_API: &str = "https://chatgpt.com/backend-api";
+const CODEX_USAGE_PATH: &str = "/wham/usage";
 const USAGE_PATH: &str = "/api/oauth/usage";
 const PROFILE_PATH: &str = "/api/oauth/profile";
 const MESSAGES_PATH: &str = "/v1/messages";
@@ -44,6 +63,7 @@ const REJECTED: &str =
 pub struct ProviderUsage {
     http: reqwest::Client,
     base: String,
+    codex_base: String,
 }
 
 impl ProviderUsage {
@@ -62,6 +82,7 @@ impl ProviderUsage {
         Ok(Self {
             http,
             base: CLAUDE_API.to_owned(),
+            codex_base: CODEX_API.to_owned(),
         })
     }
 
@@ -113,6 +134,126 @@ fn throttled(retry_after: Option<&str>) -> UsageFailure {
             .map(Duration::from_secs),
     )
 }
+
+/// Codex's `{"rate_limit": {"primary_window": {...}, "secondary_window": {...}}}`.
+pub fn parse_codex(body: &Value, now: Timestamp) -> Result<AccountUsage, String> {
+    let limits = body
+        .get("rate_limit")
+        .ok_or("the provider reported no rate limits")?;
+    let window = |key: &str| -> Option<UsageWindow> {
+        let w = limits.get(key).filter(|w| w.is_object())?;
+        let resets_at = w
+            .get("reset_at")
+            .and_then(Value::as_i64)
+            .map(|secs| Timestamp(secs.saturating_mul(1000)))
+            .or_else(|| {
+                w.get("reset_after_seconds")
+                    .and_then(Value::as_i64)
+                    .map(|secs| now.plus_millis(secs.saturating_mul(1000)))
+            });
+        Some(UsageWindow {
+            used_percent: w.get("used_percent").and_then(Value::as_f64),
+            window_minutes: w
+                .get("limit_window_seconds")
+                .and_then(Value::as_u64)
+                .and_then(|s| u32::try_from(s / 60).ok()),
+            resets_at,
+        })
+    };
+    let mut usage = AccountUsage {
+        primary: window("primary_window"),
+        secondary: window("secondary_window"),
+        limit_reached: limits
+            .get("limit_reached")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        observed_at: Some(now),
+        ..AccountUsage::default()
+    };
+    if usage.limit_reached {
+        // A reached limit resets with its full window; without one, with the latest known reset.
+        let windows: Vec<UsageWindow> = usage
+            .primary
+            .iter()
+            .chain(usage.secondary.iter())
+            .copied()
+            .collect();
+        usage.limit_resets_at = windows
+            .iter()
+            .filter(|w| w.used_percent.is_some_and(|p| p >= 100.0))
+            .filter_map(|w| w.resets_at)
+            .max()
+            .or_else(|| windows.iter().filter_map(|w| w.resets_at).max());
+    }
+    if usage.primary.is_none() && usage.secondary.is_none() {
+        return Err("the provider reported no usage windows".into());
+    }
+    Ok(usage)
+}
+
+/// What a Codex `auth.json` signs in with.
+enum CodexIdentity {
+    /// A ChatGPT sign-in: its access token, account id and `id_token`.
+    ChatGpt {
+        access: String,
+        account: Option<String>,
+        id_token: Option<String>,
+    },
+    /// An OpenAI API key: no plan windows.
+    ApiKey,
+}
+
+fn codex_identity(auth_json: &str) -> Result<CodexIdentity, UsageFailure> {
+    let unreadable = || {
+        UsageFailure::of(
+            UsageFailureKind::Rejected,
+            "The stored Codex sign-in is not readable; sign in again.",
+        )
+    };
+    let auth: Value = serde_json::from_str(auth_json).map_err(|_| unreadable())?;
+    let text = |v: Option<&Value>| {
+        v.and_then(Value::as_str)
+            .filter(|t| !t.is_empty())
+            .map(str::to_owned)
+    };
+    if let Some(tokens) = auth.get("tokens").filter(|t| t.is_object())
+        && let Some(access) = text(tokens.get("access_token"))
+    {
+        return Ok(CodexIdentity::ChatGpt {
+            access,
+            account: text(tokens.get("account_id")),
+            id_token: text(tokens.get("id_token")),
+        });
+    }
+    if text(auth.get("OPENAI_API_KEY")).is_some() {
+        return Ok(CodexIdentity::ApiKey);
+    }
+    Err(unreadable())
+}
+
+/// The `email` claim of a JWT's payload (not verified: it only names the account).
+fn jwt_email(token: &str) -> Option<String> {
+    use base64::Engine as _;
+    let payload = token.split('.').nth(1)?;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload.trim_end_matches('='))
+        .ok()?;
+    let claims: Value = serde_json::from_slice(&bytes).ok()?;
+    claims
+        .get("email")
+        .and_then(Value::as_str)
+        .and_then(plausible_email)
+}
+
+const CODEX_REJECTED: &str =
+    "OpenAI did not accept this Codex sign-in. If its tasks fail too, sign in again.";
+
+/// A Codex sign-in that may not read its usage (403): its runs' rollouts still report it.
+const CODEX_NOT_SHARED: &str =
+    "ChatGPT shares this Codex subscription's usage with its running Codex sessions only.";
+
+const API_KEY_NO_WINDOWS: &str =
+    "An API-key account has no plan usage windows; its runs report the rate limits.";
 
 /// Claude's `{"five_hour": {"utilization", "resets_at"}, "seven_day": {...},
 /// "seven_day_opus": {...}|null, "seven_day_sonnet": {...}|null}`.
@@ -259,6 +400,30 @@ impl UsageProbe for ProviderUsage {
                     Err(f) => Err(f),
                 }
             }
+            Provider::OpenAi => match codex_identity(credential.expose())? {
+                CodexIdentity::ApiKey => Err(UsageFailure::of(
+                    UsageFailureKind::NotShared,
+                    API_KEY_NO_WINDOWS,
+                )),
+                CodexIdentity::ChatGpt {
+                    access, account, ..
+                } => {
+                    let mut request = self
+                        .http
+                        .get(format!("{}{CODEX_USAGE_PATH}", self.codex_base))
+                        .bearer_auth(access)
+                        .header("accept", "application/json");
+                    if let Some(account) = account {
+                        request = request.header("ChatGPT-Account-Id", account);
+                    }
+                    let body = self.get_json(request).await.map_err(|f| match f.kind {
+                        UsageFailureKind::Rejected => UsageFailure::of(f.kind, CODEX_REJECTED),
+                        UsageFailureKind::NotShared => UsageFailure::of(f.kind, CODEX_NOT_SHARED),
+                        _ => f,
+                    })?;
+                    parse_codex(&body, now()).map_err(UsageFailure::new)
+                }
+            },
         }
     }
 
@@ -277,6 +442,12 @@ impl UsageProbe for ProviderUsage {
                     .header("accept", "application/json");
                 Ok(parse_profile_email(&self.get_json(request).await?))
             }
+            Provider::OpenAi => match codex_identity(credential.expose())? {
+                CodexIdentity::ChatGpt { id_token, .. } => {
+                    Ok(id_token.as_deref().and_then(jwt_email))
+                }
+                CodexIdentity::ApiKey => Ok(None),
+            },
         }
     }
 }
@@ -286,6 +457,160 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    /// SPEC-451 CDX-008: Codex windows parse with epoch or relative resets.
+    #[test]
+    fn codex_windows_parse_with_epoch_or_relative_resets() -> Result<(), String> {
+        let usage = parse_codex(
+            &json!({"plan_type": "plus", "rate_limit": {
+                "limit_reached": false,
+                "primary_window": {"used_percent": 61, "limit_window_seconds": 18000, "reset_at": 1_794_230_000},
+                "secondary_window": {"used_percent": 9.5, "limit_window_seconds": 604800, "reset_after_seconds": 3600}
+            }}),
+            Timestamp(1_000),
+        )?;
+        let primary = usage.primary.ok_or("primary")?;
+        assert_eq!(primary.used_percent, Some(61.0));
+        assert_eq!(primary.window_minutes, Some(300));
+        assert_eq!(primary.resets_at, Some(Timestamp(1_794_230_000_000)));
+        let secondary = usage.secondary.ok_or("secondary")?;
+        assert_eq!(secondary.window_minutes, Some(10_080));
+        assert_eq!(secondary.resets_at, Some(Timestamp(3_601_000)));
+        assert_eq!(usage.limit_resets_at, None, "no limit reached");
+        // A reached limit resets with its full window, else with the latest known reset.
+        let full = parse_codex(
+            &json!({"rate_limit": {"limit_reached": true,
+                "primary_window": {"used_percent": 100, "limit_window_seconds": 18000, "reset_at": 1_794_230_000},
+                "secondary_window": {"used_percent": 40, "limit_window_seconds": 604800, "reset_at": 1_794_700_000}}}),
+            Timestamp(1_000),
+        )?;
+        assert!(full.limit_reached);
+        assert_eq!(full.limit_resets_at, Some(Timestamp(1_794_230_000_000)));
+        let none_full = parse_codex(
+            &json!({"rate_limit": {"limit_reached": true,
+                "primary_window": {"used_percent": 70, "limit_window_seconds": 18000, "reset_at": 1_794_230_000},
+                "secondary_window": {"used_percent": 90, "limit_window_seconds": 604800, "reset_at": 1_794_700_000}}}),
+            Timestamp(1_000),
+        )?;
+        assert_eq!(
+            none_full.limit_resets_at,
+            Some(Timestamp(1_794_700_000_000))
+        );
+        assert!(parse_codex(&json!({"rate_limit": {}}), Timestamp(0)).is_err());
+        assert!(parse_codex(&json!({}), Timestamp(0)).is_err());
+        Ok(())
+    }
+
+    /// SPEC-451 CDX-008: a Codex sign-in the usage endpoint will not answer (403) says so in
+    /// Codex's words, never Claude's.
+    #[tokio::test]
+    async fn a_codex_usage_403_speaks_of_codex() -> Result<(), Box<dyn std::error::Error>> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let base = format!("http://{}", listener.local_addr()?);
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                let mut buf = vec![0u8; 8192];
+                let _ = sock.read(&mut buf).await;
+                let reply =
+                    "HTTP/1.1 403 Forbidden\r\ncontent-length: 0\r\nconnection: close\r\n\r\n";
+                let _ = sock.write_all(reply.as_bytes()).await;
+            }
+        });
+        let mut probe = ProviderUsage::new()?;
+        probe.codex_base = base;
+        let auth =
+            Secret(r#"{"tokens":{"access_token":"synthetic-access","account_id":"acc-1"}}"#.into());
+        let failure = probe
+            .fetch(Provider::OpenAi, &auth)
+            .await
+            .err()
+            .ok_or("a failure")?;
+        assert_eq!(failure.kind, UsageFailureKind::NotShared);
+        assert!(!failure.message.contains("Claude"), "{}", failure.message);
+        assert!(failure.message.contains("Codex"), "{}", failure.message);
+        Ok(())
+    }
+
+    /// SPEC-451 CDX-008: the probe asks with the sign-in's access token and account, and an
+    /// API-key account has no windows; the email is the id token's claim.
+    #[tokio::test]
+    async fn codex_usage_is_read_with_the_access_token() -> Result<(), Box<dyn std::error::Error>> {
+        use base64::Engine as _;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let base = format!("http://{}", listener.local_addr()?);
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                let mut buf = vec![0u8; 8192];
+                let n = sock.read(&mut buf).await.unwrap_or(0);
+                let head = String::from_utf8_lossy(&buf[..n]).to_ascii_lowercase();
+                let body = r#"{"rate_limit":{"primary_window":{"used_percent":42,"limit_window_seconds":18000,"reset_at":1794230000}}}"#;
+                let reply = if head.starts_with("get /wham/usage")
+                    && head.contains("authorization: bearer synthetic-access")
+                    && head.contains("chatgpt-account-id: acc-1")
+                {
+                    format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                } else {
+                    "HTTP/1.1 401 Unauthorized\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+                        .to_owned()
+                };
+                let _ = sock.write_all(reply.as_bytes()).await;
+            }
+        });
+        let mut probe = ProviderUsage::new()?;
+        probe.codex_base = base;
+        let claims = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(br#"{"email":"dev@example.com"}"#);
+        let auth = format!(
+            r#"{{"tokens":{{"access_token":"synthetic-access","account_id":"acc-1","id_token":"h.{claims}.s"}}}}"#
+        );
+        let usage = probe
+            .fetch(Provider::OpenAi, &Secret(auth.clone()))
+            .await
+            .map_err(|f| f.message)?;
+        assert_eq!(usage.primary.and_then(|w| w.used_percent), Some(42.0));
+        assert_eq!(
+            probe
+                .account_email(Provider::OpenAi, &Secret(auth))
+                .await
+                .map_err(|f| f.message)?,
+            Some("dev@example.com".to_owned())
+        );
+        let refused = probe
+            .fetch(
+                Provider::OpenAi,
+                &Secret(r#"{"tokens":{"access_token":"other"}}"#.into()),
+            )
+            .await
+            .err()
+            .ok_or("refused")?;
+        assert_eq!(refused.kind, UsageFailureKind::Rejected);
+        let key = Secret(r#"{"auth_mode":"apikey","OPENAI_API_KEY":"sk-x"}"#.into());
+        let none = probe
+            .fetch(Provider::OpenAi, &key)
+            .await
+            .err()
+            .ok_or("none")?;
+        assert_eq!(none.kind, UsageFailureKind::NotShared);
+        assert_eq!(
+            probe
+                .account_email(Provider::OpenAi, &key)
+                .await
+                .map_err(|f| f.message)?,
+            None
+        );
+        let broken = probe
+            .fetch(Provider::OpenAi, &Secret("not json".into()))
+            .await
+            .err()
+            .ok_or("broken")?;
+        assert_eq!(broken.kind, UsageFailureKind::Rejected);
+        Ok(())
+    }
 
     #[test]
     fn claude_windows_parse_in_percent() -> Result<(), String> {

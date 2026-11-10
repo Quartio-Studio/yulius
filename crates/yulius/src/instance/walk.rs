@@ -15,14 +15,16 @@ use super::archive::{Entry, Kind};
 /// Top-level names the new host makes its own (EXP-006): the sandbox base (a copy of this host's
 /// system), live processes' runtime files, the update helper's request, SQLite's shared-memory
 /// index, the filesystem's own `lost+found`, and the Claude Code builds for this host's platform
-/// (SPEC-421: the new host downloads its own within the hour).
-pub const LEFT_OUT: [&str; 6] = [
+/// (SPEC-421: the new host downloads its own within the hour) and the Codex CLI's (SPEC-451: the
+/// new host installs its own at the first Codex use).
+pub const LEFT_OUT: [&str; 7] = [
     "system",
     "runtime",
     "update",
     "yulius.db-shm",
     "lost+found",
     "claude-code",
+    "codex-cli",
 ];
 
 /// The archive path of the data directory itself.

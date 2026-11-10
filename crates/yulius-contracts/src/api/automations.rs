@@ -33,7 +33,7 @@ pub struct Automation {
     /// Workflow for created tasks.
     #[serde(default)]
     pub workflow_id: Option<String>,
-    /// Harness: `claude` (the default and the only one supported).
+    /// Harness: `claude` (the default) or `codex` (SPEC-451).
     #[serde(default = "default_harness")]
     pub harness: String,
     /// Enabled.

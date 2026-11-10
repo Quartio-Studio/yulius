@@ -30,6 +30,8 @@ const DAY_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const DAY_LONG = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 const TIMES = ['07:00', '08:00', '09:00', '12:00', '17:00', '20:00'];
 const MINUTES = [0, 15, 30, 45];
+/** The agents a created task can run (SPEC-451): wire name and label. */
+const HARNESSES = [['claude', 'Claude Code'], ['codex', 'Codex']];
 const RUN_TONE = { scheduled: 'warn', task_created: 'ok', skipped_previous_active: '', skipped_disabled: '', failed: 'danger' };
 const RUN_LABEL = { scheduled: 'scheduled', task_created: 'task created', skipped_previous_active: 'skipped: previous task still active', skipped_disabled: 'skipped: disabled', failed: 'failed' };
 
@@ -114,7 +116,7 @@ export function mountAutomationEditor(ctx, sandbox, id) {
   let loaded = false; // the automation has been read (SPEC-093): the chip and Run now turn on
   // The start choice (SPEC-078, SPEC-155): at most one of supertask, after_task_id, start_rule and
   // prepared.
-  const state = { name: '', prompt: '', workflow_id: null, enabled: true, cron: '0 9 * * 1-5', offset: -new Date().getTimezoneOffset(), custom: false, supertask: false, after_task_id: null, after_task_number: null, start_rule: null, prepared: false };
+  const state = { name: '', prompt: '', workflow_id: null, harness: 'claude', enabled: true, cron: '0 9 * * 1-5', offset: -new Date().getTimezoneOffset(), custom: false, supertask: false, after_task_id: null, after_task_number: null, start_rule: null, prepared: false };
   const live = h('div', { class: 'sr-only', role: 'status' });
 
   const nameInput = h('input', { class: 'wf-name', placeholder: 'Name the automation', 'aria-label': 'Automation name', maxlength: 100, onInput: (e) => { state.name = e.target.value; changed(); } });
@@ -215,7 +217,11 @@ export function mountAutomationEditor(ctx, sandbox, id) {
   function whatSection() {
     const prompt = h('textarea', { class: 'textarea au-prompt', rows: 4, value: state.prompt, readOnly: !write, placeholder: 'What the task should do each time, e.g. “Implement yesterday’s customer feedback from the Quartio MCP.”', 'aria-label': 'What the task does', onInput: (e) => { state.prompt = e.target.value; changed(); } });
     const pick = (value, label) => chip(label, (state.workflow_id || null) === value, () => { state.workflow_id = value; render(); }, { role: 'radio', 'aria-checked': String((state.workflow_id || null) === value), 'aria-pressed': null });
+    // The agent each created task runs (SPEC-451): Claude Code or Codex, on its own accounts.
+    const agent = (value, label) => chip(label, state.harness === value, () => { state.harness = value; render(); }, { role: 'radio', 'aria-checked': String(state.harness === value), 'aria-pressed': null });
     return section('The task', null, h('div', { class: 'stack-sm' }, prompt,
+      h('div', { class: 'au-row' }, h('span', { class: 'wf-label' }, 'Agent'),
+        h('div', { class: 'wf-chips', role: 'radiogroup', 'aria-label': 'Agent' }, HARNESSES.map(([id, label]) => agent(id, label)))),
       h('div', { class: 'au-row' }, h('span', { class: 'wf-label' }, 'Workflow'),
         h('div', { class: 'wf-chips', role: 'radiogroup', 'aria-label': 'Workflow' }, pick(null, 'None'), workflows.map((w) => pick(w.id, w.name))))));
   }
@@ -307,7 +313,7 @@ export function mountAutomationEditor(ctx, sandbox, id) {
     if (!state.name.trim()) { invalid(nameInput, 'Give the automation a name.'); return; }
     if (!state.prompt.trim()) { invalid(el.querySelector('.au-prompt'), 'Say what the task should do.'); return; }
     if (!cronValid(state.cron)) { const cron = el.querySelector('.au-cron'); cron?.closest('details')?.setAttribute('open', ''); if (cron) invalid(cron, 'A schedule has five fields, e.g. “0 9 * * 1-5”.'); return; }
-    const payload = { name: state.name.trim(), cron: state.cron, utc_offset_minutes: state.offset, prompt: state.prompt.trim(), workflow_id: state.workflow_id || null, enabled: state.enabled, supertask: state.supertask, after_task_id: state.after_task_id, start_rule: state.start_rule, prepared: state.prepared };
+    const payload = { name: state.name.trim(), cron: state.cron, utc_offset_minutes: state.offset, prompt: state.prompt.trim(), workflow_id: state.workflow_id || null, harness: state.harness, enabled: state.enabled, supertask: state.supertask, after_task_id: state.after_task_id, start_rule: state.start_rule, prepared: state.prepared };
     save.classList.add('busy');
     try {
       if (creating) await ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/automations`, payload);
@@ -392,7 +398,7 @@ export function mountAutomationEditor(ctx, sandbox, id) {
       if (!creating) {
         automation = (Array.isArray(list) ? list : []).find((a) => a.id === id);
         if (!automation) { saved = snapshot(); setChildren(el, notFound({ title: 'Automation not found', text: `There is no automation “${id}” in ${sandbox.name}. It may have been deleted.`, back: ['Automations', base] })); return; }
-        Object.assign(state, { name: automation.name, prompt: automation.prompt || '', workflow_id: automation.workflow_id || null, enabled: automation.enabled, cron: automation.cron, offset: automation.utc_offset_minutes, custom: !readSchedule(automation.cron),
+        Object.assign(state, { name: automation.name, prompt: automation.prompt || '', workflow_id: automation.workflow_id || null, harness: automation.harness || 'claude', enabled: automation.enabled, cron: automation.cron, offset: automation.utc_offset_minutes, custom: !readSchedule(automation.cron),
           supertask: Boolean(automation.supertask), after_task_id: automation.after_task_id || null, after_task_number: automation.after_task_number ?? null, start_rule: automation.start_rule || null, prepared: Boolean(automation.prepared) });
         nameInput.value = automation.name;
         showZone = state.offset !== -new Date().getTimezoneOffset();

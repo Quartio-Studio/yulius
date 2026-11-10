@@ -28,7 +28,7 @@ use yulius_app::ports::session::{
     AttachedRun, Containment, LaunchPlan, RunEvent, RunExit, RunInspection, RunReader, RunSignal,
     RunWelcome, RunWriter, SessionHost, SpawnedRun,
 };
-use yulius_app::ports::store::{AccountStore, TaskStore};
+use yulius_app::ports::store::{AccountStore, AuditStore, TaskStore};
 use yulius_contracts::terminal::{KIND_OUTPUT, KIND_SNAPSHOT, decode_binary};
 use yulius_domain::harness::Harness;
 use yulius_domain::ids::{AccountId, AttemptId, SandboxId, TaskId, UserId};
@@ -51,6 +51,9 @@ struct Script {
     exit: Option<i32>,
     /// Wait for [`FakeHost::release`] before emitting anything.
     gated: bool,
+    /// Files the process writes below its run directory after its output, before it exits
+    /// (Codex stores its sign-in in `codex/auth.json`).
+    writes: Vec<(String, String)>,
 }
 
 struct Run {
@@ -221,6 +224,7 @@ impl SessionHost for FakeHost {
         let emitter_tx = tx.clone();
         let emitter_exited = exited.clone();
         let release = self.release.clone();
+        let emitter_dir = run_dir.to_path_buf();
         tokio::spawn(async move {
             if script.gated {
                 let Ok(permit) = release.acquire().await else {
@@ -236,6 +240,9 @@ impl SessionHost for FakeHost {
                 if emitter_tx.send(event).await.is_err() {
                     return;
                 }
+            }
+            for (path, contents) in &script.writes {
+                let _ = std::fs::write(emitter_dir.join(path), contents);
             }
             if let Some(code) = script.exit
                 && !emitter_exited.swap(true, Ordering::SeqCst)
@@ -385,6 +392,7 @@ async fn claude_login_masks_the_token_for_viewers_and_seals_it() -> TestResult {
         ],
         exit: Some(0),
         gated: true,
+        writes: Vec::new(),
     });
     let mut events = s.h.app.events.subscribe();
     let (account_id, login_id) = create(&s, "anthropic", "Claude #1").await?;
@@ -478,14 +486,467 @@ async fn claude_login_masks_the_token_for_viewers_and_seals_it() -> TestResult {
     Ok(())
 }
 
+/// A synthetic Codex `auth.json` of a ChatGPT sign-in.
+const CODEX_AUTH: &str = r#"{"auth_mode":"chatgpt","OPENAI_API_KEY":null,"tokens":{"id_token":"h.e30.s","access_token":"SYNTHETIC-codex-access","refresh_token":"SYNTHETIC-codex-refresh","account_id":"acc-synthetic"},"last_refresh":"2026-11-09T10:00:00Z"}"#;
+
+/// The stored credential of `account`, opened.
+async fn stored_credential(s: &Setup, account: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let id = AccountId::parse(account)?;
+    let sealed =
+        s.h.store
+            .account(&id)
+            .await?
+            .ok_or("account")?
+            .credential
+            .ok_or("credential")?;
+    Ok(String::from_utf8(s.h.app.deps.crypto.open(&sealed)?)?)
+}
+
+/// SPEC-451 CDX-005: a Codex account signs in with `codex login --device-auth` in a temporary
+/// Codex home that keeps its credentials in a file; viewers see the device code, and the
+/// `auth.json` it wrote is sealed into the account.
 #[tokio::test]
-async fn only_claude_accounts_can_be_added() -> TestResult {
+async fn codex_device_login_seals_the_auth_file() -> TestResult {
     let s = setup().await?;
-    let refused = call(
+    s.host.push(Script {
+        chunks: vec![
+            "\nWelcome to Codex [v\u{1b}[90m0.167.0\u{1b}[0m]\n".into(),
+            "1. Open this link in your browser and sign in to your account\n   \u{1b}[94mhttps://auth.openai.com/codex/device\u{1b}[0m\n\n".into(),
+            "2. Enter this one-time code \u{1b}[90m(expires in 15 minutes)\u{1b}[0m\n   \u{1b}[94mABCD-EFGHI\u{1b}[0m\n".into(),
+        ],
+        writes: vec![("codex/auth.json".into(), CODEX_AUTH.into())],
+        exit: Some(0),
+        gated: true,
+    });
+    let mut events = s.h.app.events.subscribe();
+    let (account_id, login_id) = create(&s, "openai", "Codex #1").await?;
+    let plans = s.host.plans();
+    let (run_dir, plan, _) = plans.first().ok_or("spawned")?;
+    assert_eq!(plan.argv, ["codex", "login", "--device-auth"]);
+    let home = login_dir(&s, &login_id).join("codex");
+    assert!(
+        plan.env
+            .iter()
+            .any(|(k, v)| k == "CODEX_HOME" && Path::new(v) == home),
+        "{:?}",
+        plan.env
+    );
+    let config = plan
+        .files
+        .iter()
+        .find(|f| f.path == home.join("config.toml"))
+        .ok_or("config.toml")?;
+    assert_eq!(config.contents, b"cli_auth_credentials_store = \"file\"\n");
+    assert_eq!(config.mode, 0o600);
+    assert_eq!(*run_dir, login_dir(&s, &login_id));
+
+    let ctx = ctx_of(&s.h, &s.admin).await?;
+    let terminal = s.h.app.login_terminal(&ctx, &login_id)?;
+    let mut sub = terminal.subscribe();
+    s.host.release.add_permits(1);
+    // The device code is for the person signing in: it is shown, not masked.
+    let (shown, status, _) = viewer_output(&mut sub).await?;
+    terminal.unsubscribe();
+    assert!(shown.contains("ABCD-EFGHI"), "{shown}");
+    assert_eq!(status, "ok");
+    let settled = account_settled(&mut events, &account_id).await?;
+    assert_eq!(settled["status"], "ok", "{settled}");
+    assert_eq!(stored_credential(&s, &account_id).await?, CODEX_AUTH);
+    assert!(
+        !login_dir(&s, &login_id).exists(),
+        "the temporary home is wiped"
+    );
+    Ok(())
+}
+
+/// SPEC-451 CLI-002: the device sign-in starts the Codex CLI Yulius provides, by its path.
+#[tokio::test]
+async fn a_codex_device_login_runs_the_provided_codex_cli() -> TestResult {
+    let host = Arc::new(FakeHost::default());
+    let root = tempfile::tempdir()?;
+    let platform = yulius_domain::agent_cli::codex::platform("linux", "x86_64").ok_or("x64")?;
+    let program = root.path().join(platform.install_name()).join("bin/codex");
+    std::fs::create_dir_all(program.parent().ok_or("bin")?)?;
+    std::fs::write(&program, b"installed")?;
+    let cli = yulius::wiring::codex_cli::CodexCli::with_registry(
+        root.path().to_path_buf(),
+        "http://127.0.0.1:1".into(),
+        Some(platform),
+        false,
+    )?;
+    let adapter =
+        yulius::wiring::harness::HarnessAdapter::new("/bin/false".into(), "http://127.0.0.1:1")
+            .with_codex_cli(Arc::new(cli));
+    let h = support::harness_with(support::HarnessOptions {
+        git: Some(Arc::new(yulius::wiring::pending::UnavailableGit)),
+        session_host: Some(host.clone()),
+        harness: Some(Arc::new(adapter)),
+        ..support::HarnessOptions::default()
+    })?;
+    let admin = setup_superadmin_creds(&h).await?;
+    let s = Setup { h, host, admin };
+    s.host.push(Script {
+        chunks: vec!["Enter this one-time code\n".into()],
+        gated: true,
+        ..Script::default()
+    });
+    create(&s, "openai", "Codex provided").await?;
+    let plans = s.host.plans();
+    let (_, plan, _) = plans.first().ok_or("spawned")?;
+    assert_eq!(
+        plan.argv,
+        [
+            program.to_string_lossy().into_owned(),
+            "login".into(),
+            "--device-auth".into()
+        ]
+    );
+    Ok(())
+}
+
+/// SPEC-451 CLI-001: a Codex account that needs no sign-in (an API key, an imported auth.json)
+/// starts the Codex CLI's install in the background, so its first task does not wait for it.
+#[tokio::test]
+async fn a_codex_account_without_a_sign_in_starts_the_cli_install() -> TestResult {
+    let root = tempfile::tempdir()?;
+    let platform = yulius_domain::agent_cli::codex::platform("linux", "x86_64").ok_or("x64")?;
+    // An unreachable registry: the install fails at once and says so.
+    let cli = Arc::new(yulius::wiring::codex_cli::CodexCli::with_registry(
+        root.path().to_path_buf(),
+        "http://127.0.0.1:1".into(),
+        Some(platform),
+        false,
+    )?);
+    let adapter =
+        yulius::wiring::harness::HarnessAdapter::new("/bin/false".into(), "http://127.0.0.1:1")
+            .with_codex_cli(Arc::clone(&cli));
+    let host = Arc::new(FakeHost::default());
+    let h = support::harness_with(support::HarnessOptions {
+        git: Some(Arc::new(yulius::wiring::pending::UnavailableGit)),
+        session_host: Some(host.clone()),
+        harness: Some(Arc::new(adapter)),
+        ..support::HarnessOptions::default()
+    })?;
+    let admin = setup_superadmin_creds(&h).await?;
+    assert_eq!(cli.ready(), Ok(None), "nothing tried yet");
+    let r = call(
+        &h.router,
+        Method::POST,
+        "/api/admin/accounts",
+        Some(json!({"provider": "openai", "label": "Codex key", "api_key": "sk-proj-SYNTHETIC0123456789abcdefghij"})),
+        &admin,
+    )
+    .await?;
+    assert_eq!(r.status, StatusCode::CREATED, "{}", r.body);
+    let tried = tokio::time::timeout(Duration::from_secs(10), async {
+        while cli.ready().is_ok() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    assert!(tried.is_ok(), "no install was started");
+    Ok(())
+}
+
+/// SPEC-451 CDX-005: a Codex sign-in that stored no usable credentials fails the account.
+#[tokio::test]
+async fn a_codex_login_without_credentials_fails() -> TestResult {
+    let s = setup().await?;
+    s.host.push(Script {
+        chunks: vec!["Error: device code expired\n".into()],
+        writes: vec![("codex/auth.json".into(), r#"{"tokens":{}}"#.into())],
+        exit: Some(1),
+        ..Script::default()
+    });
+    let mut events = s.h.app.events.subscribe();
+    let (account_id, _) = create(&s, "openai", "Codex #2").await?;
+    let failed = account_settled(&mut events, &account_id).await?;
+    assert_eq!(failed["status"], "error", "{failed}");
+    assert!(
+        s.h.store
+            .account(&AccountId::parse(&account_id)?)
+            .await?
+            .ok_or("account")?
+            .credential
+            .is_none()
+    );
+    Ok(())
+}
+
+/// SPEC-451 CDX-005: an OpenAI API key makes a Codex account at once, without a sign-in; it is
+/// sealed as the `auth.json` Codex writes for it and never returned. A key that is not one, a key
+/// for a Claude account and an unknown provider are refused.
+#[tokio::test]
+async fn a_codex_account_can_be_added_with_an_api_key() -> TestResult {
+    let s = setup().await?;
+    let key = "sk-proj-SYNTHETIC0123456789abcdefghij";
+    let r = call(
         &s.h.router,
         Method::POST,
         "/api/admin/accounts",
-        Some(json!({"provider": "openai", "label": "Codex"})),
+        Some(json!({"provider": "openai", "label": "Codex key", "api_key": key})),
+        &s.admin,
+    )
+    .await?;
+    assert_eq!(r.status, StatusCode::CREATED, "{}", r.body);
+    assert_eq!(r.body["account"]["status"], "ok");
+    assert_eq!(r.body["account"]["provider"], "openai");
+    assert!(r.body.get("login_id").is_none(), "{}", r.body);
+    assert!(
+        !r.body.to_string().contains(key),
+        "the key is never returned"
+    );
+    assert!(s.host.plans().is_empty(), "no sign-in ran");
+    let id = r.body["account"]["id"].as_str().ok_or("id")?;
+    let stored: Value = serde_json::from_str(&stored_credential(&s, id).await?)?;
+    assert_eq!(stored["auth_mode"], "apikey");
+    assert_eq!(stored["OPENAI_API_KEY"], key);
+    let listed = call(
+        &s.h.router,
+        Method::GET,
+        "/api/admin/accounts",
+        None,
+        &s.admin,
+    )
+    .await?;
+    assert!(!listed.body.to_string().contains(key));
+
+    for body in [
+        json!({"provider": "openai", "label": "Bad key", "api_key": "not-a-key"}),
+        json!({"provider": "anthropic", "label": "Claude key", "api_key": key}),
+        json!({"provider": "google", "label": "Gemini"}),
+    ] {
+        let refused = call(
+            &s.h.router,
+            Method::POST,
+            "/api/admin/accounts",
+            Some(body.clone()),
+            &s.admin,
+        )
+        .await?;
+        assert_eq!(
+            refused.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{body}: {}",
+            refused.body
+        );
+        assert!(!refused.body.to_string().contains(key));
+    }
+    let after = call(
+        &s.h.router,
+        Method::GET,
+        "/api/admin/accounts",
+        None,
+        &s.admin,
+    )
+    .await?;
+    assert_eq!(
+        after.body.as_array().map(Vec::len),
+        Some(1),
+        "{}",
+        after.body
+    );
+    Ok(())
+}
+
+/// SPEC-451 IMP-001: an import wins over a device sign-in running for the account even when that
+/// sign-in has already stored credentials in its temporary home: it is cancelled and its file is
+/// not taken.
+#[tokio::test]
+async fn an_import_is_not_overwritten_by_the_sign_in_it_cancels() -> TestResult {
+    let s = setup().await?;
+    s.host.push(Script {
+        chunks: vec!["Enter this one-time code\n".into()],
+        gated: true,
+        ..Script::default()
+    });
+    let (id, login_id) = create(&s, "openai", "Codex #4").await?;
+    // The device sign-in finished on OpenAI's side and Codex wrote its file.
+    std::fs::write(login_dir(&s, &login_id).join("codex/auth.json"), CODEX_AUTH)?;
+    let auth = imported_auth("SYNTHETIC-import-wins", "2026-11-09T12:00:00Z");
+    let r = call(
+        &s.h.router,
+        Method::POST,
+        &format!("/api/admin/accounts/{id}/import"),
+        Some(json!({"auth_json": auth})),
+        &s.admin,
+    )
+    .await?;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    let ended = tokio::time::timeout(Duration::from_secs(10), async {
+        while login_dir(&s, &login_id).exists() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    assert!(ended.is_ok(), "the sign-in did not end");
+    assert_eq!(stored_credential(&s, &id).await?, auth, "the import stays");
+    Ok(())
+}
+
+/// A ChatGPT `auth.json` like `codex login` writes on a laptop, refreshed at `last_refresh`.
+fn imported_auth(access: &str, last_refresh: &str) -> String {
+    format!(
+        r#"{{"auth_mode":"chatgpt","OPENAI_API_KEY":null,"tokens":{{"id_token":"h.e30.s","access_token":"{access}","refresh_token":"SYNTHETIC-import-refresh","account_id":"acc-synthetic"}},"last_refresh":"{last_refresh}"}}"#
+    )
+}
+
+/// The accounts listed to an administrator.
+async fn listed(s: &Setup) -> Result<Value, Box<dyn std::error::Error>> {
+    Ok(call(
+        &s.h.router,
+        Method::GET,
+        "/api/admin/accounts",
+        None,
+        &s.admin,
+    )
+    .await?
+    .body)
+}
+
+/// SPEC-451 CDX-011: an `auth.json` of a `codex login` made elsewhere makes a Codex account at
+/// once, sealed as the device sign-in's file is; it is never returned, logged in the audit or
+/// accepted when it is not a full ChatGPT sign-in.
+#[tokio::test]
+async fn a_codex_account_can_be_added_by_importing_its_auth_file() -> TestResult {
+    let s = setup().await?;
+    let auth = imported_auth("SYNTHETIC-import-access", "2026-11-09T10:00:00Z");
+    let r = call(
+        &s.h.router,
+        Method::POST,
+        "/api/admin/accounts",
+        Some(json!({"provider": "openai", "label": "Codex laptop", "auth_json": auth})),
+        &s.admin,
+    )
+    .await?;
+    assert_eq!(r.status, StatusCode::CREATED, "{}", r.body);
+    assert_eq!(r.body["account"]["status"], "ok");
+    assert_eq!(r.body["account"]["provider"], "openai");
+    assert!(r.body.get("login_id").is_none(), "{}", r.body);
+    assert!(!r.body.to_string().contains("SYNTHETIC"), "{}", r.body);
+    assert!(s.host.plans().is_empty(), "no sign-in ran");
+    let id = r.body["account"]["id"].as_str().ok_or("id")?.to_owned();
+    assert_eq!(stored_credential(&s, &id).await?, auth);
+    let audit = s.h.store.audit_details(&id, "account.created", 5).await?;
+    assert!(audit.iter().any(|d| d.contains("auth_json")), "{audit:?}");
+    assert!(audit.iter().all(|d| !d.contains("SYNTHETIC")), "{audit:?}");
+    assert!(!listed(&s).await?.to_string().contains("SYNTHETIC"));
+
+    let api_key_file = r#"{"auth_mode":"apikey","OPENAI_API_KEY":"sk-SYNTHETIC0123456789abcdef"}"#;
+    let no_refresh = auth.replace(r#""refresh_token":"SYNTHETIC-import-refresh","#, "");
+    for body in [
+        json!({"provider": "openai", "label": "Key file", "auth_json": api_key_file}),
+        json!({"provider": "openai", "label": "No refresh", "auth_json": no_refresh}),
+        json!({"provider": "openai", "label": "Not JSON", "auth_json": "SYNTHETIC {"}),
+        json!({"provider": "anthropic", "label": "Claude file", "auth_json": auth}),
+        json!({"provider": "openai", "label": "Both", "auth_json": auth,
+               "api_key": "sk-proj-SYNTHETIC0123456789abcdefghij"}),
+    ] {
+        let refused = call(
+            &s.h.router,
+            Method::POST,
+            "/api/admin/accounts",
+            Some(body.clone()),
+            &s.admin,
+        )
+        .await?;
+        assert_eq!(
+            refused.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{body}: {}",
+            refused.body
+        );
+        assert!(
+            !refused.body.to_string().contains("SYNTHETIC"),
+            "{}",
+            refused.body
+        );
+    }
+    assert_eq!(listed(&s).await?.as_array().map(Vec::len), Some(1));
+    Ok(())
+}
+
+/// SPEC-451 CDX-011: an existing Codex account signs in again by importing a new `auth.json`:
+/// the file replaces its credential at once, a sign-in running for it is cancelled, the audit
+/// names the import without its content, and a file that is not a ChatGPT sign-in or an account
+/// of Claude is refused without changing anything.
+#[tokio::test]
+async fn a_codex_accounts_sign_in_is_replaced_by_an_imported_auth_file() -> TestResult {
+    let s = setup().await?;
+    // A device sign-in that never completes is running for the account.
+    s.host.push(Script {
+        chunks: vec!["Enter this one-time code\n".into()],
+        gated: true,
+        ..Script::default()
+    });
+    let mut events = s.h.app.events.subscribe();
+    let (id, login_id) = create(&s, "openai", "Codex #3").await?;
+    let auth = imported_auth("SYNTHETIC-new-access", "2026-11-09T12:00:00Z");
+    let r = call(
+        &s.h.router,
+        Method::POST,
+        &format!("/api/admin/accounts/{id}/import"),
+        Some(json!({"auth_json": auth})),
+        &s.admin,
+    )
+    .await?;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    assert_eq!(r.body["account"]["status"], "ok");
+    assert!(r.body.get("login_id").is_none(), "{}", r.body);
+    assert!(!r.body.to_string().contains("SYNTHETIC"), "{}", r.body);
+    assert_eq!(stored_credential(&s, &id).await?, auth);
+    let settled = account_settled(&mut events, &id).await?;
+    assert_eq!(settled["status"], "ok", "{settled}");
+    // A cancelled sign-in ends and wipes its temporary home.
+    let cancelled = tokio::time::timeout(Duration::from_secs(10), async {
+        while login_dir(&s, &login_id).exists() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    assert!(cancelled.is_ok(), "the running sign-in was not cancelled");
+    s.host.release.add_permits(1);
+    assert_eq!(stored_credential(&s, &id).await?, auth, "still the import");
+    let audit = s.h.store.audit_details(&id, "account.imported", 5).await?;
+    assert_eq!(audit.len(), 1, "{audit:?}");
+    assert!(audit.iter().all(|d| !d.contains("SYNTHETIC")), "{audit:?}");
+
+    let not_chatgpt = r#"{"auth_mode":"apikey","OPENAI_API_KEY":"sk-SYNTHETIC0123456789abcdef"}"#;
+    for body in [
+        json!({"auth_json": not_chatgpt}),
+        json!({"auth_json": "SYNTHETIC"}),
+        json!({"auth_json": ""}),
+    ] {
+        let refused = call(
+            &s.h.router,
+            Method::POST,
+            &format!("/api/admin/accounts/{id}/import"),
+            Some(body.clone()),
+            &s.admin,
+        )
+        .await?;
+        assert_eq!(
+            refused.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{body}: {}",
+            refused.body
+        );
+        assert!(!refused.body.to_string().contains("SYNTHETIC"));
+    }
+    assert_eq!(stored_credential(&s, &id).await?, auth, "unchanged");
+
+    // A Claude account cannot take a Codex file; an unknown account is not found.
+    s.host.push(Script {
+        chunks: vec![format!("token: {TOKEN}\r\n")],
+        exit: Some(0),
+        ..Script::default()
+    });
+    let (claude, _) = create(&s, "anthropic", "Claude #9").await?;
+    let refused = call(
+        &s.h.router,
+        Method::POST,
+        &format!("/api/admin/accounts/{claude}/import"),
+        Some(json!({"auth_json": auth})),
         &s.admin,
     )
     .await?;
@@ -495,7 +956,29 @@ async fn only_claude_accounts_can_be_added() -> TestResult {
         "{}",
         refused.body
     );
-    assert!(s.host.plans().is_empty(), "no login was started");
+    let missing = call(
+        &s.h.router,
+        Method::POST,
+        "/api/admin/accounts/missing/import",
+        Some(json!({"auth_json": auth})),
+        &s.admin,
+    )
+    .await?;
+    assert_eq!(missing.status, StatusCode::NOT_FOUND, "{}", missing.body);
+    // Only an instance administrator imports.
+    let anonymous = call(
+        &s.h.router,
+        Method::POST,
+        &format!("/api/admin/accounts/{id}/import"),
+        Some(json!({"auth_json": auth})),
+        &Creds::default(),
+    )
+    .await?;
+    assert!(
+        anonymous.status == StatusCode::UNAUTHORIZED || anonymous.status == StatusCode::FORBIDDEN,
+        "{}",
+        anonymous.status
+    );
     Ok(())
 }
 
@@ -1060,6 +1543,7 @@ async fn login_terminal_websocket_streams_masked_output_and_accepts_input() -> T
         ],
         exit: Some(0),
         gated: true,
+        writes: Vec::new(),
     });
     let (_, login_id) = create(&s, "anthropic", "Claude WS").await?;
 

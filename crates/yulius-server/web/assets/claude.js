@@ -16,6 +16,11 @@ export function claudeConnected(me) {
   return !(me && me.instance && me.instance.claude_connected === false);
 }
 
+/** Whether a Codex account is usable (`/api/me` `instance.codex_connected`, SPEC-451 CDX-014). */
+export function codexConnected(me) {
+  return Boolean(me && me.instance && me.instance.codex_connected);
+}
+
 const isAdmin = (me) => Boolean(me && me.user && (me.user.is_superadmin || me.user.is_instance_admin));
 
 /**

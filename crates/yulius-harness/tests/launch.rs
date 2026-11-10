@@ -43,6 +43,8 @@ fn claude_request(mode: LaunchMode, contained: bool) -> LaunchRequest {
         worktree: PathBuf::from("/data/sandboxes/s1/worktrees/t1"),
         sandbox_home: PathBuf::from("/data/sandboxes/s1/home"),
         run_dir: PathBuf::from("/data/runs/a1"),
+        codex_home: None,
+        codex_program: None,
         model: Some("claude-opus-4-1".into()),
         effort: Some("high".into()),
         contained,
@@ -1006,4 +1008,248 @@ fn the_global_superagent_runs_with_only_the_yulius_mcp() -> TestResult {
         Some("--dangerously-skip-permissions")
     );
     Ok(())
+}
+
+const CODEX_AUTH: &str = r#"{"auth_mode":"chatgpt","tokens":{"access_token":"SYNTHETIC-codex-access","refresh_token":"SYNTHETIC-codex-refresh"},"last_refresh":"2026-11-09T10:00:00Z"}"#;
+const CODEX_SESSION: &str = "019a6b2e-7c1d-7f00-9a3e-1b2c3d4e5f60";
+
+fn codex_request(mode: LaunchMode, contained: bool) -> LaunchRequest {
+    LaunchRequest {
+        harness: Harness::Codex,
+        mode,
+        worktree: PathBuf::from("/data/sandboxes/s1/worktrees/t1"),
+        sandbox_home: PathBuf::from("/data/sandboxes/s1/home"),
+        run_dir: PathBuf::from("/data/runs/a1"),
+        codex_home: Some(PathBuf::from("/data/sandboxes/s1/codex/acc-1")),
+        codex_program: None,
+        model: None,
+        effort: Some("xhigh".into()),
+        contained,
+        yulius_exe: PathBuf::from("/opt/yulius/bin/yulius"),
+        yulius_url: "http://127.0.0.1:7801/".into(),
+        mcp_servers: servers(),
+        credential: Credential::CodexAuthJson(Secret::new(CODEX_AUTH.as_bytes().to_vec())),
+    }
+}
+
+/// SPEC-451 CLI-002: the Codex CLI Yulius provides is started by its absolute path; a Claude
+/// run ignores it.
+#[test]
+fn a_provided_codex_cli_is_started_by_its_path() -> TestResult {
+    let program = PathBuf::from("/data/codex-cli/0.167.0-linux-x64/bin/codex");
+    let mut request = codex_request(
+        LaunchMode::New {
+            session_id: None,
+            prompt: None,
+        },
+        true,
+    );
+    request.codex_program = Some(program.clone());
+    let plan = plan_launch(&request)?;
+    assert_eq!(plan.argv.first().map(String::as_str), program.to_str());
+    assert_eq!(plan.argv.get(1).map(String::as_str), Some("--no-daemon"));
+    let mut relative = codex_request(
+        LaunchMode::New {
+            session_id: None,
+            prompt: None,
+        },
+        true,
+    );
+    relative.codex_program = Some(PathBuf::from("bin/codex"));
+    assert!(plan_launch(&relative).is_err(), "only an absolute path");
+    Ok(())
+}
+
+/// SPEC-451 CDX-002: a new Codex session is the native TUI in the worktree, kept in the spawned
+/// process, with Yulius's and the sandbox's MCP servers, the approval bypass only when contained,
+/// and its hooks trusted; the credential is the home's `auth.json`, never in argv or env.
+#[test]
+fn codex_new_session_argv_snapshot_and_files() -> TestResult {
+    let plan = plan_launch(&codex_request(
+        LaunchMode::New {
+            session_id: Some(SESSION.into()),
+            prompt: Some("-Build the login page".into()),
+        },
+        true,
+    ))?;
+    assert_eq!(
+        plan.argv,
+        [
+            "codex",
+            "--no-daemon",
+            "-C",
+            "/data/sandboxes/s1/worktrees/t1",
+            "-c",
+            "mcp_servers.yulius.command=\"/opt/yulius/bin/yulius\"",
+            "-c",
+            "mcp_servers.yulius.args=[\"mcp\"]",
+            "-c",
+            "mcp_servers.yulius.env_vars=[\"YULIUS_URL\",\"YULIUS_TASK_TOKEN\"]",
+            "-c",
+            "mcp_servers.apify.command=\"sh\"",
+            "-c",
+            "mcp_servers.apify.args=[\"-c\",\"export APIFY_TOKEN=\\\"$YULIUS_MCP_APIFY_APIFY_TOKEN\\\"; exec \\\"$@\\\"\",\"mcp-apify\",\"npx\",\"-y\",\"@apify/actors-mcp-server\"]",
+            "-c",
+            "mcp_servers.apify.env_vars=[\"YULIUS_MCP_APIFY_APIFY_TOKEN\"]",
+            "-c",
+            "mcp_servers.quartio.url=\"https://mcp.example.test/mcp\"",
+            "-c",
+            "mcp_servers.quartio.bearer_token_env_var=\"QUARTIO_MCP_TOKEN\"",
+            "-c",
+            "model_reasoning_effort=\"xhigh\"",
+            "--dangerously-bypass-approvals-and-sandbox",
+            "--dangerously-bypass-hook-trust",
+            "--",
+            "-Build the login page",
+        ]
+    );
+    // Codex names its own session: Yulius learns it from the hook or the rollout.
+    assert_eq!(plan.session_id, None);
+    assert_eq!(
+        plan.env,
+        [
+            (
+                "CODEX_HOME".to_owned(),
+                "/data/sandboxes/s1/codex/acc-1".to_owned()
+            ),
+            ("YULIUS_URL".to_owned(), "http://127.0.0.1:7801".to_owned()),
+            (
+                "YULIUS_TASK_WORKTREE".to_owned(),
+                "/data/sandboxes/s1/worktrees/t1".to_owned()
+            ),
+            ("TMPDIR".to_owned(), "/tmp".to_owned()),
+        ]
+    );
+    assert!(plan.secret_env.is_empty());
+    for secret in ["SYNTHETIC-codex-access", "SYNTHETIC-codex-refresh"] {
+        assert_secret_absent(&plan, secret);
+    }
+    for planned in &plan.files {
+        assert_eq!(planned.mode, PRIVATE_FILE_MODE);
+        assert!(planned.path.starts_with("/data/sandboxes/s1/codex/acc-1"));
+    }
+    assert_eq!(file(&plan, "auth.json")?.contents, CODEX_AUTH.as_bytes());
+    let config = String::from_utf8(file(&plan, "config.toml")?.contents.clone())?;
+    assert_eq!(
+        config,
+        "cli_auth_credentials_store = \"file\"\ncheck_for_update_on_startup = false\n\n\
+         [shell_environment_policy]\nignore_default_excludes = true\nexclude = [\"CODEX_HOME\"]\n\n\
+         [projects.\"/data/sandboxes/s1/worktrees/t1\"]\ntrust_level = \"trusted\"\n"
+    );
+    let hooks = json_of(file(&plan, "hooks.json")?)?;
+    for (event, timeout) in [
+        ("SessionStart", 15),
+        ("UserPromptSubmit", 694_800),
+        ("Stop", 694_800),
+        ("SessionEnd", 3),
+    ] {
+        assert_eq!(
+            hooks["hooks"][event],
+            json!([{ "hooks": [{
+                "type": "command",
+                "command": format!("'/opt/yulius/bin/yulius' hook codex {event}"),
+                "timeout": timeout
+            }] }])
+        );
+    }
+    assert_eq!(
+        hooks["hooks"]["PreToolUse"],
+        json!([{ "matcher": "^Bash$", "hooks": [{
+            "type": "command",
+            "command": "'/opt/yulius/bin/yulius' hook codex PreToolUse",
+            "timeout": 60
+        }] }])
+    );
+    assert_eq!(
+        hooks.as_object().map(|o| o.len()),
+        Some(1),
+        "Codex refuses unknown top-level keys"
+    );
+    Ok(())
+}
+
+/// SPEC-451 CDX-002, CDX-009: a resume is `codex resume <id>` with the model; one past a usage
+/// limit asks Codex to go on, which it does not do by itself; uncontained runs keep Codex's own
+/// approvals.
+#[test]
+fn codex_resume_argv() -> TestResult {
+    let mut request = codex_request(
+        LaunchMode::Resume {
+            session_id: CODEX_SESSION.into(),
+            prompt: Some("And the tests".into()),
+            continue_interrupted: false,
+        },
+        false,
+    );
+    request.model = Some("gpt-synthetic-codex".into());
+    request.mcp_servers.clear();
+    request.effort = None;
+    let plan = plan_launch(&request)?;
+    let tail: Vec<&str> = plan.argv.iter().skip(10).map(String::as_str).collect();
+    assert_eq!(
+        tail,
+        [
+            "-m",
+            "gpt-synthetic-codex",
+            "--dangerously-bypass-hook-trust",
+            "resume",
+            CODEX_SESSION,
+            "And the tests",
+        ]
+    );
+    assert!(
+        !plan
+            .argv
+            .iter()
+            .any(|a| a == "--dangerously-bypass-approvals-and-sandbox")
+    );
+    assert_eq!(plan.session_id.as_deref(), Some(CODEX_SESSION));
+    request.mode = LaunchMode::Resume {
+        session_id: CODEX_SESSION.into(),
+        prompt: Some("ignored".into()),
+        continue_interrupted: true,
+    };
+    let plan = plan_launch(&request)?;
+    assert_eq!(
+        plan.argv.last().map(String::as_str),
+        Some("Continue from where you left off.")
+    );
+    Ok(())
+}
+
+/// SPEC-451 CDX-002: a Codex plan needs its home and a Codex credential; a Claude plan a Claude
+/// one.
+#[test]
+fn codex_plans_refuse_a_missing_home_or_another_credential() {
+    let mode = LaunchMode::New {
+        session_id: None,
+        prompt: None,
+    };
+    let mut request = codex_request(mode.clone(), true);
+    request.codex_home = None;
+    assert_eq!(plan_launch(&request), Err(LaunchError::MissingCodexHome));
+    let mut request = codex_request(mode.clone(), true);
+    request.credential = Credential::ClaudeOauthToken(Secret::new(CLAUDE_TOKEN.into()));
+    assert_eq!(
+        plan_launch(&request),
+        Err(LaunchError::CredentialMismatch(Harness::Codex))
+    );
+    let mut request = claude_request(mode, true);
+    request.credential = Credential::CodexAuthJson(Secret::new(CODEX_AUTH.as_bytes().to_vec()));
+    assert_eq!(
+        plan_launch(&request),
+        Err(LaunchError::CredentialMismatch(Harness::ClaudeCode))
+    );
+    let mut request = codex_request(
+        LaunchMode::New {
+            session_id: None,
+            prompt: None,
+        },
+        true,
+    );
+    request.credential = Credential::CodexAuthJson(Secret::new(Vec::new()));
+    assert_eq!(
+        plan_launch(&request),
+        Err(LaunchError::Invalid("credential"))
+    );
 }

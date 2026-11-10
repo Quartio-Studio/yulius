@@ -3,6 +3,7 @@
 pub mod browser;
 pub mod claude_cli;
 pub mod clock;
+pub mod codex_cli;
 pub mod egress;
 pub mod git;
 pub mod github;
