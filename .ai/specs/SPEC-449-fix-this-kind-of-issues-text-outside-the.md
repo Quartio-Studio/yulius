@@ -1,11 +1,11 @@
 ---
 yulius-task: e05d3bd9-f5b4-4ecc-afbc-028834951cc6
-status: in-progress
+status: done
 ---
 
 # SPEC-449: Text stays inside its box
 
-Status: in-progress
+Status: done
 Date: 2026-11-10
 Owner: Yulius task #431
 Scope authorization: task #431 (`/goal`, with a screenshot of the Git page's board: the card of
@@ -83,8 +83,9 @@ inside the box. The class of defect is caught by a test, not one screenshot at a
 - [x] A sweep fails on text that runs out of its box on the pages that show tasks
 - [x] Long words wrap inside their box everywhere, by one base rule
 - [x] The board card's icon stays on its first line and the New task hint fits a narrow sidebar
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
+- [ ] Final review approves the delivered head
 
 ## Acceptance criteria
 
@@ -125,3 +126,36 @@ inside the box. The class of defect is caught by a test, not one screenshot at a
   Archive all label stays readable to screen readers; its rule repeats `.sr-only`'s, since a
   class cannot be applied from a container query.
 - **The existing per-class `overflow-wrap` rules stay.** Each is an element's own choice.
+
+## Evidence
+
+- **Test first.** Commit `4dca9d74` added the sweep, and all 18 of its tests failed on dev's CSS.
+  The text escaped the board card by 92, 197 and 92 px at 1440, 768 and 390 px. The task overview
+  scrolled sideways by 33 px at 390 px. The New task hint ran 25 px out of the 200 px sidebar.
+  Each later review round added its tests before its fix, and they failed first:
+  - `32f62061` (round 1): 18 of 21 tests failed on the `anywhere`-on-`body` CSS of `31d4209b`,
+    mostly on short words broken in the sidebar's group heads, the pipeline filters and tables.
+  - `84b7750f` (round 2): the two state-icon tests failed with
+    `iconOnFirstLine: false`.
+- **Mutation checks.** Removing the two `anywhere` rules (`.dl-card-line`, `.gt-state`) fails the
+  Git page, task overview and board card tests. Putting `anywhere` back on `body` fails 18 of 21.
+- `npx e2e run tests/text-fits.e2e.ts`: 24 passed at `ac3cda67`.
+- `npx e2e run` (full suite, at `ac3cda67`): 76 files passed and 1 skipped; 902 tests passed and
+  2 skipped.
+- `scripts/dev ci` (at `ac3cda67`, after `python3 scripts/bootstrap.py` in this fresh worktree):
+  exit 0. nextest ran 3284 tests: 3284 passed, 16 skipped.
+- `yulius security-scan`: **disabled**. It printed "Security scan disabled: Vidoc is turned off in
+  Yulius, for this project or the whole instance; nothing was scanned." This means nothing was
+  scanned, not that the scan passed.
+- **Independent review** in a fresh read-only session (`om-code-review`):
+  - Round 1, REQUEST CHANGES. Global `anywhere` broke short labels mid-word. The sweep measured
+    before loading, missed vertical overflow and boxes inside boxes, and counted transparent
+    borders. Docs overclaimed, and one page was missing. Fixed: `break-word` base, two-way sweep.
+  - Round 2, APPROVE at `4a299bfc`, with two lows and three nits. The lows were TXT-001's wording
+    and the shared `.gt-state`'s icon and unswept Git review page. The nits were the Archive all
+    threshold for multi-digit counts, the CI page's bare loading bar, and a broken comment. All
+    were fixed. Not changed: the Plan item titles, which the task's steps match by title; the
+    `.sr-only` rule is repeated because a class cannot be applied from a container query.
+  - Every finding was in this change's own code. The pre-existing stale state of a task's Git
+    review page is filed as #1147.
+
