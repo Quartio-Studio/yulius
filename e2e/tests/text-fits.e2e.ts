@@ -115,3 +115,23 @@ test('a Git board card wraps a long Needs you line inside the card, its icon on 
   });
   await expect.poll(placed).toEqual({ inside: true, wraps: true, iconOnFirstLine: true });
 });
+
+// The sweep's finding: the sidebar is 200 px below 1024 px and can be dragged as narrow anywhere
+// (UI-044), and the New task button's shortcut hint ran out of it. It gives way when there is no
+// room and shows again when there is; the button's tooltip still names it.
+test('the New task button keeps its text inside at every sidebar width', async ({ app, browser, screen }) => {
+  await browser.setViewport({ width: 1440, height: 900 });
+  await app.open(mock('/s/studio/tasks'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Tasks');
+  const splitter = screen.getByRole('separator', 'Resize sidebar');
+  const hint = browser.locator('.btn-newtask .newtask-key');
+  await expect(hint).toBeVisible();
+  await splitter.press('Home');
+  await expect(splitter).toHaveAttribute('aria-valuenow', '200');
+  await expect.poll(() => textOutside(browser)).toEqual([]);
+  await expect(hint).toBeHidden();
+  await expect(browser.locator('.btn-newtask')).toHaveAttribute('title', /^New task \(.+\)$/);
+  await splitter.press('End');
+  await expect(hint).toBeVisible();
+  await expect.poll(() => textOutside(browser)).toEqual([]);
+});

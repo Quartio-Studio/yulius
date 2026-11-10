@@ -354,7 +354,7 @@ p { margin: 0; }
 /* The sidebar lines up like a chat list: rows are cards 6 px from the edge with 12 px inside; every
    leading mark (logo, plus, nav icon, group icon, state tile, avatar) sits in a 36 px slot, so all
    text starts on one line. */
-.sidebar-top { padding: 16px 6px 8px; }
+.sidebar-top { padding: 16px 6px 8px; container: sidebar-top / inline-size; }
 .sidebar-brand { display: flex; align-items: center; gap: 12px; padding: 0 12px 16px; color: var(--text); }
 .sidebar-brand:hover { text-decoration: none; }
 .brand-logo {
@@ -374,6 +374,9 @@ p { margin: 0; }
 .btn-newtask:hover { background: var(--surface-3); border-color: var(--border-strong); text-decoration: none; }
 .newtask-key { margin-left: auto; color: var(--muted); font-size: var(--fs-sm); line-height: var(--lh-sm); font-weight: 400; letter-spacing: 0.04em; }
 @media (pointer: coarse) { .newtask-key { display: none; } }
+/* A narrow sidebar (200 px below 1024 px, or dragged so) has no room for the hint (SPEC-449); the
+   button's tooltip still names the shortcut. */
+@container sidebar-top (width < 240px) { .newtask-key { display: none; } }
 .newtask-plus {
   display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; margin: 0 4px; flex: none;
   border-radius: 50%; background: var(--accent); color: var(--accent-ink);
@@ -1975,7 +1978,9 @@ a.dl-task:hover { text-decoration: underline; }
 .dl-card-title { display: flex; align-items: flex-start; gap: 8px; font-weight: 500; }
 .dl-card-title .dl-task { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .dl-dot { flex: none; width: 8px; height: 8px; margin-top: 6px; border-radius: 50%; background: var(--warn); }
-.dl-card-line { display: flex; align-items: center; gap: 2px; color: var(--text-2); font-size: var(--fs-sm); line-height: var(--lh-sm); }
+.dl-card-line { display: flex; align-items: flex-start; gap: 2px; color: var(--text-2); font-size: var(--fs-sm); line-height: var(--lh-sm); }
+/* A label that wraps keeps its icon beside its first line (SPEC-449). */
+.dl-card-line > .glyph { flex: none; height: var(--lh-sm); }
 .dl-card-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .dl-deliver { margin-left: auto; }
 .dl-event { display: flex; align-items: center; gap: 12px; padding: 8px 12px 8px 16px; font-size: var(--fs-sm); line-height: var(--lh-sm); }
