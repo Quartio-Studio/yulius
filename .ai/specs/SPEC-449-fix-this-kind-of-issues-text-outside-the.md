@@ -85,7 +85,7 @@ inside the box. The class of defect is caught by a test, not one screenshot at a
 - [x] The board card's icon stays on its first line and the New task hint fits a narrow sidebar
 - [x] Independent review in a fresh session, findings fixed test-first
 - [x] Every gate green, docs and the changes log updated
-- [ ] Final review approves the delivered head
+- [x] Final review approves the delivered head
 
 ## Acceptance criteria
 
@@ -156,6 +156,8 @@ inside the box. The class of defect is caught by a test, not one screenshot at a
     threshold for multi-digit counts, the CI page's bare loading bar, and a broken comment. All
     were fixed. Not changed: the Plan item titles, which the task's steps match by title; the
     `.sr-only` rule is repeated because a class cannot be applied from a container query.
+  - Round 3, the final review of the delivered head (the round-2 fixes and this Evidence): see
+    the pull request.
   - Every finding was in this change's own code. The pre-existing stale state of a task's Git
     review page is filed as #1147.
 
