@@ -4214,6 +4214,30 @@ async fn an_idle_superagents_strays_are_reaped_after_the_bound() -> TestResult {
     Ok(())
 }
 
+/// SPEC-449 SDP-001 (#1110): an idle Superagent's strays are first seen when the probe that found
+/// them was asked, so the bound passing while it runs (under load, the test above moved the clock
+/// there) counts and does not start it again.
+#[tokio::test]
+async fn an_idle_superagents_strays_are_seen_when_their_probe_was_asked() -> TestResult {
+    let f = fixture().await?;
+    idle_conversation(&f)?;
+    f.gate.report_strays(vec![leaked_job(500, 77)]);
+    let clock = Arc::clone(&f.h.clock);
+    let bound = f.h.app.config.stray_reap_after_ms;
+    f.gate.during_probe(Box::new(move || {
+        clock.0.fetch_add(bound, Ordering::SeqCst);
+    }));
+    cockpit_id(&f, &f.alice).await?;
+    wait_for("the strays to be reaped", || !f.gate.reaped().is_empty()).await?;
+    assert_eq!(
+        f.gate.reaped_after(),
+        vec![(2, leaked_job(500, 77))],
+        "reaped at the second probe, the bound after the first was asked"
+    );
+    f.h.app.end_all_shells().await;
+    Ok(())
+}
+
 /// SPEC-355 SLR-004: a prompt written while the probe runs keeps the strays (the Superagent is in
 /// a turn again), and its turn's processes are not probed; once the turn ends they are reaped.
 #[tokio::test]
