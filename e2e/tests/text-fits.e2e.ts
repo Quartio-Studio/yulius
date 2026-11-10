@@ -60,35 +60,39 @@ const giveLongText = (browser: Browser) => browser.evaluate(([action, title]) =>
   m.touchTask('sb_studio', 11, { title });
 }, [URL_ACTION, LONG_TITLE]);
 
-// SPEC-449 TXT-003: the pages of responsive.e2e.ts, at a wide window, a tablet and a phone.
+// SPEC-449 TXT-003: the pages of responsive.e2e.ts, at a wide window, a tablet and a phone. The
+// last field is the long text the page shows once it has redrawn (measured only after that); the
+// other pages are swept with their own mock content.
 const pages = [
-  ['git', '/s/studio/git', 'Git'],
-  ['tasks', '/s/studio/tasks', 'Tasks'],
-  ['home', '/', 'Sandboxes'],
-  ['task', '/s/studio/t/12', null],
-  ['task overview', '/s/studio/tasks/12', '#12 Checkout API'],
-  ['dashboard', '/s/studio/dashboard', 'Dashboard'],
-  ['sessions', '/s/studio/sessions', 'Sessions'],
-  ['CI', '/s/studio/ci', 'CI/CD'],
-  ['CD', '/s/studio/ci?section=cd', 'CI/CD'],
-  ['workflows', '/s/studio/workflows', 'Workflows'],
-  ['skills', '/s/studio/skills', 'Skills'],
-  ['automations', '/s/studio/automations', 'Automations'],
-  ['automation editor', '/s/studio/automations/aut_1', 'Edit automation'],
-  ['MCP', '/s/studio/mcp', 'MCP'],
-  ['secrets', '/s/studio/secrets', 'Secrets'],
-  ['pipeline', '/s/studio/dashboard?section=pipeline', 'Dashboard'],
-  ['settings', '/settings', 'Settings'],
+  ['git', '/s/studio/git', 'Git', 'console.typesafe'],
+  ['tasks', '/s/studio/tasks', 'Tasks', 'PaymentIntentConfirmation'],
+  ['home', '/', 'Sandboxes', null],
+  ['task', '/s/studio/t/12', null, 'console.typesafe'],
+  ['task overview', '/s/studio/tasks/12', '#12 Checkout API', 'console.typesafe'],
+  ['dashboard', '/s/studio/dashboard', 'Dashboard', null],
+  ['sessions', '/s/studio/sessions', 'Sessions', null],
+  ['CI', '/s/studio/ci', 'CI/CD', null],
+  ['CD', '/s/studio/ci?section=cd', 'CI/CD', null],
+  ['workflows', '/s/studio/workflows', 'Workflows', null],
+  ['skills', '/s/studio/skills', 'Skills', null],
+  ['automations', '/s/studio/automations', 'Automations', null],
+  ['automation editor', '/s/studio/automations/aut_1', 'Edit automation', null],
+  ['MCP', '/s/studio/mcp', 'MCP', null],
+  ['secrets', '/s/studio/secrets', 'Secrets', null],
+  ['pipeline', '/s/studio/dashboard?section=pipeline', 'Dashboard', null],
+  ['settings', '/settings', 'Settings', null],
 ] as const;
 
-for (const [name, path, heading] of pages) {
+for (const [name, path, heading, shows] of pages) {
   test(`the ${name} page keeps long text inside its boxes at 1440, 768 and 390 px`, async ({ app, browser, screen }) => {
     await app.open(mock(path));
     if (heading) await expect(screen.getByRole('heading', { level: 1 })).toHaveText(heading);
     else await expect(browser.locator('.task-row:has-text("Checkout API")').first()).toBeVisible();
     await giveLongText(browser);
-    // A sandbox's pages list its tasks: the long title is shown before the text is measured.
-    if (path.startsWith('/s/')) await expect(browser.locator('.task-row:has-text("PaymentIntentConfirmationDialogContainer")').first()).toBeAttached();
+    if (shows) {
+      await expect.poll(() => browser.evaluate((text) => (document.querySelector('#main')?.textContent || '').includes(text), shows),
+        { message: `the ${name} page shows ${shows}` }).toBe(true);
+    }
     for (const width of [1440, 768, 390]) {
       await browser.setViewport({ width, height: 900 });
       await expect.poll(() => textOutside(browser), { message: `text out of its box at ${width} px` }).toEqual([]);
