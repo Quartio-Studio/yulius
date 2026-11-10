@@ -45,14 +45,19 @@ inside the box. The class of defect is caught by a test, not one screenshot at a
   200 px sidebar's group names ("Done" over four lines, out of its 32 px head), the pipeline
   filters, the automation runs table. The sweep, with the word check added, fails 18 of 21 tests
   on that version. Done's Archive all also ran 40 px out of its head at 768 px, before any change.
+- **Out of scope, found on the way.** A task's Git review (`pages/gittask.js`) computes the
+  task's state once when it opens and never follows it (#1147, present on dev before this
+  change). The sweep opens each page after giving the long text, so it does not depend on that.
 
 ## Requirements
 
 - **TXT-001 Long words wrap, short ones do not break.** A word longer than its box breaks inside
-  it, and no element's min-content width changes, so a layout where text fits is unchanged and a
-  word of at most 12 characters is never broken across lines. Free text that is a flex item and
-  may hold a URL (the board card's line, the task overview's state) may shrink below its longest
-  word. Text meant to stay on one line keeps doing so: `white-space: nowrap` with an ellipsis,
+  it, and no element's min-content width changes, so a layout where text fits is unchanged. A box
+  sized narrower than a word (a fixed column, a `min-width: 0` item) breaks that word now instead
+  of letting it run out; on the swept pages and widths no word of at most 12 characters breaks
+  across lines (TXT-003). Free text that is a flex item and may hold a URL (the board card's line,
+  a task's state on its overview and Git review) may shrink below its longest word, its icon
+  beside the first line. Text meant to stay on one line keeps doing so: `white-space: nowrap` with an ellipsis,
   code and terminal views, and scrolling areas are unchanged.
 - **TXT-002 The board card.** On the Git page, a board card whose label holds a long URL keeps the
   whole label inside the card at 1440, 768 and 390 px, the status icon beside its first line.
@@ -63,13 +68,14 @@ inside the box. The class of defect is caught by a test, not one screenshot at a
   around it, the page or the window scrolls sideways, or a word of at most 12 characters is broken
   across lines. Contents an ancestor clips or scrolls first are intended and do not count. Pages
   are measured once loaded (no skeleton) and after two animation frames; a page that shows the
-  long text (Git, Tasks, the task view, the task overview) only once it does. The pages are those
-  of `responsive.e2e.ts` plus the task view.
+  long text (Git, Tasks, the task view, the task overview, a task's Git review) only once it does;
+  each page is opened after the long text is given. The pages are those of `responsive.e2e.ts`
+  plus the task view and a task's Git review.
 - **TXT-004 The New task button.** Its text stays inside it at every sidebar width: the shortcut
   hint gives way when the sidebar is too narrow and shows when it is wide; the button's tooltip
   still names the shortcut.
-- **TXT-005 Archive all.** In a narrow task list (the 200 px sidebar) Done's Archive all keeps its
-  icon inside the group head and its name for screen readers; a wide list shows its label.
+- **TXT-005 Archive all.** In a task list under 270 px (as in the 200 px sidebar) Done's Archive all
+  keeps its icon inside the group head and its name for screen readers; a wide list shows its label.
 
 ## Plan
 
@@ -88,8 +94,9 @@ inside the box. The class of defect is caught by a test, not one screenshot at a
 
 ## Test plan
 
-- `e2e/tests/text-fits.e2e.ts`: the sweep (TXT-003) over the 17 pages of `responsive.e2e.ts` and
-  the task view; a check that the board card's label is inside the card, wraps and has its icon
+- `e2e/tests/text-fits.e2e.ts`: the sweep (TXT-003) over the 17 pages of `responsive.e2e.ts`, the
+  task view and a task's Git review; the task's state on its overview and Git review at 390 px
+  (TXT-001, icon on the first line); a check that the board card's label is inside the card, wraps and has its icon
   centred on the first line's rect (TXT-002); the New task button at every sidebar width from 200
   to 296 px in the splitter's steps, and at its widest (TXT-004); Archive all at 768 and 1440 px
   (TXT-005). They fail on the old code (test first).
@@ -103,7 +110,7 @@ inside the box. The class of defect is caught by a test, not one screenshot at a
   overflow-wrap: break-word }` breaks a word longer than its box and changes no min-content width,
   so nothing that fits today moves. Only `anywhere` lets a flex item shrink below its URL, and on
   `body` it broke short labels everywhere (review round 1), so it is set on the two items that
-  hold free text (`.dl-card-line`, `.gt-state`). See
+  hold free text (`.dl-card-line`, `.gt-state`), each with its icon on the first line (round 2). See
   [ADR-0289](../../docs/decisions/0289-long-words-wrap-by-default-and-a-sweep-keeps-text-inside-its-box.md).
 - **The sweep checks both directions.** Text past its box catches the reported class; a short
   word broken across lines catches the opposite (wrapping that squeezes a label). A box is the
@@ -113,6 +120,8 @@ inside the box. The class of defect is caught by a test, not one screenshot at a
   half-leading over a tight line-height.
 - **Container queries, not media queries, for the sidebar.** The sidebar can be dragged to 200 px
   at any window width, so the window's width does not say whether the New task hint (hidden under
-  a 240 px sidebar top; it needs about 226 px) or the Archive all label (hidden under a 250 px
-  task list) fits. The hidden Archive all label stays readable to screen readers, like `.sr-only`.
+  a 240 px sidebar top; it needs about 226 px) or the Archive all label (hidden under a 270 px
+  task list: it needs about 241 px with a one-digit count, 7 px per further digit) fits. The hidden
+  Archive all label stays readable to screen readers; its rule repeats `.sr-only`'s, since a
+  class cannot be applied from a container query.
 - **The existing per-class `overflow-wrap` rules stay.** Each is an element's own choice.

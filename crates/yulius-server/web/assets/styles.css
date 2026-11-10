@@ -416,8 +416,9 @@ button.task-group-head:hover { color: var(--text); }
 /* Done's "Archive all" (SPEC-062) sits after the count; it reads as a button, not a heading. */
 .task-group-action { margin-right: -8px; text-transform: none; letter-spacing: normal; font-weight: 500; }
 .task-group-action[aria-disabled="true"] { opacity: 0.4; cursor: progress; }
-/* A narrow list (a 200 px sidebar) keeps Archive all's icon; its name stays for screen readers (SPEC-449). */
-@container tasks (width < 250px) { .task-group-action-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; } }
+/* A narrow list (a 200 px sidebar) keeps Archive all's icon; its name stays for screen readers
+   (SPEC-449). The head needs about 241 px with the label and a one-digit count, 7 px per digit more. */
+@container tasks (width < 270px) { .task-group-action-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; } }
 /* Working's "Show as a graph" (SPEC-164): an icon after the count. */
 .task-group-graph { width: 24px; height: 24px; margin-left: 4px; color: var(--muted); }
 /* Sidebar task rows: one compact line — state icon on the nav icons' axis, pull request, title on
@@ -786,7 +787,9 @@ body.resizing iframe, body.resizing canvas { pointer-events: none; }
 /* Phones: the title takes its own line above the buttons instead of breaking inside words. */
 @media (max-width: 767px) { .gt-title-row { flex-wrap: wrap; } .gt-title { flex-basis: 100%; } }
 .gt-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; color: var(--text-2); font-size: var(--fs-sm); line-height: var(--lh-sm); }
-.gt-state { display: inline-flex; align-items: center; gap: 6px; min-width: 0; overflow-wrap: anywhere; }
+.gt-state { display: inline-flex; align-items: flex-start; gap: 6px; min-width: 0; overflow-wrap: anywhere; }
+/* A state that wraps (a Needs you link) keeps its icon beside its first line (SPEC-449). */
+.gt-state > .glyph { flex: none; height: var(--lh-sm); }
 .gt-branch { display: inline-flex; align-items: center; gap: 4px; height: var(--control-sm); padding: 0 8px; border: 1px solid var(--border-strong); border-radius: var(--radius-full); color: var(--text); font-size: var(--fs-xs); line-height: var(--lh-xs); }
 .gt-stat { font-family: var(--font-mono); font-size: var(--fs-sm); line-height: var(--lh-sm); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .gt-add { color: var(--ok-fg); }

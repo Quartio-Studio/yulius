@@ -27,12 +27,12 @@ so nothing saw text leave its own box.
   inherits. A word longer than its box breaks inside it. Min-content widths are unchanged, so no
   box gets narrower than its words, and a layout where text fits is unchanged.
 - **`anywhere` only where free text is a flex item.** The board card's status line
-  (`.dl-card-line`) and the task overview's state (`.gt-state`) opt into `overflow-wrap:
-  anywhere`, so their text item can shrink below its URL. The board card's icon sits beside the
-  first line.
+  (`.dl-card-line`) and a task's state on its overview and Git review (`.gt-state`) opt into
+  `overflow-wrap: anywhere`, so their text item can shrink below its URL. Their icon sits beside
+  the first line.
 - **A sweep for the class.** `e2e/tests/text-fits.e2e.ts` gives the mock's tasks a long URL in a
-  Needs you request and a long word in a title. It opens the responsive suite's pages and the task
-  view at 1440, 768 and 390 px, after loading and two animation frames, and fails on any of:
+  Needs you request and a long word in a title. It opens the responsive suite's pages, the task
+  view and a task's Git review at 1440, 768 and 390 px, after loading and two animation frames, and fails on any of:
   - visible text past the nearest ancestor with a visible border or a background;
   - such a box past the next box around it;
   - the page or the window scrolling sideways;
@@ -43,7 +43,7 @@ so nothing saw text leave its own box.
 - **What the sweep found besides the card is fixed too.**
   - The New task button's shortcut hint hides when the sidebar's top is under 240 px
     (a container query, since the sidebar can be dragged to 200 px at any window width).
-  - Done's Archive all keeps only its icon when the task list is under 250 px, and keeps its
+  - Done's Archive all keeps only its icon when the task list is under 270 px, and keeps its
     name for screen readers.
   - The Tasks list's column names stay on one line.
 
@@ -64,9 +64,9 @@ so nothing saw text leave its own box.
 - A long word in a block of text breaks inside its box. A long word in a flex or grid item still
   widens the item unless that item opts into `anywhere`. The sweep finds such a case on the swept
   pages when the mock shows long text there; the long text reaches the Git page, Tasks, the task
-  view and the task overview.
+  view, the task overview and a task's Git review.
 - Text that previously ran a little past a box that was too narrow, harmlessly, now breaks inside
   it. The Tasks column names hit this and were made `nowrap`. Other cases outside the swept pages
   may need the same.
 - The existing per-class `anywhere` rules stay, each on purpose for its own element.
-- The sweep adds about a minute of e2e time: 18 pages at 3 widths, about 2 s each.
+- The sweep adds about a minute of e2e time: 19 pages at 3 widths, about 2 s each.
