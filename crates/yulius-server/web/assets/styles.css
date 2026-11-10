@@ -256,7 +256,7 @@ p { margin: 0; }
 .modal-full { width: min(1100px, calc(100vw - 32px)); height: calc(100vh - 48px); }
 .modal-head { display: flex; align-items: center; gap: 8px; padding: 12px 12px 12px 16px; border-bottom: 1px solid var(--border); }
 .modal-title { flex: 1; font-family: var(--font-display); font-size: var(--fs-lg); line-height: var(--lh-lg); }
-.modal-body { padding: 16px 16px; overflow: auto; flex: 1; min-height: 0; }
+.modal-body { padding: 16px 16px; overflow: auto; flex: 1 1 auto; min-height: 0; }
 .modal-full .modal-body { display: flex; flex-direction: column; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--border); }
 

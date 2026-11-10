@@ -6,6 +6,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-10
 
+- Dialogs show their whole content in Safari (SPEC-448). Every dialog's body was 32 px tall in
+  Safari (WebKit resolves the body's `0%` flex basis to zero in an auto-height dialog), so Add
+  subscription, New playground, Import repository and the rest showed one row and scrolled the
+  rest. The body now takes its content's height; Chrome is unchanged.
+
 - A person is never stuck on a subscription (SPEC-447, task #429). Each task shows the subscription
   it runs on (its strip, the Tasks list), and "Run #N on…" moves a running or waiting task to the
   one they choose in the same session, or continues an ended task there; a choice above the pool's
