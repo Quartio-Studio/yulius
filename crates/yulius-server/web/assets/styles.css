@@ -14,6 +14,9 @@ body {
   font: var(--fs)/var(--lh) var(--font);
   -webkit-font-smoothing: antialiased;
   overflow: hidden;
+  /* A word longer than its line (a URL, a path) breaks inside its box, and a flex or grid item
+     holding it can shrink below that word (SPEC-449, ADR-0289). nowrap text keeps its ellipsis. */
+  overflow-wrap: anywhere;
 }
 button, input, select, textarea { font: inherit; color: inherit; }
 a { color: var(--accent-fg); text-decoration: none; } /* link text: the text-safe accent (4.5:1) */
