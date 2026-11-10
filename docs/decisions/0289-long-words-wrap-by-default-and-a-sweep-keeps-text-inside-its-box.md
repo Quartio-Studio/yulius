@@ -31,8 +31,9 @@ saw text leave its own box.
   draws a box (a border on both sides or a background), or when the page scrolls sideways. A box
   that clips or scrolls (an ellipsis, a wide table) holds its text on purpose and ends the search.
 - **Fixed where the sweep found more.** The board card's status icon sits on its label's first
-  line, and the New task button's shortcut hint gives way in the 200 px sidebar of a narrower
-  window (the button's tooltip still names it).
+  line, and the New task button's shortcut hint gives way when the sidebar is under 240 px wide
+  (200 px below 1024 px, or dragged so), by a container query on the sidebar's top; the button's
+  tooltip still names it.
 
 ## Alternatives
 
@@ -51,4 +52,4 @@ saw text leave its own box.
   pushing past its row; the responsive suite's overlap checks and this sweep pass with it.
 - A new element showing user or agent text needs no rule of its own, and the sweep catches one
   that still escapes (for example through `nowrap`) on the swept pages.
-- The sweep adds about two minutes of e2e time (17 pages, 3 widths).
+- The sweep adds under a minute of e2e time (17 pages, 3 widths, about 2 s each page).
