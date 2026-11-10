@@ -58,6 +58,7 @@ pub mod mcp_watch;
 pub mod merge_train;
 pub mod metrics_recount;
 pub mod model;
+mod moves;
 pub mod needs_you;
 pub mod notes;
 pub mod onboarding;

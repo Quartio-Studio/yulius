@@ -161,12 +161,16 @@ impl App {
     pub async fn task_summary(&self, task: &TaskRecord) -> AppResult<TaskSummary> {
         let store = &self.deps.store;
         let steps = store.steps(&task.id).await?;
-        let account_label = match store.live_attempt(&task.id).await? {
+        // A removed subscription is no task's (SPEC-447): neither its name nor its id is shown.
+        let (account_id, account_label) = match store.live_attempt(&task.id).await? {
             Some(attempt) => match attempt.account_id {
-                Some(id) => store.account(&id).await?.map(|a| a.label),
-                None => None,
+                Some(id) => match store.account(&id).await? {
+                    Some(account) => (Some(id.to_string()), Some(account.label)),
+                    None => (None, None),
+                },
+                None => (None, None),
             },
-            None => None,
+            None => (None, None),
         };
         let (after, next) = self.chain_links(task).await;
         let times = store.task_times(&task.id).await?;
@@ -214,6 +218,7 @@ impl App {
             steps: progress(&steps),
             archived: task.archived_at.is_some(),
             account_label,
+            account_id,
             // The sign-in email is for administrators (UI-022), and summaries go to everyone who
             // sees the task: only `task_detail` adds it, for an administrator (SPEC-244).
             account_email: None,

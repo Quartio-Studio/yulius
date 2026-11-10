@@ -4,6 +4,17 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-10
+
+- A person is never stuck on a subscription (SPEC-447, task #429). Each task shows the subscription
+  it runs on (its strip, the Tasks list), and "Run #N on…" moves a running or waiting task to the
+  one they choose in the same session, or continues an ended task there; a choice above the pool's
+  98 % but below the limit is honoured. Removing a subscription always works: its tasks move to
+  another one or wait, and nothing runs on it again. A task that moved because its subscription
+  was refused or removed says so in one line naming both, and one with no usable subscription left
+  is under Needs you. A refused subscription's card says "Claude refused it: …". Everyone signed in
+  gets subscription ids from `/api/status`.
+
 ## 2026-11-09
 
 - A subscription that stops working moves its task to a working one (ROT-010, task #428's

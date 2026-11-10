@@ -107,6 +107,9 @@ pub enum Point {
     /// Joining through a guest link (SPEC-410): the guest's account exists; their session does
     /// not yet. The path is the link's id.
     GuestJoined,
+    /// `launch_attempt` (SPEC-447): a subscription was chosen and its credential opened; the run's
+    /// attempt is not recorded yet. The path is the task id.
+    AccountChosen,
 }
 
 #[cfg(feature = "test-support")]

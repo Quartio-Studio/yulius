@@ -856,7 +856,7 @@ async fn one_login_per_account_bounded_logins_and_delete_cancels() -> TestResult
 }
 
 #[tokio::test]
-async fn account_crud_permissions_usage_and_in_use_guard() -> TestResult {
+async fn account_crud_permissions_usage_and_removal_in_use() -> TestResult {
     let s = setup().await?;
     configure_github_app(&s.h).await?;
     let alice = admit_and_sign_in(&s.h, &s.admin, "alice", 11, false).await?;
@@ -968,7 +968,7 @@ async fn account_crud_permissions_usage_and_in_use_guard() -> TestResult {
         )
         .await?;
 
-    // A live task uses the account: deletion is refused.
+    // A live task uses the account: removal still works, and its task moves (SPEC-447 MOV-003).
     insert_live_attempt(&s.h, &id).await?;
     let list = call(&s.h.router, Method::GET, "/api/admin/accounts", None, &bob).await?;
     let account = &list.body[0];
@@ -982,9 +982,9 @@ async fn account_crud_permissions_usage_and_in_use_guard() -> TestResult {
     );
     assert!(account["usage"]["secondary"].is_null());
     assert_eq!(account["usage"]["observed_at"], "2026-10-07T00:00:00Z");
-    let refused = call(&s.h.router, Method::DELETE, &path, None, &bob).await?;
-    assert_eq!(refused.status, StatusCode::CONFLICT);
-    assert!(s.h.store.account(&id).await?.is_some());
+    let removed = call(&s.h.router, Method::DELETE, &path, None, &bob).await?;
+    assert_eq!(removed.status, StatusCode::NO_CONTENT, "{}", removed.body);
+    assert!(s.h.store.account(&id).await?.is_none());
     Ok(())
 }
 

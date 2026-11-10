@@ -779,12 +779,14 @@ async fn status_shows_vm_capacity_visible_sandboxes_and_role_scoped_accounts() -
     assert_eq!(a["status"], "ok");
     assert_eq!(a["usage"]["primary"]["used_percent"], 55.5);
     assert!(a["usage"]["secondary"].is_null());
-    for hidden in ["id", "last_error", "in_use_by", "priority", "enabled"] {
+    for hidden in ["last_error", "in_use_by", "priority", "enabled"] {
         assert!(
             a.get(hidden).is_none(),
             "{hidden} is for administrators only"
         );
     }
+    // Members name a subscription when they move their task to it (SPEC-447 MOV-004).
+    assert!(a["id"].as_str().is_some_and(|id| !id.is_empty()), "{a}");
     let b = by(&s["accounts"], "label", "Claude B")?;
     assert!(b["usage"]["primary"].is_null(), "unknown usage stays null");
 

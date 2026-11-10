@@ -3,7 +3,9 @@
 ## Status
 
 Accepted. Specified in [SPEC-057](../../.ai/specs/SPEC-057-tasks-marked-as-done-are-still-attached.md)
-(task #48). It extends SPEC-050 SES-101 to the subscription pool and keeps TSK-014.
+(task #48). It extends SPEC-050 SES-101 to the subscription pool and keeps TSK-014. Amended by
+[ADR-0288](0288-a-person-moves-a-task-between-subscriptions-and-removing-one-moves-its-tasks.md):
+removal is no longer refused while a working task uses the subscription; its tasks move.
 
 ## Context
 

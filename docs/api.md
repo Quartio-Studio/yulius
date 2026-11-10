@@ -323,8 +323,8 @@ limited to the agent's sandbox.
 | POST | `/api/tasks/{tid}/pause` | write | → `TaskSummary`; its owner pauses a `running` task (SPEC-191, ADR-0154): its run is frozen, or held at its turn boundary when it cannot be (`pause.pending` until then); `pause: {"by":"person","user","since","pending"}`; pausing again changes nothing; 409 for any other state; audited `task.paused_by_person`; publishes `task.updated` |
 | POST | `/api/tasks/{tid}/resume` | write | → `TaskSummary`; ends a person's pause and thaws the run (while an update holds the task, the update thaws it); nothing for a task that is not paused; audited `task.resumed_by_person` |
 | POST | `/api/tasks/{tid}/stop` | write | → `TaskSummary`; a `stopping` task is stopped again: its escalation is armed anew (a run whose processes could not be ended is retried, SPEC-065); 409 when the task is not live, or when it keeps changing after 4 rounds (SPEC-250) |
-| POST | `/api/tasks/{tid}/continue` | write | `{"account_id?"}` → `TaskSummary`; resumes the latest session natively, on the best Claude subscription (the pool's choice; `account_id` is an operator override the web UI never sends); 403 for a `cli` token on a `pending` sandbox's onboarding task (starting onboarding is a person's action: the browser or an `operate` token, SPEC-051, SPEC-247) |
-| POST | `/api/tasks/{tid}/switch` | write | `{"account_id?"}` → `TaskSummary`; operator override: moves a running task to another Claude subscription with a native resume. Tasks are subscription-agnostic (F 2026-10-10): the web UI offers no account choice; the pool switches by itself |
+| POST | `/api/tasks/{tid}/continue` | write | `{"account_id?"}` → `TaskSummary`; resumes the latest session natively, on the best Claude subscription (the pool's choice; `account_id` is the subscription a person chose (the task view's "Continue on…", SPEC-447); a subscription that no longer exists is refused (429, "That subscription no longer exists.")); 403 for a `cli` token on a `pending` sandbox's onboarding task (starting onboarding is a person's action: the browser or an `operate` token, SPEC-051, SPEC-247) |
+| POST | `/api/tasks/{tid}/switch` | write | `{"account_id?"}` → `TaskSummary`: moves a running or waiting (`waiting_capacity`, with or without a process) task to the Claude subscription a person chose, or the pool's best other one without `account_id`, in the same session: past a limit, its first message again, a held prompt typed again, a turn cut mid-way told to go on, nothing typed into an idle one (SPEC-447 MOV-001). A choice is honoured below 100 % of every window binding the task (the pool's 98 % does not refuse it); 429 with one sentence naming the subscription otherwise ("… needs a new sign-in", "… is at its usage limit"); 409 "Resume the task first." while a person paused it. The task view's subscription button ("Run #N on…") calls it; an ended task's "Continue on…" calls `/continue` with `account_id` |
 | POST | `/api/tasks/{tid}/archive` · `/restore` | write | → `TaskSummary` |
 | DELETE | `/api/tasks/{tid}` | write | → 204; deletes a resting task permanently with its records, run directories, local worktree and branch (TSK-009); its attachments stay while another task's request or an automation's prompt names them, otherwise they wait 7 days in the trash (SPEC-396, `attachments_trash`); a Done running task (TSK-014) is closed first and deleted once its run has ended; the close and its wait take at most ~25 s (SPEC-039); 409 while any other task runs (at once, also for a task that turned switching meanwhile), if a Done task's session is still closing then, or if its session could not be ended (its processes survived termination; SPEC-065) |
 | POST | `/api/tasks/{tid}/control-request` | write | → `TaskSummary`; asks the task's owner for control (SPEC-070, ADR-0060): it would act on GitHub as you. One request waits per task: 409 for the owner and while another person's request waits (naming them); asking again changes nothing. With the owner disabled, deleted or without write access, control passes at once (`owner` is you), whatever request waits; a waiting asker who can no longer work gives way (their request dropped, `task.control_dropped`). Audited `task.control_requested` |
@@ -351,7 +351,7 @@ TaskSummary = {
   "control_request": {"by": {"login": "…"}, "at": "…"}|null,
   "created_at": "…", "updated_at": "…", "state_since": "…", "working_since": "…|null",
   "steps": {"done": 3, "total": 7, "current": "Implement API|null", "percent": 42, "active_percent": 14},
-  "archived": false, "account_label": "Claude #2|null",
+  "archived": false, "account_label": "Claude #2|null", "account_id?": "…",
   "mode": "goal|prompt",
   "resumes_at": "2026-10-09T08:20:00Z|null",
   "waits_for_account": false,
@@ -1465,7 +1465,7 @@ resolves to nothing, the run gets the server without that variable or token.
 | GET | `/api/admin/accounts` | instance admin | `[Account]` |
 | POST | `/api/admin/accounts` | instance admin | `{"provider":"anthropic","label"}` → 201 `{"account":Account,"login_id"}` (status `pending_login`) then use the login terminal; nothing is created when the login cannot start |
 | PATCH | `/api/admin/accounts/{id}` | instance admin | `{"label"}` (trimmed, 1–80 printable chars) → `Account`: renames the subscription (the Subscriptions page edits the name in place, SPEC-244; audited `account.updated`); the pool has no priority, order or on/off switch (F 2026-10-10): any other field is `invalid` (422) |
-| DELETE | `/api/admin/accounts/{id}` | instance admin | → 204; 409 while a task that is not Done uses it; Done tasks' idle sessions on it are closed first (`closed`, as archiving does; 409 if one is still closing), SPEC-057; cancels its running login |
+| DELETE | `/api/admin/accounts/{id}` | instance admin | → 204, also while tasks use it (SPEC-447 MOV-003): it is deleted first, so nothing chooses it again; Done tasks' idle sessions on it are closed (`closed`, as archiving does, SPEC-057) and every other task with a run on it moves to another subscription in the same session or waits for one (its terminal says so; with nothing usable left it is under Needs you), so every run on it ends (a launch that chose it just before chooses again). It answers once the Done sessions are closed; the moves go on after the answer, each waiting for a start or switch under way. A task its person paused, or whose move is refused, is stopped instead, saying why. Cancels its running login |
 | POST | `/api/admin/accounts/{id}/relogin` | instance admin | → `{"account":Account,"login_id"}`; replaces a running login of the account |
 | WS | `/api/admin/accounts/login/{login_id}/terminal` | instance admin | login terminal (below) |
 | POST | `/api/admin/accounts/login/{login_id}/cancel` | instance admin | → `{"status":"cancelled|ok|error|running"}`: stops a running login and waits (at most 15 s) for its end. Its process is stopped and its temporary directory removed; the account keeps its state (`cancelled`), unless the output already held a complete token, which is sealed (`ok`). `running` when it had not ended within the wait. Audited `account.login_cancelled`. Once ended, nothing changes and the answer is how it ended; 404 for an unknown or expired login (SPEC-243) |
@@ -1613,8 +1613,9 @@ Status = {
 
 VM fields are `null` when unknown (CPU needs two readings). Disk figures describe the volume
 holding the data directory. `sandboxes` lists only sandboxes the caller can see; `sessions` is
-instance-wide. Account `id`, `email` (when known, SPEC-244), `last_error` and `in_use_by` are
-present only for instance administrators.
+instance-wide. Account `email` (when known, SPEC-244), `last_error` and `in_use_by` are present
+only for instance administrators; `id` is for everyone signed in, who names it to move a task to
+it (SPEC-447 MOV-004).
 
 ```json
 CapacityView = {

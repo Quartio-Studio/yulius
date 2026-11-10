@@ -290,7 +290,7 @@ function seed(params) {
   db.accounts = [
     { id: 'acc_c1', provider: 'anthropic', email: 'mkarp@example.com', label: 'Claude #1', status: 'ok', usage: { primary: { used_percent: 42.0, resets_at: isoIn(2.2 * HOUR), window_minutes: 300 }, secondary: { used_percent: 18.5, resets_at: isoIn(4 * DAY), window_minutes: 10080 }, observed_at: iso(2 * MIN) }, last_error: null, in_use_by: 1 },
     { id: 'acc_c2', provider: 'anthropic', email: 'team@example.com', label: 'Claude #2', status: 'ok', usage: { primary: { used_percent: 87.3, resets_at: isoIn(1.1 * HOUR), window_minutes: 300 }, secondary: { used_percent: 61.0, resets_at: isoIn(2 * DAY), window_minutes: 10080 }, observed_at: iso(1 * MIN) }, last_error: 'usage: Usage updates again in about 12 min.', in_use_by: 3 },
-    { id: 'acc_c3', provider: 'anthropic', email: 'ops@example.com', label: 'Claude #3', status: 'relogin', usage: { primary: null, secondary: null, observed_at: null }, last_error: 'OAuth refresh token expired; sign in again.', in_use_by: 0 },
+    { id: 'acc_c3', provider: 'anthropic', email: 'ops@example.com', label: 'Claude #3', status: 'relogin', usage: { primary: null, secondary: null, observed_at: null }, last_error: 'Your organization has disabled Claude subscription access for Claude Code', in_use_by: 0 },
     { id: 'acc_x1', provider: 'anthropic', email: 'pawel@example.com', label: 'Claude #4', status: 'ok', usage: { primary: { used_percent: 12.0, resets_at: isoIn(3.5 * HOUR), window_minutes: 300 }, secondary: { used_percent: 33.0, resets_at: isoIn(5 * DAY), window_minutes: 10080 }, observed_at: iso(4 * MIN) }, last_error: null, in_use_by: 2 },
     { id: 'acc_x2', provider: 'anthropic', email: 'studio@example.com', label: 'Claude #5', status: 'limited', usage: { primary: { used_percent: 99.6, resets_at: isoIn(1.9 * HOUR), window_minutes: 300 }, secondary: { used_percent: 71.0, resets_at: isoIn(3 * DAY), window_minutes: 10080 }, observed_at: iso(30e3) }, last_error: null, in_use_by: 0 },
     { id: 'acc_x3', provider: 'anthropic', email: null, label: 'Claude spare', status: 'ok', usage: { primary: { used_percent: 0.5, resets_at: null, window_minutes: 300 }, secondary: null, observed_at: iso(3 * DAY) }, last_error: null, in_use_by: 0 },
@@ -1700,6 +1700,8 @@ route('POST', `/api/tasks/${ID}/switch`, ({ db, p, body }) => {
   if (!['running', 'waiting_capacity'].includes(task.status)) fail(409, 'conflict', 'Only running tasks can switch.');
   const from = task.account_label;
   const account = db.accounts.find((a) => a.id === body.account_id);
+  // A person's choice: refused only when it cannot take the task (SPEC-447 MOV-002).
+  if (account && !['ok', 'limited'].includes(account.status)) fail(429, 'capacity', `${account.label} needs a new sign-in, so it cannot take the task.`);
   touch(db, task, { status: 'switching' });
   later(() => {
     touch(db, task, { status: 'running', activity: 'waiting', account_label: account ? account.label : 'Claude #1' });
@@ -3822,9 +3824,21 @@ route('DELETE', `/api/admin/accounts/${ID}`, ({ db, p }) => {
   adminOnly(db);
   const account = db.accounts.find((a) => a.id === p[0]);
   if (!account) fail(404, 'not_found', 'not found');
-  if (account.in_use_by > 0) fail(409, 'conflict', `${account.label} is used by ${account.in_use_by} live task(s)`);
   for (const session of db.logins.values()) if (session.accountId === account.id && !session.done) session.end('cancelled', null);
   db.accounts = db.accounts.filter((a) => a.id !== p[0]);
+  // Its tasks move to another subscription, or wait for one (SPEC-447 MOV-003, MOV-006).
+  const other = db.accounts.find((a) => a.status === 'ok' || a.status === 'limited');
+  for (const task of db.tasks) {
+    if (task.account_label !== account.label || !['running', 'waiting_capacity'].includes(task.status)) continue;
+    const session = db.sessions.get(task.id);
+    if (other) {
+      touch(db, task, { status: 'running', account_label: other.label });
+      if (session) session.notice(`↻ ${account.label} was removed: this session continues on ${other.label}.`);
+    } else {
+      touch(db, task, { status: 'waiting_capacity', activity: null, account_label: null, waits_for_account: true });
+      if (session) session.notice(`⏸ ${account.label} was removed. No Claude subscription is left to continue on: sign one in again or add one in Subscriptions, and the task continues by itself.`);
+    }
+  }
   return json(204);
 });
 // Refreshes the provider's usage windows; an account that must sign in again gets the provider's 502.
@@ -4178,7 +4192,7 @@ route('GET', '/api/status', ({ db }) => {
     sandboxes: db.sandboxes.map((s) => ({ id: s.id, slug: s.slug, name: s.name, live_sessions: db.tasks.filter((t) => t.sandbox_id === s.id && !t.archived && ['starting', 'running', 'switching', 'stopping'].includes(t.status)).length })),
     accounts: db.accounts.map((a) => (admin
       ? { label: a.label, ...(a.email ? { email: a.email } : {}), provider: a.provider, status: a.status, usage: a.usage, id: a.id, last_error: a.last_error, in_use_by: a.in_use_by }
-      : { label: a.label, provider: a.provider, status: a.status, usage: a.usage })),
+      : { label: a.label, provider: a.provider, status: a.status, usage: a.usage, id: a.id })),
     contained: db.me.instance.contained,
   };
 });

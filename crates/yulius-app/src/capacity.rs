@@ -315,6 +315,8 @@ impl App {
 
     /// Closes the open pause of a task, if any (the task resumed, ended or was stopped).
     pub(crate) async fn end_pause(&self, task_id: &TaskId, outcome: &str) {
+        // A task that no longer waits needs nobody for a subscription (SPEC-447 MOV-006).
+        self.end_no_subscription_request(task_id).await;
         if let Err(err) = self
             .deps
             .store

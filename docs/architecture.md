@@ -387,6 +387,33 @@ sequenceDiagram
     N->>T: the lost turn, redone
 ```
 
+## Moving a task off its subscription
+
+A task leaves its subscription for three reasons besides the pool's own rotation
+([SPEC-447](../.ai/specs/SPEC-447-subscriptions-switch-by-hand-delete-one.md),
+[decision 0288](decisions/0288-a-person-moves-a-task-between-subscriptions-and-removing-one-moves-its-tasks.md)):
+a person chooses another from the task (`POST /api/tasks/{tid}/switch`), a person removes the
+subscription (`DELETE /api/admin/accounts/{id}`), or Claude refuses it (`Observed::AccessLost`,
+which marks it `relogin`). All three go through `App::move_task` (`moves.rs`), which picks the
+switch that fits where the task stands (past a limit, the first message again, a held prompt, a
+cut turn told to go on) and lets the pool pick when no subscription is named; with nowhere to go
+the launch pauses the task. A removal deletes the row first, so `choose_account`, which reads only
+stored accounts, can never pick it again, then ends every run on it. `App::tell_left` writes the
+one-line notice and, with nothing usable left, the task's Needs you, which `end_pause` ends.
+
+```mermaid
+flowchart LR
+  P["Person: Run #N on…"] -->|"switch_task (Trigger::Manual, < 100 %)"| M["move_task"]
+  D["Person: Remove"] -->|"delete row, close Done sessions"| M
+  R["Claude refuses (AccessLost)"] -->|"relogin, rotate"| M
+  M -->|"switch_from: end run, start_run_if"| C{"choose_account"}
+  C -->|"a subscription"| RUN["Same session on it"]
+  C -->|"none"| W["waiting_capacity"]
+  D --> T["tell_left: one line"]
+  R --> T
+  T -->|"nothing usable left"| N["Needs you, ended with the pause"]
+```
+
 ## Subscription names and emails
 
 A subscription (an `accounts` row) has the name a person gives it and the email of the Claude

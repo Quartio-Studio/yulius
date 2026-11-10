@@ -811,13 +811,15 @@ Vidoc off, it also says `Vidoc scans are switched off for the instance`.
    requests it opens are authored by the GitHub App, and merging or releasing, which act as a
    person on GitHub, are done on GitHub or after signing in with GitHub as an admitted user.
 5. User menu → Administration → Subscriptions: add Claude subscriptions; each login runs Claude's own sign-in in a
-   terminal in the browser. They form one pool with nothing to configure: tasks are
-   subscription-agnostic; Yulius places them on the capacity that expires soonest, moves them at
+   terminal in the browser. They form one pool with nothing to configure: Yulius places them on the capacity that expires soonest, moves them at
    98% at a turn boundary, pauses them (without telling the agent) only while no subscription has
    capacity left and resumes them by itself. The capacity panel there and on the Dashboard says
    when to add subscriptions (SPEC-002 ADR-17). Claude's sign-in here (`claude setup-token`) may
    not read Claude's usage endpoint (it lacks the `user:profile` scope), so a subscription's usage
    shows once a task runs on it: the running sessions report it through Claude Code's status line.
+   A subscription Claude refuses (a cancelled or downgraded plan) is marked "Sign in again" with
+   Claude's words and its tasks move on; Remove works while tasks use it and moves them; a person
+   runs a task on the subscription they choose from the task's subscription button (SPEC-447).
    Do this before importing: until a Claude account is usable, Yulius refuses every agent start a
    person asks for, Start onboarding included (SPEC-246, ADR-0190).
 6. Import or create projects (sandboxes). Product and Studio are detected and get the `product` and
