@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted. Supersedes the `opus` alias of SPEC-011 HRN-012; specified in
+Superseded by [ADR-0289](0289-tasks-default-to-fable-5-2-at-max-effort.md) for the model and effort;
+the rest stands. Supersedes the `opus` alias of SPEC-011 HRN-012; specified in
 [SPEC-023](../../.ai/specs/SPEC-023-make-sure-the-default-model-is-always-op.md).
 
 ## Context
