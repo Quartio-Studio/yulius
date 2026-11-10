@@ -37,7 +37,10 @@ The rest of what the owner met is this decision's subject:
 - **Removing always works.** `DELETE /api/admin/accounts/{id}` deletes the row first, so no later
   choice can pick it, then closes Done tasks' idle sessions on it (ADR-0040) and moves every other
   task with a run on it to the pool's choice, in the same session, or lets it wait. Every run on
-  it ends; a move that is refused (ROT-014) stops that task instead.
+  it ends: a launch that chose it before the deletion checks again once its run is recorded and
+  chooses again; a move waits for a start or switch under way; a task its person paused (an
+  administrator never resumes it) or whose move is refused (ROT-014) is stopped, saying why. The
+  request answers once Done sessions are closed; the moves go on after it.
 - **Said in one line.** A task that moved because its subscription was refused or removed says so
   in its terminal, naming both ("↻ Claude a was removed: this session continues on Claude b.").
   When no usable subscription is left, the line says so and the task gets a Needs you ("Sign a
@@ -64,5 +67,5 @@ A person is never stuck on a subscription: they move the task or remove the subs
 owner's sequence (stop, remove, continue) runs on the subscription left, as before, and now also
 the paths around it end every run on a removed subscription. A task moved by hand onto a nearly
 full subscription may pause again at its next turn boundary by the pool's rule. Account ids reach
-members; they are opaque keys, not credentials. Removing a subscription with working tasks takes
-as long as their switches (bounded by the switch timeout) before the request answers.
+members (and `TaskSummary.account_id`); they are opaque keys, not credentials. The request to
+remove a subscription answers before its tasks have moved; each says so in its terminal.

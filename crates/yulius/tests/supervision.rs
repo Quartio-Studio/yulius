@@ -1463,13 +1463,20 @@ fn removing_a_subscription_closes_done_tasks_and_moves_working_ones() -> TestRes
                 .is_none()
         );
         assert_eq!(task(&app, &first).await?.status, TaskStatus::Closed);
-        assert_eq!(
-            task(&app, &second).await?.status,
-            TaskStatus::WaitingCapacity
-        );
-        for id in [&first, &second] {
-            assert!(app.deps.store.live_attempt(id).await?.is_none());
-        }
+        assert!(app.deps.store.live_attempt(&first).await?.is_none());
+        // The working one moves by itself after the answer: nothing is left, so it waits.
+        wait_for("the wait", Duration::from_secs(60), || async {
+            task(&app, &second)
+                .await
+                .is_ok_and(|t| t.status == TaskStatus::WaitingCapacity)
+                && app
+                    .deps
+                    .store
+                    .live_attempt(&second)
+                    .await
+                    .is_ok_and(|a| a.is_none())
+        })
+        .await?;
         support::stop_tasks(&app, &[&second]).await?;
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;

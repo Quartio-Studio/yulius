@@ -846,13 +846,14 @@ impl App {
     }
 
     /// Deletes an account and its sealed credential, also while tasks run or wait on it (SPEC-447
-    /// MOV-003). It is deleted first, so nothing chooses it from then on; Done tasks' idle sessions
-    /// on it are closed, as archiving does (SPEC-057 SUB-003), and every other task with a run on
-    /// it moves to another subscription in the same session, or waits for one. Every run on it
-    /// ends. A running login of the account is cancelled.
+    /// MOV-003). It is deleted first, so nothing chooses it from then on (a launch that chose it
+    /// just before chooses again); Done tasks' idle sessions on it are closed, as archiving does
+    /// (SPEC-057 SUB-003), and every other task with a run on it moves to another subscription in
+    /// the same session, or waits for one. Every run on it ends. A running login of the account is
+    /// cancelled. The closes and moves go on by themselves after the answer.
     ///
     /// # Errors
-    /// `NotFound`, `Forbidden`, or a Done session that could not be closed.
+    /// `NotFound`, `Forbidden`, store failures before the deletion.
     pub async fn delete_account(self: &Arc<Self>, ctx: &AuthContext, id: &str) -> AppResult<()> {
         self.require_instance_admin(ctx)?;
         let account = self.load_account(id).await?;
@@ -871,56 +872,90 @@ impl App {
                 Some(&account.label),
             )
             .await?;
-        let on_it: Vec<_> = store
-            .live_attempts()
-            .await?
-            .into_iter()
-            .filter(|a| a.account_id.as_ref() == Some(&account.id))
-            .map(|a| a.task_id)
-            .collect();
-        // Together, so removal takes one close escalation or switch, not one per task.
-        let mut ends = tokio::task::JoinSet::new();
+        let on_it: Vec<_> = match store.live_attempts().await {
+            Ok(live) => live
+                .into_iter()
+                .filter(|a| a.account_id.as_ref() == Some(&account.id))
+                .map(|a| a.task_id)
+                .collect(),
+            Err(err) => {
+                tracing::error!(error = %err, "listing the runs on a removed subscription failed");
+                Vec::new()
+            }
+        };
+        // Done sessions close together, so removal takes one close escalation, not one per task,
+        // and answers once they are closed. Moves go on by themselves: a switch under way may
+        // take its time, and a closed request does not cut them short.
+        let mut closes = Vec::new();
         for task in on_it {
             let app = Arc::clone(self);
-            let label = account.label.clone();
-            ends.spawn(async move {
-                let Some(record) = app.deps.store.task(&task).await? else {
-                    return Ok(());
-                };
-                if app.task_is_done_locally(&record).await {
-                    return app.close_task_and_wait(&task).await;
-                }
-                app.move_off_removed(&task, label).await;
-                Ok(())
-            });
-        }
-        let mut failed = None;
-        for ended in ends.join_all().await {
-            if let Err(err) = ended {
-                failed = Some(err);
+            let gone = (account.id.clone(), account.label.clone());
+            let record = match store.task(&task).await {
+                Ok(Some(record)) => record,
+                _ => continue,
+            };
+            if self.task_is_done_locally(&record).await {
+                closes.push(tokio::spawn(async move {
+                    if let Err(err) = app.close_task_and_wait(&task).await {
+                        tracing::warn!(task = %task, error = %err, "closing a Done task on a removed subscription failed");
+                    }
+                }));
+            } else {
+                tokio::spawn(async move { app.move_off_removed(&task, &gone.0, gone.1).await });
             }
         }
-        failed.map_or(Ok(()), Err)
+        for close in closes {
+            let _ = close.await;
+        }
+        Ok(())
     }
 
-    /// Moves a task off a removed subscription (MOV-003) and says so (MOV-006). A move that is
-    /// refused (ROT-014) stops the task instead: nothing runs on a removed subscription.
-    async fn move_off_removed(self: &Arc<Self>, task: &yulius_domain::ids::TaskId, label: String) {
+    /// Moves a task off a removed subscription (MOV-003) and says so (MOV-006). A start, switch or
+    /// stop under way is let finish first, and the task is looked at again: only a run still on
+    /// the removed subscription moves. A task its person paused, or one whose move is refused
+    /// (ROT-014), is stopped instead: nothing runs on a removed subscription, and an
+    /// administrator's removal never resumes a person's pause.
+    async fn move_off_removed(
+        self: &Arc<Self>,
+        task: &yulius_domain::ids::TaskId,
+        removed: &yulius_domain::ids::AccountId,
+        label: String,
+    ) {
         let left = crate::moves::Left::Removed { label };
-        if let Err(err) = self.move_task(task, None, "removed").await {
-            tracing::warn!(task = %task, error = %err, "moving a task off a removed subscription failed; stopping it");
-            self.runtime(task).hub.notice(format!(
-                "■ {} and this session could not move to another one ({}): the task stopped. \
-                 Continue starts it on another subscription.",
-                left.said(),
-                err.public_message()
-            ));
-            if let Err(err) = self.stop_task_now(task).await {
-                tracing::warn!(task = %task, error = %err, "stopping a task on a removed subscription failed");
+        let deadline = self.now().0 + yulius_domain::task::SWITCH_TIMEOUT_MS;
+        let stop_why = loop {
+            match self.deps.store.live_attempt(task).await {
+                Ok(Some(attempt)) if attempt.account_id.as_ref() == Some(removed) => {}
+                _ => return,
             }
-            return;
+            if self.is_paused_by_person(task).await {
+                break "while you paused it, so it stopped here".to_owned();
+            }
+            match self.move_task(task, None, "removed").await {
+                Ok(()) => {
+                    self.tell_left(task, &left).await;
+                    return;
+                }
+                // Another start, switch or stop holds the task: look again once it settles.
+                Err(AppError::Conflict(_)) if self.now().0 < deadline => {
+                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                }
+                Err(err) => {
+                    tracing::warn!(task = %task, error = %err, "moving a task off a removed subscription failed; stopping it");
+                    break format!(
+                        "and this session could not move to another one ({}), so it stopped",
+                        err.public_message()
+                    );
+                }
+            }
+        };
+        self.runtime(task).hub.notice(format!(
+            "■ {} {stop_why}. Continue starts it on another subscription.",
+            left.said()
+        ));
+        if let Err(err) = self.stop_task_now(task).await {
+            tracing::warn!(task = %task, error = %err, "stopping a task on a removed subscription failed");
         }
-        self.tell_left(task, &left).await;
     }
 
     /// Starts a new login for an existing account (replacing a running one).

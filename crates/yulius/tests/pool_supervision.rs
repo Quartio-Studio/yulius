@@ -1720,6 +1720,15 @@ fn a_refused_subscription_moves_the_task_to_a_working_one() -> TestResult {
         let _ = refresh(&app, &user, "a-first").await;
         let record = app.deps.store.account(&refused).await?.ok_or("account")?;
         assert_eq!(record.status, AccountStatus::Relogin);
+        // Nor does it erase why (SPEC-447 MOV-005).
+        assert!(
+            record
+                .last_error
+                .as_deref()
+                .is_some_and(|e| e.contains("disabled Claude subscription access")),
+            "{:?}",
+            record.last_error
+        );
         stop(&app, &id).await?;
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;

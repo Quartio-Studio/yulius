@@ -117,6 +117,12 @@ impl App {
             "⏸ {said}. No Claude subscription is left to continue on: sign one in again or add \
              one in Subscriptions, and the task continues by itself."
         ));
+        // A request already open (the agent's question) stays: the task is under Needs you anyway.
+        if let Ok(Some(open)) = store.task_needs_you(task_id).await
+            && open.action != NO_SUBSCRIPTION_ACTION
+        {
+            return;
+        }
         let request = NeedsYouRecord {
             action: NO_SUBSCRIPTION_ACTION.into(),
             happened: Some(format!("{said}.")),
@@ -134,6 +140,11 @@ impl App {
             Err(err) => {
                 tracing::warn!(task = %task_id, error = %err, "recording a Needs you failed")
             }
+        }
+        // A subscription that came meanwhile may have started it already: then nobody is needed.
+        if !matches!(store.task(task_id).await, Ok(Some(t)) if t.status == TaskStatus::WaitingCapacity)
+        {
+            self.end_no_subscription_request(task_id).await;
         }
     }
 

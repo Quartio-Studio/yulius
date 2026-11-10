@@ -351,7 +351,7 @@ TaskSummary = {
   "control_request": {"by": {"login": "…"}, "at": "…"}|null,
   "created_at": "…", "updated_at": "…", "state_since": "…", "working_since": "…|null",
   "steps": {"done": 3, "total": 7, "current": "Implement API|null", "percent": 42, "active_percent": 14},
-  "archived": false, "account_label": "Claude #2|null",
+  "archived": false, "account_label": "Claude #2|null", "account_id?": "…",
   "mode": "goal|prompt",
   "resumes_at": "2026-10-09T08:20:00Z|null",
   "waits_for_account": false,
@@ -1465,7 +1465,7 @@ resolves to nothing, the run gets the server without that variable or token.
 | GET | `/api/admin/accounts` | instance admin | `[Account]` |
 | POST | `/api/admin/accounts` | instance admin | `{"provider":"anthropic","label"}` → 201 `{"account":Account,"login_id"}` (status `pending_login`) then use the login terminal; nothing is created when the login cannot start |
 | PATCH | `/api/admin/accounts/{id}` | instance admin | `{"label"}` (trimmed, 1–80 printable chars) → `Account`: renames the subscription (the Subscriptions page edits the name in place, SPEC-244; audited `account.updated`); the pool has no priority, order or on/off switch (F 2026-10-10): any other field is `invalid` (422) |
-| DELETE | `/api/admin/accounts/{id}` | instance admin | → 204, also while tasks use it (SPEC-447 MOV-003): it is deleted first, so nothing chooses it again; Done tasks' idle sessions on it are closed (`closed`, as archiving does, SPEC-057) and every other task with a run on it moves to another subscription in the same session or waits for one (its terminal says so; with nothing usable left it is under Needs you), so every run on it ends; a move that is refused stops that task. Cancels its running login |
+| DELETE | `/api/admin/accounts/{id}` | instance admin | → 204, also while tasks use it (SPEC-447 MOV-003): it is deleted first, so nothing chooses it again; Done tasks' idle sessions on it are closed (`closed`, as archiving does, SPEC-057) and every other task with a run on it moves to another subscription in the same session or waits for one (its terminal says so; with nothing usable left it is under Needs you), so every run on it ends (a launch that chose it just before chooses again). It answers once the Done sessions are closed; the moves go on after the answer, each waiting for a start or switch under way. A task its person paused, or whose move is refused, is stopped instead, saying why. Cancels its running login |
 | POST | `/api/admin/accounts/{id}/relogin` | instance admin | → `{"account":Account,"login_id"}`; replaces a running login of the account |
 | WS | `/api/admin/accounts/login/{login_id}/terminal` | instance admin | login terminal (below) |
 | POST | `/api/admin/accounts/login/{login_id}/cancel` | instance admin | → `{"status":"cancelled|ok|error|running"}`: stops a running login and waits (at most 15 s) for its end. Its process is stopped and its temporary directory removed; the account keeps its state (`cancelled`), unless the output already held a complete token, which is sealed (`ok`). `running` when it had not ended within the wait. Audited `account.login_cancelled`. Once ended, nothing changes and the answer is how it ended; 404 for an unknown or expired login (SPEC-243) |

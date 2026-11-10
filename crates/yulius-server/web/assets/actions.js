@@ -175,6 +175,7 @@ export function continueTask(ctx, task) {
 /** Why a subscription cannot take a task a person moves (SPEC-447 MOV-002), or null. */
 function cannotTake(account) {
   if (['relogin', 'error', 'pending_login'].includes(account.status)) return 'Needs a new sign-in';
+  if (account.status === 'limited') return 'At its usage limit';
   const usage = account.usage || {};
   const full = [usage.primary, usage.secondary].some((w) => w && Number(w.used_percent) >= 100);
   return full ? 'At its usage limit' : null;
@@ -207,12 +208,14 @@ export async function openSubscriptionMenu(ctx, anchor, task) {
   openMenu(anchor, [
     { header: moving ? `Run #${task.number} on…` : `Continue #${task.number} on…` },
     ...accounts.map((account) => {
-      const current = account.label === task.account_label;
-      const why = current ? null : cannotTake(account);
+      const current = task.account_id ? account.id === task.account_id : account.label === task.account_label;
+      const why = cannotTake(account);
+      // A running task is on it already; a waiting one may start on it all the same (MOV-002).
+      const here = current && task.status === 'running';
       return {
         label: account.label,
-        description: current ? 'Runs on it now' : why || useLine(account),
-        disabled: current || Boolean(why),
+        description: here ? 'Runs on it now' : why || (current ? `Waits on it · ${useLine(account)}` : useLine(account)),
+        disabled: here || Boolean(why),
         onSelect: () => (moving
           ? taskPost(ctx, task, 'move', () => ctx.api.post(`/api/tasks/${enc(task.id)}/switch`, { account_id: account.id }), `#${task.number} moves to ${account.label}…`)
           : taskPost(ctx, task, 'continue', () => ctx.api.post(`/api/tasks/${enc(task.id)}/continue`, { account_id: account.id }), `Continuing #${task.number} on ${account.label}…`)),
