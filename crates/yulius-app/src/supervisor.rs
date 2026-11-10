@@ -1279,6 +1279,12 @@ impl App {
         let lineage = store.provider_sessions(&task.id).await?;
         let previous = lineage.last().cloned();
         let harness = task.harness;
+        // A subscription asked for and removed since (after the switch's preflight) is no choice
+        // any more: the pool chooses, as for a launch that chose it just before (SPEC-447).
+        let requested = match requested {
+            Some(id) if store.account(&id).await?.is_none() => None,
+            other => other,
+        };
         let Some(account) = self.choose_account(&task, requested.as_ref()).await? else {
             // No subscription has capacity: the task waits before starting, without a process
             // (ROT-010); the resume loop starts it when capacity returns. A turn a limit cut

@@ -628,3 +628,41 @@ fn a_removal_keeps_a_request_already_open() -> TestResult {
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
 }
+
+/// The subscription a person moves a task to is removed while the switch is under way (review of
+/// SPEC-447, round 2): the pool chooses instead, and the task goes on, never stopped.
+#[test]
+fn a_move_to_a_subscription_removed_meanwhile_goes_where_the_pool_chooses() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let app = build_with(&data, &fake, probe.clone(), agent())?;
+        let (id, user) = running_on_first(&app, &probe, &data).await?;
+        let ctx = ctx(&app, &user).await?;
+        let (at, go) = hold(yulius_app::race::Point::SwitchDecided, &id);
+        let switching = {
+            let (app, ctx, id) = (app.clone(), ctx.clone(), id.clone());
+            tokio::spawn(async move {
+                app.switch_task(
+                    &ctx,
+                    id.as_str(),
+                    &ContinueTask {
+                        account_id: Some("b-second".into()),
+                    },
+                )
+                .await
+            })
+        };
+        reached(at).await?;
+        app.delete_account(&ctx, "b-second").await?;
+        go.send(())?;
+        switching.await??;
+        runs_on(&app, &id, "a-first").await?;
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}

@@ -896,8 +896,11 @@ impl App {
             };
             if self.task_is_done_locally(&record).await {
                 closes.push(tokio::spawn(async move {
+                    // A session that could not be closed (typed into meanwhile, or not ending in
+                    // time) still never stays on it: it moves, or stops.
                     if let Err(err) = app.close_task_and_wait(&task).await {
-                        tracing::warn!(task = %task, error = %err, "closing a Done task on a removed subscription failed");
+                        tracing::warn!(task = %task, error = %err, "closing a Done task on a removed subscription failed; moving it");
+                        app.move_off_removed(&task, &gone.0, gone.1).await;
                     }
                 }));
             } else {
@@ -922,7 +925,10 @@ impl App {
         label: String,
     ) {
         let left = crate::moves::Left::Removed { label };
-        let deadline = self.now().0 + yulius_domain::task::SWITCH_TIMEOUT_MS;
+        let deadline = tokio::time::Instant::now()
+            + std::time::Duration::from_millis(
+                u64::try_from(yulius_domain::task::SWITCH_TIMEOUT_MS).unwrap_or(120_000),
+            );
         let stop_why = loop {
             match self.deps.store.live_attempt(task).await {
                 Ok(Some(attempt)) if attempt.account_id.as_ref() == Some(removed) => {}
@@ -937,7 +943,7 @@ impl App {
                     return;
                 }
                 // Another start, switch or stop holds the task: look again once it settles.
-                Err(AppError::Conflict(_)) if self.now().0 < deadline => {
+                Err(AppError::Conflict(_)) if tokio::time::Instant::now() < deadline => {
                     tokio::time::sleep(std::time::Duration::from_millis(250)).await;
                 }
                 Err(err) => {
