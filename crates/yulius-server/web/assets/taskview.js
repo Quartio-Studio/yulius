@@ -832,12 +832,13 @@ export function mountTaskView(ctx, sandbox, task) {
       ? h('button', { type: 'button', class: 'chip strip-extra account-chip', 'aria-haspopup': 'menu', title: `${accountTitle}: choose another`, onClick: (event) => openSubscriptionMenu(ctx, event.currentTarget, current) }, icon('key', { size: 12 }), accountText)
       : runsOn ? h('span', { class: 'chip strip-extra account-chip', title: accountTitle }, icon('key', { size: 12 }), runsOn) : null;
     setChildren(extrasEl,
-      account,
       supertask,
       auto ? h('span', { class: 'chip strip-extra auto-chip', title: auto.title }, icon('zap', { size: 12 }), auto.text)
         : current.mode === 'goal' ? h('span', { class: 'chip strip-extra', title: 'Runs as a goal (/goal): the agent keeps working until it is met' }, 'Goal') : null,
       after,
-      next);
+      next,
+      // Last, so it gives way first: Task details and the Tasks list name it too.
+      account);
     fitStrip();
   }
 

@@ -426,7 +426,8 @@ function statusSection(key, iconName, title, summary, body, openByDefault) {
  * Render GET /api/status (`StatusView`: vm, sessions, sandboxes, accounts, contained) so it reads
  * in seconds: one health line, machine tiles, then sandboxes and accounts as collapsible lists.
  * VM fields are null when unknown (CPU needs two readings) and render as "—"/"unknown", never as
- * zero. Account id/last_error/in_use_by are present for admins only.
+ * zero. Account last_error/in_use_by are present for admins only (their presence marks an admin's
+ * view); every signed-in person gets the id (SPEC-447).
  */
 export function renderStatus(data) {
   const vm = data.vm || {};
@@ -479,7 +480,7 @@ export function renderStatus(data) {
       h('div', { class: 'status-facts' }, facts)),
     sandboxes.length ? statusSection('sandboxes', 'folder', 'Sandboxes', `${liveTotal} running in ${busy} of ${sandboxes.length}`, h('div', { class: 'status-rows' }, sandboxRows), false) : null,
     statusSection('accounts', 'user', 'Subscriptions', accounts.length ? accountSummary : 'none yet',
-      accounts.length === 0 ? h('div', { class: 'muted small' }, 'No subscriptions yet.') : h('div', { class: 'account-list' }, [...troubled, ...accounts.filter((a) => !troubled.includes(a))].map((a) => accountUsage(a, { foldable: true, open: troubled.includes(a), showEmail: Boolean(a.id) }))), troubled.length > 0 || accounts.length <= 3),
+      accounts.length === 0 ? h('div', { class: 'muted small' }, 'No subscriptions yet.') : h('div', { class: 'account-list' }, [...troubled, ...accounts.filter((a) => !troubled.includes(a))].map((a) => accountUsage(a, { foldable: true, open: troubled.includes(a), showEmail: a.in_use_by !== undefined }))), troubled.length > 0 || accounts.length <= 3),
   ];
 }
 

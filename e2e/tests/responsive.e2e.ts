@@ -250,7 +250,7 @@ test('the step strip gives way whole chips by priority and never passes its edge
     ],
   });
   await expect(browser.locator('.taskview .strip-pr')).toHaveText(/^PR #520/);
-  await expect.poll(async () => (await stripFit(browser)).chips).toEqual(['Supertask', 'Auto → Goal · Feature', 'After #12', 'Then #14', 'Then #11']);
+  await expect.poll(async () => (await stripFit(browser)).chips).toEqual(['Supertask', 'Auto → Goal · Feature', 'After #12', 'Then #14', 'Then #11', 'Claude #2']);
   // The fit follows the resize at the next frame: the whole check is polled.
   const fits = async () => {
     await expect.poll(() => layoutProblems(browser)).toEqual({ overlaps: [], sideways: false });
@@ -265,7 +265,7 @@ test('the step strip gives way whole chips by priority and never passes its edge
   // No panel: everything shows on a wide window, and a narrower one only drops chips (the page
   // scrolled sideways at 980-990 px).
   await browser.setViewport({ width: 1920, height: 900 });
-  await expect.poll(async () => (await fits()).shown).toHaveLength(5);
+  await expect.poll(async () => (await fits()).shown).toHaveLength(6);
   for (const width of [990, 980]) {
     await browser.setViewport({ width, height: 900 });
     await fits();
@@ -320,16 +320,16 @@ test('a narrow strip beside a panel shows no chip even when one fits', async ({ 
   await app.open(mock('/s/studio/t/12'));
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#12 Checkout API');
   await touchTask(browser, 12, { nextLinks: [{ task_id: 'tsk_studio_14', number: 14, title: 'Start the preview server', status: 'chained', blocked: null }] });
-  await expect.poll(async () => (await stripFit(browser)).shown).toEqual(['Then #14']);
+  await expect.poll(async () => (await stripFit(browser)).shown).toEqual(['Then #14', 'Claude #2']);
   await screen.getByRole('button', /^Show tools/).click();
   await screen.getByRole('navigation', 'Tools').getByRole('button', /^Shell/).click();
   await expect(screen.getByRole('region', 'Tool panel')).toBeVisible();
   await browser.setViewport({ width: 1440, height: 900 });
   await expect.poll(() => browser.evaluate(() => document.querySelector('.taskview .stepstrip')!.getBoundingClientRect().width)).toBeLessThanOrEqual(560);
   await expect.poll(async () => (await stripFit(browser)).shown).toEqual([]);
-  // Past 560 px the chip is back.
+  // Past 560 px the chips are back, the subscription's (last) once there is room for it.
   await browser.setViewport({ width: 1560, height: 900 });
-  await expect.poll(async () => (await stripFit(browser)).shown).toEqual(['Then #14']);
+  await expect.poll(async () => (await stripFit(browser)).shown[0]).toEqual('Then #14');
 });
 
 test('a task with a short state keeps it whole while the step name gives way', async ({ app, browser, screen }) => {
