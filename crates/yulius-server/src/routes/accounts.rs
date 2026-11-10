@@ -14,7 +14,8 @@ use yulius_app::auth::AuthContext;
 use yulius_app::error::AppError;
 use yulius_app::hub::HubFrame;
 use yulius_contracts::api::admin::{
-    AccountLoginCancelled, AccountLoginStarted, AccountView, CreateAccount, UpdateAccount,
+    AccountLoginCancelled, AccountLoginStarted, AccountView, CreateAccount, ReplaceAccountToken,
+    UpdateAccount,
 };
 use yulius_contracts::terminal::{
     CLOSE_LAGGING, KIND_OUTPUT, KIND_SNAPSHOT, TerminalClientMsg, TerminalServerMsg, encode_binary,
@@ -39,7 +40,7 @@ pub async fn create(
 ) -> ApiResult<(StatusCode, Json<AccountLoginStarted>)> {
     Ok((
         StatusCode::CREATED,
-        Json(app.create_account(&ctx, &req).await?),
+        Json(app.create_account(&ctx, req).await?),
     ))
 }
 
@@ -67,6 +68,17 @@ pub async fn relogin(
     Path(id): Path<String>,
 ) -> ApiResult<Json<AccountLoginStarted>> {
     Ok(Json(app.relogin_account(&ctx, &id).await?))
+}
+
+/// `PUT /api/admin/accounts/{id}/token`: signs the account in again with a pasted token
+/// (SPEC-450 TKP-002).
+pub async fn replace_token(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path(id): Path<String>,
+    Json(req): Json<ReplaceAccountToken>,
+) -> ApiResult<Json<AccountView>> {
+    Ok(Json(app.replace_account_token(&ctx, &id, req).await?))
 }
 
 /// `POST /api/admin/accounts/login/{login_id}/cancel`: stops a running sign-in and says how it

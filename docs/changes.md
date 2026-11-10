@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-10
 
+- A Claude subscription can be connected by pasting a token (SPEC-450, ADR-0289). Its owner runs
+  `claude setup-token` on any computer and the administrator pastes what it printed: Add
+  subscription offers "Sign in here" (the terminal, as before) or "Paste token", and every card
+  has "Paste a new token" to sign one in again. Only that token shape is taken, a token Claude
+  refuses is said under the field, and the token is sealed like a captured one and never echoed,
+  logged or audited (`POST /api/admin/accounts` with `token`, `PUT /api/admin/accounts/{id}/token`).
 - A person is never stuck on a subscription (SPEC-447, task #429). Each task shows the subscription
   it runs on (its strip, the Tasks list), and "Run #N on…" moves a running or waiting task to the
   one they choose in the same session, or continues an ended task there; a choice above the pool's

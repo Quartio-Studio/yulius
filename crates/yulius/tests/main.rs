@@ -9,6 +9,7 @@
 mod support;
 
 mod account_email;
+mod account_token;
 mod account_usage;
 mod accounts;
 mod agent_hooks;
