@@ -311,9 +311,7 @@ fn validate_prompt(prompt: &str) -> AppResult<String> {
 }
 
 fn validate_harness(text: &str) -> AppResult<Harness> {
-    Harness::parse(text).map_err(|_| {
-        AppError::Invalid("harness must be claude (Yulius runs Claude Code only)".into())
-    })
+    Harness::parse(text).map_err(|_| AppError::Invalid("harness must be claude or codex".into()))
 }
 
 fn input_start(input: &Automation) -> AppResult<StartInput> {

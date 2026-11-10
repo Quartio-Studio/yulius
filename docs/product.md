@@ -5,6 +5,15 @@ Cezar and Open Mercato Cloud. It runs native Claude Code sessions, one per task,
 contained sandboxes on a single Linux VM, and enforces engineering discipline around them.
 Yulius develops itself with Yulius.
 
+It also runs native Codex CLI sessions on Codex (OpenAI) subscriptions, chosen per task or
+automation; a task keeps its agent for life, and a Codex task moves only between Codex
+subscriptions. A Codex subscription signs in by device code, by an imported `auth.json` of a
+`codex login` made elsewhere, or with an OpenAI API key, and Yulius provides the pinned Codex CLI
+(0.167.0) to every Codex run. This is proposed to reverse the founders' Claude-only decision
+`F 2026-10-08` and is theirs to accept
+([SPEC-451](../.ai/specs/SPEC-451-codex-returns-as-a-second-harness.md),
+[ADR-0290](decisions/0290-codex-returns-as-a-second-harness-with-a-pinned-cli.md)).
+
 The authoritative product brief is [SPEC-001](../.ai/specs/SPEC-001-yulius-product.md); this
 page is the short version for anyone who must know the whole product before building.
 

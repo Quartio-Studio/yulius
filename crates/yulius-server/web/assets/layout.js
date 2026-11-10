@@ -561,7 +561,7 @@ function renamableName(account, rename) {
  */
 export function accountUsage(account, { foldable = false, open = false, rename = null, showEmail = false } = {}) {
   const usage = account.usage || {};
-  const provider = account.provider === 'anthropic' ? 'Claude' : account.provider;
+  const provider = account.provider === 'anthropic' ? 'Claude' : account.provider === 'openai' ? 'Codex' : account.provider;
   const state = ACCOUNT_STATES[account.status] || { icon: 'warn', tone: 'muted', label: account.status || 'Unknown' };
   // Usage not read yet: a shimmering bar where the reset time will be (SPEC-092).
   const reading = () => [h('span', { class: 'skeleton-line', 'aria-hidden': 'true' }), h('span', { class: 'sr-only' }, 'Reading usage…')];
@@ -601,8 +601,8 @@ export function accountUsage(account, { foldable = false, open = false, rename =
   const body = h('div', { class: 'account-body' },
     account.last_error && usageNote ? h('div', { class: 'account-note' }, icon('clock', { size: 13 }), h('span', null, account.last_error.slice('usage:'.length).trim())) : null,
     // Claude refusing a subscription (cancelled, downgraded, revoked) marks it for a new sign-in
-    // with Claude's words, said as why (SPEC-447 MOV-005).
-    account.last_error && !usageNote ? h('div', { class: 'account-error' }, icon('warn', { size: 13 }), h('span', null, account.status === 'relogin' ? `Claude refused it: ${account.last_error.trim().replace(/\.$/, '')}. Sign in again.` : account.last_error)) : null,
+    // with Claude's words, said as why (SPEC-447 MOV-005); a Codex one names Codex.
+    account.last_error && !usageNote ? h('div', { class: 'account-error' }, icon('warn', { size: 13 }), h('span', null, account.status === 'relogin' ? `${account.provider === 'openai' ? 'Codex' : 'Claude'} refused it: ${account.last_error.trim().replace(/\.$/, '')}. Sign in again.` : account.last_error)) : null,
     usageRow(usage.primary, '5-hour window'),
     usageRow(usage.secondary, 'This week'),
     // Per-model weekly caps, when the plan has them (they bind only tasks of that model).

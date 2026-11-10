@@ -43,7 +43,13 @@
 //! - `sleep [--seconds N]`: sleeps N seconds (default 600, bounded so a leaked fixture ends).
 //!
 //! With `--transcript`, each echoed turn appends JSONL records shaped like Claude Code
-//! (`--transcript-kind claude`, the only kind). `--limit-after N` prints
+//! (`--transcript-kind claude`, the default) or like a Codex CLI 0.167 rollout
+//! (`--transcript-kind codex`, SPEC-451): `session_meta` before the first turn's records, then per
+//! turn `task_started`, `turn_context`, the user and assistant messages, a `token_count` with the
+//! response's usage and rate limits (10 % used per turn) and `task_complete`; a usage limit is a
+//! `token_count` with `rate_limit_reached_type` and a `task_complete` with the
+//! `usage_limit_exceeded` error. With `codex` the hooks run as `YULIUS_EXE hook codex <event>`,
+//! and SessionStart runs at the first turn, as Codex runs it. `--limit-after N` prints
 //! `LIMIT REACHED` and appends a usage-limit record after N turns, shaped like Claude Code
 //! 2.1.292's (`apiError: "usage_limit_reached"`, `resetsAt` one hour ahead); later turns only repeat
 //! `LIMIT REACHED`. With `--access-lost` that record is instead the refusal of a lapsed
@@ -253,6 +259,8 @@ struct Options {
     access_lost: bool,
     idle_compact_ms: Option<u64>,
     trust_prompt: bool,
+    /// Transcripts and hooks shaped like Codex's (`--transcript-kind codex`).
+    codex: bool,
 }
 
 fn parse_number<T: std::str::FromStr>(flag: &str, value: Option<String>) -> Result<T, String> {
@@ -308,6 +316,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
         access_lost: false,
         idle_compact_ms: None,
         trust_prompt: false,
+        codex: false,
     };
     while let Some(flag) = args.next() {
         match flag.as_str() {
@@ -335,9 +344,11 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
                 options.transcript = Some(args.next().ok_or("--transcript needs a path")?.into());
             }
             "--transcript-kind" => {
-                if args.next().as_deref() != Some("claude") {
-                    return Err("--transcript-kind must be claude".into());
-                }
+                options.codex = match args.next().as_deref() {
+                    Some("claude") => false,
+                    Some("codex") => true,
+                    _ => return Err("--transcript-kind must be claude or codex".into()),
+                };
             }
             "--report-env" => {
                 options
@@ -579,6 +590,10 @@ struct Transcript {
     cwd: String,
     turns: u64,
     last_uuid: Option<String>,
+    /// A Codex rollout (SPEC-451) instead of a Claude Code transcript.
+    codex: bool,
+    /// Codex: the session's tokens so far (`total_token_usage`).
+    total_tokens: u64,
 }
 
 impl Transcript {
@@ -595,7 +610,87 @@ impl Transcript {
             cwd,
             turns: 0,
             last_uuid: None,
+            codex: false,
+            total_tokens: 0,
         })
+    }
+
+    /// A Codex rollout at `path` (SPEC-451).
+    fn open_codex(path: PathBuf, session_id: &str) -> io::Result<Self> {
+        let mut transcript = Self::open(path, session_id)?;
+        transcript.codex = true;
+        Ok(transcript)
+    }
+
+    /// Appends Codex records, after the rollout's `session_meta` when it is new (Codex writes the
+    /// file at the session's first turn).
+    fn append_codex(&self, records: &[Value]) -> io::Result<()> {
+        let empty = std::fs::metadata(&self.path).map_or(true, |m| m.len() == 0);
+        if empty {
+            let now = rfc3339(now_ms());
+            self.append(&[
+                json!({"timestamp": now, "ordinal": 0, "type": "session_meta",
+                "payload": {"session_id": self.session_id, "id": self.session_id,
+                    "timestamp": now, "cwd": self.cwd, "originator": "fake-agent",
+                    "cli_version": "0.0.0-fake", "model_provider": "openai",
+                    "history_mode": "paginated"}}),
+            ])?;
+        }
+        self.append(records)
+    }
+
+    fn codex_event(timestamp: &str, payload: Value) -> Value {
+        json!({"timestamp": timestamp, "type": "event_msg", "payload": payload})
+    }
+
+    fn codex_message(timestamp: &str, role: &str, kind: &str, text: &str) -> Value {
+        json!({"timestamp": timestamp, "type": "response_item", "payload": {
+            "type": "message", "role": role, "content": [{"type": kind, "text": text}]}})
+    }
+
+    /// The start of a Codex turn: `task_started`, `turn_context` and the user's message.
+    fn codex_begin(&mut self, prompt: &str) -> io::Result<()> {
+        let timestamp = rfc3339(now_ms());
+        let turn = self.turns.to_string();
+        self.append_codex(&[
+            Self::codex_event(&timestamp, json!({"type": "task_started", "turn_id": turn})),
+            json!({"timestamp": timestamp, "type": "turn_context", "payload": {
+                "turn_id": turn, "cwd": self.cwd, "model": "fake-codex-model"}}),
+            Self::codex_message(&timestamp, "user", "input_text", prompt),
+        ])
+    }
+
+    /// The end of a Codex turn: the answer, its usage and rate limits, and `task_complete`.
+    fn codex_answer(&mut self, prompt: &str, answer: &str) -> io::Result<()> {
+        let timestamp = rfc3339(now_ms());
+        let (input, output) = (10 + prompt.len() as u64, 4 + answer.len() as u64);
+        self.total_tokens += input + output;
+        let used = (10.0 * self.turns as f64).min(99.0);
+        let usage = json!({"input_tokens": input, "cached_input_tokens": 0,
+            "cache_write_input_tokens": 0, "output_tokens": output,
+            "reasoning_output_tokens": 0, "total_tokens": input + output});
+        self.append_codex(&[
+            Self::codex_message(&timestamp, "assistant", "output_text", answer),
+            Self::codex_event(
+                &timestamp,
+                json!({"type": "token_count",
+                "info": {"total_token_usage": {"total_tokens": self.total_tokens},
+                    "last_token_usage": usage, "model_context_window": 200_000},
+                "rate_limits": self.codex_rate_limits(used, None)}),
+            ),
+            Self::codex_event(
+                &timestamp,
+                json!({"type": "task_complete",
+                "turn_id": self.turns.to_string(), "last_agent_message": answer,
+                "duration_ms": 1}),
+            ),
+        ])
+    }
+
+    fn codex_rate_limits(&self, used: f64, reached: Option<&str>) -> Value {
+        json!({"limit_id": "codex", "primary": {"used_percent": used, "window_minutes": 300,
+            "resets_at": now_ms() / 1000 + 3600}, "secondary": null, "plan_type": "plus",
+            "rate_limit_reached_type": reached})
     }
 
     fn append(&self, records: &[Value]) -> io::Result<()> {
@@ -628,6 +723,11 @@ impl Transcript {
     }
 
     fn turn(&mut self, prompt: &str, answer: &str) -> io::Result<()> {
+        if self.codex {
+            self.turns += 1;
+            self.codex_begin(prompt)?;
+            return self.codex_answer(prompt, answer);
+        }
         self.turns += 1;
         let n = self.turns;
         let input = 10 + prompt.len() as u64;
@@ -660,6 +760,10 @@ impl Transcript {
 
     /// The user line of a turn that takes a while (`/work`).
     fn begin(&mut self, prompt: &str) -> io::Result<()> {
+        if self.codex {
+            self.turns += 1;
+            return self.codex_begin(prompt);
+        }
         self.turns += 1;
         let uuid = format!("fake-{}-{}-u", self.session_id, self.turns);
         let mut user = self.claude_envelope("user", &uuid, &rfc3339(now_ms()));
@@ -670,6 +774,9 @@ impl Transcript {
 
     /// The answer that ends a `/work` turn.
     fn answer(&mut self, prompt: &str, answer: &str) -> io::Result<()> {
+        if self.codex {
+            return self.codex_answer(prompt, answer);
+        }
         let n = self.turns;
         let uuid = format!("fake-{}-{n}-a", self.session_id);
         let mut assistant = self.claude_envelope("assistant", &uuid, &rfc3339(now_ms()));
@@ -1000,6 +1107,24 @@ impl Transcript {
     }
 
     fn limit(&mut self) -> io::Result<()> {
+        if self.codex {
+            // Codex: the account's window is full, and the turn ends with the limit's error.
+            let timestamp = rfc3339(now_ms());
+            return self.append_codex(&[
+                Self::codex_event(
+                    &timestamp,
+                    json!({"type": "token_count", "info": null,
+                    "rate_limits": self.codex_rate_limits(100.0, Some("rate_limit_reached"))}),
+                ),
+                Self::codex_event(
+                    &timestamp,
+                    json!({"type": "task_complete",
+                    "turn_id": self.turns.to_string(), "last_agent_message": null,
+                    "error": {"message": "You've hit your usage limit. Try again later.",
+                        "codex_error_info": "usage_limit_exceeded"}}),
+                ),
+            ]);
+        }
         let timestamp = rfc3339(now_ms());
         let resets_at = now_ms() / 1000 + 3600;
         let uuid = format!("fake-{}-limit", self.session_id);
@@ -1053,10 +1178,11 @@ impl Transcript {
     }
 }
 
-/// Runs one Claude Code hook through Yulius' hook client; returns its output (empty when none).
-fn run_hook(exe: &Path, event: &str, input: &Value) -> String {
+/// Runs one Claude Code (or Codex) hook through Yulius' hook client; returns its output (empty
+/// when none).
+fn run_hook(exe: &Path, harness: &str, event: &str, input: &Value) -> String {
     let child = Command::new(exe)
-        .args(["hook", "claude", event])
+        .args(["hook", harness, event])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -1080,13 +1206,21 @@ fn run_hook(exe: &Path, event: &str, input: &Value) -> String {
 struct Hooks {
     exe: PathBuf,
     session_id: String,
+    /// `claude` or `codex` (SPEC-451).
+    harness: &'static str,
+    /// Codex: SessionStart ran (Codex runs it at the session's first turn).
+    started: Arc<AtomicBool>,
 }
 
 impl Hooks {
     /// `UserPromptSubmit`; `Some(reason)` when the hook blocks the prompt.
     fn prompt(&self, prompt: &str) -> Option<String> {
+        if self.harness == "codex" && !self.started.swap(true, Ordering::SeqCst) {
+            self.session_start();
+        }
         let answer = run_hook(
             &self.exe,
+            self.harness,
             "UserPromptSubmit",
             &json!({"session_id": self.session_id, "hook_event_name": "UserPromptSubmit",
                 "prompt": prompt}),
@@ -1110,6 +1244,7 @@ impl Hooks {
     fn session_start_from(&self, source: &str) {
         run_hook(
             &self.exe,
+            self.harness,
             "SessionStart",
             &json!({"session_id": self.session_id, "hook_event_name": "SessionStart",
                 "source": source}),
@@ -1120,6 +1255,7 @@ impl Hooks {
     fn session_end(&self, reason: &str) {
         run_hook(
             &self.exe,
+            self.harness,
             "SessionEnd",
             &json!({"session_id": self.session_id, "hook_event_name": "SessionEnd",
                 "reason": reason}),
@@ -1138,13 +1274,14 @@ impl Hooks {
         {
             input["rate_limits"] = limits;
         }
-        let line = run_hook(&self.exe, "StatusLine", &input);
+        let line = run_hook(&self.exe, self.harness, "StatusLine", &input);
         say(&format!("STATUS {}", line.trim_end()))
     }
 
     fn stop(&self) -> io::Result<()> {
         let answer = run_hook(
             &self.exe,
+            self.harness,
             "Stop",
             &json!({"session_id": self.session_id, "hook_event_name": "Stop",
                 "stop_hook_active": false}),
@@ -1781,6 +1918,10 @@ fn trust_prompt() -> io::Result<()> {
 
 fn echo_loop(options: &Options, session_id: &str) -> io::Result<i32> {
     let transcript = match &options.transcript {
+        Some(path) if options.codex => Some(Arc::new(Mutex::new(Transcript::open_codex(
+            path.clone(),
+            session_id,
+        )?))),
         Some(path) => Some(Arc::new(Mutex::new(Transcript::open(
             path.clone(),
             session_id,
@@ -1790,6 +1931,8 @@ fn echo_loop(options: &Options, session_id: &str) -> io::Result<i32> {
     let mut hooks = options.hooks.as_ref().map(|exe| Hooks {
         exe: exe.clone(),
         session_id: session_id.to_owned(),
+        harness: if options.codex { "codex" } else { "claude" },
+        started: Arc::new(AtomicBool::new(false)),
     });
     if options.trust_prompt {
         trust_prompt()?;
@@ -1798,7 +1941,7 @@ fn echo_loop(options: &Options, session_id: &str) -> io::Result<i32> {
     let keys = keys.as_ref();
     status_line(options, hooks.as_ref())?;
     let mut state = EchoState::default();
-    if let (true, Some(hooks)) = (options.session_start, &hooks) {
+    if let (true, false, Some(hooks)) = (options.session_start, options.codex, &hooks) {
         hooks.session_start();
     }
     if let Some(ms) = options.opening_turn_ms {

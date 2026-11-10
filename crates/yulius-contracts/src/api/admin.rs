@@ -122,13 +122,49 @@ pub struct TokenTotalsView {
     pub cost_usd: Option<f64>,
 }
 
-/// `POST /api/admin/accounts`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// `POST /api/admin/accounts`. `Debug` never shows the API key or the `auth.json`.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CreateAccount {
-    /// Provider: `anthropic` (Claude), the only one supported.
+    /// Provider: `anthropic` (Claude) or `openai` (Codex, SPEC-451).
     pub provider: String,
     /// Label.
     pub label: String,
+    /// An OpenAI API key for an `openai` account: stored as its credential at once, no sign-in
+    /// runs (SPEC-451 CDX-005). Never returned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
+    /// The `auth.json` of a ChatGPT sign-in made with `codex login` elsewhere, for an `openai`
+    /// account: stored as its credential at once, no sign-in runs (SPEC-451 CDX-011). Never
+    /// returned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_json: Option<String>,
+}
+
+/// `POST /api/admin/accounts/{id}/import`: a new sign-in of a Codex account from the `auth.json`
+/// of a `codex login` made elsewhere (SPEC-451 CDX-011). `Debug` never shows it.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImportAccountAuth {
+    /// The `auth.json` text. Never returned.
+    pub auth_json: String,
+}
+
+impl std::fmt::Debug for ImportAccountAuth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ImportAccountAuth")
+            .field("auth_json", &"[REDACTED]")
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for CreateAccount {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CreateAccount")
+            .field("provider", &self.provider)
+            .field("label", &self.label)
+            .field("api_key", &self.api_key.as_ref().map(|_| "[REDACTED]"))
+            .field("auth_json", &self.auth_json.as_ref().map(|_| "[REDACTED]"))
+            .finish()
+    }
 }
 
 /// Response to account creation or relogin.
@@ -136,8 +172,10 @@ pub struct CreateAccount {
 pub struct AccountLoginStarted {
     /// The account.
     pub account: AccountView,
-    /// Login terminal id (`/api/admin/accounts/login/{login_id}/terminal`).
-    pub login_id: String,
+    /// Login terminal id (`/api/admin/accounts/login/{login_id}/terminal`); absent for an account
+    /// created with an API key, which needs no sign-in (SPEC-451).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub login_id: Option<String>,
 }
 
 /// Response to `POST /api/admin/accounts/login/{login_id}/cancel` (SPEC-243 LGN-002): how the
@@ -158,6 +196,11 @@ pub struct UpdateAccount {
     pub label: String,
 }
 
+/// The provider of a [`CapacityAccount`] from a server that did not name one.
+fn anthropic() -> String {
+    "anthropic".to_owned()
+}
+
 /// One account in [`CapacityView`]. Everyone sees label, status and usage; `id`, `email` and
 /// `in_use_by` are for instance administrators only.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -168,6 +211,9 @@ pub struct CapacityAccount {
     /// unknown, SPEC-244 SUB-005).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub email: Option<String>,
+    /// Provider: `anthropic`, or `openai` for Codex (SPEC-451).
+    #[serde(default = "anthropic")]
+    pub provider: String,
     /// `ok`, `relogin`, `error`, `limited` or `pending_login`.
     pub status: String,
     /// Usage snapshot (unknown windows are `null`).
@@ -308,4 +354,30 @@ pub struct ManifestCallback {
     /// The state issued with the manifest.
     #[serde(default)]
     pub state: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// SPEC-451 CDX-005, CDX-011: a Codex account's API key or `auth.json` never shows in logs.
+    #[test]
+    fn create_account_debug_hides_the_api_key() {
+        let request = CreateAccount {
+            provider: "openai".into(),
+            label: "Codex".into(),
+            api_key: Some("sk-SYNTHETIC0123456789abcdef".into()),
+            auth_json: Some(r#"{"tokens":{"refresh_token":"SYNTHETIC-r"}}"#.into()),
+        };
+        let shown = format!("{request:?}");
+        assert!(!shown.contains("SYNTHETIC"), "{shown}");
+        let import = ImportAccountAuth {
+            auth_json: r#"{"tokens":{"refresh_token":"SYNTHETIC-r"}}"#.into(),
+        };
+        assert!(!format!("{import:?}").contains("SYNTHETIC"));
+        assert!(
+            shown.contains("[REDACTED]") && shown.contains("openai"),
+            "{shown}"
+        );
+    }
 }

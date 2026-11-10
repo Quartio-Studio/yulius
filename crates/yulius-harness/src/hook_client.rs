@@ -96,7 +96,8 @@ pub fn run_hook_with(
     }
     // Commands that can never work as meant are refused here, before they run; an edit of a
     // file goes to Yulius's edit gate (SPEC-426 EDG-001).
-    if harness == "claude" && event == "PreToolUse" {
+    // Codex's shell tool has Claude Code's shape (`Bash`, `tool_input.command`; SPEC-451).
+    if (harness == "claude" || harness == "codex") && event == "PreToolUse" {
         let mut body = Vec::new();
         if input
             .take(MAX_TOOL_INPUT_BYTES as u64 + 1)

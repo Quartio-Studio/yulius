@@ -42,34 +42,46 @@ pub(crate) fn agent_accounts(accounts: &[AccountRecord], provider: Provider) -> 
     }
 }
 
-/// The refusal of a start for `state` (CLA-002), `None` when the start may go on.
-pub(crate) fn refusal(state: AgentAccounts) -> Option<AppError> {
+/// How people name a provider's accounts: "Claude", or "Codex" (SPEC-451).
+#[must_use]
+pub(crate) fn account_kind(provider: Provider) -> &'static str {
+    match provider {
+        Provider::Anthropic => "Claude",
+        Provider::OpenAi => "Codex",
+    }
+}
+
+/// The refusal of a start of a `provider` agent for `state` (CLA-002), `None` when the start may
+/// go on.
+pub(crate) fn refusal(state: AgentAccounts, provider: Provider) -> Option<AppError> {
+    let kind = account_kind(provider);
     let reason = match state {
         AgentAccounts::Usable => return None,
-        AgentAccounts::None => "no Claude account is connected",
-        AgentAccounts::NeedSignIn => "every Claude account must sign in again",
+        AgentAccounts::None => format!("no {kind} account is connected"),
+        AgentAccounts::NeedSignIn => format!("every {kind} account must sign in again"),
     };
     Some(AppError::AccountRequired(format!(
-        "Connect a Claude account first: {reason}, so no agent can start. An instance \
+        "Connect a {kind} account first: {reason}, so no agent can start. An instance \
          administrator connects one in Subscriptions ({CONNECT_PATH})."
     )))
 }
 
 /// What a task started by itself (a chain, a rule, an automation, a time) says while it waits for
-/// an account (CLA-004); `None` while one is usable (it only waits for capacity).
-pub(crate) fn waiting_notice(state: AgentAccounts) -> Option<&'static str> {
+/// an account of `provider` (CLA-004); `None` while one is usable (it only waits for capacity).
+pub(crate) fn waiting_notice(state: AgentAccounts, provider: Provider) -> Option<String> {
+    let kind = account_kind(provider);
     match state {
         AgentAccounts::Usable => None,
-        AgentAccounts::None => Some(
-            "Yulius is holding this task: no Claude account is connected. An instance \
+        AgentAccounts::None => Some(format!(
+            "Yulius is holding this task: no {kind} account is connected. An instance \
              administrator connects one in Subscriptions (/admin/accounts); the task then starts \
-             by itself.",
-        ),
-        AgentAccounts::NeedSignIn => Some(
-            "Yulius is holding this task: every Claude account must sign in again. An instance \
+             by itself."
+        )),
+        AgentAccounts::NeedSignIn => Some(format!(
+            "Yulius is holding this task: every {kind} account must sign in again. An instance \
              administrator signs one in in Subscriptions (/admin/accounts); the task then starts \
-             by itself.",
-        ),
+             by itself."
+        )),
     }
 }
 
@@ -94,7 +106,9 @@ impl App {
         Ok(agent_accounts(&accounts, provider))
     }
 
-    /// Whether a Claude account is usable (`GET /api/me` `claude_connected`).
+    /// Whether a Claude account is usable (`GET /api/me` `claude_connected`). Onboarding, the
+    /// Superagent, split proposals and the Cockpit run Claude, so a Codex account does not count
+    /// (SPEC-451 CDX-014).
     ///
     /// # Errors
     /// Store failures.
@@ -102,12 +116,20 @@ impl App {
         Ok(self.agent_accounts(Provider::Anthropic).await? == AgentAccounts::Usable)
     }
 
+    /// Whether a Codex account is usable (`GET /api/me` `codex_connected`, SPEC-451 CDX-014).
+    ///
+    /// # Errors
+    /// Store failures.
+    pub async fn codex_connected(&self) -> AppResult<bool> {
+        Ok(self.agent_accounts(Provider::OpenAi).await? == AgentAccounts::Usable)
+    }
+
     /// Refuses a person's start of an agent while no account of `provider` is usable (CLA-002).
     ///
     /// # Errors
     /// `AccountRequired` without a usable account; store failures.
     pub(crate) async fn ensure_agent_account(&self, provider: Provider) -> AppResult<()> {
-        match refusal(self.agent_accounts(provider).await?) {
+        match refusal(self.agent_accounts(provider).await?, provider) {
             Some(err) => Err(err),
             None => Ok(()),
         }
@@ -187,13 +209,13 @@ mod tests {
 
     #[test]
     fn the_refusal_names_the_reason_and_where_to_connect() -> TestResult {
-        assert_eq!(refusal(AgentAccounts::Usable), None);
-        let none = refusal(AgentAccounts::None).ok_or("refused")?;
+        assert_eq!(refusal(AgentAccounts::Usable, Provider::Anthropic), None);
+        let none = refusal(AgentAccounts::None, Provider::Anthropic).ok_or("refused")?;
         assert_eq!(none.code(), "claude_account_required");
         let text = none.public_message();
         assert!(text.contains("no Claude account is connected"), "{text}");
         assert!(text.contains(CONNECT_PATH), "{text}");
-        let stale = refusal(AgentAccounts::NeedSignIn)
+        let stale = refusal(AgentAccounts::NeedSignIn, Provider::Anthropic)
             .ok_or("refused")?
             .public_message();
         assert!(stale.contains("must sign in again"), "{stale}");
@@ -202,10 +224,16 @@ mod tests {
 
     #[test]
     fn the_waiting_notice_tells_no_account_from_a_needed_sign_in() -> TestResult {
-        assert_eq!(waiting_notice(AgentAccounts::Usable), None);
-        let none = waiting_notice(AgentAccounts::None).ok_or("notice")?;
+        assert_eq!(
+            waiting_notice(AgentAccounts::Usable, Provider::Anthropic),
+            None
+        );
+        let none = waiting_notice(AgentAccounts::None, Provider::Anthropic).ok_or("notice")?;
         assert!(none.contains("no Claude account is connected"), "{none}");
-        let stale = waiting_notice(AgentAccounts::NeedSignIn).ok_or("notice")?;
+        let codex = waiting_notice(AgentAccounts::None, Provider::OpenAi).ok_or("notice")?;
+        assert!(codex.contains("no Codex account is connected"), "{codex}");
+        let stale =
+            waiting_notice(AgentAccounts::NeedSignIn, Provider::Anthropic).ok_or("notice")?;
         assert!(stale.contains("must sign in again"), "{stale}");
         for text in [none, stale] {
             assert!(text.contains("/admin/accounts") && text.contains("starts by itself"));
@@ -215,7 +243,7 @@ mod tests {
 
     #[test]
     fn a_start_refused_for_want_of_an_account_fails_as_no_account() {
-        let refused = refusal(AgentAccounts::None);
+        let refused = refusal(AgentAccounts::None, Provider::OpenAi);
         assert_eq!(
             refused.as_ref().map(fail_reason),
             Some(FailReason::NoAccount)

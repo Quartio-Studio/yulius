@@ -169,6 +169,42 @@ export function recoveryCard(ctx) {
 
 /** What the sign-in dialog says while Claude's sign-in runs. */
 const SIGN_IN_RUNNING = 'Finish Claude’s sign-in in the terminal below: open the link, approve, and paste the code if Claude asks for it. This window closes by itself once the subscription is connected. Secrets are masked for other viewers.';
+/**
+ * The auth.json of a `codex login` made elsewhere (SPEC-451 CDX-011), pasted or read from a file.
+ * A chosen file is kept here, never shown; the text is sent once and cleared.
+ */
+function authJsonInput() {
+  let loaded = '';
+  // A chosen file is read before the dialog's button sends it.
+  let reading = Promise.resolve();
+  const text = h('textarea', { class: 'textarea mono', rows: 5, autocomplete: 'off', spellcheck: 'false', placeholder: '{"auth_mode": "chatgpt", "tokens": {…}, …}', 'aria-label': 'auth.json' });
+  const chosen = h('span', { class: 'muted small' });
+  const picker = h('input', { type: 'file', accept: '.json,application/json', class: 'auth-json-file', 'aria-label': 'auth.json file', onChange: () => {
+    const file = picker.files && picker.files[0];
+    picker.value = '';
+    reading = (file ? file.text() : Promise.resolve('')).then((content) => {
+      loaded = content;
+      text.value = '';
+      chosen.textContent = file ? `${file.name} is loaded.` : '';
+    });
+  } });
+  text.addEventListener('input', () => { if (text.value) { loaded = ''; chosen.textContent = ''; } });
+  const node = h('div', { class: 'field' },
+    h('span', { class: 'field-label', 'aria-hidden': 'true' }, 'auth.json'),
+    text,
+    h('div', { class: 'row-wrap' }, picker, chosen),
+    h('span', { class: 'field-hint' }, `Sign in with a separate Codex home (CODEX_HOME=~/codex-yulius codex login) so your laptop and ${BRAND.name} never share one refresh token.`));
+  return {
+    node,
+    text,
+    ready: () => reading,
+    value: () => text.value.trim() || loaded.trim(),
+    clear: () => { text.value = ''; loaded = ''; chosen.textContent = ''; },
+  };
+}
+
+/** What it says while Codex's device sign-in runs (SPEC-451). */
+const CODEX_SIGN_IN_RUNNING = 'Finish Codex’s sign-in: open the link in the terminal below, sign in with ChatGPT and enter the one-time code it shows. This window closes by itself once the subscription is connected.';
 
 /** A server sentence as the start of a sentence. */
 const sentence = (text) => text.charAt(0).toUpperCase() + text.slice(1);
@@ -186,7 +222,8 @@ export function openLoginTerminal(ctx, { loginId, account, onFinish }) {
   // connection (reconnecting gave up; the sign-in may still run).
   let phase = 'running';
   let closed = false;
-  const status = h('span', { class: 'muted small' }, SIGN_IN_RUNNING);
+  const codex = account.provider === 'openai';
+  const status = h('span', { class: 'muted small' }, codex ? CODEX_SIGN_IN_RUNNING : SIGN_IN_RUNNING);
   const outcome = h('div', { class: 'banner banner-danger', role: 'alert', hidden: true });
   const host = h('div', { class: 'login-terminal' });
   const modal = openModal({
@@ -269,7 +306,7 @@ export function openLoginTerminal(ctx, { loginId, account, onFinish }) {
     ended('Sign-in failed', '');
     const now = await fresh();
     if (phase !== 'error' || closed) return;
-    const reason = now && now.last_error ? sentence(now.last_error.replace(/^re-login failed: /, '')).replace(/\.$/, '') : 'Claude’s sign-in ended without a credential';
+    const reason = now && now.last_error ? sentence(now.last_error.replace(/^re-login failed: /, '')).replace(/\.$/, '') : (codex ? 'Codex’s sign-in ended without a credential' : 'Claude’s sign-in ended without a credential');
     ended('Sign-in failed', `${reason}. Try again, or close this window and sign in later from the subscription’s card.`);
   }
 
@@ -350,7 +387,7 @@ export function openLoginTerminal(ctx, { loginId, account, onFinish }) {
 export function mountAccountsPage(ctx, route) {
   if (!ctx.isInstanceAdmin()) return forbidden(ctx, 'Subscriptions');
   // One name for one thing (#147): a Claude "subscription" (the API's account).
-  const frame = pageFrame({ title: 'Subscriptions', sub: `Claude subscriptions in one pool: ${BRAND.name} places, switches and pauses tasks by itself`, actions: [createButton('Add subscription', () => add())] });
+  const frame = pageFrame({ title: 'Subscriptions', sub: `Claude and Codex subscriptions, each agent in its own pool: ${BRAND.name} places, switches and pauses tasks by itself`, actions: [createButton('Add subscription', () => add())] });
   const capacityHost = h('section', { class: 'card card-pad stack', 'aria-label': 'Capacity' },
     h('h2', { class: 'card-title' }, 'Capacity'), skeleton('Loading the capacity…', 3));
   const host = h('div');
@@ -375,7 +412,7 @@ export function mountAccountsPage(ctx, route) {
     else firstCapacity.then((shown) => { if (!shown) loadCapacity(); });
     rendered = true;
     const accounts = (Array.isArray(list) ? list : []).sort((a, b) => (a.label || '').localeCompare(b.label || ''));
-    if (accounts.length === 0) return emptyState({ iconName: 'user', title: 'No subscriptions yet', text: 'Add a Claude subscription for the agents; you finish Claude’s own sign-in in a terminal here.', action: createButton('Add subscription', () => add()) });
+    if (accounts.length === 0) return emptyState({ iconName: 'user', title: 'No subscriptions yet', text: 'Add a Claude or Codex subscription for the agents; you finish the agent’s own sign-in in a terminal here.', action: createButton('Add subscription', () => add()) });
     return h('div', { class: 'grid-2' }, accounts.map((account) => {
       // The name is edited in place (SPEC-244 SUB-001); the server trims and validates it.
       const rename = async (label) => {
@@ -407,6 +444,8 @@ export function mountAccountsPage(ctx, route) {
               errorToast(error, 'Couldn’t start the sign-in');
             }
           } }, 'Sign in again') : null,
+          // A Codex subscription can also take a new auth.json from a `codex login` elsewhere.
+          account.provider === 'openai' ? h('button', { type: 'button', class: 'btn btn-sm', onClick: () => importInto(account) }, 'Import auth.json') : null,
           // Removal always works: the tasks on it move to another subscription (SPEC-447 MOV-003).
           h('button', { type: 'button', class: 'btn btn-sm btn-quiet-danger', title: account.in_use_by > 0 ? `${account.in_use_by} live task${account.in_use_by === 1 ? '' : 's'} on this subscription move to another one` : null, onClick: async () => {
             const moving = account.in_use_by > 0 ? ` ${account.in_use_by === 1 ? 'The task' : `The ${account.in_use_by} tasks`} on it ${account.in_use_by === 1 ? 'moves' : 'move'} to another subscription in the same session, or ${account.in_use_by === 1 ? 'waits' : 'wait'} for one.` : '';
@@ -424,16 +463,101 @@ export function mountAccountsPage(ctx, route) {
 
   function add() {
     const label = h('input', { class: 'input', placeholder: 'Claude #3', maxlength: 80, autofocus: true });
-    openModal({
+    const importer = authJsonInput();
+    // Claude Code or Codex (SPEC-451); a Codex subscription signs in with ChatGPT by a device
+    // code, takes the auth.json of a `codex login` made elsewhere, or takes an OpenAI API key;
+    // the last two need no sign-in here.
+    let provider = 'anthropic';
+    let method = 'device';
+    const apiKey = h('input', { class: 'input mono', type: 'password', autocomplete: 'off', spellcheck: 'false', placeholder: 'sk-…', 'aria-label': 'OpenAI API key' });
+    const keyField = field('OpenAI API key', apiKey, 'Stored encrypted and never shown again. Usage windows come from the tasks that run on it.');
+    const hint = h('p', { class: 'muted small' });
+    const choice = (name, value, text, current, set) => h('label', null,
+      h('input', { type: 'radio', name, value, checked: current === value, onChange: () => { set(value); render(); } }), text);
+    const providers = h('div', { class: 'seg', role: 'radiogroup', 'aria-label': 'Agent' });
+    const methods = h('div', { class: 'seg', role: 'radiogroup', 'aria-label': 'Sign-in' });
+    // A group of radios is named by its own label, never wrapped in a <label>.
+    const group = (text, control) => h('div', { class: 'field' }, h('span', { class: 'field-label', 'aria-hidden': 'true' }, text), control);
+    const methodField = group('Sign-in', methods);
+    let modal = null;
+    function render() {
+      setChildren(providers,
+        choice('acct-provider', 'anthropic', 'Claude Code', provider, (v) => { provider = v; }),
+        choice('acct-provider', 'openai', 'Codex', provider, (v) => { provider = v; }));
+      setChildren(methods,
+        choice('acct-method', 'device', 'ChatGPT sign-in', method, (v) => { method = v; }),
+        choice('acct-method', 'import', 'Import auth.json', method, (v) => { method = v; }),
+        choice('acct-method', 'api_key', 'API key', method, (v) => { method = v; }));
+      const codex = provider === 'openai';
+      label.placeholder = codex ? 'Codex #1' : 'Claude #3';
+      methodField.hidden = !codex;
+      keyField.hidden = !(codex && method === 'api_key');
+      importer.node.hidden = !(codex && method === 'import');
+      hint.textContent = !codex
+        ? 'Next, a terminal opens with Claude’s own sign-in (claude setup-token). Tasks waiting for capacity continue on it as soon as it is signed in.'
+        : method === 'device'
+          ? 'Next, a terminal opens with Codex’s own sign-in (codex login --device-auth): open the link it shows and enter its one-time code. Codex tasks waiting for capacity continue on it as soon as it is signed in.'
+          : method === 'import'
+            ? `The file is the subscription’s credential at once; Codex tasks can use it right away, and ${BRAND.name} keeps the tokens Codex refreshes.`
+            : 'The key is the subscription’s credential at once; Codex tasks can use it right away.';
+      if (modal) {
+        modal.setActions(actions());
+        // The dialog is named after the agent chosen.
+        const title = `Add a ${codex ? 'Codex' : 'Claude'} subscription`;
+        modal.dialog.setAttribute('aria-label', title);
+        const heading = modal.dialog.querySelector('.modal-title');
+        if (heading) heading.textContent = title;
+      }
+    }
+    function actions() {
+      const key = provider === 'openai' && method === 'api_key';
+      const file = provider === 'openai' && method === 'import';
+      return [
+        { label: 'Cancel', value: false },
+        { label: key || file ? 'Add subscription' : 'Continue to sign-in', kind: 'primary', run: async () => {
+          if (!label.value.trim()) return invalid(label, 'Give the subscription a name.');
+          if (key && !apiKey.value.trim()) return invalid(apiKey, 'Paste the OpenAI API key.');
+          if (file) await importer.ready();
+          if (file && !importer.value()) return invalid(importer.text, 'Paste the auth.json or choose the file.');
+          const body = { provider, label: label.value.trim() };
+          if (key) body.api_key = apiKey.value.trim();
+          if (file) body.auth_json = importer.value();
+          const result = await ctx.api.post('/api/admin/accounts', body);
+          apiKey.value = '';
+          importer.clear();
+          reload();
+          if (result.login_id) {
+            openLoginTerminal(ctx, { loginId: result.login_id, account: result.account || { id: null, label: label.value.trim(), status: 'pending_login', provider }, onFinish: reload });
+          } else {
+            toast(`${label.value.trim()} is connected. Codex tasks can use it now.`, { kind: 'ok', timeout: 8000 });
+          }
+          return true;
+        } },
+      ];
+    }
+    render();
+    modal = openModal({
       title: 'Add a Claude subscription',
-      body: h('div', { class: 'stack' }, field('Name', label, 'Shown on usage bars and in task details; you can rename it later.'), h('p', { class: 'muted small' }, 'Next, a terminal opens with Claude’s own sign-in (claude setup-token). Tasks waiting for capacity continue on it as soon as it is signed in.')),
+      body: h('div', { class: 'stack' }, group('Agent', providers), field('Name', label, 'Shown on usage bars and in task details; you can rename it later.'), methodField, keyField, importer.node, hint),
+      actions: actions(),
+    });
+  }
+
+  /** A new sign-in of a Codex subscription from an imported auth.json (SPEC-451 CDX-011). */
+  function importInto(account) {
+    const importer = authJsonInput();
+    openModal({
+      title: `Import an auth.json into ${account.label}`,
+      body: h('div', { class: 'stack' }, importer.node, h('p', { class: 'muted small' }, 'It replaces the subscription’s sign-in at once; a sign-in running for it is cancelled.')),
       actions: [
         { label: 'Cancel', value: false },
-        { label: 'Continue to sign-in', kind: 'primary', run: async () => {
-          if (!label.value.trim()) return invalid(label, 'Give the subscription a name.');
-          const result = await ctx.api.post('/api/admin/accounts', { provider: 'anthropic', label: label.value.trim() });
+        { label: 'Import', kind: 'primary', run: async () => {
+          await importer.ready();
+          if (!importer.value()) return invalid(importer.text, 'Paste the auth.json or choose the file.');
+          await ctx.api.post(`/api/admin/accounts/${enc(account.id)}/import`, { auth_json: importer.value() });
+          importer.clear();
+          toast(`${account.label} is signed in again. Codex tasks can use it now.`, { kind: 'ok', timeout: 8000 });
           reload();
-          openLoginTerminal(ctx, { loginId: result.login_id, account: result.account || { id: null, label: label.value.trim(), status: 'pending_login' }, onFinish: reload });
           return true;
         } },
       ],

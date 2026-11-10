@@ -58,9 +58,7 @@ pub struct NewTask {
 }
 
 fn parse_harness(text: &str) -> AppResult<Harness> {
-    Harness::parse(text).map_err(|_| {
-        AppError::Invalid("harness must be claude (Yulius runs Claude Code only)".into())
-    })
+    Harness::parse(text).map_err(|_| AppError::Invalid("harness must be claude or codex".into()))
 }
 
 /// A prepared task has one way to start (SPEC-105 PRP-001).
@@ -327,6 +325,17 @@ impl App {
         let sid = sid.clone();
         self.require(user, &sid, Action::Work).await?;
         let harness = parse_harness(&req.harness)?;
+        // Codex runs OpenAI's models: a Claude model would make its run fail at start (SPEC-451).
+        if harness == Harness::Codex
+            && req
+                .model
+                .as_deref()
+                .is_some_and(|m| m.trim().to_ascii_lowercase().starts_with("claude"))
+        {
+            return Err(AppError::Invalid(
+                "a Codex task takes an OpenAI model, not a Claude one".into(),
+            ));
+        }
         // New tasks run in goal mode unless the user picks prompt mode (TSK-010); `auto` lets Jev
         // choose (TSK-015).
         let mode = match req.mode.as_deref().map(str::trim) {
@@ -477,13 +486,25 @@ impl App {
         self.ensure_agent_account(task.harness.provider()).await?;
         let account = parse_account(req)?;
         // A subscription asked for by name must still exist: "Continue on…" never lands elsewhere
-        // unsaid (SPEC-447 MOV-002).
-        if let Some(id) = &account
-            && self.deps.store.account(id).await?.is_none()
-        {
-            return Err(AppError::Capacity(
-                "That subscription no longer exists.".into(),
-            ));
+        // unsaid (SPEC-447 MOV-002). It must be of the task's provider too, refused before the task
+        // starts (SPEC-451 CDX-013): a task never changes harness.
+        if let Some(id) = &account {
+            let provider = task.harness.provider();
+            match self.deps.store.account(id).await? {
+                None => {
+                    return Err(AppError::Capacity(
+                        "That subscription no longer exists.".into(),
+                    ));
+                }
+                Some(record) if record.provider != provider => {
+                    return Err(AppError::Capacity(format!(
+                        "{} is not a {} subscription, so it cannot take the task.",
+                        record.label,
+                        crate::account_gate::account_kind(provider)
+                    )));
+                }
+                Some(_) => {}
+            }
         }
         // A person continues it: whatever its agent asked a person before is past (SPEC-134).
         self.end_needs_you(&task.id).await;

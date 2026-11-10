@@ -65,6 +65,15 @@ async fn fixture_with_task(
     workflow: Option<(&str, bool)>,
     tweak: impl FnOnce(&mut TaskRecord),
 ) -> Result<Fixture, Box<dyn std::error::Error>> {
+    fixture_of(workflow, tweak, Agent::ClaudeCode).await
+}
+
+/// [`fixture_with_task`] whose task and live run are of `agent` (SPEC-451).
+async fn fixture_of(
+    workflow: Option<(&str, bool)>,
+    tweak: impl FnOnce(&mut TaskRecord),
+    agent: Agent,
+) -> Result<Fixture, Box<dyn std::error::Error>> {
     let h = harness_with_git(Arc::new(GitAdapter::new("git")))?;
     let repo = tempfile::tempdir()?;
     let origin = repo.path().join("origin.git");
@@ -182,6 +191,7 @@ async fn fixture_with_task(
     }
     main.worktree_path = Some(worktree.to_string_lossy().into_owned());
     main.spec_path = Some("docs/specs/checkout.md".into());
+    main.harness = agent;
     tweak(&mut main);
     store.insert_task(&main).await?;
     store
@@ -198,7 +208,7 @@ async fn fixture_with_task(
     store
         .insert_account(&yulius_app::model::AccountRecord {
             id: account.clone(),
-            provider: yulius_domain::harness::Provider::Anthropic,
+            provider: agent.provider(),
             label: "Claude #1".into(),
             credential: Some(
                 h.app
@@ -221,7 +231,7 @@ async fn fixture_with_task(
             id: AttemptId::parse("at1")?,
             task_id: main.id.clone(),
             seq: 1,
-            harness: Agent::ClaudeCode,
+            harness: agent,
             account_id: Some(account),
             provider_session_id: None,
             launch_kind: LaunchKind::New,
@@ -1584,5 +1594,91 @@ async fn an_edit_the_gate_cannot_judge_passes() -> TestResult {
         None,
         "an unreadable workflow is a failure to decide"
     );
+    Ok(())
+}
+
+/// SPEC-451 CDX-007: a Codex run's hooks reach Yulius as Claude Code's do: SessionStart names the
+/// session (Codex has no `--session-id`) and answers the briefing in the shape Codex reads; a hook
+/// of another harness than the run's is refused, and an unknown harness is not a hook.
+#[tokio::test]
+async fn codex_hooks_reach_yulius_for_codex_runs_only() -> TestResult {
+    let f = fixture_of(None, |_| {}, Agent::Codex).await?;
+    let session = "019a6b2e-7c1d-7f00-9a3e-1b2c3d4e5f60";
+    let resp = call(
+        &f.h.internal,
+        Method::POST,
+        "/hooks/codex/SessionStart",
+        Some(
+            json!({"session_id": session, "hook_event_name": "SessionStart",
+            "source": "startup", "cwd": f.worktree, "model": "gpt-synthetic",
+            "permission_mode": "bypassPermissions", "transcript_path": null}),
+        ),
+        &agent(),
+    )
+    .await?;
+    assert_eq!(resp.status, 200, "{:?}", resp.body);
+    let output = &resp.body["hookSpecificOutput"];
+    assert_eq!(output["hookEventName"], "SessionStart", "{}", resp.body);
+    assert!(
+        output["additionalContext"]
+            .as_str()
+            .is_some_and(|c| c.contains("Checkout API")),
+        "{}",
+        resp.body
+    );
+    let attempt =
+        f.h.app
+            .deps
+            .store
+            .attempt(&AttemptId::parse("at1")?)
+            .await?
+            .ok_or("attempt")?;
+    assert_eq!(attempt.provider_session_id.as_deref(), Some(session));
+    let lineage = f.h.app.deps.store.provider_sessions(&f.task).await?;
+    assert!(
+        lineage
+            .iter()
+            .any(|l| l.session_id == session && l.harness == Agent::Codex),
+        "{lineage:?}"
+    );
+    let stop = call(
+        &f.h.internal,
+        Method::POST,
+        "/hooks/codex/Stop",
+        Some(json!({"session_id": session, "hook_event_name": "Stop",
+            "stop_hook_active": false, "last_assistant_message": "Done."})),
+        &agent(),
+    )
+    .await?;
+    assert_eq!(stop.status, 200, "{:?}", stop.body);
+    let claude = call(
+        &f.h.internal,
+        Method::POST,
+        "/hooks/claude/Stop",
+        Some(json!({})),
+        &agent(),
+    )
+    .await?;
+    assert_eq!(claude.status, 401, "a Claude hook from a Codex run");
+    let unknown = call(
+        &f.h.internal,
+        Method::POST,
+        "/hooks/gemini/Stop",
+        Some(json!({})),
+        &agent(),
+    )
+    .await?;
+    assert_eq!(unknown.status, 404);
+
+    let claude_run = fixture().await?;
+    let codex = call(
+        &claude_run.h.internal,
+        Method::POST,
+        "/hooks/codex/Stop",
+        Some(json!({})),
+        &agent(),
+    )
+    .await?;
+    assert_eq!(codex.status, 401, "a Codex hook from a Claude run");
     Ok(())
 }

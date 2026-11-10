@@ -3,9 +3,9 @@
 
 use yulius_domain::task::GoalOutcome;
 use yulius_domain::time::Timestamp;
-use yulius_domain::usage::TokenUsage;
-use yulius_harness::claude;
+use yulius_domain::usage::{TokenUsage, UsageWindow};
 use yulius_harness::observe::{LimitSignal, Observed, UsageAccumulator};
+use yulius_harness::{claude, codex};
 
 const CLAUDE_SESSION: &str = include_str!("fixtures/claude/session.jsonl");
 const CLAUDE_LIMIT_EPOCH: &str = include_str!("fixtures/claude/limit_epoch.jsonl");
@@ -13,6 +13,10 @@ const CLAUDE_LIMIT_TEXT: &str = include_str!("fixtures/claude/limit_text.jsonl")
 const CLAUDE_ABSENT_USAGE: &str = include_str!("fixtures/claude/absent_usage.jsonl");
 const CLAUDE_MALFORMED: &str = include_str!("fixtures/claude/malformed.jsonl");
 const CLAUDE_GOAL: &str = include_str!("fixtures/claude/goal.jsonl");
+const CODEX_ROLLOUT: &str = include_str!("fixtures/codex/rollout.jsonl");
+const CODEX_REACHED: &str = include_str!("fixtures/codex/rate_limit_reached.jsonl");
+const CODEX_MALFORMED: &str = include_str!("fixtures/codex/malformed.jsonl");
+const CODEX_SESSION_ID: &str = "019a6b2e-7c1d-7f00-9a3e-1b2c3d4e5f60";
 
 const CLAUDE_SESSION_ID: &str = "5b0d9c1e-2f4a-4c6b-9e7d-1a2b3c4d5e6f";
 
@@ -238,5 +242,170 @@ fn claude_goal_mode_records() {
     assert_eq!(
         accumulate(CLAUDE_GOAL, claude::observe_line).malformed_lines(),
         0
+    );
+}
+
+/// SPEC-451 CDX-004: a Codex 0.167 rollout gives its session, typed turns, their ends, the model,
+/// each response's usage once and the account's rate limits.
+#[test]
+fn codex_rollout_turns_usage_and_rate_limits() {
+    let per_line = observe_all(CODEX_ROLLOUT, codex::observe_line);
+    let all = flat(&per_line);
+    assert_eq!(
+        all.first(),
+        Some(&&Observed::SessionMeta {
+            session_id: CODEX_SESSION_ID.into(),
+            cwd: Some("/work/demo".into()),
+            model: None,
+            version: Some("0.167.0".into()),
+        })
+    );
+    let prompts: Vec<Option<Timestamp>> = all
+        .iter()
+        .filter_map(|o| match o {
+            Observed::UserTurn { at, wake: false } => Some(*at),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        prompts.len(),
+        2,
+        "developer and environment-context messages are not turns"
+    );
+    assert!(prompts.iter().all(Option::is_some));
+    let ends: Vec<Option<u64>> = all
+        .iter()
+        .filter_map(|o| match o {
+            Observed::TurnComplete {
+                duration_ms,
+                at: Some(_),
+            } => Some(*duration_ms),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ends, vec![Some(6100), Some(6100)]);
+    assert!(
+        all.iter()
+            .any(|o| matches!(o, Observed::TurnInterrupted { at: Some(_) }))
+    );
+    assert!(all.iter().any(|o| matches!(o, Observed::Compacted)));
+    assert!(
+        all.iter()
+            .any(|o| matches!(o, Observed::AgentWork { at: Some(_) }))
+    );
+    assert!(!all.iter().any(|o| matches!(o, Observed::Malformed)));
+
+    let limits: Vec<UsageWindow> = all
+        .iter()
+        .filter_map(|o| match o {
+            Observed::RateLimits(u) => u.primary,
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        limits.len(),
+        4,
+        "the repeated line reports its limits again"
+    );
+    assert_eq!(
+        limits.last(),
+        Some(&UsageWindow {
+            used_percent: Some(47.0),
+            window_minutes: Some(300),
+            resets_at: Some(Timestamp(1_794_230_000_000)),
+        })
+    );
+
+    let acc = accumulate(CODEX_ROLLOUT, codex::observe_line);
+    // Each response once (the repeated line is the same response); cached tokens out of input.
+    assert_eq!(
+        acc.usage(),
+        TokenUsage {
+            input: Some((5_000 - 3_000) + (4_000 - 3_000)),
+            output: Some(200 + 250),
+            cache_read: Some(3_000 + 3_000),
+            cache_write: Some(0),
+        }
+    );
+    assert_eq!(acc.model(), Some("gpt-synthetic-codex-mini"));
+    assert_eq!(acc.turns(), 2);
+    assert_eq!(acc.last_limit(), None);
+    assert!(acc.active().total_ms().is_some());
+}
+
+/// SPEC-451 CDX-004: a resumed run reads only its own lines, so it counts only its responses.
+#[test]
+fn codex_usage_of_a_resumed_run_is_its_own() {
+    let second_turn: String = CODEX_ROLLOUT
+        .lines()
+        .skip_while(|l| !l.contains("\"turn_id\":\"2\""))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    let acc = accumulate(&second_turn, codex::observe_line);
+    assert_eq!(acc.usage().output, Some(250));
+}
+
+/// SPEC-451 CDX-004: a reached rate limit marks the account's windows; the turn a usage limit
+/// ended is the usage limit (its `task_complete` error), and another error is a turn's end.
+#[test]
+fn codex_rate_limit_reached() {
+    let per_line = observe_all(CODEX_REACHED, codex::observe_line);
+    let snapshots: Vec<_> = per_line
+        .iter()
+        .flatten()
+        .filter_map(|o| match o {
+            Observed::RateLimits(u) => Some(*u),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(snapshots.len(), 2);
+    // A full window: the limit resets with it.
+    assert!(snapshots[0].limit_reached);
+    assert_eq!(
+        snapshots[0].limit_resets_at,
+        Some(Timestamp(1_794_230_000_000))
+    );
+    // No full window: the latest known reset.
+    assert!(snapshots[1].limit_reached);
+    assert_eq!(
+        snapshots[1].limit_resets_at,
+        Some(Timestamp(1_794_700_000_000))
+    );
+    assert!(snapshots[0].exhausted(Timestamp(1_794_229_999_999), 99.0));
+
+    assert_eq!(
+        per_line[3],
+        vec![Observed::LimitReached {
+            resets_at: None,
+            message: "You've hit your usage limit. Upgrade to Pro or try again at 1:46 PM.".into(),
+            window_minutes: None,
+            at: Some(Timestamp(1_794_218_404_000)),
+        }]
+    );
+    assert_eq!(
+        per_line[4],
+        vec![Observed::TurnComplete {
+            duration_ms: Some(10),
+            at: Some(Timestamp(1_794_218_405_000)),
+        }]
+    );
+    let acc = accumulate(CODEX_REACHED, codex::observe_line);
+    assert!(acc.last_limit().is_some());
+}
+
+/// SPEC-451 CDX-004: malformed lines are reported and unknown types ignored, never fatal.
+#[test]
+fn codex_malformed_and_unknown_lines() {
+    let per_line = observe_all(CODEX_MALFORMED, codex::observe_line);
+    assert_eq!(
+        per_line,
+        vec![
+            vec![Observed::Malformed], // truncated JSON
+            vec![Observed::Malformed], // known type without payload
+            vec![Observed::Malformed], // session_meta without id
+            vec![],                    // unknown type is ignored
+            vec![Observed::Malformed], // no type
+            vec![Observed::Malformed], // not an object
+        ]
     );
 }

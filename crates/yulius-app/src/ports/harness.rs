@@ -1,12 +1,12 @@
 //! Harness port: launch planning, transcript observation and login helpers for Claude Code
-//! (SPEC-002 §7.2). Implemented over `yulius-harness`.
+//! (SPEC-002 §7.2) and Codex (SPEC-451). Implemented over `yulius-harness`.
 
 use std::path::{Path, PathBuf};
 
 use yulius_domain::harness::Harness;
 use yulius_domain::task::GoalOutcome;
 use yulius_domain::time::Timestamp;
-use yulius_domain::usage::TokenUsage;
+use yulius_domain::usage::{AccountUsage, TokenUsage};
 
 use crate::error::AppResult;
 use crate::model::Secret;
@@ -80,8 +80,13 @@ pub struct HarnessLaunch {
     pub contained: bool,
     /// Extra MCP servers.
     pub mcp: Vec<McpAttachment>,
-    /// Provider credential (the Claude OAuth token).
+    /// Provider credential (the Claude OAuth token, or the Codex `auth.json` text).
     pub credential: Secret,
+    /// Codex home of the (sandbox, account) pair; required for Codex (SPEC-451 CDX-003).
+    pub codex_home: Option<PathBuf>,
+    /// The Codex CLI Yulius provides, started by its absolute path (SPEC-451 CLI-002); `None`:
+    /// `codex` from `PATH`.
+    pub codex_program: Option<PathBuf>,
 }
 
 /// A user's Cockpit launch (SPEC-021): plain Claude Code outside any task.
@@ -207,6 +212,9 @@ pub enum Observation {
     Compacted,
     /// A compaction failed.
     CompactFailed,
+    /// The provider's rate-limit windows of the run's account, as the CLI recorded them (Codex
+    /// `token_count` events, SPEC-451 CDX-004).
+    RateLimits(AccountUsage),
     /// The provider reported a usage limit.
     LimitReached {
         /// Reset time if known.
@@ -281,8 +289,34 @@ pub trait OutputMasker: Send {
     fn finish(&mut self) -> Vec<u8>;
 }
 
+/// An agent CLI Yulius provides itself (SPEC-451 CLI-001): its program, started by this absolute
+/// path, and the directory holding it, which a contained run binds read-only at the same path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProvidedCli {
+    /// The executable.
+    pub program: PathBuf,
+    /// Its release's directory.
+    pub dir: PathBuf,
+}
+
+/// What [`HarnessPort::provide_codex`] returns.
+pub type ProvideFuture<'a> = std::pin::Pin<
+    Box<dyn std::future::Future<Output = AppResult<Option<ProvidedCli>>> + Send + 'a>,
+>;
+
 /// Harness operations.
 pub trait HarnessPort: Send + Sync {
+    /// The Codex CLI Codex runs and sign-ins start (SPEC-451 CLI-002), installed first when
+    /// `install` (else only what is ready: a caller holding a lock never waits for a download);
+    /// `None`: the `codex` on the run's `PATH`.
+    ///
+    /// # Errors
+    /// `Upstream` when the pinned CLI cannot be installed (or, without `install`, is not
+    /// installed yet) and the host has no `codex` either.
+    fn provide_codex(&self, install: bool) -> ProvideFuture<'_> {
+        let _ = install;
+        Box::pin(async { Ok(None) })
+    }
     /// Plans a launch.
     ///
     /// # Errors
@@ -348,6 +382,39 @@ pub trait HarnessPort: Send + Sync {
         from: WatchFrom,
         until: Option<Timestamp>,
     ) -> AppResult<Option<UsageSnapshot>>;
+    /// The rollout of the Codex session `session_id` below `sessions_dir` (SPEC-451 CDX-003).
+    ///
+    /// # Errors
+    /// I/O failures; an invalid session id.
+    fn find_codex_rollout(
+        &self,
+        sessions_dir: &Path,
+        session_id: &str,
+    ) -> AppResult<Option<PathBuf>>;
+    /// The id and rollout of the Codex session started for `worktree` at or after `since`, read
+    /// from the `session_meta` of the newest rollouts below `sessions_dir` (when no hook named it).
+    ///
+    /// # Errors
+    /// I/O failures.
+    fn discover_codex_session(
+        &self,
+        sessions_dir: &Path,
+        worktree: &Path,
+        since: Timestamp,
+    ) -> AppResult<Option<(String, PathBuf)>>;
+    /// Why a Codex `auth.json` is not a usable credential, `None` when it is (SPEC-451 CDX-005).
+    fn codex_auth_problem(&self, auth_json: &[u8]) -> Option<String>;
+    /// Why an imported `auth.json` is not a full ChatGPT sign-in of Codex, `None` when it is
+    /// (SPEC-451 CDX-011). The reason never quotes the file.
+    fn codex_import_problem(&self, auth_json: &[u8]) -> Option<String>;
+    /// The `auth.json` of an OpenAI API key, `None` when the key is not one.
+    fn codex_api_key_auth(&self, api_key: &str) -> Option<Vec<u8>>;
+    /// Whether the `auth.json` a Codex run left (`fresh`, written where the agent can write)
+    /// replaces the account's `stored` one: a genuine refresh of the same sign-in, not dated after
+    /// `now` (SPEC-451 CDX-006).
+    fn codex_auth_replaces(&self, fresh: &[u8], stored: &[u8], now: Timestamp) -> bool;
+    /// The `config.toml` of a Codex home Yulius prepares for a sign-in: credentials in a file.
+    fn codex_login_config(&self) -> Vec<u8>;
     /// Login command for a provider account.
     fn login_argv(&self, harness: Harness) -> Vec<String>;
     /// Extracts a Claude OAuth token from login output.

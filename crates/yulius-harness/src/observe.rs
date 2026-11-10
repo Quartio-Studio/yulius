@@ -1,15 +1,15 @@
 //! Normalized observations from transcript lines and the usage accumulator (SPEC-002 §7.2,
 //! EVT-001/002).
 //!
-//! [`crate::claude::observe_line`] turns one transcript line into zero or more [`Observed`]
-//! values. Unknown record types yield nothing; lines that are not
+//! [`crate::claude::observe_line`] and [`crate::codex::observe_line`] turn one transcript line
+//! into zero or more [`Observed`] values. Unknown record types yield nothing; lines that are not
 //! JSON objects or lack required fields yield [`Observed::Malformed`].
 
 use std::collections::{HashSet, VecDeque};
 
 use yulius_domain::task::GoalOutcome;
 use yulius_domain::time::Timestamp;
-use yulius_domain::usage::TokenUsage;
+use yulius_domain::usage::{AccountUsage, TokenUsage};
 
 /// Maximum number of recent Claude message ids remembered for de-duplication.
 pub const MESSAGE_ID_MEMORY: usize = 65_536;
@@ -155,6 +155,13 @@ pub enum Observed {
     Compacted,
     /// A compaction failed ("Error during compaction" in the command's error output).
     CompactFailed,
+    /// The model of the turns that follow (Codex `turn_context`; Claude names it per message).
+    TurnContext {
+        /// Model, if recorded.
+        model: Option<String>,
+    },
+    /// The account's rate-limit windows as the CLI saw them (Codex `token_count`).
+    RateLimits(AccountUsage),
     /// The line is not a JSON object or lacks a required field.
     Malformed,
 }
@@ -357,6 +364,7 @@ impl UsageAccumulator {
             }
             Observed::TurnInterrupted { at: Some(at) } => self.active.close(*at),
             Observed::BackgroundStarted { at: Some(at), .. } => self.active.seen(*at),
+            Observed::TurnContext { model: Some(model) } => self.model = Some(model.clone()),
             Observed::Malformed => self.malformed += 1,
             _ => {}
         }

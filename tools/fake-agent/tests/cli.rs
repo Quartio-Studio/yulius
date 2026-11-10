@@ -181,14 +181,74 @@ fn a_goal_prompt_argument_sets_the_goal() -> TestResult {
     Ok(())
 }
 
+/// SPEC-451: a Codex-shaped rollout: `session_meta` first (written at the first turn), per turn
+/// the user's message, a `token_count` with growing totals and rate limits, and `task_complete`;
+/// the limit is a reached rate limit and a `task_complete` with the usage-limit error.
 #[test]
-fn only_claude_transcripts_are_written() -> TestResult {
+fn codex_rollout_has_session_meta_turns_usage_and_a_limit() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let path = dir
+        .path()
+        .join("sessions/2026/11/09/rollout-2026-11-09T00-00-00-s-5.jsonl");
+    let path_text = path.to_string_lossy().into_owned();
+    let output = run(
+        &[
+            "--session-id",
+            "s-5",
+            "--transcript",
+            &path_text,
+            "--transcript-kind",
+            "codex",
+            "--limit-after",
+            "2",
+        ],
+        "a
+bb
+ccc
+/exit
+",
+    )?;
+    assert!(stdout(&output).contains("ECHO: bb\nLIMIT REACHED\nLIMIT REACHED\nBYE"));
+    let records = read_jsonl(&path)?;
+    assert_eq!(records[0]["type"], "session_meta");
+    assert_eq!(records[0]["payload"]["id"], "s-5");
+    let users: Vec<&Value> = records
+        .iter()
+        .filter(|r| r["type"] == "response_item" && r["payload"]["role"] == "user")
+        .collect();
+    assert_eq!(users.len(), 2);
+    assert_eq!(users[1]["payload"]["content"][0]["text"], "bb");
+    let counts: Vec<&Value> = records
+        .iter()
+        .filter(|r| r["payload"]["type"] == "token_count")
+        .collect();
+    assert_eq!(counts.len(), 3);
+    let total = |r: &Value| r["payload"]["info"]["total_token_usage"]["total_tokens"].as_u64();
+    assert!(total(counts[1]) > total(counts[0]));
+    assert_eq!(
+        counts[2]["payload"]["rate_limits"]["rate_limit_reached_type"],
+        "rate_limit_reached"
+    );
+    let ends: Vec<&Value> = records
+        .iter()
+        .filter(|r| r["payload"]["type"] == "task_complete")
+        .collect();
+    assert_eq!(ends.len(), 3);
+    assert_eq!(
+        ends[2]["payload"]["error"]["codex_error_info"],
+        "usage_limit_exceeded"
+    );
+    Ok(())
+}
+
+#[test]
+fn unknown_transcript_kinds_are_refused() -> TestResult {
     let output = Command::new(EXE)
         .args([
             "--transcript",
             "/tmp/unused.jsonl",
             "--transcript-kind",
-            "codex",
+            "gemini",
         ])
         .stdin(Stdio::null())
         .output()?;

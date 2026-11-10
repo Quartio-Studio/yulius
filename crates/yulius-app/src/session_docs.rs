@@ -300,6 +300,7 @@ impl App {
                 &worktree,
                 session_id,
             ),
+            Harness::Codex => self.codex_rollout(&task.sandbox_id, session_id),
         }
     }
 

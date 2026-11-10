@@ -6,6 +6,17 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-10
 
+- Proposed: Codex returns as a second harness (SPEC-451, ADR-0290; an external contribution for
+  the founders to accept, reversing the Codex part of `F 2026-10-08`). A task or automation can run
+  Codex CLI 0.167.0 instead of Claude Code: the native Codex TUI in the task terminal, on Codex
+  subscriptions added from Subscriptions (ChatGPT sign-in by device code, an imported `auth.json`
+  of a `codex login` made elsewhere, or an OpenAI API key). Each subscription has its own Codex
+  home per sandbox; Yulius reads the rollout for turns, tokens, rate limits and usage limits, moves
+  a Codex task only between Codex subscriptions (at a limit, by "Run #N on…", when one is
+  removed), resumes it after a restart, and keeps the credentials Codex refreshed. Yulius
+  downloads the pinned Codex CLI from npm once (its sha512 in the source) into `<data>/codex-cli`
+  and starts it by path, so a sandbox without Codex still runs it. No provider switching or
+  session translation. The composer's model menu has Codex; automations choose their agent.
 - A person is never stuck on a subscription (SPEC-447, task #429). Each task shows the subscription
   it runs on (its strip, the Tasks list), and "Run #N on…" moves a running or waiting task to the
   one they choose in the same session, or continues an ended task there; a choice above the pool's

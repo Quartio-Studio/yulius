@@ -119,6 +119,11 @@ pub struct FakeAgentOptions {
     pub answers_first_message: bool,
     /// Open on Claude Code's folder-trust dialog, answered by the first line (`--trust-prompt`).
     pub trust_prompt: bool,
+    /// The Codex CLI the harness says it provides (SPEC-451 CLI-002); its program is recorded in
+    /// `fake-launch.txt`, the fake agent runs instead.
+    pub provided_codex: Option<yulius_app::ports::harness::ProvidedCli>,
+    /// The Codex CLI cannot be provided, for this reason (SPEC-451 CLI-002).
+    pub codex_unavailable: Option<String>,
 }
 
 /// See the module docs.
@@ -143,14 +148,28 @@ impl FakeAgentHarness {
 }
 
 impl HarnessPort for FakeAgentHarness {
+    fn provide_codex(&self, _install: bool) -> yulius_app::ports::harness::ProvideFuture<'_> {
+        let provided = self.options.provided_codex.clone();
+        let unavailable = self.options.codex_unavailable.clone();
+        Box::pin(async move {
+            match unavailable {
+                Some(reason) => Err(yulius_app::error::AppError::Upstream(reason)),
+                None => Ok(provided),
+            }
+        })
+    }
+
     fn plan(&self, launch: &HarnessLaunch) -> AppResult<HarnessPlan> {
         let mut plan = self.inner.plan(launch)?;
         // Tests read what each launch asked for from its run directory.
         let _ = std::fs::write(
             launch.run_dir.join("fake-launch.txt"),
             format!(
-                "mode={:?}\nmodel={:?}\neffort={:?}\n",
-                launch.mode, launch.model, launch.effort
+                "mode={:?}\nmodel={:?}\neffort={:?}\nprogram={:?}\n",
+                launch.mode,
+                launch.model,
+                launch.effort,
+                plan.plan.argv.first()
             ),
         );
         // A resume continues the same session (and transcript), like `claude --resume <id>`.
@@ -160,11 +179,19 @@ impl HarnessPort for FakeAgentHarness {
             }
             yulius_app::ports::harness::SessionMode::New { .. } => None,
         };
-        let session = plan
-            .session_id
-            .clone()
-            .or(resumed)
-            .unwrap_or_else(|| "fake-session".into());
+        let codex = launch.harness == Harness::Codex;
+        // Codex names its own session: a new fake one takes the run directory's name (the
+        // attempt id), which Yulius learns from the rollout's `session_meta` or the hook.
+        let session = plan.session_id.clone().or(resumed).unwrap_or_else(|| {
+            if codex {
+                launch
+                    .run_dir
+                    .file_name()
+                    .map_or_else(|| "fake-codex".into(), |n| n.to_string_lossy().into_owned())
+            } else {
+                "fake-session".into()
+            }
+        });
         let mut argv = vec![
             self.fake.to_string_lossy().into_owned(),
             "--mode".into(),
@@ -174,7 +201,21 @@ impl HarnessPort for FakeAgentHarness {
             "--report-env".into(),
             "YULIUS_TASK_TOKEN".into(),
         ];
-        if self.options.transcript {
+        if let (true, Some(home)) = (codex, &launch.codex_home) {
+            // The rollout lives in the sandbox's shared sessions, reached through the home's
+            // `sessions` link as Codex reaches it (SPEC-451 CDX-003).
+            let sessions = home.join("sessions");
+            let path = match self.inner.find_codex_rollout(&sessions, &session) {
+                Ok(Some(existing)) => existing,
+                _ => sessions
+                    .join("2026/11/09")
+                    .join(format!("rollout-2026-11-09T00-00-00-{session}.jsonl")),
+            };
+            if self.options.transcript {
+                argv.extend(["--transcript".into(), path.to_string_lossy().into_owned()]);
+            }
+            argv.extend(["--transcript-kind".into(), "codex".into()]);
+        } else if self.options.transcript {
             let path =
                 self.inner
                     .claude_transcript(&launch.sandbox_home, &launch.worktree, &session);
@@ -371,6 +412,32 @@ impl HarnessPort for FakeAgentHarness {
     ) -> AppResult<Option<yulius_app::ports::harness::UsageSnapshot>> {
         self.inner
             .recount(harness, sandbox_home, worktree, session_id, from, until)
+    }
+    fn find_codex_rollout(&self, dir: &Path, session: &str) -> AppResult<Option<PathBuf>> {
+        self.inner.find_codex_rollout(dir, session)
+    }
+    fn discover_codex_session(
+        &self,
+        dir: &Path,
+        worktree: &Path,
+        since: Timestamp,
+    ) -> AppResult<Option<(String, PathBuf)>> {
+        self.inner.discover_codex_session(dir, worktree, since)
+    }
+    fn codex_auth_problem(&self, auth_json: &[u8]) -> Option<String> {
+        self.inner.codex_auth_problem(auth_json)
+    }
+    fn codex_import_problem(&self, auth_json: &[u8]) -> Option<String> {
+        self.inner.codex_import_problem(auth_json)
+    }
+    fn codex_api_key_auth(&self, api_key: &str) -> Option<Vec<u8>> {
+        self.inner.codex_api_key_auth(api_key)
+    }
+    fn codex_auth_replaces(&self, fresh: &[u8], stored: &[u8], now: Timestamp) -> bool {
+        self.inner.codex_auth_replaces(fresh, stored, now)
+    }
+    fn codex_login_config(&self) -> Vec<u8> {
+        self.inner.codex_login_config()
     }
     fn login_argv(&self, harness: Harness) -> Vec<String> {
         self.inner.login_argv(harness)

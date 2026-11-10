@@ -10,10 +10,10 @@ use std::path::Path;
 
 use yulius_domain::time::Timestamp;
 
-use crate::claude;
-use crate::observe::UsageAccumulator;
+use crate::observe::{Observed, UsageAccumulator};
 use crate::subagents::{LinesSince, SubagentTails};
 use crate::tail::{DEFAULT_MAX_LINE_BYTES, TranscriptTail};
+use crate::{claude, codex};
 
 /// Folds the lines of `transcript` from `since` (the first line when `None`) to `until` (the end
 /// of the file when `None`), with its sub-agents' usage over the same window. `None` when the
@@ -26,6 +26,29 @@ pub fn count_run(
     transcript: &Path,
     since: Option<Timestamp>,
     until: Option<Timestamp>,
+) -> io::Result<Option<UsageAccumulator>> {
+    count_with(transcript, since, until, claude::observe_line, true)
+}
+
+/// [`count_run`] for a Codex rollout (SPEC-451): its own lines only, Codex keeps no sub-agent
+/// transcripts beside it.
+///
+/// # Errors
+/// I/O errors reading the rollout.
+pub fn count_codex_run(
+    rollout: &Path,
+    since: Option<Timestamp>,
+    until: Option<Timestamp>,
+) -> io::Result<Option<UsageAccumulator>> {
+    count_with(rollout, since, until, codex::observe_line, false)
+}
+
+fn count_with(
+    transcript: &Path,
+    since: Option<Timestamp>,
+    until: Option<Timestamp>,
+    observe: fn(&str) -> Vec<Observed>,
+    subagents: bool,
 ) -> io::Result<Option<UsageAccumulator>> {
     match fs::symlink_metadata(transcript) {
         Ok(meta) if meta.is_file() => {}
@@ -40,12 +63,15 @@ pub fn count_run(
     while !window.ended() {
         for line in tail.poll()? {
             if window.keep(&line) {
-                acc.observe_all(claude::observe_line(&line).iter());
+                acc.observe_all(observe(&line).iter());
             }
         }
         if tail.at_end() {
             break;
         }
+    }
+    if !subagents {
+        return Ok(Some(acc));
     }
     let mut side = SubagentTails::between(transcript, since, until);
     // A sub-agent transcript that cannot be read fails the count: partial tokens are not the run's.

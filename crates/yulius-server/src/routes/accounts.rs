@@ -14,7 +14,8 @@ use yulius_app::auth::AuthContext;
 use yulius_app::error::AppError;
 use yulius_app::hub::HubFrame;
 use yulius_contracts::api::admin::{
-    AccountLoginCancelled, AccountLoginStarted, AccountView, CreateAccount, UpdateAccount,
+    AccountLoginCancelled, AccountLoginStarted, AccountView, CreateAccount, ImportAccountAuth,
+    UpdateAccount,
 };
 use yulius_contracts::terminal::{
     CLOSE_LAGGING, KIND_OUTPUT, KIND_SNAPSHOT, TerminalClientMsg, TerminalServerMsg, encode_binary,
@@ -67,6 +68,17 @@ pub async fn relogin(
     Path(id): Path<String>,
 ) -> ApiResult<Json<AccountLoginStarted>> {
     Ok(Json(app.relogin_account(&ctx, &id).await?))
+}
+
+/// `POST /api/admin/accounts/{id}/import`: a Codex account signs in again from an imported
+/// `auth.json` (SPEC-451 CDX-011).
+pub async fn import(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path(id): Path<String>,
+    Json(req): Json<ImportAccountAuth>,
+) -> ApiResult<Json<AccountLoginStarted>> {
+    Ok(Json(app.import_account_auth(&ctx, &id, &req).await?))
 }
 
 /// `POST /api/admin/accounts/login/{login_id}/cancel`: stops a running sign-in and says how it
