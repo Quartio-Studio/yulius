@@ -9,6 +9,10 @@
 //! extraction. On exit the credential is sealed into the account, the temporary directory is
 //! overwritten and removed, and `account.updated` is published.
 //!
+//! A subscription can also be connected, or repaired, with a token `claude setup-token` printed
+//! elsewhere (SPEC-450, ADR-0289): its shape is checked, Claude's profile is asked once (a 401
+//! refuses it), and it is sealed and stored exactly like a captured token, with no terminal.
+//!
 //! Bounds: one active login per account (a new one replaces the old), at most
 //! [`MAX_ACTIVE_LOGINS`] at once, [`LOGIN_RAW_MAX`] bytes of raw output, [`LOGIN_TIMEOUT`] per
 //! login, [`LOGIN_VIEWERS_MAX`] viewers per login.
@@ -22,8 +26,8 @@ use std::time::Duration;
 
 use tokio::sync::Notify;
 use yulius_contracts::api::admin::{
-    AccountLoginStarted, AccountUsageView, AccountView, CreateAccount, TokenTotalsView,
-    UpdateAccount, UsageWindowView,
+    AccountLoginStarted, AccountUsageView, AccountView, CreateAccount, ReplaceAccountToken,
+    TokenTotalsView, UpdateAccount, UsageWindowView,
 };
 use yulius_contracts::events::UiEvent;
 use yulius_contracts::terminal::TerminalServerMsg;
@@ -31,18 +35,18 @@ use yulius_domain::harness::Provider;
 use yulius_domain::ids::AccountId;
 use yulius_domain::time::Timestamp;
 use yulius_domain::usage::{AccountUsage, UsageWindow};
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::auth::{AuthContext, rfc3339};
 use crate::context::App;
 use crate::error::{AppError, AppResult};
 use crate::hub::{Hub, Subscription};
-use crate::model::{AccountRecord, AccountStatus, AttemptRecord, Secret};
+use crate::model::{AccountRecord, AccountStatus, AttemptRecord, Sealed, Secret};
 use crate::ports::harness::OutputMasker;
 use crate::ports::session::{
     Containment, LaunchPlan, RunEvent, RunExit, RunInspection, RunReader, RunSignal, RunWriter,
 };
-use crate::ports::usage::{UsageFailure, UsageFailureKind};
+use crate::ports::usage::{UsageFailure, UsageFailureKind, plausible_email};
 use crate::usage_json;
 
 /// Maximum duration of one login before its process is stopped.
@@ -69,6 +73,18 @@ pub const MAX_RETAINED_LOGINS: usize = 32;
 pub const LOGIN_INPUT_MAX: usize = 64 * 1024;
 /// Longest account label.
 pub const LABEL_MAX: usize = 80;
+/// Longest pasted token, prefix included (SPEC-450 TKP-003).
+pub const PASTED_TOKEN_MAX: usize = 512;
+/// Prefix of the long-lived token `claude setup-token` prints.
+const CLAUDE_TOKEN_PREFIX: &str = "sk-ant-oat01-";
+/// Fewest token characters after the prefix (as the login terminal's capture).
+const CLAUDE_TOKEN_MIN_BODY: usize = 20;
+/// Why a pasted token was not taken: its shape (never the token itself).
+const PASTED_TOKEN_SHAPE: &str = "the token must be what claude setup-token prints: \
+     sk-ant-oat01- followed by letters, digits, - and _ (at most 512 characters)";
+/// Why a pasted token was not taken: Claude refused it.
+const PASTED_TOKEN_REFUSED: &str = "Claude did not accept this token; make a new one with \
+     claude setup-token and paste it again";
 
 /// Wait for the process to exit after a stop request before killing its host.
 const STOP_WAIT: Duration = Duration::from_secs(10);
@@ -400,6 +416,24 @@ fn validate_label(label: &str) -> AppResult<String> {
         )));
     }
     Ok(label.to_owned())
+}
+
+/// The pasted token, trimmed, when it has the shape `claude setup-token` prints (SPEC-450
+/// TKP-003); `Invalid` otherwise, with a message that never holds the input.
+fn pasted_token(token: &str) -> AppResult<Secret> {
+    let token = token.trim();
+    let shaped = token.len() <= PASTED_TOKEN_MAX
+        && token.strip_prefix(CLAUDE_TOKEN_PREFIX).is_some_and(|body| {
+            body.len() >= CLAUDE_TOKEN_MIN_BODY
+                && body
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        });
+    if shaped {
+        Ok(Secret(token.to_owned()))
+    } else {
+        Err(AppError::Invalid(PASTED_TOKEN_SHAPE.into()))
+    }
 }
 
 fn human_duration(d: Duration) -> String {
@@ -762,15 +796,25 @@ impl App {
     /// # Errors
     /// `Invalid` provider/label, `Forbidden`, `Capacity` when too many logins run, `Upstream`
     /// when the process host fails.
+    /// With a `token` the account is created signed in with it instead, `ok` and with no login
+    /// terminal (SPEC-450 TKP-001); see [`App::replace_account_token`] for its checks.
     pub async fn create_account(
         self: &Arc<Self>,
         ctx: &AuthContext,
-        req: &CreateAccount,
+        mut req: CreateAccount,
     ) -> AppResult<AccountLoginStarted> {
+        // A pasted token is zeroed when it goes, whichever way this ends.
+        let token = req.token.take().map(Zeroizing::new);
         self.require_instance_admin(ctx)?;
         let provider = Provider::parse(req.provider.trim())
             .map_err(|_| AppError::Invalid("provider must be anthropic (Claude)".into()))?;
         let label = validate_label(&req.label)?;
+        if let Some(token) = token {
+            let secret = pasted_token(&token)?;
+            return self
+                .create_account_with_token(ctx, provider, label, secret)
+                .await;
+        }
         let store = &self.deps.store;
         let now = self.now();
         let account = AccountRecord {
@@ -807,8 +851,171 @@ impl App {
         self.publish_account(view.clone());
         Ok(AccountLoginStarted {
             account: view,
-            login_id: session.id.clone(),
+            login_id: Some(session.id.clone()),
         })
+    }
+
+    /// Creates an account signed in with a pasted token (SPEC-450 TKP-001): checked with Claude's
+    /// profile first, so a refused token creates nothing.
+    async fn create_account_with_token(
+        self: &Arc<Self>,
+        ctx: &AuthContext,
+        provider: Provider,
+        label: String,
+        mut secret: Secret,
+    ) -> AppResult<AccountLoginStarted> {
+        let checked = self.check_pasted_token(provider, &secret).await;
+        let sealed = checked.and_then(|email| {
+            self.deps
+                .crypto
+                .seal(secret.expose().as_bytes())
+                .map(|sealed| (email, sealed))
+        });
+        secret.0.zeroize();
+        let (email, sealed) = sealed?;
+        let store = &self.deps.store;
+        let now = self.now();
+        let account = AccountRecord {
+            id: AccountId::parse(&self.deps.crypto.new_id()).map_err(AppError::internal)?,
+            provider,
+            label: label.clone(),
+            credential: Some(sealed.clone()),
+            status: AccountStatus::Ok,
+            usage_json: None,
+            last_error: None,
+            created_at: now,
+            updated_at: now,
+            email: None,
+            email_checked_at: None,
+        };
+        store.insert_account(&account).await?;
+        store
+            .audit(
+                now,
+                &actor(ctx),
+                "account.created",
+                Some(account.id.as_str()),
+                Some(&format!(
+                    "provider={} label={label} via=token",
+                    provider.as_str()
+                )),
+            )
+            .await?;
+        let view = self
+            .pasted_token_stored(&account.id, &sealed, email)
+            .await?;
+        Ok(AccountLoginStarted {
+            account: view,
+            login_id: None,
+        })
+    }
+
+    /// Replaces an account's credential with a pasted token (SPEC-450 TKP-002, re-sign-in by
+    /// paste). The token must have the shape `claude setup-token` prints and Claude's profile must
+    /// not refuse it (a 401); its 403, normal for a `setup-token`, and a temporary failure accept
+    /// it. A running sign-in of the account is cancelled and waited for (at most 15 s) first, so
+    /// its token cannot overwrite this one; one still running then is a `Conflict`. The token is
+    /// sealed and stored like a captured one; it is never echoed, logged or audited.
+    ///
+    /// # Errors
+    /// `Forbidden`, `NotFound`, `Invalid` for a malformed or refused token, `Conflict` when a
+    /// running sign-in did not stop in time.
+    pub async fn replace_account_token(
+        self: &Arc<Self>,
+        ctx: &AuthContext,
+        id: &str,
+        mut req: ReplaceAccountToken,
+    ) -> AppResult<AccountView> {
+        // A pasted token is zeroed when it goes, whichever way this ends.
+        let token = Zeroizing::new(std::mem::take(&mut req.token));
+        self.require_instance_admin(ctx)?;
+        let account = self.load_account(id).await?;
+        let mut secret = pasted_token(&token)?;
+        let checked = self.check_pasted_token(account.provider, &secret).await;
+        let sealed = checked.and_then(|email| {
+            self.deps
+                .crypto
+                .seal(secret.expose().as_bytes())
+                .map(|sealed| (email, sealed))
+        });
+        secret.0.zeroize();
+        let (email, sealed) = sealed?;
+        if let Some(active) = self.active_login(&account.id) {
+            let ended = active.ended.notified();
+            tokio::pin!(ended);
+            ended.as_mut().enable();
+            if active.is_running() {
+                active.request_cancel();
+                let _ = tokio::time::timeout(CANCEL_WAIT, ended).await;
+            }
+            // A sign-in that has not ended could still seal a token it captured over this one.
+            if active.is_running() {
+                return Err(AppError::Conflict(
+                    "the sign-in running for this subscription has not stopped yet; try again"
+                        .into(),
+                ));
+            }
+        }
+        let store = &self.deps.store;
+        let now = self.now();
+        store
+            .set_account_credential(&account.id, &sealed, AccountStatus::Ok, now)
+            .await?;
+        store
+            .audit(
+                now,
+                &actor(ctx),
+                "account.token_replaced",
+                Some(account.id.as_str()),
+                None,
+            )
+            .await?;
+        self.pasted_token_stored(&account.id, &sealed, email).await
+    }
+
+    /// Asks Claude's profile once with a pasted token (SPEC-450 TKP-004): `Invalid` when Claude
+    /// refused it (401); otherwise the email answer to store (`Some`: an email or none, when the
+    /// profile may not be read), or `None` when there was no answer for now.
+    async fn check_pasted_token(
+        &self,
+        provider: Provider,
+        secret: &Secret,
+    ) -> AppResult<Option<Option<String>>> {
+        match self.deps.usage.account_email(provider, secret).await {
+            Ok(email) => Ok(Some(email.as_deref().and_then(plausible_email))),
+            Err(failure) => match failure.kind {
+                UsageFailureKind::Rejected => Err(AppError::Invalid(PASTED_TOKEN_REFUSED.into())),
+                UsageFailureKind::NotShared => Ok(Some(None)),
+                UsageFailureKind::Throttled | UsageFailureKind::Unavailable => Ok(None),
+            },
+        }
+    }
+
+    /// After a pasted token was stored as `sealed`: its email answer is stored, the pool is told
+    /// (waiting tasks may continue on it, ROT-010), its usage is read in the background and the
+    /// account is published (SPEC-450 TKP-005). Returns its view.
+    async fn pasted_token_stored(
+        self: &Arc<Self>,
+        id: &AccountId,
+        sealed: &Sealed,
+        email: Option<Option<String>>,
+    ) -> AppResult<AccountView> {
+        let store = &self.deps.store;
+        if let Some(email) = email {
+            let now = self.now();
+            store
+                .set_account_email(id, sealed, email.as_deref(), Some(now), now)
+                .await?;
+        }
+        self.capacity_changed();
+        let account = store.account(id).await?.ok_or(AppError::NotFound)?;
+        let view = account_view(&account, &self.working_attempts().await?);
+        self.publish_account(view.clone());
+        let app = Arc::clone(self);
+        tokio::spawn(async move {
+            let _ = app.fetch_and_record_usage(&account).await;
+        });
+        Ok(view)
     }
 
     /// Renames an account (the only thing to change: the pool has no priorities or switches).
@@ -988,7 +1195,7 @@ impl App {
             .await?;
         Ok(AccountLoginStarted {
             account: account_view(&account, &self.working_attempts().await?),
-            login_id: session.id.clone(),
+            login_id: Some(session.id.clone()),
         })
     }
 
@@ -1686,6 +1893,47 @@ mod tests {
         assert_eq!(raw.bytes.len(), LOGIN_RAW_MAX);
         assert!(raw.bytes.ends_with(b"newest"));
         assert_eq!(raw.bytes.as_ptr(), at);
+    }
+
+    /// SPEC-450 TKP-003: only the shape `claude setup-token` prints is taken, trimmed; the
+    /// refusal never holds the input.
+    #[test]
+    fn pasted_tokens_must_have_the_setup_token_shape() {
+        let body = "SYNTHETICpaste0123456789-_abcdefXYZ";
+        let good = format!("sk-ant-oat01-{body}");
+        assert_eq!(
+            pasted_token(&format!("  {good}\n")).ok().map(|s| s.0),
+            Some(good.clone())
+        );
+        let longest = format!("sk-ant-oat01-{}", "a".repeat(PASTED_TOKEN_MAX - 13));
+        assert!(pasted_token(&longest).is_ok());
+        let too_long = format!("{longest}a");
+        let refused = [
+            String::new(),
+            "   ".into(),
+            body.into(),
+            format!("sk-ant-api03-{body}"),
+            "sk-ant-oat01-short".into(),
+            format!("sk-ant-oat01-{}", "a".repeat(CLAUDE_TOKEN_MIN_BODY - 1)),
+            format!("{good} {good}"),
+            format!("{good}!"),
+            format!("{good}\u{e9}"),
+            format!("Your token: {good}"),
+            too_long,
+        ];
+        for input in &refused {
+            assert!(
+                matches!(pasted_token(input), Err(AppError::Invalid(ref m)) if !m.contains("SYNTHETIC")),
+                "{input:?} was taken"
+            );
+        }
+        assert!(
+            pasted_token(&format!(
+                "sk-ant-oat01-{}",
+                "a".repeat(CLAUDE_TOKEN_MIN_BODY)
+            ))
+            .is_ok()
+        );
     }
 
     #[test]

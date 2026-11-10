@@ -342,9 +342,61 @@ export function openLoginTerminal(ctx, { loginId, account, onFinish }) {
   return modal;
 }
 
+/** The shape `claude setup-token` prints (SPEC-450 TKP-003); the server checks it again. */
+const TOKEN_SHAPE = /^sk-ant-oat01-[A-Za-z0-9_-]{20,}$/;
+
+/**
+ * The Token field of a paste (SPEC-450 TKP-008): masked and not autofilled, with one hint on how
+ * to make a token and not to send it in clear text.
+ */
+function tokenField() {
+  const input = h('input', { class: 'input', type: 'password', placeholder: 'sk-ant-oat01-…', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false' });
+  const el = field('Token', input, ['Run ', h('code', null, 'claude setup-token'), ' on any computer signed in to the subscription and paste the token it prints. It is a password: don’t send it through chats or email in clear text.']);
+  return { input, el };
+}
+
+/**
+ * Sends a pasted token with `send`; a malformed or refused token is said under its field
+ * (`invalid()`, false keeps the dialog open), any other failure in the dialog.
+ */
+async function sendToken(input, send) {
+  const value = input.value.trim();
+  if (!value) return invalid(input, 'Paste the token claude setup-token printed.');
+  if (value.length > 512 || !TOKEN_SHAPE.test(value)) return invalid(input, 'This is not a Claude token: it starts with sk-ant-oat01- and has no spaces.');
+  try {
+    const result = await send(value);
+    input.value = '';
+    return result;
+  } catch (error) {
+    // The token's own refusals (its shape, or Claude's) go under its field.
+    if (error && error.status === 422 && /^(the token|Claude did not accept)/.test(error.message || '')) return invalid(input, sentence(error.message));
+    throw error;
+  }
+}
+
+/** Paste a new token into a subscription (SPEC-450 TKP-009): it is signed in again at once. */
+function pasteNewToken(ctx, account, onDone) {
+  const token = tokenField();
+  token.input.setAttribute('autofocus', '');
+  openModal({
+    title: `Paste a new token · ${account.label}`,
+    body: h('div', { class: 'stack' }, token.el, h('p', { class: 'muted small' }, 'It replaces the subscription’s current sign-in; a sign-in running in a terminal is cancelled.')),
+    actions: [
+      { label: 'Cancel', value: false },
+      { label: 'Save token', kind: 'primary', run: async () => {
+        const fresh = await sendToken(token.input, (value) => ctx.api.put(`/api/admin/accounts/${enc(account.id)}/token`, { token: value }));
+        if (fresh === false) return false;
+        toast(`New token saved: ${account.label} is connected${fresh && fresh.email ? ` (${fresh.email})` : ''}. Tasks can use it now.`, { kind: 'ok' });
+        onDone();
+        return true;
+      } },
+    ],
+  });
+}
+
 /**
  * Instance admin: the Claude subscriptions as one pool (ROT-009, ROT-013, F 2026-10-10). Add a
- * subscription (Claude's own sign-in), see its usage, remove it — nothing else to manage: Yulius
+ * subscription (Claude's own sign-in, or a pasted token, SPEC-450), see its usage, remove it — nothing else to manage: Yulius
  * places, switches and pauses tasks by itself. The capacity panel on top says whether to buy more.
  */
 export function mountAccountsPage(ctx, route) {
@@ -375,7 +427,7 @@ export function mountAccountsPage(ctx, route) {
     else firstCapacity.then((shown) => { if (!shown) loadCapacity(); });
     rendered = true;
     const accounts = (Array.isArray(list) ? list : []).sort((a, b) => (a.label || '').localeCompare(b.label || ''));
-    if (accounts.length === 0) return emptyState({ iconName: 'user', title: 'No subscriptions yet', text: 'Add a Claude subscription for the agents; you finish Claude’s own sign-in in a terminal here.', action: createButton('Add subscription', () => add()) });
+    if (accounts.length === 0) return emptyState({ iconName: 'user', title: 'No subscriptions yet', text: 'Add a Claude subscription for the agents: finish Claude’s own sign-in in a terminal here, or paste a token made with claude setup-token.', action: createButton('Add subscription', () => add()) });
     return h('div', { class: 'grid-2' }, accounts.map((account) => {
       // The name is edited in place (SPEC-244 SUB-001); the server trims and validates it.
       const rename = async (label) => {
@@ -407,6 +459,8 @@ export function mountAccountsPage(ctx, route) {
               errorToast(error, 'Couldn’t start the sign-in');
             }
           } }, 'Sign in again') : null,
+          // Or a token made with `claude setup-token` elsewhere (SPEC-450 TKP-009).
+          h('button', { type: 'button', class: 'btn btn-sm', onClick: () => pasteNewToken(ctx, account, reload) }, 'Paste a new token'),
           // Removal always works: the tasks on it move to another subscription (SPEC-447 MOV-003).
           h('button', { type: 'button', class: 'btn btn-sm btn-quiet-danger', title: account.in_use_by > 0 ? `${account.in_use_by} live task${account.in_use_by === 1 ? '' : 's'} on this subscription move to another one` : null, onClick: async () => {
             const moving = account.in_use_by > 0 ? ` ${account.in_use_by === 1 ? 'The task' : `The ${account.in_use_by} tasks`} on it ${account.in_use_by === 1 ? 'moves' : 'move'} to another subscription in the same session, or ${account.in_use_by === 1 ? 'waits' : 'wait'} for one.` : '';
@@ -422,22 +476,46 @@ export function mountAccountsPage(ctx, route) {
     }));
   }, { shape: 'cards' });
 
+  // Two ways in (SPEC-450 TKP-008): Claude's own sign-in in a terminal here (the default), or a
+  // token made with `claude setup-token` on any computer.
   function add() {
     const label = h('input', { class: 'input', placeholder: 'Claude #3', maxlength: 80, autofocus: true });
-    openModal({
+    const way = (value) => h('input', { type: 'radio', name: 'add-subscription-way', value, checked: value === 'here', onChange: () => show(value) });
+    const token = tokenField();
+    const hereNote = h('p', { class: 'muted small' }, 'Next, a terminal opens with Claude’s own sign-in (claude setup-token). Tasks waiting for capacity continue on it as soon as it is signed in.');
+    const pastePart = h('div', { class: 'stack', hidden: true }, token.el, h('p', { class: 'muted small' }, 'The subscription is connected at once; tasks waiting for capacity continue on it.'));
+    const modal = openModal({
       title: 'Add a Claude subscription',
-      body: h('div', { class: 'stack' }, field('Name', label, 'Shown on usage bars and in task details; you can rename it later.'), h('p', { class: 'muted small' }, 'Next, a terminal opens with Claude’s own sign-in (claude setup-token). Tasks waiting for capacity continue on it as soon as it is signed in.')),
-      actions: [
-        { label: 'Cancel', value: false },
-        { label: 'Continue to sign-in', kind: 'primary', run: async () => {
-          if (!label.value.trim()) return invalid(label, 'Give the subscription a name.');
-          const result = await ctx.api.post('/api/admin/accounts', { provider: 'anthropic', label: label.value.trim() });
-          reload();
-          openLoginTerminal(ctx, { loginId: result.login_id, account: result.account || { id: null, label: label.value.trim(), status: 'pending_login' }, onFinish: reload });
-          return true;
-        } },
-      ],
+      body: h('div', { class: 'stack' },
+        field('Name', label, 'Shown on usage bars and in task details; you can rename it later.'),
+        h('div', { class: 'seg', role: 'radiogroup', 'aria-label': 'How to connect it' },
+          h('label', null, way('here'), 'Sign in here'),
+          h('label', null, way('paste'), 'Paste token')),
+        hereNote, pastePart),
     });
+    const named = () => label.value.trim() || invalid(label, 'Give the subscription a name.');
+    const signInHere = { label: 'Continue to sign-in', kind: 'primary', run: async () => {
+      if (!named()) return false;
+      const result = await ctx.api.post('/api/admin/accounts', { provider: 'anthropic', label: label.value.trim() });
+      reload();
+      openLoginTerminal(ctx, { loginId: result.login_id, account: result.account || { id: null, label: label.value.trim(), status: 'pending_login' }, onFinish: reload });
+      return true;
+    } };
+    const pasteToken = { label: 'Connect', kind: 'primary', run: async () => {
+      if (!named()) return false;
+      const result = await sendToken(token.input, (value) => ctx.api.post('/api/admin/accounts', { provider: 'anthropic', label: label.value.trim(), token: value }));
+      if (result === false) return false;
+      const account = (result && result.account) || { label: label.value.trim() };
+      toast(`${account.label} is connected${account.email ? ` (${account.email})` : ''}. Tasks can use it now.`, { kind: 'ok', timeout: 8000 });
+      reload();
+      return true;
+    } };
+    function show(value) {
+      hereNote.hidden = value !== 'here';
+      pastePart.hidden = value !== 'paste';
+      modal.setActions([{ label: 'Cancel', value: false }, value === 'paste' ? pasteToken : signInHere]);
+    }
+    show('here');
   }
 
   // A name being edited is not redrawn away by an update: the reload waits until the field

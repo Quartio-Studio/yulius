@@ -1,5 +1,7 @@
 //! Instance administration: users, accounts and GitHub connection.
 
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 
 /// A user as listed for instance administrators and the superadmin.
@@ -122,13 +124,44 @@ pub struct TokenTotalsView {
     pub cost_usd: Option<f64>,
 }
 
-/// `POST /api/admin/accounts`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// `POST /api/admin/accounts`. `Debug` redacts the token.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CreateAccount {
     /// Provider: `anthropic` (Claude), the only one supported.
     pub provider: String,
     /// Label.
     pub label: String,
+    /// A token made with `claude setup-token` elsewhere (SPEC-450 TKP-001): the account is
+    /// created signed in with it, with no login terminal. Absent: the login terminal starts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+}
+
+impl fmt::Debug for CreateAccount {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CreateAccount")
+            .field("provider", &self.provider)
+            .field("label", &self.label)
+            .field("token", &self.token.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
+}
+
+/// `PUT /api/admin/accounts/{id}/token` (SPEC-450 TKP-002): the account's new token, made with
+/// `claude setup-token`. `Debug` redacts it.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReplaceAccountToken {
+    /// The token.
+    pub token: String,
+}
+
+impl fmt::Debug for ReplaceAccountToken {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ReplaceAccountToken")
+            .field("token", &"<redacted>")
+            .finish()
+    }
 }
 
 /// Response to account creation or relogin.
@@ -136,8 +169,10 @@ pub struct CreateAccount {
 pub struct AccountLoginStarted {
     /// The account.
     pub account: AccountView,
-    /// Login terminal id (`/api/admin/accounts/login/{login_id}/terminal`).
-    pub login_id: String,
+    /// Login terminal id (`/api/admin/accounts/login/{login_id}/terminal`); absent when the
+    /// account was created with a pasted token (SPEC-450 TKP-001).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub login_id: Option<String>,
 }
 
 /// Response to `POST /api/admin/accounts/login/{login_id}/cancel` (SPEC-243 LGN-002): how the
@@ -308,4 +343,32 @@ pub struct ManifestCallback {
     /// The state issued with the manifest.
     #[serde(default)]
     pub state: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// SPEC-450 TKP-006: a pasted token never shows in a request's `Debug`.
+    #[test]
+    fn pasted_tokens_are_redacted_in_debug() {
+        let token = "sk-ant-oat01-SYNTHETICdebug0123456789abcdef";
+        let create = CreateAccount {
+            provider: "anthropic".into(),
+            label: "Claude".into(),
+            token: Some(token.into()),
+        };
+        let replace = ReplaceAccountToken {
+            token: token.into(),
+        };
+        for shown in [format!("{create:?}"), format!("{replace:?}")] {
+            assert!(!shown.contains("SYNTHETIC"), "{shown}");
+            assert!(shown.contains("<redacted>"), "{shown}");
+        }
+        let without = CreateAccount {
+            token: None,
+            ..create
+        };
+        assert!(format!("{without:?}").contains("token: None"));
+    }
 }

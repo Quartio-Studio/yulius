@@ -3795,11 +3795,37 @@ route('GET', '/api/admin/accounts', ({ db }) => {
   const totals = (k, runs) => ({ runs, tasks: Math.max(1, runs - 1), ...poolSpend(k) });
   return db.accounts.map((a, i) => (a.status === 'pending_login' ? a : { ...a, tokens_24h: totals(0.3 / (i + 1), 2), tokens_7d: totals(2 / (i + 1), 9) }));
 });
+/**
+ * A pasted token, as the server checks it (SPEC-450 TKP-003, TKP-004): the shape `claude
+ * setup-token` prints, and one Claude accepts (a token ending in `-revoked` stands for Claude's
+ * 401). The refusals never echo the token.
+ */
+function pastedToken(token) {
+  const value = typeof token === 'string' ? token.trim() : '';
+  if (value.length > 512 || !/^sk-ant-oat01-[A-Za-z0-9_-]{20,}$/.test(value)) fail(422, 'invalid', 'the token must be what claude setup-token prints: sk-ant-oat01- followed by letters, digits, - and _ (at most 512 characters)');
+  if (value.endsWith('-revoked')) fail(422, 'invalid', 'Claude did not accept this token; make a new one with claude setup-token and paste it again');
+  return value;
+}
+/** A subscription signed in with a pasted token: `ok` at once, its usage still unknown. */
+function signedInByPaste(db, account) {
+  db.unsignedAccounts.delete(account.id);
+  Object.assign(account, { status: 'ok', last_error: null, email: null });
+  emit(db, { type: 'account.updated', account });
+}
 // 201 {account, login_id}: the account waits in `pending_login` until the login terminal finishes.
+// With a pasted `token` it is `ok` at once and there is no `login_id` (SPEC-450 TKP-001).
 route('POST', '/api/admin/accounts', ({ db, body }) => {
   adminOnly(db);
   if (body.provider !== 'anthropic') fail(422, 'invalid', 'provider must be anthropic (Claude)');
   if (!body.label || body.label.length > 80) fail(422, 'invalid', 'label must be 1–80 characters');
+  if (body.token !== undefined && body.token !== null) {
+    pastedToken(body.token);
+    db.nextId += 1;
+    const account = { id: `acc_${db.nextId}`, provider: body.provider, label: body.label, email: null, status: 'ok', usage: { primary: null, secondary: null, observed_at: null }, last_error: null, in_use_by: 0 };
+    db.accounts.push(account);
+    signedInByPaste(db, account);
+    return json(201, { account });
+  }
   db.nextId += 1;
   const account = { id: `acc_${db.nextId}`, provider: body.provider, label: body.label, email: null, status: 'pending_login', usage: { primary: null, secondary: null, observed_at: null }, last_error: null, in_use_by: 0 };
   db.accounts.push(account);
@@ -3859,6 +3885,17 @@ route('POST', `/api/admin/accounts/${ID}/relogin`, ({ db, p }) => {
   const account = db.accounts.find((a) => a.id === p[0]);
   if (!account) fail(404, 'not_found', 'not found');
   return { account, login_id: startLogin(db, account.id) };
+});
+// Signs a subscription in again with a pasted token (SPEC-450 TKP-002): its running sign-in is
+// cancelled first.
+route('PUT', `/api/admin/accounts/${ID}/token`, ({ db, p, body }) => {
+  adminOnly(db);
+  const account = db.accounts.find((a) => a.id === p[0]);
+  if (!account) fail(404, 'not_found', 'not found');
+  pastedToken(body.token);
+  for (const session of db.logins.values()) if (session.accountId === account.id && !session.done) session.end('cancelled', null);
+  signedInByPaste(db, account);
+  return account;
 });
 // Stops a running sign-in and says how it ended (SPEC-243 LGN-002); `loginCancels` records the
 // cancelled ids.
