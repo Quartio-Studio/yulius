@@ -509,6 +509,16 @@ stateDiagram-v2
   cancelled --> running: Try again
 ```
 
+The token can also be pasted
+([SPEC-502](../.ai/specs/SPEC-502-accept-outside-pr-1144-connect-a-claude.md),
+[decision 0352](decisions/0352-a-subscription-can-be-connected-by-pasting-a-setup-token.md)). The
+subscription's owner runs `claude setup-token` on any computer and the administrator pastes what
+it printed: in the Add dialog ("Paste token") for a new subscription, or with "Paste a new token"
+on a card. The server takes only that token shape and asks Claude's profile once with it: a 401
+refuses it and nothing changes, and every other answer accepts it. It then seals and stores the
+token as the terminal does (status `ok`, no process, no temporary folder), after cancelling and
+waiting out a sign-in still running in a terminal. The token is never echoed, logged or audited.
+
 ## Usage limits
 
 When a subscription's usage limit cuts a turn, the task goes on as if the limit never happened

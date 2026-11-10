@@ -130,7 +130,7 @@ export function mountSettingsPage(ctx) {
       // Unavailable: the reason is written on the tile (not only in a tooltip) and the text stays readable.
       : h('div', { class: 'settings-tile disabled', 'aria-disabled': 'true' }, icon(iconName, { size: 18 }), h('div', null, h('div', { class: 'settings-tile-title' }, title), h('div', { class: 'muted xs' }, `${description} — open a sandbox first`)));
     frame.body.append(section('shield', 'Administration', `this ${BRAND.name} instance`,
-      row('user', 'Add a subscription', 'A Claude subscription for the agents; you finish Claude’s own sign-in in a terminal here', h('a', { class: 'btn btn-primary btn-sm', href: href('/admin/accounts?add=1'), dataset: { route: '/admin/accounts?add=1' } }, icon('plus', { size: 14 }), 'Add subscription')),
+      row('user', 'Add a subscription', 'A Claude subscription for the agents: Claude’s own sign-in in a terminal here, or a token made with claude setup-token', h('a', { class: 'btn btn-primary btn-sm', href: href('/admin/accounts?add=1'), dataset: { route: '/admin/accounts?add=1' } }, icon('plus', { size: 14 }), 'Add subscription')),
       h('div', { class: 'settings-tiles' },
         tile('users', 'Users', superadmin ? 'Who may sign in' : 'Who may sign in, and resetting a lost two-factor', '/admin/users'),
         tile('user', 'Subscriptions', 'Claude subscriptions, their usage and when to add more', '/admin/accounts'),
