@@ -75,9 +75,13 @@ export function limitsCard(ctx) {
       toast(done, { kind: 'ok' });
     } catch (error) {
       if (key && error && error.status === 422) refused.set(key, error.message);
-      else errorToast(error, 'Couldn’t change the limits');
+      else {
+        errorToast(error, 'Couldn’t change the limits');
+        // The change may be in force all the same (its audit entry failed): show what is.
+        try { view = await ctx.api.get(API); } catch { /* the view from before stays */ }
+      }
     }
-    if (card.isConnected) render();
+    if (card.isConnected) render(refused.has(key) ? key : null);
   }
 
   function notice(stale) {
@@ -104,7 +108,17 @@ export function limitsCard(ctx) {
     const save = h('button', { type: 'submit', class: 'btn btn-sm btn-primary', 'aria-label': `Save ${l.label}` }, 'Save');
     const unchanged = () => input.value.trim() === '' || (Number(input.value) === l.value && l.source === 'settings');
     save.disabled = unchanged();
-    input.addEventListener('input', () => { typed.set(l.key, input.value); save.disabled = unchanged(); });
+    const said = error ? h('div', { class: 'field-error', role: 'alert', id: errorId }, error) : null;
+    input.addEventListener('input', () => {
+      typed.set(l.key, input.value);
+      save.disabled = unchanged();
+      // A refusal was about the number before this one.
+      if (refused.delete(l.key) && said) {
+        said.remove();
+        input.removeAttribute('aria-invalid');
+        input.removeAttribute('aria-describedby');
+      }
+    });
     const hostSized = l.source === 'default' ? null : h('button', {
       type: 'button', class: 'btn btn-sm', 'aria-label': `Host-sized ${l.label}`, title: `Use ${amount(l, l.host_sized)}, whatever the unit says`,
       onClick: () => change(() => ctx.api.put(`${API}/${enc(l.key)}`, { value: null }), `${l.label} is host-sized now.`, l.key),
@@ -119,10 +133,10 @@ export function limitsCard(ctx) {
       if (input.value.trim() === '') return;
       const value = Number(input.value);
       // The server takes whole numbers only: anything else is said here, at the field.
-      if (!Number.isInteger(value) || value < 0) {
+      if (!Number.isSafeInteger(value) || value < 0) {
         typed.set(l.key, input.value);
         refused.set(l.key, `${l.label} must be a whole number between ${l.min} and ${l.max}${l.suffix ? ` ${l.suffix}` : ''}`);
-        render();
+        render(l.key);
         return;
       }
       change(() => ctx.api.put(`${API}/${enc(l.key)}`, { value }), `${l.label} saved${l.live ? ': in force now' : ': it applies at the next restart'}.`, l.key);
@@ -134,15 +148,18 @@ export function limitsCard(ctx) {
         badge(SOURCES[l.source] || l.source, l.stale ? 'warn' : '', SOURCE_TITLES[l.source])),
       h('p', { class: 'muted xs limit-note' }, limitNote(l)),
       form,
-      error ? h('div', { class: 'field-error', role: 'alert', id: errorId }, error) : null);
+      said);
   }
 
-  function render() {
+  /** Draws the card; `focus` names the limit whose field takes the focus (the one refused). */
+  function render(focus = null) {
     sub.textContent = hostSize(view.host);
     setChildren(body,
       h('p', { class: 'text-2 limits-intro' }, 'How much work this server takes at once. Without a number each limit is sized from this host and follows it; a number saved here wins over the service unit’s YULIUS_* variable.'),
       notice(view.limits.filter((l) => l.stale)),
       h('ul', { class: 'limits-list' }, view.limits.map(limitRow)));
+    const field = focus ? body.querySelector(`[data-limit="${focus}"] input`) : null;
+    if (field) field.focus();
   }
 
   async function load() {

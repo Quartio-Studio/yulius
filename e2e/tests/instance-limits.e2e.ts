@@ -50,33 +50,64 @@ test('a saved number wins, a refused one says its range, and the setting can be 
   expect(await axeViolations(browser)).toEqual([]);
 });
 
+type LimitsMock = { __yuliusMock: { limits: { puts: number; failAfterSave: boolean }; failPath: string | null } };
+
 test('a number that is not a whole one is refused at its field without a request', async ({ app, browser, screen }) => {
-  await app.open(mock('/admin/instance'));
-  const input = screen.getByRole('spinbutton', 'Live sessions');
-  await expect(input).toBeVisible();
-  for (const typed of ['1.5', '-3']) {
+  for (const typed of ['1.5', '-3', '1e30']) {
+    // A fresh page per number: no refusal is left over from the one before.
+    await app.open(mock('/admin/instance'));
+    const input = screen.getByRole('spinbutton', 'Live sessions');
+    await expect(input).toBeVisible();
     await input.fill(typed);
     await screen.getByRole('button', 'Save Live sessions').click();
     await expect(screen.getByText(/Live sessions must be a whole number between 1 and 1024/)).toBeVisible();
-    // The message belongs to the field: a screen reader reads it with the input.
+    // The message belongs to the field, which keeps the focus and what was typed: a screen
+    // reader reads it with the input.
     const field = await browser.evaluate(() => {
       const el = document.querySelector<HTMLInputElement>('[data-limit="max_sessions"] input');
       const said = el ? document.getElementById(el.getAttribute('aria-describedby') || '') : null;
-      return { invalid: el ? el.getAttribute('aria-invalid') : null, said: said ? said.textContent : null, typed: el ? el.value : null };
+      return {
+        invalid: el ? el.getAttribute('aria-invalid') : null, said: said ? said.textContent : null, typed: el ? el.value : null,
+        focused: Boolean(el) && document.activeElement === el,
+        puts: (window as unknown as LimitsMock).__yuliusMock.limits.puts,
+      };
     });
     expect(field.invalid).toBe('true');
     expect(field.said).toMatch(/whole number/);
     expect(field.typed).toBe(typed);
+    expect(field.focused).toBe(true);
+    expect(field.puts).toBe(0);
     expect(await row(browser, 'max_sessions')).toMatch(/Live sessions 34 host-sized/);
+    expect(await axeViolations(browser)).toEqual([]);
+
+    // Typing again takes the refusal away: it was about the number before.
+    await input.fill('40');
+    await expect(screen.getByText(/must be a whole number/)).toBeHidden();
+    expect(await browser.evaluate(() => document.querySelector('[data-limit="max_sessions"] input')?.getAttribute('aria-invalid') ?? null)).toBe(null);
   }
-  expect(await axeViolations(browser)).toEqual([]);
 });
 
-test('limits that could not be loaded say so with a way to try again', async ({ app, screen }) => {
+test('limits that could not be loaded say so with a way to try again', async ({ app, browser, screen }) => {
   await app.open(mock('/admin/instance', '&fail=/api/admin/limits'));
   const card = screen.getByRole('region', 'Resource limits');
   await expect(card.getByText(/Couldn’t load the resource limits/)).toBeVisible();
   await expect(card.getByRole('button', 'Try again')).toBeVisible();
+  await browser.evaluate(() => { (window as unknown as LimitsMock).__yuliusMock.failPath = null; });
+  await card.getByRole('button', 'Try again').click();
+  await expect(card.getByText(/64 CPUs · 755 GiB memory/)).toBeVisible();
+  await expect.poll(() => row(browser, 'max_sessions')).toMatch(/Live sessions 34 host-sized/);
+});
+
+test('a save that answers an error after it was applied shows what is in force', async ({ app, browser, screen }) => {
+  await app.open(mock('/admin/instance'));
+  const input = screen.getByRole('spinbutton', 'Live sessions');
+  await expect(input).toBeVisible();
+  // The server saved the number and could not write its audit entry: it answers 500.
+  await browser.evaluate(() => { (window as unknown as LimitsMock).__yuliusMock.limits.failAfterSave = true; });
+  await input.fill('40');
+  await screen.getByRole('button', 'Save Live sessions').click();
+  await expect(screen.getByText(/Couldn’t change the limits/)).toBeVisible();
+  await expect.poll(() => row(browser, 'max_sessions')).toMatch(/Live sessions 40 settings/);
 });
 
 test('a changed sandbox memory says it applies at the next restart', async ({ app, browser, screen }) => {
