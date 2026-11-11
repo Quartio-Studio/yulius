@@ -611,3 +611,40 @@ fn a_completed_frozen_pass_that_is_not_the_journal_s_leaves_nothing_known() -> T
     );
     Ok(())
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn this_host_names_its_boot_and_its_clock_s_lead() -> TestResult {
+    // What every other test injects, read for real: a boot id that stays, and a lead that
+    // does not move between two looks (a lead that moved would drop the receipts each time).
+    let first = Era::here();
+    let second = Era::here();
+    assert!(!first.boot.is_empty());
+    assert_eq!(first.boot, second.boot);
+    let (was, now) = (
+        first.ahead.ok_or("no lead")?,
+        second.ahead.ok_or("no lead")?,
+    );
+    assert!((now - was).abs() < SET_BACK_MS, "{was} then {now}");
+    // The lead is the time this boot began, as the kernel says it.
+    let stat = std::fs::read_to_string("/proc/stat")?;
+    let began: i64 = stat
+        .lines()
+        .find_map(|line| line.strip_prefix("btime "))
+        .ok_or("no btime")?
+        .trim()
+        .parse()?;
+    assert!(
+        (was / 1000 - began).abs() <= 2,
+        "{was} ms against {began} s"
+    );
+    // A stage that began a pass here still believes its receipts here.
+    let tmp = tempfile::tempdir()?;
+    let mut stage = new_stage(tmp.path())?;
+    stage.begin("n1", true, 1_000, &first)?;
+    stage.sending(d(1), check(0))?;
+    stage.earned(d(101))?;
+    stage.seal()?;
+    assert_eq!(stage.outdated(&second), None);
+    Ok(())
+}
