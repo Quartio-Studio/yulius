@@ -884,7 +884,9 @@ A restart or an update is invisible to a task's session
   closed while it was silent, "Yulius's tools are reconnected; continue". A bridge heard but never
   pinged may be an older build that is alive, since a sandbox keeps the `yulius` of the base it
   started on: it is left alone ([decision 0280](decisions/0280-only-a-yulius-mcp-known-to-be-gone-is-reconnected.md)). Mid-turn, `yulius tool <name> '<json>'` calls
-  any Yulius tool from the shell.
+  any Yulius tool from the shell. In a session `yulius` is the `/yulius/bin` wrapper, which passes
+  only the session's commands (`wait`, `tool`, `security-scan`, `remove`) to the binary; a test
+  fails when a subcommand documented "In a task's session" is missing from it (SPEC-451).
 
 ```mermaid
 sequenceDiagram
@@ -3052,6 +3054,10 @@ flowchart LR
   sent each hook (`x-yulius-hook-sent-ms`): a prompt hook sent before a Stop that reached Yulius
   or a goal verdict it applied belongs to a turn that is over and changes nothing
   ([ADR-0234](decisions/0234-a-prompt-hook-sent-before-its-turn-ended-changes-nothing.md)).
+  A prompt the transcript watcher reads takes the same per-task turn order as a clean Stop: the
+  Stop remembers its time and settles after a prompt that is being applied, and a prompt read
+  after it is not a new turn
+  ([ADR-0299](decisions/0299-a-transcript-prompt-and-its-turns-clean-stop-share-the-turn-order.md)).
 - A stop or close asks the attached run to shut down; one that comes while the run is launching
   (spawned, not attached yet) is asked by the launch once it attaches, so it never waits for the
   escalation ([SPEC-140](../.ai/specs/SPEC-140-fix-404-464-353-443-task-done-supervisio.md)).

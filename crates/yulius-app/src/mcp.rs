@@ -6,6 +6,7 @@ use serde_json::{Value, json};
 use yulius_contracts::mcp::{
     RpcRequest, RpcResponse, SUPPORTED_PROTOCOL_VERSIONS, ToolDescriptor, text_result,
 };
+use yulius_domain::harness::{DEFAULT_CLAUDE_EFFORT, DEFAULT_CLAUDE_MODEL};
 use yulius_domain::ids::SandboxId;
 use yulius_domain::vault::redact::redact_text;
 
@@ -239,8 +240,8 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
                 "supertask": {"type": "boolean", "description": "Run alone in the project: wait for the running tasks, and every other task waits for this one (not with after_task or start_rule)"},
                 "prepared": {"type": "boolean", "description": "Prepare it without starting: it waits until the person presses Start now (not with after_task, start_rule or supertask)"},
                 "start_at": {"type": "string", "description": "Prepare it and start it by itself at this RFC 3339 time, e.g. \"2026-10-15T09:00:00+02:00\" (at most 366 days ahead)"},
-                "model": {"type": "string", "description": "Model override (default Opus)"},
-                "effort": {"type": "string", "description": "Effort override (default high)"}
+                "model": {"type": "string", "description": format!("Model override (default {DEFAULT_CLAUDE_MODEL})")},
+                "effort": {"type": "string", "description": format!("Effort override (default {DEFAULT_CLAUDE_EFFORT}; none for Haiku)")}
             }), &["prompt"]),
         },
         ToolDescriptor {
@@ -962,7 +963,8 @@ pub(crate) enum TaskToolResult {
 #[cfg(test)]
 mod tests {
     use super::{
-        COCKPIT_TOOLS, CrossAction, cockpit_tool_descriptors, cross_action, tool_descriptors,
+        COCKPIT_TOOLS, CrossAction, DEFAULT_CLAUDE_EFFORT, DEFAULT_CLAUDE_MODEL,
+        cockpit_tool_descriptors, cross_action, tool_descriptors,
     };
     use yulius_domain::briefing::YULIUS_TOOLS;
 
@@ -1140,6 +1142,34 @@ mod tests {
                 "A supertask (for broad work such as security hardening or one-shotting the product)"
             ),
             "{description}"
+        );
+    }
+
+    /// SPEC-462 EFF-004: `task_create` names the default model and effort a launch really uses
+    /// (it said "default Opus" for a day after the default moved to Fable 5.2).
+    #[test]
+    fn task_create_names_the_default_model_and_effort_of_a_launch() {
+        let tool = tool_descriptors()
+            .into_iter()
+            .find(|t| t.name == "task_create");
+        let schema = tool.map(|t| t.input_schema).unwrap_or_default();
+        let described = |name: &str| {
+            schema["properties"][name]["description"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned()
+        };
+        assert_eq!(
+            described("model"),
+            format!("Model override (default {DEFAULT_CLAUDE_MODEL})")
+        );
+        assert_eq!(
+            described("effort"),
+            format!("Effort override (default {DEFAULT_CLAUDE_EFFORT}; none for Haiku)")
+        );
+        assert_eq!(
+            (DEFAULT_CLAUDE_MODEL, DEFAULT_CLAUDE_EFFORT),
+            ("claude-fable-5-2", "high")
         );
     }
 

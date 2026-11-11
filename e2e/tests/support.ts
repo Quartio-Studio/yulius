@@ -119,6 +119,9 @@ export const MONACO_LOAD_MS = 60_000;
 
 /**
  * Waits until the Editor shows a Monaco editor, within Monaco's cold load (`MONACO_LOAD_MS`).
+ * Monaco builds its view with the first file's model (the editor is made with none, #1087), so this
+ * is also when that file is in it: a test that holds the file's read or join waits on that request
+ * instead.
  * Touch `window.monaco.editor` only after it: Monaco's main chunk sets `window.monaco` before its
  * last chunk has registered its services, and the first call into the API fixes the services every
  * editor gets. A call in that gap (a poll of `getEditors()`) makes the editor's idle-time setup
@@ -127,7 +130,7 @@ export const MONACO_LOAD_MS = 60_000;
 export async function editorShown(browser: Browser): Promise<void> {
   await expect.poll(() => browser.evaluate(() => document.querySelector('.ed-host .monaco-editor') !== null), {
     timeout: MONACO_LOAD_MS,
-    message: 'the Editor never showed a Monaco editor (Monaco did not load)',
+    message: 'the Editor never showed a Monaco editor (Monaco did not load, or no file reached it)',
   }).toBe(true);
 }
 
@@ -160,6 +163,8 @@ export async function terminalShown(browser: Browser): Promise<void> {
  * which shows the rail first when it is hidden. The rail's Superagent button closes it again.
  */
 export async function openSuperagent(browser: Browser, screen: Screen): Promise<void> {
+  // The page first: a Superagent opened before the page has its sandbox is the Global one.
+  await firstShown(screen.getByRole('heading', { level: 1 }));
   if (await browser.locator('.rail:not([hidden])').count() === 0) await screen.getByRole('button', /^Show tools/).click();
   await screen.getByRole('navigation', 'Tools').getByRole('button', 'Superagent').click();
 }

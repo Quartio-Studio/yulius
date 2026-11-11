@@ -3334,6 +3334,8 @@ route('DELETE', `/api/agent-secrets/${ID}`, ({ db, p }) => {
 
 // Project variables (SPEC-275): non-secret values in plain.
 const RESERVED_VARIABLE = /^(PATH|HOME|USER|LOGNAME|SHELL|TERM|COLORTERM|LANG|LANGUAGE|PWD|OLDPWD|TMPDIR|TMP|TEMP|PORT|HOSTNAME|EDITOR|VISUAL|PAGER|IFS|PS1|PS2|PROMPT_COMMAND|ENV|BASH_ENV|CDPATH|HTTP_PROXY|HTTPS_PROXY|ALL_PROXY|NO_PROXY|FTP_PROXY|REQUESTS_CA_BUNDLE|CURL_CA_BUNDLE|DISABLE_AUTOUPDATER)$|^(YULIUS_|CLAUDE_|ANTHROPIC_|GIT_|SSL_|NODE_|NPM_CONFIG_|LD_|DYLD_|XDG_|LC_|BASH_|ZSH_)/;
+// A person's own Anthropic keys stay allowed under the reserved ANTHROPIC_ (ADR-0292).
+const reservedVariable = (name) => RESERVED_VARIABLE.test(name) && !(/^ANTHROPIC_(API_KEY|AUTH_TOKEN)_[A-Z0-9_]+$/.test(name) && !name.endsWith('_FILE'));
 const variablesOf = (db, sandbox) => {
   // sandbox-3 (read access) starts with one, for the reader's view.
   db.variables = db.variables || { sb_three: [{ name: 'APP_REGION', value: 'eu-west-1', description: 'Where the app runs', updated_by: 'anna-q', updated_at: new Date().toISOString() }] };
@@ -3355,7 +3357,7 @@ route('PUT', `/api/sandboxes/${ID}/variables`, ({ db, p, body }) => {
   if (inputs.length > 200) fail(422, 'invalid', 'at most 200 variables at once');
   const seen = new Set();
   for (const input of inputs) {
-    if (!/^[A-Z][A-Z0-9_]{0,63}$/.test(input.name || '') || RESERVED_VARIABLE.test(input.name)) fail(422, 'invalid', `invalid name ${JSON.stringify(input.name)}: capital letters, digits and _, starting with a letter, not a reserved name`);
+    if (!/^[A-Z][A-Z0-9_]{0,63}$/.test(input.name || '') || reservedVariable(input.name)) fail(422, 'invalid', `invalid name ${JSON.stringify(input.name)}: capital letters, digits and _, starting with a letter, not a reserved name`);
     if (seen.has(input.name)) fail(422, 'invalid', `${input.name} is given twice`);
     seen.add(input.name);
     if (new TextEncoder().encode(input.value || '').length > 4096) fail(422, 'invalid', `${input.name}: the value is longer than 4096 bytes`);
