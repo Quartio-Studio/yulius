@@ -86,8 +86,8 @@ pub struct FakeAgentOptions {
     /// when the API answers again by then.
     pub api_recovers_on_resume: bool,
     /// A session Yulius resumes starts with the line Claude Code writes itself when it resumes
-    /// with nothing to answer, "No response requested." (`--resumed-line`).
-    pub resumed_line: bool,
+    /// with nothing to answer, "No response requested." (`--no-response-line`).
+    pub no_response_line: bool,
     /// The session whose goal was paused is woken once this file exists, as Claude Code wakes an
     /// idle session when background work ends, and its turn works (`--paused-wake-file`).
     pub paused_wake_file: Option<PathBuf>,
@@ -147,6 +147,10 @@ pub struct FakeAgentOptions {
     pub stuck_at_start_file: Option<PathBuf>,
     /// A goal turn or an echoed turn ends only once this file exists (`--turn-hold-file`).
     pub turn_hold_file: Option<PathBuf>,
+    /// The agent writes a meta record, no prompt, with its version at each start, as a real
+    /// Claude Code may before any prompt when it resumes an interrupted turn
+    /// (`--resume-record`).
+    pub resume_record: bool,
 }
 
 /// See the module docs.
@@ -249,6 +253,9 @@ impl HarnessPort for FakeAgentHarness {
                 argv.extend([flag.into(), path.to_string_lossy().into_owned()]);
             }
         }
+        if self.options.resume_record {
+            argv.push("--resume-record".into());
+        }
         if self.options.hooks {
             argv.extend([
                 "--hooks".into(),
@@ -301,8 +308,8 @@ impl HarnessPort for FakeAgentHarness {
         if let Some(n) = api_errors {
             argv.extend(["--goal-api-errors".into(), n.to_string()]);
         }
-        if self.options.resumed_line && resumed_session {
-            argv.push("--resumed-line".into());
+        if self.options.no_response_line && resumed_session {
+            argv.push("--no-response-line".into());
         }
         if let Some(file) = &self.options.paused_wake_file {
             argv.extend([

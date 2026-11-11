@@ -115,7 +115,7 @@ whatever woke it. "Send the task a message…" is shown only while nothing goes 
   `<task-notification>` prompt and its hook, a tool call, `WOKEN`; the turn ends once
   `--turn-hold-file` exists). With `--paused-wake-dies` the woken turn gets the API error again
   and closes with no work and no notice (`WAKE DIED`). With `--paused-wake-hidden` the session
-  goes on with a hidden `isMeta` prompt and no prompt hook. `--resumed-line` starts a session
+  goes on with a hidden `isMeta` prompt and no prompt hook. `--no-response-line` starts a session
   with the line Claude Code writes itself when it resumes with nothing to answer ("No response
   requested.", the `<synthetic>` model). CLI tests cover the four.
 - Integration tests in `crates/yulius/tests/task_done.rs`, each from spent retries (Needs you,

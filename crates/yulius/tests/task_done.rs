@@ -4440,7 +4440,7 @@ fn a_session_yulius_restarts_after_its_goal_pause_no_longer_needs_you() -> TestR
         let hold = data.join("hold-turn");
         let agent = FakeAgentOptions {
             api_recovers_on_resume: true,
-            resumed_line: true,
+            no_response_line: true,
             turn_hold_file: Some(hold.clone()),
             ..pausing_agent()
         };
@@ -4501,7 +4501,7 @@ fn a_session_paused_again_after_it_worked_asks_again() -> TestResult {
     let rt = runtime()?;
     rt.block_on(async {
         let agent = FakeAgentOptions {
-            resumed_line: true,
+            no_response_line: true,
             ..pausing_agent()
         };
         let (app, _) = start(&data, &fake, agent, 0).await?;

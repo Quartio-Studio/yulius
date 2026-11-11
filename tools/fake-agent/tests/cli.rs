@@ -345,7 +345,7 @@ fn a_session_that_goes_on_by_itself_after_its_goal_pause_has_a_hidden_prompt() -
     Ok(())
 }
 
-/// SPEC-469: a resumed session starts with the line Claude Code writes itself (`--resumed-line`),
+/// SPEC-469: a resumed session starts with the line Claude Code writes itself (`--no-response-line`),
 /// before its first turn: the `<synthetic>` model's "No response requested.".
 #[test]
 fn a_resumed_session_starts_with_claude_codes_own_line() -> TestResult {
@@ -358,7 +358,7 @@ fn a_resumed_session_starts_with_claude_codes_own_line() -> TestResult {
             "s-6",
             "--transcript",
             &path_text,
-            "--resumed-line",
+            "--no-response-line",
         ],
         "one\n/exit\n",
     )?;

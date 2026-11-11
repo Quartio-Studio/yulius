@@ -18,13 +18,13 @@
 //!            [--goal-continue-verdict] [--goal-continue-dies]] [--goal-delay-ms MS] [--drop-lines N]
 //!            [--interrupts] [--rate-limits-file PATH] [--session-start] [--opening-turn-ms MS]
 //!            [--cli-version-file PATH] [--exit-at-start-file PATH] [--stuck-at-start-file PATH]
-//!            [--turn-hold-file PATH]
+//!            [--turn-hold-file PATH] [--resume-record]
 //!            [--echo-turn-ms MS] [--context-full-after N] [--compact-fails] [--compact-hangs]
 //!            [--prompt TEXT] [--limit-continues-ms MS [--limit-continues-answer-only]]
 //!            [--idle-compact-ms MS] [--trust-prompt] [--goal-api-errors N [--goal-retry-ms MS]
 //!            [--goal-check-errors] [--goal-cleared-on-retry]
 //!            [--paused-wake-file PATH [--paused-wake-dies | --paused-wake-hidden]]]
-//!            [--resumed-line]
+//!            [--no-response-line]
 //! ```
 //!
 //! Modes:
@@ -111,7 +111,7 @@
 //! as Claude Code continues a cut turn by itself (`--limit-continues-ms`): a hidden `isMeta`
 //! prompt with no `UserPromptSubmit` hook, then the same working turn.
 //!
-//! `--resumed-line` starts like a session Claude Code 2.1.322 resumed with nothing to answer:
+//! `--no-response-line` starts like a session Claude Code 2.1.322 resumed with nothing to answer:
 //! before anything else it writes its own line "No response requested." (the model `<synthetic>`,
 //! `stop_reason: stop_sequence`), which is no work of the agent.
 //!
@@ -142,6 +142,10 @@
 //! on a dialog nobody answers (SPEC-461). `--turn-hold-file PATH`: a goal turn or an echoed turn
 //! ends only once PATH exists (bounded by 60 s), so a test says when a turn ends instead of a
 //! timer.
+//!
+//! `--resume-record`: at its start the agent writes a record a real Claude Code writes before
+//! any prompt when it resumes a session whose turn was interrupted: a meta user record with
+//! its version (the transcript then names the version before any prompt, SPEC-461).
 //!
 //! `--rate-limits-file PATH` runs Claude Code's status line command as Yulius configures it
 //! (`YULIUS_EXE hook claude StatusLine`, with `--hooks`) at the start and after every turn, with
@@ -271,7 +275,7 @@ struct Options {
     paused_wake_file: Option<PathBuf>,
     paused_wake_dies: bool,
     paused_wake_hidden: bool,
-    resumed_line: bool,
+    no_response_line: bool,
     goal_delay_ms: u64,
     goal_met_on_wake_ms: Option<u64>,
     wake_stop_lost: bool,
@@ -287,6 +291,7 @@ struct Options {
     exit_at_start_file: Option<PathBuf>,
     stuck_at_start_file: Option<PathBuf>,
     turn_hold_file: Option<PathBuf>,
+    resume_record: bool,
     context_full_after: Option<u64>,
     compact_fails: bool,
     compact_hangs: bool,
@@ -334,7 +339,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
         paused_wake_file: None,
         paused_wake_dies: false,
         paused_wake_hidden: false,
-        resumed_line: false,
+        no_response_line: false,
         goal_delay_ms: 0,
         goal_met_on_wake_ms: None,
         wake_stop_lost: false,
@@ -350,6 +355,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
         exit_at_start_file: None,
         stuck_at_start_file: None,
         turn_hold_file: None,
+        resume_record: false,
         context_full_after: None,
         compact_fails: false,
         compact_hangs: false,
@@ -442,7 +448,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
             }
             "--paused-wake-dies" => options.paused_wake_dies = true,
             "--paused-wake-hidden" => options.paused_wake_hidden = true,
-            "--resumed-line" => options.resumed_line = true,
+            "--no-response-line" => options.no_response_line = true,
             "--goal-retry-ms" => {
                 let ms: u64 = parse_number(&flag, args.next())?;
                 options.goal_retry_ms = ms.min(MAX_GOAL_DELAY_MS);
@@ -499,6 +505,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
                 options.turn_hold_file =
                     Some(args.next().ok_or("--turn-hold-file needs a path")?.into());
             }
+            "--resume-record" => options.resume_record = true,
             "--context-full-after" => {
                 options.context_full_after = Some(parse_number(&flag, args.next())?);
             }
@@ -766,6 +773,20 @@ impl Transcript {
         self.append(&[user, assistant])
     }
 
+    /// A record a resumed session that redoes an interrupted turn writes before any prompt: a
+    /// meta user record (`--resume-record`).
+    fn resumed(&mut self) -> io::Result<()> {
+        let uuid = format!("fake-{}-resumed-{}", self.session_id, now_ms());
+        let mut user = self.claude_envelope("user", &uuid, &rfc3339(now_ms()));
+        user["isMeta"] = json!(true);
+        user["message"] = json!({
+            "role": "user",
+            "content": [{"type": "text", "text": "Continue from where you left off."}],
+        });
+        self.last_uuid = Some(uuid);
+        self.append(&[user])
+    }
+
     /// The user line of a turn that takes a while (`/work`).
     fn begin(&mut self, prompt: &str) -> io::Result<()> {
         self.turns += 1;
@@ -844,14 +865,14 @@ impl Transcript {
     }
 
     /// The line Claude Code 2.1.322 writes itself when a session is resumed with nothing to
-    /// answer (`--resumed-line`): no model wrote it.
-    fn resumed(&mut self) -> io::Result<()> {
+    /// answer (`--no-response-line`): no model wrote it.
+    fn no_response_requested(&mut self) -> io::Result<()> {
         let at = now_ms();
-        let uuid = format!("fake-{}-resumed-{at}", self.session_id);
+        let uuid = format!("fake-{}-no-response-{at}", self.session_id);
         let mut record = self.claude_envelope("assistant", &uuid, &rfc3339(at));
         record["isApiErrorMessage"] = json!(false);
         record["message"] = json!({
-            "id": format!("msg_fake_resumed_{at}"),
+            "id": format!("msg_fake_no_response_{at}"),
             "type": "message",
             "role": "assistant",
             "model": "<synthetic>",
@@ -2023,6 +2044,12 @@ fn echo_loop(options: &Options, session_id: &str) -> io::Result<i32> {
         )?))),
         None => None,
     };
+    if options.resume_record
+        && let Some(transcript) = &transcript
+        && let Ok(mut transcript) = transcript.lock()
+    {
+        transcript.resumed()?;
+    }
     let mut hooks = options.hooks.as_ref().map(|exe| Hooks {
         exe: exe.clone(),
         session_id: session_id.to_owned(),
@@ -2030,10 +2057,10 @@ fn echo_loop(options: &Options, session_id: &str) -> io::Result<i32> {
     if options.trust_prompt {
         trust_prompt()?;
     }
-    if let (true, Some(transcript)) = (options.resumed_line, &transcript)
+    if let (true, Some(transcript)) = (options.no_response_line, &transcript)
         && let Ok(mut t) = transcript.lock()
     {
-        t.resumed()?;
+        t.no_response_requested()?;
     }
     let keys = Keys::start(options, hooks.clone())?;
     let keys = keys.as_ref();
@@ -2592,13 +2619,14 @@ mod tests {
         assert!(parse(&["--turn-hold-file"]).is_err());
         assert!(parse(&["--paused-wake-file"]).is_err());
         assert!(parse(&["--paused-wake-hidden"]).is_ok_and(|o| o.paused_wake_hidden));
-        assert!(parse(&["--resumed-line"]).is_ok_and(|o| o.resumed_line));
+        assert!(parse(&["--no-response-line"]).is_ok_and(|o| o.no_response_line));
         assert!(parse(&["--paused-wake-dies", "--paused-wake-hidden"]).is_err());
         assert!(
             parse(&["--paused-wake-file", "/tmp/wake", "--paused-wake-dies"]).is_ok_and(|o| {
                 o.paused_wake_file.as_deref() == Some(Path::new("/tmp/wake")) && o.paused_wake_dies
             })
         );
+        assert!(parse(&["--resume-record"]).is_ok_and(|o| o.resume_record));
         assert!(
             parse(&["--goal-background", "3", "--goal-delay-ms", "999999"])
                 .is_ok_and(|o| o.goal_background == Some(3) && o.goal_delay_ms == MAX_GOAL_DELAY_MS)

@@ -15,6 +15,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   first work after the pause, whatever woke the session, and the task reads Working. A woken turn
   the API refuses again keeps the request, and a request the agent made itself stays. Tasks an
   older Yulius left in that state lose the request at the first start with this change.
+- A session that works on after a restart shows the Claude Code it runs with the first record
+  it writes (SPEC-461, task #443). Yulius read a session's Claude Code version from its prompt
+  records only, and a session that redoes an interrupted turn by itself writes none for hours:
+  task info showed the previous session's version meanwhile. Every record of the session's own
+  thread names the version now (an idle session resumed with nothing typed still names it at
+  its next prompt). Found by reading real restarted sessions' transcripts after the merge; the
+  updater was also run against npm's real registry and on a real host with npm's 2.1.311
+  (the doctor fails, the server installs 2.1.322 by itself two minutes after its start).
 - Yulius knows whether GitHub accepts its sign-in address, and laptops follow a move (SPEC-466,
   task #446, ADR-0302; slice C of the move). After a move to another URL GitHub sign-in fails until
   a person adds the new callback URL to the GitHub App, which GitHub offers no API for. The
