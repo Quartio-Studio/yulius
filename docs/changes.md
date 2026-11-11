@@ -6,6 +6,35 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-11
 
+- Sandboxes never run a Claude Code that does not know Yulius's default model (SPEC-461, task
+  #443, ADR-0293). On production the default model (Fable 5.2) had outrun the Claude Code that
+  npm's `stable` offered (2.1.311), so a session's own model picker and its `fable` alias meant
+  Fable 5.1. Yulius now follows npm's `latest`, reads each release for the models the composer
+  offers before it becomes current and refuses one without the default model, and on `stable`
+  takes `latest`'s release when stable's does not know it. Settings, Instance has a Claude Code
+  card: the version sandboxes run, npm's newest releases, the last check, "Check now", the
+  channel (Latest, Stable, Off) changed there without editing the unit, a red banner with the
+  fix while the default model is unknown, and the tasks still on an older version. `yulius
+  doctor` fails on it too. A running task moves to the new Claude Code when its turn ends, in
+  the same session, and a task's info shows the model it asks for, the models that answered and
+  the Claude Code each session ran. A version a session cannot continue on (the restart fails,
+  or the restarted session ends or stays silent before it starts) gets no other running session,
+  and the card names the task. Also fixed: an idle task a person moved to another subscription
+  read "working" until its next turn.
+- One command moves the instance to another host (SPEC-460, task #442, ADR-0297): `sudo yulius
+  instance migrate root@new-host` on the old host. It plans first and asks people only there (the
+  SSH sign-in, a DNS record, the GitHub App's callback, blank disks to use), then sets up the new
+  host like the old one (data disk as ext4 or an mdadm mirror, third-party apt sources and the
+  manual package list fitted to the new release, coreutils flavour, `/usr/local`, unowned `/opt`,
+  root's Rust toolchain, the unit with its drop-ins and key files, the update helper, Caddy for
+  the new host name, ufw), copies the data while the old instance is frozen, starts the new
+  instance only when both hosts count the same copy (entries, bytes and a fingerprint per folder),
+  redirects the old URL and removes its own key. A failure before the new instance runs thaws the
+  old one; a new instance that does not come up is stopped first. `--status` shows the checklist,
+  `--abort` goes back, and the same command continues a move that stopped. On the new host the
+  tasks that were live come back by themselves. The operations guide §7 describes it. To come:
+  a warm copy (the freeze still takes the whole copy), the GitHub App check and the Settings →
+  Instance button.
 - `browser_screenshot` never shows an agent secret typed with `browser_fill_secret` (SPEC-450,
   task #432, ADR-0291, #1113). Yulius reads each page before and after capturing it and refuses
   the screenshot, pointing to `browser_snapshot`, while the page shows any agent secret or cannot

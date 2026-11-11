@@ -269,8 +269,10 @@ enum Command {
         /// The reverse proxy's secret file (as for `serve`): checked, never shown.
         #[arg(long, env = "YULIUS_PROXY_SECRET_FILE")]
         proxy_secret_file: Option<PathBuf>,
-        /// Claude Code releases isolated sandboxes follow (as for `serve`, SPEC-421).
-        #[arg(long, env = "YULIUS_CLAUDE_UPDATES", default_value = "stable",
+        /// Claude Code releases isolated sandboxes follow (as for `serve`, SPEC-421), unless
+        /// one was chosen in Settings, Instance.
+        #[arg(long, env = "YULIUS_CLAUDE_UPDATES",
+              default_value = yulius::wiring::sandbox::DEFAULT_CHANNEL,
               value_parser = yulius::wiring::sandbox::parse_channel)]
         claude_updates: yulius_domain::agent_cli::Channel,
     },
@@ -339,6 +341,56 @@ enum InstanceAction {
         /// exported one's name).
         #[arg(long)]
         user: Option<String>,
+    },
+    /// Move the whole instance to another host with one command: check and set up the new
+    /// host, carry every setting and key, copy and prove the data, start the new instance,
+    /// redirect the old URL. Run it on the old host; run it again to continue.
+    Migrate {
+        /// The new host, as ssh takes it: `root@new-host`.
+        target: Option<String>,
+        /// The new host's SSH port.
+        #[arg(long = "ssh-port", default_value_t = 22)]
+        ssh_port: u16,
+        /// The new public URL (default: the old one, or the same form for the new address).
+        #[arg(long)]
+        public_url: Option<String>,
+        /// A blank disk of the new host for the data directory; twice for a mirror.
+        #[arg(long = "data-disk")]
+        data_disk: Vec<String>,
+        /// Do not ask before moving.
+        #[arg(long)]
+        yes: bool,
+        /// Print the recorded move and its checklist.
+        #[arg(long, conflicts_with_all = ["abort", "target"])]
+        status: bool,
+        /// Go back to this host: stop the new instance, undo the redirect, thaw and enable the
+        /// old one.
+        #[arg(long, conflicts_with = "target")]
+        abort: bool,
+        /// Data directory.
+        #[arg(
+            long = "data-dir",
+            visible_alias = "data",
+            env = "YULIUS_DATA",
+            default_value = "/var/lib/yulius"
+        )]
+        data_dir: PathBuf,
+        /// The server's systemd unit.
+        #[arg(long, default_value = "yulius.service")]
+        service: String,
+        /// The update helper's unit.
+        #[arg(long, default_value = "yulius-update.service")]
+        update_service: String,
+        /// Where the move keeps its key and state.
+        #[arg(long, default_value = "/var/lib/yulius-migrate")]
+        state_dir: PathBuf,
+    },
+    /// A move's steps on the new host; run by `yulius instance migrate` over SSH.
+    #[command(hide = true)]
+    MigrateTarget {
+        /// Install the copy arriving on standard input.
+        #[arg(long)]
+        receive: bool,
     },
 }
 
@@ -792,6 +844,44 @@ fn main() -> ExitCode {
             data_dir,
             user,
         }),
+        Command::Instance {
+            action:
+                InstanceAction::Migrate {
+                    target,
+                    ssh_port,
+                    public_url,
+                    data_disk,
+                    yes,
+                    status,
+                    abort,
+                    data_dir,
+                    service,
+                    update_service,
+                    state_dir,
+                },
+        } => yulius::instance::migrate::main(
+            &yulius::instance::migrate::Options {
+                target,
+                port: ssh_port,
+                public_url,
+                data_disks: data_disk,
+                yes,
+                data_dir,
+                service,
+                update_service,
+                state_dir,
+            },
+            if status {
+                yulius::instance::migrate::Action::Status
+            } else if abort {
+                yulius::instance::migrate::Action::Abort
+            } else {
+                yulius::instance::migrate::Action::Run
+            },
+        ),
+        Command::Instance {
+            action: InstanceAction::MigrateTarget { receive },
+        } => yulius::instance::migrate::target::main(receive),
         Command::Version => {
             let commit = env!("YULIUS_BUILD_COMMIT");
             if commit.is_empty() {

@@ -790,6 +790,18 @@ pub struct RecordReservation {
     pub reserved_at: Timestamp,
 }
 
+/// What a run ran on (SPEC-461 CCM-011): the model that answered and the agent CLI's version,
+/// each `None` while its transcript has not said.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunFacts {
+    /// The run.
+    pub attempt: AttemptId,
+    /// The model of its latest answer.
+    pub model: Option<String>,
+    /// The agent CLI version its lines name.
+    pub cli_version: Option<String>,
+}
+
 /// Per-attempt usage metrics; `None` = unknown.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct MetricsRecord {

@@ -304,6 +304,11 @@ pub struct TaskRuntime {
     /// When a switch of this task was last refused before it started (ms, 0 = never): an
     /// automatic switch waits [`SWITCH_COOLDOWN_MS`] before it tries again.
     pub(crate) switch_refused_ms: AtomicI64,
+    /// When a restart of this task's session on a newer Claude Code was last refused before it
+    /// started (ms, 0 = never): the next one waits [`SWITCH_COOLDOWN_MS`] too. Apart from
+    /// `switch_refused_ms`: a refused restart keeps no subscription switch waiting, and is
+    /// neither shown nor recorded (SPEC-461 CCM-013).
+    pub(crate) claude_move_refused_ms: AtomicI64,
     /// The recovery of a session whose context is full (SPEC-060); outlives a run, so a fresh
     /// session counts as its second stage.
     pub(crate) context: Mutex<crate::context_full::ContextEpisode>,
@@ -442,6 +447,7 @@ impl TaskRuntime {
             nudged: Mutex::new(std::collections::BTreeSet::new()),
             acting_as_app_said: AtomicBool::new(false),
             switch_refused_ms: AtomicI64::new(0),
+            claude_move_refused_ms: AtomicI64::new(0),
             context: Mutex::new(crate::context_full::ContextEpisode::default()),
             finalizing: tokio::sync::watch::channel(0).0,
             end_failed: Mutex::new(None),
@@ -595,7 +601,7 @@ fn launch_goal_settled(run_dir: &Path) {
 const SESSION_STARTED_FILE: &str = "session-started";
 
 /// Whether the session of the run in `run_dir` started.
-fn session_started_marked(run_dir: &Path) -> bool {
+pub(crate) fn session_started_marked(run_dir: &Path) -> bool {
     run_dir.join(SESSION_STARTED_FILE).exists()
 }
 
@@ -2562,8 +2568,10 @@ impl App {
         let session_end = runtime.session_end.lock().ok().and_then(|mut g| g.take());
         runtime.watcher_alive.store(false, Ordering::SeqCst);
         // Keep the last screen so viewers still see how the run ended after a server restart.
+        let mut session_started = true;
         if let Ok(Some(attempt)) = store.attempt(attempt_id).await {
             save_screen(&runtime.hub, Path::new(&attempt.run_dir));
+            session_started = session_started_marked(Path::new(&attempt.run_dir));
         }
         let state = if intent.is_some() {
             AttemptState::Killed
@@ -2615,6 +2623,10 @@ impl App {
             return; // another observer already recorded the outcome
         }
         runtime.clear_start_counters(attempt_id);
+        // A session restarted on a newer Claude Code that ended by itself before it started
+        // there: that version gets no other session (SPEC-461 CCM-013).
+        self.claude_code_run_ended(task_id, attempt_id, session_started, intent.is_none())
+            .await;
         // The snapshot is the run's once its watcher read the run's transcript to its end;
         // otherwise it is empty or partial, and the transcript is counted (SPEC-143 RDM-001).
         let read = runtime
@@ -3281,13 +3293,19 @@ impl App {
         let elsewhere = account.is_some()
             && attempt.as_ref().map(|a| a.account_id.as_ref()) != Some(account.as_ref());
         let fresh = matches!(start, RunStart::Fresh { .. });
-        runtime.hub.notice(if fresh {
-            "↻ Yulius starts a fresh session for this task…"
-        } else if elsewhere {
-            "↻ Yulius continues this session on another Claude subscription…"
+        // A restart for a newer Claude Code says that, in its one line (SPEC-461 CCM-013).
+        let for_claude_code = reason == crate::claude_code::MOVE_REASON;
+        if for_claude_code {
+            runtime.hub.notice(self.claude_code_move_notice());
         } else {
-            "↻ Yulius continues this session…"
-        });
+            runtime.hub.notice(if fresh {
+                "↻ Yulius starts a fresh session for this task…"
+            } else if elsewhere {
+                "↻ Yulius continues this session on another Claude subscription…"
+            } else {
+                "↻ Yulius continues this session…"
+            });
+        }
         self.publish_task(task_id).await;
         if let Some(attempt) = attempt {
             // A paused run takes the end as it would unpaused (SPEC-191 PER-004).
@@ -3372,6 +3390,18 @@ impl App {
             crate::race::Point::SwitchLaunching,
             Path::new(task_id.as_str()),
         );
+        // A prompt-mode session that was idle and gets nothing typed is idle again once it
+        // runs (SPEC-447 MOV-002; a restart on a newer Claude Code, SPEC-461 CCM-013): the
+        // launch marks every run working, and no turn would end to say otherwise.
+        let rests_as = task
+            .activity
+            .filter(|activity| {
+                activity.is_idle()
+                    && task.status == TaskStatus::Running
+                    && task.mode == TaskMode::Prompt
+                    && matches!(start, RunStart::Resume { prompt: None })
+            })
+            .map(|activity| (activity, runtime.turn_began_ms.load(Ordering::SeqCst)));
         match self.start_run_if(task_id, start, account, Some(from)).await {
             // Another start (the capacity loop's) ran the paused task first: it won, the switch
             // is made.
@@ -3394,12 +3424,22 @@ impl App {
                     store.set_switch_outcome(&decision_id, "waiting").await?;
                 } else {
                     store.set_switch_outcome(&decision_id, "completed").await?;
-                    runtime.switch_refused_ms.store(0, Ordering::SeqCst);
-                    runtime.hub.notice(if fresh {
-                        "↻ The task continues in a fresh session."
+                    if for_claude_code {
+                        runtime.claude_move_refused_ms.store(0, Ordering::SeqCst);
                     } else {
-                        "↻ The session continues where it left off."
-                    });
+                        runtime.switch_refused_ms.store(0, Ordering::SeqCst);
+                    }
+                    if let Some((activity, turn_began)) = rests_as {
+                        self.rest_after_idle_switch(task_id, activity, turn_began)
+                            .await;
+                    }
+                    if !for_claude_code {
+                        runtime.hub.notice(if fresh {
+                            "↻ The task continues in a fresh session."
+                        } else {
+                            "↻ The session continues where it left off."
+                        });
+                    }
                 }
                 Ok(())
             }
@@ -3427,6 +3467,32 @@ impl App {
                 Err(err)
             }
         }
+    }
+
+    /// Puts a session that was idle before a switch that typed nothing back to `activity`,
+    /// unless a turn began in the new run meanwhile (a prompt someone sent at once).
+    async fn rest_after_idle_switch(&self, task_id: &TaskId, activity: Activity, turn_began: i64) {
+        let runtime = self.runtime(task_id);
+        let Ok(Some(task)) = self.deps.store.task(task_id).await else {
+            return;
+        };
+        // The new run's watch resets the turn's start; anything else is a turn of the new run.
+        let began = runtime.turn_began_ms.load(Ordering::SeqCst);
+        if task.status != TaskStatus::Running
+            || task.activity != Some(Activity::Working)
+            || (began != 0 && began != turn_began)
+        {
+            return;
+        }
+        if let Err(err) = self
+            .deps
+            .store
+            .set_activity(task_id, Some(activity), self.now())
+            .await
+        {
+            tracing::warn!(error = %err, task = %task_id, "the moved task was not put back to idle");
+        }
+        self.publish_task(task_id).await;
     }
 
     /// The status a switch goes on from: still `Switching`, or paused for capacity meanwhile (a
@@ -3548,8 +3614,20 @@ impl App {
     }
 
     /// Whether a switch of `task` was refused so recently that an automatic one waits.
-    pub(crate) fn switch_cooling(&self, task: &TaskId) -> bool {
+    #[must_use]
+    pub fn switch_cooling(&self, task: &TaskId) -> bool {
         let at = self.runtime(task).switch_refused_ms.load(Ordering::SeqCst);
+        at > 0 && self.now().0 - at < SWITCH_COOLDOWN_MS
+    }
+
+    /// Whether a restart of `task`'s session on a newer Claude Code was refused so recently
+    /// that the next one waits (SPEC-461 CCM-013).
+    #[must_use]
+    pub fn claude_move_cooling(&self, task: &TaskId) -> bool {
+        let at = self
+            .runtime(task)
+            .claude_move_refused_ms
+            .load(Ordering::SeqCst);
         at > 0 && self.now().0 - at < SWITCH_COOLDOWN_MS
     }
 
@@ -3562,6 +3640,16 @@ impl App {
         err: &AppError,
     ) {
         let message = err.public_message();
+        // A restart for a newer Claude Code that cannot start now is no switch of subscriptions
+        // and nothing a person must read: it has its own wait, is neither shown nor recorded,
+        // and a later turn's end tries again (SPEC-461 CCM-013).
+        if reason == crate::claude_code::MOVE_REASON {
+            self.runtime(&task.id)
+                .claude_move_refused_ms
+                .store(self.now().0, Ordering::SeqCst);
+            tracing::warn!(task = %task.id, error = %err, "restart on the newer Claude Code refused; the running session stays");
+            return;
+        }
         // A repeat of an automatic switch inside the cooldown is only logged: one record and
         // one notice per cooldown, not one per retry.
         let repeat = reason != "manual" && self.switch_cooling(&task.id);
@@ -3657,7 +3745,17 @@ impl App {
     /// # Errors
     /// Store failures.
     pub async fn reconcile(self: &Arc<Self>) -> AppResult<()> {
+        self.reconcile_lost().await.map(|_| ())
+    }
+
+    /// [`App::reconcile`], returning the tasks whose runs were lost, each with the status it had:
+    /// what the first start after a move brings back (SPEC-460 MIG-050).
+    ///
+    /// # Errors
+    /// Store failures.
+    pub(crate) async fn reconcile_lost(self: &Arc<Self>) -> AppResult<Vec<(TaskId, TaskStatus)>> {
         let store = &self.deps.store;
+        let mut lost = Vec::new();
         for attempt in store.live_attempts().await? {
             let host_token: Option<[u8; 32]> = self
                 .deps
@@ -3747,7 +3845,13 @@ impl App {
                 }
                 continue;
             }
-            match self.deps.session_host.inspect(Path::new(&attempt.run_dir)) {
+            let inspection = self.deps.session_host.inspect(Path::new(&attempt.run_dir));
+            if !matches!(inspection, RunInspection::Exited(_))
+                && let Ok(Some(task)) = store.task(&attempt.task_id).await
+            {
+                lost.push((task.id, task.status));
+            }
+            match inspection {
                 // It ended while Yulius was down: no watcher of this process read it, so its
                 // figures are counted from its transcript (SPEC-143 RDM-001).
                 RunInspection::Exited(exit) => {
@@ -3794,10 +3898,11 @@ impl App {
                 let _ = store
                     .transition_task(&task.id, Some(task.status), next, None, self.now())
                     .await;
+                lost.push((task.id, task.status));
             }
         }
         self.drain_queue().await;
-        Ok(())
+        Ok(lost)
     }
 
     /// Account usage update from transcripts or providers.
@@ -3952,6 +4057,8 @@ impl App {
         let mut spec_synced = std::time::Instant::now();
         let mut saved: Option<UsageSnapshot> = None;
         let mut saved_at = Timestamp(0);
+        // The Claude Code version the run's lines name, as last recorded (SPEC-461 CCM-011).
+        let mut cli_version: Option<String> = None;
         // After a restart, the transcript the reattached run already wrote is history until the
         // first poll reaches its end: it is reduced to its final state, not replayed event by
         // event (TSK-014; a replayed prompt used to put a finished task back to Working after
@@ -4054,6 +4161,20 @@ impl App {
             let runtime = self.runtime(&task_id);
             if let Ok(mut u) = runtime.usage.lock() {
                 *u = usage.clone();
+            }
+            // Which Claude Code runs this session is kept as soon as a line names it: the task's
+            // info shows it, and the turn's end moves a session on an older one (SPEC-461).
+            if usage.cli_version.is_some() && usage.cli_version != cli_version {
+                cli_version.clone_from(&usage.cli_version);
+                if let Some(version) = &cli_version
+                    && let Err(err) = self
+                        .deps
+                        .store
+                        .set_run_cli_version(&attempt.id, &task_id, version, self.now())
+                        .await
+                {
+                    tracing::debug!(error = %err, task = %task_id, "the run's Claude Code version was not recorded");
+                }
             }
             if w.caught_up()
                 && let Ok(mut read) = runtime.usage_read.lock()

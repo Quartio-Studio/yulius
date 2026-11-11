@@ -92,6 +92,16 @@ watching, steering and unblocking.
   packages, Docker data) without writing anything on the old VM's disk; the new VM installs it as
   it arrives, checks it, and `yulius host setup` starts it. `--move` keeps the old instance frozen
   and disabled. A copy can also go to a file and be installed later.
+- **Move the instance to another host with one command** (SPEC-460): `sudo yulius instance migrate
+  root@new-host` on the old host checks and sets up the new one (a data disk, the old host's
+  packages and apt sources, software outside apt, the unit with its settings and key files, the
+  update helper, Caddy, ufw), copies the data while the old instance is frozen, proves the copy
+  (entries, bytes and a fingerprint per folder, equal on both hosts), starts the new instance,
+  redirects the old URL and removes its own key. People are asked only in the plan, before
+  anything changes (the SSH sign-in, a DNS record, the GitHub App's callback). Any failure before
+  the new instance runs thaws the old one; `--abort` goes back. Tasks that were live come back by
+  themselves on the new host. Still to come: a warm copy so the freeze sends only the changes,
+  the GitHub App check and the button in Settings → Instance.
 - **Playgrounds**: a team tries Yulius on its own code before it connects GitHub. On a fresh
   instance Home offers it first: drop a project folder (a repository keeps its branches and
   history) or start from a template, and tasks start a minute later. Its Git stays on the server
@@ -177,8 +187,10 @@ watching, steering and unblocking.
   then "More" for Sessions, Workflows, Skills, Automations and MCP, then the active tasks.
 - **Tasks**: each task runs a real Claude Code CLI in a PTY on its own git worktree. Sessions
   outlive server restarts. Yulius keeps that CLI current by itself: a new Claude Code release
-  (npm's `stable` by default) reaches every new or resumed session within about an hour, with no
-  one signing in again (SPEC-421). A task, Cockpit or Superagent that names no model or effort runs
+  (npm's `latest` by default) reaches every new or resumed session within about an hour and a
+  running task when its turn ends, with no one signing in again; a release that does not know
+  Yulius's default model is never used, and Settings, Instance shows the version, the channel
+  and "Check now" (SPEC-421, SPEC-461). A task, Cockpit or Superagent that names no model or effort runs
   Fable 5.2 at high effort (SPEC-023, SPEC-462); the composer and Settings choose another.
   Task intake splits mixed requests, holds scope changes and chains
   dependent tasks, also by a logical rule such as "#12 done and #13 done", which the composer

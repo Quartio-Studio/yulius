@@ -6,8 +6,9 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use yulius_app::model::Secret;
 use yulius_contracts::api::updates::{
-    JevKeyView, JevTestResult, SandboxDockerView, SetJevKey, SetVidocEnabled, SetVidocKey,
-    StartRestart, StartUpdate, UpdateView, VidocKeyView, VidocTestResult,
+    ClaudeCodeView, JevKeyView, JevTestResult, SandboxDockerView, SetClaudeChannel, SetJevKey,
+    SetVidocEnabled, SetVidocKey, StartRestart, StartUpdate, UpdateView, VidocKeyView,
+    VidocTestResult,
 };
 use yulius_contracts::update::VersionInfo;
 
@@ -142,6 +143,36 @@ pub async fn test_vidoc(
     Auth(ctx): Auth,
 ) -> ApiResult<Json<VidocTestResult>> {
     Ok(Json(app.test_vidoc_key(&ctx).await?))
+}
+
+/// `GET /api/admin/claude-code` (SPEC-461 CCM-008).
+pub async fn claude_code(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+) -> ApiResult<Json<ClaudeCodeView>> {
+    Ok(Json(app.claude_code_view(&ctx).await?))
+}
+
+/// `POST /api/admin/claude-code/check` (SPEC-461 CCM-010).
+pub async fn check_claude_code(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+) -> ApiResult<(StatusCode, Json<ClaudeCodeView>)> {
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(app.check_claude_code_now(&ctx).await?),
+    ))
+}
+
+/// `PUT /api/admin/claude-code/channel` (SPEC-461 CCM-009).
+pub async fn set_claude_channel(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Json(req): Json<SetClaudeChannel>,
+) -> ApiResult<Json<ClaudeCodeView>> {
+    Ok(Json(
+        app.set_claude_channel(&ctx, req.channel.as_deref()).await?,
+    ))
 }
 
 /// `GET /api/admin/sandbox-docker` (SPEC-203 HST-014).
