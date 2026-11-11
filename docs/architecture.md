@@ -225,8 +225,9 @@ need for Docker: Docker Engine for the bases to copy, the host's own daemon stop
 modules, the service user and its ids, an AppArmor rule that lets bwrap create user namespaces
 where the host restricts them (`host_setup/bwrap_userns.rs`, proven by starting bwrap;
 [decision 0296](decisions/0296-host-setup-writes-the-apparmor-profile-that-lets-bwrap-create-user-namespaces.md)),
-the unit's delegation, a root-owned binary, a current base. Each item reads the host through a `Host` trait, so the same items run against a fake host
-in tests. `yulius host check` is the same list with only the safe fixes. After each healthy
+the unit's delegation, a root-owned binary, a current base. Each item reads the host through a
+`Host` trait, so the same items run against a fake host in tests. `yulius host check` is the
+same list with only the safe fixes. After each healthy
 install, the update helper runs the **new** binary's `host check --json` and keeps the report.
 One verdict, `yulius_sandbox::docker_status::verdict`, gives "sandbox Docker" to the doctor, the
 setup and the server. The server's isolation adapter adds the base's rebuild and the sandboxes

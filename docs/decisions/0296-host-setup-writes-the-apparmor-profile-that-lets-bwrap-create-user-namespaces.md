@@ -37,7 +37,9 @@ other in load order, which a boot does not fix.
   without AppArmor, a host with a working hand-written rule, a second run).
 - **The shipped profile is disabled the supported way.** A link in `/etc/apparmor.d/disable/` and
   `apparmor_parser -R`; the package's file is never edited or removed, and the link survives
-  package upgrades.
+  package upgrades. An enabled shipped profile is disabled even where bwrap works at that
+  moment (a person's override in `local/bwrap-userns-restrict`, say): Yulius's sandboxes are
+  proven against one known state, not against an override nobody at Yulius has seen.
 - **A profile a person wrote is theirs.** Another enabled file that attaches to `/usr/bin/bwrap`
   is adopted when bwrap works with it, and never changed, disabled or joined by Yulius's profile.
   When bwrap does not work with it, the item fails and prints the commands that disable it.
