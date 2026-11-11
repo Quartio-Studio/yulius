@@ -1,11 +1,11 @@
 ---
 yulius-task: 6c1a1301-0997-4895-b6fb-112ea0720a93
-status: in-progress
+status: done
 ---
 
 # SPEC-467: Instance move: the last review's leftovers (two minors, five nits)
 
-Status: in-progress
+Status: done
 Date: 2026-11-11
 Owner: Yulius task #450 (runs after #442)
 Scope authorization: task #450, asked by the project's owner: "Fix the findings the independent
@@ -55,10 +55,10 @@ messages and documents say what the code does.
 - LFT-001 **A look that fails right after the freeze thaws.** In the cutover, when the unit is
   not known to be frozen right after the freeze, nothing is copied and the line says what systemd
   said: the unit does not run (as before: "is not running any more: start it"), it runs unfrozen
-  (thawed or started from outside), or systemd does not say. In the last two cases the move thaws the unit
-  after it claimed the freeze's end, so the old instance runs on; the copy on the new host is not
-  touched and the same command starts over. (Amends SPEC-460 MIG-004: "a failure … before the new
-  instance is started thaws the old one".)
+  (thawed or started from outside), or systemd does not say. In the last two cases the move
+  thaws the unit after it claimed the freeze's end, so the old instance runs on; the copy on
+  the new host is not touched and the same command starts over. (Amends SPEC-460 MIG-004: "a
+  failure … before the new instance is started thaws the old one".)
 - LFT-002 **A recorded start never ends in two running instances.** A run that goes on from a
   recorded start and finds the old unit not frozen asks the new instance, as before. When it
   reports the build:
@@ -90,9 +90,10 @@ messages and documents say what the code does.
   finish answered. The finish is recorded (`finished`), the checklist says so (`manual`: look at
   the new host's firewall once, and what to remove there if the key was deleted by hand instead)
   and the run ends with exit 0, whether or not the new URL answers from the old host (a DNS
-  record may still be open). A key the new host refuses stays as it was (done when the new
-  instance answers); a new host that cannot be reached with a key that still exists keeps "Run
-  the command again".
+  record may still be open). No step is tried over the missing key: `ssh` could only complain
+  about it before the line that says all is done. A key the new host refuses stays as it was
+  (done when the new instance answers); a new host that cannot be reached with a key that still
+  exists keeps "Run the command again".
 - LFT-005 **The import's limits mark is never the copy.** `yulius instance export` leaves a
   top-level `.yulius-limits-adapt` out, whatever it is (file, link, directory), and neither host
   counts it: every import writes its own (SPEC-459 HSL-005). A move from an old host that holds
@@ -114,7 +115,7 @@ messages and documents say what the code does.
 - [x] ADR index in order, the guide's Ctrl-C paragraph true, changes entry (findings 5 and 6)
 - [x] A real move between two QEMU guests through the fixed paths
 - [x] A freeze beside a running new instance never thaws, and a new host that cannot be reached is waited for
-- [ ] Gates green and the independent review answered
+- [x] Gates green and the independent review answered
 
 ## Acceptance criteria
 
@@ -216,19 +217,25 @@ messages and documents say what the code does.
   the unit `inactive` gave that line before this change too. That a unit stopped by hand leaves
   its agents running (`KillMode=process`) is a state of its own, with its own decision (a failed
   line, or ending them), found by this change's review.
+- **The commands a person is told to run kill with SIGKILL (LFT-002).** `systemctl kill
+  --kill-whom=all` alone sends SIGTERM, which a shell ignores: on the real guest such a process
+  survived it in the stopped unit's cgroup and was gone after `--signal=SIGKILL`, which the new
+  host's own stop uses for the same reason. `systemctl stop` comes first, so that the unit is
+  not restarted. What the old instance holds stays on its disk either way.
 - **No new ADR.** ADR-0297's decisions stand (the start is the point of no automatic return; the
   inventory is the proof); these are corrections inside them.
 
 ## Evidence
 
-Head of the gate: `e3ea9cc4` (2026-11-11), which holds `dev` up to `eb2e8a4e` (#1167). #1169 had
+Head of the gate: `4f67fb21` (2026-11-11), which holds `dev` up to `eb2e8a4e` (#1167). #1169 had
 been squash-merged meanwhile: its final head `e38828ea` was merged first (its tree equals the
-squash `4f90a309`), then `dev` itself. The commits after `e3ea9cc4` change this document only.
+squash `4f90a309`), then `dev` itself. The commit after `4f67fb21` changes this document only.
 
 - `scripts/dev ci`: exit 0; nextest 3540 tests run, 3540 passed, 16 skipped;
   doctests, `cargo deny`, `cargo shear` and the docs built. Earlier runs: `6793e524` failed at
   clippy (`type_complexity` on a field of the tests' fake systemd; a named type fixed it);
-  `605b51d1` and `3ab24053` were green (3498 passed, 16 skipped each).
+  `605b51d1` and `3ab24053` (3498 passed, 16 skipped each) and `e3ea9cc4` (3540 passed, 16
+  skipped) were green.
 - `cargo test -p yulius --lib instance::`: 173 passed (89 in `instance::migrate`, 39 of them flow
   tests; 19 freeze, 19 import, 10 inventory, 5 walk).
 - Each fix has a test that fails without it (seen failing before the change, or with the change
@@ -244,7 +251,7 @@ squash `4f90a309`), then `dev` itself. The commits after `e3ea9cc4` change this 
     test fails too) and `flow::a_recorded_start_waits_for_a_new_host_that_cannot_be_reached`
     (before: "add this line" and exit 0).
   - LFT-004: `flow::a_finish_that_was_done_but_not_recorded_is_found_done` (before: "Run the
-    command again", exit 1) and
+    command again", exit 1; before the last fix: two steps tried over the missing key) and
     `remote::a_connection_without_its_key_says_so_and_a_forgotten_key_is_such_a_one`.
   - LFT-005: with the mark taken out of `walk::left_out` four tests fail:
     `inventory::a_limits_mark_left_on_the_old_host_is_not_the_copy`,
@@ -292,31 +299,47 @@ squash `4f90a309`), then `dev` itself. The commits after `e3ea9cc4` change this 
     - the new guest up again: "changed old instance yulius.service ran here beside the new
       instance … it is frozen again" (`freeze::freeze_to_stay` on systemd 259), "stays frozen
       and is disabled", the finish, exit 0.
-  - What systemd 259 answers in the states the resumed start tells apart (the old guest alone,
-    at `e3ea9cc4`'s time; the fake systemd of the flow tests answers the same):
+  - What systemd 259 answers in the states the resumed start tells apart (the old guest alone;
+    the fake systemd of the flow tests answers the same):
     - a unit that is `activating` (an `ExecStartPre` that sleeps) or `deactivating` (an
       `ExecStop` that sleeps): `systemctl freeze` fails with "Unit has a pending job", exit 1,
-      and the state stays; `systemctl stop` and `systemctl kill --kill-whom=all`, which the
-      failed line names, end it (no cgroup left);
+      and the state stays; `systemctl stop` and `systemctl kill --kill-whom=all` end it (no
+      cgroup left);
     - a unit stopped by hand with a process left in its cgroup (`KillMode=process`):
       `ActiveState=inactive`, `ControlGroup` still set, `cgroup.events` "populated 1";
-      `systemctl freeze` fails with "Unit is not active"; `systemctl kill --kill-whom=all`, which
-      the `manual` line names, ends it. The resumed start does not look at that cgroup: issue
-      #1178 (present before this change, see the review below).
+      `systemctl freeze` fails with "Unit is not active". The resumed start does not look at
+      that cgroup: issue #1178 (present before this change, see the review below);
+    - such a process that ignores SIGTERM (a shell with `trap "" TERM`): `systemctl kill
+      --kill-whom=all` leaves it ("populated 1"); `systemctl kill --kill-whom=all
+      --signal=SIGKILL`, which both lines name, ends it (no cgroup left).
 - Independent review, in fresh read-only sessions given the diff range, this spec and
   `om-code-review`. The account's usage limit ended three of them before they reported; the
-  fourth kept notes: every requirement read against the code, eight mutations in a copy of the
-  tree that each make a test of LFT-001 to LFT-005 fail, the documents checked against the
-  code, and its candidates, all answered:
-  - a unit between states taken for stopped, the wording after a freeze that did not hold, a
-    freeze of a unit whose state was not known said as "ran", a signal's word after the move
-    took its end, and the tests' fake connection looking at the host before its key: fixed
-    with tests in `3ab24053`;
-  - the key tried twice in a resumed start, the advice after a failed freeze that systemd
-    would refuse again, and `failed` without a test: fixed with tests in `e3ea9cc4`;
-  - outside this change, because it was there before it: an old unit stopped by hand that left
-    processes behind (`KillMode=process`) still gets the `manual` line and exit 0 in a resumed
-    start. Issue #1178, with what systemd 259 answers in that state.
+  fourth kept notes and, resumed, approved `048ffc3e`: no blocker and no major. It read every
+  requirement against the code, made twelve mutations in a copy of the tree that each make a
+  test fail, ran the 173 instance tests (and 250 repeats, none failing), and checked the
+  documents and this section against the code, the gate's log and the real-host logs. Its
+  findings, all answered:
+  - from its notes, before the approval: a unit between states taken for stopped, the wording
+    after a freeze that did not hold, a freeze of a unit whose state was not known said as
+    "ran", and the tests' fake connection looking at the host before its key: fixed with tests
+    in `3ab24053`, together with a signal's word after the move took its end, which no test
+    reaches (`RealWorld`); the key tried twice in a resumed start, the advice after a failed
+    freeze that systemd would refuse again, and `failed` without a test: fixed with tests in
+    `e3ea9cc4`;
+  - nits of the approval, own code: this section had said that the signal's wording was fixed
+    "with tests" (corrected above); a finish found done tried two steps over the missing key,
+    and the advised kill sent SIGTERM: fixed with tests in `4f67fb21`;
+  - there before this change, so outside it: an old unit stopped by hand that left processes
+    behind (`KillMode=process`) still gets the `manual` line and exit 0 in a resumed start
+    (issue #1178); a run that could not freeze or disable the old unit is still recorded as
+    finished, so the next run says "finished" and exits 0, and the line of a first start for a
+    new host that stopped answering offers `--abort` without saying when it is safe (issue
+    #1179);
+  - decided, no change: a resumed start whose key the new host refuses and that cannot sign
+    in ends as a plan does, with the line to add and exit 0 (LFT-003).
+
+  `4f67fb21` and this section went back to the same reviewer for the confirmation of the exact
+  head, which the merge requires.
 
 Not tested here:
 
@@ -324,8 +347,9 @@ Not tested here:
   completes on a real host: the fake systemd and `freeze::tests` cover them.
 - The resumed start at the last head on real hosts: the runs above are at `a160608d` and
   `605b51d1`. What changed since is which states count as stopped (`inactive`, `failed`), one
-  try of the key instead of two, and wordings; the flow tests cover them, and systemd's answers
-  they rely on were checked on the real guest.
+  try of the key instead of two, the key asked before the steps of a finish found done, and
+  wordings; the flow tests cover them, and systemd's answers they rely on were checked on the
+  real guest.
 - Ctrl-C in a resumed run on real hosts: the change is to the guide; such a run arms no signal
   handler (`World::arm` is called by the cutover's freeze alone).
 - The HTTPS check from the old host: both guests have the same private address, as in SPEC-460,
