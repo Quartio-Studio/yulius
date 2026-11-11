@@ -2464,6 +2464,57 @@ async fn a_job_waiting_for_its_turn_holds_no_slot() -> TestResult {
     Ok(())
 }
 
+/// Two jobs per run that run until `<data>/go` exists.
+fn two_held_toml(data: &Path) -> String {
+    let hold = format!(
+        "cpus = 1\ncommand = 'while [ ! -e \"{dir}/go\" ]; do sleep 0.05; done'\n",
+        dir = data.display()
+    );
+    format!("[[ci.jobs]]\nname = \"a\"\n{hold}\n[[ci.jobs]]\nname = \"b\"\n{hold}")
+}
+
+/// SPEC-459 HSL-006: the limit of CI jobs at once changes while jobs run. With one slot one of
+/// the four jobs runs; raised to three in Settings, two of the waiting ones start beside it
+/// without a restart and without the running one ending.
+#[tokio::test]
+async fn a_raised_job_limit_starts_waiting_jobs_while_one_runs() -> TestResult {
+    use yulius_domain::limits::Limit;
+    let f = fixture_with(false, two_held_toml).await?;
+    f.h.app.load_limits([(Limit::CiJobs, 1)].into()).await;
+    let admin = support::superadmin_bearer(&f.h).await?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    let running = |runs: &[(String, Vec<Value>)]| {
+        runs.iter()
+            .flat_map(|(_, jobs)| jobs)
+            .filter(|job| job["state"] == "running")
+            .count()
+    };
+    let queued = |runs: &[(String, Vec<Value>)]| {
+        runs.iter()
+            .flat_map(|(_, jobs)| jobs)
+            .filter(|job| job["state"] == "queued")
+            .count()
+    };
+    until_runs(&f, |runs| running(runs) == 1 && queued(runs) == 3).await?;
+    let raised = call(
+        &f.h.router,
+        Method::PUT,
+        "/api/admin/limits/ci_max_jobs",
+        Some(serde_json::json!({ "value": 3 })),
+        &admin,
+    )
+    .await?;
+    assert_eq!(raised.status, StatusCode::OK, "{}", raised.body);
+    until_runs(&f, |runs| running(runs) == 3 && queued(runs) == 1).await?;
+    std::fs::write(f.data.join("go"), "")?;
+    f.settle().await?;
+    let overview = f.get("/api/sandboxes/s1/ci").await?;
+    for run in overview["runs"].as_array().ok_or("runs")? {
+        assert_eq!(run["state"], "passed", "{overview}");
+    }
+    Ok(())
+}
+
 /// SPEC-435 JTL-001: a job cancelled while it waits for its turn ends cancelled without having
 /// started, and the turn still comes to a later run of the job.
 #[tokio::test]

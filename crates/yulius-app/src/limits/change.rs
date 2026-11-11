@@ -219,8 +219,11 @@ impl App {
                 Some(&done.detail),
             )
             .await?;
-        if raised {
+        if raised.sessions {
             self.drain_queue().await;
+        }
+        if raised.lanes {
+            self.ci_dispatch().await;
         }
         Ok(view)
     }

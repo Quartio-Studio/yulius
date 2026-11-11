@@ -526,3 +526,45 @@ async fn an_instance_that_is_not_set_up_starts_with_host_sized_limits() -> TestR
     assert_eq!(h.app.ci_max_jobs(), 12);
     Ok(())
 }
+
+/// HSL-006: more live sessions apply while the server runs: the queued task is offered the new
+/// slot at once, without waiting for another run to end.
+#[tokio::test]
+async fn a_queued_task_is_started_when_the_session_limit_is_raised() -> TestResult {
+    use yulius_app::ports::store::TaskStore as _;
+    use yulius_domain::task::TaskStatus;
+    let (h, admin) = instance(OLD, &[(Limit::Sessions, 1)]).await?;
+    support::add_sandbox(&h, "s1", "studio", 20000).await?;
+    support::user_with_token(&h, "u-alice", "alice", false).await?;
+    support::seed_task(&h, "t-run", "s1", "u-alice", TaskStatus::Running, None).await?;
+    support::seed_live_attempt(&h, "t-run", "tok-run").await?;
+    let waiting = support::seed_task(&h, "t-wait", "s1", "u-alice", TaskStatus::Queued, None)
+        .await?
+        .id;
+    // The one slot is taken: a pass of the queue starts nothing.
+    h.app.drain_queue_now().await;
+    let status = call(&h.router, Method::GET, "/api/status", None, &admin).await?;
+    assert_eq!(
+        status.body["sessions"],
+        json!({"live": 1, "limit": 1, "queued": 1})
+    );
+    assert_eq!(h.store.attempts(&waiting).await?.len(), 0);
+
+    let r = put(&h, &admin, "max_sessions", json!(2)).await?;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        let task = h.store.task(&waiting).await?.ok_or("task")?;
+        if task.status != TaskStatus::Queued {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "still queued under a limit of 2"
+        );
+        tokio::task::yield_now().await;
+    }
+    let status = call(&h.router, Method::GET, "/api/status", None, &admin).await?;
+    assert_eq!(status.body["sessions"]["limit"], 2);
+    Ok(())
+}

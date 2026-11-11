@@ -1167,7 +1167,7 @@ impl App {
             let live = self.sessions_in_use().await?;
             // While an update pauses the tasks, starts queue like at the session limit and run
             // once it is over (SPEC-002 ADR-18).
-            let full = held || live >= self.config.max_live_sessions || self.update_holds_starts();
+            let full = held || live >= self.max_live_sessions() || self.update_holds_starts();
             if full && task.status != TaskStatus::Switching {
                 let queued = self
                     .deps
@@ -2792,7 +2792,7 @@ impl App {
         }
         for task in crate::supertask::start_order(free) {
             let live = self.sessions_in_use().await.unwrap_or(u32::MAX);
-            if live >= self.config.max_live_sessions {
+            if live >= self.max_live_sessions() {
                 return;
             }
             let has_lineage = self

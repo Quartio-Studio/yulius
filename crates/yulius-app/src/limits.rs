@@ -259,6 +259,13 @@ impl Loaded {
     }
 }
 
+/// What a change of the limits lets start: queued tasks, queued CI runs.
+#[derive(Debug, Clone, Copy)]
+struct Raised {
+    sessions: bool,
+    lanes: bool,
+}
+
 /// `"12 CPUs, 47 GiB, 387 GB"`, with `?` for what a host does not report.
 fn host_words(host: Host) -> String {
     let or_unknown = |n: Option<u64>| n.map_or_else(|| "?".to_owned(), |n| n.to_string());
@@ -399,17 +406,20 @@ impl App {
         saved
     }
 
-    /// Puts every limit's resolved value in force. Returns whether more sessions may run now.
-    fn put_in_force(&self, loaded: &Loaded) -> bool {
+    /// Puts every limit's resolved value in force. Returns what may start now that could not
+    /// before.
+    fn put_in_force(&self, loaded: &Loaded) -> Raised {
         let count = |limit: Limit| u32::try_from(loaded.resolved(limit).value).unwrap_or(u32::MAX);
         let sessions = count(Limit::Sessions);
-        let raised = sessions > self.limits.sessions.swap(sessions, Ordering::Relaxed);
+        let lanes = count(Limit::CiLanes);
+        let raised = Raised {
+            sessions: sessions > self.limits.sessions.swap(sessions, Ordering::Relaxed),
+            lanes: lanes > self.limits.ci_lanes.swap(lanes, Ordering::Relaxed),
+        };
         self.limits
             .ci_jobs
             .store(count(Limit::CiJobs), Ordering::Relaxed);
-        self.limits
-            .ci_lanes
-            .store(count(Limit::CiLanes), Ordering::Relaxed);
+        self.ci_resize_slots();
         self.limits.run_disk_max.store(
             loaded.resolved(Limit::CdRunDisk).value.saturating_mul(GB),
             Ordering::Relaxed,
