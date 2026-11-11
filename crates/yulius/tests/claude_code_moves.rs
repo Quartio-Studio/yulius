@@ -1106,7 +1106,9 @@ mod moves {
             );
             wait_for("the switch to end", Duration::from_secs(60), || async {
                 let switches = s.app.deps.store.switches(&s.id).await;
-                switches.is_ok_and(|all| all.iter().all(|one| one.outcome != "started"))
+                switches.is_ok_and(|all| {
+                    !all.is_empty() && all.iter().all(|one| one.outcome != "started")
+                })
             })
             .await?;
             let switches = s.app.deps.store.switches(&s.id).await?;
@@ -1115,10 +1117,17 @@ mod moves {
                 .map(|one| (one.reason.as_str(), one.outcome.as_str()))
                 .collect();
             assert_eq!(made, [("claude_code", "completed")]);
-            assert_eq!(
-                run_versions(&s.app, &s.id).await,
-                [Some("2.1.311".to_owned()), Some("2.1.322".to_owned())]
-            );
+            // The restarted session counts as on the new version once the move recorded it,
+            // a moment after its switch.
+            wait_for(
+                "the new session's version",
+                Duration::from_secs(30),
+                || async {
+                    run_versions(&s.app, &s.id).await
+                        == [Some("2.1.311".to_owned()), Some("2.1.322".to_owned())]
+                },
+            )
+            .await?;
             stop(&s.app, &s.id).await
         })?;
         rt.shutdown_timeout(Duration::from_secs(5));
