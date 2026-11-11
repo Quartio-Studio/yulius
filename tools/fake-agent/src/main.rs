@@ -59,7 +59,8 @@
 //! session, by the notice `Goal paused · the request was rate limited` and the record closing the
 //! turn; with `--credits-reset-s S` it is shaped like 2.1.322's, whose `rate_limit_info` says the
 //! allowance (`seven_day_overage_included`) resets S seconds ahead. Each later line then appends
-//! its prompt and another such refusal. With `--limit-continues-ms MS` the agent then continues the cut turn by itself
+//! its prompt and another such refusal; with `--limit-after 0` the first line already does (a
+//! session resumed on a subscription that still refuses it). With `--limit-continues-ms MS` the agent then continues the cut turn by itself
 //! like Claude Code's "continuing automatically" at the reset (#276): MS later it appends a hidden
 //! `isMeta` prompt and an assistant `tool_use` record and prints `CONTINUED`, and MS after that it
 //! appends the answer ending the turn and prints `DONE continued`; with
@@ -1931,7 +1932,11 @@ fn echo_loop(options: &Options, session_id: &str) -> io::Result<i32> {
     let keys = Keys::start(options, hooks.clone())?;
     let keys = keys.as_ref();
     status_line(options, hooks.as_ref())?;
-    let mut state = EchoState::default();
+    let mut state = EchoState {
+        // Out of usage credits from the first message on (`--credits-out --limit-after 0`).
+        limited: options.credits_out && options.limit_after == Some(0),
+        ..EchoState::default()
+    };
     if let (true, Some(hooks)) = (options.session_start, &hooks) {
         hooks.session_start();
     }

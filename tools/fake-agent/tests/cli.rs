@@ -220,6 +220,32 @@ fn a_usage_credits_refusal_is_written_as_either_claude_code_version_does() -> Te
     assert_eq!(again[7]["subtype"], "informational");
     assert_eq!(again[8]["subtype"], "turn_duration");
     assert_ne!(again[8]["uuid"], again[4]["uuid"]);
+
+    // `--limit-after 0`: out of credits from the first message on, which gets no answer.
+    let path = dir.path().join("projects/x/s-start.jsonl");
+    let path_text = path.to_string_lossy().into_owned();
+    let output = run(
+        &[
+            "--session-id",
+            "s-start",
+            "--transcript",
+            &path_text,
+            "--limit-after",
+            "0",
+            "--credits-out",
+        ],
+        "one\n/exit\n",
+    )?;
+    let text = stdout(&output);
+    assert!(
+        text.contains("LIMIT REACHED") && !text.contains("ECHO: one"),
+        "{text}"
+    );
+    let start = read_jsonl(&path)?;
+    assert_eq!(start.len(), 4, "{start:?}");
+    assert_eq!(start[0]["message"]["content"], "one");
+    assert_eq!(start[1]["apiError"], "model_requires_usage_credits");
+    assert_eq!(start[3]["subtype"], "turn_duration");
     Ok(())
 }
 

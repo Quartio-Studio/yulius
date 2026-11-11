@@ -534,6 +534,101 @@ fn a_refused_move_at_a_usage_credits_limit_still_asks_a_person() -> TestResult {
     Ok(())
 }
 
+/// How often `action` was audited for `id`.
+async fn audited(app: &App, id: &TaskId, action: &str) -> usize {
+    app.deps
+        .store
+        .audit_details(id.as_str(), action, 10)
+        .await
+        .map_or(0, |entries| entries.len())
+}
+
+/// SPEC-464 UCL-010: a model's limit nothing says the end of (Claude Code 2.1.311's record, or
+/// credits switched off) with no other subscription to go to. The task waits, and a provider's
+/// reading, which ends such a limit, lets the pool try it once. Refused again the same way, it
+/// is not tried a second time: the session stays at the refusal and a person is asked, and
+/// further readings start nothing. One blind retry, never a loop of restarts nobody hears of.
+#[test]
+fn a_limit_nothing_says_the_end_of_is_retried_once_then_asks_a_person() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        // Refused from the first message of every run, never saying when it ends.
+        let agent = FakeAgentOptions {
+            limit_after: Some(0),
+            ..refused_for_credits(None)
+        };
+        let app = build_with(&data, &fake, probe.clone(), agent)?;
+        let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
+        let id = new_task(&app, &sandbox, &user, "No end").await?;
+        ready(&app, &id).await?;
+        app.send_input(&id, b"hello\r").await?;
+        wait_for("the pause", Duration::from_secs(30), || {
+            has_status(&app, &id, TaskStatus::WaitingCapacity)
+        })
+        .await?;
+        let pause = app.deps.store.open_pause(&id).await?.ok_or("pause")?;
+        assert_eq!(pause.kind, PauseKind::Limit);
+        needs_nobody(&app, &id).await?;
+        let (status, stored) = stored_usage(&app, "a-first").await?;
+        assert_eq!(stored["weekly_fable"]["used_percent"], 100.0, "{stored}");
+        assert!(stored["weekly_fable"]["resets_at"].is_null(), "{stored}");
+        assert_eq!(status, AccountStatus::Limited);
+
+        // A provider's reading ends the limit; the pool tries the task again, once.
+        probe.set("a-first", usage(10.0, 4 * HOUR, 30.0, 100));
+        refresh(&app, &user, "a-first").await?;
+        let (status, stored) = stored_usage(&app, "a-first").await?;
+        assert!(stored["weekly_fable"].is_null(), "{stored}");
+        assert_eq!(status, AccountStatus::Ok);
+        let _ = app.resume_round().await;
+        live_run(&app, &id, 2).await?;
+        needs_nobody(&app, &id).await?;
+
+        app.send_input(&id, b"again\r").await?;
+        wait_for("the request", Duration::from_secs(30), || async {
+            audited(&app, &id, "task.limit_without_end").await == 1
+        })
+        .await?;
+        let asked = app.deps.store.task_needs_you(&id).await?.ok_or("request")?;
+        assert!(
+            asked
+                .action
+                .starts_with("Run the task on another subscription or model"),
+            "{asked:?}"
+        );
+        assert!(
+            asked
+                .happened
+                .as_deref()
+                .is_some_and(|happened| happened.contains("did not say when the limit ends")),
+            "{asked:?}"
+        );
+        let task = app.deps.store.task(&id).await?.ok_or("task")?;
+        assert_eq!(task.status, TaskStatus::Running, "not paused again");
+        assert_eq!(task.activity, Some(Activity::NeedsAttention));
+        assert!(app.deps.store.open_pause(&id).await?.is_none());
+        assert_eq!(
+            pauses_audited(&app, &id).await,
+            0,
+            "one request, Yulius's own"
+        );
+
+        // Readings start nothing now: the task waits for its person.
+        refresh(&app, &user, "a-first").await?;
+        let _ = app.resume_round().await;
+        assert_eq!(run_accounts(&app, &id).await.len(), 2);
+        assert!(has_status(&app, &id, TaskStatus::Running).await);
+        assert_eq!(audited(&app, &id, "task.limit_without_end").await, 1);
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// The transcript of the one session under `data`, once its first turn is in it whole.
 fn session_transcript(data: &Path) -> Option<PathBuf> {
     let mut dirs = vec![data.to_path_buf()];
