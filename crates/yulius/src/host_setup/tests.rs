@@ -11,6 +11,8 @@ use super::{
     Run, UNIT_DROP_IN, UNIT_FILE, free_sub_range, passed, summary,
 };
 
+mod session_units;
+
 const DATA: &str = "/var/lib/yulius";
 const EXE: &str = "/usr/local/bin/yulius";
 const SERVICE_UID: u32 = 999;
@@ -480,6 +482,7 @@ impl Host for Fake {
             }
             ["systemctl", "daemon-reload"] => ok(""),
             ["systemctl", "enable", service] if service.ends_with(".service") => ok(""),
+            ["systemctl", "start", unit] if unit.ends_with("-sandboxes.service") => ok(""),
             ["systemctl", "start", service] if service.ends_with(".service") => {
                 self.service_active = true;
                 ok("")

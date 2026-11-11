@@ -29,9 +29,9 @@ const CONTROLLERS: [&str; 3] = ["cpu", "memory", "pids"];
 /// Processes moved out of the unit's root at most (a bound for a pathological unit).
 const MAX_MOVED: usize = 4096;
 /// The leaf of processes found in the unit's root.
-const LEGACY_LEAF: &str = "legacy";
+pub(crate) const LEGACY_LEAF: &str = "legacy";
 /// The parent of sandbox groups.
-const SANDBOXES: &str = "sandboxes";
+pub(crate) const SANDBOXES: &str = "sandboxes";
 /// A sandbox's leaves and their `cpu.weight` (SPEC-053 CPU-201): CI gets four times the agents'
 /// share, so up to 80 % of the sandbox under full contention while the holder and the engine
 /// idle. The engine's group (SPEC-187 DKR-005) is the root of its cgroup namespace: containers
@@ -43,7 +43,7 @@ const LEAVES: [(&str, u32); 4] = [
     ("engine", 100),
 ];
 /// The engine's group, also without the `cpu` split.
-const ENGINE_LEAF: &str = "engine";
+pub(crate) const ENGINE_LEAF: &str = "engine";
 /// A sandbox group's `cpu.weight` while none of its CI jobs runs (the kernel's default).
 const BASE_WEIGHT: u32 = 100;
 /// What running CI jobs add to their sandbox group's weight (SPEC-362 CSW-002): what the `ci`

@@ -10,6 +10,7 @@
 //! nothing and says what setup would change. The last line is the "sandbox Docker" verdict
 //! (`yulius_sandbox::docker_status`), the doctor's words.
 
+pub mod session_units;
 pub mod system;
 #[cfg(test)]
 mod tests;
@@ -199,17 +200,23 @@ pub const NEEDRESTART_RULE_FILE: &str = "/etc/needrestart/conf.d/yulius.conf";
 /// class) is escaped: it matches the name literally whatever `service_name_ok` accepts (#678).
 #[must_use]
 pub fn needrestart_rule(service: &str) -> String {
-    let pattern: String = service
-        .chars()
-        .flat_map(|c| match c {
-            c if c.is_ascii_alphanumeric() || matches!(c, '_' | '-') => vec![c],
-            c => vec!['\\', c],
-        })
-        .collect();
+    let pattern = |unit: &str| -> String {
+        unit.chars()
+            .flat_map(|c| match c {
+                c if c.is_ascii_alphanumeric() || matches!(c, '_' | '-') => vec![c],
+                c => vec!['\\', c],
+            })
+            .collect()
+    };
+    // Its sessions unit too (SPEC-458 LAY-006): a restart of that one ends every session.
+    let sessions = yulius_sandbox::units::sessions_unit(service)
+        .map(|unit| format!("$nrconf{{override_rc}}{{qr(^{}$)}} = 0;\n", pattern(&unit)))
+        .unwrap_or_default();
     format!(
         "# Written by `yulius host setup`: package installs never restart Yulius behind the \
          operator's\n# back. Its update flow pauses tasks before a restart (docs/operations.md, \
-         \"Upgrades\").\n$nrconf{{override_rc}}{{qr(^{pattern}$)}} = 0;\n"
+         \"Upgrades\").\n$nrconf{{override_rc}}{{qr(^{}$)}} = 0;\n{sessions}",
+        pattern(service)
     )
 }
 
@@ -469,6 +476,7 @@ impl<'a> Run<'a> {
         self.service_user();
         self.subordinate_ids();
         self.service_unit();
+        self.session_units();
         self.helper_unit();
         self.binary();
         self.base();

@@ -18,6 +18,7 @@
 //! Namespaces, mounts and `setns` are Linux-only; elsewhere the functions that need them
 //! return errors and the server keeps the previous containment.
 
+pub mod adopt;
 pub mod base;
 pub mod cgroup;
 pub mod docker_bind;
