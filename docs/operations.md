@@ -1223,7 +1223,9 @@ and ends with exit 0 when nothing failed, 1 when a step failed and 2 when it was
 anything changed. Run the same command again to continue a move that stopped: every step finds out
 what is already done. The new host needs only SSH for root and the same architecture; it must not
 hold a Yulius instance. One run at a time (a lock in the state directory); a unit that is already
-frozen (an earlier run that was killed, an export in progress) is refused until it is thawed.
+frozen (an earlier run that was killed, an export in progress) is refused until it is thawed, and
+so is a unit that does not run: start it first, so the move can freeze everything it runs (an
+instance that cannot start is copied with `yulius instance export`, below).
 `--public-url` is `https://host` without a port.
 
 **Plan** (nothing is changed but the flow's own files in `/var/lib/yulius-migrate` on both hosts,
@@ -1290,8 +1292,10 @@ the tasks that were live (its first start puts them back in the queue, whoever o
 person had paused or was stopping stay stopped), and replaces what the old host's Caddy site
 proxied to Yulius by a temporary redirect (307) to the same path at the new URL, with the header
 `X-Yulius-Moved-To`; the site keeps its name and TLS settings, and other sites in the file stay.
-It then removes its key from the new host, enables ufw there (allowing the SSH port the move
-used first), deletes the key on the old host and lists what is left for people: the GitHub App and the DNS record if still
+It then removes its key from the new host, enables ufw there with the old host's rules (first
+admitting the old host itself on the SSH port the move used; make sure the carried rules let
+you in on the new host's SSH port), deletes the key on the old host and lists what is left for
+people: the GitHub App and the DNS record if still
 open, `yulius remote login <new URL>` and `claude mcp add` for laptops, and that the old host
 still holds a frozen copy with `master.key` and every secret.
 
@@ -1300,7 +1304,7 @@ instance (through the key while the move is not finished; afterwards the key is 
 there first with `systemctl disable --now yulius.service`; the abort refuses while the new URL
 still answers and otherwise asks you to confirm that it is stopped, `--yes` answers for you), puts
 the old proxy configuration back, thaws and enables the old unit and removes the key and the
-state.
+state. The copy on the new host, with `master.key` and every secret, stays there until you remove it.
 It never leaves both running. Work done on the new host after the move is not copied back.
 
 A run that hangs after the start was ordered ignores Ctrl-C on purpose (it must not thaw the old

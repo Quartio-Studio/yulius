@@ -587,10 +587,12 @@ fn disk(host: &mut dyn Host, setup: &Setup, disks: &[String], l: &mut Lines) {
     };
     let mirrored = array.ok();
     if mirrored && labelled.is_none() {
-        // Only the array a cut run made of exactly these disks, still without a filesystem.
-        let ours = disks.iter().all(|d| array.stdout.contains(d.as_str()));
-        let kind = sh(host, &["blkid", "-o", "value", "-s", "TYPE", MIRROR]);
-        if !ours || !kind.stdout.trim().is_empty() {
+        // Only the array a cut run made of exactly these disks, with nothing on it yet
+        // (`wipefs` lists every signature; it must run and find none).
+        let members: Vec<&str> = array.stdout.split_whitespace().collect();
+        let ours = disks.iter().all(|d| members.contains(&d.as_str()));
+        let found = sh(host, &["wipefs", "--no-act", MIRROR]);
+        if !ours || !found.ok() || !found.stdout.trim().is_empty() {
             return l.failed(
                 ITEM,
                 format!(
@@ -1419,10 +1421,7 @@ fn start(
         // stops what is started here.
         let _switch = (env.hold)(Hold::Switch);
         if host.is_file(Path::new(STOPPED)) {
-            l.failed(
-                ITEM,
-                "not started: the move stopped this copy meanwhile (the old instance runs again)",
-            );
+            l.failed(ITEM, "not started: the move stopped this copy meanwhile");
             return false;
         }
         // Units carried as files (the helper's, a drop-in) are known only after a reload.
@@ -1731,16 +1730,22 @@ pub fn handle(host: &mut dyn Host, env: &mut Env<'_>, request: &Request) -> Repl
     reply
 }
 
-/// The real [`Env::hold`]: `flock` on files in the state directory. A lock that cannot be
-/// taken (no state directory) holds nothing: the steps then run as before.
+/// The real [`Env::hold`]: [`hold_in`] the state directory.
 fn real_hold(hold: Hold) -> Box<dyn std::any::Any> {
+    hold_in(Path::new(STATE_DIR), hold, FLIGHT_WAIT)
+}
+
+/// Takes `hold` with `flock` on files in `dir`; it is released when the returned value is
+/// dropped. [`Hold::Landed`] waits at most `landing` for a Start in flight and holds nothing.
+/// A lock that cannot be taken (no such directory) holds nothing: the steps then run as before.
+pub fn hold_in(dir: &Path, hold: Hold, landing: Duration) -> Box<dyn std::any::Any> {
     use rustix::fs::{FlockOperation, flock};
     let open = |name: &str| {
         std::fs::OpenOptions::new()
             .create(true)
             .truncate(false)
             .write(true)
-            .open(Path::new(STATE_DIR).join(name))
+            .open(dir.join(name))
             .ok()
     };
     match hold {
@@ -1753,11 +1758,11 @@ fn real_hold(hold: Hold) -> Box<dyn std::any::Any> {
         }
         Hold::Landed => {
             if let Some(file) = open(HOLD_FILES[0]) {
-                let deadline = std::time::Instant::now() + FLIGHT_WAIT;
+                let deadline = std::time::Instant::now() + landing;
                 while flock(&file, FlockOperation::NonBlockingLockShared).is_err()
                     && std::time::Instant::now() < deadline
                 {
-                    std::thread::sleep(Duration::from_secs(1));
+                    std::thread::sleep(Duration::from_millis(200));
                 }
             }
             Box::new(())

@@ -28,6 +28,8 @@ pub struct FakeHost {
     pub read_only: BTreeSet<PathBuf>,
     /// Asked before the rules: answers a command from the host's state, or leaves it to them.
     pub script: Option<Script>,
+    /// Every command also goes here, in order with what else a test notes there.
+    pub trace: Option<std::rc::Rc<std::cell::RefCell<Vec<String>>>>,
 }
 
 impl FakeHost {
@@ -154,6 +156,9 @@ impl Host for FakeHost {
 
     fn run(&mut self, cmd: &Cmd) -> Result<Out, String> {
         self.log.push(cmd.argv.join(" "));
+        if let Some(trace) = &self.trace {
+            trace.borrow_mut().push(cmd.argv.join(" "));
+        }
         // `rm` removes what it names, so a step's cleanup shows in the host's files.
         if cmd.argv[0] == "rm" {
             for gone in cmd.argv.iter().filter(|a| a.starts_with('/')) {

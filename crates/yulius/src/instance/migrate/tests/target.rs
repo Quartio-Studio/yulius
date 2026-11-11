@@ -1227,20 +1227,32 @@ fn a_request_travels_as_tagged_json() -> Result<(), serde_json::Error> {
 
 #[test]
 fn an_array_that_is_not_the_moves_own_is_never_formatted() {
-    // Of other disks, or already holding a filesystem.
-    for (detail, kind) in [
-        ("/dev/md/yulius:\n 0 /dev/sdx\n 1 /dev/sdy\n", ""),
+    let ours =
+        "/dev/md/yulius:\n 0 259 0 active sync /dev/nvme0n1\n 1 259 1 active sync /dev/nvme1n1\n";
+    // Of other disks (a longer name is another disk), or with something on it, or one that
+    // cannot be looked at.
+    for (detail, wipefs, code) in [
+        ("/dev/md/yulius:\n 0 /dev/sdx\n 1 /dev/sdy\n", "", 0),
         (
-            "/dev/md/yulius:\n 0 /dev/nvme0n1\n 1 /dev/nvme1n1\n",
-            "xfs\n",
+            "/dev/md/yulius:\n 0 /dev/nvme0n1p1\n 1 /dev/nvme1n1\n",
+            "",
+            0,
         ),
+        (ours, "0x438 ext4 [filesystem]\n", 0),
+        (ours, "0x1fe dos [partition table]\n", 0),
+        (ours, "", 1),
     ] {
         let mut host = new_host();
         host.says(&["mdadm", "--detail", "/dev/md/yulius"], detail);
-        host.says(&["blkid", "-o", "value", "-s", "TYPE"], kind);
+        host.on(
+            &["wipefs", "--no-act", "/dev/md/yulius"],
+            code,
+            wipefs,
+            None,
+        );
         let reply = step(&mut host, &disk_request(&["/dev/nvme0n1", "/dev/nvme1n1"]));
         let (outcome, why) = only(&reply);
-        assert_eq!(outcome, HostOutcome::Failed, "{why}");
+        assert_eq!(outcome, HostOutcome::Failed, "{detail:?} {wipefs:?}: {why}");
         assert!(
             why.contains("is not an empty mirror") && !host.ran("mkfs"),
             "{why}"
@@ -1332,5 +1344,105 @@ fn an_installed_copy_is_marked_unproven_once() -> Result<(), Box<dyn std::error:
     assert!(dir.path().join(".yulius-import-incomplete").is_file());
     // Already there: something else is wrong, and it says so.
     assert!(mark_unproven(dir.path()).is_err());
+    Ok(())
+}
+
+/// What a hold's guard notes when it is taken and when it is dropped.
+struct Noted(Hold, std::rc::Rc<std::cell::RefCell<Vec<String>>>);
+
+impl Drop for Noted {
+    fn drop(&mut self) {
+        self.1.borrow_mut().push(format!("drop {:?}", self.0));
+    }
+}
+
+#[test]
+fn the_unit_is_started_while_a_stop_is_excluded() {
+    let trace = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let mut host = new_host();
+    host.trace = Some(std::rc::Rc::clone(&trace));
+    let noted = std::rc::Rc::clone(&trace);
+    let mut env = Env {
+        address: None,
+        ssh_port: None,
+        peer: None,
+        hold: &mut |hold| {
+            noted.borrow_mut().push(format!("hold {hold:?}"));
+            Box::new(Noted(hold, std::rc::Rc::clone(&noted)))
+        },
+        health: &mut |_| Some(BUILD.into()),
+        sleep: &mut |_| {},
+        count: &mut |_, old| Ok(old.clone()),
+        setup: &mut |_, _, _| Vec::new(),
+    };
+    assert!(handle(&mut host, &mut env, &start_request()).started);
+    let said = trace.borrow();
+    let at = |what: &str| {
+        said.iter()
+            .position(|line| line == what)
+            .unwrap_or_else(|| panic!("no {what}: {said:?}"))
+    };
+    // The whole Start is one flight; the look at the stop mark's place and the start itself
+    // are inside the switch, and the health wait is not.
+    assert!(at("hold Flight") < at("hold Switch"));
+    assert!(at("hold Switch") < at("systemctl daemon-reload"));
+    assert!(at("systemctl start yulius.service") < at("drop Switch"));
+    assert!(at("drop Switch") < at("systemctl enable --now yulius-update.path"));
+    assert_eq!(said.last().map(String::as_str), Some("drop Flight"));
+}
+
+/// The real holds: `flock` on files of the state directory.
+#[test]
+fn holds_exclude_as_the_protocol_needs() -> Result<(), Box<dyn std::error::Error>> {
+    use std::sync::mpsc;
+    let dir = tempfile::tempdir()?;
+    let long = Duration::from_secs(30);
+    // A second Switch waits for the first.
+    let first = hold_in(dir.path(), Hold::Switch, long);
+    let (taken, heard) = mpsc::channel();
+    let path = dir.path().to_path_buf();
+    let second = std::thread::spawn(move || {
+        let held = hold_in(&path, Hold::Switch, long);
+        let _ = taken.send(());
+        drop(held);
+    });
+    assert!(
+        heard.recv_timeout(Duration::from_millis(300)).is_err(),
+        "a second Switch was taken while the first is held"
+    );
+    // A Flight is another lock: a Stop is not kept out for the whole of a Start.
+    drop(hold_in(dir.path(), Hold::Flight, long));
+    drop(first);
+    heard.recv_timeout(Duration::from_secs(10))?;
+    second.join().map_err(|_| "the second holder panicked")?;
+
+    // A look at the health waits for a Start in flight, and only so long.
+    let flight = hold_in(dir.path(), Hold::Flight, long);
+    let started = std::time::Instant::now();
+    drop(hold_in(
+        dir.path(),
+        Hold::Landed,
+        Duration::from_millis(400),
+    ));
+    assert!(
+        started.elapsed() >= Duration::from_millis(400),
+        "it did not wait"
+    );
+    let (landed, heard) = mpsc::channel();
+    let path = dir.path().to_path_buf();
+    let waiter = std::thread::spawn(move || {
+        drop(hold_in(&path, Hold::Landed, long));
+        let _ = landed.send(());
+    });
+    assert!(heard.recv_timeout(Duration::from_millis(300)).is_err());
+    drop(flight);
+    heard.recv_timeout(Duration::from_secs(10))?;
+    waiter.join().map_err(|_| "the waiter panicked")?;
+    // Nothing in flight: at once. No such directory: nothing held, nothing waited for.
+    let started = std::time::Instant::now();
+    drop(hold_in(dir.path(), Hold::Landed, long));
+    drop(hold_in(&dir.path().join("gone"), Hold::Switch, long));
+    drop(hold_in(&dir.path().join("gone"), Hold::Landed, long));
+    assert!(started.elapsed() < Duration::from_secs(5));
     Ok(())
 }

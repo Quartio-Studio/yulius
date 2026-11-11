@@ -94,7 +94,9 @@ Command and checklist
   instance's health without planning or copying again. A new instance that reports the build
   has taken over: what fails after that is reported, never rolled back; a start whose answer was
   lost is decided by asking the new host, and when it cannot be asked the old instance stays
-  frozen. One run at a time (a lock); a unit frozen before the move is refused.
+  frozen. One run at a time (a lock); a unit frozen before the move is refused, and so is a
+  unit that does not run (what it left running could not be frozen; moving an instance that
+  cannot start is not part of this change).
 
 Target
 

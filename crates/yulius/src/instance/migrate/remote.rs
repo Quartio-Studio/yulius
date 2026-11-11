@@ -266,8 +266,24 @@ impl Remote for Ssh {
         if !self.key_file().is_file() {
             return Err("there is no one-time key yet".into());
         }
-        let mut child = self.spawn(HELLO, Stdio::null(), Stdio::null())?;
-        ended("ssh", &mut child)
+        // Its words are kept: "Permission denied" (the key was removed there) is told from a
+        // host that cannot be reached.
+        let out = Command::new("ssh")
+            .args(self.args(true, HELLO))
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .output()
+            .map_err(|e| format!("cannot run ssh: {e}"))?;
+        if out.status.success() {
+            return Ok(());
+        }
+        let said = String::from_utf8_lossy(&out.stderr);
+        let last = said.lines().rev().find(|l| !l.trim().is_empty());
+        Err(format!(
+            "ssh ended with {}: {}",
+            out.status,
+            last.unwrap_or("it said nothing").trim()
+        ))
     }
 
     fn key(&mut self) -> Result<String, String> {

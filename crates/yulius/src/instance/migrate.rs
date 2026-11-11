@@ -102,12 +102,12 @@ pub struct State {
     pub finished: bool,
     /// The instance the move is of, for `--abort` without options.
     #[serde(default)]
-    pub instance: Option<Moved>,
+    pub instance: Option<Recorded>,
 }
 
 /// The instance a move is of.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Moved {
+pub struct Recorded {
     /// The data directory.
     pub data_dir: PathBuf,
     /// The server's unit.
@@ -179,6 +179,37 @@ impl State {
                 Ok(state)
             }
         }
+    }
+
+    /// Binds the move to the instance `opts` names, once. An abort is of the recorded
+    /// instance whatever options it is given; a run of another instance is refused.
+    ///
+    /// # Errors
+    /// The options name another instance than the move is of.
+    pub fn for_instance(&mut self, opts: &mut Options, abort: bool) -> Result<(), String> {
+        let named = Recorded {
+            data_dir: opts.data_dir.clone(),
+            service: opts.service.clone(),
+            update_service: opts.update_service.clone(),
+        };
+        match &self.instance {
+            None => self.instance = Some(named),
+            Some(of) if abort => {
+                opts.data_dir.clone_from(&of.data_dir);
+                opts.service.clone_from(&of.service);
+                opts.update_service.clone_from(&of.update_service);
+            }
+            Some(of) if *of != named => {
+                return Err(format!(
+                    "the move recorded here is of {} in {}: give the same --service, \
+                     --update-service and --data-dir, or `yulius instance migrate --abort`",
+                    of.service,
+                    of.data_dir.display()
+                ));
+            }
+            Some(_) => {}
+        }
+        Ok(())
     }
 
     /// Keeps the move.
@@ -329,15 +360,19 @@ impl<'a> Move<'a> {
     }
 
     fn push(&mut self, line: HostLine) {
-        // `host setup` runs in parts that repeat its first items: said once.
-        if matches!(line.outcome, HostOutcome::Ok | HostOutcome::Manual)
-            && self.lines.contains(&line)
-        {
-            return;
-        }
         self.world.show(&host_setup::format_line(&line));
         self.lines.push(line);
         self.save_status();
+    }
+
+    /// A line of the new host; `host setup` runs there in parts that repeat its first items,
+    /// which are said once.
+    fn push_once(&mut self, line: HostLine) {
+        let repeated = matches!(line.outcome, HostOutcome::Ok | HostOutcome::Manual)
+            && self.lines.contains(&line);
+        if !repeated {
+            self.push(line);
+        }
     }
 
     fn line(&mut self, name: &str, outcome: HostOutcome, detail: impl Into<String>) {
@@ -373,7 +408,7 @@ impl<'a> Move<'a> {
         };
         let stop = failed(&reply.lines);
         for line in reply.lines.clone() {
-            self.push(shown(line));
+            self.push_once(shown(line));
         }
         if stop { Err(Stop::Failed) } else { Ok(reply) }
     }
@@ -496,7 +531,31 @@ impl<'a> Move<'a> {
                 ),
             ));
         }
-        if matches!(self.state.cutover, Cutover::No | Cutover::RolledBack) && self.old_unit().1 {
+        let before = matches!(self.state.cutover, Cutover::No | Cutover::RolledBack);
+        match self.old_unit() {
+            Some((true, _)) => {}
+            // What a stopped unit left running cannot be frozen, and a unit that is stopped
+            // or stopping cannot be told from one stopped under the move.
+            Some((false, _)) if before => {
+                return Err(refuse(
+                    self,
+                    format!(
+                        "{0} is not running: start it (`systemctl start {0}`), so the move can \
+                         freeze everything it runs. An instance that cannot start is copied \
+                         with `yulius instance export` instead (docs/operations.md §7)",
+                        opts.service
+                    ),
+                ));
+            }
+            None if before => {
+                return Err(refuse(
+                    self,
+                    format!("systemd does not say what state {} is in", opts.service),
+                ));
+            }
+            _ => {}
+        }
+        if before && self.old_frozen() {
             return Err(refuse(
                 self,
                 format!(
@@ -906,7 +965,7 @@ impl<'a> Move<'a> {
                 "settings",
                 format!(
                     "carried as they are although they name the old host: {}. Edit them on \
-                     the new host before the cutover, or after it and restart",
+                     the new host after the move and restart the service there",
                     files.join(", ")
                 ),
             );
@@ -1190,32 +1249,37 @@ impl<'a> Move<'a> {
         proven.map(|_| ())
     }
 
-    /// What systemd says of the old unit: active, frozen.
-    fn old_unit(&mut self) -> (bool, bool) {
+    /// What systemd says of the old unit: active, frozen; `None` when it does not say.
+    fn old_unit(&mut self) -> Option<(bool, bool)> {
         let unit = self.opts.service.clone();
-        let said = self
+        let (code, said) = self
             .world
             .freezer()
             .systemctl(&["show", "--property=ActiveState,FreezerState", &unit])
-            .map(|(_, text)| text)
-            .unwrap_or_default();
-        let is = |line: &str| said.lines().any(|l| l.trim() == line);
-        (is("ActiveState=active"), is("FreezerState=frozen"))
+            .ok()?;
+        let value = |key: &str| {
+            said.lines()
+                .find_map(|l| l.trim().strip_prefix(key)?.strip_prefix('='))
+                .map(str::to_owned)
+        };
+        let (active, freezer) = (value("ActiveState")?, value("FreezerState")?);
+        (code == 0).then_some((active == "active", freezer == "frozen"))
+    }
+
+    /// Whether the old unit is known to be frozen. Not knowing is not frozen: nothing is
+    /// started on a guess.
+    fn old_frozen(&mut self) -> bool {
+        self.old_unit().is_some_and(|(_, frozen)| frozen)
     }
 
     /// Thaws the old unit, whoever froze it: after a cutover that did not happen the old
-    /// instance runs. A unit that was stopped before stays stopped.
+    /// instance runs.
     fn thaw(&mut self) {
         let unit = self.opts.service.clone();
-        let (active, frozen) = self.old_unit();
-        if !frozen {
-            let how = if active {
-                "runs"
-            } else {
-                "is stopped, as before"
-            };
-            return self.ok("old instance", format!("{unit} {how}; nothing to thaw"));
+        if self.old_unit() == Some((true, false)) {
+            return self.ok("old instance", format!("{unit} runs; nothing to thaw"));
         }
+        // Frozen, or systemd did not say: thawing a unit that runs changes nothing.
         match self.world.freezer().systemctl(&["thaw", &unit]) {
             Ok((0, _)) => self.changed("old instance", "thawed: it runs as before"),
             _ => {
@@ -1277,47 +1341,39 @@ impl<'a> Move<'a> {
         self.phase("Cutover");
         let unit = self.opts.service.clone();
         let mut held = self.freeze()?;
-        if self.old_unit().0 {
-            self.changed(
-                "old instance",
-                format!("{unit} is frozen: every Yulius process is paused until the new one runs"),
-            );
-        } else {
-            self.ok(
-                "old instance",
-                format!("{unit} is stopped and nothing of it runs: nothing to freeze"),
-            );
-        }
+        self.changed(
+            "old instance",
+            format!("{unit} is frozen: every Yulius process is paused until the new one runs"),
+        );
         let copied = self.copy(p, facts, &mut held);
         self.claim(held);
         if let Err(stop) = copied {
             self.thaw();
             return Err(stop);
         }
-        if !self.old_held() {
+        if !self.old_frozen() {
             self.fail(
                 "old instance",
-                format!("{unit} was thawed from outside during the copy: nothing is started"),
+                format!(
+                    "{unit} is no longer known to be frozen (thawed or stopped from outside \
+                     during the copy, or systemd does not answer): nothing is started"
+                ),
             );
             return Err(Stop::Failed);
+        }
+        // Recorded first: a run that dies from here on is taken up from its state, with the
+        // copy still unfinished on the new host until it is marked.
+        self.state.cutover = Cutover::Starting;
+        if let Err(stop) = self.save_state() {
+            self.thaw();
+            return Err(stop);
         }
         // Disabled before the start is ordered: while nobody knows whether the new instance
         // runs, a restart of this host must not start the old one beside it.
-        if !matches!(
+        let marked = if matches!(
             self.world.freezer().systemctl(&["disable", &unit]),
             Ok((0, _))
         ) {
-            self.fail(
-                "old instance",
-                format!("`systemctl disable {unit}` failed: nothing is started"),
-            );
-            self.thaw();
-            return Err(Stop::Failed);
-        }
-        // Recorded before the copy loses its unfinished mark: a run that dies in between
-        // finds a new host that refuses to start an unproven copy, and rolls back.
-        self.state.cutover = Cutover::Starting;
-        let marked = self.save_state().and_then(|()| {
             self.call(
                 "move mark",
                 &Request::Mark {
@@ -1327,7 +1383,12 @@ impl<'a> Move<'a> {
                 },
             )
             .map(|_| ())
-        });
+        } else {
+            Err(self.fail(
+                "old instance",
+                format!("`systemctl disable {unit}` failed: nothing is started"),
+            ))
+        };
         if let Err(stop) = marked {
             self.state.cutover = Cutover::No;
             let _ = self.save_state();
@@ -1336,12 +1397,6 @@ impl<'a> Move<'a> {
             return Err(stop);
         }
         self.start(p)
-    }
-
-    /// Whether the old instance cannot run: frozen, or stopped with nothing of it running.
-    fn old_held(&mut self) -> bool {
-        let (active, frozen) = self.old_unit();
-        frozen || !active
     }
 
     /// The old unit starts again with its host: the move did not happen.
@@ -1365,7 +1420,7 @@ impl<'a> Move<'a> {
         let started = match self.remote.call(&self.start_request(p)) {
             Ok(reply) => {
                 for line in reply.lines {
-                    self.push(shown(line));
+                    self.push_once(shown(line));
                 }
                 reply.started
             }
@@ -1408,12 +1463,10 @@ impl<'a> Move<'a> {
             self.world.freezer().systemctl(&["disable", &unit]),
             Ok((0, _))
         );
-        let (active, _) = self.old_unit();
-        if disabled && self.old_held() {
-            let how = if active { "frozen" } else { "stopped" };
+        if disabled && self.old_frozen() {
             self.changed(
                 "old instance",
-                format!("{unit} stays {how} and is disabled: it never runs beside the new one"),
+                format!("{unit} stays frozen and is disabled: it never runs beside the new one"),
             );
         } else {
             self.fail(
@@ -1467,8 +1520,20 @@ impl<'a> Move<'a> {
     /// A run that ended after it ordered the start: the new instance's state decides.
     fn resume_start(&mut self, p: &Profile) -> Result<(), Stop> {
         self.phase("Cutover");
-        let held = self.freeze()?;
-        self.claim(held);
+        // The start was ordered by an earlier run: nothing here may thaw, and a unit that is
+        // not frozen any more is a person's to look at before anything goes on.
+        if !self.old_frozen() {
+            let unit = self.opts.service.clone();
+            self.fail(
+                "old instance",
+                format!(
+                    "{unit} is not frozen although the new instance's start was ordered. If \
+                     the new instance runs, `systemctl freeze {unit}` and run the command \
+                     again; to go back, `yulius instance migrate --abort`"
+                ),
+            );
+            return Err(Stop::Failed);
+        }
         self.start(p)
     }
 
@@ -1529,7 +1594,13 @@ impl<'a> Move<'a> {
                 ),
             ),
         }
-        if self.remote.reachable().is_ok() {
+        // Skipped only when the key was removed there (an earlier run's finish): any other
+        // failure to reach the new host is said by the step itself.
+        let refused = self
+            .remote
+            .reachable()
+            .is_err_and(|why| why.contains("Permission denied"));
+        if !refused {
             self.call(
                 "tasks",
                 &Request::Tasks {
@@ -1623,7 +1694,10 @@ impl<'a> Move<'a> {
             // The key no longer signs in and the new instance answers: an earlier run's finish
             // was done there and only its answer was lost.
             Err(_)
-                if self.remote.reachable().is_err()
+                if self
+                    .remote
+                    .reachable()
+                    .is_err_and(|why| why.contains("Permission denied"))
                     && self.state.new_url.clone().is_some_and(|url| {
                         self.world.healthz(&format!("{url}/healthz"), None).is_ok()
                     }) =>
@@ -1692,6 +1766,9 @@ impl<'a> Move<'a> {
             {
                 return self.end_abort(false);
             }
+            // Stopped there: whatever fails from here on, the move is no longer "moved".
+            self.state.cutover = Cutover::RolledBack;
+            let _ = self.save_state();
         } else if started {
             let url = self.state.new_url.clone().unwrap_or_default();
             if self.world.healthz(&format!("{url}/healthz"), None).is_ok() {
@@ -1749,14 +1826,16 @@ impl<'a> Move<'a> {
             }
         }
         // Frozen: thawed. Stopped (the old host was restarted since): started.
-        let (active, frozen) = self.old_unit();
+        let state = self.old_unit();
         let mut systemd = self.world.freezer();
         let did = |out: Result<(i32, String), String>| matches!(out, Ok((0, _)));
-        let runs = if active {
-            (!frozen || did(systemd.systemctl(&["thaw", &unit])))
-                && did(systemd.systemctl(&["enable", &unit]))
-        } else {
-            did(systemd.systemctl(&["enable", "--now", &unit]))
+        let runs = match state {
+            Some((true, frozen)) => {
+                (!frozen || did(systemd.systemctl(&["thaw", &unit])))
+                    && did(systemd.systemctl(&["enable", &unit]))
+            }
+            Some((false, _)) => did(systemd.systemctl(&["enable", "--now", &unit])),
+            None => false,
         };
         if runs {
             self.changed(
@@ -1772,6 +1851,10 @@ impl<'a> Move<'a> {
                 ),
             );
         }
+        if failed(&self.lines) {
+            // Not back yet: the key stays, so the same abort can go on through it.
+            return self.end_abort(false);
+        }
         if reachable {
             let _ = self.call(
                 "one-time key",
@@ -1779,6 +1862,17 @@ impl<'a> Move<'a> {
                     key: self.state.key_comment(),
                     firewall: false,
                 },
+            );
+        }
+        if started {
+            self.manual(
+                "new host",
+                format!(
+                    "the copy in {} there still holds master.key and every secret: remove it \
+                     (and {} with it)",
+                    self.opts.data_dir.display(),
+                    target::STATE_DIR
+                ),
             );
         }
         self.remote.forget();
@@ -2071,24 +2165,12 @@ pub fn main(opts: &Options, action: Action) -> ExitCode {
         },
         (_, None) => return refused("name the new host"),
     };
-    // An abort is of the instance the move was of, whatever options it is given.
     let mut opts = opts.clone();
-    match (&state.instance, action) {
-        (Some(of), Action::Abort) => {
-            opts.data_dir.clone_from(&of.data_dir);
-            opts.service.clone_from(&of.service);
-            opts.update_service.clone_from(&of.update_service);
-        }
-        _ => {
-            state.instance = Some(Moved {
-                data_dir: opts.data_dir.clone(),
-                service: opts.service.clone(),
-                update_service: opts.update_service.clone(),
-            });
-            if let Err(why) = state.save(&opts.state_dir) {
-                return refused(&why);
-            }
-        }
+    if let Err(why) = state.for_instance(&mut opts, action == Action::Abort) {
+        return refused(&why);
+    }
+    if let Err(why) = state.save(&opts.state_dir) {
+        return refused(&why);
     }
     let opts = &opts;
     let mut ssh = remote::Ssh::new(
