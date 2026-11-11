@@ -4,6 +4,15 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-11
+
+- The CI test of the security job's independence no longer fails under load (SPEC-454, task #436,
+  #1079). `local_ci::the_security_job_and_the_others_never_cancel_each_other` queued two runs
+  whose held jobs competed for the fixture's three job slots, so it passed or failed by the order
+  in which they took them and by the fixture's 8 s job limit. Now the integration branch's run and
+  the pull request's first run pass before the test holds any job, the test asserts that, and its
+  jobs have a limit of an hour: only the test ends them. Nothing in the product changes.
+
 ## 2026-11-10
 
 - Text stays inside its box (SPEC-449, task #431, ADR-0290). A long URL, path or identifier

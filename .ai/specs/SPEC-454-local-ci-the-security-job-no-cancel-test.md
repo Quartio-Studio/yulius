@@ -119,3 +119,40 @@ it holds end only when the test releases them, and nothing else competes with th
   (one concern per pull request).
 - **No decision record.** Nothing in the product or in the project's rules changes; the choices
   above are local to one test and recorded here.
+
+## Evidence
+
+- **The command throughout:** `cargo nextest run -p yulius -E 'binary_id(yulius::main) &
+  test(=local_ci::the_security_job_and_the_others_never_cancel_each_other)'`, one run each time.
+- **Reproduced at dev `911e3127`** with probes that were never committed. Without any, the
+  unchanged test passed in 9.6 s, 1.3 s and 9.3 s: the 9 s runs are the branch-first order,
+  saved by the 8 s limit.
+  - R1 (no poll for 20 s after the first dispatch): failed after 80.7 s, `jobs never reached
+    [("security", "failed"), ("quality", "running"), ("e2e", "running")]`, with `quality` and
+    `e2e` in `error`, "timed out: ran 8 s, its time limit; it waited 8 s before it started".
+  - R1b (no poll for 12 s in the second phase): failed after 81.0 s, `jobs never reached
+    [("quality", "failed"), ("e2e", "cancelled"), ("security", "running")]`, with `security` in
+    `error`, "timed out: ran 8 s, its time limit".
+  - R2 (the mixed slot order, forced): failed after 60.7 s with the picture CI recorded:
+    `security` failed after waiting 8038 ms, `quality` "timed out: ran 8 s, its time limit"
+    with no wait, `e2e` "…; it waited 8 s before it started".
+  - R3 (only the limit raised, to 600 s): 2 of 4 runs failed after 60.7 s, the pull request's
+    jobs still queued behind the branch's held ones.
+- **Regression first** (`3273fbae`, the assertion alone): 6 of 6 runs at rest failed on it,
+  "another run holds job slots or was ended by its time limit": 4 with the branch's run in
+  `error` (after 8.8 s), 2 with it still `running` (after 0.8 s).
+- **With the fix** (`2e4b9244`):
+  - At rest: 20 of 20 passed, in 1.56 to 1.72 s.
+  - Under R2: 5 of 5 passed (3.0 s). Under R1 + R1b: 2 of 2 (33.3 s, 32 s of them the probes).
+    Under all three: 2 of 2 (33.8 s).
+  - Each half of the fix is needed (mutations, not committed). With the limit back at 8 s the
+    test under R1 + R1b failed after 81.0 s: `quality` and `e2e` "timed out: ran 8 s, its time
+    limit", with no wait. Without the runs going ahead it failed 4 of 4 times: 3 after 60.7 s
+    with the pull request's jobs behind the branch's, 1 on the assertion after 0.8 s.
+  - Under CPU load, pinned with busy loops to four CPUs (the fixture's capacity is the CPUs the
+    test sees): 10 of 10 passed with 32 loops (a pinned probe got 0.11 to 0.16 of a CPU; 7.9 to
+    9.2 s a run, five times the time at rest) and 5 of 5 with 120 loops (0.03 of a CPU; 29 to
+    33 s a run). No job ended in `error`. For scale: SPEC-441 records the unchanged test at 16
+    to 18 s alone after its gate hit the flake; here it took 9 s at rest.
+- **The neighbours.** `cargo nextest run -p yulius -E 'binary_id(yulius::main) &
+  test(/^local_ci::/)'`: 63 of 63 passed in 18.4 s.
