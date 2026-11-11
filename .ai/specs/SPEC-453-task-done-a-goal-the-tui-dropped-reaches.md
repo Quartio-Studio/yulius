@@ -77,8 +77,8 @@ task reads Your turn, instead of staying Working for good with the agent idle.
 ## Plan
 
 - [x] Reproduce the stuck Working under probe delays and find the wait that runs out
-- [ ] Spec with the root cause, the fix and its regression tests, and a progress comment on #1066
-- [ ] Regression tests that fail without the fix: a wiped verdict wait and a stale Stop copy
+- [x] Spec with the root cause, the fix and its regression tests, and a progress comment on #1066
+- [x] Regression tests that fail without the fix: a wiped verdict wait and a stale Stop copy
 - [ ] Fix: the transcript's prompt and the clean Stop take the turn order
 - [ ] Proof on the original test: the forced race and the phase loop pass with the fix
 - [ ] ADR, architecture, changes entry and the full gate
@@ -96,12 +96,12 @@ task reads Your turn, instead of staying Working for good with the agent idle.
 
 Two `race` pause points (test-support builds only; no-ops in production), keyed by the task id:
 `UserTurnChecked`, in the watcher right after a transcript prompt passed its last-Stop check, and
-`CleanStopLock`, at the start of `clean_stop`, before it remembers its time. The tests are end to
+`StopClean`, at the start of `clean_stop`, before it remembers its time. The tests are end to
 end in `task_done` (the real hook client, the fake agent's transcript, the real watcher), because
 the watcher has no entry of its own.
 
 - TPO-001: a goal task that reached Done gets a second goal typed (`/goal …`). Its turn's Stop is
-  parked at `CleanStopLock` until the watcher's prompt reached `UserTurnChecked`; the watcher then
+  parked at `StopClean` until the watcher's prompt reached `UserTurnChecked`; the watcher then
   gives the Stop 2 s to be answered (a test layer on the internal listener counts answered Stops)
   before it goes on. Without the fix the Stop is answered at once (its verdict wait open), the
   watcher clears the wait, and "met" leaves the task Working: the test times out waiting for Done.
@@ -111,7 +111,7 @@ the watcher has no entry of its own.
   points gives the same result.
 - TPO-002: a prompt task that reads Your turn gets a line typed whose prompt hook never reaches
   Yulius (the test layer answers it, as a hook client failing open would). Its Stop is parked at
-  `CleanStopLock`, after it read the task, until the watcher's prompt set Working; then it is
+  `StopClean`, after it read the task, until the watcher's prompt set Working; then it is
   released and must leave Your turn. Without the fix it settles from its copy and the task stays
   Working. (When the watcher happens to apply the prompt before the Stop reads the task, a few ms
   of each second, the Stop reads Working itself and the run proves nothing; it still passes.)
@@ -136,7 +136,7 @@ the watcher has no entry of its own.
   in `hook_event`. The lock is held across the watcher's own store writes only, never across a
   hold or a scope check.
 - **Two pause points, not sleeps.** The existing `StopTurnLock` sits before the Stop's first
-  lock, where the fix's first half alone would already order it; `CleanStopLock` also proves the
+  lock, where the fix's first half alone would already order it; `StopClean` also proves the
   stamp is under the lock.
 - **Not done here, pre-existing, noted on #1066:** `await_goal_verdict`'s 20 s expiry landing on
   the next turn's prompt (heals at the next work line); a failed Stop's `settle_unanswered_turn`

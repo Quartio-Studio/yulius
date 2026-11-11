@@ -86,6 +86,12 @@ pub enum Point {
     /// A prompt hook (SPEC-346) passed its turn-end check under the turn lock; it has not set
     /// Working yet. The path is the task id.
     PromptTurnChecked,
+    /// The transcript watcher (SPEC-453): a prompt it read passed its last-Stop check; nothing of
+    /// the new turn is set yet. The path is the task id.
+    UserTurnChecked,
+    /// A Stop hook (SPEC-453) found its turn ended cleanly; it has not remembered when or settled
+    /// the turn yet. The path is the task id.
+    StopClean,
     /// `validate_checkout` (SPEC-394): the checkout's root was resolved and the file's path
     /// worked out; the file is not opened yet. The path is the file's.
     CheckoutRead,

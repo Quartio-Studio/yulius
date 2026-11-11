@@ -129,6 +129,7 @@ async fn start_on(
         attach_late,
         sessions,
         None,
+        None,
     )
     .await
 }
@@ -145,9 +146,18 @@ struct LateHook {
     handled: tokio::sync::watch::Sender<bool>,
 }
 
+/// What a test sees and decides of the turn hooks at the internal listener (SPEC-453): each Stop
+/// Yulius answered (not held) is reported on `stop_answered`, and while `prompts_lost` is set a
+/// `UserPromptSubmit` never reaches Yulius: its client fails open, as on an unreachable server.
+#[derive(Clone)]
+struct TurnHooks {
+    stop_answered: std::sync::mpsc::Sender<()>,
+    prompts_lost: Arc<std::sync::atomic::AtomicBool>,
+}
+
 /// [`start_on`], and with `late_goal` the server sees a `/goal` prompt hook (a resumed session's
 /// typed goal) only after its hold, then handles it to its end, as a loaded host does once the
-/// hook client gave up waiting (SPEC-346).
+/// hook client gave up waiting (SPEC-346); with `turn_hooks` the test follows the turn hooks.
 #[allow(clippy::too_many_arguments)]
 async fn start_holding(
     data: &Path,
@@ -159,6 +169,7 @@ async fn start_holding(
     attach_late: bool,
     sessions: Option<u32>,
     late_goal: Option<LateHook>,
+    turn_hooks: Option<TurnHooks>,
 ) -> Result<(Arc<App>, u16), BoxError> {
     let socket = tokio::net::TcpSocket::new_v4()?;
     socket.set_reuseaddr(true)?;
@@ -277,8 +288,41 @@ async fn start_holding(
             }
         },
     );
+    let turn_followed = axum::middleware::from_fn(
+        move |request: axum::extract::Request, next: axum::middleware::Next| {
+            let turn_hooks = turn_hooks.clone();
+            async move {
+                use axum::response::IntoResponse as _;
+                let Some(turn) = turn_hooks else {
+                    return next.run(request).await;
+                };
+                let path = request.uri().path();
+                if path.ends_with("/UserPromptSubmit")
+                    && turn.prompts_lost.load(std::sync::atomic::Ordering::SeqCst)
+                {
+                    return axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response();
+                }
+                if !path.ends_with("/Stop") {
+                    return next.run(request).await;
+                }
+                // To its end even if its client hangs up.
+                let stop = tokio::spawn(async move {
+                    let response = next.run(request).await;
+                    // A held Stop (202) decided nothing about the turn.
+                    if response.status() == axum::http::StatusCode::OK {
+                        let _ = turn.stop_answered.send(());
+                    }
+                    response
+                });
+                stop.await.unwrap_or_else(|_| {
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR.into_response()
+                })
+            }
+        },
+    );
     let internal = yulius_server::internal_router(app.clone())
         .layer(goal_held)
+        .layer(turn_followed)
         .layer(session_start_answered)
         .into_make_service_with_connect_info::<SocketAddr>();
     tokio::spawn(async move { axum::serve(listener, internal).await });
@@ -1005,6 +1049,7 @@ fn a_goal_whose_prompt_hook_is_answered_late_is_done() -> TestResult {
             false,
             None,
             Some(late.clone()),
+            None,
         )
         .await?;
         let (sandbox, user) = seed(&app, &data).await?;
@@ -1021,6 +1066,168 @@ fn a_goal_whose_prompt_hook_is_answered_late_is_done() -> TestResult {
             "Done after the late prompt",
             Duration::from_secs(45),
             || async { activity(&app, &id).await == Some(Activity::Done) },
+        )
+        .await?;
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// [`start`] with the turn hooks followed: the receiver gets each Stop Yulius answered.
+async fn start_following(
+    data: &Path,
+    fake: &Path,
+) -> Result<(Arc<App>, TurnHooks, std::sync::mpsc::Receiver<()>), BoxError> {
+    let agent = FakeAgentOptions {
+        transcript: true,
+        hooks: true,
+        ..FakeAgentOptions::default()
+    };
+    let (stop_answered, answered) = std::sync::mpsc::channel();
+    let turn = TurnHooks {
+        stop_answered,
+        prompts_lost: Arc::default(),
+    };
+    let hooks = Some(turn.clone());
+    let (app, _) =
+        start_holding(data, fake, agent, 0, None, None, false, None, None, hooks).await?;
+    Ok((app, turn, answered))
+}
+
+/// SPEC-453 TPO-001 (#1066): a goal turn's Stop arrives while the transcript watcher is between
+/// its last-Stop check of that turn's prompt and the turn it starts for it: the Stop waits for
+/// the prompt, opens its verdict wait after it, and Claude Code's "met" makes the task Done.
+/// Before, the watcher cleared the verdict wait the Stop had just opened: "met" found no waited
+/// turn and the task stayed Working with the agent idle, as on a loaded host.
+#[test]
+fn a_goal_whose_stop_races_its_transcript_prompt_is_done() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
+        use yulius_app::race::{Point, on};
+        let (app, _, answered) = start_following(&data, &fake).await?;
+        let (sandbox, user) = seed(&app, &data).await?;
+        let id = goal_task(&app, &sandbox, &user, "Tidy the parser").await?;
+        // The launch goal is met: the watcher read its whole turn.
+        wait_for("the launch goal Done", Duration::from_secs(90), || async {
+            activity(&app, &id).await == Some(Activity::Done)
+        })
+        .await?;
+        let key = PathBuf::from(id.as_str());
+        let (checked_tx, checked) = std::sync::mpsc::channel();
+        // The next turn's Stop, about to settle, waits until the watcher's prompt passed its check.
+        let raced = Arc::new(AtomicBool::new(false));
+        let stop_raced = raced.clone();
+        on(Point::StopClean, &key, move || {
+            let checked =
+                tokio::task::block_in_place(|| checked.recv_timeout(Duration::from_secs(30)));
+            stop_raced.store(checked.is_ok(), SeqCst);
+        });
+        on(Point::UserTurnChecked, &key, move || {
+            // Stops of the turns before are not this turn's: its own cannot end before this.
+            while answered.try_recv().is_ok() {}
+            let _ = checked_tx.send(());
+            // The Stop goes on now; the watcher gives it time to end before the prompt does.
+            let _ = tokio::task::block_in_place(|| answered.recv_timeout(Duration::from_secs(2)));
+        });
+        app.send_input(&id, b"/goal Tidy the lexer too\r").await?;
+        // Its prompt hook was answered (Working) before the agent echoes it.
+        wait_for("the typed goal's turn", Duration::from_secs(30), || {
+            screen_contains(&app, &id, "ECHO: /goal Tidy the lexer too")
+        })
+        .await?;
+        wait_for("Done", Duration::from_secs(45), || async {
+            activity(&app, &id).await == Some(Activity::Done)
+        })
+        .await?;
+        assert!(
+            raced.load(SeqCst),
+            "the Stop came while the watcher's prompt was past its check"
+        );
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-453 TPO-002 (#1066): a turn Yulius knows only from the transcript (its prompt hook was
+/// lost) whose Stop read the task before the watcher's prompt set Working: the Stop settles the
+/// task as it is by then, Your turn. It used to settle from its copy, which already read Your
+/// turn, so it wrote nothing and the task stayed Working with the agent idle.
+#[test]
+fn a_stop_that_raced_its_transcript_prompt_settles_the_turn() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        use yulius_app::race::{Point, on};
+        let (app, turn, answered) = start_following(&data, &fake).await?;
+        let (sandbox, user) = seed(&app, &data).await?;
+        let id = app
+            .create_task_internal(NewTask {
+                sandbox: sandbox.clone(),
+                created_by: user.clone(),
+                prompt: "Make the header blue".into(),
+                harness: Harness::ClaudeCode,
+                title: Some("Blue header".into()),
+                workflow_id: None,
+                steps: Vec::new(),
+                model: None,
+                effort: None,
+                origin: TaskOrigin::Ui,
+                automation_run: None,
+                start: true,
+                mode: TaskMode::Prompt,
+                supertask: false,
+            })
+            .await?
+            .id;
+        wait_for("the run", Duration::from_secs(90), || {
+            screen_contains(&app, &id, "FAKE-AGENT READY")
+        })
+        .await?;
+        // An ordinary turn first: its hooks arrive and its Stop leaves Your turn.
+        app.send_input(&id, b"hello\r").await?;
+        wait_for("the first turn's Stop", Duration::from_secs(30), || async {
+            answered.try_recv().is_ok()
+        })
+        .await?;
+        wait_for("Your turn", Duration::from_secs(20), || async {
+            activity(&app, &id).await == Some(Activity::Waiting)
+        })
+        .await?;
+        // The next prompt hook is lost: only the transcript says a turn began.
+        turn.prompts_lost
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let key = PathBuf::from(id.as_str());
+        let (parked_tx, parked) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        // The turn's Stop read the task and is about to settle it: it waits for the test.
+        on(Point::StopClean, &key, move || {
+            let _ = parked_tx.send(());
+            let _ = tokio::task::block_in_place(|| released.recv_timeout(Duration::from_secs(30)));
+        });
+        app.send_input(&id, b"also rename the module\r").await?;
+        wait_for(
+            "the Stop about to settle",
+            Duration::from_secs(30),
+            || async { parked.try_recv().is_ok() },
+        )
+        .await?;
+        wait_for(
+            "the transcript's prompt",
+            Duration::from_secs(30),
+            || async { activity(&app, &id).await == Some(Activity::Working) },
+        )
+        .await?;
+        release.send(())?;
+        wait_for(
+            "Your turn after the Stop",
+            Duration::from_secs(20),
+            || async { activity(&app, &id).await == Some(Activity::Waiting) },
         )
         .await?;
         stop(&app, &id).await

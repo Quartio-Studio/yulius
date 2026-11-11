@@ -4180,6 +4180,10 @@ impl App {
                 if at.is_some_and(|at| at.0 <= runtime.last_stop_ms.load(Ordering::SeqCst)) {
                     return;
                 }
+                crate::race::reached(
+                    crate::race::Point::UserTurnChecked,
+                    Path::new(task_id.as_str()),
+                );
                 // A prompt reached the agent while its turn or prompt was held for capacity:
                 // the CLI gave the hold up (an interrupt, its own hook timeout), so the task
                 // runs again (F 2026-10-10: the task follows its session).

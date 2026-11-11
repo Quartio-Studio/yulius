@@ -579,6 +579,10 @@ impl App {
     /// hook that runs after this one, so the hook cannot wait for it).
     pub(crate) async fn clean_stop(self: &Arc<Self>, task: &TaskRecord) -> AppResult<()> {
         let runtime = self.runtime(&task.id);
+        crate::race::reached(
+            crate::race::Point::StopClean,
+            std::path::Path::new(task.id.as_str()),
+        );
         let stop_ms = self.now().0;
         runtime.last_stop_ms.store(stop_ms, Ordering::SeqCst);
         runtime.resumed_turn.store(false, Ordering::SeqCst);
