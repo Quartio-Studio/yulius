@@ -92,6 +92,7 @@ an older one.
 - [x] Independent review round 1 answered, every finding fixed with its test
 - [x] Independent review round 2 answered, every finding fixed with its test
 - [x] A session resumed with nothing typed names its Claude Code with its first record
+- [x] While a channel change is saved neither control of the channel takes another
 
 ## Acceptance criteria
 
@@ -343,6 +344,11 @@ an older one.
     built this change with task #452's branch on top: the harness, move-decision, wiring and
     `claude_`/`metrics_recount` tests of both pass there (the rest of the suite and the e2e
     suite were not run on that tree).
+  - *Seen on the real host and fixed in a pull request of its own (#1192).* While a channel
+    change was being saved the select was off and "Use the server's" was not: a second click
+    sent the request again and showed its toast twice (nothing else: the server finds the
+    channel as asked). Both controls are off until the answer is drawn, and the card is drawn
+    again after every save, whatever the answer says. The mock's `holdpost` holds a PUT too.
   - *The version is cut at 64 bytes where it is kept* (`UsageAccumulator::note_cli_version`).
     Task #452 answers the third review's finding that the stored version is whatever a
     transcript line holds (a line may be megabytes) by cutting it in the parser's prompt
@@ -459,6 +465,10 @@ an older one.
   810, and at the same line twice.
 - Seen failing first: `wiring::harness::tests::a_run_resumed_with_nothing_typed_names_its_claude_code_at_once`
   read `None` after the resumed run's first record.
+- #1192: e2e "while a channel change is being saved neither the select nor “Use the server’s”
+  takes another" failed first with `select off, button on`; with the fix `claude-code.e2e.ts`
+  passes (8), and with every file that holds a request or shows the Instance page 179 pass
+  (13 files).
 - After the merge, a real host (2026-11-11 21:07 to 21:18 UTC): an Ubuntu 26.04.1 guest (QEMU,
   kernel 7.0.0-38) with Node 22 and `npm install -g @anthropic-ai/claude-code@2.1.311`, the
   incident's host (`claude --version`: 2.1.311; its binary holds `claude-fable-5-2` 0 times
