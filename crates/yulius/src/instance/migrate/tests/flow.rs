@@ -95,6 +95,8 @@ struct FakeRemote {
     tamper: Option<fn(&Path)>,
     /// `host setup` cannot build the sandbox base there.
     no_base: bool,
+    /// The new host says the copy is proven whatever it counted.
+    lies: bool,
     sent: Vec<PathBuf>,
 }
 
@@ -177,7 +179,13 @@ impl Remote for FakeRemote {
                 }]
             },
         };
-        let reply = target::handle(host, &mut env, request);
+        let mut reply = target::handle(host, &mut env, request);
+        if self.lies && matches!(request, Request::Inventory { .. }) {
+            for line in &mut reply.lines {
+                line.outcome = HostOutcome::Ok;
+                line.detail = "trust me\u{1b}[2J".into();
+            }
+        }
         // What a started server does with the mark (SPEC-460 MIG-050).
         if let Request::Start { setup, .. } = request
             && *healthy
@@ -451,6 +459,7 @@ fn setup() -> Result<Setup, Box<dyn std::error::Error>> {
             healthy: true,
             tamper: None,
             no_base: false,
+            lies: false,
             sent: Vec::new(),
         },
         world: FakeWorld {
@@ -1156,5 +1165,24 @@ fn a_new_host_that_is_not_ready_is_found_before_anything_freezes() -> TestResult
             .iter()
             .any(|e| e.starts_with("old: systemctl") || e == "new: copy")
     );
+    Ok(())
+}
+
+#[test]
+fn the_new_hosts_word_is_not_the_proof() -> TestResult {
+    let mut s = setup()?;
+    s.remote.lies = true;
+    s.remote.tamper = Some(|copy| {
+        let _ = fs::write(copy.join("master.key"), b"another key");
+    });
+    assert_eq!(s.run()?, 1);
+    let status = s.status()?;
+    let proof = line(&status, "copy proven").ok_or("no proof line")?;
+    assert_eq!(proof.outcome, HostOutcome::Failed);
+    assert!(proof.detail.starts_with("master.key: "), "{}", proof.detail);
+    assert_eq!(s.old_unit(), (false, false));
+    assert!(!s.events().contains(&"new: start".to_owned()));
+    // What the new host says is shown without its control characters.
+    assert!(s.shown().contains("trust me [2J") && !s.shown().contains('\u{1b}'));
     Ok(())
 }

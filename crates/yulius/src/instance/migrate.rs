@@ -223,6 +223,14 @@ fn now_secs() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
+/// A line of the new host as the person's terminal may show it: no control characters.
+fn shown(mut line: HostLine) -> HostLine {
+    let plain = |text: &str| text.replace(|c: char| c.is_control(), " ");
+    line.name = plain(&line.name);
+    line.detail = plain(&line.detail);
+    line
+}
+
 fn failed(lines: &[HostLine]) -> bool {
     !host_setup::passed(lines)
 }
@@ -334,7 +342,7 @@ impl<'a> Move<'a> {
         };
         let stop = failed(&reply.lines);
         for line in reply.lines.clone() {
-            self.push(line);
+            self.push(shown(line));
         }
         if stop { Err(Stop::Failed) } else { Ok(reply) }
     }
@@ -1068,7 +1076,7 @@ impl<'a> Move<'a> {
         let reply = sent.map_err(|why| self.fail("copy", why))?;
         let stop = failed(&reply.lines);
         for line in reply.lines {
-            self.push(line);
+            self.push(shown(line));
         }
         if stop {
             return Err(Stop::Failed);
@@ -1081,10 +1089,22 @@ impl<'a> Move<'a> {
                 "copy proven",
                 &Request::Inventory {
                     manifest,
-                    old,
+                    old: old.clone(),
                     release: p.release.clone(),
                 },
             )
+            .and_then(|reply| {
+                // The new host's word is not the proof: its count is compared here.
+                match reply.inventory.as_ref() {
+                    Some(new) if *new == old => Ok(reply),
+                    Some(new) => Err(self.fail(
+                        "copy proven",
+                        super::inventory::difference(&old, new)
+                            .unwrap_or_else(|| "the new host's count is not this host's".into()),
+                    )),
+                    None => Err(self.fail("copy proven", "the new host sent no count of the copy")),
+                }
+            })
             .and_then(|_| {
                 self.call(
                     "move mark",

@@ -219,6 +219,7 @@ fn a_disk_that_is_not_blank_changes_nothing() {
         vec!["/dev/nope"],
         vec![],
         vec!["/dev/nvme0n1", "/dev/nvme1n1", "/dev/nvme1n1"],
+        vec!["/dev/nvme0n1", "/dev/nvme0n1"],
     ] {
         let mut host = new_host();
         let reply = step(&mut host, &disk_request(&disks));

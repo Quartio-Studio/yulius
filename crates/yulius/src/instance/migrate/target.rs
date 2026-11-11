@@ -539,8 +539,8 @@ fn disk(host: &mut dyn Host, setup: &Setup, disks: &[String], l: &mut Lines) {
         }
         return l.ok(ITEM, format!("{source} is mounted at {data}"));
     }
-    if !(1..=2).contains(&disks.len()) {
-        return l.failed(ITEM, "name one disk, or two for a mirror");
+    if !(1..=2).contains(&disks.len()) || disks.first() == disks.get(1) {
+        return l.failed(ITEM, "name one disk, or two different ones for a mirror");
     }
     let blank = list_blank(host);
     if let Some(taken) = disks.iter().find(|d| !blank.iter().any(|b| &b.path == *d)) {
