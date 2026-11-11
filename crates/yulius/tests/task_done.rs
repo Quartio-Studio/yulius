@@ -4534,6 +4534,60 @@ fn a_woken_turn_the_api_refuses_again_still_needs_you() -> TestResult {
     Ok(())
 }
 
+/// SPEC-469 GPW-006: the store refuses the write that ends the request (a trigger aborts it)
+/// when the agent's first work is read. Nothing is lost: the request stays, and the agent's
+/// next work ends it once the store takes the write.
+#[test]
+fn a_request_the_store_could_not_end_ends_at_the_agents_next_work() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let (wake, hold) = (data.join("wake"), data.join("hold-turn"));
+        let agent = FakeAgentOptions {
+            paused_wake_file: Some(wake.clone()),
+            turn_hold_file: Some(hold.clone()),
+            ..pausing_agent()
+        };
+        let (app, _) = start(&data, &fake, agent, 0).await?;
+        let id = paused_goal_task(&app, &data).await?;
+        let db = rusqlite::Connection::open(data.join("yulius.db"))?;
+        db.execute_batch(
+            "CREATE TRIGGER refuse_the_end BEFORE UPDATE OF needs_you ON tasks \
+             WHEN NEW.needs_you IS NULL \
+             BEGIN SELECT RAISE(ABORT, 'refused for the test'); END",
+        )?;
+        std::fs::write(&wake, "")?;
+        wait_for("the woken turn's work", Duration::from_secs(60), || {
+            screen_contains(&app, &id, "WOKEN")
+        })
+        .await?;
+        // The work line was written before the marker: two more rounds read it.
+        let runtime = app.runtime(&id);
+        let rounds = runtime.transcript_rounds();
+        wait_for("the work read", Duration::from_secs(20), || async {
+            runtime.transcript_rounds() >= rounds + 2
+        })
+        .await?;
+        assert!(
+            pause_asks(&app, &id).await,
+            "the store refused the write: the request stays"
+        );
+        db.execute_batch("DROP TRIGGER refuse_the_end")?;
+        // The answer is the agent's next work.
+        std::fs::write(&hold, "")?;
+        wait_for(
+            "the request to end at the agent's next work",
+            Duration::from_secs(30),
+            || async { !pause_asks(&app, &id).await },
+        )
+        .await?;
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// SPEC-469 GPW-003: the agent asked a person for something before Claude Code paused the goal
 /// (Yulius opens no second request). The session's work after the pause is no answer to the
 /// agent's question: its request stays, as SPEC-134 says.
