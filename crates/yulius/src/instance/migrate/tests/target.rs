@@ -25,6 +25,7 @@ pub fn setup() -> Setup {
 pub fn step(host: &mut FakeHost, request: &Request) -> Reply {
     let mut env = Env {
         address: Some(NEW_ADDRESS.into()),
+        ssh_port: Some(2222),
         health: &mut |_| Some(BUILD.into()),
         sleep: &mut |_| {},
         count: &mut |_, old| Ok(old.clone()),
@@ -118,12 +119,12 @@ fn disk_script(host: &mut FakeHost, argv: &[String]) -> Option<Out> {
             None
         }
         "findmnt" if host.is_file(std::path::Path::new("/mounted")) => said("/dev/md127\n"),
-        "blkid" => said("0a1b2c3d-1111-2222-3333-444455556666\n"),
+        "blkid" if argv[1] == "-s" => said("0a1b2c3d-1111-2222-3333-444455556666\n"),
         "mdadm" if argv[1] == "--version" && !host.ran("apt-get install -y mdadm") => Some(Out {
             code: 127,
             ..Out::default()
         }),
-        "mdadm" if argv[1] == "--detail" => {
+        "mdadm" if argv[1..] == ["--detail", "--scan"] => {
             said("ARRAY /dev/md/yulius metadata=1.2 UUID=aa:bb:cc:dd name=new:yulius\n")
         }
         _ => None,
@@ -158,10 +159,13 @@ fn two_blank_disks_become_a_mirror_at_the_data_directory() {
     assert_eq!(
         did,
         [
+            "blkid -L yulius-data",
+            "mdadm --detail /dev/md/yulius",
             "mdadm --version",
             "apt-get install -y mdadm",
             "mdadm --create /dev/md/yulius --run --level=1 --raid-devices=2 --metadata=1.2 \
              --name=yulius /dev/nvme0n1 /dev/nvme1n1",
+            "udevadm settle",
             "mkfs.ext4 -q -L yulius-data /dev/md/yulius",
             "blkid -s UUID -o value /dev/md/yulius",
             "write /etc/fstab",
@@ -225,7 +229,7 @@ fn a_disk_that_is_not_blank_changes_nothing() {
         let reply = step(&mut host, &disk_request(&disks));
         assert_eq!(only(&reply).0, HostOutcome::Failed, "{disks:?}");
         assert!(
-            !host.ran("mkfs") && !host.ran("mdadm") && !host.ran("write"),
+            !host.ran("mkfs") && !host.ran("mdadm --create") && !host.ran("write"),
             "{:?}",
             host.log
         );
@@ -779,6 +783,7 @@ fn an_equal_inventory_proves_the_copy_and_a_different_one_fails() {
 
     let mut env = Env {
         address: None,
+        ssh_port: None,
         health: &mut |_| None,
         sleep: &mut |_| {},
         count: &mut |_, _| Ok(inventory_of(6_388_082)),
@@ -847,6 +852,47 @@ fn the_copy_is_marked_for_its_first_start() {
     host.log.clear();
     assert_eq!(only(&step(&mut host, &request)).0, HostOutcome::Ok);
     assert!(host.log.is_empty());
+
+    // The copy of an instance that moved before carries that move's report, and it is still
+    // marked unfinished until this step: the report goes, the mark is written, the copy is
+    // proven.
+    let mut host = new_host();
+    host.file(
+        "/var/lib/yulius/moved.json",
+        r#"{"queued":7,"left":0,"failed":0}"#,
+    );
+    host.file("/var/lib/yulius/.yulius-import-incomplete", "");
+    assert_eq!(only(&step(&mut host, &request)).0, HostOutcome::Changed);
+    assert!(host.text("/var/lib/yulius/moved.json").is_none());
+    assert!(host.text("/var/lib/yulius/move-pending.json").is_some());
+    assert!(
+        host.text("/var/lib/yulius/.yulius-import-incomplete")
+            .is_none()
+    );
+}
+
+#[test]
+fn health_says_whether_the_instance_reports_the_build() {
+    let request = |build: &str| Request::Health {
+        build: Some(build.into()),
+        health: "127.0.0.1:8081".into(),
+    };
+    let mut host = new_host();
+    let reply = step(&mut host, &request(BUILD));
+    assert!(reply.started && reply.lines.is_empty());
+    assert!(!step(&mut host, &request(&"f".repeat(40))).started);
+}
+
+#[test]
+fn a_copy_that_is_not_proven_is_never_started() {
+    let mut host = new_host();
+    host.file("/var/lib/yulius/.yulius-import-incomplete", "");
+    let reply = step(&mut host, &start_request());
+    assert!(!reply.started);
+    let (outcome, detail) = only(&reply);
+    assert_eq!(outcome, HostOutcome::Failed);
+    assert!(detail.contains("not proven"), "{detail}");
+    assert!(!host.ran("systemctl"));
 }
 
 fn start_request() -> Request {
@@ -865,6 +911,7 @@ fn a_started_instance_must_report_the_old_hosts_build() {
     let mut slept = Duration::ZERO;
     let mut env = Env {
         address: None,
+        ssh_port: None,
         health: &mut |address| {
             assert_eq!(address, "127.0.0.1:8081");
             asked += 1;
@@ -885,6 +932,7 @@ fn a_started_instance_must_report_the_old_hosts_build() {
         names,
         ["BeforeStart", "new instance", "update helper", "AfterStart"]
     );
+    assert!(reply.started);
     assert_eq!(reply.lines[1].outcome, HostOutcome::Changed);
     assert!(reply.lines[1].detail.ends_with("runs build 0123456"));
     assert_eq!(slept, Duration::from_secs(2));
@@ -905,6 +953,7 @@ fn an_instance_that_never_reports_fails_and_a_host_not_ready_is_not_started() {
     let mut slept = Duration::ZERO;
     let mut env = Env {
         address: None,
+        ssh_port: None,
         health: &mut |_| None,
         sleep: &mut |d| slept += d,
         count: &mut |_, old| Ok(old.clone()),
@@ -913,12 +962,14 @@ fn an_instance_that_never_reports_fails_and_a_host_not_ready_is_not_started() {
     let reply = handle(&mut host, &mut env, &start_request());
     let last = reply.lines.last().map(|l| (l.name.as_str(), l.outcome));
     assert_eq!(last, Some(("new instance", HostOutcome::Failed)));
+    assert!(!reply.started);
     assert_eq!(slept, Duration::from_secs(120));
     assert!(!host.ran("systemctl enable --now yulius-update.path"));
 
     let mut host = new_host();
     let mut env = Env {
         address: None,
+        ssh_port: None,
         health: &mut |_| Some(BUILD.into()),
         sleep: &mut |_| {},
         count: &mut |_, old| Ok(old.clone()),
@@ -927,7 +978,18 @@ fn an_instance_that_never_reports_fails_and_a_host_not_ready_is_not_started() {
     let reply = handle(&mut host, &mut env, &start_request());
     assert_eq!(reply.lines.len(), 2);
     assert_eq!(reply.lines[1].outcome, HostOutcome::Failed);
-    assert!(!host.ran("systemctl"));
+    assert!(!host.ran("systemctl") && !reply.started);
+
+    // It reports the build, then something after that fails: it has started all the same.
+    let mut host = new_host();
+    host.fails(
+        &["systemctl", "enable", "--now", "yulius-update.path"],
+        "Unit not found",
+    );
+    let reply = step(&mut host, &start_request());
+    assert!(reply.started);
+    let helper = reply.lines.iter().find(|l| l.name == "update helper");
+    assert_eq!(helper.map(|l| l.outcome), Some(HostOutcome::Failed));
 }
 
 #[test]
@@ -941,12 +1003,91 @@ fn stopping_leaves_nothing_of_the_copy_running() {
     );
     assert_eq!(only(&reply).0, HostOutcome::Changed);
     assert_eq!(
-        host.runs("systemctl"),
+        host.runs("systemctl")[..2],
         [
             "systemctl disable --now yulius.service",
             "systemctl kill --kill-whom=all --signal=SIGKILL yulius.service",
         ]
     );
+
+    // An older systemd knows the option by its earlier name.
+    let mut host = new_host();
+    host.fails(
+        &["systemctl", "kill", "--kill-whom=all"],
+        "unrecognized option",
+    );
+    let reply = step(
+        &mut host,
+        &Request::Stop {
+            service: "yulius.service".into(),
+        },
+    );
+    assert_eq!(only(&reply).0, HostOutcome::Changed);
+    assert!(host.ran("systemctl kill --kill-who=all --signal=SIGKILL yulius.service"));
+
+    // Processes that outlive the kill: not stopped, said so after a bounded wait.
+    let mut host = new_host();
+    host.says(
+        &["systemctl", "show", "--property=ControlGroup"],
+        "/system.slice/yulius.service\n",
+    );
+    host.file(
+        "/sys/fs/cgroup/system.slice/yulius.service/cgroup.procs",
+        "4242\n",
+    );
+    let mut slept = 0;
+    let mut env = Env {
+        address: None,
+        ssh_port: None,
+        health: &mut |_| None,
+        sleep: &mut |_| slept += 1,
+        count: &mut |_, old| Ok(old.clone()),
+        setup: &mut |_, _, _| Vec::new(),
+    };
+    let reply = handle(
+        &mut host,
+        &mut env,
+        &Request::Stop {
+            service: "yulius.service".into(),
+        },
+    );
+    let (outcome, detail) = only(&reply);
+    assert_eq!(outcome, HostOutcome::Failed);
+    assert!(
+        detail.contains("still run") && slept == 15,
+        "{detail} after {slept}"
+    );
+}
+
+#[test]
+fn a_disk_step_that_was_cut_is_taken_up_where_it_stopped() {
+    // The array was made, the filesystem was not: no second create, and its members are not
+    // refused for no longer being blank.
+    let mut host = new_host();
+    host.script = Some(disk_script);
+    host.says(
+        &["mdadm", "--detail", "/dev/md/yulius"],
+        "/dev/md/yulius: raid1\n",
+    );
+    host.says(&["lsblk"], r#"{"blockdevices":[]}"#);
+    let reply = step(&mut host, &disk_request(&["/dev/nvme0n1", "/dev/nvme1n1"]));
+    assert_eq!(only(&reply).0, HostOutcome::Changed, "{:?}", reply.lines);
+    assert!(!host.ran("mdadm --create") && host.ran("mkfs.ext4 -q -L yulius-data /dev/md/yulius"));
+
+    // The filesystem was made, the mount was not: nothing is formatted again, and the fstab
+    // line is written once.
+    let mut host = new_host();
+    host.script = Some(disk_script);
+    host.says(&["blkid", "-L", "yulius-data"], "/dev/md127\n");
+    host.says(&["lsblk"], r#"{"blockdevices":[]}"#);
+    host.file(
+        "/etc/fstab",
+        "UUID=0a1b2c3d-1111-2222-3333-444455556666 /var/lib/yulius ext4 defaults,nofail 0 2\n",
+    );
+    let reply = step(&mut host, &disk_request(&["/dev/nvme0n1", "/dev/nvme1n1"]));
+    assert_eq!(only(&reply).0, HostOutcome::Changed, "{:?}", reply.lines);
+    assert!(!host.ran("mkfs") && !host.ran("mdadm --create") && !host.ran("write /etc/fstab"));
+    assert!(host.ran("mount -- /var/lib/yulius"));
 }
 
 #[test]
@@ -980,6 +1121,7 @@ fn the_first_starts_report_on_the_tasks_is_read() {
     let mut slept = 0;
     let mut env = Env {
         address: None,
+        ssh_port: None,
         health: &mut |_| None,
         sleep: &mut |_| slept += 1,
         count: &mut |_, old| Ok(old.clone()),
@@ -1020,7 +1162,9 @@ fn finishing_removes_the_key_and_the_flows_files_and_enables_the_firewall() {
         host.text("/root/.ssh/authorized_keys"),
         Some("ssh-ed25519 AAAA1 admin@laptop\nssh-rsa AAAA3 backup\n")
     );
-    assert!(host.ran("ufw --force enable"));
+    // The port the move came in at is allowed before the old host's rules take effect.
+    let ufw = host.runs("ufw");
+    assert_eq!(ufw, ["ufw allow 2222/tcp", "ufw --force enable"]);
     assert!(host.ran("rm -rf -- /var/lib/yulius-migrate"));
 
     // Again, without a firewall: nothing to remove, nothing enabled.

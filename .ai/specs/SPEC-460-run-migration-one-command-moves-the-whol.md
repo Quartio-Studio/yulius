@@ -90,8 +90,11 @@ Command and checklist
   one is thawed, and the checklist says that the copy on the target was started and must be
   removed before another run. Only when the new instance is healthy does the old one stay frozen
   and disabled. Once the start was ordered no signal thaws the old instance; a run that ends
-  there (killed) leaves it frozen, and the next run decides from the new instance's health
-  without planning or copying again. A failed cutover thaws the unit whoever froze it.
+  there (killed, a lost terminal) leaves it frozen, and the next run decides from the new
+  instance's health without planning or copying again. A new instance that reports the build
+  has taken over: what fails after that is reported, never rolled back; a start whose answer was
+  lost is decided by asking the new host, and when it cannot be asked the old instance stays
+  frozen. One run at a time (a lock); a unit frozen before the move is refused.
 
 Target
 
@@ -160,16 +163,16 @@ Settings and keys
   included, validated (`caddy validate`) and enabled before the cutover, so its certificate is
   there when the instance starts. Another proxy is named in the plan (`manual`).
 - MIG-028 **Firewall.** An enabled ufw is carried (its rule files and settings) and enabled as
-  the flow's last act on the target, after the one-time key is removed. Another firewall is named
-  in the plan (`manual`).
+  the flow's last act on the target, after the one-time key is removed and with the SSH port the
+  move used allowed. Another firewall is named in the plan (`manual`).
 
 Copy and proof
 
 - MIG-030 **Copy.** The old instance is frozen and its data directory streamed to the target with
   the export's exact-size archive and checksum, compressed with `zstd` when both hosts have it,
   and installed there by the import (its checks, id remapping and marker). An unfinished copy
-  found on the target is removed first (a copy that was installed but not proven is marked
-  unfinished); an instance or anything else there is refused.
+  found on the target is removed first (an installed copy stays marked unfinished until the old
+  host has proven it); an instance or anything else there is refused.
 - MIG-031 **Proof.** Both hosts compute the copy's inventory: entries and bytes for each
   top-level folder and one fingerprint over every entry's path, kind, size, owner, mode, time and
   restorable attributes in archive order, in the old host's ids. The new instance is started only
@@ -190,9 +193,10 @@ URL change
   for the target's address. After the start the flow waits (bounded) until `https://<host>/healthz`
   answers from the target. A name that does not lead to the target yet is checked by connecting
   to the target's address directly and stays in the checklist as the DNS record to change.
-- MIG-041 **Old URL.** When the URL changed and the old host's proxy is Caddy, its site answers
-  every request with a temporary redirect (307) to the same path at the new URL and the header
-  `X-Yulius-Moved-To`; the earlier configuration is kept for `--abort`.
+- MIG-041 **Old URL.** When the URL changed and the old host's proxy is Caddy, what its site
+  proxied to Yulius becomes a temporary redirect (307) to the same path at the new URL with the
+  header `X-Yulius-Moved-To`; the site keeps its name and TLS settings, other sites stay, and
+  the earlier configuration is kept for `--abort`.
 - MIG-042 **GitHub App.** When the URL changes the plan says, before the cutover, where the
   App's settings are and the callback and homepage to register there: an App accepts several
   callbacks, so the old one keeps working until the old host is retired. Yulius never uses a

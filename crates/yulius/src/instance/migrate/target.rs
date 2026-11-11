@@ -159,11 +159,12 @@ pub enum Request {
         /// The new one.
         to: String,
     },
-    /// Mark a copy that was installed but never started as unfinished, so the next run removes
-    /// it.
-    Discard {
-        /// The data directory.
-        data_dir: PathBuf,
+    /// Whether the instance reports `build` right now ([`Reply::started`]).
+    Health {
+        /// The commit it must report.
+        build: Option<String>,
+        /// The address of its internal listener.
+        health: String,
     },
     /// Finish `host setup`, start the instance and wait until it reports `build`.
     Start {
@@ -267,6 +268,10 @@ pub struct Reply {
     /// [`Request::Inventory`]'s answer.
     #[serde(default)]
     pub inventory: Option<Inventory>,
+    /// [`Request::Start`] and [`Request::Health`]: the instance reports the build, so it has
+    /// taken over.
+    #[serde(default)]
+    pub started: bool,
 }
 
 /// A part of `host setup` ([`host_setup::Run`]).
@@ -284,6 +289,8 @@ pub enum Part {
 pub struct Env<'a> {
     /// The address the caller connected to (`SSH_CONNECTION`).
     pub address: Option<String>,
+    /// The port it connected to.
+    pub ssh_port: Option<u16>,
     /// The commit the server at a loopback address reports (`/internal/version`); `None` while
     /// it does not answer.
     pub health: &'a mut dyn FnMut(&str) -> Option<String>,
@@ -542,8 +549,17 @@ fn disk(host: &mut dyn Host, setup: &Setup, disks: &[String], l: &mut Lines) {
     if !(1..=2).contains(&disks.len()) || disks.first() == disks.get(1) {
         return l.failed(ITEM, "name one disk, or two different ones for a mirror");
     }
+    // What an earlier run that was cut already made is taken up, not refused as "not blank":
+    // the labelled filesystem, or the array without one.
+    let labelled = sh(host, &["blkid", "-L", DISK_LABEL]);
+    let labelled =
+        Some(labelled.stdout.trim().to_owned()).filter(|d| labelled.ok() && plain(Path::new(d)));
+    let mirrored = disks.len() == 2 && sh(host, &["mdadm", "--detail", MIRROR]).ok();
     let blank = list_blank(host);
-    if let Some(taken) = disks.iter().find(|d| !blank.iter().any(|b| &b.path == *d)) {
+    if labelled.is_none()
+        && !mirrored
+        && let Some(taken) = disks.iter().find(|d| !blank.iter().any(|b| &b.path == *d))
+    {
         return l.failed(
             ITEM,
             format!(
@@ -567,7 +583,11 @@ fn disk(host: &mut dyn Host, setup: &Setup, disks: &[String], l: &mut Lines) {
         }
     };
     let made = (|| -> Result<String, String> {
-        let device = if let [a, b] = disks {
+        let device = if let Some(device) = labelled.clone() {
+            device
+        } else if mirrored {
+            MIRROR.to_owned()
+        } else if let [a, b] = disks {
             if !sh(host, &["mdadm", "--version"]).ok() {
                 step(host, &Cmd::apt(&["install", "-y", "mdadm"]))?;
             }
@@ -593,10 +613,13 @@ fn disk(host: &mut dyn Host, setup: &Setup, disks: &[String], l: &mut Lines) {
         } else {
             disks[0].clone()
         };
-        step(
-            host,
-            &long(&["mkfs.ext4", "-q", "-L", DISK_LABEL, &device], 30 * 60),
-        )?;
+        if labelled.is_none() {
+            sh(host, &["udevadm", "settle"]);
+            step(
+                host,
+                &long(&["mkfs.ext4", "-q", "-L", DISK_LABEL, &device], 30 * 60),
+            )?;
+        }
         let uuid = step(
             host,
             &Cmd::new(&["blkid", "-s", "UUID", "-o", "value", &device]),
@@ -608,12 +631,16 @@ fn disk(host: &mut dyn Host, setup: &Setup, disks: &[String], l: &mut Lines) {
             return Err(format!("{device} reports no filesystem UUID"));
         }
         let mut fstab = host.read(Path::new("/etc/fstab")).unwrap_or_default();
-        if !fstab.is_empty() && !fstab.ends_with('\n') {
+        let line = format!("UUID={uuid} {data} ext4 defaults,nofail 0 2");
+        if !fstab.lines().any(|l| l.trim() == line) {
+            if !fstab.is_empty() && !fstab.ends_with('\n') {
+                fstab.push('\n');
+            }
+            fstab.push_str(&line);
             fstab.push('\n');
+            host.write(Path::new("/etc/fstab"), &fstab, 0o644)
+                .map_err(|why| format!("cannot write /etc/fstab: {why}"))?;
         }
-        fstab.push_str(&format!("UUID={uuid} {data} ext4 defaults,nofail 0 2\n"));
-        host.write(Path::new("/etc/fstab"), &fstab, 0o644)
-            .map_err(|why| format!("cannot write /etc/fstab: {why}"))?;
         step(host, &Cmd::new(&["mkdir", "-p", "--", &data]))?;
         step(host, &Cmd::new(&["mount", "--", &data]))?;
         if disks.len() == 2 {
@@ -1101,7 +1128,11 @@ fn data_dir(host: &mut dyn Host, setup: &Setup, l: &mut Lines) {
         }
         return l.changed(ITEM, format!("removed an unfinished copy from {shown}"));
     }
-    if let Some(name) = names.iter().find(|name| !name.starts_with('.')) {
+    // As the import: only a skeleton's dotfiles may be there.
+    if let Some(name) = names
+        .iter()
+        .find(|name| !(name.starts_with('.') && host.is_file(&dir.join(name))))
+    {
         return l.failed(
             ITEM,
             format!(
@@ -1140,7 +1171,7 @@ fn texts(host: &mut dyn Host, name: &str, files: &[TextFile], l: &mut Lines) {
         if host.read(&file.path).as_deref() == Some(&file.content) {
             continue;
         }
-        if let Err(why) = host.write(&file.path, &file.content, file.mode & 0o7777) {
+        if let Err(why) = profile::write_keeping_owner(host, &file.path, &file.content, file.mode) {
             return l.failed(name, format!("cannot write {}: {why}", file.path.display()));
         }
         wrote.push(file.path.display().to_string());
@@ -1275,9 +1306,13 @@ fn inventory(
 fn mark(host: &mut dyn Host, setup: &Setup, from: Option<&str>, to: &str, l: &mut Lines) {
     const ITEM: &str = "move mark";
     let path = setup.data_dir.join(MOVE_PENDING);
-    if host.is_file(&setup.data_dir.join(MOVED)) || host.is_file(&path) {
+    let unproven = setup.data_dir.join(INCOMPLETE);
+    if host.is_file(&path) && !host.is_file(&unproven) {
         return l.ok(ITEM, "the copy is marked as moved");
     }
+    // An earlier move's report came with the copy: this move writes its own.
+    let report = setup.data_dir.join(MOVED).display().to_string();
+    sh(host, &["rm", "-f", "--", &report]);
     let at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
@@ -1293,9 +1328,19 @@ fn mark(host: &mut dyn Host, setup: &Setup, from: Option<&str>, to: &str, l: &mu
             format!("cannot give the mark to {}: {}", setup.user, out.why()),
         );
     }
+    // Proven on the old host: the copy is no longer unfinished.
+    let out = sh(host, &["rm", "-f", "--", &unproven.display().to_string()]);
+    if !out.ok() || host.is_file(&unproven) {
+        return l.failed(
+            ITEM,
+            format!("cannot remove {}: {}", unproven.display(), out.why()),
+        );
+    }
     l.changed(ITEM, "the first start brings back the tasks that were live");
 }
 
+/// Starts the instance; whether it reports the build (it has taken over). What fails after
+/// that is said and changes nothing of that.
 fn start(
     host: &mut dyn Host,
     env: &mut Env<'_>,
@@ -1304,13 +1349,21 @@ fn start(
     health: &str,
     helper: Option<&str>,
     l: &mut Lines,
-) {
+) -> bool {
     const ITEM: &str = "new instance";
+    if host.is_file(&setup.data_dir.join(INCOMPLETE)) {
+        l.failed(
+            ITEM,
+            "not started: the copy is not proven (it is marked unfinished)",
+        );
+        return false;
+    }
     let before = (env.setup)(host, Part::BeforeStart, setup);
     let ready = host_setup::passed(&before);
     l.0.extend(before);
     if !ready {
-        return l.failed(ITEM, "not started: the host is not ready (see above)");
+        l.failed(ITEM, "not started: the host is not ready (see above)");
+        return false;
     }
     let service = setup.service.as_str();
     // Units carried as files (the helper's, a drop-in) are known only after a reload.
@@ -1321,22 +1374,27 @@ fn start(
     ] {
         let out = sh(host, argv);
         if !out.ok() {
-            return l.failed(ITEM, format!("`{}` failed: {}", argv.join(" "), out.why()));
+            l.failed(ITEM, format!("`{}` failed: {}", argv.join(" "), out.why()));
+            return false;
         }
     }
-    let mut waited = Duration::ZERO;
+    // Bounded by the clock and by the number of looks, whichever ends first.
+    let deadline = std::time::Instant::now() + HEALTH_WAIT;
+    let mut looks = 0;
     let reported = loop {
         match (env.health)(health) {
             Some(commit) if build.is_none_or(|b| b == commit) => break Some(commit),
-            _ if waited >= HEALTH_WAIT => break None,
+            _ if looks >= HEALTH_WAIT.as_secs() || std::time::Instant::now() >= deadline => {
+                break None;
+            }
             _ => {
                 (env.sleep)(Duration::from_secs(1));
-                waited += Duration::from_secs(1);
+                looks += 1;
             }
         }
     };
     let Some(commit) = reported else {
-        return l.failed(
+        l.failed(
             ITEM,
             format!(
                 "{service} did not report the old host's build within {} s (`journalctl -u \
@@ -1344,6 +1402,7 @@ fn start(
                 HEALTH_WAIT.as_secs()
             ),
         );
+        return false;
     };
     l.changed(
         ITEM,
@@ -1365,31 +1424,63 @@ fn start(
     }
     let after = (env.setup)(host, Part::AfterStart, setup);
     l.0.extend(after);
+    true
 }
 
-fn stop(host: &mut dyn Host, service: &str, l: &mut Lines) {
+fn stop(host: &mut dyn Host, env: &mut Env<'_>, service: &str, l: &mut Lines) {
     const ITEM: &str = "new instance stopped";
     let out = sh(host, &["systemctl", "disable", "--now", service]);
     // KillMode=process leaves agents and terminals: nothing of the copy may keep running.
-    sh(
+    // (`--kill-whom` is systemd 252 and later, `--kill-who` its older name.)
+    for whom in ["--kill-whom=all", "--kill-who=all"] {
+        if sh(
+            host,
+            &["systemctl", "kill", whom, "--signal=SIGKILL", service],
+        )
+        .ok()
+        {
+            break;
+        }
+    }
+    let group = sh(
         host,
         &[
             "systemctl",
-            "kill",
-            "--kill-whom=all",
-            "--signal=SIGKILL",
+            "show",
+            "--property=ControlGroup",
+            "--value",
             service,
         ],
     );
-    if out.ok() {
-        l.changed(
-            ITEM,
-            format!("{service} is stopped and disabled on the new host"),
-        );
-    } else {
+    let procs = Path::new("/sys/fs/cgroup")
+        .join(group.stdout.trim().trim_start_matches('/'))
+        .join("cgroup.procs");
+    let running = |host: &mut dyn Host| {
+        sh(host, &["systemctl", "is-active", service]).stdout.trim() == "active"
+            || (!group.stdout.trim().is_empty()
+                && host
+                    .read(&procs)
+                    .is_some_and(|pids| !pids.trim().is_empty()))
+    };
+    let mut waited = 0;
+    while running(host) && waited < 15 {
+        (env.sleep)(Duration::from_secs(1));
+        waited += 1;
+    }
+    if !out.ok() {
         l.failed(
             ITEM,
             format!("`systemctl disable --now {service}` failed: {}", out.why()),
+        );
+    } else if running(host) {
+        l.failed(
+            ITEM,
+            format!("processes of {service} still run on the new host after it was killed"),
+        );
+    } else {
+        l.changed(
+            ITEM,
+            format!("{service} is stopped and disabled on the new host, nothing of it runs"),
         );
     }
 }
@@ -1436,7 +1527,7 @@ fn tasks(host: &mut dyn Host, env: &mut Env<'_>, data_dir: &Path, wait_secs: u64
     }
 }
 
-fn finish(host: &mut dyn Host, key: &str, firewall: bool, l: &mut Lines) {
+fn finish(host: &mut dyn Host, env: &Env<'_>, key: &str, firewall: bool, l: &mut Lines) {
     let keys = Path::new("/root/.ssh/authorized_keys");
     let text = host.read(keys).unwrap_or_default();
     let ours = |line: &str| !key.is_empty() && line.trim_end().ends_with(key);
@@ -1460,9 +1551,23 @@ fn finish(host: &mut dyn Host, key: &str, firewall: bool, l: &mut Lines) {
         }
     }
     if firewall {
+        // The old host's rules may not know the port this host is reached at.
+        let port = env.ssh_port.map(|port| format!("{port}/tcp"));
+        if let Some(port) = &port {
+            sh(host, &["ufw", "allow", port]);
+        }
         let out = sh(host, &["ufw", "--force", "enable"]);
         if out.ok() {
-            l.changed("firewall", "ufw is enabled with the old host's rules");
+            l.changed(
+                "firewall",
+                match port {
+                    Some(port) => format!(
+                        "ufw is enabled with the old host's rules, and {port} (the SSH port \
+                         the move used) allowed"
+                    ),
+                    None => "ufw is enabled with the old host's rules".to_owned(),
+                },
+            );
         } else {
             l.failed(
                 "firewall",
@@ -1506,36 +1611,32 @@ pub fn handle(host: &mut dyn Host, env: &mut Env<'_>, request: &Request) -> Repl
             release,
         } => inventory(host, env, manifest, old, release, &mut reply, &mut l),
         Request::Mark { setup, from, to } => mark(host, setup, from.as_deref(), to, &mut l),
-        Request::Discard { data_dir } => {
-            let marker = data_dir.join(INCOMPLETE);
-            match host.write(&marker, "", 0o600) {
-                Ok(()) => l.changed(
-                    "copy",
-                    "marked unfinished on the new host: the next run removes it and copies again",
-                ),
-                Err(why) => l.failed("copy", format!("cannot write {}: {why}", marker.display())),
-            }
+        Request::Health { build, health } => {
+            reply.started = (env.health)(health)
+                .is_some_and(|commit| build.as_ref().is_none_or(|b| *b == commit));
         }
         Request::Start {
             setup,
             build,
             health,
             helper,
-        } => start(
-            host,
-            env,
-            setup,
-            build.as_deref(),
-            health,
-            helper.as_deref(),
-            &mut l,
-        ),
-        Request::Stop { service } => stop(host, service, &mut l),
+        } => {
+            reply.started = start(
+                host,
+                env,
+                setup,
+                build.as_deref(),
+                health,
+                helper.as_deref(),
+                &mut l,
+            );
+        }
+        Request::Stop { service } => stop(host, env, service, &mut l),
         Request::Tasks {
             data_dir,
             wait_secs,
         } => tasks(host, env, data_dir, *wait_secs, &mut l),
-        Request::Finish { key, firewall } => finish(host, key, *firewall, &mut l),
+        Request::Finish { key, firewall } => finish(host, env, key, *firewall, &mut l),
     }
     reply.lines = l.0;
     reply
@@ -1624,6 +1725,21 @@ pub fn receive() -> Reply {
         p.end();
     }
     let unpacked = unpack.is_none_or(|mut child| child.wait().is_ok_and(|s| s.success()));
+    // Installed is not proven: the copy stays marked unfinished until the old host has
+    // compared its count ([`Request::Mark`] removes the mark), so a run that dies in between
+    // leaves nothing that looks like an instance.
+    let result = result.and_then(|done| {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(expect.data_dir.join(INCOMPLETE))
+            .map(|_| done)
+            .map_err(|e| {
+                crate::instance::import::Failure::Failed(format!(
+                    "cannot mark the copy as unproven: {e}"
+                ))
+            })
+    });
     match result {
         Ok(_) if !unpacked => l.failed(ITEM, "zstd reported a damaged stream"),
         Ok((m, report)) => {
@@ -1688,6 +1804,9 @@ pub fn main(receive_copy: bool) -> std::process::ExitCode {
             address: std::env::var("SSH_CONNECTION")
                 .ok()
                 .and_then(|c| c.split_whitespace().nth(2).map(str::to_owned)),
+            ssh_port: std::env::var("SSH_CONNECTION")
+                .ok()
+                .and_then(|c| c.split_whitespace().nth(3)?.parse().ok()),
             health: &mut |address| reported_commit(address),
             sleep: &mut |d| std::thread::sleep(d),
             count: &mut |manifest, old| {

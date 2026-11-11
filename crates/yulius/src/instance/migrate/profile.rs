@@ -230,15 +230,6 @@ fn assignments(value: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-/// Whether a variable's value is never shown (SPEC-460 MIG-025).
-#[must_use]
-pub fn secret_name(name: &str) -> bool {
-    let name = name.to_ascii_uppercase();
-    ["KEY", "SECRET", "TOKEN", "PASSWORD"]
-        .iter()
-        .any(|word| name.contains(word))
-}
-
 /// Whether a move leaves `package` to the new machine (its kernel, boot loader, network setup).
 #[must_use]
 pub fn host_package(package: &str) -> bool {
@@ -415,6 +406,78 @@ pub fn moved_site(old_host: &str, new_url: &str) -> String {
          # `yulius instance migrate --abort` puts the earlier file back.\n\
          {old_host} {{\n\theader X-Yulius-Moved-To {new_url}\n\tredir {new_url}{{uri}} 307\n}}\n"
     )
+}
+
+/// Writes `content` to `path` and gives the new file the owner the old one had (a proxy's
+/// configuration that belongs to its group stays readable to it).
+///
+/// # Errors
+/// The write or the `chown` failed.
+pub fn write_keeping_owner(
+    host: &mut dyn Host,
+    path: &Path,
+    content: &str,
+    mode: u32,
+) -> Result<(), String> {
+    let owner = host.stat(path).map(|(uid, _)| uid).zip(host.gid(path));
+    host.write(path, content, mode & 0o7777)?;
+    if let Some((uid, gid)) = owner.filter(|owner| *owner != (0, 0)) {
+        let out = run(
+            host,
+            &[
+                "chown",
+                "--",
+                &format!("{uid}:{gid}"),
+                &path.display().to_string(),
+            ],
+        );
+        if !out.ok() {
+            return Err(format!("chown: {}", out.why()));
+        }
+    }
+    Ok(())
+}
+
+/// `caddyfile` with every `reverse_proxy` to the local port `port` replaced by a temporary
+/// redirect to the same path at `new_url` (SPEC-460 MIG-041), so the site keeps its name, its
+/// TLS settings and its neighbours; `None` when it proxies nothing there.
+#[must_use]
+pub fn redirected(caddyfile: &str, port: u16, new_url: &str) -> Option<String> {
+    let new_url = new_url.trim_end_matches('/');
+    let upstream = format!(":{port}");
+    let mut out = String::new();
+    let mut found = false;
+    let mut skip_depth = 0usize;
+    for line in caddyfile.lines() {
+        let text = line.trim();
+        if skip_depth > 0 {
+            // Inside the directive's own block (its `header_up` lines): dropped with it.
+            skip_depth += text.matches('{').count();
+            skip_depth = skip_depth.saturating_sub(text.matches('}').count());
+            continue;
+        }
+        let words: Vec<&str> = text.split_whitespace().collect();
+        let proxies = words.first() == Some(&"reverse_proxy")
+            && words[1..]
+                .iter()
+                .any(|w| w.trim_end_matches('{').ends_with(&upstream));
+        if !proxies {
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
+        found = true;
+        let indent = &line[..line.len() - line.trim_start().len()];
+        out.push_str(&format!(
+            "{indent}# Written by `yulius instance migrate`: this instance moved; `--abort` \
+             puts the earlier file back.\n{indent}header X-Yulius-Moved-To {new_url}\n\
+             {indent}redir {new_url}{{uri}} 307\n"
+        ));
+        if text.ends_with('{') {
+            skip_depth = 1;
+        }
+    }
+    found.then_some(out)
 }
 
 /// A file's text and mode, when it is a readable regular file.
@@ -667,7 +730,8 @@ impl Profile {
         }
         paths.extend(["/root/.rustup", "/root/.cargo"].map(PathBuf::from));
         for path in paths {
-            if !is_dir(host, &path) {
+            // The data directory travels as the copy, never as software.
+            if !is_dir(host, &path) || self.data_dir.starts_with(&path) {
                 continue;
             }
             let shown = path.display().to_string();

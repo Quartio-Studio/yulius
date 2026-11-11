@@ -54,8 +54,13 @@ fn every_remote_command_is_a_constant_and_values_stay_out_of_it() {
             "{option} missing: {args:?}"
         );
     }
-    // Every call is a connection of its own: no shared master that outlives a step.
-    assert!(!args.iter().any(|a| a.starts_with("Control")), "{args:?}");
+    // Every call is a connection of its own, whatever root's ssh configuration says: no
+    // shared master outlives the key.
+    for option in ["ControlMaster=no", "ControlPath=none"] {
+        assert!(args.iter().any(|a| a == option), "{args:?}");
+    }
+    // The key lands on a line of its own, also after a file without a final newline.
+    assert!(ADD_KEY.contains("{ echo; cat; } >> ~/.ssh/authorized_keys"));
     let key = args
         .iter()
         .position(|a| a == "-i")
@@ -71,7 +76,7 @@ fn every_remote_command_is_a_constant_and_values_stay_out_of_it() {
     // Nothing a request could name is in a command.
     for command in [PUT_BUILD, STEP, RECEIVE, UNTAR, ADD_KEY, SINK, HELLO] {
         assert!(
-            !command.contains('{') && !command.contains('$'),
+            !command.contains("{}") && !command.contains('$') && !command.contains('%'),
             "{command}"
         );
     }

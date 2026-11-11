@@ -113,8 +113,6 @@ fn no_secret_reaches_the_profile() -> Result<(), String> {
     for secret in ["jev-secret-value", "token-value", "proxy-secret-value"] {
         assert!(!json.contains(secret), "{secret} is in the profile");
     }
-    assert!(secret_name("YULIUS_JEV_API_KEY_FILE") && secret_name("update_token"));
-    assert!(!secret_name("YULIUS_PUBLIC_URL"));
     Ok(())
 }
 
@@ -317,4 +315,66 @@ fn the_moved_site_redirects_temporarily_and_names_the_new_url() {
         site.contains("header X-Yulius-Moved-To https://185-189-47-160.sslip.io\n"),
         "{site}"
     );
+}
+
+#[test]
+fn only_what_a_site_proxied_to_yulius_becomes_the_redirect() {
+    let caddyfile = "{\n\temail ops@example.com\n}\n\nyulius.example.com {\n\ttls internal\n\
+                     \tencode zstd gzip\n\treverse_proxy 127.0.0.1:8080 {\n\t\theader_up \
+                     X-Yulius-Proxy-Secret {env.YULIUS_PROXY_SECRET}\n\t}\n}\n\n\
+                     other.example.com {\n\treverse_proxy 127.0.0.1:9000\n}\n";
+    let moved = redirected(caddyfile, 8080, "https://new.example.com/").unwrap_or_default();
+    // The global options, the site's name and TLS settings and the other site stay.
+    assert!(
+        moved
+            .starts_with("{\n\temail ops@example.com\n}\n\nyulius.example.com {\n\ttls internal\n")
+    );
+    assert!(
+        moved.ends_with("other.example.com {\n\treverse_proxy 127.0.0.1:9000\n}\n"),
+        "{moved}"
+    );
+    assert!(moved.contains("\theader X-Yulius-Moved-To https://new.example.com\n"));
+    assert!(
+        moved.contains("\tredir https://new.example.com{uri} 307\n}\n"),
+        "{moved}"
+    );
+    // The proxy directive went with its own block.
+    assert!(!moved.contains("127.0.0.1:8080") && !moved.contains("header_up"));
+    assert_eq!(moved.matches('{').count(), moved.matches('}').count());
+    // A one-line directive, and a file that proxies nothing there.
+    let one = redirected(
+        "a.example {\n  reverse_proxy localhost:8080\n}\n",
+        8080,
+        "https://n",
+    );
+    assert_eq!(
+        one.as_deref()
+            .map(|t| t.contains("  redir https://n{uri} 307\n}\n")),
+        Some(true)
+    );
+    assert_eq!(
+        redirected("a.example {\n  respond \"hi\"\n}\n", 8080, "https://n"),
+        None
+    );
+    assert_eq!(redirected(caddyfile, 80, "https://n"), None);
+}
+
+#[test]
+fn a_rewritten_file_keeps_its_owner() -> Result<(), String> {
+    let mut host = FakeHost::default();
+    host.file_as("/etc/caddy/Caddyfile", "old", 0, 0o640);
+    host.on(&["chown"], 0, "", None);
+    // root:root: nothing to give back.
+    write_keeping_owner(&mut host, Path::new("/etc/caddy/Caddyfile"), "new", 0o640)?;
+    assert!(!host.ran("chown"));
+    // Another owner: given back after the write.
+    host.file_as("/etc/yulius/unit.conf", "old", 996, 0o600);
+    write_keeping_owner(&mut host, Path::new("/etc/yulius/unit.conf"), "new", 0o600)?;
+    assert!(
+        host.ran("chown -- 996:0 /etc/yulius/unit.conf"),
+        "{:?}",
+        host.log
+    );
+    assert_eq!(host.text("/etc/yulius/unit.conf"), Some("new"));
+    Ok(())
 }

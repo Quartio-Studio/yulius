@@ -301,3 +301,90 @@ fn an_inventory_survives_its_json() -> TestResult {
     assert_eq!(inventory.fingerprint.len(), 64);
     Ok(())
 }
+
+/// As the real import runs: as root, with owners remapped to another service user and another
+/// subordinate range. The copy still reads as the old host's tree.
+#[test]
+fn a_copy_installed_with_remapped_owners_has_its_sources_inventory() -> TestResult {
+    if !crate::instance::is_root() {
+        eprintln!("skipped: needs root to give files to other ids");
+        return Ok(());
+    }
+    use std::os::unix::fs::{chown, lchown};
+    let (src, dst) = (tempfile::tempdir()?, tempfile::tempdir()?);
+    let root = src.path();
+    tree(root)?;
+    // A sandbox's root has only its own ids: these are not mapped there.
+    if chown(root.join("master.key"), Some(100_042), Some(5001)).is_err() {
+        eprintln!("skipped: this root cannot give files to ids outside its namespace");
+        return Ok(());
+    }
+    // The old host: service 5000:5001, its subordinate ids from 100000; one file of root's
+    // with setuid, which the import gives to the service user without it.
+    for entry in [
+        "",
+        "yulius.db",
+        "master.key",
+        "sandboxes",
+        "sandboxes/sb",
+        "sandboxes/sb/home",
+        "sandboxes/sb/home/notes",
+        "sysroots",
+        "sysroots/sb",
+    ] {
+        chown(root.join(entry), Some(5000), Some(5001))?;
+    }
+    lchown(root.join("sandboxes/sb/home/link"), Some(5000), Some(5001))?;
+    chown(root.join("sysroots/sb/upper"), Some(100_000), Some(100_000))?;
+    chown(
+        root.join("sysroots/sb/upper/tool"),
+        Some(100_042),
+        Some(100_007),
+    )?;
+    fs::write(root.join("sandboxes/sb/rootfile"), b"x")?;
+    fs::set_permissions(
+        root.join("sandboxes/sb/rootfile"),
+        fs::Permissions::from_mode(0o4755),
+    )?;
+    let range = Some(IdRange {
+        start: 100_000,
+        count: 65_536,
+    });
+    let target = dst.path().join("data");
+    let mut m = manifest(root, &target)?;
+    (m.subuid, m.subgid) = (range, range);
+    let mut counter = Counter::new(IdSpace::of(&m));
+    let plan = plan_observed(root, &mut |e| counter.add(e))?;
+    let old = counter.finish();
+    let mut bytes = Vec::new();
+    send(root, &plan, &m, &mut bytes, &mut |_| {}, &mut || Ok(()))?;
+    // The new host: service 6000:6001, subordinate ids from 300000 and 400000.
+    let map = IdMap {
+        uid: (5000, 6000),
+        gid: (5001, 6001),
+        subuid: Some((100_000, 300_000, 65_536)),
+        subgid: Some((100_000, 400_000, 65_536)),
+    };
+    fs::create_dir_all(&target)?;
+    chown(&target, Some(6000), Some(6001))?;
+    install(
+        bytes.as_slice(),
+        &target,
+        Some("nobody-checks-the-name-here"),
+        &mut |_, _| Ok(map),
+        true,
+        &mut |_, _| {},
+    )
+    .map_err(|e| format!("{e:?}"))?;
+    let tool = fs::metadata(target.join("sysroots/sb/upper/tool"))?;
+    assert_eq!((tool.uid(), tool.gid()), (300_042, 400_007));
+    let folded = fs::metadata(target.join("sandboxes/sb/rootfile"))?;
+    assert_eq!((folded.uid(), folded.mode() & 0o7777), (6000, 0o755));
+
+    let new = of_copy(&target, &map, &old)?;
+    assert_eq!(difference(&old, &new), None);
+    // An owner the import never gives is not passed over.
+    chown(target.join("master.key"), Some(77), Some(6001))?;
+    assert!(of_copy(&target, &map, &old).is_err());
+    Ok(())
+}

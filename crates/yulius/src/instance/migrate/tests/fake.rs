@@ -398,6 +398,9 @@ pub fn new_host() -> FakeHost {
         "LISTEN 0 4096 0.0.0.0:22 0.0.0.0:* users:((\"sshd\",pid=900,fd=3))\n",
     );
     h.fails(&["findmnt"], "");
+    // Nothing an earlier run made: no labelled filesystem, no array.
+    h.fails(&["blkid", "-L"], "");
+    h.fails(&["mdadm", "--detail", "/dev/md/yulius"], "");
     h.says(&["ls", "--version"], "ls (uutils coreutils) 0.10.0\n");
     h.fails(&["cmp", "-s"], "");
     h

@@ -1222,7 +1222,9 @@ It prints one checklist, a line per step as `host setup` does (`ok`, `changed`, 
 and ends with exit 0 when nothing failed, 1 when a step failed and 2 when it was refused before
 anything changed. Run the same command again to continue a move that stopped: every step finds out
 what is already done. The new host needs only SSH for root and the same architecture; it must not
-hold a Yulius instance.
+hold a Yulius instance. One run at a time (a lock in the state directory); a unit that is already
+frozen (an earlier run that was killed, an export in progress) is refused until it is thawed.
+`--public-url` is `https://host` without a port.
 
 **Plan** (nothing is changed but the flow's own files in `/var/lib/yulius-migrate` on both hosts,
 and nothing is frozen). Everything a person has to do is asked for here:
@@ -1272,16 +1274,22 @@ each top-level folder and a fingerprint over every entry's name, kind, size, own
 restorable attributes. Only when they are equal is the copy marked and the new instance started
 (`host setup`'s remaining items, `systemctl enable` and `start`, then it must report the old
 host's build). Until that start any failure, Ctrl-C or SIGTERM thaws the old instance, which runs
-on as before. If the new instance does not come up, it is stopped and disabled before the old one
-is thawed; the copy there was started and must be removed (`rm -rf` the data directory on the new
-host) before the next run. Once the new instance runs, the old unit stays frozen and is disabled.
+on as before, and the copy on the new host stays marked unfinished (the next run removes it and
+copies again). Once the start is ordered nothing thaws the old instance by itself, not a signal
+and not a lost terminal. If the new instance does not come up, it is stopped and disabled, and
+only then is the old one thawed; the copy there was started and must be removed (`rm -rf` the
+data directory on the new host) before the next run. If the new host stops answering at that
+point, the old instance stays frozen: run the command again when it answers. Once the new
+instance reports the build it has taken over: the old unit stays frozen and is disabled, and
+whatever fails after that (the helper, the Docker smoke) is a line to act on, never a rollback.
 
 **After.** The flow waits for `https://<new host>/healthz`, reads what the new instance did with
 the tasks that were live (its first start puts them back in the queue, whoever owns them; tasks a
-person had paused or was stopping stay stopped), and makes the old host's Caddy answer every
-request with a temporary redirect (307) to the same path at the new URL, with the header
-`X-Yulius-Moved-To`. It then removes its key from the new host, enables ufw there, deletes the key
-on the old host and lists what is left for people: the GitHub App and the DNS record if still
+person had paused or was stopping stay stopped), and replaces what the old host's Caddy site
+proxied to Yulius by a temporary redirect (307) to the same path at the new URL, with the header
+`X-Yulius-Moved-To`; the site keeps its name and TLS settings, and other sites in the file stay.
+It then removes its key from the new host, enables ufw there (allowing the SSH port the move
+used first), deletes the key on the old host and lists what is left for people: the GitHub App and the DNS record if still
 open, `yulius remote login <new URL>` and `claude mcp add` for laptops, and that the old host
 still holds a frozen copy with `master.key` and every secret.
 

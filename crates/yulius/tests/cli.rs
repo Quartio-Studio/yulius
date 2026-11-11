@@ -113,3 +113,64 @@ fn secrets_import_refuses_a_malformed_file_without_showing_values() -> TestResul
     assert!(!all.contains("Type yes"), "{all}");
     Ok(())
 }
+
+/// SPEC-460 MIG-001, MIG-003: the move's command explains itself, reads a recorded move
+/// without root, and refuses what cannot be a run before it touches anything.
+#[test]
+fn instance_migrate_explains_itself_and_refuses_what_is_not_a_run() -> TestResult {
+    let help = Command::new(EXE)
+        .args(["instance", "migrate", "--help"])
+        .output()?;
+    let text = String::from_utf8_lossy(&help.stdout);
+    assert!(help.status.success());
+    for option in [
+        "--public-url",
+        "--data-disk",
+        "--ssh-port",
+        "--yes",
+        "--status",
+        "--abort",
+    ] {
+        assert!(text.contains(option), "{option} is not in the help: {text}");
+    }
+
+    let dir = tempfile::tempdir()?;
+    let state = dir.path().join("state");
+    let status = Command::new(EXE)
+        .args(["instance", "migrate", "--status", "--state-dir"])
+        .arg(&state)
+        .output()?;
+    assert!(status.status.success());
+    assert!(String::from_utf8_lossy(&status.stdout).contains("No move is recorded"));
+    assert!(!state.exists(), "--status made the state directory");
+
+    // `--abort` names no host, and a destination that ssh could read as an option is none.
+    let both = Command::new(EXE)
+        .args(["instance", "migrate", "--abort", "root@new-host"])
+        .output()?;
+    assert_eq!(both.status.code(), Some(2));
+    for refused in [
+        vec!["instance", "migrate"],
+        vec!["instance", "migrate", "--", "-oProxyCommand=id"],
+        vec!["instance", "migrate", "deploy@new-host"],
+        vec![
+            "instance",
+            "migrate",
+            "root@new-host",
+            "--service",
+            "-x.service",
+        ],
+    ] {
+        let out = Command::new(EXE)
+            .args(&refused)
+            .arg("--state-dir")
+            .arg(&state)
+            .output()?;
+        assert_eq!(out.status.code(), Some(2), "{refused:?}: {out:?}");
+        assert!(
+            !state.join("state.json").exists(),
+            "{refused:?} recorded a move"
+        );
+    }
+    Ok(())
+}

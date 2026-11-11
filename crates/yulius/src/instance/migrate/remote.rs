@@ -22,8 +22,10 @@ pub const RECEIVE: &str = "/var/lib/yulius-migrate/yulius instance migrate-targe
 /// Extracts carried files at the root; owners are taken by name, so the service user's files
 /// belong to the new host's service user.
 pub const UNTAR: &str = "tar -C / -xpf -";
-/// Adds the one-time key, with the operator's own sign-in.
-pub const ADD_KEY: &str = "umask 077 && mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys";
+/// Adds the one-time key, with the operator's own sign-in. On a line of its own, also after a
+/// file that ends without a newline.
+pub const ADD_KEY: &str =
+    "umask 077 && mkdir -p ~/.ssh && { echo; cat; } >> ~/.ssh/authorized_keys";
 /// Swallows the link test's bytes.
 pub const SINK: &str = "cat > /dev/null";
 /// Answers a sign-in.
@@ -83,6 +85,10 @@ pub trait Remote {
     fn measure(&mut self, bytes: u64) -> Result<Duration, String>;
     /// Deletes the one-time key and what else the connection kept on this host.
     fn forget(&mut self);
+    /// The new host's key as first seen (`SHA256:… (ED25519)`), for the person to compare.
+    fn host_key(&mut self) -> Option<String> {
+        None
+    }
 }
 
 /// Whether `destination` is `[user@]host` and nothing `ssh` could read as an option.
@@ -161,6 +167,12 @@ impl Ssh {
             "ServerAliveInterval=15".into(),
             "-o".into(),
             "ServerAliveCountMax=8".into(),
+            // Each call is its own connection, whatever root's ssh configuration says: no
+            // shared master may outlive the key's removal.
+            "-o".into(),
+            "ControlMaster=no".into(),
+            "-o".into(),
+            "ControlPath=none".into(),
         ];
         if key {
             for option in ["IdentitiesOnly=yes", "BatchMode=yes", "ConnectTimeout=20"] {
@@ -187,11 +199,15 @@ impl Ssh {
         stdout: Stdio,
         stderr: Stdio,
     ) -> Result<Child, String> {
+        use std::os::unix::process::CommandExt as _;
         Command::new("ssh")
             .args(self.args(true, command))
             .stdin(stdin)
             .stdout(stdout)
             .stderr(stderr)
+            // Its own process group: a Ctrl-C on the terminal reaches the move, which decides
+            // (thaw, or go on once the new instance starts), not the step in flight.
+            .process_group(0)
             .spawn()
             .map_err(|e| format!("cannot run ssh: {e}"))
     }
@@ -236,7 +252,10 @@ fn follow(out: impl io::Read) -> Option<Reply> {
         let text = String::from_utf8_lossy(&line);
         match text.strip_prefix(REPLY) {
             Some(json) => reply = serde_json::from_str(json.trim_end()).ok(),
-            None => eprint!("{text}"),
+            // A terminal that went away must not end the move.
+            None => {
+                let _ = write!(io::stderr(), "{text}");
+            }
         }
     }
     reply
@@ -329,7 +348,8 @@ impl Remote for Ssh {
             Ok(status) => Err(format!("tar ended with {status}")),
             Err(e) => Err(format!("tar: {e}")),
         };
-        packed.and(received)
+        // The new host's own words first: tar's broken pipe is their consequence.
+        received.and(packed)
     }
 
     fn send_copy(
@@ -387,6 +407,19 @@ impl Remote for Ssh {
         ended("the link test", &mut child)?;
         sent.map_err(|e| format!("the link test: {e}"))?;
         Ok(start.elapsed())
+    }
+
+    fn host_key(&mut self) -> Option<String> {
+        let out = Command::new("ssh-keygen")
+            .arg("-lf")
+            .arg(self.dir.join("known_hosts"))
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+            .ok()?;
+        let text = String::from_utf8_lossy(&out.stdout);
+        let fields: Vec<&str> = text.lines().next()?.split_whitespace().collect();
+        Some(format!("{} {}", fields.get(1)?, fields.last()?))
     }
 
     fn forget(&mut self) {

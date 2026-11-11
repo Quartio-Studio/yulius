@@ -44,6 +44,8 @@ fn build() -> String {
 struct Systemd {
     frozen: bool,
     disabled: bool,
+    /// Not running at all (the old host was restarted after the move).
+    stopped: bool,
 }
 
 struct FakeSystemd(Arc<Mutex<Systemd>>, Events);
@@ -54,17 +56,25 @@ impl freeze::Host for FakeSystemd {
         let said = |text: String| Ok((0, text));
         match args[0] {
             "show" => said(format!(
-                "LoadState=loaded\nActiveState=active\nFreezerState={}\n\
+                "LoadState=loaded\nActiveState={}\nFreezerState={}\n\
                  ControlGroup=/system.slice/yulius.service\n",
+                if unit.stopped { "inactive" } else { "active" },
                 if unit.frozen { "frozen" } else { "running" }
             )),
             "is-active" => Ok((3, "inactive\n".into())),
             verb => {
                 match verb {
                     "freeze" => unit.frozen = true,
+                    // systemd refuses to thaw a unit that does not run.
+                    "thaw" if unit.stopped => return Ok((1, String::new())),
                     "thaw" => unit.frozen = false,
                     "disable" => unit.disabled = true,
-                    "enable" => unit.disabled = false,
+                    "enable" => {
+                        unit.disabled = false;
+                        if args.contains(&"--now") {
+                            unit.stopped = false;
+                        }
+                    }
                     _ => {}
                 }
                 note(&self.1, format!("old: systemctl {verb}"));
@@ -97,6 +107,10 @@ struct FakeRemote {
     no_base: bool,
     /// The new host says the copy is proven whatever it counted.
     lies: bool,
+    /// Steps the new host is not reached for, once each: nothing is done there.
+    refuse: Vec<&'static str>,
+    /// Steps whose answer is lost, once each: done there, unheard here.
+    lose: Vec<&'static str>,
     sent: Vec<PathBuf>,
 }
 
@@ -147,7 +161,16 @@ impl Remote for FakeRemote {
         if !self.host.is_staged() {
             return Err("yulius: No such file or directory".into());
         }
-        note(&self.events, format!("new: {}", step_name(request)));
+        let step = step_name(request);
+        if let Some(at) = self.refuse.iter().position(|s| *s == step) {
+            self.refuse.remove(at);
+            return Err("ssh: connect to host 185.189.47.160 port 22: Connection timed out".into());
+        }
+        note(&self.events, format!("new: {step}"));
+        let lost = self.lose.iter().position(|s| *s == step);
+        if let Some(at) = lost {
+            self.lose.remove(at);
+        }
         let Self {
             host,
             copy_dir,
@@ -157,6 +180,7 @@ impl Remote for FakeRemote {
         } = self;
         let mut env = Env {
             address: Some(NEW_ADDRESS.into()),
+            ssh_port: Some(22),
             health: &mut |_| healthy.then(build),
             sleep: &mut |_| {},
             count: &mut |manifest, old| {
@@ -188,12 +212,15 @@ impl Remote for FakeRemote {
         }
         // What a started server does with the mark (SPEC-460 MIG-050).
         if let Request::Start { setup, .. } = request
-            && *healthy
+            && reply.started
         {
             let mark = setup.data_dir.join(target::MOVE_PENDING);
             host.files.remove(&mark);
             let report = setup.data_dir.join(target::MOVED).display().to_string();
             host.file(&report, r#"{"queued":2,"left":1,"failed":0}"#);
+        }
+        if lost.is_some() {
+            return Err("ssh: the connection was reset".into());
         }
         Ok(reply)
     }
@@ -222,6 +249,9 @@ impl Remote for FakeRemote {
         });
         if let Some(data) = data {
             self.host.file(&format!("{data}/yulius.db"), "the copy");
+            // Installed is not proven: the copy stays unfinished until it is marked.
+            self.host
+                .file(&format!("{data}/.yulius-import-incomplete"), "");
         }
         let (outcome, detail) = match installed {
             Ok(entries) => (HostOutcome::Changed, format!("installed {entries} entries")),
@@ -287,6 +317,8 @@ struct FakeWorld {
     dns: BTreeMap<String, Vec<String>>,
     https: bool,
     shown: Vec<String>,
+    /// The terminal goes away when a line with this text is shown.
+    lost_at: Option<&'static str>,
 }
 
 impl World for FakeWorld {
@@ -297,7 +329,9 @@ impl World for FakeWorld {
         ))
     }
 
-    fn arm(&mut self, _: &str) {}
+    fn arm(&mut self, _: &str) -> Result<(), String> {
+        Ok(())
+    }
 
     fn refused(&mut self) {}
 
@@ -335,6 +369,10 @@ impl World for FakeWorld {
     }
 
     fn show(&mut self, text: &str) {
+        assert!(
+            !self.lost_at.is_some_and(|at| text.contains(at)),
+            "the terminal went away"
+        );
         self.shown.push(text.to_owned());
     }
 }
@@ -460,6 +498,8 @@ fn setup() -> Result<Setup, Box<dyn std::error::Error>> {
             tamper: None,
             no_base: false,
             lies: false,
+            refuse: Vec::new(),
+            lose: Vec::new(),
             sent: Vec::new(),
         },
         world: FakeWorld {
@@ -469,6 +509,7 @@ fn setup() -> Result<Setup, Box<dyn std::error::Error>> {
             dns: BTreeMap::from([(NEW_HOST.to_owned(), vec![NEW_ADDRESS.to_owned()])]),
             https: true,
             shown: Vec::new(),
+            lost_at: None,
         },
         _tmp: tmp,
     })
@@ -558,10 +599,18 @@ fn a_move_runs_from_the_plan_to_the_finish() -> TestResult {
 
     // The old host: frozen and disabled, redirecting, without the key.
     assert_eq!(s.old_unit(), (true, true));
-    assert_eq!(
-        s.local.text(profile::CADDYFILE),
-        Some(profile::moved_site(OLD_HOST, NEW_URL).as_str())
+    // Only what the site proxied to Yulius became the redirect: it keeps its name.
+    let old_proxy = s.local.text(profile::CADDYFILE).unwrap_or_default();
+    assert!(
+        old_proxy.starts_with(&format!("{OLD_HOST} {{\n")),
+        "{old_proxy}"
     );
+    assert!(
+        old_proxy.contains(&format!("\tredir {NEW_URL}{{uri}} 307\n")),
+        "{old_proxy}"
+    );
+    assert!(old_proxy.contains(&format!("\theader X-Yulius-Moved-To {NEW_URL}\n")));
+    assert!(!old_proxy.contains("reverse_proxy") && !old_proxy.contains("header_up"));
     assert!(s.local.ran("systemctl reload caddy"));
     let kept = fs::read_to_string(s.opts.state_dir.join("Caddyfile.before"))?;
     assert!(kept.contains("reverse_proxy 127.0.0.1:8080"));
@@ -655,9 +704,9 @@ fn a_move_runs_from_the_plan_to_the_finish() -> TestResult {
     assert!(at("new: before_start")? < at("old: systemctl freeze")?);
     assert!(at("old: systemctl freeze")? < at("new: copy")?);
     assert!(at("new: copy")? < at("new: inventory")?);
-    assert!(at("new: inventory")? < at("new: mark")?);
-    assert!(at("new: mark")? < at("old: no signal thaws from here")?);
-    assert!(at("old: no signal thaws from here")? < at("new: start")?);
+    assert!(at("new: inventory")? < at("old: no signal thaws from here")?);
+    assert!(at("old: no signal thaws from here")? < at("new: mark")?);
+    assert!(at("new: mark")? < at("new: start")?);
     assert!(at("new: start")? < at("old: systemctl disable")?);
     assert!(at("old: systemctl disable")? < at("new: finish")?);
     assert!(!events.contains(&"old: systemctl thaw".to_owned()));
@@ -796,9 +845,8 @@ fn a_copy_that_differs_thaws_the_old_instance_and_starts_nothing() -> TestResult
         Some(true)
     );
 
-    // The copy that was not proven is marked unfinished: the same command removes it, copies
-    // again and completes.
-    assert!(events.contains(&"new: discard".to_owned()));
+    // The copy that was not proven stays marked unfinished: the same command removes it,
+    // copies again and completes.
     s.remote.tamper = None;
     assert_eq!(s.run()?, 0, "{}", s.shown());
     assert!(s.remote.host.ran("rm -rf --one-file-system -- "));
@@ -959,7 +1007,7 @@ fn a_named_disk_must_be_blank_and_too_little_space_names_the_blank_ones() -> Tes
     s.opts.data_disks = vec!["/dev/nvme0n1".into(), "/dev/nvme1n1".into()];
     s.remote
         .host
-        .says(&["blkid"], "0a1b2c3d-1111-2222-3333-444455556666\n");
+        .says(&["blkid", "-s"], "0a1b2c3d-1111-2222-3333-444455556666\n");
     assert_eq!(s.run()?, 0, "{}", s.shown());
     let events = s.events();
     let at = |what: &str| events.iter().position(|e| e == what);
@@ -1008,6 +1056,10 @@ fn what_cannot_be_moved_from_here_is_refused() -> TestResult {
     s.state()?;
     let other = State::begin(&s.opts.state_dir, "root@elsewhere", 22);
     assert!(other.is_err_and(|why| why.contains("a move to root@185.189.47.160 is recorded")));
+    // A state that cannot be read is not "no move".
+    fs::write(s.opts.state_dir.join("state.json"), "{ not json")?;
+    let broken = State::begin(&s.opts.state_dir, "root@185.189.47.160", 22);
+    assert!(broken.is_err_and(|why| why.contains("cannot be read as a move's state")));
     Ok(())
 }
 
@@ -1071,16 +1123,20 @@ fn abort_during_a_move_stops_the_new_host_through_the_key() -> TestResult {
 }
 
 #[test]
-fn a_unit_an_earlier_run_left_frozen_is_thawed_when_the_cutover_fails() -> TestResult {
+fn a_unit_that_is_frozen_before_the_move_is_not_touched() -> TestResult {
+    // An earlier run that was killed, or an export in progress: said, not guessed.
     let mut s = setup()?;
     if let Ok(mut unit) = s.world.systemd.lock() {
         unit.frozen = true;
     }
-    s.remote.tamper = Some(|copy| {
-        let _ = fs::remove_file(copy.join("master.key"));
-    });
-    assert_eq!(s.run()?, 1);
-    assert_eq!(s.old_unit(), (false, false), "{}", s.shown());
+    assert_eq!(s.run()?, 2);
+    assert!(
+        s.shown().contains("yulius.service is frozen"),
+        "{}",
+        s.shown()
+    );
+    assert_eq!(s.old_unit(), (true, false));
+    assert!(s.events().is_empty());
     Ok(())
 }
 
@@ -1194,5 +1250,131 @@ fn the_new_hosts_word_is_not_the_proof() -> TestResult {
     assert!(!s.events().contains(&"new: start".to_owned()));
     // What the new host says is shown without its control characters.
     assert!(s.shown().contains("trust me [2J") && !s.shown().contains('\u{1b}'));
+    Ok(())
+}
+
+#[test]
+fn a_terminal_lost_after_the_start_is_ordered_thaws_nothing() -> TestResult {
+    let mut s = setup()?;
+    // The line that reports the new instance cannot be shown any more.
+    s.world.lost_at = Some("runs build");
+    let ended = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| s.run()));
+    assert!(ended.is_err(), "the fake terminal did not go away");
+    // The new instance runs: whatever ended this process, the old one stays frozen.
+    assert!(s.events().contains(&"new: start".to_owned()));
+    assert!(!s.events().contains(&"old: systemctl thaw".to_owned()));
+    assert!(
+        s.old_unit().0,
+        "the old unit was thawed beside the new instance"
+    );
+    // The same command goes on from the recorded state.
+    s.world.lost_at = None;
+    assert_eq!(s.run()?, 0, "{}", s.shown());
+    assert_eq!(s.old_unit(), (true, true));
+    Ok(())
+}
+
+#[test]
+fn a_new_instance_that_runs_is_never_rolled_back() -> TestResult {
+    // It reports the build; enabling the helper fails after that.
+    let mut s = setup()?;
+    s.remote.host.fails(
+        &["systemctl", "enable", "--now", "yulius-update.path"],
+        "Unit yulius-update.path not found",
+    );
+    assert_eq!(s.run()?, 1);
+    let status = s.status()?;
+    assert_eq!(outcome(&status, "update helper"), Some(HostOutcome::Failed));
+    assert!(
+        !s.events()
+            .iter()
+            .any(|e| e == "new: stop" || e == "old: systemctl thaw")
+    );
+    assert_eq!(s.old_unit(), (true, true));
+    let state = State::load(&s.opts.state_dir).ok_or("no state")?;
+    assert_eq!((state.cutover, state.finished), (Cutover::Moved, true));
+    Ok(())
+}
+
+#[test]
+fn a_lost_answer_to_the_start_is_decided_by_asking_the_new_host() -> TestResult {
+    // The start happened, its answer did not arrive: the new host says that it runs.
+    let mut s = setup()?;
+    s.remote.lose = vec!["start"];
+    assert_eq!(s.run()?, 0, "{}", s.shown());
+    assert!(s.events().contains(&"new: health".to_owned()));
+    assert!(!s.events().contains(&"new: stop".to_owned()));
+    assert_eq!(s.old_unit(), (true, true));
+
+    // Nobody answers: nothing is decided, the old instance stays frozen and is not disabled.
+    let mut s = setup()?;
+    s.remote.refuse = vec!["start", "health"];
+    assert_eq!(s.run()?, 1);
+    assert_eq!(s.old_unit(), (true, false));
+    assert!(!s.events().contains(&"old: systemctl thaw".to_owned()));
+    let state = State::load(&s.opts.state_dir).ok_or("no state")?;
+    assert_eq!(state.cutover, Cutover::Starting);
+    assert!(
+        s.shown().contains("nobody knows whether it runs"),
+        "{}",
+        s.shown()
+    );
+    // The new host answers again: the same command starts it and finishes.
+    assert_eq!(s.run()?, 0, "{}", s.shown());
+    assert_eq!(s.old_unit(), (true, true));
+    Ok(())
+}
+
+#[test]
+fn a_finish_that_did_not_reach_the_new_host_is_tried_again() -> TestResult {
+    let mut s = setup()?;
+    s.remote.refuse = vec!["finish"];
+    assert_eq!(s.run()?, 1);
+    let state = State::load(&s.opts.state_dir).ok_or("no state")?;
+    assert_eq!((state.cutover, state.finished), (Cutover::Moved, false));
+    // The key is still on both hosts, and nothing claims the firewall is on.
+    assert!(s.remote.key && !s.remote.host.ran("ufw --force enable"));
+    assert!(
+        s.shown().contains("the firewall there are still to do"),
+        "{}",
+        s.shown()
+    );
+
+    assert_eq!(s.run()?, 0, "{}", s.shown());
+    let state = State::load(&s.opts.state_dir).ok_or("no state")?;
+    assert!(state.finished && !s.remote.key);
+    assert!(s.remote.host.ran("ufw --force enable"));
+    Ok(())
+}
+
+#[test]
+fn a_run_that_ended_before_the_proof_copies_again() -> TestResult {
+    // The copy was installed; the old host never heard its count (a killed run, a cut link).
+    let mut s = setup()?;
+    s.remote.refuse = vec!["inventory"];
+    assert_eq!(s.run()?, 1);
+    assert_eq!(s.old_unit(), (false, false));
+    assert!(!s.events().contains(&"new: start".to_owned()));
+    // What is there is an unfinished copy, not an instance: the same command removes it.
+    assert_eq!(s.run()?, 0, "{}", s.shown());
+    assert!(s.remote.host.ran("rm -rf --one-file-system -- "));
+    assert_eq!(s.old_unit(), (true, true));
+    Ok(())
+}
+
+#[test]
+fn abort_starts_an_old_unit_that_no_longer_runs() -> TestResult {
+    let mut s = setup()?;
+    assert_eq!(s.run()?, 0);
+    // The old host was restarted since: its unit is disabled and does not run, so there is
+    // nothing to thaw.
+    if let Ok(mut unit) = s.world.systemd.lock() {
+        unit.stopped = true;
+        unit.frozen = false;
+    }
+    s.world.https = false;
+    assert_eq!(s.abort()?, 0, "{}", s.shown());
+    let unit = s.world.systemd.lock().map_err(|e| e.to_string())?;
+    assert!(!unit.stopped && !unit.disabled && !unit.frozen);
     Ok(())
 }
