@@ -1,6 +1,6 @@
 ---
 yulius-task: 82e50053-d61d-4639-b3a6-6950286a81d3
-status: done
+status: in-progress
 ---
 
 # SPEC-450: browser_screenshot never shows a secret typed with browser_fill_secret
