@@ -72,7 +72,7 @@ the fix. Nobody writes an AppArmor rule by hand again.
 | BNS-005 | **Shipped profile.** When `/etc/apparmor.d/bwrap-userns-restrict` is enabled, setup disables it the supported way (the link in `disable/`, then `apparmor_parser -R`), never editing or removing the file, then loads the profile that is to attach (ours, or a hand-written one again) and proves. It does so also when the proof passes at that moment (same-name race at boot). `apparmor_parser -R` may fail only with exit 254 (not loaded). A shipped profile that its link disables but the kernel may still hold (a person's link, an unload that failed) is unloaded when the proof fails. | `a_resolute_host_disables_the_shipped_profile`, `a_release_upgrade_is_reported_and_fixed`, `a_shipped_profile_beside_a_hand_written_one_is_disabled`, `a_disabled_shipped_profile_that_is_still_loaded_is_unloaded`; VM (26.04, reboot, `apparmor` reinstall) |
 | BNS-006 | **Hand-written rule.** Another enabled file in `/etc/apparmor.d` whose profile attaches to `/usr/bin/bwrap` (a top-level header, whatever its layout: on one line, with the brace on the next line) (also through a variable set to bwrap's path) is never changed, disabled or removed, and Yulius's profile is never written next to it. When the proof passes the item is ok and names the adopted file. When it fails, setup loads that file again once (what a boot does); if it still fails, the item is **FAIL** with what was done and the commands that disable that file; if that load fails (the parser refuses the file, so it cannot unload it either), the item is **FAIL** with the parser's words and asks for a correct file. | `a_hand_written_rule_is_adopted`, `a_hand_written_rule_that_fails_is_named_not_touched`, `a_profile_header_is_found_in_any_layout`; VM (24.04 with the production rule) |
 | BNS-007 | **Unsupported or broken.** When AppArmor cannot load Yulius's profile, the file is removed again and the item is FAIL with the parser's error and the word "unsupported". When the proof fails and AppArmor is off, or still fails after the fix, the item is FAIL with bwrap's error and, where they apply, the cause: `kernel.unprivileged_userns_clone = 0`, `user.max_user_namespaces = 0`, a link that disables Yulius's profile; with such a kernel limit a person's profile is not blamed and no command that disables it is printed. A failed command or write is named once; a step that fails after the write is undone (Yulius's file removed again, or given its earlier text when it existed before the run; the shipped profile enabled again) and the line says so, or says what could not be undone. | `a_parser_that_cannot_read_the_rule_is_unsupported`, `a_namespace_limit_is_named`, `a_failed_write_is_named`, `a_failed_step_is_undone_and_named` |
-| BNS-008 | **Check and dry run change nothing.** `host check` reports what setup would do as FAIL "…; run `sudo yulius host setup`" (so the update helper's re-check and Settings → Instance show it, with no new contract), and ok only when nothing is to do. `--dry-run` says "would …". Neither writes, links nor runs `apparmor_parser`. | `a_check_reports_and_changes_nothing`, `a_dry_run_says_what_it_would_do`; VM (`host check` before and after) |
+| BNS-008 | **Check and dry run change nothing.** `host check` reports what setup would do as FAIL "…; run `sudo yulius host setup`" (so the update helper's re-check and Settings → Instance show it, with no new contract), and ok only when nothing is to do. `--dry-run` says "would …". Where setup has steps and the proof did not pass (it failed, or nothing could be started yet), both also name a kernel limit on user namespaces, which keeps bwrap out whatever setup does. Neither writes, links nor runs `apparmor_parser`. | `a_check_reports_and_changes_nothing`, `a_dry_run_says_what_it_would_do`, `a_namespace_limit_is_named`; VM (`host check` before and after) |
 | BNS-009 | **Doctor.** `yulius doctor --contained`, once isolation resolves, starts bwrap as sandboxes do (`Mapper`: ids mapped by `newuidmap`/`newgidmap`, the same namespace arguments, the same mount) and reports **sandbox namespaces**: ok, or FAIL (exit 1) with bwrap's error and `sudo yulius host setup` as the fix. Host setup's "contained doctor" line therefore fails on such a host. | `doctor::tests` (the line for both results), `userns::tests::the_proof_mounts_in_the_holders_namespace` (arguments); VMs (before and after) |
 | BNS-010 | **Import.** After a successful import, `yulius instance import` evaluates the item without changing anything and, when the host lacks it, names it first in step 1 of "Next:" (`sudo yulius host setup …` lets bwrap create user namespaces). It never tells anyone to write a rule by hand. | `import::tests` (text with and without); VM (import on fresh 24.04) if a copy can be made, else the text test |
 | BNS-011 | **Documents.** The operations guide (§1 prerequisites, §2 host setup items, Sandbox isolation, the update helper's re-check) describes the rule, why it exists, what setup does on 24.04, 26.04 and Debian, and a release upgrade from 24.04 to 26.04. ADR-0296 records the decision and its security trade-off. | `python3 scripts/check_repository.py` |
@@ -117,6 +117,9 @@ the fix. Nobody writes an AppArmor rule by hand again.
 - [x] Operations guide, architecture and changes describe the rule
 - [x] Proof on real Ubuntu 24.04, Ubuntu 26.04 and Debian hosts
 - [x] Gates and independent review
+- [x] After the merge: the review's last nits (issue #1165) and Settings → Instance in a browser
+- [x] The follow-up's reviews answered for the kernel limit: its own clause in a check and a dry run, also where nothing could be started yet
+- [x] After three review rounds the follow-up is split: this pull request carries the kernel limit, the reader's rewrite follows on its own
 
 ## Acceptance criteria
 
@@ -272,8 +275,66 @@ container: at `b74138b1` for the first runs, at `39c85810` for the runs after re
   head that carries this section.
 - **Not tested**: a release upgrade from 24.04 to 26.04 itself (its end state, both profiles
   enabled, was made by hand on 26.04); a host whose AppArmor cannot parse a `userns` rule (fake
-  host; on 26.04 a missing `abi/4.0` stood in for it); the production hosts themselves; Settings → Instance in a browser against such a host (it shows the host check's
-  lines unchanged, and the check's lines are proven above).
+  host; on 26.04 a missing `abi/4.0` stood in for it); the production hosts themselves (not
+  reachable from the task's sandbox; the request reports from the 26.04 production host what
+  the 26.04 guest shows: the shipped profile confines what a sandbox does inside its
+  namespace).
+- **After the merge** (#1164 merged at `00caba17`; the branch continues from `dev`):
+  - Round 3's nits of #1164, issue #1165. In this pull request (#1168), test-first on the fake
+    host: a check and a dry run name a kernel limit (`user.max_user_namespaces`,
+    `kernel.unprivileged_userns_clone` set to 0) like setup does, each limit as its own clause
+    ("… (bwrap: …); user.max_user_namespaces is 0 (…); setup would …"), also where nothing
+    could be started yet; the link that disables Yulius's profile is no cause beside a
+    person's profile; ADR-0296 says an earlier file gets its text back. The remaining nit (two
+    more layouts of a hand-written profile) is the reader's and follows, see the next point.
+  - **Split after three reviews.** The follow-up at first also rewrote the reader that finds a
+    person's profile for bwrap (`attaches_bwrap`). Three independent reviews each asked for
+    changes there (a variable written without braces; a file that sets `@{bin}` itself with an
+    alternation; `?=` and `:=`, which the third review found unread at `c38df089`), and each
+    found the kernel limit's part correct. As the project's rule for a third round asks, the
+    work is delivered in two pull requests. This one carries the limit's part and leaves the
+    reader as it is on `dev`. The reader's rewrite (the branch's commit `c38df089`: compared
+    with `apparmor_parser` 5.0.2 on 103,000 generated profile files and two real collections,
+    and tried on a real 26.04 host and its kernel) follows as its own pull request, with the
+    third review's findings answered. Issue #1177 lists what the reader leaves unread, on
+    `dev` and in the rewrite.
+  - What holds the limit's part: `a_namespace_limit_is_named` (a failed proof with one and with
+    two limits in a check, the dry run, a host where nothing can be started yet, a host where
+    bwrap works beside a switch set to 0 and nothing is named, a person's profile beside a
+    limit, the link beside a person's profile). Five mutations each fail it
+    (`target/evidence/split/mutate-limits.log`, not in the repository): a check without the
+    limits, a dry run without them, no limit where nothing could be started, a limit named
+    where bwrap works, the link named beside a person's profile. On a real host (QEMU guest: Ubuntu
+    26.04.1, kernel 7.0.0-38; the binary of `6fd02c02`, which also carries the reader's
+    rewrite, the limit's code being the same as here) with `user.max_user_namespaces = 0` the
+    check says "bwrap cannot start a user namespace as yulius (bwrap: Creating new namespace
+    failed: … (ENOSPC)); user.max_user_namespaces is 0 (no user namespaces at all: raise it in
+    /etc/sysctl.d); setup would …; run `sudo yulius host setup`" and the dry run "would …;
+    user.max_user_namespaces is 0 (…)"; with the limit lifted the check is ok again.
+  - Gates at the head that carries this section, `dev` merged in (`78f0f019`):
+    `cargo check --workspace --all-targets`, `cargo fmt --all -- --check`,
+    `cargo clippy -p yulius --all-targets -- -D warnings`, `cargo test -p yulius --lib`
+    (433 pass), `python3 scripts/check_repository.py` and `spec_check` here; the whole gate
+    (`scripts/dev ci`) and e2e are Yulius CI's run on the pull request's head. The security
+    scan is turned off for this project (Vidoc): nothing was scanned.
+  - Yulius CI on #1168 at `05d79655` failed once in e2e alone, in `onboarding.e2e.ts` "a
+    composer left before its reads answer adds no second toast to the start" (two recovery
+    reads waited where the test expects one). The branch changes no web or e2e file and the
+    next run passed it. `dev` has since corrected that test for this very race (#1151: the
+    hold starts once the earlier recovery reads answered), merged into this branch; issue
+    #1170, opened by task #442 for the same failure, has the pointer.
+  - Settings → Instance in a browser against a failing host: `yulius host check --json
+    --update-state …` (binary `ce389689`) as root in a throwaway `ubuntu:26.04` container on the
+    sandbox's 26.04 kernel (AppArmor on, `apparmor_restrict_unprivileged_userns = 1`, bubblewrap
+    and the service user present) exits 1 and keeps its report; a real `yulius serve` pointed at
+    that state directory, opened in the Yulius browser as its superadmin at `/admin/instance`,
+    lists under "The last host check … found that sandboxes may have lost Docker": "bwrap
+    namespaces: bwrap cannot start a user namespace as yulius (bwrap: No permissions to create a
+    new namespace, …): setup would write and load /etc/apparmor.d/yulius-bwrap; run `sudo yulius
+    host setup`". (A container, not a booted host: its other items fail for lack of systemd.)
+  - Outside this task, reported: issue #1166 (the import refusal's `chown user:` under uutils
+    coreutils, and `build-essential` on 26.04) and issue #1177 (the forms of a person's
+    profile the reader does not read).
 - **Met on the way, outside this change**: on every fresh host with cgroup delegation the first
   `host setup` ends with `FAIL Docker smoke test` in the step "a sandbox without Docker answers
   why" (a live engine answers the Docker-off run; a later `doctor --docker-smoke` passes): issue
