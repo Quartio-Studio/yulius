@@ -1,11 +1,11 @@
 ---
 yulius-task: 34165c5e-1d18-4e09-ab9d-c25b750f0d82
-status: draft
+status: in-progress
 ---
 
 # SPEC-454: The security-job no-cancel test holds its jobs itself, not by the 8 s job limit
 
-Status: draft
+Status: in-progress
 Date: 2026-11-11
 Owner: Yulius task #436, issue #1079
 Scope authorization: the request of task #436 (from task #430, which works through open issues):
@@ -70,7 +70,7 @@ it holds end only when the test releases them, and nothing else competes with th
 ## Plan
 
 - [x] Reproduce the defect and find its root cause
-- [ ] Write the fix spec and the regression test that fails
+- [x] Write the fix spec and the regression test that fails
 - [ ] Fix the cause until the regression test and every gate pass
 - [ ] Independent review in a fresh session, findings fixed test-first
 
@@ -108,8 +108,8 @@ it holds end only when the test releases them, and nothing else competes with th
   own limit, SPEC-435 JTL-003) into a test about fail-fast.
 - **An hour.** Any limit the test's waits cannot reach would do; an hour is far from the longest
   hold a passing run can have (two waits of 60 s), and the limit no longer decides anything. A
-  held job never outlives the test: the fixture's directory goes with it and the process host
-  ends a run whose directory is gone.
+  held job does not outlive a failed test for long: the fixture's directory goes with the test
+  and the process host ends a run whose directory is gone (seen: gone 9 s after a failed run).
 - **The regression test is an assertion in the test itself.** The defect is the test's scenario,
   so the guard states what the scenario needs (the other runs passed while the jobs are held) and
   fails without the fix in every order, with no probe. The limit has no such guard: only a wait
