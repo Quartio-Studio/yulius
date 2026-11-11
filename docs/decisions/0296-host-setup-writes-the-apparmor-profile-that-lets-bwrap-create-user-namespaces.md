@@ -43,6 +43,9 @@ other in load order, which a boot does not fix.
 - **A profile a person wrote is theirs.** Another enabled file that attaches to `/usr/bin/bwrap`
   is adopted when bwrap works with it, and never changed, disabled or joined by Yulius's profile.
   When bwrap does not work with it, the item fails and prints the commands that disable it.
+  The item reads only the plain spellings of such a profile. One in any other spelling is found
+  by what it does: Yulius's profile is proven with every profile of the directory loaded as a
+  boot loads them, and taken back where bwrap does not start (SPEC-456 BNS-012).
 - **Checks report and never fix.** `yulius host check` (the update helper's re-check, Settings →
   Instance) runs the same proof and reports what setup would do. `yulius doctor --contained`
   starts bwrap with ids mapped by `newuidmap`, as a sandbox does, and fails when that does not
@@ -64,6 +67,11 @@ other in load order, which a boot does not fix.
   needs once is not worth it. Rejected.
 - **Deciding from files only.** Cannot tell a working hand-written rule from a broken one, nor a
   profile that is written from one that is loaded. Rejected in favour of the proof.
+- **Reading every spelling AppArmor takes for a profile's path**, or asking `apparmor_parser`'s
+  debug dumps for it. A reader after the parser's grammar went through three reviews, each of
+  which found one more corner, and what a pattern weighs beside an exact path only the kernel
+  says; the dumps do not tell a profile's attachment from a child's, and before AppArmor 5.0 not
+  a profile named by its path from a rule. Rejected for the proof beside the whole directory.
 
 ## Consequences
 
