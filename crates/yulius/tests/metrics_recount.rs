@@ -155,6 +155,18 @@ async fn old_runs_get_their_transcripts_figures_once() -> TestResult {
         ..HarnessOptions::default()
     })?;
     transcripts(&h, &data)?;
+    // A restart took `a1` to run this version; its lines, which no live watch read, name
+    // another: the recount's word replaces the assumption (SPEC-461 CCM-011).
+    {
+        use yulius_app::ports::store::TaskStore as _;
+        let (run, task) = (
+            yulius_domain::ids::AttemptId::parse("a1")?,
+            yulius_domain::ids::TaskId::parse("t1")?,
+        );
+        h.store
+            .assume_run_cli_version(&run, &task, "2.1.200", yulius_domain::time::Timestamp(1))
+            .await?;
+    }
 
     let tally = h.app.recount_old_metrics().await?;
     assert_eq!(
