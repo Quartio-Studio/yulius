@@ -86,7 +86,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   host check` (the update helper's re-check, Settings → Instance) and `yulius doctor --contained`
   ("sandbox namespaces") report a host where bwrap cannot start a sandbox, with the fix, by
   starting one, and `yulius instance import` names the step. Run `sudo yulius host setup` again
-  after a release upgrade from 24.04 to 26.04.
+  after a release upgrade from 24.04 to 26.04. A follow-up (#1165) makes the check and the
+  dry run name a kernel limit on user namespaces (`user.max_user_namespaces` or
+  `kernel.unprivileged_userns_clone` set to 0) like setup does.
 - Resource limits are sized from the host (SPEC-459, task #441, ADR-0294). Live sessions, CI
   jobs, CI runs per sandbox, the sandbox disk quota and the CD run disk no longer have fixed
   defaults (8, 4, 2, 100 GB, 20 GB): like the sandbox memory they follow the host's CPUs, memory
