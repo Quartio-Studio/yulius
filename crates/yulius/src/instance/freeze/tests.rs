@@ -427,6 +427,32 @@ fn a_stopped_server_with_live_sessions_freezes_the_sessions_unit() -> TestResult
     Ok(())
 }
 
+/// Review of SPEC-458 (nit): what was frozen before the export is named as it is. With a stopped
+/// server that is the sessions unit, not the server's.
+#[test]
+fn units_frozen_before_the_export_are_named_as_they_are() -> TestResult {
+    let mut fake = Fake::new(&[("inactive", "running")]).with_sessions(&[("active", "frozen")]);
+    fake.files.insert(
+        "/sys/fs/cgroup/system.slice/yulius.service/cgroup.events".into(),
+        "populated 0\nfrozen 0\n".into(),
+    );
+    let held = run(&fake)?;
+    assert!(!held.ours());
+    assert_eq!(
+        held.describe(),
+        "yulius-sandboxes.service was frozen before the export; it stays frozen after it."
+    );
+    drop(held);
+    let both = Fake::new(&[("active", "frozen")]).with_sessions(&[("active", "frozen")]);
+    let held = run(&both)?;
+    assert_eq!(
+        held.describe(),
+        "yulius.service and yulius-sandboxes.service were frozen before the export; they stay \
+         frozen after it."
+    );
+    Ok(())
+}
+
 #[test]
 fn a_move_keeps_both_units_frozen_and_disables_the_server() -> TestResult {
     let fake = Fake::new(&[("active", "running"), ("active", "frozen")])

@@ -222,8 +222,15 @@ impl Freeze {
             )
         } else if self.stopped {
             format!("{unit} is stopped and nothing of it runs; nothing was frozen.")
+        } else if self.covered.len() > 1 {
+            format!(
+                "{} were frozen before the export; they stay frozen after it.",
+                self.covered.join(" and ")
+            )
         } else {
-            format!("{unit} was frozen before the export; it stays frozen after it.")
+            // With a stopped server that is its sessions unit, not the server's.
+            let frozen = self.covered.first().unwrap_or(unit);
+            format!("{frozen} was frozen before the export; it stays frozen after it.")
         }
     }
 
