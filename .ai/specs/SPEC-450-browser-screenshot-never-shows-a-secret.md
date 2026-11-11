@@ -132,8 +132,9 @@ with `browser_fill_secret`. A password field, drawn as dots, keeps screenshots w
   The screenshot is refused when:
   - the page's host is exposed;
   - it frames a host a value was typed into, or an exposed one, in a frame the probe cannot read
-    (frames of another origin or of an opaque, sandboxed one in the frame tree, and the `iframe`
-    targets whose parent frame is the tab's, is not said, or is no target listed);
+    (frames of another origin or of an opaque, sandboxed one in the frame tree, also when the
+    page's own origin is opaque, and the `iframe` targets whose parent frame is the tab's, is not
+    said, or is no target listed);
   - its `shown` holds a remembered value or line, which also exposes its host;
   - its `shown` holds any agent secret the redactor hides for the sandbox (its matcher: values,
     their encodings and lines). That also covers a stored key nobody filled.
@@ -151,11 +152,13 @@ with `browser_fill_secret`. A password field, drawn as dots, keeps screenshots w
   get it.
 - **SSC-007 A tool chosen while its sandbox's page loads opens in that sandbox** (the web app's
   tool panel; found by the e2e job). While a sandbox's page loads and no sandbox is the panel's
-  context yet, a tool the person opens (rail, link, shortcut) is remembered and shown pressed, and
-  opens in that sandbox once it is the context, taking the keyboard as a tool opened then does;
-  the tool chosen last wins. Choosing it again or hiding the tools cancels it; a page that ends
-  outside a sandbox drops it. The rail's tools are enabled while a sandbox arrives. Unchanged: a
-  tool opened while another sandbox is still the context (A shown, B loading) opens in A.
+  context yet, a tool the person opens (rail, link) is remembered and shown pressed, and opens in
+  that sandbox, the one whose page started loading last, once it is the context, taking the
+  keyboard as a tool opened then does; the tool chosen last wins. Choosing it again or hiding the
+  tools cancels it; a page that ends in another sandbox or outside one drops it (what it was
+  opened with, a browser tab or a file, belongs to the sandbox it was chosen for). The rail's
+  tools are enabled while a sandbox arrives. Unchanged: a tool opened while another sandbox is
+  still the context (A shown, B loading) opens in A.
 
 ## Plan
 
@@ -244,6 +247,7 @@ with `browser_fill_secret`. A password field, drawn as dots, keeps screenshots w
   - `a_restored_filled_page_during_the_look_exposes_its_site`.
   - `fills_that_cannot_be_placed_refuse_every_screenshot`: no host, frame targets unknown, a
     sandboxed frame.
+  - `a_sandboxed_frame_of_a_sandboxed_page_is_not_readable`.
   - `a_page_showing_any_hidden_secret_is_not_captured`.
 - `crates/yulius-browser/tests/manager.rs`: `typed_secrets_outlive_the_browser`,
   `a_lost_secret_refuses_screenshots_after_a_restart`.
@@ -252,9 +256,11 @@ with `browser_fill_secret`. A password field, drawn as dots, keeps screenshots w
   - `e2e/tests/terminals.e2e.ts`: "the Shell chosen while its sandbox’s page loads opens there
     with the keyboard", "a tool chosen twice while its sandbox’s page loads does not open", "a
     tool chosen while its sandbox’s page loads does not open once the tools are hidden", "the tool
-    chosen last on the way into a sandbox opens there" (from Settings, outside a sandbox).
+    chosen last on the way into a sandbox opens there" (from Settings, outside a sandbox), "a tool
+    chosen for a sandbox left while its page loads does not open in another".
   - `e2e/tests/agent-panel.e2e.ts`: "the Superagent chosen while its sandbox’s page loads is that
-    sandbox’s own".
+    sandbox’s own", "the Superagent chosen for a sandbox is dropped when its page is left for
+    Settings".
 - `e2e/tests/onboarding.e2e.ts`, "a composer left before its reads answer adds no second toast to
   the start": holds the recovery reads once those asked earlier have answered (the mock counts
   the answers, `recoveryAnswered`).
@@ -349,10 +355,11 @@ with `browser_fill_secret`. A password field, drawn as dots, keeps screenshots w
   --locked check`: advisories ok, bans ok, licenses ok, sources ok). `scripts/dev ci` at ada375dc:
   exit 0: fmt, clippy, the macOS build, 3302 tests passed (16 skipped), 152 script tests OK,
   `cargo deny` ok, docs built.
-- **The e2e job** (`cd e2e && npx e2e run`, 11 workers here). The five SSC-007 tests were committed
+- **The e2e job** (`cd e2e && npx e2e run`, 11 workers here). Four SSC-007 tests were committed
   first (`03b5bf75`) and failed on that head: the Shell showed "Open a sandbox first." without the
-  keyboard, the Superagent was the Global one; they pass with `6ef301ee`. Removing the "chosen
-  again" and the "tools hidden" guards by hand fails their tests. The onboarding race was
+  keyboard, the Superagent was the Global one; they pass with `6ef301ee`, which also brought the
+  "tools hidden" test. Removing the "chosen again" and the "tools hidden" guards by hand fails
+  their tests. The onboarding race was
   reproduced by letting every recovery read arrive at the same moment in the mock (failed 3 of 3,
   "expected 3 to be 1") and passes under the same probe with `fa895b4e`. The whole suite at
   `fa895b4e`, with `dev` (e2dd441d) merged: exit 0, 907 passed, 2 skipped (skipped on `dev` too).
@@ -361,6 +368,17 @@ with `browser_fill_secret`. A password field, drawn as dots, keeps screenshots w
   numbers". That one failed once in four whole runs and never in 17 runs alone (every row measured
   as spilling right after the drawer opened); it opens no tool and this change does not touch its
   page, so it is reported on #1113, not fixed here.
+- **The final head.** `scripts/dev ci` at 65ca08d7: exit 0: fmt, clippy, the macOS build, 3305
+  tests passed (16 skipped), 152 script tests OK, `cargo deny` ok, docs built. The review of
+  65ca08d7 requested changes: a waiting tool opened in whichever sandbox became the context (a
+  Shell or a Superagent session in the sandbox the person went to instead); the un-press of a
+  tool dropped outside a sandbox had no test; a sandboxed frame inside a page whose own origin is
+  opaque counted as readable; two wordings here. The tests came first (`0e9eb172`: the Shell
+  opened in product, the frame's page was captured; the Settings test fails with the un-press
+  removed), the fixes in `928fdce4`. After them: `cargo fmt --check`, `cargo clippy -p
+  yulius-browser --all-features --all-targets -- -D warnings`, `cargo nextest run -p
+  yulius-browser --all-features` (105 passed) and the whole e2e suite (exit 0, 909 passed, 2
+  skipped); the whole gate at that head is Yulius CI's.
 - **Security scan.** `scripts/dev security`: "Security scan disabled: Vidoc is turned off in
   Yulius, for this project or the whole instance; nothing was scanned" (exit 0): disabled, not
   passed.
