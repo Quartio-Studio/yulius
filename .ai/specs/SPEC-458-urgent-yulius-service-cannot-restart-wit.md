@@ -192,20 +192,27 @@ for one unit; with sessions in their own unit that is wrong in four places.
 
 - **MOV-001** Thawing the old instance thaws its sessions unit first, then the server's unit
   (`freeze::thaw_instance`); a server's unit that does not run is left out, since systemd
-  refuses to thaw it. A signal during the cutover thaws the units the freeze covers.
+  refuses to thaw it, and the move's line then says that the unit is down and how to start
+  it, not that it "runs as before". A signal during the cutover thaws the units the freeze
+  covers.
 - **MOV-002** Two questions about the old instance. "Something of it is frozen" decides the
   plan's refusal, whether there is anything to thaw, and the abort. "All of it is frozen" (the
   server's unit, and its sessions unit where one runs) is what the new instance's start, a
   recorded start and the move's last line wait for: one unit thawed alone starts nothing. A
   server found stopped after the freeze gives back what the freeze took. Not knowing is not
   frozen: when systemd does not say what the sessions unit does, the old instance's state is
-  unknown, as when it does not say what the server's unit does; a thaw still tries the unit.
+  unknown, as when it does not say what the server's unit does; a thaw still tries the unit,
+  and the cutover says "not known to be frozen as a whole" then, not "is not running".
 - **MOV-003** The stop on the new host ends the sessions unit with the server's (kill, then
   stop) and fails, naming the unit, while something of either still runs: "nothing of it runs"
-  comes before the old instance thaws.
+  comes before the old instance thaws. "Still runs" reads `cgroup.events` of each unit's
+  group, since a delegated unit keeps its processes in subgroups. A systemd that does not say
+  whether the sessions unit is there is not a host without one: the unit is ended as far as
+  that goes and the step fails.
 - **MOV-004** The sessions unit's own drop-ins under `/etc/systemd/system` travel like the
-  server unit's; the plan refuses a run from inside the sessions unit; the commands a person
-  is told to run name both units.
+  server unit's; the plan refuses a run from inside the sessions unit; every command a person
+  is told to stop the new instance with, or to stop, freeze or thaw the old one with, names
+  both units.
 
 ### A task that rests while its run is on record (#439)
 
@@ -324,10 +331,11 @@ Ubuntu 24.04.5 (systemd 255.4, kernel 6.8) and Ubuntu 26.04.1 (systemd 259.5, ke
 Prepared as production was: the pre-fix binary (`911e3127`, the first merge base) installed as
 `/usr/local/bin/yulius` and set up by its own `yulius host setup --public-url http://vm.test
 --no-smoke`, which wrote and started `yulius.service`; the update helper installed from
-`deploy/systemd` as the guide says. The build with the fix is this branch at `82c3b2a5` (the
+`deploy/systemd` as the guide says. The build with the fix is this branch at `4d35e7f9` (the
 runs were repeated as the change grew, and the figures below are those of the last, complete
-run of that build; the one commit that changes code after it, `36f4aeb1`, is in `yulius
-instance migrate` only, which these runs do not use).
+run of that build). The one commit that changes code after it, `e8ca16ce`, is in `yulius
+instance migrate` only, which those runs do not use; the last two rows of the table were run
+with the build of `e8ca16ce`.
 
 What stands in for what, because it cannot be had in a guest:
 
@@ -339,7 +347,7 @@ What stands in for what, because it cannot be had in a guest:
 - A build is staged by hand in `/var/lib/yulius-update/staged/` where the helper's own build
   would put it. The request file is written as the server writes it, by the service user.
 
-Results (fourteen runs, seven scripted scenarios on each system; every run ended, and no session
+Results (sixteen runs, eight scripted scenarios on each system; every run ended, and no session
 process was lost where one should be kept):
 
 | Scenario | 24.04 (systemd 255) | 26.04 (systemd 259) |
@@ -363,6 +371,8 @@ process was lost where one should be kept):
 | A host without the server's unit, `/usr/local/bin` given to the service user, `host setup --public-url …` | the setup writes and starts `yulius.service` (it runs as the service user), then fails "yulius binary" and "sessions unit" ("… would run /usr/local/bin/yulius as root, but … is not root's alone to write … nothing was written"): no sessions unit, no adopt unit, no drop-in | the same |
 | The same host with the directory root's again, the server's unit removed, the setup once more | the three units and the server's written and started; server in `yulius.slice`, "per-sandbox limits on cgroup=…/yulius-sandboxes.service"; restart and crash keep the sessions; a second setup changes nothing | the same |
 | That host with `ExecStart=` naming a link to the binary | the setup fails the item: "… is a link, and what it leads to can change: name the file itself in the server unit's ExecStart= … nothing was written"; sessions kept | the same |
+| `yulius instance export` on a host set up by the build with the fix, two sandboxes in the sessions unit | both units `running` before; both `frozen` while the archive is read ("Frozen yulius.service and yulius-sandboxes.service: every Yulius process is paused until the export ends. …"); exit 0; both `running` after; 14 of 14 kept; a run paused in its own group is still `frozen 1` | the same |
+| The stop a move makes on its new host (`yulius instance migrate-target`, step `stop`) there: 18 session and engine processes, one of them frozen | reply "yulius.service is stopped and disabled on the new host, nothing of it runs"; the server's unit inactive and disabled, the sessions unit not active (`failed`: its keeper was killed with the rest); 0 of 18 processes left, no forked child either; both units' groups gone | the same |
 
 Found by these runs and by the independent review, and fixed before the last run: the adopt
 step reported a failure on 26.04 when systemd gave up the emptied old group without removing
@@ -377,21 +387,25 @@ on 259.
 
 - New tests fail without their change and pass with it (several were checked by taking the
   change out again): `cgroup::detect` and the unit names; `adopt`, its repeated reads, its
-  second look and `let_go` on fake cgroup trees (18); the host setup item (26, with the deploy
+  second look and `let_go` on fake cgroup trees (18); the host setup item (27, with the deploy
   files and the operations guide pinned to what the setup writes, the binary that could be
   replaced, the binary named through a link, a directory that cannot be inspected, units
   systemd has not loaded, the sessions unit that does not run, and the adopt command over a
   fake tree and injected systemd answers); the restart guard's table and readers; the helper
   refusing before it stops anything; the server's 409 (`self_update`); the doctor's line; the
-  export's freeze with a sessions unit and the thaw of a whole instance (3); the migration
-  freezing, thawing, judging, stopping and carrying both units (flow 8, target 1, profile 1);
+  export's freeze with a sessions unit and the thaw of a whole instance (4); the migration
+  freezing, thawing, judging, stopping and carrying both units and naming both in what it
+  tells a person to run (flow 12, target 1 with five cases, profile 1);
   the Docker front decision (3); and the
   supervisor (`task_done`: the reconciliation during a launch, the sweep's two conditions, a
   refused start, a start during a launch, a start and a stop that settle a run no server
   holds).
-- `scripts/dev ci` at `82c3b2a5`, the last commit that changes code: exit 0; formatting,
-  clippy, the repository check, the macOS compile check, `3587 tests run: 3587 passed, 16
+- `scripts/dev ci` at `e8ca16ce`, the last commit that changes code: exit 0; formatting,
+  clippy, the repository check, the macOS compile check, `3635 tests run: 3635 passed, 16
   skipped`, doctests and the documentation build.
+- Yulius CI passed on this pull request's heads `d3ffc574`, `cf884254`, `68dc658c` (on its
+  second run: the first failed in one e2e test of the CD page that this change does not touch,
+  reported as #1175) and `4d35e7f9`.
 - `yulius security-scan`: "Security scan disabled: Vidoc is turned off in Yulius"; nothing was
   scanned, so this is not a pass.
 
@@ -427,11 +441,20 @@ skill; it was asked again after each set of fixes.
   move's stop on the new host ended only the server's unit, so after an abort the new
   instance's agents ran on beside the thawed old one. Medium: the "still frozen" gates passed
   with one of the two units frozen. Low: a stopped server's frozen sessions unit; drop-ins
-  that did not travel. Fixed test-first (`82c3b2a5`, MOV-001 to MOV-004); the review of that
-  is of the head that holds this text.
+  that did not travel. Fixed test-first (`82c3b2a5`, MOV-001 to MOV-004).
+- The review of that (head `4d35e7f9`, after one more merge of `dev`, #1167, with one conflict
+  in the list of probe points): four of the five resolved, the merge clean; changes needed.
+  Medium: one of the three messages that tell a person how to stop the new instance (the
+  abort's, while the new URL still answers) still named only the server's unit. Low: a
+  server's unit stopped during the copy reported as "thawed: it runs as before"; the stop on
+  the new host taking an unanswered question about the sessions unit for "no such unit"; "still
+  runs" for the server's unit reading only its own `cgroup.procs` (already so in #1169; fixed
+  here with a test, the function being this change's now); two wordings. Fixed test-first
+  (`e8ca16ce`); the review of that is of the head that holds this text.
 
 Not shown, and why: production itself; real agent sessions, sandboxes and Docker engines (a
 guest has no GitHub App and no Claude subscription), so that the server attaches to a session's
 terminal again and that an engine starts again after the move rest on unit tests and on code
-this change does not touch; `yulius instance migrate` on a host with a sessions unit (fake
-systemd only); the helper's own `build` step.
+this change does not touch; a whole `yulius instance migrate` between hosts with a sessions
+unit (its stop on the new host and the export's freeze ran in the guests; its own freeze, thaw
+and gates ran against a fake systemd only); the helper's own `build` step.
