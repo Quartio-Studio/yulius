@@ -290,11 +290,11 @@ Remote clients
 
 ## Evidence
 
-Head of the gates: `afdc1a2b` (2026-11-11), which holds `dev` up to `4b59bce3` (#1173); the
+Head of the gates: `52c2aed7` (2026-11-11), the merge of `dev` up to `63819769` (#1168); the
 commits after it change this document only.
 
 - `scripts/dev ci`: exit 0; nextest 3682 tests run, 3682 passed, 16 skipped; clippy,
-  doctests, docs and the repository check.
+  doctests, docs and the repository check (the same at `afdc1a2b`, before that merge).
 - e2e: the whole suite (`cd e2e && npx e2e run`) at `8e687075`: 79 files passed, 1 skipped; 940
   tests passed, 1 skipped. At `c84185d3`, where only a comment of the sign-in page had changed
   since (and no file of the web UI changed after it): `sign-in`, `instance-address`,
