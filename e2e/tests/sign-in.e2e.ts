@@ -180,8 +180,7 @@ test('a late status answer for an earlier sign-in page leaves the current one ri
 
 // SPEC-466 MVC-012: after a move to another URL GitHub refuses every sign-in from the new address
 // until the GitHub App holds its callback URL. The page says so (`callback=missing`: the server
-// knows GitHub's answer), opens the superadmin password and keeps GitHub sign-in: GitHub decides,
-// and pressing it makes the server ask GitHub again.
+// knows GitHub's answer), opens the superadmin password and keeps GitHub sign-in: GitHub decides.
 const MOVED_ADDRESS = /GitHub says it doesn’t know this address/;
 
 test('when GitHub does not know this address the page says so and opens the password', async ({ app, browser, screen }) => {

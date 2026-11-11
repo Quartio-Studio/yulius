@@ -60,7 +60,7 @@ The check
   memory: registered, missing, or unknown with the reason, and when it was given. Without a GitHub
   App there is no answer and GitHub is not asked.
 - MVC-003 **When it asks.** At start (in the background) and when the manifest flow has stored the
-  App; on demand (MVC-011's "Check again" and the return to the page, MVC-013, MVC-020); and,
+  App; on demand (MVC-011's "Check again" and the return to the page, MVC-020); and,
   while the answer is not "registered", when it is read (the Instance page, the sign-in page) and
   is due: 30 s old at first, so a missing callback is re-checked until it is registered, and
   nothing asks GitHub while nobody looks. A page left open does not ask for ever at that pace:
@@ -97,9 +97,8 @@ Settings → Instance and the sign-in page
   instance ask GitHub again), and the sentence goes in place once the callback is there.
   Password sign-in is unchanged.
 - MVC-013 **The check never blocks sign-in.** `GET /api/auth/github/start` goes to GitHub whatever
-  the kept answer is: GitHub's own page stays the authority. A start while the answer is
-  "missing" and older than 5 s makes the instance ask GitHub again beside it (a demand), so a
-  callback registered since is known at the next look.
+  the kept answer is and asks GitHub nothing: GitHub's own page stays the authority, no visitor
+  can make the instance ask, and the sign-in that completes proves the callback (MVC-003).
 
 The root command
 
@@ -188,9 +187,8 @@ Remote clients
 - After a start with the move's mark the address API names the old URL, the time and the three
   task counts; without `moved.json`, `moved: null`.
 - `GET /api/setup/status` says `github_callback_missing: true` only while the answer is missing;
-  `GET /api/auth/github/start` redirects to GitHub whatever the answer is and, while it is
-  missing and older than 5 s, makes the instance ask GitHub again, after which the status no
-  longer says missing once GitHub accepts the callback; password sign-in works throughout.
+  `GET /api/auth/github/start` redirects to GitHub whatever the answer is and asks GitHub
+  nothing; password sign-in works throughout.
 - `/internal/github-callback` answers 401 without the key, `{"github": …}` with it (`null`
   without an App), checks another `public_url` without changing the kept answer, and refuses
   `public_url=http://x` and `https://x/path` (422).

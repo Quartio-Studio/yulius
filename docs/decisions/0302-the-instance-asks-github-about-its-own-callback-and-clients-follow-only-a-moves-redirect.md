@@ -27,7 +27,7 @@ C of [0297](0297-one-root-command-moves-an-instance-and-drives-the-new-host-over
   `redirect_uri_mismatch` missing, anything else unknown with the reason. One bounded request, no
   person's token, nothing changed at GitHub.
 - **Asked on demand and while someone looks.** At start, when the App is stored, on a superadmin's
-  "Check again" or return to the page, for the move's plan, and when a sign-in starts or a page
+  "Check again" or return to the page, for the move's plan, and when a page
   reads an answer that is not "registered" and due: 30 s old at first, and, once eleven such
   answers in a row said the same, twice as old with each further one, up to 4 minutes (a demand
   or a changed answer makes it 30 s again). No loop asks GitHub while nobody looks, a page left
@@ -37,7 +37,8 @@ C of [0297](0297-one-root-command-moves-an-instance-and-drives-the-new-host-over
   whatever the question with the made-up code said before.
 - **The check never stops a sign-in.** While the answer is "missing" the sign-in page says so and
   opens the password; "Sign in with GitHub" still leads to GitHub, whose own page stays the
-  authority, and a start makes the instance ask again. "Unknown" changes nothing at all.
+  authority; a start asks GitHub nothing, so no visitor can make the instance ask. "Unknown"
+  changes nothing at all.
 - **Root's commands get the facts over the loopback listener.** `GET /internal/github-callback`
   takes the key the server writes for `yulius leftovers` (`leftovers-cli.key`) and answers the
   state, the settings link and the two values, for the instance's URL or the one named. The move

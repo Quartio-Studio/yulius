@@ -305,7 +305,7 @@ export function signInProblem(reason, login) {
  * Sign-in: GitHub (all users) and a compact superadmin password form. Without a GitHub App
  * (`githubConfigured` false, SPEC-422) only the password, open, with why GitHub is missing. While
  * GitHub refuses this address (`callbackMissing`, SPEC-466) the page says so and opens the
- * password; GitHub sign-in stays (GitHub decides), and pressing it makes the server ask again.
+ * password; GitHub sign-in stays: GitHub decides.
  */
 export function mountSignIn(ctx, { next, onDone, problem, githubConfigured = true, callbackMissing = false }) {
   // Same rule as the server (#60): browsers read \\ as / and drop tabs and newlines.

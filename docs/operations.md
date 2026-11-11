@@ -1070,8 +1070,8 @@ Yulius notices and says exactly what to do:
   and secret) the card says why; sign-in is not affected by that.
 - **The sign-in page** says that GitHub does not know this address and opens the superadmin
   password, which keeps working. "Sign in with GitHub" stays and leads to GitHub as always (until
-  the callback is saved GitHub shows its own error there), and pressing it makes the instance ask
-  GitHub again, so the sentence goes once the callback is saved.
+  the callback is saved GitHub shows its own error there); the first sign-in that completes tells
+  the instance that the callback is there, and the sentence goes.
 - **`yulius instance migrate`** checks the new URL's callback in its plan, before anything is
   moved, with the same link and values ([Move the instance](#move-the-instance-to-another-host)).
 
