@@ -89,9 +89,12 @@ with `browser_fill_secret`. A password field, drawn as dots, keeps screenshots w
     the Global one (SPEC-428 SAT-005). A person on a slow connection meets the same. Fixed here
     (SSC-007); `dev` meanwhile got waits in the tests that met it (#1150).
   - Races in tests only: production protection read the stored switch while it was being sent;
-    the places editor test typed before README.md's text was in Monaco's model (#1087); the
+    the places editor test typed before README.md's text was in Monaco's model (#1087; `dev`
+    has since fixed that in the Editor itself, #1159, and dropped the wait); the
     left-composer onboarding test (#581) set its hold on recovery reads while an earlier read was
-    still on its way, so two or three waited there instead of one.
+    still on its way, so two or three waited there instead of one; the 320 px navigation drawer
+    test (SPEC-122) measured its rows while the drawer still slid in from the left, when a part
+    of a row that is not drawn (it measures as zeros) lies right of every row.
 
 ## Requirements
 
@@ -131,10 +134,18 @@ with `browser_fill_secret`. A password field, drawn as dots, keeps screenshots w
   plus the values and placeholders of fields drawn as text; `masked` is the password field values.
   The screenshot is refused when:
   - the page's host is exposed;
-  - it frames a host a value was typed into, or an exposed one, in a frame the probe cannot read
-    (frames of another origin or of an opaque, sandboxed one in the frame tree, also when the
-    page's own origin is opaque, and the `iframe` targets whose parent frame is the tab's, is not
-    said, or is no target listed);
+  - it frames a host a value was typed into, or an exposed one, in a frame the probe cannot read:
+    - a frame of another origin in the frame tree, or one the tree calls opaque (`null`), also
+      when the page's own origin is opaque;
+    - an `iframe` target (a frame in a process of its own, as Chrome runs a sandboxed frame)
+      whose parent frame is the tab's, is not said, or is no target listed, also on the page's
+      own host;
+    - a frame at an address of the page's own origin that the probe did not read. The frame tree
+      says the origin of a frame's address whether or not it is sandboxed, so the probe says how
+      many such frame documents it read (`frames`; none when it does not say), and fewer than
+      the tree lists counts as a frame of the page's own host out of reach: a sandboxed frame
+      kept in the page's process, or any frame of a page sandboxed by its
+      `Content-Security-Policy`;
   - its `shown` holds a remembered value or line, which also exposes its host;
   - its `shown` holds any agent secret the redactor hides for the sandbox (its matcher: values,
     their encodings and lines). That also covers a stored key nobody filled.
@@ -155,10 +166,11 @@ with `browser_fill_secret`. A password field, drawn as dots, keeps screenshots w
   context yet, a tool the person opens (rail, link) is remembered and shown pressed, and opens in
   that sandbox, the one whose page started loading last, once it is the context, taking the
   keyboard as a tool opened then does; the tool chosen last wins. Choosing it again or hiding the
-  tools cancels it; a page that ends in another sandbox or outside one drops it (what it was
-  opened with, a browser tab or a file, belongs to the sandbox it was chosen for). The rail's
-  tools are enabled while a sandbox arrives. Unchanged: a tool opened while another sandbox is
-  still the context (A shown, B loading) opens in A.
+  tools cancels it; another sandbox's page starting to load ends the wait at once, and a page
+  that ends outside a sandbox drops it (what it was opened with, a browser tab or a file, belongs
+  to the sandbox it was chosen for); another page of the same sandbox keeps it. The rail's tools
+  are enabled while a sandbox arrives. Unchanged: a tool opened while another sandbox is still
+  the context (A shown, B loading) opens in A.
 
 ## Plan
 
@@ -217,9 +229,11 @@ with `browser_fill_secret`. A password field, drawn as dots, keeps screenshots w
 - `crates/yulius-browser/tests/real_chromium.rs` (opt-in, `YULIUS_TEST_CHROMIUM`): on a real page
   a password fill keeps screenshots, its reveal and a text-field fill on another origin refuse
   them, and a third site framing the filled one is refused, so the probe expression, the isolated
-  world, the frame tree and the `iframe` targets work in Chromium. The page's named elements
-  shadow `document.documentElement` and `document.querySelectorAll`, which the probe reads through
-  the prototypes.
+  world, the frame tree and the `iframe` targets work in Chromium. A page of a site signed in to
+  that frames its own origin keeps its screenshots; with that frame sandboxed, or the page
+  itself (`Content-Security-Policy: sandbox`), it is refused. The page's named elements shadow
+  `document.documentElement` and `document.querySelectorAll`, which the probe reads through the
+  prototypes.
 - `crates/yulius-browser/tests/instance.rs`:
   - `typed_secrets_refuse_screenshots_while_a_page_may_show_them`: an unseen fill and its origin,
     the isolated world's frame and context, another origin echoing the value, probe answers over
@@ -245,9 +259,13 @@ with `browser_fill_secret`. A password field, drawn as dots, keeps screenshots w
   - `a_fill_into_an_unreadable_frame_exposes_the_framed_site`: its frames' hosts, frames by origin.
   - `a_navigation_during_the_look_before_typing_exposes_nothing`.
   - `a_restored_filled_page_during_the_look_exposes_its_site`.
-  - `fills_that_cannot_be_placed_refuse_every_screenshot`: no host, frame targets unknown, a
-    sandboxed frame.
-  - `a_sandboxed_frame_of_a_sandboxed_page_is_not_readable`.
+  - `fills_that_cannot_be_placed_refuse_every_screenshot`: no host, frame targets unknown.
+  - `a_frame_of_the_pages_own_site_is_readable_only_when_the_probe_read_it`: read (captured),
+    one of two read, a probe that does not say, sandboxed in the page's process, a sandboxed
+    page, a frame target on the page's own host; a site nothing was typed into keeps its
+    screenshots. The fake answers as Chrome 157 does (the origin of the frame's address).
+  - `a_frame_the_tree_calls_opaque_is_not_readable`: a frame tree that says `null`, also for the
+    page itself, whatever the probe says it read.
   - `a_page_showing_any_hidden_secret_is_not_captured`.
 - `crates/yulius-browser/tests/manager.rs`: `typed_secrets_outlive_the_browser`,
   `a_lost_secret_refuses_screenshots_after_a_restart`.
@@ -257,13 +275,18 @@ with `browser_fill_secret`. A password field, drawn as dots, keeps screenshots w
     with the keyboard", "a tool chosen twice while its sandbox’s page loads does not open", "a
     tool chosen while its sandbox’s page loads does not open once the tools are hidden", "the tool
     chosen last on the way into a sandbox opens there" (from Settings, outside a sandbox), "a tool
-    chosen for a sandbox left while its page loads does not open in another".
+    chosen for a sandbox left while its page loads does not open in another", "a tool chosen
+    while its sandbox’s page loads opens beside the page shown in the end" (another task of the
+    same sandbox), "a tool waits for the sandbox whose page started loading last" (studio, then
+    product, then studio again, each held).
   - `e2e/tests/agent-panel.e2e.ts`: "the Superagent chosen while its sandbox’s page loads is that
     sandbox’s own", "the Superagent chosen for a sandbox is dropped when its page is left for
     Settings".
 - `e2e/tests/onboarding.e2e.ts`, "a composer left before its reads answer adds no second toast to
   the start": holds the recovery reads once those asked earlier have answered (the mock counts
   the answers, `recoveryAnswered`).
+- `e2e/tests/navigation.e2e.ts`, "the navigation drawer rows fit a 320 px phone with task and
+  pull request numbers": measures the parts of a row that are drawn.
 
 ## Decisions
 
@@ -290,6 +313,15 @@ with `browser_fill_secret`. A password field, drawn as dots, keeps screenshots w
 - **A framed site is judged by its host.** The frame cannot be read, so a page framing a host a
   secret was typed into is refused whatever the frame shows; a frame of another site (an ad, a
   captcha) is not.
+- **A frame of the page's own site is readable only when the probe read it.** Chrome's frame
+  tree says the origin of a frame's address whether or not the frame is sandboxed, also for a
+  page sandboxed by its `Content-Security-Policy`, and Chrome runs a sandboxed frame in a
+  process of its own: a target on the page's own host (seen on Chrome 157). The tree's origins
+  only prove that a frame is of another site. So the probe says how many frames of the page's
+  origin it read, and a frame target counts whatever its host. Rejected: trusting the tree's
+  origin (a sandboxed frame of the site signed in to was captured on Chrome); counting every
+  frame element the probe could not read (any ad or captcha frame would cost such a site its
+  screenshots).
 - **Compare in Yulius, read in an isolated world, look again after the capture.** Sending the
   value into the page would hand it to whatever origin the tab shows by then; the isolated world
   keeps page scripts from spoofing the probe; the second look catches a page that changed by
@@ -348,7 +380,14 @@ with `browser_fill_secret`. A password field, drawn as dots, keeps screenshots w
   (`"securityOrigin":"://","url":""`) or not at all, while `Target.getTargets` lists it as an
   `iframe` target with its URL and `parentFrameId`. The page's elements named `documentElement` and
   `querySelectorAll` did not affect the probe in its isolated world even without the prototype
-  getters, which stay as defense.
+  getters, which stay as defense. Asked again for the final review (Chrome 157.0.8103.50, raw
+  CDP): `Page.getFrameTree` gives `securityOrigin` as the origin of the frame's address for a
+  sandboxed frame and for a page sandboxed by `Content-Security-Policy: sandbox` (whose
+  `self.origin` is `null`), never `null`; a sandboxed frame is an `iframe` target at its address
+  with the page as parent, and with `--disable-features=IsolateSandboxedIframes` a child in the
+  tree; `contentDocument` is `null` for each. The test, with a page framing its own origin
+  (captured), a sandboxed frame of it and a sandboxed page (refused), failed at the sandboxed
+  frame on `1c26954f` and passes with `ed174310`, with both ways of running sandboxed frames.
 - **Gate.** `scripts/dev ci` at 3d3a06cf: 3302 tests passed (16 skipped), 152 script tests OK; it
   failed only `cargo deny --locked check` on RUSTSEC-2026-0486 (rustix 1.1.5, new, failing every
   pull request), fixed by `ada375dc` (`cargo update -p rustix@1.1.5`, lockfile only; `cargo deny
@@ -365,9 +404,11 @@ with `browser_fill_secret`. A password field, drawn as dots, keeps screenshots w
   `fa895b4e`, with `dev` (e2dd441d) merged: exit 0, 907 passed, 2 skipped (skipped on `dev` too).
   Before the onboarding fix it ran three times: 907 passed twice, and once two failed, the
   onboarding test and "the navigation drawer rows fit a 320 px phone with task and pull request
-  numbers". That one failed once in four whole runs and never in 17 runs alone (every row measured
-  as spilling right after the drawer opened); it opens no tool and this change does not touch its
-  page, so it is reported on #1113, not fixed here.
+  numbers". That one failed once in seven whole runs and never in 17 runs alone (every row
+  measured as spilling right after the drawer opened). Its cause (see Context) showed when the
+  rows were measured from the click on, frame by frame: 12 of 12 rows "spill" until the drawer
+  is half in, none when only the drawn parts are measured; `0772b389` measures those, and the
+  test then passed 10 times alone and with its file.
 - **The final head.** `scripts/dev ci` at 65ca08d7: exit 0: fmt, clippy, the macOS build, 3305
   tests passed (16 skipped), 152 script tests OK, `cargo deny` ok, docs built. The review of
   65ca08d7 requested changes: a waiting tool opened in whichever sandbox became the context (a
@@ -378,7 +419,23 @@ with `browser_fill_secret`. A password field, drawn as dots, keeps screenshots w
   removed), the fixes in `928fdce4`. After them: `cargo fmt --check`, `cargo clippy -p
   yulius-browser --all-features --all-targets -- -D warnings`, `cargo nextest run -p
   yulius-browser --all-features` (105 passed) and the whole e2e suite (exit 0, 909 passed, 2
-  skipped); the whole gate at that head is Yulius CI's.
+  skipped). With `dev` merged, `scripts/dev ci` at 08a7d002: exit 0, 3308 tests passed (16
+  skipped), 152 script tests OK.
+- **The second review of the final head** (d8d0a527) found its four findings answered and asked
+  for two more things. The sandboxed-frame rule was proven on the fake only: Chrome was asked
+  (above), the rule did not hold there, and the tests came first (`1c26954f`), the fix in
+  `ed174310`. "The sandbox whose page started loading last" had no test: `09694541` and
+  `13392caa` add two, `b27261b8` ends the wait at once when another sandbox's page starts
+  loading, and `75fd0239` keeps that sandbox as one id. Removed by hand, each rule fails a test
+  (restored after): the count of frames read (also on Chrome), the frame target on the page's
+  own host (also on Chrome), a probe that does not say, the probe's own counting (on Chrome),
+  an opaque origin taken for the page's own; the end of the wait for another sandbox, the id of
+  the sandbox arriving last, the end of the wait for the same sandbox only, the un-press outside
+  a sandbox. After them, `scripts/dev ci` at 53c0dd15: exit 0, 3311 tests passed (16 skipped),
+  152 script tests OK, `cargo deny` ok, docs built; the whole e2e suite there: exit 0, 911
+  passed, 2 skipped. With `dev` (dbec951d) merged again: `cargo clippy --workspace --all-features
+  --all-targets -- -D warnings` ok, the browser and app crates' tests (580 passed) and the whole
+  e2e suite (exit 0, 913 passed, 1 skipped); the whole gate at the final head is Yulius CI's.
 - **Security scan.** `scripts/dev security`: "Security scan disabled: Vidoc is turned off in
   Yulius, for this project or the whole instance; nothing was scanned" (exit 0): disabled, not
   passed.
@@ -393,4 +450,5 @@ with `browser_fill_secret`. A password field, drawn as dots, keeps screenshots w
   cross-origin frame receives the value.
 - **Not tested here.** macOS at run time (the gate only compiles for it), a person's display input,
   and real sites (single-page sign-ins, framing with cookies) beyond the fake server and the local
-  Chromium pages.
+  Chromium pages. CI does not run the real Chromium test, so the probe's own script and what
+  Chrome says about frames are checked only by that opt-in test (here on Chrome 157).

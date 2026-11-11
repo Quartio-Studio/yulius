@@ -19,9 +19,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   #432). The Shell, Superagent or another tool opened before a task's page had its sandbox opened
   for no sandbox: a Shell saying "Open a sandbox first." without the keyboard, or the Global
   Superagent. It now waits, shown pressed, and opens there; choosing it again, hiding the tools
-  or going elsewhere cancels it. Found by the `e2e` job on the faster host, together with three
-  test-only races (production protection, the places editor test of #1087, the left-composer
-  onboarding test).
+  or leaving that sandbox cancels it. Found by the `e2e` job on the faster host, together with
+  three test-only races (production protection, the left-composer onboarding test, the phone
+  drawer's row measurement).
 - A turn whose Stop meets its own prompt still ends (SPEC-453, task #435, ADR-0299). On a loaded
   host a goal task could stay Working for good after Claude Code recorded its goal as met: the
   transcript watcher, applying the turn's prompt, cleared the verdict wait the turn's Stop had

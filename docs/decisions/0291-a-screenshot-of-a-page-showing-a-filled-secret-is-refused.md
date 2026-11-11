@@ -60,14 +60,18 @@ involved; that is outside what a screenshot guard can close.
   - `shown`: the `textContent` of its documents (all but `head`), open shadow roots,
     same-origin frames, objects and embeds, and the values and placeholders of fields drawn as
     text;
-  - `masked`: the values of password fields.
+  - `masked`: the values of password fields;
+  - `frames`: how many frame documents at addresses of the page's own origin it read.
 - **When it refuses.** The screenshot is a tool error (`BrowserError::SecretOnPage`) pointing to
   `browser_snapshot`, in any of these cases:
   - the page's host is exposed;
   - it frames a host a value went into, or an exposed one, where the probe cannot read: another
-    origin in the frame tree, or an `iframe` target (`Target.getTargets`) whose parent frame is the
-    tab's, not said, or no target listed, as Chromium lists an out-of-process frame without its
-    address or not at all in the tree;
+    origin in the frame tree; an `iframe` target (`Target.getTargets`) whose parent frame is the
+    tab's, not said, or no target listed, also on the page's own host, as Chromium lists an
+    out-of-process frame without its address or not at all in the tree and runs a sandboxed
+    frame in a process of its own; or a frame of the page's own origin the probe did not read
+    (it read fewer than the tree lists), as the tree says the origin of a frame's address
+    whether or not the frame, or the page, is sandboxed;
   - `shown` holds a remembered value, which also exposes the host;
   - `shown` holds any agent secret the redactor's matcher finds for the sandbox (values, their
     encodings, lines);
@@ -99,6 +103,9 @@ involved; that is outside what a screenshot guard can close.
   refused its dashboard and exposed the site.
 - **Read frames from `Page.getFrameTree` only**: an out-of-process frame is listed there without
   its address, or not at all.
+- **Tell a sandboxed frame by the frame tree's origin**: Chrome (157) says the origin of the
+  frame's address there, never the opaque one, so a sandboxed frame of the site signed in to
+  looked readable and was captured.
 - **Record at fill time whether the field was a password field**: it misses a revealed password
   and a value restored by history navigation.
 - **Send the value (or its hash) into the page to search it**: hands the value to whatever origin
@@ -115,6 +122,9 @@ involved; that is outside what a screenshot guard can close.
   Yulius restarts; so does an agent whose page framed a site it signed in to. A page of another
   site is refused only while it shows an agent secret, even scrolled out of view. A password
   sign-in keeps screenshots.
+- A page of a site signed in to that holds a sandboxed frame of the same site (a message, a
+  preview), or is sandboxed itself and frames its own site, loses its screenshots: the frame
+  cannot be read.
 - A screenshot in a sandbox with agent secrets costs a `Page.getFrameTree`, a `Target.getTargets`,
   an isolated world and a probe, twice; one without any captures as before. Agent input waits for a
   screenshot's capture.

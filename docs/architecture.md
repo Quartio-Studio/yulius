@@ -285,8 +285,9 @@ sandbox, whose agent secrets `browser_fill_secret` resolves, the audit actor and
 redacted, so the `BrowserManager` keeps per sandbox, across browser restarts, each value
 `browser_fill_secret` typed, the hosts and documents it went into and the hosts it reached outside
 a password field. Before and after a capture the browser instance reads the page's text and
-fields with a probe in an isolated world and its frames (frame tree, `iframe` targets), and
-searches them in Yulius, also with the redactor's matcher, holding the input lock throughout:
+fields with a probe in an isolated world and its frames (frame tree, `iframe` targets, and how
+many frames of its own origin the probe read), and searches them in Yulius, also with the
+redactor's matcher, holding the input lock throughout:
 `browser_screenshot` is refused while the page shows an agent secret, is on an exposed host
 (a value went outside a password field, or was edited as typed), frames a host a secret went
 into, or cannot be read; password sign-ins keep screenshots
