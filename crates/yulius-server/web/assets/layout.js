@@ -537,8 +537,9 @@ function afterPress(run) {
  * One line of a subscription's head that its manager edits in place: the name (SPEC-244 SUB-001)
  * or the email under it (SPEC-463 EML-001). The pencil (or a click on the text) turns the line
  * into a field; Enter or leaving the field saves through `save`, Escape cancels. A refused value
- * keeps the field open with the message; focus returns to the field only after Enter, never when
- * it was left, and to the pencil once editing ends. A field left by a press on a control saves,
+ * keeps the field open with the message; the keyboard stays in the field after Enter, is never
+ * pulled back to a field that was left, and goes to the pencil once a key ends the edit (not
+ * when the person went on while a save was on its way). A field left by a press on a control saves,
  * refuses or closes only once that press has ended (`afterPress`), so the control is clicked.
  * The window losing the focus is not leaving the field. A field that closes says so (the
  * bubbling event `yulius:edit-closed`), whatever ended the edit: a page that kept a refresh
@@ -570,7 +571,7 @@ function editableLine(line, save) {
   };
   function edit() {
     const input = h('input', { ...line.field(), dataset: { focusKey: line.key } });
-    const error = h('span', { class: 'field-error xs', role: 'alert' });
+    const error = h('span', { class: 'field-error xs', role: 'alert', id: `${line.key}:refusal` });
     // `closed` once the field is gone: removing a focused field fires its blur, which must not
     // save what Escape cancelled.
     let busy = false;
@@ -591,10 +592,16 @@ function editableLine(line, save) {
       if (!keep || value === line.stored()) { close(fromKey); return; }
       // Removing takes Enter: an emptied field that was left closes as it was (SPEC-463 EML-002).
       if (!value && line.removes && !fromKey) { close(false); return; }
+      // After a key the keyboard stays with the edit (the field when refused, the pencil when
+      // done), unless the person went on meanwhile, while a save was on its way: then it stays
+      // where they are, as when they left the field.
+      const stays = () => fromKey && document.activeElement === input;
       const refuse = (message) => {
         error.textContent = message;
-        if (fromKey) input.focus();
-        else input.dataset.setAside = 'true';
+        // The refusal is the field's own (as `invalid` in dom.js says it for a form's control).
+        input.setAttribute('aria-invalid', 'true');
+        input.setAttribute('aria-describedby', error.id);
+        if (!stays()) input.dataset.setAside = 'true';
       };
       const refused = line.check(value);
       if (refused) { refuse(refused); return; }
@@ -602,7 +609,7 @@ function editableLine(line, save) {
       try {
         await save(value);
         busy = false;
-        close(fromKey);
+        close(stays());
       } catch (err) {
         busy = false;
         refuse((err && err.message) || line.failed);

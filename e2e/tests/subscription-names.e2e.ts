@@ -156,6 +156,11 @@ test("a subscription's email is typed in place under its name: \"Agent TEAM\" ov
   await field.press('Enter');
   await expect(screen.getByText('Type an address like name@example.com.')).toBeVisible();
   await expect(field).toBeFocused();
+  // The refusal is the field's: a screen reader hears it as the field's description.
+  expect(await browser.evaluate(() => {
+    const input = document.activeElement;
+    return { invalid: input?.getAttribute('aria-invalid') ?? null, described: document.getElementById(input?.getAttribute('aria-describedby') ?? '')?.textContent ?? null };
+  })).toEqual({ invalid: 'true', described: 'Type an address like name@example.com.' });
   expect(await axeViolations(browser)).toEqual([]);
   // Leaving the refused field does not pull focus back into it.
   await browser.locator('main h1').click();
@@ -680,6 +685,36 @@ test('the window losing the focus is not leaving the field: nothing is saved or 
   await expect(screen.getByText('Email of Claude spare is now agent@example.com.')).toBeVisible();
   expect(await sentFor(browser, 'acc_x3')).toBe(1);
   expect(await stored(browser, 'Claude spare')).toEqual({ email: 'agent@example.com', typed: true });
+});
+
+test('a name saved with Enter does not take the keyboard from the email the person went on to', async ({ app, browser, screen }) => {
+  // The name's save waits here until the test lets it go, as on a slow connection.
+  await app.open(mock('/admin/accounts', '&ambient=0&holdpost=/api/admin/accounts/acc_x1'));
+  await firstShown(browser.locator('main .account-card').first());
+  await screen.getByRole('button', 'Rename Claude #4').click();
+  const name = screen.getByRole('textbox', 'New name for Claude #4');
+  await expect(name).toBeFocused();
+  await name.fill('Agent TEAM');
+  await name.press('Enter');
+  await expect.poll(() => sentFor(browser, 'acc_x1')).toBe(1);
+  // While it is on its way the person goes on to the email under it and types.
+  await screen.getByRole('button', 'Change the email of Claude #4').click();
+  const email = screen.getByRole('textbox', 'Email of Claude #4');
+  await expect(email).toBeFocused();
+  await email.fill('agent@');
+  // The save answers: the name is shown, and the keyboard stays in the email's field.
+  await browser.evaluate(() => (window as unknown as Mock).__yuliusMock.release());
+  await expect(screen.getByText('Subscription renamed to Agent TEAM.')).toBeVisible();
+  await expect(browser.locator('main .account-card:has-text("Agent TEAM") .account-name strong')).toHaveText('Agent TEAM');
+  const still = screen.getByRole('textbox', /^Email of /);
+  await expect(still).toBeFocused();
+  await expect(still).toHaveValue('agent@');
+  expect(await sentFor(browser, 'acc_x1')).toBe(1);
+  await still.fill('agent@example.com');
+  await still.press('Enter');
+  await expect(screen.getByText('Email of Agent TEAM is now agent@example.com.')).toBeVisible();
+  await expect(screen.getByRole('button', 'Change the email of Agent TEAM')).toBeFocused();
+  expect(await stored(browser, 'Agent TEAM')).toEqual({ email: 'agent@example.com', typed: true });
 });
 
 test("a field's late claim on the keyboard does not take it back from where Tab went", async ({ app, browser, screen }) => {
