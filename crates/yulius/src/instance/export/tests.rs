@@ -813,8 +813,14 @@ fn beside_a_secret() -> Result<(tempfile::TempDir, PathBuf, PathBuf), Box<dyn st
 /// The sandbox's directory goes aside and a link to `outside` takes its name.
 fn swap_for_a_link(root: &Path, outside: &Path) {
     let dir = root.join("sandboxes/sb/dir");
-    fs::rename(&dir, root.join("sandboxes/sb/dir.aside")).expect("rename");
-    std::os::unix::fs::symlink(outside, &dir).expect("symlink");
+    let _ = fs::rename(&dir, root.join("sandboxes/sb/dir.aside"));
+    let _ = std::os::unix::fs::symlink(outside, &dir);
+}
+
+/// Whether [`swap_for_a_link`] happened.
+fn swapped(root: &Path) -> bool {
+    fs::symlink_metadata(root.join("sandboxes/sb/dir")).is_ok_and(|meta| meta.is_symlink())
+        && root.join("sandboxes/sb/dir.aside/a").is_file()
 }
 
 fn nothing_of_the_host(stream: &Stream) {
@@ -849,7 +855,7 @@ fn a_directory_that_became_a_link_during_a_warm_pass_is_not_entered() -> TestRes
         later(),
         &mut |_| {},
     )?;
-    assert!(meddler.acted());
+    assert!(meddler.acted() && swapped(&root));
     let stream = read(&out)?;
     nothing_of_the_host(&stream);
     assert_eq!(sent.vanished, 1, "{:?}", stream.paths());
@@ -880,7 +886,7 @@ fn a_file_is_read_in_the_directory_the_walk_listed_whatever_its_name_leads_to_no
         later(),
         &mut |_| {},
     )?;
-    assert!(meddler.acted());
+    assert!(meddler.acted() && swapped(&root));
     let stream = read(&out)?;
     nothing_of_the_host(&stream);
     // What the walk listed is what it read: the directory it holds, not the name.
