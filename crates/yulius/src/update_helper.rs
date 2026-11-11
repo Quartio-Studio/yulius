@@ -125,6 +125,14 @@ pub struct HelperArgs {
     /// HST-012); the installed binary when unset.
     #[arg(long, env = "YULIUS_UPDATE_HOST_CHECK", hide = true)]
     pub host_check: Option<PathBuf>,
+    /// The cgroup tree (a test double).
+    #[arg(
+        long,
+        env = "YULIUS_UPDATE_CGROUP_ROOT",
+        default_value = yulius_sandbox::cgroup::CGROUP_ROOT,
+        hide = true
+    )]
+    pub cgroup_root: PathBuf,
 }
 
 /// `yulius update-helper`: handles the pending request, if any. Exit 0 also when a request was
@@ -893,6 +901,27 @@ impl Helper {
         )
     }
 
+    /// SPEC-458 RST-002: refuses, before anything is stopped, a stop the unit would not come
+    /// back from (systemd 258 and later, sessions in the unit's own group, no adopt unit).
+    fn restart_guard(&self) -> Result<(), String> {
+        let service = &self.args.service;
+        let ask = |args: &[&str]| {
+            run_bounded(
+                Command::new(&self.args.systemctl).args(args),
+                SYSTEMCTL_TIMEOUT,
+                "systemctl",
+            )
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|output| output.stdout)
+        };
+        let facts = crate::restart_safety::read(&self.args.cgroup_root, service, &ask);
+        match crate::restart_safety::blocker(service, &facts) {
+            Some(why) => Err(format!("{why}; nothing was stopped.")),
+            None => Ok(()),
+        }
+    }
+
     fn service_active(&self) -> bool {
         self.systemctl(&["is-active", "--quiet"])
             .is_ok_and(|o| o.status.success())
@@ -1093,6 +1122,7 @@ impl Helper {
                 short(&installed)
             ));
         }
+        self.restart_guard()?;
         self.report(HelperState::Running, "stopping", |s| {
             s.previous = Some(commit.to_owned());
         });
@@ -1117,6 +1147,7 @@ impl Helper {
                 short(commit)
             ));
         }
+        self.restart_guard()?;
         let previous = reported_commit(&self.args.health_url).ok().flatten();
         self.report(HelperState::Running, "stopping", |s| {
             s.previous.clone_from(&previous)

@@ -1,8 +1,10 @@
 //! The export's freeze (SPEC-329 EXP-001, ADR-0222): systemd's freezer on the whole service
-//! unit, so the server and everything it started stop between two instructions while the data
-//! directory is read, and the database's main file and WAL stand as after a power cut.
+//! unit and on its sessions unit (SPEC-458 EXP-001, ADR-0298), so the server and everything it
+//! started stop between two instructions while the data directory is read, and the database's
+//! main file and WAL stand as after a power cut.
 
 use std::path::Path;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Duration;
 
@@ -66,13 +68,19 @@ fn own_cgroup(host: &dyn Host) -> Option<String> {
         .find_map(|l| l.strip_prefix("0::").map(str::to_owned))
 }
 
+fn runs(state: &Unit) -> bool {
+    matches!(state.active.as_str(), "active" | "activating" | "reloading")
+}
+
 /// A held freeze: thawed when dropped unless it was released or kept for a move.
 pub struct Freeze {
     host: Box<dyn Host>,
     unit: String,
     update_unit: String,
-    /// The export froze the unit (it was running and not frozen already).
-    ours: bool,
+    /// The running units the freeze covers: the server's and its sessions unit (SPEC-458).
+    covered: Vec<String>,
+    /// The units the export froze (they ran and were not frozen already), in that order.
+    frozen: Vec<String>,
     /// The unit was stopped with nothing of it running.
     stopped: bool,
 }
@@ -81,16 +89,17 @@ impl std::fmt::Debug for Freeze {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Freeze")
             .field("unit", &self.unit)
-            .field("ours", &self.ours)
+            .field("frozen", &self.frozen)
             .finish_non_exhaustive()
     }
 }
 
-/// Freezes `unit` for an export, or says why not; `Err` is a refusal, nothing was changed.
+/// Freezes `unit` and its sessions unit (SPEC-458 EXP-001) for an export, or says why not;
+/// `Err` is a refusal, nothing stays changed.
 ///
 /// # Errors
-/// The unit is unknown, the export runs inside it, the update helper `update_unit` runs, a
-/// stopped unit still has processes, or systemd did not freeze it in [`FREEZE_WAIT`].
+/// The unit is unknown, the export runs inside one of them, the update helper `update_unit`
+/// runs, a stopped unit still has processes, or systemd did not freeze one in [`FREEZE_WAIT`].
 pub fn freeze(mut host: Box<dyn Host>, unit: &str, update_unit: &str) -> Result<Freeze, String> {
     let state = show(&mut *host, unit)?;
     if state.load != "loaded" {
@@ -103,24 +112,47 @@ pub fn freeze(mut host: Box<dyn Host>, unit: &str, update_unit: &str) -> Result<
             }
         ));
     }
-    if !state.cgroup.is_empty()
-        && let Some(own) = own_cgroup(&*host)
-        && (own == state.cgroup || own.starts_with(&format!("{}/", state.cgroup)))
-    {
-        return Err(format!(
-            "this command runs inside {unit} (a Yulius terminal?) and would freeze itself; run \
-             it over SSH on the host"
-        ));
+    // Sessions live in a unit of their own beside the server's when the host has one.
+    let mut sessions = None;
+    if let Some(name) = yulius_sandbox::units::sessions_unit(unit) {
+        let found = show(&mut *host, &name)?;
+        if found.load == "loaded" && runs(&found) {
+            sessions = Some((name, found));
+        }
+    }
+    let own = own_cgroup(&*host);
+    let places = std::iter::once((unit, &state.cgroup)).chain(
+        sessions
+            .iter()
+            .map(|(name, found)| (name.as_str(), &found.cgroup)),
+    );
+    for (name, cgroup) in places {
+        if !cgroup.is_empty()
+            && let Some(own) = &own
+            && (own == cgroup || own.starts_with(&format!("{cgroup}/")))
+        {
+            return Err(format!(
+                "this command runs inside {name} (a Yulius terminal?) and would freeze itself; \
+                 run it over SSH on the host"
+            ));
+        }
     }
     let mut held = Freeze {
         host,
         unit: unit.to_owned(),
         update_unit: update_unit.to_owned(),
-        ours: false,
+        covered: Vec::new(),
+        frozen: Vec::new(),
         stopped: false,
     };
     held.helper_idle()?;
-    if !matches!(state.active.as_str(), "active" | "activating" | "reloading") {
+    let mut targets = Vec::new();
+    if runs(&state) {
+        held.covered.push(unit.to_owned());
+        if state.freezer != "frozen" {
+            targets.push(unit.to_owned());
+        }
+    } else {
         let events = Path::new("/sys/fs/cgroup")
             .join(state.cgroup.trim_start_matches('/'))
             .join("cgroup.events");
@@ -135,65 +167,70 @@ pub fn freeze(mut host: Box<dyn Host>, unit: &str, update_unit: &str) -> Result<
                  start it (`systemctl start {unit}`) so the export can freeze them"
             ));
         }
-        held.stopped = true;
-        return Ok(held);
+        held.stopped = sessions.is_none();
     }
-    if state.freezer == "frozen" {
-        return Ok(held);
+    if let Some((name, found)) = sessions {
+        held.covered.push(name.clone());
+        if found.freezer != "frozen" {
+            targets.push(name);
+        }
     }
-    let (code, _) = held.host.systemctl(&["freeze", unit])?;
-    held.ours = true;
-    if code != 0 {
+    for target in &targets {
+        held.freeze_one(target)?;
+    }
+    // An update request written just before the freeze may have started the helper, which
+    // would restart the unit under the export.
+    if !held.frozen.is_empty()
+        && let Err(why) = held.helper_idle()
+    {
         held.thaw_now();
-        return Err(format!(
-            "`systemctl freeze {unit}` failed (exit {code}); the export needs systemd 246 or \
-             later with cgroup v2"
-        ));
+        return Err(why);
     }
-    let mut waited = Duration::ZERO;
-    loop {
-        if show(&mut *held.host, unit)?.freezer == "frozen" {
-            // An update request written just before the freeze may have started the helper,
-            // which would restart the unit under the export.
-            if let Err(why) = held.helper_idle() {
-                held.thaw_now();
-                return Err(why);
-            }
-            return Ok(held);
-        }
-        if waited >= FREEZE_WAIT {
-            held.thaw_now();
-            return Err(format!(
-                "{unit} did not freeze within {} s (a process may hang in the kernel); it was \
-                 thawed and nothing was exported",
-                FREEZE_WAIT.as_secs()
-            ));
-        }
-        held.host.sleep(POLL);
-        waited += POLL;
-    }
+    Ok(held)
 }
 
 impl Freeze {
-    /// Whether the export froze the unit (so it thaws it).
+    /// Whether the export froze a unit (so it thaws it).
     #[must_use]
     pub fn ours(&self) -> bool {
-        self.ours
+        !self.frozen.is_empty()
+    }
+
+    /// The units the export froze, in the order a thaw takes them.
+    #[must_use]
+    pub fn frozen(&self) -> Vec<String> {
+        self.frozen.iter().rev().cloned().collect()
+    }
+
+    /// The running units the freeze covers (frozen by the export or before it).
+    #[must_use]
+    pub fn covered(&self) -> &[String] {
+        &self.covered
     }
 
     /// What the export holds, for the operator.
     #[must_use]
     pub fn describe(&self) -> String {
         let unit = &self.unit;
-        if self.ours {
+        if self.ours() {
             format!(
-                "Frozen {unit}: every Yulius process is paused until the export ends. If this \
-                 command is killed with SIGKILL, thaw it with `sudo systemctl thaw {unit}`."
+                "Frozen {}: every Yulius process is paused until the export ends. If this \
+                 command is killed with SIGKILL, thaw {} with `sudo systemctl thaw {}`.",
+                self.frozen.join(" and "),
+                if self.frozen.len() == 1 { "it" } else { "them" },
+                self.frozen().join(" ")
             )
         } else if self.stopped {
             format!("{unit} is stopped and nothing of it runs; nothing was frozen.")
+        } else if self.covered.len() > 1 {
+            format!(
+                "{} were frozen before the export; they stay frozen after it.",
+                self.covered.join(" and ")
+            )
         } else {
-            format!("{unit} was frozen before the export; it stays frozen after it.")
+            // With a stopped server that is its sessions unit, not the server's.
+            let frozen = self.covered.first().unwrap_or(unit);
+            format!("{frozen} was frozen before the export; it stays frozen after it.")
         }
     }
 
@@ -212,44 +249,63 @@ impl Freeze {
         Ok(())
     }
 
-    fn thaw_now(&mut self) -> Option<String> {
-        if !std::mem::take(&mut self.ours) {
-            return None;
+    /// Freezes `target` and waits until systemd says so; on a failure everything the export
+    /// froze is thawed.
+    fn freeze_one(&mut self, target: &str) -> Result<(), String> {
+        let (code, _) = self.host.systemctl(&["freeze", target])?;
+        self.frozen.push(target.to_owned());
+        if code != 0 {
+            self.thaw_now();
+            return Err(format!(
+                "`systemctl freeze {target}` failed (exit {code}); the export needs systemd 246 \
+                 or later with cgroup v2"
+            ));
         }
-        match self.host.systemctl(&["thaw", &self.unit]) {
-            Ok((0, _)) => None,
-            Ok((code, _)) => Some(format!(
-                "`systemctl thaw {}` failed (exit {code}); run it by hand",
-                self.unit
-            )),
-            Err(e) => Some(format!(
-                "`systemctl thaw {}` did not run ({e}); run it by hand",
-                self.unit
-            )),
+        let mut waited = Duration::ZERO;
+        loop {
+            if show(&mut *self.host, target)?.freezer == "frozen" {
+                return Ok(());
+            }
+            if waited >= FREEZE_WAIT {
+                self.thaw_now();
+                return Err(format!(
+                    "{target} did not freeze within {} s (a process may hang in the kernel); it \
+                     was thawed and nothing was exported",
+                    FREEZE_WAIT.as_secs()
+                ));
+            }
+            self.host.sleep(POLL);
+            waited += POLL;
         }
     }
 
-    /// Thaws the unit if the export froze it.
+    fn thaw_now(&mut self) -> Option<String> {
+        let units = std::mem::take(&mut self.frozen);
+        thaw(&mut *self.host, units.iter().rev())
+    }
+
+    /// Thaws what the export froze.
     ///
     /// # Errors
-    /// The thaw failed; the message says to run it by hand.
+    /// A thaw failed; the message says to run it by hand.
     pub fn release(mut self) -> Result<(), String> {
         self.thaw_now().map_or(Ok(()), Err)
     }
 
-    /// Leaves the unit frozen without disabling it: a move whose new instance may still run
-    /// must not thaw the old one (SPEC-460 MIG-004).
+    /// Leaves the units frozen without disabling the server's: a move whose new instance may
+    /// still run must not thaw the old one (SPEC-460 MIG-004).
     pub fn leave_frozen(mut self) {
-        self.ours = false;
+        self.frozen.clear();
     }
 
-    /// For a move: leaves the unit as it is (frozen) and disables it, so a reboot does not start
-    /// the old instance beside the new one.
+    /// For a move: leaves the units as they are (frozen) and disables the server's, so a reboot
+    /// does not start the old instance beside the new one (its sessions unit starts only with
+    /// it).
     ///
     /// # Errors
-    /// The disable failed (the unit stays frozen).
+    /// The disable failed (the units stay frozen).
     pub fn keep_for_move(mut self) -> Result<(), String> {
-        self.ours = false;
+        self.frozen.clear();
         match self.host.systemctl(&["disable", &self.unit])? {
             (0, _) => Ok(()),
             (code, _) => Err(format!(
@@ -259,6 +315,67 @@ impl Freeze {
             )),
         }
     }
+}
+
+/// The sessions unit of the server's unit `unit` (SPEC-458): `Some(frozen)` when the host has
+/// one that runs, `None` when it has none or it does not run.
+///
+/// # Errors
+/// systemd did not say. That is not "no sessions unit": nothing may be started on it.
+pub fn sessions_state(host: &mut dyn Host, unit: &str) -> Result<Option<bool>, String> {
+    let Some(name) = yulius_sandbox::units::sessions_unit(unit) else {
+        return Ok(None);
+    };
+    let found = show(host, &name)?;
+    Ok((found.load == "loaded" && runs(&found)).then_some(found.freezer == "frozen"))
+}
+
+/// The units to thaw to bring the instance of the server's unit `unit` back, in that order: its
+/// sessions unit first, when the host has one that runs, then `unit` (SPEC-458 EXP-001). A
+/// server's unit that systemd says does not run is left out: systemd refuses to thaw it, and
+/// there is nothing of it to thaw. A unit systemd says nothing about stays in: a thaw that
+/// reports a failure is better than a unit left frozen.
+pub fn thaw_units(host: &mut dyn Host, unit: &str) -> Vec<String> {
+    let mut units = Vec::new();
+    if !matches!(sessions_state(host, unit), Ok(None))
+        && let Some(name) = yulius_sandbox::units::sessions_unit(unit)
+    {
+        units.push(name);
+    }
+    if show(host, unit).map_or(true, |found| runs(&found)) {
+        units.push(unit.to_owned());
+    }
+    units
+}
+
+/// Thaws the instance of the server's unit `unit`, whoever froze it: every unit of
+/// [`thaw_units`] is tried.
+///
+/// # Errors
+/// A thaw failed; the message names the command to run by hand.
+pub fn thaw_instance(host: &mut dyn Host, unit: &str) -> Result<(), String> {
+    let units = thaw_units(host, unit);
+    match thaw(host, units.iter()) {
+        None => Ok(()),
+        Some(why) => Err(format!("{why} (`systemctl thaw {}`)", units.join(" "))),
+    }
+}
+
+/// Thaws `units` in order; every one is tried, and the failures say to run it by hand.
+fn thaw<'a>(host: &mut dyn Host, units: impl Iterator<Item = &'a String>) -> Option<String> {
+    let mut failures = Vec::new();
+    for unit in units {
+        match host.systemctl(&["thaw", unit]) {
+            Ok((0, _)) => {}
+            Ok((code, _)) => failures.push(format!(
+                "`systemctl thaw {unit}` failed (exit {code}); run it by hand"
+            )),
+            Err(e) => failures.push(format!(
+                "`systemctl thaw {unit}` did not run ({e}); run it by hand"
+            )),
+        }
+    }
+    (!failures.is_empty()).then(|| failures.join("; "))
 }
 
 impl Drop for Freeze {
@@ -293,11 +410,13 @@ pub enum Signal {
 
 /// What a SIGINT, SIGTERM or SIGHUP does during an export, on its own thread so it works while
 /// the export is blocked writing to a stalled pipe: waits (bounded) while the freeze is being
-/// taken, so a thaw never comes before it, then, if the export froze the unit and has not
-/// claimed its end ([`claim_end`]), claims it and thaws.
-pub fn on_signal(state: &AtomicU8, host: &mut dyn Host, unit: &str) -> Signal {
+/// taken, so a thaw never comes before it, then, if the export froze units and has not claimed
+/// its end ([`claim_end`]), claims it and thaws `frozen` (the export's [`Freeze::frozen`], set
+/// before the state leaves [`ARMING`]).
+pub fn on_signal(state: &AtomicU8, host: &mut dyn Host, frozen: &Mutex<Vec<String>>) -> Signal {
     let mut waited = Duration::ZERO;
-    while state.load(Ordering::SeqCst) == ARMING && waited < FREEZE_WAIT + FREEZE_WAIT {
+    // The server's unit and its sessions unit are frozen one after the other.
+    while state.load(Ordering::SeqCst) == ARMING && waited < FREEZE_WAIT * 3 {
         host.sleep(POLL);
         waited += POLL;
     }
@@ -311,15 +430,8 @@ pub fn on_signal(state: &AtomicU8, host: &mut dyn Host, unit: &str) -> Signal {
         // Not the export's freeze, and the export may be blocked writing: just stop.
         Err(_) => return Signal::Exit(None),
     }
-    Signal::Exit(match host.systemctl(&["thaw", unit]) {
-        Ok((0, _)) => None,
-        Ok((code, _)) => Some(format!(
-            "`systemctl thaw {unit}` failed (exit {code}); run it by hand"
-        )),
-        Err(e) => Some(format!(
-            "`systemctl thaw {unit}` did not run ({e}); run it by hand"
-        )),
-    })
+    let units = frozen.lock().map(|units| units.clone()).unwrap_or_default();
+    Signal::Exit(thaw(host, units.iter()))
 }
 
 /// The export takes its own end (a thaw, or keeping the freeze for a move): from then on a
