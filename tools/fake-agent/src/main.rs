@@ -54,7 +54,8 @@
 //! (`apiError: "model_requires_usage_credits"`, no `rate_limit_info`) and followed, as in a goal
 //! session, by the notice `Goal paused · the request was rate limited` and the record closing the
 //! turn; with `--credits-reset-s S` it is shaped like 2.1.322's, whose `rate_limit_info` says the
-//! allowance (`seven_day_overage_included`) resets S seconds ahead. With `--limit-continues-ms MS` the agent then continues the cut turn by itself
+//! allowance (`seven_day_overage_included`) resets S seconds ahead. Each later line then appends
+//! its prompt and another such refusal. With `--limit-continues-ms MS` the agent then continues the cut turn by itself
 //! like Claude Code's "continuing automatically" at the reset (#276): MS later it appends a hidden
 //! `isMeta` prompt and an assistant `tool_use` record and prints `CONTINUED`, and MS after that it
 //! appends the answer ending the turn and prints `DONE continued`; with
@@ -1048,7 +1049,7 @@ impl Transcript {
     /// model's allowance resets. Goal mode's pause notice and the record closing the turn follow.
     fn credits_out(&mut self, reset_s: Option<i64>) -> io::Result<()> {
         let timestamp = rfc3339(now_ms());
-        let uuid = format!("fake-{}-credits-out", self.session_id);
+        let uuid = format!("fake-{}-{}-credits-out", self.session_id, self.turns);
         let mut record = self.claude_envelope("assistant", &uuid, &timestamp);
         record["isApiErrorMessage"] = json!(true);
         record["error"] = json!("rate_limit");
@@ -1969,7 +1970,18 @@ fn echo_loop(options: &Options, session_id: &str) -> io::Result<i32> {
             _ if line.starts_with("/compact") => {
                 compact(options, &line, transcript.as_ref(), &mut state)?;
             }
-            _ if state.limited => say("LIMIT REACHED")?,
+            _ if state.limited => {
+                say("LIMIT REACHED")?;
+                // Out of usage credits, every later message gets its own refusal, as each
+                // message does in Claude Code until the model runs again.
+                if options.credits_out
+                    && let Some(transcript) = transcript.as_ref()
+                    && let Ok(mut t) = transcript.lock()
+                {
+                    t.begin(&line)?;
+                    t.credits_out(options.credits_reset_s)?;
+                }
+            }
             _ if line.starts_with("/goal ") && (transcript.is_some() || hooks.is_some()) => {
                 state.turns += 1;
                 goal_turn(options, &line, transcript.as_ref(), hooks.as_ref())?;

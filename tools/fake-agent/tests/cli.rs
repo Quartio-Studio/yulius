@@ -193,6 +193,33 @@ fn a_usage_credits_refusal_is_written_as_either_claude_code_version_does() -> Te
     assert_eq!(info["rateLimitType"], "seven_day_overage_included");
     assert_eq!(info["overageDisabledReason"], "out_of_credits");
     assert!(info["resetsAt"].is_i64(), "{info}");
+
+    // Every later message gets its own refusal: its prompt, the error, the notice, the turn's end.
+    let path = dir.path().join("projects/x/s-again.jsonl");
+    let path_text = path.to_string_lossy().into_owned();
+    let output = run(
+        &[
+            "--session-id",
+            "s-again",
+            "--transcript",
+            &path_text,
+            "--limit-after",
+            "1",
+            "--credits-out",
+        ],
+        "one\ntwo\n/exit\n",
+    )?;
+    assert!(stdout(&output).contains("ECHO: one\nLIMIT REACHED\nLIMIT REACHED\nBYE"));
+    let again = read_jsonl(&path)?;
+    assert_eq!(again.len(), 9, "{again:?}");
+    assert_eq!(again[5]["type"], "user");
+    assert_eq!(again[5]["message"]["content"], "two");
+    assert_eq!(again[6]["apiError"], "model_requires_usage_credits");
+    assert_eq!(again[6]["parentUuid"], again[5]["uuid"]);
+    assert_ne!(again[6]["uuid"], again[2]["uuid"]);
+    assert_eq!(again[7]["subtype"], "informational");
+    assert_eq!(again[8]["subtype"], "turn_duration");
+    assert_ne!(again[8]["uuid"], again[4]["uuid"]);
     Ok(())
 }
 

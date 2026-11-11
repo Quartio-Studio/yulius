@@ -56,6 +56,15 @@ async fn stored_usage(
     Ok((record.status, usage))
 }
 
+/// How often a goal pause that needs a person was audited for `id`.
+async fn pauses_audited(app: &App, id: &TaskId) -> usize {
+    app.deps
+        .store
+        .audit_details(id.as_str(), "task.goal_retries_spent", 10)
+        .await
+        .map_or(0, |entries| entries.len())
+}
+
 /// Nobody is asked to do anything about `id`: no request is open and it is not under Needs you.
 async fn needs_nobody(app: &App, id: &TaskId) -> TestResult {
     let asked = app.deps.store.task_needs_you(id).await?;
@@ -372,6 +381,24 @@ fn a_refused_move_at_a_usage_credits_limit_still_asks_a_person() -> TestResult {
         assert_eq!(task.activity, Some(Activity::NeedsAttention));
         assert_eq!(run_accounts(&app, &id).await, [Some("a-first".to_owned())]);
         assert!(app.deps.store.open_pause(&id).await?.is_none(), "no pause");
+        assert_eq!(pauses_audited(&app, &id).await, 1);
+
+        // A message that is no person's answer (Yulius types its pull request notices into
+        // the session) is refused the same way. The request stays as it is, and the task is
+        // under Needs you again: it does not read Working at a refusal nobody takes on.
+        app.send_input(&id, b"again\r").await?;
+        wait_for("the second refusal", Duration::from_secs(30), || async {
+            pauses_audited(&app, &id).await == 2
+        })
+        .await?;
+        let task = app.deps.store.task(&id).await?.ok_or("task")?;
+        assert_eq!(task.status, TaskStatus::Running);
+        assert_eq!(task.activity, Some(Activity::NeedsAttention));
+        assert_eq!(
+            app.deps.store.task_needs_you(&id).await?.as_ref(),
+            Some(&asked),
+            "the request is not asked twice"
+        );
 
         // The subscription works again and a person runs the task on it: the session goes on
         // past the refusal by itself, so the request to send it a message ends with the move.
@@ -474,7 +501,7 @@ fn a_usage_credits_refusal_written_while_yulius_was_down_is_read_at_restart() ->
             },
         )
         .await?;
-        let app = build_with(&data, &fake, probe.clone(), agent)?;
+        let app = build_with(&data, &fake, probe.clone(), agent.clone())?;
         // Nothing of it was seen before the restart.
         assert!(app.deps.store.task_needs_you(&id).await?.is_none());
         assert!(app.deps.store.switches(&id).await?.is_empty());
@@ -493,15 +520,39 @@ fn a_usage_credits_refusal_written_while_yulius_was_down_is_read_at_restart() ->
             Some("Goal paused \u{b7} the request was rate limited."),
             "{asked:?}"
         );
-        let refused = app.deps.store.switches(&id).await?;
-        assert!(
-            refused.iter().any(|s| s.outcome == "refused"),
-            "{refused:?}"
-        );
+        assert_eq!(refused_moves(&app, &id).await, 1);
         assert_eq!(run_accounts(&app, &id).await, [Some("a-first".to_owned())]);
-        stop(&app, &id).await?;
+        assert_eq!(pauses_audited(&app, &id).await, 1);
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
     second.shutdown_timeout(Duration::from_secs(5));
+
+    // Another restart reads the same refusal and the same pause again. The move is tried and
+    // refused once more, and the person, asked already, is told nothing new.
+    let third = runtime()?;
+    third.block_on(async {
+        let app = build_with(&data, &fake, probe.clone(), agent)?;
+        app.reconcile().await?;
+        wait_for(
+            "the move refused again",
+            Duration::from_secs(30),
+            || async { refused_moves(&app, &id).await == 2 },
+        )
+        .await?;
+        assert_eq!(pauses_audited(&app, &id).await, 1, "asked once");
+        let task = app.deps.store.task(&id).await?.ok_or("task")?;
+        assert_eq!(task.activity, Some(Activity::NeedsAttention));
+        assert!(app.deps.store.task_needs_you(&id).await?.is_some());
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    third.shutdown_timeout(Duration::from_secs(5));
     Ok(())
+}
+
+/// How many moves of `id` were refused before they ended its session.
+async fn refused_moves(app: &App, id: &TaskId) -> usize {
+    app.deps.store.switches(id).await.map_or(0, |switches| {
+        switches.iter().filter(|s| s.outcome == "refused").count()
+    })
 }

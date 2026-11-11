@@ -102,10 +102,12 @@ impl App {
             // A pause at a usage limit, or at a refused subscription, is the limit's: Yulius
             // moves the task past it or resumes it at the reset, and nobody has to send a
             // message (SPEC-464 UCL-007). Unless the session stays at its limit.
-            if runtime.at_limit.load(Ordering::SeqCst)
-                && self.hold_limit_goal_pause(&runtime, notice)
-            {
-                tracing::info!(task = %task_id, notice, "Claude Code paused the goal at a usage limit: the limit path goes on");
+            if runtime.at_limit.load(Ordering::SeqCst) {
+                if self.hold_limit_goal_pause(&runtime, notice) {
+                    tracing::info!(task = %task_id, notice, "Claude Code paused the goal at a usage limit: the limit path goes on");
+                } else {
+                    self.limit_goal_pause_needs_a_person(&task, notice).await;
+                }
                 return;
             }
             self.goal_retries_spent(&task, notice).await;
@@ -144,27 +146,29 @@ impl App {
             Err(_) => return,
         };
         if let Some(notice) = held {
-            // Asked already (a restart reads the same pause again): nothing new to say.
-            if self.goal_retry_request_open(&task.id).await {
-                return;
-            }
-            self.goal_retries_spent(task, &notice).await;
+            self.limit_goal_pause_needs_a_person(task, &notice).await;
         }
     }
 
-    /// Whether the task's open request is the one for a goal Claude Code stopped retrying.
-    async fn goal_retry_request_open(&self, task_id: &TaskId) -> bool {
-        matches!(
-            self.deps.store.task_needs_you(task_id).await,
-            Ok(Some(open)) if open.action == RETRY_ACTION
-        )
+    /// The goal pause written at the limit where `task`'s session stays needs a person. A task
+    /// already under Needs you was told: a restart reads the same pause again and says nothing
+    /// new. One that a prompt set working since (Yulius's own, which ends no request) is under
+    /// Needs you again, its open request kept.
+    async fn limit_goal_pause_needs_a_person(&self, task: &TaskRecord, notice: &str) {
+        if task.activity == Some(Activity::NeedsAttention) {
+            return;
+        }
+        self.goal_retries_spent(task, notice).await;
     }
 
     /// The session goes on past the limit that cut its turn, with nothing typed: a request to
     /// send it a message for the goal pause written at that limit is answered (SPEC-464
     /// UCL-007). Any other request stays.
     pub(crate) async fn end_goal_retry_request(&self, task_id: &TaskId) {
-        if self.goal_retry_request_open(task_id).await {
+        if matches!(
+            self.deps.store.task_needs_you(task_id).await,
+            Ok(Some(open)) if open.action == RETRY_ACTION
+        ) {
             self.end_needs_you(task_id).await;
         }
     }
