@@ -26,18 +26,23 @@ pub const DROP_IN_NAME: &str = "20-yulius-sessions.conf";
 const ENGINE_WAIT: Duration = Duration::from_secs(10);
 /// How long systemd may take to let go of the server unit's emptied old group.
 const RELEASE_WAIT: Duration = Duration::from_secs(5);
+/// The adopt unit's `TimeoutStartSec=`: a oneshot has none by default, and the server's start
+/// waits for it. Below the three minutes the update helper gives `systemctl start`.
+const ADOPT_TIMEOUT_SECS: u32 = 120;
 
 /// The sessions unit of the server unit `service`, delegated to `user` in `slice`. It keeps the
 /// default `KillMode`: a unit that kept processes after its stop could not start again on systemd
-/// 258. Its keeper is root's (`+`), while `User=` still names who the group is delegated to: the
-/// service user, whose kill would end every session with it, cannot signal it.
+/// 258. Its keeper is root's (`+`), while `User=` still names who the group is delegated to: no
+/// signal of the service user reaches it, so a stray `kill` or `pkill` cannot end every session
+/// with it. (The group is the service user's, so it could still end the keeper through the
+/// group's own files; that takes intent, not an accident.)
 #[must_use]
 pub fn sessions_unit_text(service: &str, user: &str, slice: &str) -> String {
     format!(
         "# Written by `yulius host setup` (docs/operations.md §3, ADR-0298): the group every \
          session and\n# sandbox of {service} lives in. Restarting {service} never touches it; \
-         stopping this unit\n# ends every session. Its one process is root's, so nothing of \
-         {user} can end it.\n\
+         stopping this unit\n# ends every session. Its one process is root's, so no signal of \
+         {user} reaches it.\n\
          [Unit]\nDescription=Yulius sessions and sandboxes ({service})\n\n\
          [Service]\nSlice={slice}\nUser={user}\n\
          ExecStartPre=+/usr/bin/chown {user} /sys/fs/cgroup/{slice}/cgroup.procs\n\
@@ -54,7 +59,8 @@ pub fn adopt_unit_text(service: &str, sessions: &str, exe: &Path) -> String {
          starts, sessions\n# an earlier layout left in its own group move to {sessions}.\n\
          [Unit]\nDescription=Move Yulius sessions out of {service}\nRequires={sessions}\n\
          After={sessions}\n\n\
-         [Service]\nType=oneshot\nExecStart={exe} host adopt-sessions --service {service}\n",
+         [Service]\nType=oneshot\nExecStart={exe} host adopt-sessions --service {service}\n\
+         TimeoutStartSec={ADOPT_TIMEOUT_SECS}\n",
         exe = exe.display()
     )
 }
@@ -191,38 +197,78 @@ impl Run<'_> {
     }
 }
 
-/// What systemd names as the group of `service` (`ControlGroup`); `None` when it cannot be asked.
-fn control_group(service: &str) -> Option<String> {
-    let out = std::process::Command::new("systemctl")
-        .args(["show", "--property=ControlGroup", "--value", "--", service])
-        .stdin(std::process::Stdio::null())
-        .output()
-        .ok()?;
-    Some(String::from_utf8_lossy(&out.stdout).into_owned())
+/// How long the adopt step waits: for each ended engine, and for systemd to let go.
+#[derive(Debug, Clone, Copy)]
+pub struct AdoptWaits {
+    /// For one ended Docker engine to leave.
+    pub engine: Duration,
+    /// For systemd to let go of the server unit's emptied old group.
+    pub release: Duration,
 }
 
-/// `yulius host adopt-sessions --service <unit>` (SPEC-458 LAY-004): as root, before the server
-/// starts, moves the sessions an earlier layout left in the server's unit into its sessions unit.
-/// Nothing to move is success; a group that keeps processes fails the unit, which the server's
-/// `Wants=` survives.
+/// What one run of `yulius host adopt-sessions` did.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Adoption {
+    /// Whether the step failed (the unit then fails, which the server's `Wants=` survives).
+    pub failed: bool,
+    /// What it did, for standard output.
+    pub said: Vec<String>,
+    /// What went wrong, for standard error.
+    pub errors: Vec<String>,
+}
+
+/// One value of `systemctl show` for `service`, asked with a bound; `None` when systemd cannot
+/// be asked or does not answer in time.
+fn systemd_property(service: &str, property: &str) -> Option<String> {
+    crate::doctor::output_of(
+        Path::new("systemctl"),
+        &[
+            "show",
+            &format!("--property={property}"),
+            "--value",
+            "--",
+            service,
+        ],
+    )
+}
+
+/// The adopt step (SPEC-458 LAY-004) below the cgroup root `root`: moves the sessions an earlier
+/// layout left in the unit `service` into its sessions unit. `show` gives one property of the
+/// unit as systemd shows it (`MainPID`, `ControlGroup`), `None` when it cannot be asked.
+///
+/// While the server runs nothing is moved: `systemctl start` on an active unit starts its
+/// `Wants=` again, and a move then would take the sandboxes from under the running server and
+/// its own processes with them. Its sessions move at its next start.
 #[must_use]
-pub fn adopt_main(service: &str) -> ExitCode {
+pub fn adopt_sessions(
+    root: &Path,
+    service: &str,
+    show: &dyn Fn(&str) -> Option<String>,
+    waits: AdoptWaits,
+) -> Adoption {
+    let mut run = Adoption::default();
     let (true, Some(sessions), Some(slice)) = (
         service_name_ok(service),
         units::sessions_unit(service),
         units::slice(service),
     ) else {
-        eprintln!("yulius host adopt-sessions: {service:?} is not a unit name");
-        return ExitCode::from(2);
+        run.failed = true;
+        run.errors.push(format!("{service:?} is not a unit name"));
+        return run;
     };
-    let root = Path::new(cgroup::CGROUP_ROOT);
+    let main_pid = show("MainPID").and_then(|pid| pid.trim().parse::<u32>().ok());
+    if let Some(pid) = main_pid.filter(|pid| *pid != 0) {
+        run.said.push(format!(
+            "{service} is running (process {pid}): what it holds moves to {sessions} when it \
+             starts next; nothing was moved"
+        ));
+        return run;
+    }
     let sessions_dir = root.join(&slice).join(&sessions);
     let wanted = root.join(&slice).join(service);
-    let old = unit_groups(root, service, control_group(service).as_deref());
-    let shown = || control_group(service);
-    let mut failed = false;
-    for unit in old {
-        match adopt::adopt(&unit, &sessions_dir, unit == wanted, ENGINE_WAIT) {
+    let shown = || show("ControlGroup");
+    for unit in unit_groups(root, service, shown().as_deref()) {
+        match adopt::adopt(&unit, &sessions_dir, unit == wanted, waits.engine) {
             Ok(done) if done.nothing() => {
                 // What an earlier move left of the old group, once systemd names it no more.
                 if unit != wanted {
@@ -230,7 +276,7 @@ pub fn adopt_main(service: &str) -> ExitCode {
                 }
             }
             Ok(done) => {
-                println!(
+                run.said.push(format!(
                     "moved {} processes in {} groups from {} to {} ({} Docker engines ended: \
                      they start again on demand)",
                     done.processes,
@@ -238,32 +284,58 @@ pub fn adopt_main(service: &str) -> ExitCode {
                     unit.display(),
                     sessions_dir.display(),
                     done.engines
-                );
-                for line in &done.left {
-                    eprintln!("yulius host adopt-sessions: {line}");
-                }
-                failed |= !done.left.is_empty();
+                ));
+                run.failed |= !done.left.is_empty();
+                run.errors.extend(done.left);
                 // The server starts where systemd still holds its group: wait for it to let go.
-                if unit != wanted && !adopt::let_go(&unit, root, &shown, RELEASE_WAIT) {
-                    eprintln!(
-                        "yulius host adopt-sessions: systemd still holds {} for {service}, which \
-                         starts in it once more and moves at its next restart",
+                if unit != wanted && !adopt::let_go(&unit, root, &shown, waits.release) {
+                    run.errors.push(format!(
+                        "systemd still holds {} for {service}, which starts in it once more and \
+                         moves at its next restart",
                         unit.display()
-                    );
-                    failed = true;
+                    ));
+                    run.failed = true;
                 }
             }
             Err(error) => {
-                eprintln!(
-                    "yulius host adopt-sessions: cannot move the sessions of {} to {}: {error}",
+                run.errors.push(format!(
+                    "cannot move the sessions of {} to {}: {error}",
                     unit.display(),
                     sessions_dir.display()
-                );
-                failed = true;
+                ));
+                run.failed = true;
             }
         }
     }
-    if failed {
+    run
+}
+
+/// `yulius host adopt-sessions --service <unit>` (SPEC-458 LAY-004): as root, before the server
+/// starts, moves the sessions an earlier layout left in the server's unit into its sessions unit
+/// ([`adopt_sessions`]). Nothing to move is success; a group that keeps processes fails the
+/// unit, which the server's `Wants=` survives.
+#[must_use]
+pub fn adopt_main(service: &str) -> ExitCode {
+    if !service_name_ok(service) || units::sessions_unit(service).is_none() {
+        eprintln!("yulius host adopt-sessions: {service:?} is not a unit name");
+        return ExitCode::from(2);
+    }
+    let run = adopt_sessions(
+        Path::new(cgroup::CGROUP_ROOT),
+        service,
+        &|property| systemd_property(service, property),
+        AdoptWaits {
+            engine: ENGINE_WAIT,
+            release: RELEASE_WAIT,
+        },
+    );
+    for line in &run.said {
+        println!("{line}");
+    }
+    for line in &run.errors {
+        eprintln!("yulius host adopt-sessions: {line}");
+    }
+    if run.failed {
         ExitCode::FAILURE
     } else {
         ExitCode::SUCCESS

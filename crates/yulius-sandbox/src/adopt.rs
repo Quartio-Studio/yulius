@@ -6,6 +6,7 @@
 //! start again while one session survives. [`adopt`] runs as root before the server starts and
 //! rebuilds the old tree inside the sessions unit: the same groups, limits and processes.
 
+use std::collections::HashSet;
 use std::io;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
@@ -29,6 +30,9 @@ const SETTINGS: [&str; 6] = [
     "pids.max",
     "cgroup.freeze",
 ];
+/// How often one group's processes are read again while new ones keep appearing, and how often
+/// the old tree is looked through again after its move.
+const MAX_PASSES: usize = 16;
 /// How often an ended engine's group is looked at while it empties.
 const ENGINE_POLL: Duration = Duration::from_millis(50);
 
@@ -43,6 +47,8 @@ pub struct Adopted {
     pub engines: usize,
     /// Groups that still hold processes, with the reason.
     pub left: Vec<String>,
+    /// The processes placed so far, so that another look at a group takes only what is new.
+    placed: HashSet<String>,
 }
 
 impl Adopted {
@@ -108,14 +114,58 @@ fn pass_controllers(from: &Path, to: &Path) -> io::Result<()> {
 
 /// Moves the processes of `from` to `to`; one that exited meanwhile is not an error.
 fn move_all(from: &Path, to: &Path, done: &mut Adopted) {
+    move_with(from, to, done, &mut |procs, pid| std::fs::write(procs, pid));
+}
+
+/// [`move_all`] with the write that places one process (`place`, given `to`'s `cgroup.procs`).
+///
+/// Nothing is frozen for the move, so a process may fork between the read of its group and its
+/// own move: its child is born in the old group and was not in that read. The group is therefore
+/// read again until a read shows no process that was not placed yet, at most [`MAX_PASSES`]
+/// times. A process that could not be placed is reported once and not tried again.
+fn move_with(
+    from: &Path,
+    to: &Path,
+    done: &mut Adopted,
+    place: &mut dyn FnMut(&Path, &str) -> io::Result<()>,
+) {
     let procs = to.join("cgroup.procs");
-    for pid in lines(&from.join("cgroup.procs")).iter().take(MAX_GROUPS) {
-        match std::fs::write(&procs, pid) {
-            Ok(()) => done.processes += 1,
-            Err(error) if error.raw_os_error() == Some(nix::libc::ESRCH) => {}
-            Err(error) => done
-                .left
-                .push(format!("{}: process {pid}: {error}", from.display())),
+    for _ in 0..MAX_PASSES {
+        let fresh: Vec<String> = lines(&from.join("cgroup.procs"))
+            .into_iter()
+            .filter(|pid| !done.placed.contains(pid))
+            .take(MAX_GROUPS)
+            .collect();
+        if fresh.is_empty() {
+            return;
+        }
+        for pid in fresh {
+            match place(&procs, &pid) {
+                Ok(()) => done.processes += 1,
+                Err(error) if error.raw_os_error() == Some(nix::libc::ESRCH) => {}
+                Err(error) => done
+                    .left
+                    .push(format!("{}: process {pid}: {error}", from.display())),
+            }
+            done.placed.insert(pid);
+        }
+    }
+}
+
+/// Looks through `old/relative` once more after its move: a process that appeared since in a
+/// group already made in the sessions unit moves there too. Engines' groups are not looked at.
+fn sweep(old: &Path, sessions: &Path, relative: &Path, done: &mut Adopted) {
+    if is_engine(relative) || relative.iter().count() > MAX_DEPTH {
+        return;
+    }
+    let (from, to) = (old.join(relative), sessions.join(relative));
+    if !to.is_dir() {
+        return;
+    }
+    move_all(&from, &to, done);
+    for child in subgroups(&from) {
+        if let Ok(below) = child.strip_prefix(old) {
+            sweep(old, sessions, below, done);
         }
     }
 }
@@ -250,33 +300,52 @@ pub fn adopt(
     if !old.is_dir() || old == sessions {
         return Ok(done);
     }
+    // Not the server's own subgroup, and not systemd's (`.control`).
     let children: Vec<PathBuf> = subgroups(old)
         .into_iter()
-        .filter(|dir| dir.file_name().is_some_and(|name| name != SERVER_LEAF))
+        .filter(|dir| {
+            dir.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name != SERVER_LEAF && !name.starts_with('.'))
+        })
         .collect();
     let server = old.join(SERVER_LEAF);
     let stray_server = !keep_server && !lines(&server.join("cgroup.procs")).is_empty();
-    if children.is_empty() && !stray_server {
-        return Ok(done);
-    }
-    let meta = std::fs::metadata(sessions)?;
-    let owner = (meta.uid(), meta.gid());
-    pass_controllers(old, sessions)?;
-    for child in &children {
-        if let Ok(relative) = child.strip_prefix(old) {
-            mirror_or_report(old, sessions, relative, owner, engine_wait, &mut done);
+    if !children.is_empty() || stray_server {
+        let meta = std::fs::metadata(sessions)?;
+        let owner = (meta.uid(), meta.gid());
+        pass_controllers(old, sessions)?;
+        for child in &children {
+            if let Ok(relative) = child.strip_prefix(old) {
+                mirror_or_report(old, sessions, relative, owner, engine_wait, &mut done);
+            }
+        }
+        if stray_server {
+            let legacy = sessions.join(LEGACY_LEAF);
+            std::fs::create_dir_all(&legacy)?;
+            give(&legacy, owner)?;
+            move_all(&server, &legacy, &mut done);
+        }
+        // A group that was empty when it was left may hold a process again (one that placed
+        // itself there meanwhile): look again while a look still finds something.
+        for _ in 0..MAX_PASSES {
+            let before = done.processes;
+            for child in &children {
+                if let Ok(relative) = child.strip_prefix(old) {
+                    sweep(old, sessions, relative, &mut done);
+                }
+            }
+            if done.processes == before {
+                break;
+            }
+        }
+        for child in &children {
+            remove_tree(child, 0);
         }
     }
-    if stray_server {
-        let legacy = sessions.join(LEGACY_LEAF);
-        std::fs::create_dir_all(&legacy)?;
-        give(&legacy, owner)?;
-        move_all(&server, &legacy, &mut done);
-    }
-    for child in &children {
-        remove_tree(child, 0);
-    }
-    // One write each: a controller a remaining group still uses must not keep the others.
+    // Also with nothing to move: a unit that keeps its place with a process left in `server/`
+    // still passes its controllers down, and systemd 258 starts no unit that does. One write
+    // each: a controller a remaining group still uses must not keep the others.
     for controller in lines(&old.join("cgroup.subtree_control")) {
         let _ = std::fs::write(old.join("cgroup.subtree_control"), format!("-{controller}"));
     }
@@ -583,6 +652,116 @@ mod tests {
             done.left
                 .iter()
                 .any(|line| line.contains("sandboxes/s1") && line.contains("not moved")),
+            "{:?}",
+            done.left
+        );
+        Ok(())
+    }
+
+    /// Review of SPEC-458 (medium): nothing is frozen during the move, so a process may fork
+    /// between the read of its group and its own move. Its child was not in that read and is
+    /// born in the old group: the group is read again until a read finds nothing new.
+    #[test]
+    fn a_child_forked_while_its_group_is_read_moves_too() -> TestResult {
+        let root = tempfile::tempdir()?;
+        let (from, to) = (root.path().join("from"), root.path().join("to"));
+        group(&from, &[("cgroup.procs", "41\n")])?;
+        group(&to, &[("cgroup.procs", "")])?;
+        let mut done = Adopted::default();
+        let mut placed = Vec::new();
+        move_with(&from, &to, &mut done, &mut |_, pid| {
+            if pid == "41" {
+                // 41 forks 42 before it leaves: only a second read sees 42.
+                std::fs::write(from.join("cgroup.procs"), "42\n")?;
+            }
+            placed.push(pid.to_owned());
+            Ok(())
+        });
+        assert_eq!(placed, ["41", "42"]);
+        assert_eq!(done.processes, 2);
+        assert!(done.left.is_empty(), "{:?}", done.left);
+        Ok(())
+    }
+
+    /// A group that never stops gaining processes ends the reads at the bound.
+    #[test]
+    fn the_reads_of_a_group_are_bounded() -> TestResult {
+        let root = tempfile::tempdir()?;
+        let (from, to) = (root.path().join("from"), root.path().join("to"));
+        group(&from, &[("cgroup.procs", "1\n")])?;
+        group(&to, &[("cgroup.procs", "")])?;
+        let mut done = Adopted::default();
+        let mut next = 1_u32;
+        move_with(&from, &to, &mut done, &mut |_, _| {
+            next += 1;
+            std::fs::write(from.join("cgroup.procs"), format!("{next}\n"))
+        });
+        assert_eq!(done.processes, MAX_PASSES);
+        Ok(())
+    }
+
+    /// Review of SPEC-458 (low): a unit that keeps its place with nothing but a process in
+    /// `server/` still passes its controllers down, which is what systemd 258 cannot start.
+    #[test]
+    fn the_controllers_go_also_when_only_the_servers_group_is_left() -> TestResult {
+        let root = tempfile::tempdir()?;
+        let unit = root.path().join("yulius.slice/yulius.service");
+        let sessions = root.path().join("yulius.slice/yulius-sandboxes.service");
+        group(&unit, &[("cgroup.subtree_control", "cpu memory pids\n")])?;
+        group(&unit.join("server"), &[("cgroup.procs", "9\n")])?;
+        group(&sessions, &[("cgroup.subtree_control", "")])?;
+        let done = adopt(&unit, &sessions, true, WAIT)?;
+        assert!(done.nothing(), "{done:?}");
+        assert_eq!(
+            std::fs::read_to_string(unit.join("cgroup.subtree_control"))?,
+            "-pids",
+            "each controller was taken (a fake file keeps the last write)"
+        );
+        assert_eq!(
+            std::fs::read_to_string(unit.join("server/cgroup.procs"))?,
+            "9\n",
+            "the server's own group is left alone"
+        );
+        Ok(())
+    }
+
+    /// systemd's own subgroups (`.control`) are not the server's to move.
+    #[test]
+    fn systemds_own_subgroups_are_left_alone() -> TestResult {
+        let root = tempfile::tempdir()?;
+        let (old, sessions) = old_layout(root.path())?;
+        group(&old.join(".control"), &[("cgroup.procs", "")])?;
+        let before = adopt(&old, &sessions, false, WAIT)?.groups;
+        assert!(!sessions.join(".control").exists());
+        assert!(old.join(".control").is_dir());
+        let root = tempfile::tempdir()?;
+        let (old, sessions) = old_layout(root.path())?;
+        assert_eq!(adopt(&old, &sessions, false, WAIT)?.groups, before);
+        Ok(())
+    }
+
+    /// Emptied groups go, deepest first; one that still holds something stays and is named.
+    #[test]
+    fn emptied_groups_are_removed_and_one_that_holds_processes_is_reported() -> TestResult {
+        let root = tempfile::tempdir()?;
+        let (old, sessions) = old_layout(root.path())?;
+        // A real group has no files of its own to remove: only a directory with nothing in it
+        // is what an emptied group looks like to `rmdir`.
+        std::fs::create_dir_all(old.join("sandboxes/s3/agents/run-x"))?;
+        std::fs::write(
+            old.join("sandboxes/cgroup.events"),
+            "populated 1\nfrozen 0\n",
+        )?;
+        let done = adopt(&old, &sessions, false, WAIT)?;
+        assert!(
+            !old.join("sandboxes/s3").exists(),
+            "removed with what was below it"
+        );
+        assert!(sessions.join("sandboxes/s3/agents/run-x").is_dir());
+        assert!(
+            done.left
+                .iter()
+                .any(|line| line.ends_with("sandboxes: still holds processes")),
             "{:?}",
             done.left
         );

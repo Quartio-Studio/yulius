@@ -8,3 +8,4 @@ After=yulius-sandboxes.service
 [Service]
 Type=oneshot
 ExecStart=/usr/local/bin/yulius host adopt-sessions --service yulius.service
+TimeoutStartSec=120

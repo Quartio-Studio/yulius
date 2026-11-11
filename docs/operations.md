@@ -216,7 +216,7 @@ writes three more files and starts the first unit; `deploy/systemd/` holds the s
 ```ini
 # Written by `yulius host setup` (docs/operations.md §3, ADR-0298): the group every session and
 # sandbox of yulius.service lives in. Restarting yulius.service never touches it; stopping this unit
-# ends every session. Its one process is root's, so nothing of yulius can end it.
+# ends every session. Its one process is root's, so no signal of yulius reaches it.
 [Unit]
 Description=Yulius sessions and sandboxes (yulius.service)
 
@@ -243,6 +243,7 @@ After=yulius-sandboxes.service
 [Service]
 Type=oneshot
 ExecStart=/usr/local/bin/yulius host adopt-sessions --service yulius.service
+TimeoutStartSec=120
 ```
 
 `/etc/systemd/system/yulius.service.d/20-yulius-sessions.conf`:

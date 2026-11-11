@@ -4,7 +4,9 @@ use std::path::{Path, PathBuf};
 
 use yulius_contracts::update::HostOutcome;
 
-use super::super::session_units::{adopt_unit_text, drop_in_text, sessions_unit_text};
+use super::super::session_units::{
+    AdoptWaits, adopt_sessions, adopt_unit_text, drop_in_text, sessions_unit_text,
+};
 use super::super::{Mode, Options, Run};
 use super::{EXE, Fake, SERVICE_UID, line, options, outcome, passed, run};
 
@@ -103,6 +105,8 @@ fn the_unit_texts_say_what_the_layout_needs() {
         "After=yulius-sandboxes.service\n",
         "Type=oneshot\n",
         "ExecStart=/usr/local/bin/yulius host adopt-sessions --service yulius.service\n",
+        // A oneshot has no start timeout by default, and the server's start waits for it.
+        "TimeoutStartSec=120\n",
     ] {
         assert!(adopt.contains(needed), "{needed:?} in {adopt}");
     }
@@ -354,4 +358,180 @@ fn needrestart_leaves_the_sessions_unit_alone() {
     let rule = super::super::needrestart_rule("yulius.service");
     assert!(rule.contains(r"qr(^yulius\.service$)"), "{rule}");
     assert!(rule.contains(r"qr(^yulius-sandboxes\.service$)"), "{rule}");
+}
+
+// --- `yulius host adopt-sessions` over a fake cgroup tree and injected systemd answers ---
+
+const WAITS: AdoptWaits = AdoptWaits {
+    engine: std::time::Duration::from_millis(50),
+    release: std::time::Duration::from_millis(50),
+};
+const OLD_GROUP: &str = "/system.slice/yulius.service";
+
+fn fake_group(dir: &Path, files: &[(&str, &str)]) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    for (name, text) in files {
+        std::fs::write(dir.join(name), text)?;
+    }
+    Ok(())
+}
+
+/// A stopped server unit of the old layout with one session, and its sessions unit.
+fn stopped_old_layout(root: &Path) -> std::io::Result<(PathBuf, PathBuf)> {
+    let old = root.join("system.slice/yulius.service");
+    let sessions = root.join("yulius.slice/yulius-sandboxes.service");
+    fake_group(&old, &[("cgroup.subtree_control", "cpu memory pids\n")])?;
+    fake_group(
+        &old.join("sandboxes"),
+        &[("cgroup.subtree_control", "cpu memory pids\n")],
+    )?;
+    fake_group(
+        &old.join("sandboxes/s1/agents"),
+        &[("cgroup.procs", "41\n")],
+    )?;
+    fake_group(&sessions, &[("cgroup.subtree_control", "")])?;
+    Ok((old, sessions))
+}
+
+/// systemd's answers: `MainPID`, and `ControlGroup` naming the old group for the first `held`
+/// questions and nothing after.
+fn systemd_says(main_pid: &'static str, held: u32) -> impl Fn(&str) -> Option<String> {
+    let asked = std::cell::Cell::new(0_u32);
+    move |property: &str| match property {
+        "MainPID" => Some(format!("{main_pid}\n")),
+        "ControlGroup" => {
+            asked.set(asked.get() + 1);
+            Some(if asked.get() <= held {
+                format!("{OLD_GROUP}\n")
+            } else {
+                "\n".to_owned()
+            })
+        }
+        _ => None,
+    }
+}
+
+/// Review of SPEC-458 (medium): starting an active unit starts its `Wants=` again, so the step
+/// can run beside a running server. It must then move nothing: the server's own processes would
+/// go to `legacy/` and its sandboxes out from under it.
+#[test]
+fn the_adopt_step_leaves_a_running_server_alone() -> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let (old, sessions) = stopped_old_layout(root.path())?;
+    fake_group(&old.join("server"), &[("cgroup.procs", "4242\n")])?;
+    let done = adopt_sessions(
+        root.path(),
+        "yulius.service",
+        &systemd_says("4242", 9),
+        WAITS,
+    );
+    assert!(!done.failed, "{done:?}");
+    assert!(
+        done.said
+            .iter()
+            .any(|line| line.contains("is running") && line.contains("4242")),
+        "{done:?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(old.join("sandboxes/s1/agents/cgroup.procs"))?,
+        "41\n"
+    );
+    assert!(!sessions.join("sandboxes").exists() && !sessions.join("legacy").exists());
+    assert_eq!(
+        std::fs::read_to_string(old.join("cgroup.subtree_control"))?,
+        "cpu memory pids\n",
+        "its controllers stay too"
+    );
+    Ok(())
+}
+
+#[test]
+fn the_adopt_step_moves_a_stopped_servers_sessions() -> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let (old, sessions) = stopped_old_layout(root.path())?;
+    // One answer for the list of groups, one more while systemd still holds the old one.
+    let done = adopt_sessions(root.path(), "yulius.service", &systemd_says("0", 2), WAITS);
+    assert!(!done.failed, "{done:?}");
+    assert!(
+        done.said.iter().any(
+            |line| line.starts_with("moved 1 processes in 3 groups from")
+                && line.contains(&old.display().to_string())
+                && line.contains(&sessions.display().to_string())
+        ),
+        "{done:?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(sessions.join("sandboxes/s1/agents/cgroup.procs"))?,
+        "41"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_group_systemd_still_holds_fails_the_adopt_step() -> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    stopped_old_layout(root.path())?;
+    let done = adopt_sessions(
+        root.path(),
+        "yulius.service",
+        &systemd_says("0", u32::MAX),
+        WAITS,
+    );
+    assert!(done.failed, "{done:?}");
+    assert!(
+        done.errors
+            .iter()
+            .any(|line| line.contains("systemd still holds")),
+        "{done:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn nothing_to_move_is_a_quiet_success() -> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let sessions = root.path().join("yulius.slice/yulius-sandboxes.service");
+    fake_group(&sessions, &[("cgroup.subtree_control", "")])?;
+    fake_group(
+        &root.path().join("yulius.slice/yulius.service/server"),
+        &[("cgroup.procs", "")],
+    )?;
+    let done = adopt_sessions(root.path(), "yulius.service", &systemd_says("0", 0), WAITS);
+    assert_eq!(
+        (done.failed, done.said.len(), done.errors.len()),
+        (false, 0, 0),
+        "{done:?}"
+    );
+    Ok(())
+}
+
+/// A systemd that cannot be asked is no reason to leave the sessions where the server cannot
+/// start: the step moves them and does not fail for the unanswered questions.
+#[test]
+fn an_unanswered_systemd_does_not_stop_the_move() -> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let (_old, sessions) = stopped_old_layout(root.path())?;
+    let done = adopt_sessions(root.path(), "yulius.service", &|_| None, WAITS);
+    assert!(!done.failed, "{done:?}");
+    assert_eq!(
+        std::fs::read_to_string(sessions.join("sandboxes/s1/agents/cgroup.procs"))?,
+        "41"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_missing_sessions_unit_fails_the_adopt_step() -> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let (_old, sessions) = stopped_old_layout(root.path())?;
+    std::fs::remove_dir_all(&sessions)?;
+    let done = adopt_sessions(root.path(), "yulius.service", &systemd_says("0", 1), WAITS);
+    assert!(done.failed, "{done:?}");
+    assert!(
+        done.errors
+            .iter()
+            .any(|line| line.contains("cannot move the sessions")),
+        "{done:?}"
+    );
+    Ok(())
 }
