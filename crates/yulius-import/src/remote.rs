@@ -52,7 +52,8 @@ fn moved_base(
     there.set_scheme(origin.scheme()).ok()?;
     there.set_host(origin.host_str()).ok()?;
     there.set_port(origin.port()).ok()?;
-    if Url::parse(location?.trim()).ok()? != there {
+    // A redirect to the URL itself moves nothing.
+    if there == *endpoint || Url::parse(location?.trim()).ok()? != there {
         return None;
     }
     // The endpoint is the base URL with `mcp` appended.
@@ -383,6 +384,11 @@ mod tests {
                 "another scheme",
             ),
             (Some("new.example"), there, "not a URL"),
+            (
+                Some("https://old.example"),
+                Some("https://old.example/mcp"),
+                "a redirect to itself",
+            ),
             (Some(""), there, "an empty header"),
         ] {
             assert_eq!(follows(old, moved, location), None, "{why}");
