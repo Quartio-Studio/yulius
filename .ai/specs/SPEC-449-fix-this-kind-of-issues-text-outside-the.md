@@ -112,7 +112,7 @@ inside the box. The class of defect is caught by a test, not one screenshot at a
   so nothing that fits today moves. Only `anywhere` lets a flex item shrink below its URL, and on
   `body` it broke short labels everywhere (review round 1), so it is set on the two items that
   hold free text (`.dl-card-line`, `.gt-state`), each with its icon on the first line (round 2). See
-  [ADR-0289](../../docs/decisions/0289-long-words-wrap-by-default-and-a-sweep-keeps-text-inside-its-box.md).
+  [ADR-0290](../../docs/decisions/0290-long-words-wrap-by-default-and-a-sweep-keeps-text-inside-its-box.md).
 - **The sweep checks both directions.** Text past its box catches the reported class; a short
   word broken across lines catches the opposite (wrapping that squeezes a label). A box is the
   nearest ancestor with a visible border on both sides or a background, which is what a person

@@ -6,7 +6,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-10
 
-- Text stays inside its box (SPEC-449, task #431, ADR-0289). A long URL, path or identifier
+- Text stays inside its box (SPEC-449, task #431, ADR-0290). A long URL, path or identifier
   wraps inside its box (`overflow-wrap: break-word` on the page, `anywhere` for the Git board
   card's line and the task overview's state) instead of running out of it, as a Needs you link
   did on the Git board. A new e2e sweep gives the mock's tasks long text and fails on any text or

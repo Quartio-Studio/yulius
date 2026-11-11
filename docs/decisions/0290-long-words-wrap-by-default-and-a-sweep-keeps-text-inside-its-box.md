@@ -1,4 +1,4 @@
-# 0289. Long words wrap by default, and a sweep keeps text inside its box
+# 0290. Long words wrap by default, and a sweep keeps text inside its box
 
 ## Status
 

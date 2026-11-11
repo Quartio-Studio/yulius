@@ -16,7 +16,7 @@ body {
   overflow: hidden;
   /* A word longer than its box (a URL, a path) breaks inside it. break-word, not anywhere: no box
      gets narrower than its words, so short labels never break; a flex item holding free text
-     opts into anywhere (SPEC-449, ADR-0289). */
+     opts into anywhere (SPEC-449, ADR-0290). */
   overflow-wrap: break-word;
 }
 button, input, select, textarea { font: inherit; color: inherit; }
