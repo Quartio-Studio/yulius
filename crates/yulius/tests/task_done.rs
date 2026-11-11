@@ -30,6 +30,7 @@ use yulius_app::ports::session::{
     AttachedRun, BackgroundProbe, LaunchPlan, RunInspection, SessionHost, SpawnedRun,
 };
 use yulius_app::ports::store::TaskStore;
+use yulius_app::supervisor::RunStart;
 use yulius_contracts::events::UiEvent;
 use yulius_domain::harness::{Harness, Provider};
 use yulius_domain::ids::{AccountId, SandboxId, TaskId, UserId};
@@ -3178,6 +3179,208 @@ fn a_stop_while_a_runs_loss_is_recorded_still_ends_the_task() -> TestResult {
             TaskStatus::Stopped(StopReason::Lost)
         );
         assert!(app.deps.store.live_attempt(&id).await?.is_none());
+        Ok::<(), BoxError>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// Rests `id` as the startup sweep of #439 did, whatever run it has.
+async fn rest_as_server_lost(app: &App, id: &TaskId) -> TestResult {
+    let from = task(app, id).await?.status;
+    let lost = TaskStatus::Stopped(StopReason::ServerLost);
+    assert!(
+        app.deps
+            .store
+            .transition_task(id, Some(from), lost, None, app.now())
+            .await?
+    );
+    Ok(())
+}
+
+/// Resumes `id` as Continue and Restart do.
+async fn resume(app: &Arc<App>, id: &TaskId) -> AppResult<()> {
+    app.start_run(id, RunStart::Resume { prompt: None }, None)
+        .await
+}
+
+/// SPEC-458 RUN-002, RUN-003 (#439): a task that rests while its run lives under this server. A
+/// start is refused and changes nothing (it used to leave the task `failed_precondition`, which
+/// takes no message, with the run going on); a stop ends that run, and then the task continues.
+#[test]
+fn a_refused_start_leaves_a_resting_task_with_a_live_run_as_it_was() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let (app, _host, id) = gated_goal_task(&data, &fake).await?;
+        rest_as_server_lost(&app, &id).await?;
+        let refused = resume(&app, &id).await;
+        assert!(
+            refused
+                .as_ref()
+                .is_err_and(|e| e.to_string().contains("live run")),
+            "{refused:?}"
+        );
+        assert_eq!(
+            task(&app, &id).await?.status,
+            TaskStatus::Stopped(StopReason::ServerLost)
+        );
+        assert!(app.deps.store.live_attempt(&id).await?.is_some());
+        app.stop_task_now(&id).await?;
+        let ended = wait_for("the run's end", Duration::from_secs(60), || async {
+            matches!(app.deps.store.live_attempt(&id).await, Ok(None))
+        })
+        .await;
+        assert!(ended.is_ok(), "{}", run_states(&app, &id).await);
+        assert!(task(&app, &id).await?.status.is_resting());
+        resume(&app, &id).await?;
+        wait_for("the new run", Duration::from_secs(60), || async {
+            task(&app, &id)
+                .await
+                .is_ok_and(|t| t.status == TaskStatus::Running)
+        })
+        .await?;
+        assert_eq!(app.deps.store.attempts(&id).await?.len(), 2);
+        app.stop_task_now(&id).await?;
+        Ok::<(), BoxError>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// A resting task whose run an earlier server started and this one never attached to, its host
+/// killed: the server on `data`, the task and the run.
+fn left_by_a_dead_server(data: &Path, fake: &Path) -> Result<(TaskId, i32), BoxError> {
+    let first = runtime()?;
+    let (id, host_pid) = first.block_on(async {
+        let (app, _host, id) = gated_goal_task(data, fake).await?;
+        let run = app.deps.store.live_attempt(&id).await?.ok_or("no run")?;
+        let pid = i32::try_from(run.ptyhost_pid.ok_or("no host pid")?)?;
+        rest_as_server_lost(&app, &id).await?;
+        Ok::<_, BoxError>((id, pid))
+    })?;
+    first.shutdown_timeout(Duration::from_secs(5));
+    Ok((id, host_pid))
+}
+
+/// A second server on `data` that reconciled nothing.
+async fn second_server(data: &Path, fake: &Path) -> Result<Arc<App>, BoxError> {
+    let agent = FakeAgentOptions {
+        transcript: true,
+        hooks: true,
+        ..FakeAgentOptions::default()
+    };
+    let (app, _) = start_on(data, fake, agent, 0, None, None, false, None).await?;
+    Ok(app)
+}
+
+/// SPEC-458 RUN-002 (ADR-0050): a start finds a live run on record that this server holds no
+/// connection to, its host killed from outside. It ends what is left of it, records it lost and
+/// starts the new run, instead of answering "task already has a live run" for ever.
+#[test]
+fn a_start_settles_a_run_no_server_holds_before_it_starts_the_next() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let (id, host_pid) = left_by_a_dead_server(&data, &fake)?;
+    nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(host_pid),
+        nix::sys::signal::Signal::SIGKILL,
+    )?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = second_server(&data, &fake).await?;
+        resume(&app, &id).await?;
+        wait_for("the new run", Duration::from_secs(60), || async {
+            task(&app, &id)
+                .await
+                .is_ok_and(|t| t.status == TaskStatus::Running)
+        })
+        .await?;
+        let runs = app.deps.store.attempts(&id).await?;
+        let states: Vec<AttemptState> = runs.iter().map(|a| a.state).collect();
+        assert_eq!(runs.len(), 2, "{states:?}");
+        assert!(states.contains(&AttemptState::Lost), "{states:?}");
+        app.stop_task_now(&id).await?;
+        Ok::<(), BoxError>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-458 RUN-003: Stop on such a task ends the run (its host still runs here) and records it
+/// lost, instead of answering "task is stopped_server_lost" and changing nothing.
+#[test]
+fn a_stop_settles_a_run_no_server_holds() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let (id, host_pid) = left_by_a_dead_server(&data, &fake)?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = second_server(&data, &fake).await?;
+        app.stop_task_now(&id).await?;
+        assert!(app.deps.store.live_attempt(&id).await?.is_none());
+        let runs = app.deps.store.attempts(&id).await?;
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].state, AttemptState::Lost);
+        assert_eq!(
+            task(&app, &id).await?.status,
+            TaskStatus::Stopped(StopReason::ServerLost)
+        );
+        // Proven gone before it was recorded (AGENTS.md: a timeout is no proof).
+        assert!(
+            nix::sys::signal::kill(nix::unistd::Pid::from_raw(host_pid), None).is_err(),
+            "the run's host still runs"
+        );
+        Ok::<(), BoxError>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-458 RUN-001 (#439): the start-up reconciliation runs while a task launches (the queue
+/// starts one as soon as a lost run frees its slot), between `Starting` and its run's record. The
+/// task is not taken for one a dead server left starting: it used to rest `stopped_server_lost`
+/// with its run going on.
+#[test]
+fn the_startup_reconciliation_leaves_a_launching_task_alone() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let (app, _host, id) = gated_goal_task(&data, &fake).await?;
+        stop_on_worker(&app, &id).await?;
+        expect_stopped(&app, &id).await?;
+        let (reached, at) = std::sync::mpsc::channel();
+        let (go, wait) = std::sync::mpsc::channel::<()>();
+        yulius_app::race::on(
+            yulius_app::race::Point::AccountChosen,
+            Path::new(id.as_str()),
+            move || {
+                let _ = reached.send(());
+                let _ = wait.recv_timeout(Duration::from_secs(60));
+            },
+        );
+        let start = {
+            let (app, id) = (app.clone(), id.clone());
+            tokio::spawn(async move { resume(&app, &id).await })
+        };
+        tokio::task::spawn_blocking(move || at.recv_timeout(Duration::from_secs(60)))
+            .await?
+            .map_err(|_| "the launch never chose its subscription")?;
+        assert_eq!(task(&app, &id).await?.status, TaskStatus::Starting);
+        app.reconcile().await?;
+        let during = task(&app, &id).await?.status;
+        let _ = go.send(());
+        start.await??;
+        assert_eq!(during, TaskStatus::Starting);
+        wait_for("the run", Duration::from_secs(60), || async {
+            task(&app, &id)
+                .await
+                .is_ok_and(|t| t.status == TaskStatus::Running)
+        })
+        .await?;
+        app.stop_task_now(&id).await?;
         Ok::<(), BoxError>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));

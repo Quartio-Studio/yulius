@@ -68,12 +68,20 @@ memory pids`, no process in the unit's root, no `server` child).
 
 ### Task #439
 
-After the cleanup its task was `failed_precondition` with a live run on record: Restart said
-"task already has a live run", a message "continue the task first", Stop changed nothing. A
-start that finds a live run on record fails at `insert_attempt` and nothing looks at that run
-again; a resting task's Stop is refused before it looks either. Which path left the record
-live could not be read from production (no access); the code leaves it live when a launch fails
-after its spawn (`attach_run` or a store write), and nothing recovers it later.
+From the database and the code (the requester's correction, 2026-11-11): #439 was queued until
+the clean start at 11:28:16, when its first run started, and that run lived until 11:47:35.
+Two defects made it unusable meanwhile:
+
+1. The start-up reconciliation ends with a sweep: every task that is starting, switching,
+   stopping or running without a live run rests `stopped_server_lost`. The reconciliation
+   itself starts queued tasks (each lost run frees a slot and drains the queue, in the
+   background), and a launch is `Starting` with no run on record until it records one. The
+   sweep took #439 for a dead server's task while its launch went on.
+2. `yulius task restart` then moved the resting task to `Starting` before it looked for a run,
+   was refused at `insert_attempt` ("task already has a live run"), and the refusal's error
+   path wrote `failed_precondition` over the status, with the run still live. From then on a
+   restart was refused the same way, a message "is failed_precondition", and Stop answered
+   "task is …" without looking at the run.
 
 ## Requirements
 
@@ -133,14 +141,19 @@ after its spawn (`attach_run` or a store write), and nothing recovers it later.
   unit and thaws both; a stopped server whose sessions unit is active is frozen there instead
   of being refused; `--move` leaves both frozen.
 
-### A run killed behind the server (#439)
+### A task that rests while its run is on record (#439)
 
-- **RUN-001** A start (Continue, Restart) that finds a live run on record which this server is
-  not attached to settles it first, as a restarted server does (ADR-0050): exited, ended and
-  counted; host or agent alive, terminated and then lost; gone, lost. A run that cannot be
-  ended still refuses the start.
-- **RUN-002** Stop on a resting task with such a run settles it the same way instead of
-  answering "task is …".
+- **RUN-001** The start-up sweep rests only tasks the server before this one left live, whose
+  run this server does not hold again and which it is not launching.
+- **RUN-002** A start (Continue, Restart) of a resting task with a live run on record changes
+  nothing when it is refused: while this server holds the run it is refused before the task
+  moves ("the task still has a live run: stop it first"). A run no server holds is settled
+  first, as a restarted server does (ADR-0050): exited, ended and counted; host or agent
+  alive, terminated and then lost; gone, lost. A run that cannot be ended still refuses the
+  start.
+- **RUN-003** Stop on a resting task with a live run on record ends that run (held: asked to
+  shut down, with the escalation armed; not held: settled as in RUN-002) instead of answering
+  "task is …".
 
 ## Plan
 
@@ -149,7 +162,7 @@ after its spawn (`attach_run` or a store write), and nothing recovers it later.
 - [ ] Host setup writes the sessions unit, the adopt unit and the drop-in; host check and the doctor report it
 - [ ] Restart and Update now refuse where the restart would fail (helper and server)
 - [ ] The export freezes the sessions unit too
-- [ ] A start or a stop settles a live run whose host is gone (#439)
+- [ ] Start-up never rests a launching task; a start or a stop settles a run left on record (#439)
 - [ ] Proof on real hosts: restarts, the helper's restart and rollback, the first restart that installs the fix (systemd 255 and 259)
 - [ ] ADR-0298, the operations guide, the architecture document and the change entry
 - [ ] Gates and an independent review of the final head
@@ -166,8 +179,9 @@ after its spawn (`attach_run` or a store write), and nothing recovers it later.
 - The helper's restart, install and rollback paths end healthy with sessions alive on both
   versions.
 - `yulius doctor` and `host check` name the missing setup.
-- Task #439's state (a resting task, a live run on record, no process) is left by Continue or
-  Stop.
+- A task launched during the start-up reconciliation runs, shown as running. A resting task
+  with a live run on record (#439's state) keeps its status when a start is refused, and Stop
+  ends its run; then it continues.
 
 ## Test plan
 
@@ -175,12 +189,13 @@ after its spawn (`attach_run` or a store write), and nothing recovers it later.
   the unit names; adopt on a fake cgroup tree (mirror, moves, limits, engine killed, bounds,
   nothing to do); `restart_safety::blocker` table; host setup item with the fake host (writes,
   idempotent, dry run, check mode, needrestart rule); helper refuses before stopping; freeze
-  with the sessions unit (frozen, thawed, stopped server, move); supervisor: start and stop
-  with an unattached live run (gone, alive, cannot be ended).
+  with the sessions unit (frozen, thawed, stopped server, move); supervisor: the
+  reconciliation during a launch; a refused start and a stop with a run this server holds; a
+  start and a stop with a run no server holds (host killed, host alive).
 - Real hosts (QEMU, Ubuntu 24.04 and 26.04, the real binary as `yulius.service` with real
   sessions): the acceptance list above; logs kept in the Evidence section.
 - Not testable here: production itself (the first restart is a person's, by the operations
-  guide), and the exact path that left #439's run live.
+  guide).
 
 ## Decisions
 
@@ -195,7 +210,10 @@ after its spawn (`attach_run` or a store write), and nothing recovers it later.
   answer at once); the doctor only warns, since hosts without systemd 258 are fine.
 - The engine is killed at the migration rather than moved broken; it is a one-time cost of the
   first restart on a host that had the old layout.
-- #439 is fixed where it shows (start and stop look at a live run nobody is attached to)
-  rather than at the unknown path that left it: every such path is covered.
+- #439 is fixed at its cause (the sweep) and where it shows (a start and a stop look at the
+  run on record first), so another path that leaves a resting task with a run is recoverable
+  too. The launch marks its task instead of the sweep waiting for the launch lock: a start-up
+  never waits for a slow launch, and a test can hold a launch and reconcile without a
+  deadlock.
 - One pull request although it passes 400 lines: the layout, its setup, the adopt step and the
   guard are one fix that is unsafe in parts; the #439 recovery was asked for in the same fix.
