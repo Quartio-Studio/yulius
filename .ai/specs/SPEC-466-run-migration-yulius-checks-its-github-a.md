@@ -1,11 +1,11 @@
 ---
 yulius-task: 25decd3b-ed8e-4fcf-ab8e-a49ca9c2b1c2
-status: in-progress
+status: done
 ---
 
 # SPEC-466: Run migration: Yulius checks its GitHub App callback, Settings → Instance shows the move, the remote CLI follows it
 
-Status: in-progress
+Status: done
 Date: 2026-11-11
 Owner: Yulius task #446 (slice C of #442)
 Scope authorization: task #446, asked by the project's owner: "After a move changes the public
@@ -188,7 +188,7 @@ Remote clients
 - [x] `yulius remote` follows a move's redirect and the store remembers it
 - [x] Operations guide §5 and §7, remote control, API, architecture, product summary, changes
 - [x] Gates green and the independent review answered
-- [ ] The first review's findings fixed, each with a test that fails without it
+- [x] The first review's findings fixed, each with a test that fails without it
 
 ## Acceptance criteria
 
@@ -276,71 +276,90 @@ Remote clients
 
 ## Evidence
 
-Head of the gates: `b451719f` (2026-11-11), which holds `dev` up to `eb2e8a4e` (#1167); the
+Head of the gates: `c84185d3` (2026-11-11), which holds `dev` up to `4b59bce3` (#1173); the
 commits after it change this document only.
 
-- `scripts/dev ci`: exit 0; nextest 3568 tests run, 3568 passed, 16 skipped; clippy, doctests,
-  docs and the repository check.
-- e2e: the whole suite (`cd e2e && npx e2e run`) at `8e687075`, the merge of `dev`: 79 files
-  passed, 1 skipped; 940 tests passed, 1 skipped. At the gates' head, where only comments of the
-  pages changed since: `sign-in`, `instance-address`, `instance-limits` and `claude-code`,
-  36 tests passed. New: `instance-address.e2e.ts` (8) and three in `sign-in.e2e.ts`.
+- `scripts/dev ci`: exit 0; nextest 3681 tests run, 3681 passed, 16 skipped; clippy,
+  doctests, docs and the repository check.
+- e2e: the whole suite (`cd e2e && npx e2e run`) at `8e687075`: 79 files passed, 1 skipped; 940
+  tests passed, 1 skipped. At the gates' head, where only a comment of the sign-in page changed
+  since: `sign-in`, `instance-address`, `instance-limits` and `claude-code`, 36 tests passed.
+  New: `instance-address.e2e.ts` (8) and three in `sign-in.e2e.ts`.
 - The tests of this change, by requirement:
   - MVC-001: `yulius-github` `tests/client.rs`
-    `a_callback_url_is_registered_missing_or_not_known`,
-    `a_callback_question_ends_when_github_does_not_answer`; through the production adapter,
-    `github_callback::the_adapter_asks_the_fake_github`.
+    `a_callback_url_is_registered_missing_or_not_known` (with the control question and a GitHub
+    that takes every URL), `a_callback_question_ends_when_github_does_not_answer`; through the
+    production adapter, `github_callback::the_adapter_asks_the_fake_github`.
   - MVC-002, MVC-003, MVC-010, MVC-012, MVC-013, MVC-020: `crates/yulius/tests/github_callback.rs`
-    (15 tests) and `yulius-app` `github_callback::tests` (3, the schedule of re-checks among them).
+    (19 tests) and `yulius-app` `github_callback::tests` (3, the schedule of re-checks among
+    them).
   - MVC-011, MVC-012: the e2e tests above.
-  - MVC-021, MVC-022: `instance::migrate::tests::github` (7), four flow tests
+  - MVC-021, MVC-022: `instance::migrate::tests::github` (8), four flow tests
     (`a_callback_github_accepts_is_ok_in_the_plan_and_at_the_finish` and the three after it),
     `github_callback::the_move_s_question_is_answered_by_the_running_server`.
-  - MVC-030 to MVC-032: `yulius-import` `remote::tests` (3), `token_store::tests` (2 new),
-    `remote_mcp::the_cli_follows_an_instance_that_moved` (the `yulius` binary).
+  - MVC-030 to MVC-032: `yulius-import` `remote::tests` (3), `token_store::tests` (4 new), and
+    with the `yulius` binary against real servers `remote_mcp::the_cli_follows_an_instance_that_moved`,
+    `the_cli_does_not_follow_a_move_onto_another_sign_in` and
+    `the_cli_finds_its_way_back_after_a_move_that_was_undone`.
 - Each behaviour's test was seen to fail without it: before its code was written, or by a
-  mutation of it (55 mutations of the kept answer and its schedule, the routes, the pages, the
-  move's question and the remote client with its store). Two survived at first and got their
-  tests (a URL that is not a host reaching the request line; the count of equal answers not reset
-  by a changed one); a third was an equivalent change.
+  mutation of it (73 mutations of the kept answer and its schedule, the routes, the pages, the
+  move's question and line, the client's control question and the remote client with its
+  store). Two survived at first and got their tests (a URL that is not a host reaching the
+  request line; the count of equal answers not reset by a changed one), a third was an
+  equivalent change. The first review found a fourth that no mutation had been tried on: the
+  schedule's test asked only "is GitHub asked by then", never "not before". It now reads at
+  29 999 ms and at each longer wait minus one, and ten mutations of the schedule, run against
+  the integration tests alone, are all caught.
 - `yulius security-scan`: "Security scan disabled" (Vidoc is off for this project): disabled, not
   passed.
-- Real runs (2026-11-11, at `f9590767`, before the later fixes to the schedule and the pages):
+- Real runs (2026-11-11):
   - GitHub's live token endpoint through `GitHubClient::callback_registered`, with the GitHub
-    CLI's public OAuth client: its registered callback `Ok(true)` (249 ms), another URL
-    `Ok(false)`, a wrong secret `Err(OAuth("incorrect_client_credentials"))`.
-  - A real `yulius serve` on loopback: `GET /api/setup/status` has
-    `"github_callback_missing":false`; `/internal/github-callback` answers 401 without the key,
-    `{"github":null}` with the key of `leftovers-cli.key` and 422 for `public_url=http://…`; the
-    address API shows a `moved.json`. `yulius instance migrate-target` with the step `callback`
-    (the command the move runs on the new host) answered `ok` "no GitHub App is connected" from
-    that server, and `manual` with the reason for a data directory without the key.
-  - A real Caddy 2.11.9 with the site block the move writes (`header X-Yulius-Moved-To`, `redir
-    … 307`) in front of that server: `yulius remote status` printed `yulius:
-    http://127.0.0.1:20110 moved to http://127.0.0.1:20108; the saved sign-in follows it.`,
-    answered from the new URL (exit 0), said nothing the second time, worked with `--server <old
-    URL>`, and left `remote-credentials.json` (0600) with the token under the new URL and the old
-    name in `moved`.
-- Independent review: asked of a fresh read-only session for the head that holds this section.
-  The merge (`delivery_merge`) is refused without its approval of the exact head and records its
-  verdict.
+    CLI's public OAuth client, at `9262383b` (with the control question): its registered callback
+    `Ok(Some(true))` after two requests (405 ms), another URL `Ok(Some(false))` after one, a
+    wrong secret `Err(OAuth("incorrect_client_credentials"))`. So GitHub refuses the control URL
+    for an OAuth app.
+  - At `f9590767`, before the later fixes: a real `yulius serve` on loopback (`GET
+    /api/setup/status` has `"github_callback_missing":false`; `/internal/github-callback`
+    answers 401 without the key, `{"github":null}` with the key of `leftovers-cli.key` and 422
+    for `public_url=http://…`; the address API shows a `moved.json`); `yulius instance
+    migrate-target` with the step `callback` (the command the move runs on the new host)
+    answered `ok` "no GitHub App is connected" from that server, and `manual` with the reason
+    for a data directory without the key.
+  - At `f9590767`: a real Caddy 2.11.9 with the site block the move writes (`header
+    X-Yulius-Moved-To`, `redir … 307`) in front of that server: `yulius remote status` printed
+    `yulius: http://127.0.0.1:20110 moved to http://127.0.0.1:20108; the saved sign-in follows
+    it.`, answered from the new URL (exit 0), said nothing the second time, worked with
+    `--server <old URL>`, and left `remote-credentials.json` (0600) with the token under the new
+    URL and the old name in `moved`.
+- Independent review, in a fresh read-only session:
+  - Round 1 at `401d401f`: changes requested. One major (the schedule's test could not fail
+    without the schedule), five minors (a clock that steps back silenced "Check again"; no test
+    for the questions at start and after the manifest flow; no way back for a laptop after a
+    move that is undone; an instance could make itself a name of another saved one; `ok` said
+    without looking at which URL was asked about) and seven nits. All are answered in code with
+    a test each, or in the documents; the control question came from its remark that the
+    checklist now turns to `ok` on an answer measured only with an OAuth app.
+  - Round 2: asked for the head that holds this section. The merge (`delivery_merge`) is
+    refused without its approval of the exact head and records its verdict.
 
 Changed while it was built, and why:
 
 - A sign-in start first returned to the sign-in page while the callback was known as missing.
   The answer rests on what GitHub says to a made-up code, measured with an OAuth app and promised
   nowhere for a GitHub App, so it may not be able to stop a sign-in: a start always goes to
-  GitHub and asks nothing, and a sign-in that completes proves the callback.
+  GitHub and asks nothing, a sign-in that completes proves the callback, and "registered" is
+  believed only after the control question.
 - Reads asked GitHub again every 30 s for as long as a page stayed open; the wait now doubles
   after eleven equal answers, up to 4 minutes.
 
 Not tested here:
 
 - GitHub's answer for a real GitHub App: a sandbox holds no App secret. The endpoint, the order of
-  its checks and the three answers were measured with an OAuth app's public client. This is why
-  the answer is advice only (MVC-013): were it wrong for an App, a page would say so wrongly and
-  sign-in would work all the same. On an instance with an App, Settings → Instance → Address shows
-  the answer at once.
+  its checks and the answers were measured with an OAuth app's public client. If an App is
+  treated otherwise, the control question turns the answer into "unknown" (GitHub takes every
+  URL) or the pages say "missing" wrongly (GitHub refuses every URL) while sign-in works all the
+  same and the first sign-in that completes corrects it. On an instance with an App, Settings →
+  Instance → Address shows the answer at once.
 - A real move between two hosts whose instance has a GitHub App, and the plan's question on a real
   old host (the root command needs systemd and a unit to freeze): covered by the fake-host flow
   tests and by the real `migrate-target` step above.
