@@ -1311,14 +1311,15 @@ test('another person’s worktree saves nothing, offers no writing menu items an
 // #1087 (SPEC-452): Monaco shows before the first file's read and join are back. Made with no model,
 // Monaco gave it an empty one of its own: text typed in that gap went into it, the file's model
 // replaced it, and the suggestions for the typed word threw "Model is disposed!" twice.
-type JoinsMock = Window & { __yuliusMock: { live: { holdJoins: boolean }; releaseJoins(): void } };
+type JoinsMock = Window & { __yuliusMock: { live: { holdJoins: boolean; joins: { path: string }[] }; releaseJoins(): void } };
 test('the editor offers nothing to type into until its first file is in it', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12'));
   await browser.evaluate(() => { (window as unknown as JoinsMock).__yuliusMock.live.holdJoins = true; });
   await screen.getByRole('button', /^Show tools/).click();
   await screen.getByRole('button', 'Editor').click();
   await screen.getByRole('tree', 'Files').getByRole('treeitem', 'README.md').click();
-  await editorShown(browser);
+  // The file's join is asked once the editor is made and the file read: the gap is open.
+  await expect.poll(() => browser.evaluate(() => (window as unknown as JoinsMock).__yuliusMock.live.joins.some((j) => j.path === 'README.md')), { timeout: MONACO_LOAD_MS }).toBe(true);
   await expect(screen.getByRole('textbox', 'Editor content')).toHaveCount(0);
 
   await browser.evaluate(() => (window as unknown as JoinsMock).__yuliusMock.releaseJoins());
