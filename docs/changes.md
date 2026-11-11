@@ -19,6 +19,21 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   the same session, and a task's info shows the model it asks for, the models that answered and
   the Claude Code each session ran. Also fixed: an idle task a person moved to another
   subscription read "working" until its next turn.
+- A turn whose Stop meets its own prompt still ends (SPEC-453, task #435, ADR-0299). On a loaded
+  host a goal task could stay Working for good after Claude Code recorded its goal as met: the
+  transcript watcher, applying the turn's prompt, cleared the verdict wait the turn's Stop had
+  just opened. A task without a goal could stay Working the same way when the Stop had read it
+  before the watcher's prompt. The watcher's prompt and a clean Stop now take the task's turn
+  order (ADR-0234), and the Stop settles the task as it reads after that. This was the third
+  report of `task_done::a_goal_the_tui_dropped_is_submitted_again` timing out in the full suite
+  (#1066): it failed 2 of 48 runs under probe delays and passes 96 of 96 with the fix.
+- Nothing is typed into the Editor before its file is in it (SPEC-452, task #434, #1087). The
+  editor is made with no model, so it shows no text to type into while the first file's read and
+  live join are on their way. Before, Monaco's own empty model took that typing, the file's model
+  replaced it (the text was lost) and Monaco threw "Model is disposed!" twice. The quarantined
+  e2e "a folder chosen while the worktrees are read…" runs again: it types once the tab is open,
+  and moves the disk once the server has the typing (a look that got there first took the disk's
+  text as the saved one, and no conflict was asked).
 - Your own Anthropic key can be named `ANTHROPIC_API_KEY_<NAME>` or `ANTHROPIC_AUTH_TOKEN_<NAME>`
   (not ending in `_FILE`), such as `ANTHROPIC_API_KEY_QUARTIO` (SPEC-455, task #437, ADR-0292, #1153); every other
   `ANTHROPIC_` name stays reserved for the agent CLI. A refused name now says which prefix is

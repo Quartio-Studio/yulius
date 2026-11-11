@@ -579,8 +579,18 @@ impl App {
     /// hook that runs after this one, so the hook cannot wait for it).
     pub(crate) async fn clean_stop(self: &Arc<Self>, task: &TaskRecord) -> AppResult<()> {
         let runtime = self.runtime(&task.id);
-        let stop_ms = self.now().0;
-        runtime.last_stop_ms.store(stop_ms, Ordering::SeqCst);
+        crate::race::reached(
+            crate::race::Point::StopClean,
+            std::path::Path::new(task.id.as_str()),
+        );
+        // After a prompt the transcript watcher is applying: it passed its last-Stop check and
+        // starts its turn first (SPEC-453 TPO-001).
+        let stop_ms = {
+            let _order = runtime.turn_order.lock().await;
+            let stop_ms = self.now().0;
+            runtime.last_stop_ms.store(stop_ms, Ordering::SeqCst);
+            stop_ms
+        };
         runtime.resumed_turn.store(false, Ordering::SeqCst);
         if runtime.goal_open.load(Ordering::SeqCst) && !runtime.goal_achieved.load(Ordering::SeqCst)
         {
@@ -590,7 +600,11 @@ impl App {
             return Ok(());
         }
         runtime.verdict_stop_ms.clear();
-        self.settle_clean_turn(task).await
+        // That prompt set Working by now: the Stop settles the task as it is, not as it was read
+        // on arrival (the copy if the store fails; SPEC-453 TPO-002).
+        let current = self.deps.store.task(&task.id).await.ok().flatten();
+        self.settle_clean_turn(current.as_ref().unwrap_or(task))
+            .await
     }
 
     /// A clean turn's end: Done when the goal is achieved, waiting otherwise (TSK-014). Its
