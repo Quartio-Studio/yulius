@@ -872,8 +872,8 @@ async fn typed_secrets_refuse_screenshots_while_a_page_may_show_them() -> TestRe
         .tool_screenshot_within(&shot(&tab), 100_000)
         .await?;
 
-    // A password field keeps screenshots; the value edited in it (a character typed into the
-    // middle) is not the value typed any more: refused, and so is its origin from then on.
+    // A password field keeps screenshots; the value edited in it as it is typed (a character
+    // into the middle) is not the value typed any more: its site is refused from then on.
     instance
         .tool_navigate(&to(&tab, "https://d.example/login"))
         .await?;
@@ -884,11 +884,14 @@ async fn typed_secrets_refuse_screenshots_while_a_page_may_show_them() -> TestRe
     instance
         .tool_screenshot_within(&shot(&tab), 100_000)
         .await?;
-    fake.set_secret_probe(probe(&["Fake page text"], &["pw-sec ret-4471"]));
+    fake.queue_secret_probes(vec![
+        json!({"shown": ["Fake page text"], "masked": ["pw-secret-4471"], "over": false}),
+        json!({"shown": ["Fake page text"], "masked": ["pw-sec ret-4471"], "over": false}),
+    ]);
+    instance.tool_type(&fill(&tab, "#pw", " ")).await?;
     assert!(refused(
         instance.tool_screenshot_within(&shot(&tab), 100_000).await
     ));
-    fake.set_secret_probe(None);
     instance
         .tool_navigate(&to(&tab, "https://d.example/home"))
         .await?;

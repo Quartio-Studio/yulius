@@ -14,7 +14,7 @@ use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::TcpListener;
 use yulius_browser::{BrowserConfig, BrowserError, BrowserManager};
 use yulius_contracts::browser::{
-    ClickParams, OpenParams, ScreenshotParams, SnapshotParams, TypeParams,
+    ClickParams, NavigateParams, OpenParams, ScreenshotParams, SnapshotParams, TypeParams,
 };
 use yulius_domain::ids::SandboxId;
 
@@ -25,7 +25,8 @@ const PAGE: &str = "<!doctype html><html><head><title>Yulius test page</title></
 <button id=\"press\" onclick=\"document.getElementById('out').textContent='clicked '+document.getElementById('name').value\">Press</button>\
 <p id=\"out\">waiting</p>\
 <input id=\"pw\" type=\"password\" aria-label=\"Password\">\
-<button id=\"show\" onclick=\"document.getElementById('pw').type='text'\">Show</button></body></html>";
+<button id=\"show\" onclick=\"document.getElementById('pw').type='text'\">Show</button>\
+<form name=\"documentElement\"></form><img name=\"querySelectorAll\" alt=\"\"></body></html>";
 
 /// Serves [`PAGE`], or at `/frame` a page framing `framed`.
 async fn serve(listener: TcpListener, framed: String) {
@@ -220,7 +221,9 @@ async fn drives_a_real_chromium_when_configured() -> TestResult {
     assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
 
     // SPEC-450 on a real page: the probe reads a password field as masked, so a secret typed
-    // there keeps screenshots; revealed, or typed into a text field, it refuses them.
+    // there keeps screenshots; revealed, or typed into a text field, it refuses them. The page's
+    // named elements shadow `document.documentElement` and `document.querySelectorAll`, which
+    // the probe reads through the prototypes.
     let shot_params = ScreenshotParams {
         tab_id: tab.clone(),
     };
@@ -261,12 +264,17 @@ async fn drives_a_real_chromium_when_configured() -> TestResult {
     ));
     // A page of another site is captured, unless it frames the site the secret went into
     // (out of the probe's reach, so the frame tree tells).
-    browser.navigate(&tab, &framing_url).await?;
+    let load = |url: String| NavigateParams {
+        tab_id: tab.clone(),
+        url,
+    };
+    browser.tool_navigate(&load(framing_url.clone())).await?;
     browser
         .tool_screenshot_within(&shot_params, 1 << 20)
         .await?;
+    // Waits for the load event, so the frame is there.
     browser
-        .navigate(&tab, &format!("{framing_url}frame"))
+        .tool_navigate(&load(format!("{framing_url}frame")))
         .await?;
     assert!(matches!(
         browser.tool_screenshot_within(&shot_params, 1 << 20).await,

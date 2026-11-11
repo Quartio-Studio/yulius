@@ -100,6 +100,12 @@ const SECRET_PROBE_WORLD: &str = "yulius-secret-probe";
 /// values, which never reach the page. The marker comment names it for the fake.
 const SECRET_PROBE_EXPRESSION: &str = "(() => {
   // yulius:secret-probe
+  // Read through the prototypes: a page's named elements override a document's own properties.
+  const getter = (proto, name) => Object.getOwnPropertyDescriptor(proto, name).get;
+  const rootOf = getter(Document.prototype, 'documentElement');
+  const kindOf = getter(Node.prototype, 'nodeType');
+  const inDocument = Document.prototype.querySelectorAll;
+  const inFragment = DocumentFragment.prototype.querySelectorAll;
   const shown = [], masked = [];
   let size = 0, over = false;
   const add = (list, text) => {
@@ -108,7 +114,8 @@ const SECRET_PROBE_EXPRESSION: &str = "(() => {
     if (size > 4000000) over = true; else list.push(String(text));
   };
   const walk = (root) => {
-    for (const el of root.querySelectorAll('*')) {
+    const all = (kindOf.call(root) === 9 ? inDocument : inFragment).call(root, '*');
+    for (const el of all) {
       const name = String(el.localName).toLowerCase();
       if (name === 'input') {
         const type = String(el.type).toLowerCase();
@@ -124,7 +131,7 @@ const SECRET_PROBE_EXPRESSION: &str = "(() => {
     }
   };
   const text = (doc) => {
-    const top = doc.documentElement;
+    const top = rootOf.call(doc);
     if (!top) return;
     for (const child of top.children) if (String(child.localName).toLowerCase() !== 'head') add(shown, child.textContent);
   };
@@ -475,11 +482,9 @@ impl SecretMemory {
         lock(&self.0)
     }
 
-    /// For a new browser: documents (loader ids) and "every screenshot" belong to the old one.
+    /// For a new browser: documents (loader ids) belong to the old one.
     fn restart(&self) {
-        let mut typed = self.lock();
-        typed.documents.clear();
-        typed.everywhere = false;
+        self.lock().documents.clear();
     }
 }
 
@@ -497,8 +502,8 @@ struct TypedSecrets {
     /// Hosts where a value went outside a password field or was found shown or edited: every
     /// page of them is refused (the site may show an edited copy anywhere).
     exposed: Vec<String>,
-    /// A value went where this browser could not tell the page: every screenshot is refused
-    /// until it stops.
+    /// A value went where a browser could not tell the page, or a bound was passed: every
+    /// screenshot is refused (until Yulius restarts).
     everywhere: bool,
 }
 
@@ -599,7 +604,8 @@ impl Document {
 
     /// Adds the hosts of the out-of-process frames among `targets` (`Target.getTargets`) that
     /// belong to the tab `tab`: `iframe` targets whose parent frame is one of its frames, nested
-    /// ones too, and, failing closed, any whose parent is not said.
+    /// ones too, and, failing closed, any whose parent is not said or is no target listed (a
+    /// frame inside another out-of-process frame).
     fn add_frame_targets(&mut self, tab: &TabId, targets: &Value) {
         let iframes: Vec<&Value> = targets
             .get("targetInfos")
@@ -608,6 +614,16 @@ impl Document {
                 infos
                     .iter()
                     .filter(|info| info.get("type").and_then(Value::as_str) == Some("iframe"))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let listed: Vec<&str> = targets
+            .get("targetInfos")
+            .and_then(Value::as_array)
+            .map(|infos| {
+                infos
+                    .iter()
+                    .filter_map(|info| info.get("targetId").and_then(Value::as_str))
                     .collect()
             })
             .unwrap_or_default();
@@ -624,7 +640,9 @@ impl Document {
                 let parent = ["parentFrameId", "parentId"]
                     .iter()
                     .find_map(|field| info.get(*field).and_then(Value::as_str));
-                if parent.is_some_and(|parent| !ours.iter().any(|id| id == parent)) {
+                if parent.is_some_and(|parent| {
+                    !ours.iter().any(|id| id == parent) && listed.contains(&parent)
+                }) {
                     continue;
                 }
                 taken[index] = true;
@@ -713,9 +731,9 @@ impl TypedSecrets {
     /// Whether a screenshot of `page`, read from `document`, may show a secret, and whether its
     /// host is to be refused from now on. It may: on an exposed host; framing a host a value was
     /// typed into; when its text or text fields hold a typed value or line (exposing it) or, by
-    /// `vault`, any secret Yulius hides; in a document a value was typed into, unless that value
-    /// is whole in a password field there and shown nowhere (exposing it); when the document or
-    /// the page is unknown.
+    /// `vault`, any secret Yulius hides; when the document or the page is unknown. A value gone
+    /// from a page (a single-page sign-in) is no edit: edits are caught as they are typed
+    /// ([`BrowserInstance::type_text`]).
     fn judge(
         &self,
         document: Option<&Document>,
@@ -739,11 +757,7 @@ impl TypedSecrets {
             .values
             .iter()
             .chain(&self.lines)
-            .any(|value| page.shows(value))
-            || self
-                .typed_into(document)
-                .iter()
-                .any(|value| !page.confines(value));
+            .any(|value| page.shows(value));
         (typed || vault, typed)
     }
 }
@@ -2503,9 +2517,8 @@ impl BrowserInstance {
         // Screenshots hold the same lock from their look at the page to the capture.
         let _input = self.input_lock.lock().await;
         if !secret {
-            let typed = self.type_lines(&session, params).await;
-            self.check_typed_documents(&session).await;
-            return typed;
+            let watched = self.watched_values(&session).await;
+            return self.type_lines(&session, params, watched.as_ref()).await;
         }
         let Some(before) = self.document(&session).await else {
             return Err(BrowserError::InvalidInput(
@@ -2522,7 +2535,7 @@ impl BrowserInstance {
             }
             typed.record(Some(&before), &params.text);
         }
-        let typed = self.type_lines(&session, params).await;
+        let typed = self.type_lines(&session, params, None).await;
         let after = self.document(&session).await;
         let page = match &after {
             Some(document) => self.read_page(&session, &document.frame).await,
@@ -2550,21 +2563,34 @@ impl BrowserInstance {
         typed
     }
 
-    /// After other typing (`browser_type`, a user name): a secret typed into this document may
-    /// have been edited into something no longer found as typed (a character typed into its
-    /// middle), so unless each stays whole in a password field the host is exposed.
-    async fn check_typed_documents(&self, session: &str) {
+    /// Before other typing (`browser_type`, a user name): the secrets typed into this document
+    /// that are whole in a password field now, which the typing may edit (a character into the
+    /// middle of one); `None` when there are none. A document that cannot be told, with secrets
+    /// typed in this browser, refuses every screenshot.
+    async fn watched_values(&self, session: &str) -> Option<(Document, Vec<Zeroizing<String>>)> {
         if self.secrets.lock().documents.is_empty() {
-            return;
+            return None;
         }
         let Some(document) = self.document(session).await else {
             self.secrets.lock().expose(None);
-            return;
+            return None;
         };
         let values = self.secrets.lock().typed_into(&document);
         if values.is_empty() {
-            return;
+            return None;
         }
+        let page = self.read_page(session, &document.frame).await?;
+        let values: Vec<_> = values
+            .into_iter()
+            .filter(|value| page.confines(value))
+            .collect();
+        (!values.is_empty()).then_some((document, values))
+    }
+
+    /// After a line typed into `watched`'s document: a value no longer whole in a password field
+    /// was edited, so its host is exposed.
+    async fn check_edits(&self, session: &str, watched: &(Document, Vec<Zeroizing<String>>)) {
+        let (document, values) = watched;
         let page = self.read_page(session, &document.frame).await;
         if !page
             .as_ref()
@@ -2687,10 +2713,13 @@ impl BrowserInstance {
         Ok(())
     }
 
+    /// Inserts `params.text`, pressing Enter for each `\n`; with `watched`, checks for edits
+    /// after each line, before its Enter may submit the form ([`Self::check_edits`]).
     async fn type_lines(
         &self,
         session: &str,
         params: &TypeParams,
+        watched: Option<&(Document, Vec<Zeroizing<String>>)>,
     ) -> Result<TypeResult, BrowserError> {
         let mut chars = 0;
         for (index, line) in params.text.split('\n').enumerate() {
@@ -2700,9 +2729,14 @@ impl BrowserInstance {
             }
             let line = line.strip_suffix('\r').unwrap_or(line);
             if !line.is_empty() {
-                self.cdp
+                let inserted = self
+                    .cdp
                     .call_session(session, "Input.insertText", json!({"text": line}))
-                    .await?;
+                    .await;
+                if let Some(watched) = watched {
+                    self.check_edits(session, watched).await;
+                }
+                inserted?;
                 chars += line.chars().count();
             }
         }
