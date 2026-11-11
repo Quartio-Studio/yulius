@@ -624,14 +624,35 @@ fn the_data_directory_is_made_ready_for_a_copy() {
     host.file("/var/lib/yulius/.yulius-import-incomplete", "");
     let reply = step(&mut host, &request);
     assert_eq!(only(&reply).0, HostOutcome::Changed);
+    // The marker goes last: a removal that is cut leaves an unfinished copy, not a directory
+    // that is neither empty nor marked.
     assert_eq!(
         host.runs("rm"),
         [
-            "rm -rf --one-file-system -- /var/lib/yulius/.yulius-import-incomplete",
             "rm -rf --one-file-system -- /var/lib/yulius/sandboxes",
             "rm -rf --one-file-system -- /var/lib/yulius/yulius.db",
+            "rm -rf --one-file-system -- /var/lib/yulius/.yulius-import-incomplete",
         ]
     );
+    // Cut in the middle: still an unfinished copy, which the next run removes.
+    let mut host = new_host();
+    host.dir("/var/lib/yulius/sandboxes");
+    host.file("/var/lib/yulius/yulius.db", "half");
+    host.file("/var/lib/yulius/.yulius-import-incomplete", "");
+    host.fails(
+        &[
+            "rm",
+            "-rf",
+            "--one-file-system",
+            "--",
+            "/var/lib/yulius/yulius.db",
+        ],
+        "Input/output error",
+    );
+    assert_eq!(only(&step(&mut host, &request)).0, HostOutcome::Failed);
+    assert!(host.is_file(std::path::Path::new(
+        "/var/lib/yulius/.yulius-import-incomplete"
+    )));
 
     // The base this host built before the copy is its own: it stays, also when an unfinished
     // copy beside it is removed.

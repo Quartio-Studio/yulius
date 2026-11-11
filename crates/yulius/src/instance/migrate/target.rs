@@ -1203,7 +1203,15 @@ fn data_dir(host: &mut dyn Host, setup: &Setup, stage: Option<&str>, l: &mut Lin
                 ),
             );
         }
-        for name in &names {
+        // The marker last: until everything else is gone, what is there stays an unfinished
+        // copy for the next run to remove.
+        let marker_last = names
+            .iter()
+            .filter(|name| *name != INCOMPLETE)
+            .chain(std::iter::once(&INCOMPLETE.to_owned()))
+            .cloned()
+            .collect::<Vec<_>>();
+        for name in &marker_last {
             let path = dir.join(name).display().to_string();
             let out = run(
                 host,
