@@ -1792,6 +1792,8 @@ impl<'a> Move<'a> {
         // Without the key nothing more can be done from here: what failed above is a person's.
         self.state.finished = true;
         let _ = self.save_state();
+        // The copy there is the instance: what this host knew of it while it was staged goes.
+        self.stage.forget();
         let new = self.state.new_url.clone().unwrap_or_default();
         if p.public_url.as_deref().is_some_and(|old| old != new) {
             self.manual("GitHub App", github_note(&new));

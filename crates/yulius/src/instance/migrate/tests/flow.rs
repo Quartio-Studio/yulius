@@ -2355,3 +2355,23 @@ fn a_data_directory_that_holds_the_copy_s_marker_is_refused_in_the_plan() -> Tes
     }
     Ok(())
 }
+
+#[test]
+fn a_finished_move_keeps_no_receipts_however_it_got_there() -> TestResult {
+    // A run that ended while the new instance started; this host was restarted since (its
+    // disabled unit does not run) and the new instance runs. What this host knew of the
+    // staged copy is of no use any more.
+    let mut s = killed_while_starting()?;
+    let copy = s.opts.state_dir.join("copy");
+    fs::create_dir_all(&copy)?;
+    fs::write(copy.join("receipts-0"), [0u8; 64])?;
+    if let Ok(mut unit) = s.world.systemd.lock() {
+        unit.frozen = false;
+        unit.stopped = true;
+    }
+    assert_eq!(s.run()?, 0, "{}", s.shown());
+    let state = State::load(&s.opts.state_dir).ok_or("no state")?;
+    assert_eq!((state.cutover, state.finished), (Cutover::Moved, true));
+    assert!(!copy.exists(), "the receipts are still there");
+    Ok(())
+}
