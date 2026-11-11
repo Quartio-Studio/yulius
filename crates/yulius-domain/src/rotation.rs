@@ -681,8 +681,9 @@ mod tests {
         let out = |resets_in_hours: i64| -> AccountUsage {
             let mut usage = usage(0.0, 61.0, Some(100));
             usage.record_limit(
+                // As the harness reads the refusal: the limit of the model the session runs.
                 crate::usage::ReportedLimit {
-                    scope: crate::usage::LimitScope::Model(Some(ModelFamily::Fable)),
+                    scope: crate::usage::LimitScope::Model(None),
                     window_minutes: Some(crate::usage::WEEKLY_WINDOW_MINUTES),
                     resets_at: Some(NOW.plus_millis(resets_in_hours * HOUR)),
                 },

@@ -33,9 +33,11 @@ wrong:
   way. The limit path (ADR-0027, ADR-0058) then does what it does for every limit: the task moves
   past the cut turn or waits and resumes at the reset.
 - **A limit says what it binds** (`LimitScope`): the subscription (`five_hour`, `seven_day`, an
-  unknown kind) or the models of one family (`seven_day_opus`, `seven_day_sonnet`,
-  `seven_day_overage_included` = Fable, and a credits refusal that names no window = the model
-  the session runs).
+  unknown kind) or the models of one family. A per-model cap names its family (`seven_day_opus`,
+  `seven_day_sonnet`). The allowance of usage credits (`seven_day_overage_included`, a bucket
+  per model) and a credits refusal that names no window are the limit of the model the task is
+  launched with: the default model when the task names none. The family is never hardcoded, so
+  the limit always binds the task that hit it.
 - **A model's limit is stored on that model's weekly window.** `ModelFamily::Fable` gets one
   (`AccountUsage::weekly_fable`, beside `weekly_opus` and `weekly_sonnet`), full until the reset
   Claude named. It binds only tasks of that model; the subscription's own windows keep their
@@ -69,6 +71,9 @@ wrong:
 - **Keep an account-wide limit that readings may not clear.** It would keep every model off the
   subscription, show a week at 100 % that is at 61 %, and stay after Claude reset a 5-hour or
   weekly window early, which a reading does show. Rejected.
+- **Map `seven_day_overage_included` to Fable in the harness**, as Claude Code's label "Fable
+  limit" does. A task of another model refused for its own bucket would not be bound by the
+  stored limit and would be sent back to the same subscription within seconds. Rejected.
 - **Drop the goal pause in the harness by its wording.** "The request was rate limited" also
   follows refusals nobody else handles (a throttle Claude Code gave up on), and those need a
   person. The decision belongs where the limit is known. Rejected.

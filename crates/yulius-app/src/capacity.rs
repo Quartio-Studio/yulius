@@ -175,19 +175,21 @@ fn healthy(status: AccountStatus) -> bool {
     matches!(status, AccountStatus::Ok | AccountStatus::Limited)
 }
 
-/// The family of the model a task runs when it names none: the default model's (Fable 5.2,
-/// whose weekly allowance of usage credits binds it, SPEC-464).
+/// The family of the model a task set to `model` is launched with: the default model's when it
+/// names none (Fable 5.2, whose weekly allowance of usage credits binds it, SPEC-464). A limit
+/// Claude reports for "the model of the request" is taken as this family's: a model switched
+/// inside the session is not followed, and the next launch runs this one again.
 #[must_use]
-pub(crate) fn default_family() -> ModelFamily {
-    ModelFamily::of(Some(yulius_domain::harness::DEFAULT_CLAUDE_MODEL))
+pub(crate) fn model_family(model: Option<&str>) -> ModelFamily {
+    ModelFamily::of(Some(
+        model.unwrap_or(yulius_domain::harness::DEFAULT_CLAUDE_MODEL),
+    ))
 }
 
-/// The family of the model `task` runs.
+/// The family of the default model.
 #[must_use]
-pub(crate) fn family_of(task: &TaskRecord) -> ModelFamily {
-    task.model
-        .as_deref()
-        .map_or_else(default_family, |model| ModelFamily::of(Some(model)))
+pub(crate) fn default_family() -> ModelFamily {
+    model_family(None)
 }
 
 impl App {
@@ -210,7 +212,7 @@ impl App {
             current,
             task_provider: task.harness.provider(),
             // A task without a model runs the default, Fable 5.2.
-            family: family_of(task),
+            family: model_family(task.model.as_deref()),
             accounts: self.account_views().await?,
             now: self.now(),
             threshold: rotation::THRESHOLD,
@@ -221,7 +223,7 @@ impl App {
     /// be read.
     pub(crate) async fn task_family(&self, task_id: &TaskId) -> ModelFamily {
         match self.deps.store.task(task_id).await {
-            Ok(Some(task)) => family_of(&task),
+            Ok(Some(task)) => model_family(task.model.as_deref()),
             _ => default_family(),
         }
     }
@@ -951,6 +953,23 @@ fn pool_view(pool: &PoolTokens) -> PoolTokensView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SPEC-464: a task that names no model runs the default one, Fable, whose weekly allowance
+    /// of usage credits binds it; a task that names one is bound by that model's family.
+    #[test]
+    fn a_tasks_model_family_is_its_models_or_the_defaults() {
+        assert_eq!(default_family(), ModelFamily::Fable);
+        assert_eq!(model_family(None), ModelFamily::Fable);
+        for (model, family) in [
+            ("claude-fable-5-2", ModelFamily::Fable),
+            ("claude-fable-5-1", ModelFamily::Fable),
+            ("claude-opus-5-5", ModelFamily::Opus),
+            ("claude-sonnet-5-5", ModelFamily::Sonnet),
+            ("claude-haiku-4-5", ModelFamily::Any),
+        ] {
+            assert_eq!(model_family(Some(model)), family, "{model}");
+        }
+    }
 
     /// SPEC-398 VSH-005 (#728): a session's reading is bounded before it is stored: a percentage
     /// that is not finite or outside 0..=1000 drops the window, and a reset time in the past or

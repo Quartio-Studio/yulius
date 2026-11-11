@@ -73,7 +73,7 @@ Parallel work: PR #1167 (task #443) touches `observe.rs`, `ports/harness.rs`, `w
 | ID | Requirement | Evidence |
 | --- | --- | --- |
 | UCL-001 | `observe_line` reads an API error record with `apiError: "model_requires_usage_credits"` as `LimitReached`, with or without `rate_limit_info`. Its reset is `resetsAt` only when `rateLimitType` is `seven_day_overage_included` (another claim's reset is not the allowance's). A record with only the text ("out of usage credits", "requires usage credits", "out of extra usage") is read the same way. The transcript step back removes the refusal, the goal's pause notice and the record closing that turn. | `claude::tests::a_usage_credits_refusal_is_a_usage_limit` (the two recorded lines, ids replaced), `step_back::tests::step_back_removes_a_usage_credits_refusal` |
-| UCL-002 | A limit says what it binds (`LimitScope`): the subscription (`five_hour`, `seven_day`, an unknown kind), or one model family (`seven_day_opus`, `seven_day_sonnet`, `seven_day_overage_included` = Fable; a credits refusal that names no window = the model the session runs). | same test; `structured_limit_record_with_reset_time` |
+| UCL-002 | A limit says what it binds (`LimitScope`): the subscription (`five_hour`, `seven_day`, an unknown kind), or one model family: the one a per-model cap names (`seven_day_opus`, `seven_day_sonnet`), or the family of the model the task is launched with, for the allowance of usage credits (`seven_day_overage_included`, a bucket per model) and for a credits refusal that names no window. A task that names no model runs the default one. | same test; `structured_limit_record_with_reset_time`; `capacity::tests::a_tasks_model_family_is_its_models_or_the_defaults` |
 | UCL-003 | `ModelFamily::Fable` (a model name containing "fable") has its own weekly window, `AccountUsage::weekly_fable`, which binds only Fable tasks. A model's limit with a known reset is stored as that family's window at 100 % until the reset; the 5-hour and weekly windows and `limit_reached` are left as they are. A model's limit without a reset, or for a family without a window, is stored as before (`limit_reached`, no reset: in effect until the next usage reading). | `usage::tests::a_models_limit_is_its_own_window`, `rotation::tests::a_fable_allowance_binds_only_fable_tasks` |
 | UCL-004 | A usage reading from the provider replaces the windows it carries and keeps the per-model windows it does not carry while their reset is ahead; a per-model window whose reset passed is dropped at the next stored reading. A new sign-in of the subscription drops the per-model windows: they are what Claude told the previous sign-in, and no reading would end them. | `usage::tests::a_reading_keeps_the_model_windows_it_cannot_see`; `usage_credits::a_subscription_out_of_usage_credits_gets_no_task_until_they_reset`; `account_email::a_new_sign_in_drops_the_models_limit_of_the_previous_one` |
 | UCL-005 | A subscription reads `limited` while the default model cannot run on it: a limit Claude reported is in effect or a window binding the default model is at 100 %. The capacity view's "available" counts subscriptions for the default model. | `usage_credits::a_subscription_out_of_usage_credits_gets_no_task_until_they_reset` (status after the limit and after the reading); `account_usage::a_reading_keeps_a_models_limit_and_the_status_follows_the_windows` |
@@ -149,9 +149,15 @@ Parallel work: PR #1167 (task #443) touches `observe.rs`, `ports/harness.rs`, `w
   subscription out after Claude reset a 5-hour or weekly window early, which a reading does
   show), and a free-text "kind" beside the limit (the page and the policy would each interpret
   it).
-- **`seven_day_overage_included` is the Fable window.** Claude Code names it "Fable limit" and
-  describes it as a per-model bucket. Assumed (reversible): Mythos names are not mapped to it;
-  such a task's refusal falls back to the account-wide limit.
+- **The allowance's limit is the limit of the model the task runs, not a hardcoded family.**
+  Claude Code describes `seven_day_overage_included` as a bucket per model and labels it "Fable
+  limit" after the one model that has it today. Yulius stores it on the family of the model the
+  task is launched with (Fable for the default model). So the limit always binds the task that
+  hit it: a limit that did not would send the task back to the same subscription at once.
+  A family without a window of its own (Haiku, unknown names) gets a limit of the whole
+  subscription until the reset, which the next usage reading ends. Assumed (reversible): both
+  Fable models share one family; a model switched inside the session with `/model` is not
+  followed, since the next launch runs the task's model again.
 - **A reading keeps what it cannot see.** Per-model windows a reading does not carry stay until
   their reset; the session readings already worked that way, the probe did not. A person who
   bought credits clears the limit with the page's refresh (the chained task below).

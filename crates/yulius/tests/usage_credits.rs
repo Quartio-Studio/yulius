@@ -6,7 +6,7 @@
 
 use crate::pool_supervision::{
     HOUR, ScriptedUsage, build_with, has_status, new_task, refresh, runtime, screen, seed, stop,
-    temp, wait_for,
+    temp, usage, wait_for,
 };
 use crate::subscription_moves::{live_run, ready, run_accounts, running_on_first};
 use crate::support::TestResult;
@@ -18,9 +18,11 @@ use std::time::Duration;
 
 use yulius_app::auth::AuthContext;
 use yulius_app::context::App;
-use yulius_app::model::{AccountStatus, PauseKind};
+use yulius_app::lifecycle::NewTask;
+use yulius_app::model::{AccountStatus, PauseKind, TaskMode, TaskOrigin};
 use yulius_contracts::api::tasks::ContinueTask;
-use yulius_domain::ids::{AccountId, TaskId};
+use yulius_domain::harness::Harness;
+use yulius_domain::ids::{AccountId, SandboxId, TaskId, UserId};
 use yulius_domain::task::{Activity, TaskStatus};
 use yulius_domain::time::Timestamp;
 use yulius_domain::usage::{AccountUsage, UsageWindow};
@@ -171,6 +173,105 @@ fn a_subscription_out_of_usage_credits_gets_no_task_until_they_reset() -> TestRe
         );
         stop(&app, &next).await?;
         stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// A task set to `model` (the default one with `None`), started now.
+async fn task_of_model(
+    app: &Arc<App>,
+    sandbox: &SandboxId,
+    user: &UserId,
+    title: &str,
+    model: Option<&str>,
+) -> Result<TaskId, Box<dyn std::error::Error>> {
+    let record = app
+        .create_task_internal(NewTask {
+            sandbox: sandbox.clone(),
+            created_by: user.clone(),
+            prompt: format!("{title}: answer with an echo"),
+            harness: Harness::ClaudeCode,
+            title: Some(title.into()),
+            workflow_id: None,
+            steps: Vec::new(),
+            model: model.map(str::to_owned),
+            effort: None,
+            origin: TaskOrigin::Ui,
+            automation_run: None,
+            start: true,
+            mode: TaskMode::Prompt,
+            supertask: false,
+        })
+        .await?;
+    Ok(record.id)
+}
+
+/// The allowance is a bucket per model, and Claude names no family with it: the limit is the
+/// limit of the model the refused task is launched with, here Opus, never Fable by name. The
+/// subscription stays usable for the default model (it reads Ready and gets the next such
+/// task) and gets no further task of the refused model until the reset.
+#[test]
+fn a_usage_credits_limit_binds_the_model_of_the_task_that_hit_it() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let app = build_with(
+            &data,
+            &fake,
+            probe.clone(),
+            refused_for_credits(Some(40 * 3600)),
+        )?;
+        let (sandbox, user) = seed(&app, &data, &["a-first", "b-second"]).await?;
+        // Placed on a-first while b-second is nearly full; b-second is free again afterwards.
+        probe.set("b-second", usage(99.0, 4 * HOUR, 30.0, 100));
+        refresh(&app, &user, "b-second").await?;
+        let opus = Some("claude-opus-5-5");
+        let id = task_of_model(&app, &sandbox, &user, "Opus", opus).await?;
+        ready(&app, &id).await?;
+        assert_eq!(run_accounts(&app, &id).await, [Some("a-first".to_owned())]);
+        probe.set("b-second", usage(0.0, 5 * HOUR, 30.0, 100));
+        refresh(&app, &user, "b-second").await?;
+
+        app.send_input(&id, b"hello\r").await?;
+        live_run(&app, &id, 2).await?;
+        assert_eq!(
+            run_accounts(&app, &id).await[1].as_deref(),
+            Some("b-second")
+        );
+        needs_nobody(&app, &id).await?;
+        let (status, stored) = stored_usage(&app, "a-first").await?;
+        assert_eq!(stored["weekly_opus"]["used_percent"], 100.0, "{stored}");
+        assert!(stored["weekly_fable"].is_null(), "{stored}");
+        assert_eq!(status, AccountStatus::Ok, "the default model still runs");
+
+        // a-first has the most room of the week, and a reading of it keeps the model's limit.
+        probe.set("a-first", usage(0.0, 5 * HOUR, 10.0, 50));
+        refresh(&app, &user, "a-first").await?;
+        let (status, stored) = stored_usage(&app, "a-first").await?;
+        assert_eq!(stored["weekly_opus"]["used_percent"], 100.0, "{stored}");
+        assert_eq!(stored["secondary"]["used_percent"], 10.0, "{stored}");
+        assert_eq!(status, AccountStatus::Ok);
+        let fable = task_of_model(&app, &sandbox, &user, "Default", None).await?;
+        ready(&app, &fable).await?;
+        assert_eq!(
+            run_accounts(&app, &fable).await,
+            [Some("a-first".to_owned())],
+            "a task of the default model goes where the week has the most room"
+        );
+        let other = task_of_model(&app, &sandbox, &user, "Opus again", opus).await?;
+        ready(&app, &other).await?;
+        assert_eq!(
+            run_accounts(&app, &other).await,
+            [Some("b-second".to_owned())],
+            "a task of the refused model does not"
+        );
+        for task in [&other, &fable, &id] {
+            stop(&app, task).await?;
+        }
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));

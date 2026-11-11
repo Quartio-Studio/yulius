@@ -429,10 +429,12 @@ A limit Claude reports binds either the subscription or the models of one family
 ([SPEC-464](../.ai/specs/SPEC-464-we-still-have-healthy-subscribtionsbut-w.md),
 [decision 0301](decisions/0301-a-models-usage-credits-are-a-limit-of-that-model.md)). The harness
 reads which from the limit record (`LimitScope`). The 5-hour and weekly windows are the
-subscription's. A per-model weekly cap (`seven_day_opus`, `seven_day_sonnet`) and the weekly
-allowance of usage credits that Fable runs on (`seven_day_overage_included`) are a model's. So is
-Claude Code's refusal "You're out of usage credits" (`apiError: "model_requires_usage_credits"`),
-which Claude Code 2.1.311 writes without a window or a reset.
+subscription's. A per-model weekly cap (`seven_day_opus`, `seven_day_sonnet`) is that family's.
+The weekly allowance of usage credits (`seven_day_overage_included`, a bucket per model; Fable
+runs on one) is the limit of the model the task is launched with, the default model when it
+names none. So is Claude Code's refusal "You're out of usage credits"
+(`apiError: "model_requires_usage_credits"`), which Claude Code 2.1.311 writes without a window
+or a reset.
 
 A model's limit fills that family's own weekly window in the stored usage (`weekly_opus`,
 `weekly_sonnet`, `weekly_fable`) until the reset Claude named. The pool's policy counts that
@@ -447,7 +449,7 @@ the next reading ends. A subscription reads `limited` while the default model ca
 flowchart TD
     R["Claude Code's limit record<br/>(usage_limit_reached, or model_requires_usage_credits)"] --> S{"What it binds<br/>(LimitScope)"}
     S -->|"the subscription:<br/>five_hour, seven_day, unknown"| A["5-hour or weekly window full,<br/>limit in effect until the reset"]
-    S -->|"one model family:<br/>seven_day_opus, seven_day_sonnet,<br/>seven_day_overage_included (Fable)"| K{"Reset named?"}
+    S -->|"one model family:<br/>seven_day_opus, seven_day_sonnet (named),<br/>seven_day_overage_included (the task's model)"| K{"Reset named?"}
     K -->|yes| M["that family's weekly window full<br/>until the reset; other windows kept"]
     K -->|no| A2["limit of the subscription with no reset:<br/>the next reading ends it"]
     A --> P["Pool: the task moves past the cut turn,<br/>or waits and resumes at the reset"]

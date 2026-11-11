@@ -716,7 +716,8 @@ the "Fable limit"). Neither the endpoint's windows nor the status line show it. 
 from the limit record: `apiError: "model_requires_usage_credits"` ("You're out of usage credits.
 /model to switch models."), which Claude Code 2.1.311 writes without `rate_limit_info` and
 2.1.322 with the allowance's `resetsAt`. A limit says what it binds (`LimitScope`): the
-subscription, or the models of one family. A model's limit fills that family's weekly window in
+subscription, or the models of one family (the one a per-model cap names, else the family of the
+model the task is launched with). A model's limit fills that family's weekly window in
 the stored usage (`weekly_opus`, `weekly_sonnet`, `weekly_fable`) until the reset Claude named and
 binds only that model's tasks; a usage reading replaces the windows it carries and keeps these
 until their reset.

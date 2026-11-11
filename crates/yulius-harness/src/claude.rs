@@ -108,16 +108,18 @@ const USAGE_LIMIT_API_ERROR: &str = "usage_limit_reached";
 /// `seven_day_overage_included` when the model's weekly allowance was used up.
 const CREDITS_API_ERROR: &str = "model_requires_usage_credits";
 
-/// The `rateLimitType` of a model's weekly allowance of usage credits, which Claude Code calls
-/// the "Fable limit".
+/// The `rateLimitType` of the weekly allowance of usage credits included for a model that
+/// otherwise runs on them: a bucket per model, which Claude Code 2.1.322 calls the "Fable limit"
+/// after the one model that has it today.
 const CREDITS_ALLOWANCE_TYPE: &str = "seven_day_overage_included";
 
-/// What Claude's `rateLimitType` binds: the subscription, or the models of one family.
+/// What Claude's `rateLimitType` binds: the subscription, or the models of one family. The
+/// allowance of usage credits is the bucket of the model the request ran, whichever that is.
 fn scope_of_type(kind: &str) -> LimitScope {
     match kind {
         "seven_day_opus" => LimitScope::Model(Some(ModelFamily::Opus)),
         "seven_day_sonnet" => LimitScope::Model(Some(ModelFamily::Sonnet)),
-        CREDITS_ALLOWANCE_TYPE => LimitScope::Model(Some(ModelFamily::Fable)),
+        CREDITS_ALLOWANCE_TYPE => LimitScope::Model(None),
         _ => LimitScope::Account,
     }
 }
@@ -1366,11 +1368,12 @@ mod tests {
             }]
         );
         let new = r#"{"parentUuid":"p2","isSidechain":false,"type":"assistant","uuid":"u2","timestamp":"2026-11-11T14:49:50.566Z","message":{"id":"m2","model":"<synthetic>","role":"assistant","stop_reason":"stop_sequence","type":"message","content":[{"type":"text","text":"You're out of usage credits. /model to switch models."}]},"requestId":"req_2","apiError":"model_requires_usage_credits","apiErrorParams":{"rate_limit_info":{"status":"rejected","resetsAt":1794556800,"rateLimitType":"seven_day_overage_included","overageStatus":"rejected","overageDisabledReason":"out_of_credits","isUsingOverage":false}},"error":"rate_limit","isApiErrorMessage":true,"apiErrorStatus":429,"version":"2.1.322"}"#;
+        // The allowance is the bucket of the model the session runs: no family is named.
         let allowance = Observed::LimitReached {
             resets_at: Some(Timestamp(1_794_556_800_000)),
             message: text.into(),
             window_minutes: Some(WEEKLY_WINDOW_MINUTES),
-            scope: LimitScope::Model(Some(ModelFamily::Fable)),
+            scope: LimitScope::Model(None),
             at: parse_rfc3339("2026-11-11T14:49:50.566Z"),
         };
         assert_eq!(observe_line(new), vec![allowance.clone()]);
@@ -1442,10 +1445,7 @@ mod tests {
                 "seven_day_sonnet",
                 LimitScope::Model(Some(ModelFamily::Sonnet)),
             ),
-            (
-                "seven_day_overage_included",
-                LimitScope::Model(Some(ModelFamily::Fable)),
-            ),
+            ("seven_day_overage_included", LimitScope::Model(None)),
             ("seven_day", LimitScope::Account),
             ("five_hour", LimitScope::Account),
             ("overage", LimitScope::Account),
