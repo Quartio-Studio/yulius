@@ -208,6 +208,16 @@ enum FreezeState {
     Refused,
 }
 
+/// SPEC-458 RST-003: refuses a restart the server's unit would not come back from, before a
+/// task is paused or anything is built. The helper checks again before it stops the unit.
+async fn refuse_unsafe_restart(helper: &Arc<dyn UpdateHelper>) -> AppResult<()> {
+    let helper = Arc::clone(helper);
+    match tokio::task::spawn_blocking(move || helper.restart_blocker()).await {
+        Ok(Some(why)) => Err(AppError::Conflict(format!("{why}; nothing was stopped"))),
+        _ => Ok(()),
+    }
+}
+
 fn build_view(commit: Option<&str>) -> BuildView {
     BuildView {
         commit: commit.map(str::to_owned),
@@ -900,6 +910,7 @@ impl App {
                         .into(),
                 )
             })?;
+        refuse_unsafe_restart(&helper).await?;
         let (summary, via) = {
             let slot = self.updates.check.lock().map_err(AppError::internal)?;
             let snapshot = slot.as_ref().ok_or_else(|| {
@@ -992,12 +1003,13 @@ impl App {
         let services = self.update_services().ok_or_else(|| {
             AppError::Conflict("restarts are not available on this server".into())
         })?;
-        if !services.helper.as_ref().is_some_and(|h| h.installed()) {
+        let Some(helper) = services.helper.clone().filter(|h| h.installed()) else {
             return Err(AppError::Conflict(
                 "the update helper is not installed on this server (see the operations guide)"
                     .into(),
             ));
-        }
+        };
+        refuse_unsafe_restart(&helper).await?;
         let build = services
             .build
             .clone()

@@ -1,0 +1,14 @@
+# Written by `yulius host setup` (docs/operations.md §3, ADR-0298): the group every session and
+# sandbox of yulius.service lives in. Restarting yulius.service never touches it; stopping this unit
+# ends every session. Its one process is root's, so no signal of yulius reaches it.
+[Unit]
+Description=Yulius sessions and sandboxes (yulius.service)
+
+[Service]
+Slice=yulius.slice
+User=yulius
+ExecStartPre=+/usr/bin/chown yulius /sys/fs/cgroup/yulius.slice/cgroup.procs
+ExecStart=+/usr/bin/sleep infinity
+Delegate=yes
+DelegateSubgroup=keeper
+OOMScoreAdjust=-1000

@@ -7,18 +7,39 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 ## 2026-11-11
 
 - The instance move's last review findings are fixed (SPEC-467, task #450; the command is
-  SPEC-460's). A `systemctl show` that fails right after the freeze no longer leaves the old unit
-  frozen behind "is not running any more": the unit is thawed and the line says what systemd
-  said. A run that goes on from a recorded start never ends with both instances running: an old
-  unit that runs unfrozen beside a new instance that reports the build is frozen again and
-  disabled (a `FAIL` line with the reason when it cannot be; nothing is thawed there, a slow
-  freeze is left on its way), and a new host that cannot be reached or does not answer is told
-  from a new instance that does not run ("run the command again when the new host answers", not
-  `--abort`, and no second request for the key). A finish that was done but not recorded is found done by the key it
-  deleted, instead of "Run the command again" on every run. `yulius instance export` leaves a
-  `.yulius-limits-adapt` out and neither host counts it, so a move from a host that still holds
-  that mark proves its copy. The operations guide §7 says which run ignores Ctrl-C, and the
-  decisions index lists 0297 in its place and 0219 once.
+  SPEC-460's). An instance that systemd does not report frozen as a whole right after the freeze
+  is no longer left frozen behind "is not running any more": it is thawed (the sessions unit of
+  SPEC-458 with the server's) and the line says what systemd said. A run that goes on from a
+  recorded start never ends well with both instances running: whatever unit of the old instance
+  runs unfrozen beside a new instance that reports the build is frozen again, to stay, and the
+  server's unit disabled (a `FAIL` line with the reason and the commands when it cannot be;
+  nothing is thawed there, a slow freeze is left on its way), and a new host that cannot be
+  reached or does not answer is told from a new instance that does not run ("run the command
+  again when the new host answers", not `--abort`, and no second request for the key). A finish
+  that was done but not recorded is found done by the key it deleted, instead of "Run the command
+  again" on every run. `yulius instance export` leaves a `.yulius-limits-adapt` out and neither
+  host counts it, so a move from a host that still holds that mark proves its copy. The
+  operations guide §7 says which run ignores Ctrl-C, and the decisions index lists 0297 in its
+  place and 0219 once. Two things the review found that were there before are issues #1178 and
+  #1179.
+- A restart of the server keeps its sessions on systemd 258 and later (SPEC-458, task #440,
+  ADR-0298). On Ubuntu 26.04 (systemd 259) `yulius.service` could be stopped but not started
+  again while one session ran, so a restart or an update took the instance down until every
+  session was ended by hand (production, 2026-11-11). Sessions and sandboxes now live in a unit
+  of their own, `yulius-sandboxes.service`, which a restart of the server never touches, and a
+  root step before every start moves what an earlier layout left in the server's unit. `sudo
+  yulius host setup` writes the units and restarts nothing. Until a host has them, Restart… and
+  Update now are refused there with the reason instead of stopping the server, and `yulius
+  doctor` and `yulius host check` name the missing setup. **On a host with systemd 258 or later,
+  put the three units in place before the update that brings this** (`docs/operations.md` §8,
+  "Upgrading to sessions in their own unit", with the way back if it was skipped). Sandbox Docker
+  engines end once at that first restart and start again on demand.
+- A task that starts while the server starts up is no longer shown as stopped, and a refused
+  restart no longer breaks a task whose run is alive (SPEC-458, from task #439). The start-up
+  sweep rested a task whose launch it had itself begun; and Restart on a task that still had a
+  live run was refused only after its status had changed, so the task ended as "failed" beside a
+  running agent that no button reached. A start is now refused before anything changes, a run
+  that no server holds is settled first, and Stop ends a run that is still on record.
 - Sandboxes never run a Claude Code that does not know Yulius's default model (SPEC-461, task
   #443, ADR-0293). On production the default model (Fable 5.2) had outrun the Claude Code that
   npm's `stable` offered (2.1.311), so a session's own model picker and its `fable` alias meant

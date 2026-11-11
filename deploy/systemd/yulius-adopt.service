@@ -1,0 +1,11 @@
+# Written by `yulius host setup` (docs/operations.md §3, ADR-0298): before yulius.service starts, sessions
+# an earlier layout left in its own group move to yulius-sandboxes.service.
+[Unit]
+Description=Move Yulius sessions out of yulius.service
+Requires=yulius-sandboxes.service
+After=yulius-sandboxes.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/yulius host adopt-sessions --service yulius.service
+TimeoutStartSec=120
