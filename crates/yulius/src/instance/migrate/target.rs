@@ -23,10 +23,7 @@ pub const STAGED: &str = "/var/lib/yulius-migrate/yulius";
 pub const EXPECT_FILE: &str = "/var/lib/yulius-migrate/expect.json";
 /// The reply's line on standard output; everything before it is a command's output.
 pub const REPLY: &str = "YULIUS-REPLY ";
-/// The mark of a copy that a move installed (SPEC-460 MIG-050), at the data directory's top.
-pub const MOVE_PENDING: &str = "move-pending.json";
-/// What the first start after a move did with the mark.
-pub const MOVED: &str = "moved.json";
+pub use yulius_app::host_move::{MOVE_PENDING, MOVED};
 /// The file system label of a data disk a move made.
 const DISK_LABEL: &str = "yulius-data";
 /// The array a move makes of two disks.

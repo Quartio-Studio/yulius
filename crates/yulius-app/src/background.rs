@@ -36,9 +36,15 @@ impl App {
     /// reconciliation a lost run would read as live, so nothing is recounted until a start that
     /// reconciles. Returns the recount, running in its own task, when it started.
     pub async fn recover(self: &Arc<Self>) -> Option<JoinHandle<AppResult<RecountTally>>> {
-        if let Err(err) = self.reconcile().await {
-            tracing::error!(error = %err, "session reconciliation failed");
-            return None;
+        // A move took every run with the old host: the copy's mark brings their tasks back
+        // (SPEC-460 MIG-050).
+        let paused = self.paused_before_a_move().await;
+        match self.reconcile_lost().await {
+            Ok(lost) => self.revive_after_move(&lost, &paused).await,
+            Err(err) => {
+                tracing::error!(error = %err, "session reconciliation failed");
+                return None;
+            }
         }
         let recount = Arc::clone(self);
         Some(tokio::spawn(async move {

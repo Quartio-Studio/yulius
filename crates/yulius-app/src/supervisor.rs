@@ -3655,7 +3655,17 @@ impl App {
     /// # Errors
     /// Store failures.
     pub async fn reconcile(self: &Arc<Self>) -> AppResult<()> {
+        self.reconcile_lost().await.map(|_| ())
+    }
+
+    /// [`App::reconcile`], returning the tasks whose runs were lost, each with the status it had:
+    /// what the first start after a move brings back (SPEC-460 MIG-050).
+    ///
+    /// # Errors
+    /// Store failures.
+    pub(crate) async fn reconcile_lost(self: &Arc<Self>) -> AppResult<Vec<(TaskId, TaskStatus)>> {
         let store = &self.deps.store;
+        let mut lost = Vec::new();
         for attempt in store.live_attempts().await? {
             let host_token: Option<[u8; 32]> = self
                 .deps
@@ -3745,7 +3755,13 @@ impl App {
                 }
                 continue;
             }
-            match self.deps.session_host.inspect(Path::new(&attempt.run_dir)) {
+            let inspection = self.deps.session_host.inspect(Path::new(&attempt.run_dir));
+            if !matches!(inspection, RunInspection::Exited(_))
+                && let Ok(Some(task)) = store.task(&attempt.task_id).await
+            {
+                lost.push((task.id, task.status));
+            }
+            match inspection {
                 // It ended while Yulius was down: no watcher of this process read it, so its
                 // figures are counted from its transcript (SPEC-143 RDM-001).
                 RunInspection::Exited(exit) => {
@@ -3792,10 +3808,11 @@ impl App {
                 let _ = store
                     .transition_task(&task.id, Some(task.status), next, None, self.now())
                     .await;
+                lost.push((task.id, task.status));
             }
         }
         self.drain_queue().await;
-        Ok(())
+        Ok(lost)
     }
 
     /// Account usage update from transcripts or providers.
