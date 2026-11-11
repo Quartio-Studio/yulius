@@ -1,11 +1,11 @@
 ---
 yulius-task: 57d7619e-9b14-4e4a-81e8-6a431b4d5b7c
-status: done
+status: in-progress
 ---
 
 # SPEC-468: Claude Code moves: the last review's leftovers of SPEC-461
 
-Status: implemented
+Status: in progress
 Date: 2026-11-11
 Owner: Yulius task #452
 Scope authorization: the request of task #452 (by MrFishPL, 2026-11-11): fix the two minors and
@@ -72,11 +72,11 @@ The question of direction: the restart waits only while a person typed in the la
 
 | ID | Requirement |
 | --- | --- |
-| CCF-001 | **A person's own goal keeps a prompt-mode session.** While Claude Code's goal is open (set or not met yet) in a prompt-mode session, the session is not restarted for a newer Claude Code: not idle after a settled turn, and not at a Stop the gate blocks (the resumed session would get the gate's reasons and no goal). It moves at a later turn's end once the goal is met, failed or cleared, or at its next start. Goal-mode tasks are as before (their goal is typed again). |
+| CCF-001 | **A person's own goal keeps a prompt-mode session.** While Claude Code's goal is open (set or not met yet) in a prompt-mode session, the session is not restarted for a newer Claude Code: not idle after a settled turn, and not at a Stop the gate blocks (the resumed session would get the gate's reasons and no goal). Both ask once the turn's lines were read, so a goal set in that very turn counts; a goal known before saves the look at the session. It moves at a later turn's end once the goal is met, failed or cleared, or at its next start. Goal-mode tasks are as before (their goal is typed again). |
 | CCF-002 | **The gate's block case is tested.** With code changed in the worktree and no spec, a session on an older Claude Code moves at the Stop the gate blocks: its second run starts by resume in the same Claude session, that run's launch prompt is the gate's reasons, and one switch decision `claude_code` / `completed` is stored. |
 | CCF-003 | **Only the next start is promised while moves are stopped.** While running tasks are no longer moved to the version runs get, the card's list of tasks on an older version says that each gets that version at its next start, and a task's info says the same instead of "when its turn ends" (`GET /api/tasks/{tid}`: `cli_moves_stopped`). |
 | CCF-004 | **The "started in time" test does not depend on the machine's speed.** A restarted session's start (its SessionStart hook) takes the restart off the breaker's watch at a race point (`ClaudeMoveStarted`); the test asserts there that the restart is no longer watched, with a time to start it cannot reach. |
-| CCF-005 | **What a transcript names is capped.** The Claude Code version kept for a run is at most 64 bytes and the model name at most 128 (the launch's own bound for a model id), cut on a character boundary with an ellipsis; a version that is not a plain `X.Y.Z` is still kept and shown. |
+| CCF-005 | **What a transcript names is capped.** The Claude Code version kept for a run is at most 64 bytes and the model name at most 128 (the launch's own bound for a model id), cut on a character boundary with an ellipsis; a version that is not a plain `X.Y.Z` is still kept and shown. The model is cut in the parser. The version is cut where it is kept (`UsageAccumulator::note_cli_version`): SPEC-461's first-record rule (#1188, merged while this task ran) reads it from every record of the session's thread, so that is where every path ends. |
 | CCF-006 | **One restart of a task at a time, each with its own identity.** A turn end that decides to restart a session while another restart of that task is under way leaves it to that one, and one that comes after it finds the session sent; it registers nothing and asks for no switch. Each registered start has its own identity, so a start is only ever taken off the watch by its own restart, its session's start or end, or its own time limit. |
 | CCF-007 | **The card says when the binary could not be read.** When Yulius keeps Claude Code current and the binary runs get cannot be read for the models it knows, the card shows a warning badge and a sentence saying that whether it knows the default model is not known (`ClaudeCodeView.models_unread`), as `yulius doctor` warns. |
 | CCF-008 | **An idle restart is no news.** A prompt-mode session that was idle and is restarted with nothing typed never reads Working: its task goes from switching back to the activity it had, and what Claude Code last recorded of the session's goal (unfinished or not) still counts, so the task reads as it did. The notification center remembers a task's state through a switch, so a task that reads after it as it did before gets no second notification, in the bell or on the desktop. |
@@ -94,28 +94,33 @@ The question of direction: the restart waits only while a person typed in the la
 - [x] An idle restart never reads Working and notifies nobody again (finding 8)
 - [x] SPEC-461, ADR-0293, the operations guide, the API reference and the changes log say so (finding 9)
 - [x] Gate and the whole e2e suite green, evidence recorded
+- [ ] Independent review round 1 answered, every finding fixed with its test
 
 ## Acceptance criteria
 
 - AC1 (CCF-001). A prompt-mode session on 2.1.311 in which a person typed `/goal …`, whose turn
   closes with the goal open and no verdict while runs get 2.1.322, keeps its one run, its screen
   shows "GOAL SET" once and `App::goal_is_open` stays true. The same session at a Stop the gate
-  blocks is answered with the block and keeps its run.
+  blocks is answered with the block and keeps its run, without a look at it when the goal is
+  known, and also when the goal was set in that very turn and is read only by that look.
 - AC2 (CCF-002). The gate's block case moves as CCF-002 says; without `gate_continues` in
   `works_on`, or without the reasons passed on, the test fails.
 - AC3 (CCF-003). With moves stopped for the version runs get, the card's list says "Each gets X
   at its next start." and not "when its turn ends"; a task's detail carries `cli_moves_to` and
-  `cli_moves_stopped: true`, and its info says "gets X at its next start".
+  `cli_moves_stopped: true`, and its info says "gets X at its next start". Once runs get a
+  newer version than the one moves stopped for, the detail promises that one with
+  `cli_moves_stopped: false`.
 - AC4 (CCF-004). The test of a restarted session that starts sets a time to start of an hour and
   passes; with the start not noticed it fails at once.
-- AC5 (CCF-005). A prompt record whose `version` is 4 MiB long leaves at most 64 bytes and an
-  ellipsis; `2.2.0-beta.3+build.7` is kept as it is; a model name of 4 MiB leaves at most 128
-  bytes and an ellipsis.
+- AC5 (CCF-005). A version of 4 MiB leaves at most 64 bytes and an ellipsis, and
+  `2.2.0-beta.3+build.7` is kept as it is (SPEC-461's test of the accumulator); a model name of
+  4 MiB leaves at most 128 bytes and an ellipsis.
 - AC6 (CCF-006). Two turn ends of one task that both decided to restart its session before
   either began (held at the race point `ClaudeMoveDecided`) make one restart (two runs),
   whether the second goes on while the first's switch is under way or once it is over; and
   that restart is watched: its session, which never starts, stops further restarts on that
-  version. Two starts of one run on one version are not equal.
+  version. Two starts of one run on one version are not equal. A later release restarts the
+  task again: a finished restart gives the task's slot back.
 - AC7 (CCF-007). The view of a binary that could not be read has `models_read: false` and the
   sentence; the card shows the badge and the sentence (mock `claude=unread`); a server that
   keeps nothing current shows neither.
@@ -136,8 +141,10 @@ The question of direction: the restart waits only while a person typed in the la
   is a draft (`is_draft`: after the last submit and the run's start; AC9).
   `crates/yulius-app/src/finish.rs`: which submitted prompts came through the prompt box.
   `crates/yulius-app/src/claude_code.rs`: a start is only taken off the watch as itself (AC6).
-  `crates/yulius-app/src/supervisor.rs`: an idle rest holds until a turn begins in the new run.
-  `crates/yulius-harness/src/claude.rs`: the caps (AC5).
+  `crates/yulius-app/src/supervisor.rs`: a new run starts with an empty prompt box and no
+  held prompt. `crates/yulius-harness/src/claude.rs`: the model's cut (AC5; the version's is
+  SPEC-461's `the_version_a_transcript_names_is_kept_short` in
+  `crates/yulius-harness/tests/observe.rs`).
 - Integration with real processes, `crates/yulius/tests/claude_code_moves.rs` (`mod moves`):
   AC1 (both cases), AC2, AC4, AC6 (both decisions held at `ClaudeMoveDecided` with
   `block_in_place`; the second goes on at `SwitchDecided`, or at `ClaudeMoveSettled`), AC8's
@@ -154,10 +161,12 @@ The question of direction: the restart waits only while a person typed in the la
   gate's block; `gate_continues` dropped from `works_on`; the reasons not passed on; the start
   not noticed; the caps removed; the slot not taken; a session already sent restarted again;
   starts without an identity; the draft not asked, a submit not emptying the box, a launch not
-  emptying it, a wake-up emptying it, a held prompt emptying it at every request; the launch
-  reading Working; the goal's state not carried;
-  the rest held over a new turn; the notification center not remembering through a switch; the
-  card's and task info's old words; the unread binary not said.
+  emptying it, a wake-up emptying it (the predicate and its use), a held prompt emptying it at
+  every request, a new run keeping a held prompt; the launch reading Working; the goal's state
+  not carried; the Stop not asking about the goal again after its look, or not before it; a
+  stop of moves read for every version; a finished restart keeping the task's slot; the
+  notification center not remembering through a switch; the card's and task info's old
+  words; the unread binary not said.
 - Not testable here: a real Claude Code's goal across `--resume` (the fake agent stands in: its
   goal lives in its process, as Claude Code's does), and a real prompt box (Yulius sees
   keystrokes and submitted prompts, not the box).
@@ -173,6 +182,14 @@ The question of direction: the restart waits only while a person typed in the la
 - **The same rule at the gate's block.** The finding names the idle path; the Stop a gate
   blocks restarts a prompt-mode session too (with the gate's reasons), and loses the goal the
   same way. One rule covers both (`keeps_own_goal`).
+- **The Stop asks about the goal twice** (review round 1 of this change, minor 1): once
+  before its look at the session, which a goal known by then saves (the look waits for the
+  transcript and asks the session's processes, inside the Stop hook), and once after it,
+  because the look is what reads the turn's lines: a goal set in the very turn whose Stop the
+  gate blocks is not read yet when that Stop arrives (the transcript is read once a second).
+  Each has its test; the second cannot assert that the goal was unread at the Stop without
+  failing in the rare run in which a read falls between, so it asserts what must hold either
+  way, and its mutation was caught 3 runs of 3.
 - **A goal that failed does not keep the session.** Claude Code's goal is over then; what is
   left is Yulius's reading of the task ("Your turn": work is unfinished, SPEC-429), which the
   idle restart carries over (CCF-008).
@@ -186,9 +203,11 @@ The question of direction: the restart waits only while a person typed in the la
   something was typed and not sent. Keystrokes that are no draft (an answer to a permission
   dialog, a command that submits no prompt) count as one: the session then keeps its version
   until a turn ends with nothing typed since its prompt, or its next start. That errs toward
-  the person at the keyboard, and costs one turn. The alternative, the minute alone, loses what
+  the person at the keyboard, and usually costs one turn. The alternative, the minute alone, loses what
   a person typed ahead during a long turn. The minute stays for the person who just sent a
-  prompt and is about to type the next. A message typed and entered while a turn runs, which
+  prompt and is about to type the next. "One turn" holds for a session that is prompted
+  again; a goal session nobody prompts keeps its version until its next start after a single
+  keystroke. A message typed and entered while a turn runs, which
   Claude Code queues until the turn ends, is covered the same way: its submit comes after
   that turn's end. Limits: the server keeps what was typed in memory, so after its own restart
   no draft is known until someone types again (as for the minute); and a prompt Claude Code
@@ -215,13 +234,34 @@ The question of direction: the restart waits only while a person typed in the la
   an idle one writes none, so a prompt-mode task whose own goal had failed read "Answered"
   after the restart instead of "Your turn": a different reading, which notified. In the same
   session with nothing typed, what Claude Code last recorded is still what the agent left.
+  It is kept in memory, like the goal's other readings: after a restart of the server the
+  reattached run reads its own lines again, which hold no goal, and the task reads "Answered"
+  (a failed own goal, an idle restart and a server restart together; the same holds for any
+  resumed run since SPEC-429). A mark in the run directory would close it; not done for a
+  case this narrow.
+- **No guard for "a turn began in the new run"** (review round 1, nit): the put-back it
+  replaced ran after the launch and had to step aside for a prompt sent at once. The launch
+  gives the rest before the run is attached, when nobody can type and nothing is typed, so
+  there is nothing to see there, and a prompt sent right after sets the task working through
+  its hook.
+- **Left as it is: a goal across `/clear`.** Yulius's reading of the goal is not reset when
+  the session changes inside its process (older code), so a prompt-mode session whose person
+  cleared it with a goal open keeps its version until its next start: the safe direction. What
+  a real Claude Code records at `/clear` was not checked.
 - **Left as it is: the age of a task's state restarts at an idle restart.** Its status did
   change for a moment (`state_since`), so "Your turn" counts from the restart. Keeping the
   earlier time would need a store call of its own for a figure that tells nobody anything
   wrong: the task was continuing at that time.
 - **The model name is capped too.** The review said the version should be capped "as the model
   name is"; it was not. It is the same record's word, kept per run and shown in the same cell,
-  so it gets the same treatment in the same place (the parser).
+  so it gets the same treatment.
+- **The version's cut is SPEC-461's, where it is kept.** This task first cut the version in
+  the parser's prompt records. Task #443's second delivery (#1188, merged into `dev` while
+  this one was in review) reads the version from every record of the session's thread and
+  cuts it in `UsageAccumulator::note_cli_version`, with the same rule and its own test; its
+  spec says the two would otherwise have merged without a conflict and left the string
+  unbounded on the new path. After that merge this task's cut was a second one on one of two
+  paths, so it is gone; the model's stays in the parser, its only path.
 - **The start test asserts the watch, not the judge.** With the restart off the watch, the judge
   has nothing to take, which `a_restarted_session_that_never_starts…` shows from the other
   side; waiting for the judge is what tied the test to the clock.

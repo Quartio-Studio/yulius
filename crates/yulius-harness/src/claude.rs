@@ -27,11 +27,10 @@ use crate::time::{from_epoch_seconds, parse_rfc3339};
 /// Maximum bytes of provider limit text kept in [`Observed::LimitReached`].
 const LIMIT_MESSAGE_BYTES: usize = 512;
 
-/// Maximum bytes kept of the Claude Code version a record names (SPEC-468 CCF-005): the agent
-/// writes its own transcript, and the version is kept per run and shown.
-const CLI_VERSION_BYTES: usize = 64;
-
-/// Maximum bytes kept of the model a record names: the bound of a model a launch asks for.
+/// Maximum bytes kept of the model a record names (SPEC-468 CCF-005): the agent writes its own
+/// transcript, where a line may be megabytes, and the model is kept per run and shown. It is
+/// the bound of a model a launch asks for. The version a record names is cut where every path
+/// that reads it ends ([`crate::observe::UsageAccumulator::note_cli_version`]).
 const MODEL_NAME_BYTES: usize = 128;
 
 /// Model name Claude uses for locally generated (non-API) messages.
@@ -336,7 +335,7 @@ fn observe_user(record: &Map<String, Value>) -> Vec<Observed> {
         session_id,
         cwd: owned_str(record, "cwd"),
         model: None,
-        version: str_of(record, "version").map(|version| shorten(version, CLI_VERSION_BYTES)),
+        version: owned_str(record, "version"),
     });
     // A record Claude Code writes for itself starts no turn: an idle compaction's summary made a
     // finished task read Working for good (SPEC-085 STT-001).
@@ -1548,36 +1547,11 @@ mod tests {
         assert_eq!(wake, vec![session, Observed::UserTurn { at, wake: true }]);
     }
 
-    /// SPEC-468 CCF-005: the agent writes its own transcript, and a line may be 4 MiB. What a
-    /// record names as its Claude Code and as its model is kept per run and shown, so each is
-    /// cut to a few bytes on a character boundary; a version that is no plain `X.Y.Z` is kept.
+    /// SPEC-468 CCF-005: the agent writes its own transcript, and a line may be 4 MiB. The
+    /// model a record names is kept per run and shown, so it is cut to a few bytes on a
+    /// character boundary (the version is cut where it is kept, `observe.rs`).
     #[test]
-    fn the_version_and_the_model_a_record_names_are_capped() {
-        let prompt = |version: &str| {
-            let record = serde_json::json!({"type": "user", "isSidechain": false,
-                "message": {"role": "user", "content": "go on"},
-                "timestamp": "2026-10-10T05:38:01.385Z", "cwd": "/w", "sessionId": "s1",
-                "version": version});
-            observe_line(&record.to_string())
-                .into_iter()
-                .find_map(|observed| match observed {
-                    Observed::SessionMeta { version, .. } => version,
-                    _ => None,
-                })
-        };
-        assert_eq!(prompt("2.1.322").as_deref(), Some("2.1.322"));
-        assert_eq!(
-            prompt("2.2.0-beta.3+build.7").as_deref(),
-            Some("2.2.0-beta.3+build.7"),
-            "no plain version, kept and shown as it is"
-        );
-        let long = prompt(&"9".repeat(4 * 1024 * 1024)).unwrap_or_default();
-        assert_eq!(long, format!("{}…", "9".repeat(CLI_VERSION_BYTES)));
-        // Cut on a character boundary: 21 three-byte characters fit in 64 bytes; the
-        // ellipsis follows them.
-        let wide = prompt(&"…".repeat(100)).unwrap_or_default();
-        assert_eq!(wide, "…".repeat(22));
-
+    fn the_model_a_record_names_is_capped() {
         let answer = |model: &str| {
             let record = serde_json::json!({"type": "assistant", "isSidechain": false,
                 "timestamp": "2026-10-10T05:38:01.385Z",

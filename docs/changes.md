@@ -16,8 +16,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   notification. Two turn ends that decide at once make one restart, and the breaker watches
   it. While running tasks are no longer moved to a version, the card and a task's info promise
   it only at the task's next start, and the card says when the binary in use could not be read
-  for its models. The version and the model a transcript names are capped. The gate's block
-  case of the move has its test. Older code, reported as #1182: a move to another subscription
+  for its models. The model a transcript names is cut as its Claude Code version is. The
+  gate's block case of the move has its test. Older code, reported as #1182: a move to another subscription
   still drops a goal a person set in a prompt-mode session.
 - A session that works on after a restart shows the Claude Code it runs with the first record
   it writes (SPEC-461, task #443). Yulius read a session's Claude Code version from its prompt
