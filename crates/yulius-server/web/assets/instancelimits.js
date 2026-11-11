@@ -69,11 +69,13 @@ export function limitsCard(ctx) {
   /** One request that answers the new view; `key` names the limit a refusal belongs to. */
   async function change(request, done, key = null) {
     for (const button of card.querySelectorAll('button')) button.disabled = true;
+    let failed = false;
     try {
       view = await request();
       if (key) { refused.delete(key); typed.delete(key); }
       toast(done, { kind: 'ok' });
     } catch (error) {
+      failed = true;
       if (key && error && error.status === 422) refused.set(key, error.message);
       else {
         errorToast(error, 'Couldn’t change the limits');
@@ -81,7 +83,8 @@ export function limitsCard(ctx) {
         try { view = await ctx.api.get(API); } catch { /* the view from before stays */ }
       }
     }
-    if (card.isConnected) render(refused.has(key) ? key : null);
+    // The pressed button is drawn anew: after a failure the focus goes to the limit's field.
+    if (card.isConnected) render(failed ? key : null);
   }
 
   function notice(stale) {

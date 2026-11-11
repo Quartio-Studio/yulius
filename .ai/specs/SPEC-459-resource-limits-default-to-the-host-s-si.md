@@ -68,9 +68,10 @@ host-sized one, by the migration flow itself.
   for a while.
 - HSL-004: a pin no longer fits when a fact its formula uses differs from this host's by a quarter
   or more (either way: the larger reading is at least a quarter above the smaller) and its number
-  differs from this host's host-sized value. The instance says so at start (a warning naming each such limit, its number, the host it was configured on and
-  the host-sized value), in the limits view and on Settings → Instance, where one action takes the
-  host-sized values for all of them and another keeps them (recording them for this host).
+  differs from this host's host-sized value. The instance says so at start (a warning naming each
+  such limit, its number, the host it was configured on and the host-sized value), in the limits
+  view and on Settings → Instance, where one action takes the host-sized values for all of them
+  and another keeps them (recording them for this host).
 - HSL-005: the migration flow applies the host-sized values by itself: `yulius instance import`
   marks the copy (`<data>/.yulius-limits-adapt`), and the first start that finds the mark saves
   "host-sized" for every pin that no longer fits, recorded unit pins included, so a drop-in copied

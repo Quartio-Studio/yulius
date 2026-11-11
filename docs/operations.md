@@ -569,7 +569,8 @@ If the server could not read the saved limits at start (it warns: "the saved res
 could not be read", with the reason), it runs on the unit's and the host's values, writes nothing
 over them, leaves an import's mark and refuses changes (409) until a restart reads them. When a
 restart warns again the record itself is damaged: stop the service, clear it with
-`sqlite3 /var/lib/yulius/yulius.db "UPDATE instance SET limits = NULL"` and start. The settings
+`sudo -u yulius sqlite3 /var/lib/yulius/yulius.db "UPDATE instance SET limits = NULL"` (the
+`sqlite3` package) and start. The settings
 saved in Settings → Instance are then gone and the unit's numbers are recorded for this host, so
 after a move check the card's values by hand.
 
@@ -577,8 +578,9 @@ after a move check the card's values by hand.
 (a unit value at the first start that sees it, a setting when it is saved). When a fact its
 formula uses differs from this host's by a quarter or more (the larger of the two readings is at
 least a quarter above the smaller, so 48 GiB against 38 GiB counts and 47 against 45 does not)
-and the number is not what this host would get, the limit no longer fits: the server warns at start ("… is pinned to …, sized for another host …; this host would get
-…", with the number, the host it was configured on and the host-sized value) and the card lists it,
+and the number is not what this host would get, the limit no longer fits: the server warns at
+start ("… is pinned to …, sized for another host …; this host would get …", with the number, the
+host it was configured on and the host-sized value) and the card lists it,
 with "Use host-sized values" (host-sized for all of them, overruling the unit) and "Keep these
 numbers" (they are recorded for this host). After `yulius instance import` the first start takes
 the host-sized values by itself (audited as `limits.adapted` by `migration`).

@@ -183,9 +183,9 @@ function seed(params) {
     connections: savedConnections(),
     jev: { key: null, setAt: null, setBy: null, config: params.get('jev') === 'config' },
     // Resource limits (SPEC-459): `limits=moved` is a 64-CPU host whose unit still pins two
-    // numbers sized for the 12-CPU one it came from. `puts` counts the saves asked for; a test
-    // sets `failAfterSave` for a save that is applied and answers 500 (its audit entry failed).
-    limits: { unit: params.get('limits') === 'moved' ? { max_sessions: 8, sandbox_disk_gb: 300 } : {}, kept: false, settings: {}, runningMemory: 660, puts: 0, failAfterSave: false },
+    // numbers sized for the 12-CPU one it came from. A test sets `failAfterSave` for a save
+    // that is applied and answers 500 (its audit entry failed).
+    limits: { unit: params.get('limits') === 'moved' ? { max_sessions: 8, sandbox_disk_gb: 300 } : {}, kept: false, settings: {}, runningMemory: 660, failAfterSave: false },
     // The instance Vidoc key (SPEC-195): `vidoc=config` (YULIUS_VIDOC_API_KEY_FILE is set).
     protectPatchFail: params.get('protect_patch_fail') === '1',
     vidoc: { key: null, setAt: null, setBy: null, config: params.get('vidoc') === 'config', offAt: params.get('vidoc_off') ? '2026-10-30T09:00:00Z' : null, offBy: params.get('vidoc_off') ? 'superadmin' : null, fail: params.get('vidoc_fail') === '1', repo: params.get('vidoc_repo'), patchFail: params.get('vidoc_patch_fail') === '1' },
@@ -4572,7 +4572,6 @@ route('GET', '/api/admin/limits', ({ db }) => { superadminOnly(db); return limit
 route('PUT', `/api/admin/limits/${ID}`, ({ db, body, p }) => {
   superadminOnly(db);
   const l = limitOf(p[0]);
-  db.limits.puts += 1;
   if (!body || body.value === undefined) fail(422, 'invalid', 'missing field `value`');
   // As the server reads it: a whole number or null, never a number in a string.
   const { value } = body;

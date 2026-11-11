@@ -50,7 +50,7 @@ test('a saved number wins, a refused one says its range, and the setting can be 
   expect(await axeViolations(browser)).toEqual([]);
 });
 
-type LimitsMock = { __yuliusMock: { limits: { puts: number; failAfterSave: boolean }; failPath: string | null } };
+type LimitsMock = { __yuliusMock: { limits: { failAfterSave: boolean }; failPath: string | null; sent?: Record<string, number> } };
 
 test('a number that is not a whole one is refused at its field without a request', async ({ app, browser, screen }) => {
   for (const typed of ['1.5', '-3', '1e30']) {
@@ -69,7 +69,8 @@ test('a number that is not a whole one is refused at its field without a request
       return {
         invalid: el ? el.getAttribute('aria-invalid') : null, said: said ? said.textContent : null, typed: el ? el.value : null,
         focused: Boolean(el) && document.activeElement === el,
-        puts: (window as unknown as LimitsMock).__yuliusMock.limits.puts,
+        // Counted when the page sends it, before the mock's latency.
+        puts: ((window as unknown as LimitsMock).__yuliusMock.sent || {})['PUT /api/admin/limits/max_sessions'] || 0,
       };
     });
     expect(field.invalid).toBe('true');
@@ -108,6 +109,8 @@ test('a save that answers an error after it was applied shows what is in force',
   await screen.getByRole('button', 'Save Live sessions').click();
   await expect(screen.getByText(/Couldn’t change the limits/)).toBeVisible();
   await expect.poll(() => row(browser, 'max_sessions')).toMatch(/Live sessions 40 settings/);
+  // The card was drawn again: the focus is on the field the save was for, not lost.
+  expect(await browser.evaluate(() => document.activeElement === document.querySelector('[data-limit="max_sessions"] input'))).toBe(true);
 });
 
 test('a changed sandbox memory says it applies at the next restart', async ({ app, browser, screen }) => {
