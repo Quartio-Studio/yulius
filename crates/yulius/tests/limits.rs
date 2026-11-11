@@ -682,6 +682,41 @@ async fn limits_that_cannot_be_read_are_not_overwritten_and_the_mark_waits() -> 
     Ok(())
 }
 
+/// A record that reads but is no limits document is treated the same: nothing is written over
+/// it, the mark waits and changes are refused. Cleared by hand, the next start begins anew.
+#[tokio::test]
+async fn limits_that_do_not_parse_are_not_overwritten_and_the_mark_waits() -> TestResult {
+    let (old, _, db, _file) = file_instance(OLD, &OLD_PINS).await?;
+    db.execute("UPDATE instance SET limits = '{\"settings\": 7'", [])?;
+
+    let (h, admin, _) = restarted(&old, NEW, &OLD_PINS, true).await?;
+    assert_eq!(h.app.max_live_sessions(), 8, "the unit's number");
+    assert!(
+        h.app.config.data_dir.join(ADAPT_MARK).exists(),
+        "the mark waits for a start that can read the limits"
+    );
+    let r = put(&h, &admin, "max_sessions", json!(40)).await?;
+    assert_eq!(r.status, StatusCode::CONFLICT, "{}", r.body);
+    assert!(
+        r.body.to_string().contains("could not be read"),
+        "{}",
+        r.body
+    );
+    let kept: String = db.query_row("SELECT limits FROM instance", [], |row| row.get(0))?;
+    assert_eq!(kept, "{\"settings\": 7", "not written");
+
+    // Cleared by hand (operations.md): the start records the unit's numbers for this host.
+    db.execute("UPDATE instance SET limits = NULL", [])?;
+    let (h, admin, _) = restarted(&h, NEW, &OLD_PINS, true).await?;
+    assert!(!h.app.config.data_dir.join(ADAPT_MARK).exists());
+    let v = view(&h, &admin).await?;
+    assert_eq!(limit(&v, "max_sessions")["value"], 8);
+    assert_eq!(limit(&v, "max_sessions")["stale"], false);
+    let r = put(&h, &admin, "max_sessions", json!(40)).await?;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    Ok(())
+}
+
 /// A change that cannot be saved is not put in force either.
 #[tokio::test]
 async fn a_change_that_cannot_be_saved_changes_nothing() -> TestResult {

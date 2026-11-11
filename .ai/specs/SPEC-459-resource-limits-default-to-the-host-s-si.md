@@ -67,8 +67,8 @@ host-sized one, by the migration flow itself.
   A unit value seen again with the same number keeps its record, also after the unit dropped it
   for a while.
 - HSL-004: a pin no longer fits when a fact its formula uses differs from this host's by a quarter
-  or more (either way: the larger reading is at least a quarter above the smaller) and its number differs from this host's host-sized value. The instance says
-  so at start (a warning naming each such limit, its number, the host it was configured on and
+  or more (either way: the larger reading is at least a quarter above the smaller) and its number
+  differs from this host's host-sized value. The instance says so at start (a warning naming each such limit, its number, the host it was configured on and
   the host-sized value), in the limits view and on Settings → Instance, where one action takes the
   host-sized values for all of them and another keeps them (recording them for this host).
 - HSL-005: the migration flow applies the host-sized values by itself: `yulius instance import`
@@ -79,8 +79,10 @@ host-sized one, by the migration flow itself.
 - HSL-006: a superadmin reads the limits (`GET /api/admin/limits`), saves a number or "host-sized"
   for one (`PUT /api/admin/limits/{key}`), removes its setting (`DELETE`), takes the host-sized
   values for every pin that no longer fits (`POST /api/admin/limits/adapt`) or keeps them
-  (`POST /api/admin/limits/keep`). Everyone else gets 403. A number outside the limit's range, or
-  a sandbox memory above the host's, is refused with the range named. Each change is audited.
+  (`POST /api/admin/limits/keep`). Everyone else gets 403, whatever the key. A number outside the
+  limit's range, or a sandbox memory above the host's, is refused with the range named (422), and
+  so is a body without `value` or with anything but a whole number or `null`: it is never read as
+  "host-sized". Each change is audited.
 - HSL-007: a change applies without a restart for live sessions (a raise starts queued tasks at
   once), CI jobs (running jobs finish; the count in force never exceeds the larger of the old and
   the new number), CI runs per sandbox, the sandbox disk quota and the CD run disk bound (from the
@@ -90,7 +92,10 @@ host-sized one, by the migration flow itself.
   value, its source, the formula in words with the host-sized value, the unit's number when it is
   overruled, who saved a setting and when, and the controls of HSL-006.
 - HSL-009: saved settings and records survive a restart; a database of an earlier version starts
-  with none (every unit value is then recorded for the host of that first start).
+  with none (every unit value is then recorded for the host of that first start). A start that
+  cannot read the saved record, or finds it is no limits document, runs on the unit's and the
+  host's values, writes nothing over the record, leaves the import's mark and refuses every
+  change (409) until a start reads it.
 
 ## Plan
 

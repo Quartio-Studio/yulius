@@ -204,6 +204,18 @@ impl Loaded {
         pin.stale(limit, self.host).then_some(pin)
     }
 
+    /// What the start says about each pin that no longer fits this host (HSL-004).
+    fn stale_warnings(&self) -> Vec<String> {
+        Limit::ALL
+            .into_iter()
+            .filter_map(|limit| {
+                let pin = self.pin(limit).filter(|pin| pin.stale(limit, self.host))?;
+                let source = self.resolved(limit).source;
+                Some(stale_words(limit, pin, source, self.host))
+            })
+            .collect()
+    }
+
     /// Records each unit value with this host, unless the same number is already on record.
     fn record_unit(&mut self) {
         for (limit, value) in &self.unit {
@@ -343,27 +355,25 @@ impl App {
     /// Returns what the sandbox isolation is built with.
     pub async fn load_limits(self: &Arc<Self>, unit: UnitLimits) -> StartLimits {
         let host = self.host();
-        // A read that fails says nothing about what is saved: this start then runs on the
-        // unit's and the host's values, writes nothing over the record and leaves the mark.
-        let (saved, unread) = match self.deps.store.limits().await {
-            Ok(doc) => (doc, false),
+        // A read that fails, or a document that is no limits record, says nothing about what is
+        // saved: this start then runs on the unit's and the host's values, writes nothing over
+        // the record and leaves the mark.
+        let read = self.deps.store.limits().await.and_then(|doc| {
+            doc.as_deref()
+                .map(serde_json::from_str::<Record>)
+                .transpose()
+                .map_err(|err| AppError::Internal(format!("not a limits record: {err}")))
+        });
+        let (record, unread) = match read {
+            Ok(record) => (record.unwrap_or_default(), false),
             Err(err) => {
                 tracing::warn!(
                     "the saved resource limits could not be read; this start uses the unit's \
                      and the host's values and saves none: {err}"
                 );
-                (None, true)
+                (Record::default(), true)
             }
         };
-        let record = saved
-            .as_deref()
-            .map(serde_json::from_str::<Record>)
-            .transpose()
-            .unwrap_or_else(|err| {
-                tracing::warn!("the saved resource limits are not readable, starting anew: {err}");
-                None
-            })
-            .unwrap_or_default();
         let before = record.clone();
         let mut loaded = Loaded {
             host,
@@ -483,12 +493,9 @@ impl App {
                     amount(limit, resolved.value)
                 );
             }
-            if let Some(pin) = loaded
-                .pin(limit)
-                .filter(|pin| pin.stale(limit, loaded.host))
-            {
-                tracing::warn!("{}", stale_words(limit, pin, resolved.source, loaded.host));
-            }
+        }
+        for warning in loaded.stale_warnings() {
+            tracing::warn!("{warning}");
         }
     }
 
@@ -530,6 +537,38 @@ mod tests {
             "sandbox disk quota is pinned to 300 GB (unit), sized for another host (12 CPUs, \
              47 GiB, 387 GB); this host would get 875 GB: take it or keep the number in \
              Settings → Instance"
+        );
+    }
+
+    /// HSL-004: the start warns about the pins that no longer fit and about no other: a number
+    /// equal to this host's host-sized value, and a limit without a pin, are left out.
+    #[test]
+    fn the_start_warns_about_the_pins_that_no_longer_fit_only() {
+        let old = Host {
+            cpus: Some(12),
+            memory: Some(47 * GIB),
+            disk: Some(387 * GB),
+        };
+        let mut loaded = Loaded {
+            host: old,
+            unit: UnitLimits::from([(Limit::Sessions, 8), (Limit::CiLanes, 4)]),
+            record: Record::default(),
+            memory_at_start: 0,
+            unread: false,
+        };
+        loaded.record_unit();
+        assert_eq!(loaded.stale_warnings(), Vec::<String>::new(), "at home");
+
+        loaded.host = Host {
+            cpus: Some(64),
+            memory: Some(755 * GIB),
+            disk: Some(3500 * GB),
+        };
+        let warnings = loaded.stale_warnings();
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(
+            warnings[0].starts_with("live sessions is pinned to 8 (unit)"),
+            "{warnings:?}"
         );
     }
 }

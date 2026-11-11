@@ -204,8 +204,8 @@ impl App {
         };
         if current.unread {
             return Err(AppError::Conflict(
-                "the saved resource limits could not be read when this server started: \
-                 restart it before changing them"
+                "the saved resource limits could not be read when this server started (its \
+                 log says why): they stay as they are until a start reads them"
                     .into(),
             ));
         }
