@@ -182,6 +182,9 @@ function seed(params) {
     // sessionStorage, so a reload's first read lists them as the server still would.
     connections: savedConnections(),
     jev: { key: null, setAt: null, setBy: null, config: params.get('jev') === 'config' },
+    // Resource limits (SPEC-459): `limits=moved` is a 64-CPU host whose unit still pins two
+    // numbers sized for the 12-CPU one it came from.
+    limits: { unit: params.get('limits') === 'moved' ? { max_sessions: 8, sandbox_disk_gb: 300 } : {}, kept: false, settings: {}, runningMemory: 660 },
     // The instance Vidoc key (SPEC-195): `vidoc=config` (YULIUS_VIDOC_API_KEY_FILE is set).
     protectPatchFail: params.get('protect_patch_fail') === '1',
     vidoc: { key: null, setAt: null, setBy: null, config: params.get('vidoc') === 'config', offAt: params.get('vidoc_off') ? '2026-10-30T09:00:00Z' : null, offBy: params.get('vidoc_off') ? 'superadmin' : null, fail: params.get('vidoc_fail') === '1', repo: params.get('vidoc_repo'), patchFail: params.get('vidoc_patch_fail') === '1' },
@@ -4529,6 +4532,57 @@ route('POST', '/api/admin/leftovers/delete', ({ db, body }) => {
   });
   return leftoversView(db);
 });
+
+// Resource limits (SPEC-459): the server's formulas on this mock's host.
+const LIMITS_HOST = { cpus: 64, memory_bytes: 755 * 1024 ** 3, disk_bytes: 3500e9 };
+const LIMITS_OLD_HOST = { cpus: 12, memory_bytes: 47 * 1024 ** 3, disk_bytes: 387e9 };
+const LIMITS = [
+  { key: 'max_sessions', label: 'Live sessions', env: 'YULIUS_MAX_SESSIONS', suffix: '', min: 1, max: 1024, formula: 'half the CPUs plus 2, at most one per 2 GiB of memory, at least 2', sized: (c, m) => Math.max(2, Math.min(Math.floor(c / 2) + 2, Math.floor(m / 2))) },
+  { key: 'ci_max_jobs', label: 'CI jobs at once', env: 'YULIUS_CI_MAX_JOBS', suffix: '', min: 1, max: 64, formula: 'a sixth of the CPUs plus 2, at most 64', sized: (c) => Math.min(64, Math.floor(c / 6) + 2) },
+  { key: 'ci_lanes', label: 'CI runs at once per sandbox', env: 'YULIUS_CI_LANES', suffix: '', min: 1, max: 8, formula: 'one per 32 CPUs plus 2, at most 8', sized: (c) => Math.min(8, Math.floor(c / 32) + 2) },
+  { key: 'sandbox_memory_gb', label: 'Sandbox memory', env: 'YULIUS_SANDBOX_MEMORY_GB', suffix: 'GiB', min: 1, max: 755, restart: true, formula: 'the host\u2019s memory minus an eighth (at least 4 GiB kept back), at least 2 GiB', sized: (c, m) => Math.max(2, Math.floor(m - Math.max(m / 8, 4))) },
+  { key: 'sandbox_disk_gb', label: 'Sandbox disk quota', env: 'YULIUS_SANDBOX_DISK_GB', suffix: 'GB', min: 0, max: 1000000, formula: 'a quarter of the data disk, at least 100 GB, at most half the disk', sized: (c, m, d) => Math.max(1, Math.min(Math.max(Math.floor(d / 4), 100), Math.floor(d / 2))) },
+  { key: 'cd_run_disk_gb', label: 'CD run disk', env: 'YULIUS_CD_RUN_DISK_GB', suffix: 'GB', min: 1, max: 10000, formula: 'a twentieth of the data disk, at least 20 GB, at most half the disk', sized: (c, m, d) => Math.max(1, Math.min(Math.max(Math.floor(d / 20), 20), Math.floor(d / 2))) },
+];
+function limitView(db, l) {
+  const state = db.limits;
+  const hostSized = l.sized(LIMITS_HOST.cpus, LIMITS_HOST.memory_bytes / 1024 ** 3, LIMITS_HOST.disk_bytes / 1e9);
+  const saved = state.settings[l.key] || null;
+  const unit = state.unit[l.key] ?? null;
+  const pinned = saved ? saved.value : unit;
+  const source = saved && saved.value !== null ? 'settings' : !saved && unit !== null ? 'unit' : 'default';
+  const value = source === 'default' ? hostSized : pinned;
+  // A unit value was recorded on the old host until it is kept; a setting is saved on this one.
+  const configuredOn = source === 'unit' ? (state.kept ? LIMITS_HOST : LIMITS_OLD_HOST) : source === 'settings' ? LIMITS_HOST : null;
+  return {
+    key: l.key, label: l.label, env: l.env, suffix: l.suffix, value, source, host_sized: hostSized, formula: l.formula, unit_value: unit,
+    setting: saved ? { value: saved.value, set_by: saved.by, set_at: saved.at } : null,
+    configured_on: configuredOn, stale: configuredOn === LIMITS_OLD_HOST && value !== hostSized,
+    min: l.min, max: l.max, live: !l.restart, restart_needed: Boolean(l.restart) && value !== state.runningMemory,
+  };
+}
+const limitsView = (db) => ({ host: clone(LIMITS_HOST), limits: LIMITS.map((l) => limitView(db, l)) });
+function limitOf(key) {
+  const l = LIMITS.find((x) => x.key === key);
+  if (!l) fail(404, 'not_found', 'no such limit');
+  return l;
+}
+route('GET', '/api/admin/limits', ({ db }) => { superadminOnly(db); return limitsView(db); });
+route('PUT', `/api/admin/limits/${ID}`, ({ db, body, p }) => {
+  superadminOnly(db);
+  const l = limitOf(p[0]);
+  const value = body.value === null || body.value === undefined ? null : Number(body.value);
+  if (value !== null && !(Number.isInteger(value) && value >= l.min && value <= l.max)) fail(422, 'invalid', `${l.label} must be between ${l.min} and ${l.max}${l.suffix ? ` ${l.suffix}` : ''}`);
+  db.limits.settings[l.key] = { value, by: db.me.user.login, at: new Date().toISOString() };
+  return limitsView(db);
+});
+route('DELETE', `/api/admin/limits/${ID}`, ({ db, p }) => { superadminOnly(db); delete db.limits.settings[limitOf(p[0]).key]; return limitsView(db); });
+route('POST', '/api/admin/limits/adapt', ({ db }) => {
+  superadminOnly(db);
+  for (const l of limitsView(db).limits.filter((x) => x.stale)) db.limits.settings[l.key] = { value: null, by: db.me.user.login, at: new Date().toISOString() };
+  return limitsView(db);
+});
+route('POST', '/api/admin/limits/keep', ({ db }) => { superadminOnly(db); db.limits.kept = true; return limitsView(db); });
 
 function jevView(db) {
   const j = db.jev;
