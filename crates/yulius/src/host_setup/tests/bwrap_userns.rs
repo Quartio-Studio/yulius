@@ -890,15 +890,20 @@ fn a_namespace_limit_is_named() {
     fake.file("/proc/sys/kernel/unprivileged_userns_clone", "0\n");
     fake.file("/proc/sys/user/max_user_namespaces", "0\n");
     let lines = run(&mut fake, Mode::Setup);
-    let (outcome, detail) = item(&lines);
-    assert_eq!(outcome, HostOutcome::Failed);
-    assert!(
-        detail.starts_with(
-            "wrote and loaded /etc/apparmor.d/yulius-bwrap, loaded the other profiles of /etc/apparmor.d as a boot does, but bwrap still cannot start a user namespace as yulius: bwrap: Creating new namespace failed"
-        ) && detail.contains("; kernel.unprivileged_userns_clone is 0 (")
-            && detail.contains("; user.max_user_namespaces is 0 ("),
-        "{detail}"
+    // The limits say it all: no word of another profile, and Yulius's stays.
+    assert_eq!(
+        item(&lines),
+        (
+            HostOutcome::Failed,
+            "wrote and loaded /etc/apparmor.d/yulius-bwrap, loaded the other profiles of \
+             /etc/apparmor.d as a boot does, but bwrap still cannot start a user namespace as \
+             yulius: bwrap: Creating new namespace failed: No space left on device; \
+             kernel.unprivileged_userns_clone is 0 (unprivileged user namespaces are off: set \
+             it to 1 in /etc/sysctl.d); user.max_user_namespaces is 0 (no user namespaces at \
+             all: raise it in /etc/sysctl.d)"
+        )
     );
+    assert_eq!(fake.text(PROFILE_FILE), Some(PROFILE));
 
     // A person's profile is not blamed for a limit: no commands that would disable a good rule.
     let mut fake = noble();
