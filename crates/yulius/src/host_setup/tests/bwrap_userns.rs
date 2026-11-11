@@ -671,8 +671,8 @@ fn a_parser_that_cannot_read_the_rule_is_unsupported() {
     assert!(!passed(&lines));
 }
 
-/// BNS-007: what no AppArmor rule fixes is named: a namespace limit of zero, a link that keeps
-/// Yulius's profile from loading.
+/// BNS-007, BNS-008: what no AppArmor rule fixes is named, by setup, a check and a dry run: a
+/// namespace limit of zero, a link that keeps Yulius's profile from loading.
 #[test]
 fn a_namespace_limit_is_named() {
     let mut fake = Fake::fresh();
@@ -728,11 +728,15 @@ fn a_namespace_limit_is_named() {
         PathBuf::from(PROFILE_FILE),
     );
     let lines = run(&mut fake, Mode::Setup);
-    let (outcome, detail) = item(&lines);
-    assert_eq!(outcome, HostOutcome::Failed);
-    assert!(
-        detail.contains("; user.max_user_namespaces is 0 (") && !detail.contains("that link"),
-        "{detail}"
+    assert_eq!(
+        item(&lines),
+        (
+            HostOutcome::Failed,
+            "loaded /etc/apparmor.d/bwrap again, but bwrap still cannot start a user namespace \
+             as yulius: bwrap: Creating new namespace failed: No space left on device; \
+             user.max_user_namespaces is 0 (no user namespaces at all: raise it in \
+             /etc/sysctl.d)"
+        )
     );
 
     // A check and a dry run name every limit too, each as its own clause: setup's steps alone
@@ -779,6 +783,28 @@ fn a_namespace_limit_is_named() {
              yulius host setup`"
         )
     );
+    assert!(!touched(&fake));
+
+    // Where bwrap starts all the same (a setuid bwrap), the switch keeps nothing out: not named.
+    let mut fake = set_up(noble());
+    fake.file(PROFILE_FILE, "# an earlier version\n");
+    fake.file("/proc/sys/kernel/unprivileged_userns_clone", "0\n");
+    for (mode, outcome, expected) in [
+        (
+            Mode::Check,
+            HostOutcome::Failed,
+            "the AppArmor rules for bwrap are not what setup leaves: setup would write and load \
+             /etc/apparmor.d/yulius-bwrap; run `sudo yulius host setup`",
+        ),
+        (
+            Mode::DryRun,
+            HostOutcome::Changed,
+            "would write and load /etc/apparmor.d/yulius-bwrap",
+        ),
+    ] {
+        let lines = run(&mut fake, mode);
+        assert_eq!(item(&lines), (outcome, expected));
+    }
     assert!(!touched(&fake));
 
     // Nor is the limit left out where nothing can be started yet.
