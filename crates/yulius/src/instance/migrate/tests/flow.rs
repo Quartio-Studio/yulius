@@ -362,7 +362,15 @@ fn install(bytes: &[u8], dir: &Path) -> io::Result<u64> {
     while let Item::Entry(e) = r.next_item()? {
         ex.put(&e, &mut r.data_reader())?;
     }
-    Ok(ex.finish()?.entries)
+    let entries = ex.finish()?.entries;
+    // The import's own limits mark (SPEC-459 HSL-005), whatever the copy brought at its name.
+    let mark = dir.join(yulius_app::limits::ADAPT_MARK);
+    match fs::remove_file(&mark) {
+        Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
+        _ => {}
+    }
+    fs::write(&mark, b"")?;
+    Ok(entries)
 }
 
 struct FakeWorld {
@@ -1709,6 +1717,36 @@ fn a_finish_whose_answer_was_lost_is_recorded_when_the_key_no_longer_signs_in() 
     );
     let state = State::load(&s.opts.state_dir).ok_or("no state")?;
     assert!(state.finished);
+    Ok(())
+}
+
+/// SPEC-467 LFT-005: the old host still holds the limits mark of the import it once came from.
+/// The import on the new host writes its own, so the mark is no part of the copy or its proof.
+#[test]
+fn a_limits_mark_left_on_the_old_host_does_not_fail_the_proof() -> TestResult {
+    use std::os::unix::fs::MetadataExt as _;
+    const MARK: &str = yulius_app::limits::ADAPT_MARK;
+    let mut s = setup()?;
+    fs::write(s.opts.data_dir.join(MARK), b"")?;
+    fs::File::options()
+        .write(true)
+        .open(s.opts.data_dir.join(MARK))?
+        .set_modified(std::time::UNIX_EPOCH + Duration::from_secs(1_700_000_000))?;
+    assert_eq!(s.run()?, 0, "{}", s.shown());
+    let status = s.status()?;
+    let proof = line(&status, "copy proven").ok_or("no proof")?;
+    assert_eq!(proof.outcome, HostOutcome::Ok, "{}", proof.detail);
+    assert!(
+        proof
+            .detail
+            .starts_with("13 entries and 50.3 KiB in 5 folders"),
+        "{}",
+        proof.detail
+    );
+    // The new host's mark is the import's own, of now.
+    let there = fs::symlink_metadata(s.remote.copy_dir.join(MARK))?;
+    assert!(there.is_file() && there.mtime() != 1_700_000_000);
+    assert_eq!(s.old_unit(), (true, true));
     Ok(())
 }
 
