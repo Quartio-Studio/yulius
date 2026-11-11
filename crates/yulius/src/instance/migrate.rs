@@ -262,8 +262,8 @@ pub trait World {
     /// # Errors
     /// Why not.
     fn sync(&mut self, dir: &Path) -> Result<(), String>;
-    /// This boot's id ([`super::receipts::boot_id`]).
-    fn boot(&self) -> String;
+    /// Where and when this host is, for the receipts ([`super::receipts::Era::here`]).
+    fn era(&mut self) -> super::receipts::Era;
     /// How many entries of `dir` a second a pass looks at once they are cached
     /// ([`warm::sampled`]); `None` when it cannot be measured.
     fn walk_rate(&mut self, dir: &Path) -> Option<f64>;
@@ -2303,8 +2303,8 @@ impl World for RealWorld {
         super::export::sync(dir).map_err(|e| e.to_string())
     }
 
-    fn boot(&self) -> String {
-        super::receipts::boot_id()
+    fn era(&mut self) -> super::receipts::Era {
+        super::receipts::Era::here()
     }
 
     fn walk_rate(&mut self, dir: &Path) -> Option<f64> {

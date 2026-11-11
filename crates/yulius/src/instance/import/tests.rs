@@ -465,7 +465,13 @@ struct Hosts {
     streams: Vec<Vec<u8>>,
 }
 
-const BOOT: &str = "boot";
+/// The boot every test's passes run in, with a clock that was never set.
+fn era() -> crate::instance::receipts::Era {
+    crate::instance::receipts::Era {
+        boot: "boot".into(),
+        ahead: Some(0),
+    }
+}
 
 fn hosts() -> Result<Hosts, Box<dyn std::error::Error>> {
     let tmp = tempfile::tempdir()?;
@@ -508,7 +514,9 @@ impl Hosts {
 
     /// What the move does before every pass: the receipts follow the new host's marker.
     fn reconcile(&mut self) -> Result<receipts::Reconciled, String> {
-        let found = self.stage.reconcile(Mark::read(&self.new).as_ref(), BOOT)?;
+        let found = self
+            .stage
+            .reconcile(Mark::read(&self.new).as_ref(), &era())?;
         if found.fresh {
             let _ = fs::remove_dir_all(&self.new);
             self.stage.renew(&receipts::token())?;
@@ -546,7 +554,7 @@ impl Hosts {
         self.reconcile()?;
         let m = self.manifest(true);
         let nonce = m.pass.as_ref().map(|p| p.nonce.clone()).unwrap_or_default();
-        self.stage.begin(&nonce, true, 1_000, BOOT)?;
+        self.stage.begin(&nonce, true, 1_000, &era())?;
         let mut out = Vec::new();
         send_live(
             &self.old,
@@ -574,7 +582,7 @@ impl Hosts {
         let nonce = m.pass.as_ref().map(|p| p.nonce.clone()).unwrap_or_default();
         let mut counter = Counter::new(IdSpace::of(&self.manifest_of_old()));
         let plan = plan_pass(&self.old, Some(&self.stage), &mut |e| counter.add(e))?;
-        self.stage.begin(&nonce, false, 2_000, BOOT)?;
+        self.stage.begin(&nonce, false, 2_000, &era())?;
         let mut out = Vec::new();
         send_pass(
             &self.old,
@@ -679,7 +687,7 @@ fn a_stream_that_is_not_the_next_of_the_stage_here_changes_nothing() -> TestResu
         }
         let mut book = Stage::open(&h.old.join("no-such-state"));
         book.renew("x")?;
-        book.begin("n", true, 0, BOOT)?;
+        book.begin("n", true, 0, &era())?;
         let mut out = Vec::new();
         send_live(&h.old, &m, &mut out, &mut book, (0, 0), &mut |_| {})?;
         fs::remove_dir_all(h.old.join("no-such-state"))?;
@@ -745,7 +753,7 @@ fn a_whole_copy_and_a_pass_are_not_taken_for_each_other() -> TestResult {
     let _ = h.warm()?;
     h.reconcile()?;
     let m = h.manifest(true);
-    h.stage.begin("n", true, 0, BOOT)?;
+    h.stage.begin("n", true, 0, &era())?;
     let mut pass = Vec::new();
     send_live(&h.old, &m, &mut pass, &mut h.stage, (0, 0), &mut |_| {})?;
     let _ = fs::remove_dir_all(&target);
@@ -801,7 +809,7 @@ fn a_damaged_pass_counts_only_up_to_the_last_entry_whose_digest_is_the_senders()
     h.reconcile()?;
     let m = h.manifest(true);
     let nonce = m.pass.as_ref().map(|p| p.nonce.clone()).unwrap_or_default();
-    h.stage.begin(&nonce, true, 1_000, BOOT)?;
+    h.stage.begin(&nonce, true, 1_000, &era())?;
     let mut out = Vec::new();
     send_live(
         &h.old,
@@ -990,7 +998,7 @@ fn a_stream_is_marked_before_its_first_entry_so_a_receive_that_dies_says_so() ->
     h.reconcile()?;
     let m = h.manifest(true);
     let nonce = m.pass.as_ref().map(|p| p.nonce.clone()).unwrap_or_default();
-    h.stage.begin(&nonce, true, 1_000, BOOT)?;
+    h.stage.begin(&nonce, true, 1_000, &era())?;
     let mut out = Vec::new();
     send_live(
         &h.old,

@@ -439,6 +439,10 @@ struct FakeWorld {
     updated_to: Option<&'static str>,
     /// Looks at the old instance's build.
     looks: u32,
+    /// The boot and the clock the receipts are believed by.
+    era: crate::instance::receipts::Era,
+    /// The clock is an hour behind once this event has happened.
+    set_back_at: Option<&'static str>,
 }
 
 impl World for FakeWorld {
@@ -499,8 +503,17 @@ impl World for FakeWorld {
         }
     }
 
-    fn boot(&self) -> String {
-        "boot".into()
+    fn era(&mut self) -> crate::instance::receipts::Era {
+        let mut era = self.era.clone();
+        if let Some(event) = self.set_back_at
+            && self
+                .events
+                .lock()
+                .is_ok_and(|events| events.iter().any(|seen| seen == event))
+        {
+            era.ahead = era.ahead.map(|ahead| ahead - 3_600_000);
+        }
+        era
     }
 
     fn walk_rate(&mut self, _: &Path) -> Option<f64> {
@@ -679,6 +692,11 @@ fn setup() -> Result<Setup, Box<dyn std::error::Error>> {
             walk_rate: Some(100_000.0),
             updated_to: None,
             looks: 0,
+            era: crate::instance::receipts::Era {
+                boot: "boot".into(),
+                ahead: Some(0),
+            },
+            set_back_at: None,
         },
         _tmp: tmp,
     })
@@ -2796,5 +2814,99 @@ fn the_plan_gives_a_first_estimate_of_the_freeze_from_a_sample_of_the_tree() -> 
         "{}",
         downtime.detail
     );
+    Ok(())
+}
+
+/// A move that copied and did not freeze (its bound cannot be met): the staged copy and its
+/// receipts are there for the next run.
+fn copied_and_not_frozen() -> Result<Setup, Box<dyn std::error::Error>> {
+    let mut s = setup()?;
+    s.opts.max_downtime = Some(0);
+    assert_eq!(s.run()?, 1);
+    assert!(Mark::read(&s.remote.copy_dir).is_some());
+    s.opts.max_downtime = None;
+    s.remote.streams.clear();
+    s.world.shown.clear();
+    Ok(s)
+}
+
+fn passes(s: &Setup) -> Vec<(bool, usize)> {
+    s.remote
+        .streams
+        .iter()
+        .map(|(live, paths)| (*live, paths.len()))
+        .collect()
+}
+
+#[test]
+fn after_a_restart_of_the_old_host_everything_is_sent_into_the_staged_copy_again() -> TestResult {
+    // After a crash a file may hold newer content than the change time its receipt was earned
+    // with: the receipts of the boot before are not believed.
+    let mut s = copied_and_not_frozen()?;
+    s.world.era.boot = "the boot after".into();
+    assert_eq!(s.run()?, 0, "{}", s.shown());
+    assert!(
+        s.shown()
+            .contains("this host was restarted since the last pass")
+            && s.shown()
+                .contains("everything is sent into the staged copy again"),
+        "{}",
+        s.shown()
+    );
+    // Into the staged copy that is there: nothing is removed first.
+    assert!(!s.remote.host.ran("rm -rf --one-file-system -- "));
+    assert_eq!(passes(&s), [(true, 13), (true, 0), (false, 0)]);
+    assert_eq!(content(&s.remote.copy_dir)?, content(&s.opts.data_dir)?);
+    assert_eq!(s.old_unit(), (true, true));
+    Ok(())
+}
+
+#[test]
+fn a_clock_set_back_during_a_pass_makes_the_next_one_send_everything_again() -> TestResult {
+    let mut s = setup()?;
+    // While the first pass is on its way.
+    s.world.set_back_at = Some("new: copy warm");
+    assert_eq!(s.run()?, 0, "{}", s.shown());
+    assert_eq!(
+        s.shown()
+            .matches("this host's clock was set back since a pass began")
+            .count(),
+        1,
+        "{}",
+        s.shown()
+    );
+    // What the first pass sent earned nothing; the passes after it are a move like any other.
+    assert_eq!(passes(&s), [(true, 13), (true, 13), (true, 0), (false, 0)]);
+    assert_eq!(content(&s.remote.copy_dir)?, content(&s.opts.data_dir)?);
+    Ok(())
+}
+
+#[test]
+fn a_clock_set_back_before_the_freeze_copies_nothing_while_frozen() -> TestResult {
+    let mut s = setup()?;
+    // After the last warm pass was reconciled: the frozen pass would be planned on receipts
+    // that are not believed any more.
+    s.world.set_back_at = Some("old: systemctl freeze");
+    assert_eq!(s.run()?, 1);
+    let status = s.status()?;
+    let copy = line(&status, "copy").ok_or("no copy line")?;
+    assert_eq!(copy.outcome, HostOutcome::Failed);
+    assert!(
+        copy.detail
+            .contains("clock was set back since the last pass: nothing is copied while frozen"),
+        "{}",
+        copy.detail
+    );
+    assert!(!s.remote.streams.iter().any(|(live, _)| !*live));
+    assert!(s.events().contains(&"old: systemctl thaw".to_owned()));
+    assert_eq!(s.old_unit(), (false, false));
+
+    // The same command again: everything goes into the staged copy once more, warm, and the
+    // move ends as it should.
+    s.remote.streams.clear();
+    assert_eq!(s.run()?, 0, "{}", s.shown());
+    assert_eq!(passes(&s), [(true, 13), (true, 0), (false, 0)]);
+    assert!(!s.remote.host.ran("rm -rf --one-file-system -- "));
+    assert_eq!(content(&s.remote.copy_dir)?, content(&s.opts.data_dir)?);
     Ok(())
 }

@@ -10,6 +10,12 @@
 //! entry in stream order (the stream's digest before the entry, its path, its state once
 //! earned). The new host's marker says how much of a stream it installed and synced;
 //! [`Stage::reconcile`] adopts exactly that much.
+//!
+//! A receipt is believed only where it was earned ([`Era`]): in the same boot, and while the
+//! clock was not set back. An inode's times are not written with its data, so after a crash a
+//! file may hold newer content than its change time says; and a clock that goes back can stamp
+//! a later change with the time of an earlier one. In both cases the receipts are dropped and
+//! the staged copy is filled again.
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -45,6 +51,52 @@ pub fn state(headers: &[u8], ino: u64, ctime: (i64, i64)) -> Digest {
     let mut out = [0u8; 16];
     out.copy_from_slice(&hash.finalize()[..16]);
     out
+}
+
+/// Where and when a host is, as far as receipts go (SPEC-465 WCP-016).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Era {
+    /// This boot's id; empty where the kernel names none.
+    pub boot: String,
+    /// How far the clock is ahead of the time this boot has run, in milliseconds; `None` where
+    /// that is not known. Setting the clock changes it, the clock's own pace does not.
+    pub ahead: Option<i64>,
+}
+
+impl Era {
+    /// This host, now.
+    #[must_use]
+    pub fn here() -> Self {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .and_then(|now| i64::try_from(now.as_millis()).ok());
+        Self {
+            boot: boot_id(),
+            ahead: now.zip(up_millis()).map(|(now, up)| now - up),
+        }
+    }
+}
+
+/// How long this boot has run, in milliseconds.
+fn up_millis() -> Option<i64> {
+    let text = std::fs::read_to_string("/proc/uptime").ok()?;
+    let secs: f64 = text.split_whitespace().next()?.parse().ok()?;
+    Some((secs * 1000.0) as i64)
+}
+
+/// A clock that fell this far behind where it was when a pass began was set back: far enough
+/// to notice every step that could give a later change an earlier entry's time (two seconds,
+/// [`super::export::RACY_SECS`]), and more than a leap second.
+const SET_BACK_MS: i64 = 1_500;
+
+/// Why receipts are not believed any more.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Outdated {
+    /// The host was restarted since they were earned.
+    Restarted,
+    /// The host's clock was set back since a pass began.
+    ClockBack,
 }
 
 /// What a pass asks and records while it streams.
@@ -85,8 +137,6 @@ struct Pending {
     live: bool,
     /// When it began, seconds since the epoch.
     began: u64,
-    /// The boot it was written in: a journal from before a restart is not adopted.
-    boot: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -107,6 +157,13 @@ struct Meta {
     began: Option<u64>,
     /// The stream in flight.
     pending: Option<Pending>,
+    /// The boot the receipts and the journal were written in ([`Era`]).
+    #[serde(default)]
+    boot: String,
+    /// The furthest the clock was ahead of the boot's own time when a pass began, since there
+    /// were no receipts.
+    #[serde(default)]
+    ahead: Option<i64>,
 }
 
 /// What [`Stage::reconcile`] found.
@@ -120,6 +177,9 @@ pub struct Reconciled {
     /// Paths of the pending stream whose receipts were revoked (sent beyond what was installed,
     /// or not installed there).
     pub revoked: u64,
+    /// Every receipt was dropped, and why: the stage goes on, and the next pass sends everything
+    /// into it again.
+    pub outdated: Option<Outdated>,
 }
 
 /// The receipts of one staged copy.
@@ -302,15 +362,50 @@ impl Stage {
         self.save()
     }
 
-    /// Begins the journal of a stream that builds on what is acknowledged; `boot` is this
-    /// boot's id ([`boot_id`]).
+    /// Whether what this host knows of the staged copy is not to be believed at `at`: receipts
+    /// and a journal written before a restart, or before the clock was set back.
+    #[must_use]
+    pub fn outdated(&self, at: &Era) -> Option<Outdated> {
+        if self.held.is_empty() && self.meta.pending.is_none() {
+            return None;
+        }
+        if self.meta.boot != at.boot {
+            return Some(Outdated::Restarted);
+        }
+        match (self.meta.ahead, at.ahead) {
+            (Some(was), Some(now)) if now < was - SET_BACK_MS => Some(Outdated::ClockBack),
+            _ => None,
+        }
+    }
+
+    /// Begins the journal of a stream that builds on what is acknowledged, at `at`
+    /// ([`Era::here`]).
     ///
     /// # Errors
-    /// There is no stage, or the state directory cannot be written.
-    pub fn begin(&mut self, nonce: &str, live: bool, began: u64, boot: &str) -> Result<(), String> {
+    /// There is no stage, the receipts are not to be believed at `at` ([`Stage::outdated`]; they
+    /// are dropped, and what was planned on them must not be sent), or the state directory
+    /// cannot be written.
+    pub fn begin(&mut self, nonce: &str, live: bool, began: u64, at: &Era) -> Result<(), String> {
         if self.meta.stage.is_empty() {
             return Err("there is no staged copy to send a pass into".into());
         }
+        if let Some(why) = self.outdated(at) {
+            self.unknown(None)?;
+            return Err(format!(
+                "{}: what this host knew of the staged copy was dropped",
+                match why {
+                    Outdated::Restarted => "this host was restarted",
+                    Outdated::ClockBack => "this host's clock was set back",
+                }
+            ));
+        }
+        self.meta.boot.clone_from(&at.boot);
+        // Without receipts there is nothing an earlier clock could speak for.
+        self.meta.ahead = match (self.meta.ahead, at.ahead) {
+            (Some(was), Some(now)) if !self.held.is_empty() => Some(was.max(now)),
+            (was, None) if !self.held.is_empty() => was,
+            (_, now) => now,
+        };
         let io = |e: io::Error| format!("cannot write in {}: {e}", self.dir.display());
         let file = private(&self.dir.join("pending"), true).map_err(io)?;
         let kept = if live {
@@ -325,7 +420,6 @@ impl Stage {
             nonce: nonce.to_owned(),
             live,
             began,
-            boot: boot.to_owned(),
         });
         self.save()?;
         self.journal = Some(Journal {
@@ -363,14 +457,15 @@ impl Stage {
     /// stream before its first entry), and the paths that stream sent are revoked all the same.
     /// One count ahead with the pending stream's name: the receipts of exactly the entries the
     /// marker counts are adopted, when the stream's digest there is the recorded one; the rest
-    /// of what was sent is revoked. A stream the new host never closed, one that removed paths
-    /// and broke, and a journal written before this host was restarted leave nothing known:
-    /// the stage goes on without receipts. Anything else: no staged copy is agreed on, and the
-    /// receipts are dropped with the stage.
+    /// of what was sent is revoked. A stream the new host never closed and one that removed
+    /// paths and broke leave nothing known, and so does everything this host wrote before it
+    /// was restarted or before its clock was set back ([`Stage::outdated`] at `at`): the stage
+    /// goes on without receipts. Anything else: no staged copy is agreed on, and the receipts
+    /// are dropped with the stage.
     ///
     /// # Errors
     /// The state directory cannot be written; nothing may be skipped on these receipts then.
-    pub fn reconcile(&mut self, mark: Option<&Mark>, boot: &str) -> Result<Reconciled, String> {
+    pub fn reconcile(&mut self, mark: Option<&Mark>, at: &Era) -> Result<Reconciled, String> {
         self.journal = None;
         let fresh = Reconciled {
             fresh: true,
@@ -382,21 +477,30 @@ impl Stage {
             return Ok(fresh);
         };
         let pending = self.meta.pending.clone();
+        let outdated = self.outdated(at);
         let (count, sum) = self.journal();
         // The entries of the pending stream whose receipts count, and those among them that
         // were not installed.
         let (take, deferred) = if mark.acked == self.meta.acked {
+            if outdated.is_some() {
+                let mut out = self.unknown(None)?;
+                out.outdated = outdated;
+                return Ok(out);
+            }
             (0, Vec::new())
         } else if let (Some(p), Some(last)) = (&pending, &mark.last)
             && mark.acked == self.meta.acked + 1
             && p.seq == self.meta.acked
             && p.nonce == last.nonce
         {
-            if last.unknown || p.boot != boot {
+            if last.unknown || outdated.is_some() {
                 // The receive ended without closing its stream (a kill, a power cut), or it
-                // removed paths this host never sent and broke, or what this host's journal
-                // says was sent may not be all that was (it was restarted since).
-                return self.unknown(p);
+                // removed paths this host never sent and broke; or this host was restarted
+                // since (what its journal says was sent may not be all that was, and no
+                // receipt speaks for a file after a crash), or its clock was set back.
+                let mut out = self.unknown(Some(p))?;
+                out.outdated = outdated;
+                return Ok(out);
             }
             let take = if last.complete {
                 // Its checksum matched there, so every record here is of what arrived.
@@ -414,7 +518,7 @@ impl Stage {
                 return if take == count {
                     self.replace(p)
                 } else {
-                    self.unknown(p)
+                    self.unknown(Some(p))
                 };
             }
             self.meta.whole |= last.complete && take == count;
@@ -473,24 +577,29 @@ impl Stage {
         Ok(out)
     }
 
-    /// The stage goes on with no receipts: the next pass sends everything again.
-    fn unknown(&mut self, pending: &Pending) -> Result<Reconciled, String> {
+    /// The stage goes on with no receipts: the next pass sends everything again. `pending` is
+    /// the stream the new host counted, when it counted one.
+    fn unknown(&mut self, pending: Option<&Pending>) -> Result<Reconciled, String> {
         let revoked = self.held.len() as u64;
         self.held.clear();
-        let old = std::mem::replace(
-            &mut self.meta.log,
-            format!("receipts-{}", self.meta.acked + 1),
-        );
         self.meta.log_len = 0;
-        self.meta.acked += 1;
         self.meta.whole = false;
-        self.meta.began = Some(pending.began);
+        self.meta.ahead = None;
+        if let Some(pending) = pending {
+            self.meta.acked += 1;
+            self.meta.began = Some(pending.began);
+        }
         self.settle()?;
-        let _ = std::fs::remove_file(self.dir.join(old));
+        // The log's valid length is 0 now: what it held is only freed.
+        if let Ok(log) = File::options()
+            .write(true)
+            .open(self.dir.join(&self.meta.log))
+        {
+            let _ = log.set_len(0);
+        }
         Ok(Reconciled {
-            fresh: false,
-            adopted: 0,
             revoked,
+            ..Reconciled::default()
         })
     }
 
@@ -520,9 +629,8 @@ impl Stage {
             let _ = std::fs::remove_file(self.dir.join(old));
         }
         Ok(Reconciled {
-            fresh: false,
-            adopted: 0,
             revoked: before.saturating_sub(self.held.len() as u64),
+            ..Reconciled::default()
         })
     }
 

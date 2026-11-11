@@ -13,7 +13,7 @@ use crate::host_setup::Cmd;
 use crate::instance::export::{self, Sent};
 use crate::instance::freeze::Freeze;
 use crate::instance::inventory::{Counter, IdSpace, Inventory};
-use crate::instance::receipts::{self, Stage};
+use crate::instance::receipts::{self, Outdated, Reconciled, Stage};
 use crate::instance::{Manifest, Pass, Progress, walk};
 
 /// The delta passes one run makes before it freezes anyway, or stops when the freeze is bound.
@@ -147,11 +147,12 @@ impl Move<'_> {
                 data_dir: self.opts.data_dir.clone(),
             },
         )?;
-        let (had, boot) = (self.stage.id().is_some(), self.world.boot());
+        let (had, at) = (self.stage.id().is_some(), self.world.era());
         let found = self
             .stage
-            .reconcile(reply.stage.as_ref(), &boot)
+            .reconcile(reply.stage.as_ref(), &at)
             .map_err(|why| self.fail("copy", why))?;
+        self.say_outdated(&found);
         if found.fresh && had {
             self.changed(
                 "copy",
@@ -160,6 +161,29 @@ impl Move<'_> {
             );
         }
         Ok(found.fresh)
+    }
+
+    /// Says that what this host knew of the staged copy was dropped, and why (SPEC-465
+    /// WCP-016).
+    fn say_outdated(&mut self, found: &Reconciled) {
+        let why = match found.outdated {
+            Some(Outdated::Restarted) => {
+                "this host was restarted since the last pass: after a crash a file may be newer \
+                 than its change time says"
+            }
+            Some(Outdated::ClockBack) => {
+                "this host's clock was set back since a pass began: a later change may carry an \
+                 earlier time"
+            }
+            None => return,
+        };
+        self.changed(
+            "copy",
+            format!(
+                "{why}. Nothing is taken as copied: everything is sent into the staged copy \
+                 again"
+            ),
+        );
     }
 
     /// The warm passes (SPEC-465 WCP-001, WCP-012, WCP-013): until a pass that found only
@@ -263,11 +287,11 @@ impl Move<'_> {
         live: bool,
         began: (i64, i64),
     ) -> Result<Manifest, Stop> {
-        let (nonce, boot) = (receipts::token(), self.world.boot());
+        let (nonce, at) = (receipts::token(), self.world.era());
         let began = u64::try_from(began.0).unwrap_or(0);
         self.stage
-            .begin(&nonce, live, began, &boot)
-            .map_err(|why| self.fail("copy", why))?;
+            .begin(&nonce, live, began, &at)
+            .map_err(|why| self.fail("copy", format!("{why}. Run the command again")))?;
         manifest.pass = Some(Pass {
             stage: self.stage.id().unwrap_or_default().to_owned(),
             seq: self.stage.acked(),
@@ -304,10 +328,12 @@ impl Move<'_> {
             )
         })?;
         if let Some(mark) = &reply.stage {
-            let boot = self.world.boot();
-            self.stage
-                .reconcile(Some(mark), &boot)
+            let at = self.world.era();
+            let found = self
+                .stage
+                .reconcile(Some(mark), &at)
                 .map_err(|why| self.fail("copy", why))?;
+            self.say_outdated(&found);
         }
         if failed(&reply.lines) {
             for line in reply.lines {
@@ -403,6 +429,22 @@ impl Move<'_> {
         held: &mut Freeze,
     ) -> Result<(Inventory, Manifest), Stop> {
         let opts = self.opts;
+        // Before anything is planned on the receipts: a plan made on receipts that are dropped
+        // when the stream begins would not be the stream's.
+        let at = self.world.era();
+        if let Some(why) = self.stage.outdated(&at) {
+            return Err(self.fail(
+                "copy",
+                format!(
+                    "{}: nothing is copied while frozen. Run the command again: it sends \
+                     everything into the staged copy again while the instance runs",
+                    match why {
+                        Outdated::Restarted => "this host was restarted since the last pass",
+                        Outdated::ClockBack => "this host's clock was set back since the last pass",
+                    }
+                ),
+            ));
+        }
         if !self.stage.whole() {
             return Err(self.fail(
                 "copy",

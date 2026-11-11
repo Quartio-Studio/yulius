@@ -5,6 +5,19 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 const BOOT: &str = "boot-1";
 
+/// The boot every test's passes run in, with a clock that was never set.
+fn era() -> Era {
+    at(BOOT, 0)
+}
+
+/// The boot `boot`, with a clock `ahead` milliseconds ahead of the time the boot has run.
+fn at(boot: &str, ahead: i64) -> Era {
+    Era {
+        boot: boot.into(),
+        ahead: Some(ahead),
+    }
+}
+
 fn d(n: u8) -> Digest {
     [n; 16]
 }
@@ -42,7 +55,7 @@ fn landed(nonce: &str, entries: u64, complete: bool, live: bool) -> Landed {
 
 /// Sends `paths` in a stream called `nonce`; each earns the state of its own number.
 fn send(stage: &mut Stage, nonce: &str, live: bool, paths: &[u8]) -> TestResult {
-    stage.begin(nonce, live, 1_000, BOOT)?;
+    stage.begin(nonce, live, 1_000, &era())?;
     for (at, path) in paths.iter().enumerate() {
         stage.sending(d(*path), check(u8::try_from(at)?))?;
         stage.earned(d(*path + 100))?;
@@ -80,7 +93,7 @@ fn a_whole_stream_that_was_acknowledged_is_held_and_survives_a_reload() -> TestR
     assert!(!stage.held(&d(1), &d(101)));
     let found = stage.reconcile(
         Some(&mark("s1", 1, Some(landed("n1", 3, true, true)))),
-        BOOT,
+        &era(),
     )?;
     assert_eq!((found.fresh, found.adopted, found.revoked), (false, 3, 0));
     assert!(stage.held(&d(1), &d(101)) && stage.held(&d(3), &d(103)));
@@ -107,16 +120,16 @@ fn sending_a_path_revokes_what_was_known_of_it() -> TestResult {
     send(&mut stage, "n1", true, &[1, 2])?;
     stage.reconcile(
         Some(&mark("s1", 1, Some(landed("n1", 2, true, true)))),
-        BOOT,
+        &era(),
     )?;
 
     // Sent again and no receipt earned (it changed while it was read).
-    stage.begin("n2", true, 2_000, BOOT)?;
+    stage.begin("n2", true, 2_000, &era())?;
     stage.sending(d(1), check(0))?;
     stage.seal()?;
     let found = stage.reconcile(
         Some(&mark("s1", 2, Some(landed("n2", 1, true, true)))),
-        BOOT,
+        &era(),
     )?;
     assert_eq!((found.adopted, found.revoked), (0, 1));
     assert!(!stage.held(&d(1), &d(101)) && stage.held(&d(2), &d(102)));
@@ -132,13 +145,13 @@ fn a_stream_that_was_not_acknowledged_revokes_every_path_it_sent() -> TestResult
     send(&mut stage, "n1", true, &[1, 2])?;
     stage.reconcile(
         Some(&mark("s1", 1, Some(landed("n1", 2, true, true)))),
-        BOOT,
+        &era(),
     )?;
     // The new host may have taken some of the next stream in before it died.
     send(&mut stage, "n2", true, &[2, 3])?;
     let found = stage.reconcile(
         Some(&mark("s1", 1, Some(landed("n1", 2, true, true)))),
-        BOOT,
+        &era(),
     )?;
     assert_eq!((found.fresh, found.adopted, found.revoked), (false, 0, 1));
     assert!(stage.held(&d(1), &d(101)));
@@ -155,7 +168,7 @@ fn a_cut_stream_is_adopted_up_to_the_entry_whose_digest_both_hosts_recorded() ->
     // Two entries were installed there; the digest before the third is the recorded one.
     let found = stage.reconcile(
         Some(&mark("s1", 1, Some(landed("n1", 2, false, true)))),
-        BOOT,
+        &era(),
     )?;
     assert_eq!((found.fresh, found.adopted), (false, 2));
     assert!(stage.held(&d(1), &d(101)) && stage.held(&d(2), &d(102)));
@@ -173,7 +186,7 @@ fn a_cut_after_the_last_recorded_entry_adopts_up_to_the_entry_before() -> TestRe
     // All three arrived, and no record says what the stream was after the third.
     let found = stage.reconcile(
         Some(&mark("s1", 1, Some(landed("n1", 3, false, true)))),
-        BOOT,
+        &era(),
     )?;
     assert_eq!(found.adopted, 2);
     assert!(stage.held(&d(2), &d(102)) && !stage.held(&d(3), &d(103)));
@@ -187,12 +200,12 @@ fn a_prefix_whose_digest_is_not_the_recorded_one_is_not_adopted() -> TestResult 
     send(&mut stage, "n0", true, &[9])?;
     stage.reconcile(
         Some(&mark("s1", 1, Some(landed("n0", 1, true, true)))),
-        BOOT,
+        &era(),
     )?;
     send(&mut stage, "n1", true, &[1, 2, 9])?;
     let mut last = landed("n1", 2, false, true);
     last.sums = ["00".repeat(8), "11".repeat(8)];
-    let found = stage.reconcile(Some(&mark("s1", 2, Some(last))), BOOT)?;
+    let found = stage.reconcile(Some(&mark("s1", 2, Some(last))), &era())?;
     assert_eq!((found.fresh, found.adopted, found.revoked), (false, 0, 1));
     assert!(!stage.held(&d(1), &d(101)) && !stage.held(&d(9), &d(109)));
     assert_eq!(stage.acked(), 2);
@@ -206,7 +219,7 @@ fn an_entry_the_new_host_did_not_install_gets_no_receipt() -> TestResult {
     send(&mut stage, "n1", true, &[1, 2, 3])?;
     let mut last = landed("n1", 3, true, true);
     last.deferred = vec![1];
-    let found = stage.reconcile(Some(&mark("s1", 1, Some(last))), BOOT)?;
+    let found = stage.reconcile(Some(&mark("s1", 1, Some(last))), &era())?;
     assert_eq!(found.adopted, 2);
     assert!(stage.held(&d(1), &d(101)) && stage.held(&d(3), &d(103)));
     assert!(!stage.held(&d(2), &d(102)));
@@ -216,26 +229,26 @@ fn an_entry_the_new_host_did_not_install_gets_no_receipt() -> TestResult {
 #[test]
 fn any_other_marker_drops_the_receipts() -> TestResult {
     let whole = |nonce: &str| Some(landed(nonce, 1, true, true));
-    let cases: Vec<(&str, Option<Mark>, &str)> = vec![
-        ("the copy was removed", None, BOOT),
-        ("another stage", Some(mark("s2", 2, whole("n2"))), BOOT),
-        ("another stream", Some(mark("s1", 2, whole("nX"))), BOOT),
-        ("two streams ahead", Some(mark("s1", 3, whole("n2"))), BOOT),
-        ("behind", Some(mark("s1", 0, None)), BOOT),
+    let cases: Vec<(&str, Option<Mark>)> = vec![
+        ("the copy was removed", None),
+        ("another stage", Some(mark("s2", 2, whole("n2")))),
+        ("another stream", Some(mark("s1", 2, whole("nX")))),
+        ("two streams ahead", Some(mark("s1", 3, whole("n2")))),
+        ("behind", Some(mark("s1", 0, None))),
     ];
-    for (name, found, boot) in cases {
+    for (name, found) in cases {
         let tmp = tempfile::tempdir()?;
         let mut stage = new_stage(tmp.path())?;
         send(&mut stage, "n1", true, &[1])?;
-        stage.reconcile(Some(&mark("s1", 1, whole("n1"))), BOOT)?;
+        stage.reconcile(Some(&mark("s1", 1, whole("n1"))), &era())?;
         send(&mut stage, "n2", true, &[2])?;
-        let out = stage.reconcile(found.as_ref(), boot)?;
+        let out = stage.reconcile(found.as_ref(), &era())?;
         assert!(out.fresh, "{name}");
         assert!(!stage.held(&d(1), &d(101)), "{name}");
         assert_eq!((stage.id(), stage.receipts()), (None, 0), "{name}");
         assert_eq!(Stage::open(&tmp.path().join("copy")).id(), None, "{name}");
         // A stream needs a stage.
-        assert!(stage.begin("n3", true, 0, BOOT).is_err(), "{name}");
+        assert!(stage.begin("n3", true, 0, &era()).is_err(), "{name}");
     }
     Ok(())
 }
@@ -247,18 +260,18 @@ fn a_completed_frozen_pass_leaves_exactly_what_it_left_alone() -> TestResult {
     send(&mut stage, "n1", true, &[1, 2, 3])?;
     stage.reconcile(
         Some(&mark("s1", 1, Some(landed("n1", 3, true, true)))),
-        BOOT,
+        &era(),
     )?;
 
     // Frozen: 1 is still there and left alone, 2 changed and is sent, 3 is gone on the old
     // host (the new host deletes it).
-    stage.begin("n2", false, 2_000, BOOT)?;
+    stage.begin("n2", false, 2_000, &era())?;
     stage.kept(d(1), d(101))?;
     stage.sending(d(2), check(0))?;
     stage.seal()?;
     let found = stage.reconcile(
         Some(&mark("s1", 2, Some(landed("n2", 1, true, false)))),
-        BOOT,
+        &era(),
     )?;
     assert_eq!((found.fresh, found.adopted, found.revoked), (false, 0, 2));
     assert!(stage.held(&d(1), &d(101)));
@@ -273,13 +286,13 @@ fn a_completed_frozen_pass_leaves_exactly_what_it_left_alone() -> TestResult {
 
     // A frozen pass that was cut deleted nothing: the receipts stay, what it sent is revoked.
     let mut stage = again;
-    stage.begin("n3", false, 3_000, BOOT)?;
+    stage.begin("n3", false, 3_000, &era())?;
     stage.sending(d(1), check(0))?;
     stage.sending(d(5), check(1))?;
     stage.seal()?;
     stage.reconcile(
         Some(&mark("s1", 3, Some(landed("n3", 1, false, false)))),
-        BOOT,
+        &era(),
     )?;
     assert!(!stage.held(&d(1), &d(101)));
     assert_eq!(stage.acked(), 3);
@@ -293,7 +306,7 @@ fn what_a_run_that_died_left_beyond_the_valid_log_is_not_a_receipt() -> TestResu
     send(&mut stage, "n1", true, &[1])?;
     stage.reconcile(
         Some(&mark("s1", 1, Some(landed("n1", 1, true, true)))),
-        BOOT,
+        &era(),
     )?;
     drop(stage);
     // Appended, and the count never saved.
@@ -307,7 +320,7 @@ fn what_a_run_that_died_left_beyond_the_valid_log_is_not_a_receipt() -> TestResu
     send(&mut stage, "n2", true, &[2])?;
     stage.reconcile(
         Some(&mark("s1", 2, Some(landed("n2", 1, true, true)))),
-        BOOT,
+        &era(),
     )?;
     let again = Stage::open(&tmp.path().join("copy"));
     assert!(again.held(&d(2), &d(102)) && !again.held(&d(7), &d(107)));
@@ -346,16 +359,16 @@ fn a_frozen_pass_that_removed_and_was_cut_leaves_nothing_known() -> TestResult {
     send(&mut stage, "n1", true, &[1, 2, 3])?;
     stage.reconcile(
         Some(&mark("s1", 1, Some(landed("n1", 3, true, true)))),
-        BOOT,
+        &era(),
     )?;
     // It replaced a directory by a file (what was below is gone there) and then broke.
-    stage.begin("n2", false, 2_000, BOOT)?;
+    stage.begin("n2", false, 2_000, &era())?;
     stage.kept(d(1), d(101))?;
     stage.sending(d(2), check(0))?;
     stage.seal()?;
     let mut last = landed("n2", 1, false, false);
     last.unknown = true;
-    let found = stage.reconcile(Some(&mark("s1", 2, Some(last))), BOOT)?;
+    let found = stage.reconcile(Some(&mark("s1", 2, Some(last))), &era())?;
     assert_eq!((found.fresh, found.adopted, found.revoked), (false, 0, 3));
     assert_eq!(
         (stage.id(), stage.acked(), stage.receipts(), stage.whole()),
@@ -383,12 +396,12 @@ fn a_receive_that_never_closed_its_stream_leaves_nothing_known() -> TestResult {
     send(&mut stage, "n1", true, &[1, 2, 3])?;
     stage.reconcile(
         Some(&mark("s1", 1, Some(landed("n1", 3, true, true)))),
-        BOOT,
+        &era(),
     )?;
     // The next stream's receive was killed: files half written, directories' times moved, and
     // only the marker it wrote first says so.
     send(&mut stage, "n2", true, &[2])?;
-    let found = stage.reconcile(Some(&mark("s1", 2, Some(opened("n2", true)))), BOOT)?;
+    let found = stage.reconcile(Some(&mark("s1", 2, Some(opened("n2", true)))), &era())?;
     assert_eq!((found.fresh, found.adopted, found.revoked), (false, 0, 3));
     // The stage goes on, with no receipts: the next pass sends everything into it.
     assert_eq!(
@@ -406,14 +419,14 @@ fn a_journal_from_before_a_restart_is_not_believed() -> TestResult {
     send(&mut stage, "n1", true, &[1, 2])?;
     stage.reconcile(
         Some(&mark("s1", 1, Some(landed("n1", 2, true, true)))),
-        BOOT,
+        &era(),
     )?;
     send(&mut stage, "n2", true, &[2, 3])?;
     // The new host took the stream in; this host was restarted since, so what the journal
     // says was sent may not be all that was.
     let found = stage.reconcile(
         Some(&mark("s1", 2, Some(landed("n2", 2, true, true)))),
-        "boot-2",
+        &at("boot-2", 0),
     )?;
     assert_eq!((found.fresh, found.adopted), (false, 0));
     assert_eq!(
@@ -421,21 +434,156 @@ fn a_journal_from_before_a_restart_is_not_believed() -> TestResult {
         (Some("s1"), 2, 0)
     );
 
-    // A stream that never reached the new host installed nothing there: the receipts stand,
-    // whatever became of its journal.
+    Ok(())
+}
+
+#[test]
+fn receipts_earned_before_a_restart_are_not_believed_after_it() -> TestResult {
+    // An inode's times are not written with its data: after a crash a file may hold newer
+    // content than the change time its receipt was earned with.
+    let tmp = tempfile::tempdir()?;
+    let mut stage = new_stage(tmp.path())?;
+    send(&mut stage, "n1", true, &[1, 2])?;
+    let whole = mark("s1", 1, Some(landed("n1", 2, true, true)));
+    stage.reconcile(Some(&whole), &era())?;
+    assert!(stage.held(&d(1), &d(101)) && stage.whole());
+    assert_eq!(stage.outdated(&era()), None);
+
+    // The same marker after a restart: the staged copy is this move's, and nothing of it is
+    // known to be as the files are now.
+    let mut stage = Stage::open(&tmp.path().join("copy"));
+    assert_eq!(stage.receipts(), 2);
+    assert_eq!(stage.outdated(&at("boot-2", 0)), Some(Outdated::Restarted));
+    let found = stage.reconcile(Some(&whole), &at("boot-2", 0))?;
+    assert_eq!(
+        (found.fresh, found.adopted, found.revoked, found.outdated),
+        (false, 0, 2, Some(Outdated::Restarted))
+    );
+    assert_eq!(
+        (stage.id(), stage.acked(), stage.receipts(), stage.whole()),
+        (Some("s1"), 1, 0, false)
+    );
+    assert!(!stage.held(&d(1), &d(101)));
+    // Dropped for good, also for a run that finds the first boot's id again.
+    let again = Stage::open(&tmp.path().join("copy"));
+    assert_eq!((again.id(), again.receipts()), (Some("s1"), 0));
+    assert_eq!(again.outdated(&era()), None);
+
+    // A stream that never reached the new host, and then the restart: the same.
     let mut stage = new_stage(&tmp.path().join("b"))?;
+    send(&mut stage, "n1", true, &[1, 2])?;
+    stage.reconcile(Some(&whole), &era())?;
+    send(&mut stage, "n2", true, &[9])?;
+    let found = stage.reconcile(Some(&whole), &at("boot-2", 0))?;
+    assert_eq!(
+        (found.fresh, found.outdated),
+        (false, Some(Outdated::Restarted))
+    );
+    assert_eq!(
+        (stage.id(), stage.acked(), stage.receipts()),
+        (Some("s1"), 1, 0)
+    );
+    // The next pass of the new boot earns receipts as any other.
+    stage.begin("n3", true, 3_000, &at("boot-2", 0))?;
+    stage.sending(d(1), check(0))?;
+    stage.earned(d(101))?;
+    stage.seal()?;
+    let found = stage.reconcile(
+        Some(&mark("s1", 2, Some(landed("n3", 1, true, true)))),
+        &at("boot-2", 0),
+    )?;
+    assert_eq!((found.adopted, found.outdated), (1, None));
+    assert!(stage.held(&d(1), &d(101)));
+    Ok(())
+}
+
+#[test]
+fn a_pass_does_not_begin_on_receipts_from_before_a_restart() -> TestResult {
+    let tmp = tempfile::tempdir()?;
+    let mut stage = new_stage(tmp.path())?;
     send(&mut stage, "n1", true, &[1, 2])?;
     stage.reconcile(
         Some(&mark("s1", 1, Some(landed("n1", 2, true, true)))),
-        BOOT,
+        &era(),
     )?;
-    send(&mut stage, "n2", true, &[9])?;
-    let found = stage.reconcile(
-        Some(&mark("s1", 1, Some(landed("n1", 2, true, true)))),
-        "boot-2",
-    )?;
-    assert!(!found.fresh);
-    assert!(stage.held(&d(1), &d(101)) && stage.held(&d(2), &d(102)));
+    // What was planned on the receipts must not be sent: the pass is refused, and the
+    // receipts are gone for the next one.
+    let refused = stage.begin("n2", false, 2_000, &at("boot-2", 0));
+    assert!(
+        refused.as_ref().is_err_and(|why| why.contains("restarted")),
+        "{refused:?}"
+    );
+    assert_eq!((stage.receipts(), stage.whole()), (0, false));
+    stage.begin("n2", true, 2_000, &at("boot-2", 0))?;
+    Ok(())
+}
+
+#[test]
+fn a_clock_that_was_set_back_leaves_nothing_known() -> TestResult {
+    // A change is told by its inode's change time: a clock that goes back by two seconds or
+    // more can stamp a later change with the time of what was copied.
+    let tmp = tempfile::tempdir()?;
+    let whole = mark("s1", 1, Some(landed("n1", 2, true, true)));
+    let begun = |dir: &Path| -> Result<Stage, Box<dyn std::error::Error>> {
+        let mut stage = new_stage(dir)?;
+        stage.begin("n1", true, 1_000, &at(BOOT, 50_000))?;
+        stage.sending(d(1), check(0))?;
+        stage.earned(d(101))?;
+        stage.sending(d(2), check(1))?;
+        stage.earned(d(102))?;
+        stage.seal()?;
+        Ok(stage)
+    };
+    // The clock's own pace and a step forward change nothing, nor does a second back (a leap
+    // second).
+    let mut stage = begun(&tmp.path().join("a"))?;
+    for ahead in [50_000, 50_004, 49_000, 3_600_000] {
+        assert_eq!(stage.outdated(&at(BOOT, ahead)), None, "{ahead}");
+    }
+    let found = stage.reconcile(Some(&whole), &at(BOOT, 49_000))?;
+    assert_eq!((found.adopted, found.outdated), (2, None));
+
+    // Two seconds back while the pass ran: what it sent earned nothing.
+    let mut stage = begun(&tmp.path().join("b"))?;
+    assert_eq!(stage.outdated(&at(BOOT, 48_000)), Some(Outdated::ClockBack));
+    let found = stage.reconcile(Some(&whole), &at(BOOT, 48_000))?;
+    assert_eq!(
+        (found.fresh, found.adopted, found.outdated),
+        (false, 0, Some(Outdated::ClockBack))
+    );
+    assert_eq!(
+        (stage.id(), stage.acked(), stage.receipts(), stage.whole()),
+        (Some("s1"), 1, 0, false)
+    );
+    // From there on the clock is where it is.
+    assert_eq!(stage.outdated(&at(BOOT, 48_000)), None);
+    stage.begin("n2", true, 2_000, &at(BOOT, 48_000))?;
+
+    // Forward and, passes later, back again by as much: every pass's receipts are measured
+    // against the furthest the clock was ahead when one of them began.
+    let mut stage = begun(&tmp.path().join("c"))?;
+    stage.reconcile(Some(&whole), &at(BOOT, 50_000))?;
+    stage.begin("n2", true, 2_000, &at(BOOT, 80_000))?;
+    stage.sending(d(3), check(0))?;
+    stage.earned(d(103))?;
+    stage.seal()?;
+    let second = mark("s1", 2, Some(landed("n2", 1, true, true)));
+    assert_eq!(
+        stage.reconcile(Some(&second), &at(BOOT, 80_000))?.adopted,
+        1
+    );
+    let reopened = Stage::open(&tmp.path().join("c/copy"));
+    assert_eq!(reopened.outdated(&at(BOOT, 79_000)), None);
+    assert_eq!(
+        reopened.outdated(&at(BOOT, 50_000)),
+        Some(Outdated::ClockBack)
+    );
+    // Where the time a boot has run is not known, only the boot counts.
+    let unknown = Era {
+        boot: BOOT.into(),
+        ahead: None,
+    };
+    assert_eq!(reopened.outdated(&unknown), None);
     Ok(())
 }
 
@@ -446,16 +594,16 @@ fn a_completed_frozen_pass_that_is_not_the_journal_s_leaves_nothing_known() -> T
     send(&mut stage, "n1", true, &[1, 2, 3])?;
     stage.reconcile(
         Some(&mark("s1", 1, Some(landed("n1", 3, true, true)))),
-        BOOT,
+        &era(),
     )?;
-    stage.begin("n2", false, 2_000, BOOT)?;
+    stage.begin("n2", false, 2_000, &era())?;
     stage.kept(d(1), d(101))?;
     stage.sending(d(2), check(0))?;
     stage.seal()?;
     // It says it took in two entries and removed the rest; the journal knows of one.
     let found = stage.reconcile(
         Some(&mark("s1", 2, Some(landed("n2", 2, true, false)))),
-        BOOT,
+        &era(),
     )?;
     assert_eq!(
         (found.fresh, stage.receipts(), stage.acked()),
