@@ -65,8 +65,12 @@ The check
   is due: 30 s old at first, so a missing callback is re-checked until it is registered, and
   nothing asks GitHub while nobody looks. A page left open does not ask for ever at that pace:
   after eleven answers in a row that say the same and were asked for by reads, the wait doubles
-  with each one, up to 32 minutes; a demand or a changed answer makes it 30 s again. One check
-  runs at a time: a second request waits for it and takes its answer.
+  with each one, up to 4 minutes (what a page says of a callback added since is never older); a
+  demand or a changed answer makes it 30 s again. A GitHub sign-in that completes proves the
+  callback: GitHub exchanged a code for it, so the answer is "registered" at once, without
+  another question, and an answer that was on its way meanwhile does not undo it. One check runs
+  at a time: a second request waits for it and takes its
+  answer, and a check that dies does not stop the next ones.
 
 Settings → Instance and the sign-in page
 
@@ -177,9 +181,10 @@ Remote clients
   with the organization's (and a person's) settings link and both values; after the callback is
   registered at GitHub a read 30 s after the last answer makes it `registered` without a restart,
   and "Check again" does at once. A callback that stays missing is asked for at 30 s for eleven
-  reads, then at 60 s, 120 s and so on up to 32 minutes; after "Check again", or an answer that
-  changed, at 30 s again. Without an App: `github: null` and GitHub was never asked. A member is
-  refused (403).
+  reads, then at 60 s, 120 s and 4 minutes from then on; after "Check again", or an answer that
+  changed, at 30 s again. A GitHub sign-in that completes makes the answer `registered` without
+  asking GitHub; one GitHub refuses changes nothing. Without an App: `github: null` and GitHub was
+  never asked. A member is refused (403).
 - After a start with the move's mark the address API names the old URL, the time and the three
   task counts; without `moved.json`, `moved: null`.
 - `GET /api/setup/status` says `github_callback_missing: true` only while the answer is missing;

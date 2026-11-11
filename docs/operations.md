@@ -1029,9 +1029,9 @@ Yulius notices and says exactly what to do:
   host is retired) and the **homepage URL** to replace. Save on GitHub; the card says "GitHub
   accepts this address for sign-in" at once when you come back to the page or press Check again,
   and by itself within half a minute while you watch it (a page left open for long asks GitHub
-  less and less often, every half hour at the least). When GitHub gave no answer (it is down, the
-  server has no route to it, it refuses the App's client id and secret) the card says why; sign-in
-  is not affected by that.
+  less often, every four minutes at the least), or as soon as someone signs in with GitHub. When
+  GitHub gave no answer (it is down, the server has no route to it, it refuses the App's client id
+  and secret) the card says why; sign-in is not affected by that.
 - **The sign-in page** says that GitHub does not know this address and opens the superadmin
   password, which keeps working. "Sign in with GitHub" stays and leads to GitHub as always (until
   the callback is saved GitHub shows its own error there), and pressing it makes the instance ask

@@ -29,9 +29,12 @@ C of [0297](0297-one-root-command-moves-an-instance-and-drives-the-new-host-over
 - **Asked on demand and while someone looks.** At start, when the App is stored, on a superadmin's
   "Check again" or return to the page, for the move's plan, and when a sign-in starts or a page
   reads an answer that is not "registered" and due: 30 s old at first, and, once eleven such
-  answers in a row said the same, twice as old with each further one, up to 32 minutes (a demand
+  answers in a row said the same, twice as old with each further one, up to 4 minutes (a demand
   or a changed answer makes it 30 s again). No loop asks GitHub while nobody looks, a page left
   open asks ever less, and one check runs at a time.
+- **A sign-in that completes is the better witness.** When GitHub exchanges a real code for the
+  instance's callback URL, the URL is registered: the kept answer becomes "registered" at once,
+  whatever the question with the made-up code said before.
 - **The check never stops a sign-in.** While the answer is "missing" the sign-in page says so and
   opens the password; "Sign in with GitHub" still leads to GitHub, whose own page stays the
   authority, and a start makes the instance ask again. "Unknown" changes nothing at all.

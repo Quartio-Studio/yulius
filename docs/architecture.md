@@ -3060,11 +3060,12 @@ made-up code and its callback URL to GitHub's token endpoint, which answers `red
 or `bad_verification_code`, and keeps the answer (registered, missing, or unknown with the reason)
 in memory. GitHub is asked at start, on demand, and when an answer that is not "registered" is
 read once it is due (30 s old; after eleven answers in a row that say the same the wait doubles
-with each one, up to 32 minutes, until a demand or a changed answer); never in a loop, and one
+with each one, up to 4 minutes, until a demand or a changed answer); never in a loop, and one
 check at a time. Settings → Instance reads it with the
 App's settings link and the move's report (`GET /api/admin/instance/address`), the sign-in page
 through `GET /api/setup/status`. The answer is advice: a sign-in start always goes to GitHub, and
-while the answer is "missing" it only makes the instance ask again beside it. The root command cannot open the sealed App
+while the answer is "missing" it only makes the instance ask again beside it; a sign-in that
+completes proves the callback and makes the answer "registered" by itself. The root command cannot open the sealed App
 credentials, so it asks the running server (`migrate/github.rs`): `GET /internal/github-callback`
 on the loopback listener with the key of `<data>/leftovers-cli.key`, in the plan for the new URL
 (the old instance answers) and before the finish (the new instance answers, through the staged
