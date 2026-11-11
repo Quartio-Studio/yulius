@@ -124,6 +124,27 @@ to use, run instead of printing the wrapper's usage line.
   (the resolver also moves the Windows-only `windows-sys` users onto 0.52, which `ring` already
   locks); then `cargo deny --locked check` → all ok, `cargo check --locked --workspace
   --all-targets` and `scripts/dev macos` → exit 0.
+- Yulius CI run `17f01b52` at `0bd3a591` failed `quality` on four `yulius::main` tests that fail
+  for every pull request since the host move of 2026-11-11 (#1154; they touch nothing of this
+  change). Fixed here, in two test-only commits, because no head merges without it:
+  - `first_message` (three tests, "timed out waiting for the continued turn"): the helper moved
+    the task to another subscription after its goal's turn had ended (the fake's turn has no
+    length, and the faster host answers its hooks before the move); since #1141 a task moved while
+    idle gets nothing typed (SPEC-447 MOV-001), so the new session never opened with a turn. A
+    probe showed `activity = Waiting` at the move. The helper now holds the goal's turn open
+    (`goal_delay_ms`) and moves the task while it works (`4f34df77`).
+  - `merge_train::a_member_that_cannot_merge_is_told_instead_of_tested_again`: the owner was
+    disabled after the train's run had ended, racing the background decision, which had merged the
+    member already. The owner is now disabled while the run is queued (`0817eefb`).
+  - `cargo nextest run -p yulius -E 'binary_id(yulius::main) & (test(=merge_train::a_member_that_cannot_merge_is_told_instead_of_tested_again) | test(/^first_message::/))'`
+    before → 12 passed, 4 failed; after, both modules → 37 passed; the four tests ten times in a
+    row → 10 of 10.
+  - Not proven: that test is not sensitive to the train's own owner check. Two mutations of it in
+    `train_member` (skipped; `Step::Stop` for one by one) leave it green, since `merge_armed_task`
+    drops the armed merge of a disabled owner in the same pass. So before this change; left as is.
+- Yulius CI run `e753bd7a` at `0bd3a591` failed `e2e`: about ten tests that open a tool while the
+  page still loads fail on the new host for every pull request (reproduced here with 2 and with
+  10 workers; this change touches neither `web/` nor `e2e/`). Task #437 (PR #1155) fixes them.
 - `scripts/dev security` → exit 0, "Security scan disabled: Vidoc is turned off in Yulius":
   disabled, not passed; nothing was scanned.
 - Not tested: acceptance criterion 3 with the real `/yulius/bin/yulius` of a task session needs the
