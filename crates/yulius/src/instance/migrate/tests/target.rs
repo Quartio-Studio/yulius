@@ -616,6 +616,24 @@ fn the_data_directory_is_made_ready_for_a_copy() {
         ]
     );
 
+    // The base this host built before the copy is its own: it stays, also when an unfinished
+    // copy beside it is removed.
+    let mut host = new_host();
+    host.dir("/var/lib/yulius/system/base-1");
+    host.file("/etc/passwd", "yulius:x:996:995::/var/lib/yulius:/n\n");
+    host.file_as("/var/lib/yulius/.bashrc", "skel", 996, 0o644);
+    // Not refused for holding the base (the fake's directories belong to root: it is given).
+    assert_eq!(only(&step(&mut host, &request)).0, HostOutcome::Changed);
+    assert!(!host.ran("rm"));
+    host.file("/var/lib/yulius/.yulius-import-incomplete", "");
+    host.file("/var/lib/yulius/master.key", "half");
+    assert_eq!(only(&step(&mut host, &request)).0, HostOutcome::Changed);
+    assert!(
+        !host.runs("rm").iter().any(|l| l.ends_with("/system")),
+        "{:?}",
+        host.runs("rm")
+    );
+
     // An instance, or anything else, is never removed.
     let mut host = new_host();
     host.file("/var/lib/yulius/yulius.db", "db");

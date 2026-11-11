@@ -49,11 +49,15 @@ fn free(dir: &Path) -> Option<(u64, Option<u64>)> {
     None
 }
 
-/// Whether `name` at the top of an existing target may stay: the filesystem's `lost+found` and
-/// the dotfiles `useradd --create-home` copies from `/etc/skel`.
+/// Whether `name` at the top of an existing target may stay: the filesystem's `lost+found`, the
+/// dotfiles `useradd --create-home` copies from `/etc/skel`, and what a copy never holds because
+/// each host makes its own ([`super::walk::LEFT_OUT`]: the sandbox base a move builds before
+/// its copy, SPEC-460 MIG-024).
 fn may_be_there(name: &std::ffi::OsStr, meta: &std::fs::Metadata) -> bool {
     let name = name.to_string_lossy();
-    (name == "lost+found" && meta.is_dir()) || (name.starts_with('.') && meta.is_file())
+    (name == "lost+found" && meta.is_dir())
+        || (name.starts_with('.') && meta.is_file())
+        || super::walk::LEFT_OUT.contains(&name.as_ref())
 }
 
 /// What an existing target must be (IMP-001): a directory, not a link, holding nothing but

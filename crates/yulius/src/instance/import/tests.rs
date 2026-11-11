@@ -300,6 +300,34 @@ fn skeleton_dotfiles_and_lost_found_may_be_there() -> TestResult {
     Ok(())
 }
 
+/// SPEC-460 MIG-024: a move builds the new host's sandbox base before its copy; what a copy
+/// never holds may be there and is left alone.
+#[test]
+fn the_new_hosts_own_sandbox_base_may_be_there() -> TestResult {
+    if crate::instance::is_root() {
+        eprintln!("skipped: root owns the target, which is refused as a fresh disk");
+        return Ok(());
+    }
+    let host = tempfile::tempdir()?;
+    let target = host.path().join("yulius");
+    fs::create_dir_all(target.join("system/base-9"))?;
+    fs::write(target.join("system/base-9/ready"), b"this host's")?;
+    fs::create_dir_all(target.join("runtime"))?;
+    let bytes = exported(&target)?;
+    run(&bytes, &target).map_err(|f| format!("{f:?}"))?;
+    assert_eq!(
+        fs::read(target.join("system/base-9/ready"))?,
+        b"this host's"
+    );
+    assert!(target.join("yulius.db").is_file());
+    // Anything else still is not an empty data directory.
+    let other = host.path().join("other");
+    fs::create_dir_all(other.join("systems"))?;
+    let bytes = exported(&other)?;
+    assert!(matches!(run(&bytes, &other), Err(Failure::Refused(_))));
+    Ok(())
+}
+
 #[test]
 fn a_target_of_another_user_is_refused() -> TestResult {
     if !crate::instance::is_root() {

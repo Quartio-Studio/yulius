@@ -1201,7 +1201,99 @@ wanted, `sandboxes/` (clones and worktrees can be re-created from GitHub, uncomm
 Restore: stop the service, put the database copy at `yulius.db`, restore `master.key`, start.
 The database copy holds the secrets vault and the egress CA key as ciphertext only; keep
 `master.key` apart from database backups (whoever has both can read every secret). For a copy of
-everything, files included, see the next section.
+everything, files included, see "Copy or move the whole instance" below; to move to another host,
+use the next section.
+
+### Move the instance to another host
+
+`yulius instance migrate` (SPEC-460, ADR-0297) moves the whole instance with one command. Run it as
+root on the old host over SSH (not from a Yulius terminal: it freezes the service):
+
+```sh
+sudo yulius instance migrate root@new-host            # shows the plan, asks once, then moves
+sudo yulius instance migrate root@new-host --yes      # without the question
+sudo yulius instance migrate root@new-host --data-disk /dev/nvme0n1 --data-disk /dev/nvme1n1
+sudo yulius instance migrate root@new-host --public-url https://yulius.example.com
+sudo yulius instance migrate --status                 # the recorded move and its checklist
+sudo yulius instance migrate --abort                  # back to the old host
+```
+
+It prints one checklist, a line per step as `host setup` does (`ok`, `changed`, `manual`, `FAIL`),
+and ends with exit 0 when nothing failed, 1 when a step failed and 2 when it was refused before
+anything changed. Run the same command again to continue a move that stopped: every step finds out
+what is already done. The new host needs only SSH for root and the same architecture; it must not
+hold a Yulius instance.
+
+**Plan** (nothing is changed but the flow's own files in `/var/lib/yulius-migrate` on both hosts,
+and nothing is frozen). Everything a person has to do is asked for here:
+
+- The SSH sign-in to the new host, once: the flow makes a one-time key and adds it to root's
+  `authorized_keys` there through your own sign-in (`ssh` asks for the password or second factor).
+  Without a terminal it prints the line to add and stops; add it and run the command again. From
+  then on it uses only that key.
+- The new host: release, architecture, systemd, CPUs and memory; refused when it runs or holds an
+  instance or another program holds the ports of the proxy and of Yulius.
+- Disk space where the data directory goes. When it is too small the blank disks of the new host
+  are listed: name one with `--data-disk`, or two for a mirror. Only disks without a partition
+  table, filesystem, holder or mount are taken.
+- The link's rate and the time frozen it implies (this version freezes for the whole copy).
+- The new public URL: `--public-url`, else the old URL, else for an address-made URL
+  (`1-2-3-4.sslip.io`) the same form for the new address. A name that does not lead to the new
+  host yet is named: change its DNS record when the checklist says the new instance runs.
+- When the URL changes, the GitHub App: add the callback URL `<new URL>/api/auth/github/callback`
+  and set the homepage in the App's settings before the cutover (an App accepts several callback
+  URLs, so the old one keeps working). GitHub has no API for this and Yulius never uses a person's
+  GitHub session. Until it is done GitHub sign-in fails at the new URL; password sign-in works.
+- What is not carried: another reverse proxy than Caddy, another firewall than ufw, packages
+  without a candidate on the new release.
+
+Then it asks "Move this instance to …?" unless `--yes`. Without a terminal and without `--yes` it
+ends after the plan.
+
+**Prepare** (the old instance still runs). On the new host: the data disk (`--data-disk`: ext4 on
+the disk, or on an mdadm RAID1 of two, mounted at the data directory by UUID from `fstab` with
+`nofail`, the array in `mdadm.conf` and the initramfs, the unit drop-in `RequiresMountsFor=`, the
+mount point given to the service user); the old host's third-party apt sources with their keys
+and the release's codename replaced (a source without that suite keeps the old one; one that still
+fails is removed and named); the old host's `apt-mark showmanual` packages in one transaction (a
+library whose name carries another version there, `libicu74` → `libicu78`, is renamed; kernel,
+boot and network packages are left to the machine); coreutils of the old host's flavour (GNU or
+uutils); `/usr/local`, the entries of `/opt` no package owns and root's Rust toolchain, copied as
+they are; `host setup`'s host items; the build at the unit's path; the unit file, its drop-ins,
+its environment and key files outside the data directory, the update helper's units and its
+record of the installed commit, with the old public URL and host name replaced; Caddy's directory
+and drop-ins for the new host name, validated and started, so its certificate is there before the
+cutover; ufw's rules (enabled at the very end); and `host setup` up to the sandbox base. Limits pinned in the unit travel unchanged and
+are named; the new instance re-sizes those that no longer fit (SPEC-459).
+
+**Cutover.** The old unit is frozen, the data directory is streamed into the new host's import
+(compressed with `zstd` when both have it), and both hosts count the copy: entries and bytes for
+each top-level folder and a fingerprint over every entry's name, kind, size, owner, mode, time and
+restorable attributes. Only when they are equal is the copy marked and the new instance started
+(`host setup`'s remaining items, `systemctl enable` and `start`, then it must report the old
+host's build). Until that start any failure, Ctrl-C or SIGTERM thaws the old instance, which runs
+on as before. If the new instance does not come up, it is stopped and disabled before the old one
+is thawed; the copy there was started and must be removed (`rm -rf` the data directory on the new
+host) before the next run. Once the new instance runs, the old unit stays frozen and is disabled.
+
+**After.** The flow waits for `https://<new host>/healthz`, reads what the new instance did with
+the tasks that were live (its first start puts them back in the queue, whoever owns them; tasks a
+person had paused or was stopping stay stopped), and makes the old host's Caddy answer every
+request with a temporary redirect (307) to the same path at the new URL, with the header
+`X-Yulius-Moved-To`. It then removes its key from the new host, enables ufw there, deletes the key
+on the old host and lists what is left for people: the GitHub App and the DNS record if still
+open, `yulius remote login <new URL>` and `claude mcp add` for laptops, and that the old host
+still holds a frozen copy with `master.key` and every secret.
+
+**Abort.** `sudo yulius instance migrate --abort` on the old host stops and disables the new
+instance (through the key while the move is not finished; afterwards it refuses while the new URL
+still answers, so stop it there first with `systemctl disable --now yulius.service`), puts the
+old proxy configuration back, thaws and enables the old unit and removes the key and the state.
+It never leaves both running. Work done on the new host after the move is not copied back.
+
+Not part of a move: packages installed inside sandboxes keep their files; on another release the
+checklist names those sandboxes. The sandbox base is built for the new host while preparing, so
+a host that cannot run sandboxes is found before anything freezes.
 
 ### Copy or move the whole instance
 

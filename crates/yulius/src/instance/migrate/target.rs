@@ -122,6 +122,11 @@ pub enum Request {
         /// The instance.
         setup: Setup,
     },
+    /// `host setup` up to the sandbox base, so the host is proven ready before the freeze.
+    BeforeStart {
+        /// The instance.
+        setup: Setup,
+    },
     /// Write text files under one checklist name.
     Texts {
         /// The line's name.
@@ -1069,10 +1074,11 @@ fn data_dir(host: &mut dyn Host, setup: &Setup, l: &mut Lines) {
     if !is_dir(host, dir) {
         return l.ok(ITEM, format!("{shown} will be made by the copy"));
     }
+    // What a copy never holds is this host's own (the sandbox base built before the copy).
     let names: Vec<String> = host
         .list(dir)
         .into_iter()
-        .filter(|name| name != "lost+found")
+        .filter(|name| !crate::instance::walk::LEFT_OUT.contains(&name.as_str()))
         .collect();
     if names.iter().any(|name| name == INCOMPLETE) {
         for name in &names {
@@ -1477,6 +1483,7 @@ pub fn handle(host: &mut dyn Host, env: &mut Env<'_>, request: &Request) -> Repl
         Request::HostItems { setup } => l.0 = (env.setup)(host, Part::Host, setup),
         Request::Binary { setup } => binary(host, setup, &mut l),
         Request::DataDir { setup } => data_dir(host, setup, &mut l),
+        Request::BeforeStart { setup } => l.0 = (env.setup)(host, Part::BeforeStart, setup),
         Request::Texts { name, files } => texts(host, name, files, &mut l),
         Request::Proxy { changed } => proxy(host, *changed, &mut l),
         Request::Expect(expect) => {

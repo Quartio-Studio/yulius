@@ -93,6 +93,8 @@ struct FakeRemote {
     healthy: bool,
     /// Changes the installed copy before it is counted.
     tamper: Option<fn(&Path)>,
+    /// `host setup` cannot build the sandbox base there.
+    no_base: bool,
     sent: Vec<PathBuf>,
 }
 
@@ -148,6 +150,7 @@ impl Remote for FakeRemote {
             host,
             copy_dir,
             healthy,
+            no_base,
             ..
         } = self;
         let mut env = Env {
@@ -165,7 +168,11 @@ impl Remote for FakeRemote {
                         Part::AfterStart => "sandbox Docker",
                     }
                     .to_owned(),
-                    outcome: HostOutcome::Ok,
+                    outcome: if *no_base && part == Part::BeforeStart {
+                        HostOutcome::Failed
+                    } else {
+                        HostOutcome::Ok
+                    },
                     detail: "as host setup leaves it".into(),
                 }]
             },
@@ -443,6 +450,7 @@ fn setup() -> Result<Setup, Box<dyn std::error::Error>> {
             signs_in: true,
             healthy: true,
             tamper: None,
+            no_base: false,
             sent: Vec::new(),
         },
         world: FakeWorld {
@@ -635,6 +643,7 @@ fn a_move_runs_from_the_plan_to_the_finish() -> TestResult {
             .position(|e| e == what)
             .ok_or(format!("no {what}: {events:?}"))
     };
+    assert!(at("new: before_start")? < at("old: systemctl freeze")?);
     assert!(at("old: systemctl freeze")? < at("new: copy")?);
     assert!(at("new: copy")? < at("new: inventory")?);
     assert!(at("new: inventory")? < at("new: mark")?);
@@ -1130,5 +1139,22 @@ fn a_firewall_that_cannot_be_enabled_fails_the_run_but_the_move_is_finished() ->
     let state = State::load(&s.opts.state_dir).ok_or("no state")?;
     assert!(state.finished && !s.remote.key);
     assert_eq!(s.run()?, 0);
+    Ok(())
+}
+
+#[test]
+fn a_new_host_that_is_not_ready_is_found_before_anything_freezes() -> TestResult {
+    let mut s = setup()?;
+    s.remote.no_base = true;
+    assert_eq!(s.run()?, 1);
+    let status = s.status()?;
+    assert_eq!(status.phase, "Prepare");
+    assert_eq!(outcome(&status, "sandbox base"), Some(HostOutcome::Failed));
+    assert_eq!(s.old_unit(), (false, false));
+    assert!(
+        !s.events()
+            .iter()
+            .any(|e| e.starts_with("old: systemctl") || e == "new: copy")
+    );
     Ok(())
 }

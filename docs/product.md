@@ -83,6 +83,16 @@ watching, steering and unblocking.
   packages, Docker data) without writing anything on the old VM's disk; the new VM installs it as
   it arrives, checks it, and `yulius host setup` starts it. `--move` keeps the old instance frozen
   and disabled. A copy can also go to a file and be installed later.
+- **Move the instance to another host with one command** (SPEC-460): `sudo yulius instance migrate
+  root@new-host` on the old host checks and sets up the new one (a data disk, the old host's
+  packages and apt sources, software outside apt, the unit with its settings and key files, the
+  update helper, Caddy, ufw), copies the data while the old instance is frozen, proves the copy
+  (entries, bytes and a fingerprint per folder, equal on both hosts), starts the new instance,
+  redirects the old URL and removes its own key. People are asked only in the plan, before
+  anything changes (the SSH sign-in, a DNS record, the GitHub App's callback). Any failure before
+  the new instance runs thaws the old one; `--abort` goes back. Tasks that were live come back by
+  themselves on the new host. Still to come: a warm copy so the freeze sends only the changes,
+  the GitHub App check and the button in Settings → Instance.
 - **Playgrounds**: a team tries Yulius on its own code before it connects GitHub. On a fresh
   instance Home offers it first: drop a project folder (a repository keeps its branches and
   history) or start from a template, and tasks start a minute later. Its Git stays on the server
