@@ -41,11 +41,20 @@ Accepted. Specified in
   change time is at least 2 s before that, its stat did not move while it was read, and it lies
   on the synced filesystem. Any later change, through a mapping too, gets a later change time.
 - **The new host acknowledges what it installed and synced, in its marker.** The marker
-  `.yulius-import-incomplete` holds the stage id, the count of acknowledged passes, the last
+  `.yulius-import-incomplete` holds the stage id, the count of streams taken in, the last
   stream's nonce, how many of its entries were installed and the stream's digest there. The old
   host asks for the marker and adopts the receipts of exactly that prefix when the digest is its
   own; it revokes the paths it sent beyond it. A mismatch of id or count drops the receipts and
   the staged copy.
+- **Nothing is known while a stream is open.** The marker names a stream before its first entry
+  and says that the copy's state is unknown; the stream's end takes that back. A receive that
+  dies, a pass that removed paths and then broke, and a journal from before a restart of the old
+  host therefore cost the receipts, never the copy's truth: the stage goes on and everything is
+  sent into it again.
+- **A stream whose sender is gone is closed by the next run.** A link that breaks leaves the new
+  host's end open until TCP gives up. The receive reads on a thread of its own and, without
+  bytes, looks for a stop file beside its lock; the old host's next look at the marker writes
+  that file and waits until the stream is closed and marked.
 - **A warm pass never removes.** Stale paths stay until the frozen pass, whose kept paths decide
   what is deleted; an entry that would need a directory removed waits for it. After a frozen pass
   the receipts are exactly the entries it skipped. So a receipt is always true: the new host
@@ -70,6 +79,10 @@ Accepted. Specified in
   which is what the warm copy removes.
 - **All-or-nothing passes**: simplest, but a cut after 50 minutes sends everything again, and the
   paths the cut stream already replaced on the new host would still have to be revoked.
+- **An idle timeout on the receiving side** instead of the stop file: a pass that finds little
+  to send writes nothing for minutes while it walks, so the timeout would end healthy streams.
+- **Repairing a staged copy after a receive died** (a journal of directory times on the new
+  host): more state to get wrong than sending everything again in that rare case.
 - **Filesystem snapshots (LVM, btrfs) or `fanotify` marks**: exact change tracking, but they need
   a volume layout or a watcher the hosts do not have, and miss what happens before the watch.
 - **Deleting in warm passes**: would make receipts of removed paths false unless every removal

@@ -71,16 +71,21 @@ Passes
   second, a file whose modification time was set back, and a path that holds another file again
   after its directory was swapped away and back are sent again.
 - WCP-005 **The staged copy.** The new host's marker `.yulius-import-incomplete` holds the stage
-  id, the count of acknowledged passes and what the last stream installed. A pass is accepted only
-  into an empty data directory (it creates the stage) or into the stage whose id and pass count it
-  names. A marker without that stage id is an unfinished copy and is removed before the first
-  pass, as today. `Request::Mark` removes the marker once the copy is proven, so a copy that was
-  started is never a staged copy.
+  id, the count of streams taken in and what the last one installed. A pass is accepted only
+  into an empty data directory (it creates the stage) or into the stage whose id and count it
+  names. The marker names a stream before its first entry and says that nothing is known of the
+  copy until that stream is closed, so a receive that dies (a kill, a power cut) is found. A
+  marker without that stage id is an unfinished copy and is removed before the first pass, as
+  today. `Request::Mark` removes the marker once the copy is proven, so a copy that was started
+  is never a staged copy.
 - WCP-006 **Binding.** Receipts live in `<state>/copy/` on the old host with the stage id and the
-  count of acknowledged passes. Before every pass the old host asks the new host for its marker:
-  equal id and count continue; a count one ahead with the pending stream's nonce is adopted
-  (WCP-011); anything else (no marker, another id, another count) drops the receipts and the
-  staged copy, and the next pass is a full one.
+  count of streams. Before every pass the old host asks the new host for its marker: equal id and
+  count continue; a count one ahead with the pending stream's nonce is adopted (WCP-011). A
+  stream that was never closed, a pass that removed paths and then broke, and a journal written
+  before the old host was restarted leave nothing known: the stage goes on without receipts, and
+  the next pass sends everything into it. Anything else (no marker, another id, another count,
+  another stream) drops the receipts and the staged copy, and the next pass is a full one into a
+  new stage.
 
 The frozen pass
 
@@ -106,8 +111,9 @@ Resume and bound
   installed, with the stream's nonce and the stream's digest at that entry; the old host adopts
   the receipts of exactly those entries when the digest matches its own record, and revokes the
   receipts of the paths it sent after them. Running the same command again continues: no
-  acknowledged entry is sent again. A pending record written before the old host was restarted is
-  not adopted.
+  acknowledged entry is sent again. A link that breaks leaves the new host's end of the stream
+  open (for hours, until TCP gives up): the next run's look at the marker tells that receive to
+  close its stream and waits for it, so what arrived counts.
 - WCP-012 **Estimate.** After each delta pass the checklist shows the estimated freeze (item
   `downtime`) before anything freezes: four counts of the tree at the measured rate (two on each
   host), the time to send what will have changed since the pass began (the last pass's sending
@@ -121,6 +127,12 @@ Resume and bound
 - WCP-014 **Before the freeze.** The sandbox base is built and the new host proven ready while
   preparing, before the first pass (as since SPEC-460's `2866a890`); the freeze holds the delta,
   the deletions, the proof and the start.
+- WCP-015 **Guards.** The plan refuses an old data directory that holds one of the marker's
+  names. A rerun does not ask again for the room the staged copy already takes. The freeze is
+  not begun when the old instance reports another build than when the plan looked (an update
+  during the copy): the staged copy stays for a run with that build. A copy whose proof fails is
+  dropped with its receipts. `--abort` closes a stream still being received and names the staged
+  copy left on the new host, which holds every secret.
 
 ## Design
 
@@ -136,11 +148,16 @@ Resume and bound
   state), written before the entry is sent and completed after it; `pending.kept` lists what a
   frozen pass left alone. A frozen pass that completed replaces the log by `pending.kept`: after
   its deletions the receipts are exactly the entries that were skipped.
-- **Acknowledgment.** The importer counts installed entries and remembers the stream's digest at
-  the last two entry boundaries. At the end of a stream, complete or not, it sets the directories'
-  times, syncs the filesystem and rewrites the marker atomically. The old host never trusts the
-  reply alone: it asks for the marker (`Request::Stage`, which waits for a receive still running
-  there) and reconciles.
+- **Acknowledgment.** The importer rewrites the marker before the first entry (the stream's
+  nonce, "nothing known"), counts installed entries and remembers the stream's digest at the last
+  two entry boundaries. At the end of a stream, complete or not, it sets the directories' times,
+  syncs the filesystem and rewrites the marker atomically. The old host never trusts the reply
+  alone: it asks for the marker (`Request::Stage`) and reconciles.
+- **A receive whose sender is gone.** The receive reads its stream on a thread of its own; when
+  no bytes come for a second it looks for `receive.stop` beside its lock. `Request::Stage` writes
+  that file when the lock is held (one run at a time on the old host: whoever asks, the stream's
+  sender is gone), waits until the receive has closed its stream (bounded, 30 minutes) and takes
+  the file back. A new stream waits two minutes for the one before it, then fails.
 - **Flow.** Plan (the marker is read with the facts, receipts are reconciled) → Prepare (the
   data directory keeps this move's stage) → Copy (warm passes, estimate, bound) → Cutover (freeze,
   frozen pass, proof, mark, start) → Finish. A signal during the warm passes ends the command;
@@ -155,8 +172,8 @@ Resume and bound
 - [x] Receipts on the old host: the map of what the new host holds, the journal of a stream, adoption
 - [x] Passes in the export: a live walk that tolerates change, an exact delta with the kept paths
 - [x] Extraction onto a staged copy: replace, link to earlier files, keep directory times, defer or delete
-- [ ] The import of a pass: stage marker, acknowledged prefix, deletions, sync
-- [ ] The move: warm passes, estimate and --max-downtime, the frozen delta, resume
+- [x] The import of a pass: stage marker, acknowledged prefix, deletions, sync
+- [x] The move: warm passes, estimate and --max-downtime, the frozen delta, resume
 - [ ] Operations guide §7, architecture, product summary, changes, SPEC-460's pointer
 - [ ] A real move between two hosts (QEMU guests) with changes during the copy
 - [ ] Independent review answered, gates green
@@ -181,6 +198,10 @@ Resume and bound
   above the estimate it freezes after the first delta pass.
 - After a rolled-back move (the new instance did not come up) the copy on the new host has no
   marker and the next run refuses it, as today.
+- A receive that died mid-stream (only the marker written before its first entry is left): the
+  old host drops its receipts, keeps the stage, and the next pass sends every entry. A receive
+  that holds its lock is told to stop by a look at the marker, which waits for it.
+- An old instance that reports another build before the freeze than in the plan is not frozen.
 - A plain `yulius instance export | import` is unchanged (its tests pass untouched), and `import`
   refuses a pass.
 
@@ -193,7 +214,9 @@ Resume and bound
   live file); `instance::export` (each case of WCP-002..004 and WCP-007 against an in-memory
   ledger); `instance::extract` (each case of WCP-009, the deletions of WCP-008);
   `instance::import` (stage marker, refusal of another stage or count, a cut stream's
-  acknowledgment, the plain import refusing a pass).
+  acknowledgment, the marker before the first entry, the plain import refusing a pass);
+  `instance::migrate::target` (the staged copy kept or removed by the data-directory step, the
+  marker read once no stream is received, the stop word, the watched stream).
 - Flow tests (`instance::migrate::tests::flow`): the acceptance criteria, with the existing moves
   updated to the new order of events.
 - CLI test: `--max-downtime` is parsed and refused when 0.
@@ -226,5 +249,12 @@ Resume and bound
   copying, as SPEC-460's acceptance criterion asks.
 - **A bound that cannot be met fails** (exit 1) rather than ending as `manual`: a script that
   asked for a bounded move must not read exit 0 as "moved".
+- **A stream is marked before it is taken in.** A receive that is killed leaves files half
+  written and directories' times moved, which no receipt would find until the proof fails in the
+  freeze. Restoring that state after a crash needs a journal on the new host; saying "nothing is
+  known" before the first entry and taking it back at the end needs one more write of the marker.
+- **A receive is told to stop by a file beside its lock**, not by an idle timeout (a pass that
+  finds little to send writes nothing for minutes while it walks) and not by a signal (process
+  ids are reused, and the reads would have to be interruptible).
 - **One pull request.** The change is one concern (MIG-032) whose parts are not useful alone; it
   is built in the plan's slices, each with its tests.
