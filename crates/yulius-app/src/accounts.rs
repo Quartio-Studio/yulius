@@ -1728,6 +1728,20 @@ mod tests {
             Some("1970-01-01T00:00:00Z")
         );
         assert!(known.secondary.is_none());
+        // A model's own weekly window is shown as its own, never as the week (SPEC-464).
+        let fable = usage_view(&AccountUsage {
+            weekly_fable: Some(UsageWindow {
+                used_percent: Some(100.0),
+                window_minutes: Some(10_080),
+                resets_at: Some(Timestamp(0)),
+            }),
+            ..AccountUsage::default()
+        });
+        assert_eq!(
+            fable.weekly_fable.as_ref().and_then(|w| w.used_percent),
+            Some(100.0)
+        );
+        assert!(fable.secondary.is_none() && fable.weekly_opus.is_none());
     }
 
     #[test]

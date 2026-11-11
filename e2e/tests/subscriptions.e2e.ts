@@ -36,6 +36,22 @@ test('the subscriptions page shows the pool capacity and nothing to manage but a
   expect(await axeViolations(browser)).toEqual([]);
 });
 
+test('a subscription out of its model\'s usage credits shows that model\'s week beside its own (SPEC-464)', async ({ app, browser, screen }) => {
+  await app.open(mock('/admin/accounts'));
+  // The limit is the model's: its weekly allowance is used up until it resets, while the 5-hour
+  // and weekly windows keep their own readings.
+  const card = '.card:has-text("studio@example.com")';
+  await expect(browser.locator(`${card} .account-state`)).toHaveText('Limit reached');
+  const fable = browser.locator(`${card} .usage-row:has-text("Fable this week")`);
+  await expect(fable).toContainText('100% used');
+  await expect(fable).toContainText(/Resets \S+ \d/);
+  await expect(browser.locator(`${card} .usage-row:has-text("This week")`).first()).toContainText('71% used');
+  await expect(screen.getByRole('meter', 'Fable this week')).toHaveAttribute('aria-valuetext', '100% used');
+  // A subscription Claude reported no such limit for has no such row.
+  await expect(browser.locator('.card:has-text("mkarp@example.com") .usage-row:has-text("Fable this week")')).toHaveCount(0);
+  expect(await axeViolations(browser)).toEqual([]);
+});
+
 test('a task shows its subscription and a person runs it on another (SPEC-447 MOV-001, MOV-004)', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12'));
   const chip = browser.locator('.taskview .stepstrip-main button.account-chip');

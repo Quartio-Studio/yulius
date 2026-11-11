@@ -608,6 +608,9 @@ export function accountUsage(account, { foldable = false, open = false, rename =
     // Per-model weekly caps, when the plan has them (they bind only tasks of that model).
     usage.weekly_opus ? usageRow({ ...usage.weekly_opus, window_minutes: null }, 'Opus this week') : null,
     usage.weekly_sonnet ? usageRow({ ...usage.weekly_sonnet, window_minutes: null }, 'Sonnet this week') : null,
+    // Fable runs on a weekly allowance of usage credits no reading shows: the row appears once
+    // Claude reported it used up, full until its reset (SPEC-464).
+    usage.weekly_fable ? usageRow({ ...usage.weekly_fable, window_minutes: null }, 'Fable this week') : null,
     h('div', { class: 'account-foot' },
       account.in_use_by ? h('span', { class: 'status-count live' }, h('span', { class: 'live-dot' }), `${account.in_use_by} ${account.in_use_by === 1 ? 'task' : 'tasks'} on this subscription`) : h('span', null, 'No tasks right now'),
       h('span', null, usage.observed_at ? `Updated ${relLong(usage.observed_at)}` : 'Usage is read every few minutes')));
