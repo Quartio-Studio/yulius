@@ -368,9 +368,14 @@ mod moves {
     }
 
     async fn second_run_live(s: &Server) -> TestResult {
+        run_live(s, 2).await
+    }
+
+    /// Waits until the task has `runs` runs and the last one is live.
+    async fn run_live(s: &Server, runs: usize) -> TestResult {
         wait_for("the restarted session", Duration::from_secs(90), || async {
             let attempts = s.app.deps.store.attempts(&s.id).await.unwrap_or_default();
-            attempts.len() == 2 && attempts[1].state == AttemptState::Live
+            attempts.len() == runs && attempts[runs - 1].state == AttemptState::Live
         })
         .await
     }
@@ -542,6 +547,28 @@ mod moves {
                 "no subscription switch: {:?}",
                 detail.switches
             );
+
+            // A later release moves it again at its next turn's end: the first restart gave
+            // the task's one restart at a time back when it was over.
+            release(&s, &version, "2.1.330")?;
+            let again = decided(&s.id);
+            turn(&s, "four").await?;
+            run_live(&s, 3).await?;
+            until_decided(&again).await?;
+            settled(&s, Activity::Waiting).await?;
+            wait_for(
+                "the third session's version",
+                Duration::from_secs(30),
+                || async {
+                    run_versions(&s.app, &s.id).await
+                        == [
+                            Some("2.1.311".to_owned()),
+                            Some("2.1.322".to_owned()),
+                            Some("2.1.330".to_owned()),
+                        ]
+                },
+            )
+            .await?;
             stop(&s.app, &s.id).await
         })?;
         rt.shutdown_timeout(Duration::from_secs(5));
@@ -744,6 +771,13 @@ mod moves {
         h.clock.0.fetch_add(1_000, Ordering::SeqCst);
         h.app.record_typing(&task, &alice);
         assert!(h.app.has_draft(&task));
+        // Claude Code wakes the session by itself (a background shell ended): that prompt did
+        // not come through the prompt box, and empties nothing.
+        h.clock.0.fetch_add(1_000, Ordering::SeqCst);
+        let wake = "<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>\n\
+                    </task-notification>";
+        assert_eq!(hook(&h, Some(wake)).await?, StatusCode::OK);
+        assert!(h.app.has_draft(&task), "a wake-up is no submit");
         // The turn ends five minutes later: the minute after a keystroke is long over.
         h.clock.0.fetch_add(5 * MINUTE, Ordering::SeqCst);
         let probed = reached(Point::ClaudeMoveProbed, &task);
@@ -926,17 +960,19 @@ mod moves {
         Ok(())
     }
 
-    /// A prompt-mode session on 2.1.311 while runs get 2.1.322, whose turns end when `may_end`
-    /// exists and whose goal evaluator gives no verdict; with `code` changed in its worktree
-    /// and no spec, so the gate blocks its turn's end.
+    /// A prompt-mode session on 2.1.311 while runs get 2.1.322, in which a person sets a goal
+    /// of their own and whose goal evaluator gives no verdict; with `code` changed in its
+    /// worktree and no spec, so the gate blocks its turn's end. With `may_end` the goal's turn
+    /// ends when that file exists, and Yulius has read that the goal is set when this returns;
+    /// without it the turn ends by itself, milliseconds after the goal was set.
     async fn session_with_own_goal(
         data: &Path,
         version: &Path,
-        may_end: &Path,
+        may_end: Option<&Path>,
         code: bool,
     ) -> Result<Server, Box<dyn std::error::Error>> {
         let options = FakeAgentOptions {
-            turn_hold_file: Some(may_end.to_path_buf()),
+            turn_hold_file: may_end.map(Path::to_path_buf),
             goal_verdict: Some("none"),
             ..hooked()
         };
@@ -945,16 +981,30 @@ mod moves {
         if code {
             change_code(&s).await?;
         }
-        // Its person sets a goal of their own in the terminal; the goal's turn ends once
-        // Yulius read that the goal is set.
         s.app
             .send_input(&s.id, b"/goal keep the header blue\r")
             .await?;
+        if may_end.is_some() {
+            goal_read(&s).await?;
+        }
+        Ok(s)
+    }
+
+    /// Waits until Yulius read from the transcript that the session's goal is set.
+    async fn goal_read(s: &Server) -> TestResult {
         wait_for("the goal to be read", Duration::from_secs(60), || async {
             s.app.goal_is_open(&s.id)
         })
-        .await?;
-        Ok(s)
+        .await
+    }
+
+    /// Waits until the goal turn's Stop was answered: with the gate's block, or by a restart
+    /// of the session.
+    async fn stop_answered(s: &Server) -> TestResult {
+        wait_for("the Stop's answer", Duration::from_secs(60), || async {
+            screen(&s.app, &s.id).contains("STOP BLOCKED") || runs(s).await > 1
+        })
+        .await
     }
 
     /// Code changed in the task's worktree, and no spec: the gate blocks the next turn's end.
@@ -987,7 +1037,7 @@ mod moves {
         let may_end = data.join("turn-may-end");
         let rt = runtime()?;
         rt.block_on(async {
-            let s = session_with_own_goal(&data, &version, &may_end, false).await?;
+            let s = session_with_own_goal(&data, &version, Some(&may_end), false).await?;
             let flag = decided(&s.id);
             std::fs::write(&may_end, "")?;
             until_decided(&flag).await?;
@@ -1006,7 +1056,8 @@ mod moves {
 
     /// SPEC-468 CCF-001: the same session at a Stop the gate blocks. A restart there would give
     /// the resumed session the gate's reasons and no goal: the Stop is answered with the block
-    /// instead, and the session keeps its goal.
+    /// instead, and the session keeps its goal. Its goal is known when the Stop comes, so the
+    /// session is not even looked at.
     #[test]
     fn a_persons_own_goal_keeps_the_session_at_a_stop_the_gate_blocks() -> TestResult {
         let (_dir, data) = data_dir()?;
@@ -1014,13 +1065,48 @@ mod moves {
         let may_end = data.join("turn-may-end");
         let rt = runtime()?;
         rt.block_on(async {
-            let s = session_with_own_goal(&data, &version, &may_end, true).await?;
+            let s = session_with_own_goal(&data, &version, Some(&may_end), true).await?;
+            let looked_at = reached(Point::ClaudeMoveProbed, &s.id);
             std::fs::write(&may_end, "")?;
-            // The Stop was answered: with the gate's block, or by a restart of the session.
-            wait_for("the Stop's answer", Duration::from_secs(60), || async {
-                screen(&s.app, &s.id).contains("STOP BLOCKED") || runs(&s).await > 1
-            })
-            .await?;
+            stop_answered(&s).await?;
+            assert_eq!(
+                own_goal(&s).await,
+                (1, 1, true),
+                "{}",
+                screen(&s.app, &s.id)
+            );
+            assert!(
+                screen(&s.app, &s.id).contains("STOP BLOCKED"),
+                "the gate blocks as it would without a newer Claude Code"
+            );
+            assert!(
+                !looked_at.load(Ordering::SeqCst),
+                "a session known to hold its person's goal is not looked at"
+            );
+            stop(&s.app, &s.id).await
+        })?;
+        rt.shutdown_timeout(Duration::from_secs(5));
+        Ok(())
+    }
+
+    /// SPEC-468 CCF-001 (review round 1 of this change, minor 1): the goal is set in the very
+    /// turn whose Stop the gate blocks, and that Stop comes before Yulius read the goal's
+    /// record: the transcript is read once a second, and this turn takes milliseconds. The
+    /// Stop asks again once the turn's lines were read, and the session stays. It asked only
+    /// before, so the session was restarted with the gate's reasons and the goal was gone.
+    /// That the record was unread when the Stop came is not asserted: in the rare run in which
+    /// a read falls between the two, the first question keeps the session, and it must stay
+    /// either way.
+    #[test]
+    fn a_goal_set_in_the_turn_the_gate_blocks_keeps_the_session() -> TestResult {
+        let (_dir, data) = data_dir()?;
+        let version = data.join("claude-version");
+        let rt = runtime()?;
+        rt.block_on(async {
+            let s = session_with_own_goal(&data, &version, None, true).await?;
+            stop_answered(&s).await?;
+            assert_eq!(runs(&s).await, 1, "{}", screen(&s.app, &s.id));
+            goal_read(&s).await?;
             assert_eq!(
                 own_goal(&s).await,
                 (1, 1, true),
@@ -1215,6 +1301,16 @@ mod moves {
                 .any(|task| task.number == 2 && task.version == "2.1.311"),
             "{behind:?}"
         );
+        // A newer release lifts it: moves were stopped for 2.1.322 only, so the task is
+        // promised the newer one when its turn ends again, and the card says nothing.
+        s.installed.release("2.1.330");
+        let ctx = s.ctx().await?;
+        let detail = s.app.task_detail(&ctx, other.as_str()).await?;
+        assert_eq!(
+            (detail.cli_moves_to.as_deref(), detail.cli_moves_stopped),
+            (Some("2.1.330"), false)
+        );
+        assert_eq!(s.app.claude_code_view(&ctx).await?.moves_stopped, None);
         stop(&s.app, &other).await
     }
 

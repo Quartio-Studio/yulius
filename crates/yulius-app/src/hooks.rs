@@ -831,7 +831,9 @@ impl App {
         // A goal that is achieved, or not set, is not typed again for it: such a session waits
         // for its next start. Nor is a goal its person set in a prompt-mode session, which the
         // restart would lose: that session stays, and the gate blocks as usual (SPEC-468
-        // CCF-001).
+        // CCF-001). A goal known by now saves the look at the session; one set in this very
+        // turn may not be read yet, so it is asked again after the look, which reads the
+        // turn's lines.
         let works_on = !self.keeps_own_goal(task)
             && (gate_continues || {
                 let runtime = self.runtime(&task.id);
@@ -842,6 +844,7 @@ impl App {
         if matches!(decision.0, Decision::Stay)
             && works_on
             && let Some(version) = self.claude_code_move_due(&task.id, &ctx.attempt.id).await
+            && !self.keeps_own_goal(task)
         {
             let continuation = gate_continues.then(|| reasons.join("\n\n"));
             let app = Arc::clone(self);

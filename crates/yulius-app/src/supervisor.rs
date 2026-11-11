@@ -152,10 +152,11 @@ pub struct TaskRuntime {
     /// launch, or the last prompt submitted from it. What a person typed after that may still
     /// sit there (SPEC-468 CCF-010).
     pub(crate) box_emptied_ms: AtomicI64,
-    /// The task's last prompt hook was answered with a hold: the next one is that prompt sent
+    /// The run's last prompt hook was answered with a hold: the next one is that prompt sent
     /// again by the hook client, not another submit. A hold the CLI gave up leaves this set
-    /// until the next prompt is answered, which then counts as no submit: the session reads as
-    /// holding a draft for one turn longer, never as holding none.
+    /// until the run's next prompt is answered, which then counts as no submit: the session
+    /// reads as holding a draft for one turn longer, never as holding none. A new run holds
+    /// none ([`Self::prompt_box_starts_empty`]).
     pub(crate) prompt_held: AtomicBool,
     /// Whose personal MCP servers the current run was started with (SPEC-332 MSC-009): a live
     /// run keeps its MCP configuration, so a hand-over restarts it, and only that person messages
@@ -382,6 +383,13 @@ impl TaskRuntime {
         }
     }
 
+    /// A run starts at `now_ms`: its prompt box is empty, and no prompt of it is held (one held
+    /// in the run before went with that run's hook client; SPEC-468 CCF-010).
+    pub(crate) fn prompt_box_starts_empty(&self, now_ms: i64) {
+        self.box_emptied_ms.store(now_ms, Ordering::SeqCst);
+        self.prompt_held.store(false, Ordering::SeqCst);
+    }
+
     pub(crate) fn new() -> Self {
         Self {
             hub: Hub::new(DEFAULT_SIZE.0, DEFAULT_SIZE.1),
@@ -530,24 +538,17 @@ pub enum RunStart {
 /// task, SPEC-447 MOV-002; a restart on a newer Claude Code, SPEC-461 CCM-013): its launch gives
 /// the task this back, so it never reads Working, which viewers would take for work and a
 /// person's notifications for news (SPEC-468 CCF-008).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// No turn can begin in the new run before its launch gives the task this: nothing is typed
+/// into it, and nobody can type before it is attached, which comes after. A prompt sent right
+/// after that sets the task working through its hook, as any prompt does.
+#[derive(Debug, Clone, Copy)]
 struct IdleRest {
     /// What the task read: waiting, or done.
     activity: Activity,
-    /// When the old run's last turn began (ms, 0 = none).
-    turn_began: i64,
     /// Whether Claude Code last recorded the session's goal as unfinished (SPEC-429): in the
     /// same session, with nothing typed, that is still what its agent left.
     goal_unfinished: bool,
-}
-
-impl IdleRest {
-    /// The rest a launch gives its task, the task's last turn having begun at `turn_began_now`:
-    /// none once that is no longer the old run's last turn, since a turn began in the new run
-    /// meanwhile (a prompt someone sent at once), which is work.
-    fn at_launch(rest: Option<Self>, turn_began_now: i64) -> Option<Self> {
-        rest.filter(|rest| rest.turn_began == turn_began_now)
-    }
 }
 
 /// The statuses of a task whose run lives, starts or ends.
@@ -1697,8 +1698,7 @@ impl App {
             TaskEvent::Spawned
         };
         // A run works from its launch on, except a session that was idle and got nothing typed:
-        // it is idle again, unless a turn began in it meanwhile (SPEC-468 CCF-008).
-        let rest = IdleRest::at_launch(rest, runtime.turn_began_ms.load(Ordering::SeqCst));
+        // it is idle again (SPEC-468 CCF-008).
         let activity = rest.map_or(Activity::Working, |rest| rest.activity);
         if let Ok(next) = current.status.apply(event) {
             store
@@ -1718,7 +1718,7 @@ impl App {
         // Typing from now on, once viewers can write to this run, is a person's draft in it
         // (SPEC-068): its prompt box starts empty (SPEC-468 CCF-010).
         let typed_before = runtime.typed_at_ms.load(Ordering::SeqCst);
-        runtime.box_emptied_ms.store(self.now().0, Ordering::SeqCst);
+        runtime.prompt_box_starts_empty(self.now().0);
         self.attach_run(&task.id, &attempt, &host_token).await?;
         // The new run learns its goal from its own lines, and an idle one writes none: what the
         // old run read of the goal still says what the agent left.
@@ -3567,7 +3567,6 @@ impl App {
             })
             .map(|activity| IdleRest {
                 activity,
-                turn_began: runtime.turn_began_ms.load(Ordering::SeqCst),
                 goal_unfinished: runtime.goal_unfinished.load(Ordering::SeqCst),
             });
         let started = self.start_run_if(task_id, start, account, Some(from), rest);
@@ -4686,34 +4685,18 @@ fn interrupts_first(reason: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    /// SPEC-468 CCF-008: an idle session that got nothing typed is idle again from its launch
-    /// on, unless a turn began in the new run before the launch got that far.
+    /// SPEC-468 CCF-010: a run starts with an empty prompt box and holds no prompt: one held
+    /// in the run before went with that run's hook client, so the new run's first prompt is a
+    /// submit, not that prompt sent again.
     #[test]
-    fn an_idle_rest_holds_until_a_turn_begins_in_the_new_run() {
-        use super::IdleRest;
-        use yulius_domain::task::Activity;
-        let rest = IdleRest {
-            activity: Activity::Waiting,
-            turn_began: 1_000,
-            goal_unfinished: true,
-        };
-        assert_eq!(IdleRest::at_launch(Some(rest), 1_000), Some(rest));
-        // A session that never had a turn rests too.
-        let fresh = IdleRest {
-            turn_began: 0,
-            ..rest
-        };
-        assert_eq!(IdleRest::at_launch(Some(fresh), 0), Some(fresh));
-        assert_eq!(
-            IdleRest::at_launch(Some(rest), 2_000),
-            None,
-            "a prompt was sent at once"
-        );
-        assert_eq!(
-            IdleRest::at_launch(None, 1_000),
-            None,
-            "it worked, or works on"
-        );
+    fn a_new_run_starts_with_an_empty_prompt_box_and_no_held_prompt() {
+        use std::sync::atomic::Ordering;
+        let runtime = super::TaskRuntime::new();
+        runtime.typed_at_ms.store(5_000, Ordering::SeqCst);
+        runtime.prompt_held.store(true, Ordering::SeqCst);
+        runtime.prompt_box_starts_empty(7_000);
+        assert_eq!(runtime.box_emptied_ms.load(Ordering::SeqCst), 7_000);
+        assert!(!runtime.prompt_held.load(Ordering::SeqCst));
     }
 
     /// Review of SPEC-332 (round 3): a person's switch and a hand-over may come mid-turn, so they

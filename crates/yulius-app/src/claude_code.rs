@@ -444,6 +444,7 @@ impl App {
         // replace the first's start on the watch and be refused its switch, or make the
         // restart a second time.
         let Some(_moving) = Moving::begin(services, task_id) else {
+            tracing::debug!(task = %task_id, %version, "another restart of this session on the new Claude Code is under way: left to it");
             return;
         };
         let sent = services
@@ -451,6 +452,7 @@ impl App {
             .lock()
             .is_ok_and(|moved| moved.get(task_id) == Some(&version));
         if sent {
+            tracing::debug!(task = %task_id, %version, "this session was restarted on the new Claude Code meanwhile: nothing to do");
             return;
         }
         // Known before the old run ends: the restarted session's run may end at once.
