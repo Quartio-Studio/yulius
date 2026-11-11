@@ -1,11 +1,11 @@
 ---
 yulius-task: 25decd3b-ed8e-4fcf-ab8e-a49ca9c2b1c2
-status: done
+status: in-progress
 ---
 
 # SPEC-466: Run migration: Yulius checks its GitHub App callback, Settings → Instance shows the move, the remote CLI follows it
 
-Status: done
+Status: in-progress
 Date: 2026-11-11
 Owner: Yulius task #446 (slice C of #442)
 Scope authorization: task #446, asked by the project's owner: "After a move changes the public
@@ -171,6 +171,7 @@ Remote clients
 - [x] `yulius remote` follows a move's redirect and the store remembers it
 - [x] Operations guide §5 and §7, remote control, API, architecture, product summary, changes
 - [x] Gates green and the independent review answered
+- [ ] The first review's findings fixed, each with a test that fails without it
 
 ## Acceptance criteria
 
