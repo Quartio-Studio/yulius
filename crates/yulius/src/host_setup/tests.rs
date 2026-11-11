@@ -8,12 +8,15 @@ use yulius_sandbox::docker_status::{ENGINE_MODULES, MODULES_FILE, modules_file_c
 
 use super::{
     Cmd, DOCKER_CE, DOCKER_SOURCE, HELPER_DROP_IN, Host, Mode, NEEDRESTART_RULE_FILE, Options, Out,
-    Run, UNIT_DROP_IN, UNIT_FILE, free_sub_range, passed, summary,
+    Run, UNIT_DROP_IN, UNIT_FILE, free_sub_range, lacks_namespaces, passed, summary,
 };
 
 const DATA: &str = "/var/lib/yulius";
 const EXE: &str = "/usr/local/bin/yulius";
 const SERVICE_UID: u32 = 999;
+const APPARMOR_D: &str = "/etc/apparmor.d";
+
+mod bwrap_userns;
 
 /// A unit's state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,6 +59,42 @@ struct Fake {
     containerd_tasks: usize,
     /// Files whose write fails as on a read-only `/etc` (the update helper's, #674).
     read_only: BTreeSet<PathBuf>,
+    /// AppArmor profiles the kernel holds, by name (SPEC-456).
+    profiles: BTreeMap<String, Profile>,
+    /// `apparmor_parser` cannot read a profile (no `abi/4.0`).
+    parser_fails: bool,
+    /// Commands that fail, by the first words of their line: the exit code (`None`: it cannot
+    /// be started) and what they say.
+    failing: Vec<(&'static str, Option<i32>, &'static str)>,
+}
+
+/// A loaded AppArmor profile, as far as bwrap's start depends on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Profile {
+    /// It attaches to `/usr/bin/bwrap`.
+    bwrap: bool,
+    /// `flags=(unconfined)`: what bwrap starts keeps its capabilities.
+    unconfined: bool,
+    /// It allows `userns`.
+    userns: bool,
+}
+
+/// The profiles a file declares, read as the measurements need them (not the item's own parser).
+fn profiles_in(text: &str) -> Vec<(String, Profile)> {
+    text.lines()
+        .filter_map(|l| l.strip_prefix("profile "))
+        .map(|header| {
+            let name = header.split(' ').next().unwrap_or_default().to_owned();
+            let profile = Profile {
+                bwrap: header.contains(" /usr/bin/bwrap "),
+                unconfined: header.contains("flags=(unconfined)"),
+                userns: ["  userns,\n", "  allow userns,\n", "{ userns, }"]
+                    .iter()
+                    .any(|rule| text.contains(rule)),
+            };
+            (name, profile)
+        })
+        .collect()
 }
 
 impl Fake {
@@ -80,6 +119,9 @@ impl Fake {
             docker_ps_fails: false,
             containerd_tasks: 0,
             read_only: BTreeSet::new(),
+            profiles: BTreeMap::new(),
+            parser_fails: false,
+            failing: Vec::new(),
         };
         fake.files
             .insert(PathBuf::from(EXE), (String::new(), 0, 0o100_755));
@@ -171,6 +213,56 @@ impl Fake {
         self.loaded.extend(listed);
         for unit in self.units.values_mut() {
             unit.active = unit.enabled;
+        }
+        // AppArmor's unit loads every file of its directory that no `disable/` link names.
+        self.profiles.clear();
+        let enabled: Vec<PathBuf> = self
+            .files
+            .keys()
+            .filter(|p| p.parent() == Some(Path::new(APPARMOR_D)))
+            .cloned()
+            .collect();
+        for file in enabled {
+            self.load_profiles(&file);
+        }
+    }
+
+    /// `apparmor_parser -r <file>`: `false` when a `disable/` link makes it skip the file.
+    fn load_profiles(&mut self, file: &Path) -> bool {
+        let name = file.file_name().unwrap_or_default();
+        if self
+            .links
+            .contains_key(&Path::new(APPARMOR_D).join("disable").join(name))
+        {
+            return false;
+        }
+        let text = self.files.get(file).map(|(t, _, _)| t.clone());
+        self.profiles.extend(profiles_in(&text.unwrap_or_default()));
+        true
+    }
+
+    /// What `bwrap --unshare-user … mount` does as the service user, as measured on Ubuntu
+    /// 24.04 and 26.04 and Debian 12 and 13 (SPEC-456, Context).
+    fn bwrap_proof(&self) -> Result<(), &'static str> {
+        let says = |path: &str, value: &str| self.text(path).is_some_and(|t| t.trim() == value);
+        if says("/proc/sys/user/max_user_namespaces", "0") {
+            return Err("bwrap: Creating new namespace failed: No space left on device");
+        }
+        if !says("/sys/module/apparmor/parameters/enabled", "Y") {
+            return Ok(());
+        }
+        let restricted = says(
+            "/proc/sys/kernel/apparmor_restrict_unprivileged_userns",
+            "1",
+        );
+        let attached: Vec<&Profile> = self.profiles.values().filter(|p| p.bwrap).collect();
+        match attached.as_slice() {
+            // Its children run under a profile that denies every capability.
+            [one] if !one.unconfined => Err("mount: /tmp: permission denied."),
+            [one] if one.userns || !restricted => Ok(()),
+            // No profile, or two that cancel each other: bwrap runs unconfined.
+            _ if restricted => Err("bwrap: setting up uid map: Permission denied"),
+            _ => Ok(()),
         }
     }
 
@@ -265,6 +357,20 @@ impl Host for Fake {
         let line = cmd.argv.join(" ");
         self.log.push(line.clone());
         let argv: Vec<&str> = cmd.argv.iter().map(String::as_str).collect();
+        let failing = self.failing.iter().find(|f| {
+            line.strip_prefix(f.0)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with(' '))
+        });
+        if let Some((_, code, why)) = failing {
+            return match code {
+                Some(code) => Ok(Out {
+                    code: *code,
+                    stdout: String::new(),
+                    stderr: (*why).to_owned(),
+                }),
+                None => Err((*why).to_owned()),
+            };
+        }
         if self.systemd_down && argv.first() == Some(&"systemctl") {
             return Ok(Out {
                 code: 1,
@@ -528,6 +634,92 @@ impl Host for Fake {
                 "--data-dir",
                 DATA,
             ] => ok(""),
+            [
+                "/usr/sbin/runuser",
+                "-u",
+                "yulius",
+                "--",
+                "bwrap",
+                "--unshare-user",
+                "--uid",
+                "0",
+                "--gid",
+                "0",
+                "--unshare-net",
+                "--dev-bind",
+                "/",
+                "/",
+                "--cap-add",
+                "ALL",
+                "--chdir",
+                "/",
+                "--",
+                "mount",
+                "-t",
+                "tmpfs",
+                "none",
+                "/tmp",
+            ] => {
+                assert!(
+                    !cmd.show,
+                    "the proof's output is the item's, not the terminal's"
+                );
+                match self.bwrap_proof() {
+                    Ok(()) => ok(""),
+                    Err(why) => fail(1, why),
+                }
+            }
+            ["/usr/sbin/apparmor_parser", "-r", file] => {
+                if !self.has(file) {
+                    fail(1, &format!("File {file} not found, skipping..."))
+                } else if self.parser_fails {
+                    fail(
+                        1,
+                        &format!(
+                            "AppArmor parser error for {file} in profile {file} at line 3: Could \
+                             not open 'abi/4.0': No such file or directory"
+                        ),
+                    )
+                } else if self.load_profiles(Path::new(file)) {
+                    ok("")
+                } else {
+                    ok(&format!(
+                        "Skipping profile in {APPARMOR_D}/disable: {file}\n"
+                    ))
+                }
+            }
+            ["/usr/sbin/apparmor_parser", "-R", file] => {
+                let names = profiles_in(self.text(file).unwrap_or_default());
+                let mut missing = false;
+                for (name, _) in names {
+                    missing |= self.profiles.remove(&name).is_none();
+                }
+                if missing {
+                    fail(
+                        254,
+                        "apparmor_parser: Unable to remove \"bwrap\".  Profile doesn't exist",
+                    )
+                } else {
+                    ok("")
+                }
+            }
+            ["ln", "-s", target, link] => {
+                if self.links.contains_key(Path::new(link)) {
+                    fail(
+                        1,
+                        &format!("ln: failed to create symbolic link '{link}': File exists"),
+                    )
+                } else {
+                    self.links
+                        .insert(PathBuf::from(link), PathBuf::from(target));
+                    ok("")
+                }
+            }
+            ["rm", "-f", file] => {
+                self.files.remove(Path::new(file));
+                self.links.remove(Path::new(file));
+                ok("")
+            }
             [EXE, "doctor", "--docker-smoke", "--data-dir", DATA] => {
                 if self.smoke_fails {
                     fail(1, "FAIL docker run --rm hello-world")
@@ -1417,7 +1609,7 @@ fn a_move_runs_the_setup_in_three_parts() {
     let host = Run::new(&mut fake, Mode::Setup, options(), &mut |_| {}).host_items();
     assert!(passed(&host), "{host:#?}");
     let names: Vec<&str> = host.iter().map(|l| l.name.as_str()).collect();
-    assert_eq!(names.last(), Some(&"subordinate ids"), "{names:?}");
+    assert_eq!(names.last(), Some(&"bwrap namespaces"), "{names:?}");
     assert!(!names.contains(&"yulius.service") && !names.contains(&"sandbox base"));
     // Nothing of the instance yet: no unit, no base, no start.
     assert!(!fake.has(UNIT_FILE), "{:#?}", fake.log);

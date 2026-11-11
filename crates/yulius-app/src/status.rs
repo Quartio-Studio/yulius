@@ -95,7 +95,7 @@ impl App {
             sessions: SessionCounts {
                 // What the limit counts: Done tasks' idle sessions do not (SES-101).
                 live: u32::try_from(working.len()).unwrap_or(u32::MAX),
-                limit: self.config.max_live_sessions,
+                limit: self.max_live_sessions(),
                 queued: u32::try_from(queued).unwrap_or(u32::MAX),
             },
             sandboxes,

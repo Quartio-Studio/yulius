@@ -214,6 +214,7 @@ pub fn install(
     let user = user.unwrap_or(&m.service.user);
     check(&m, target, user, yulius_store::schema_version()).map_err(Failure::Refused)?;
     let map = prepare(&m, target).map_err(Failure::Refused)?;
+    let owner = (map.uid.1, map.gid.1);
     let failed = |e: io::Error| {
         Failure::Failed(format!(
             "{e}; {} holds an incomplete copy: remove it (`sudo rm -rf {}`) before importing \
@@ -247,8 +248,76 @@ pub fn install(
             m.total_bytes
         ))));
     }
+    limits_mark(target, chown.then_some(owner)).map_err(failed)?;
     std::fs::remove_file(target.join(INCOMPLETE)).map_err(failed)?;
     Ok((m, report))
+}
+
+/// Leaves the mark that makes the first start here size the limits for this host (SPEC-459
+/// HSL-005), owned by the service user. Whatever the copy brought at its name is replaced, a
+/// link never followed.
+fn limits_mark(target: &Path, owner: Option<(u32, u32)>) -> io::Result<()> {
+    let mark = target.join(yulius_app::limits::ADAPT_MARK);
+    match std::fs::remove_file(&mark) {
+        Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
+        _ => {}
+    }
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&mark)?;
+    if let Some((uid, gid)) = owner {
+        std::os::unix::fs::fchown(&file, Some(uid), Some(gid))?;
+    }
+    Ok(())
+}
+
+/// `host setup`'s options for the copy's instance on this host.
+fn host_options(m: &Manifest, target: &Path, user: Option<&str>) -> crate::host_setup::Options {
+    crate::host_setup::Options {
+        data_dir: target.to_path_buf(),
+        user: user.unwrap_or(&m.service.user).to_owned(),
+        public_url: None,
+        exe: std::env::current_exe().unwrap_or_default(),
+        smoke: false,
+        service: m.service.unit.clone(),
+        update_state: None,
+    }
+}
+
+/// Whether this host cannot start a sandbox's namespace yet (SPEC-456 BNS-010): `host setup`'s
+/// item in check mode, which changes nothing.
+fn lacks_namespaces(m: &Manifest, user: Option<&str>) -> bool {
+    let mut host = crate::host_setup::system::RealHost { quiet: true };
+    let lines = crate::host_setup::Run::new(
+        &mut host,
+        crate::host_setup::Mode::Check,
+        host_options(m, Path::new(&m.data_dir), user),
+        &mut |_| {},
+    )
+    .namespaces();
+    crate::host_setup::lacks_namespaces(&lines)
+}
+
+/// What to do after an import. `namespaces` says that bwrap cannot start a sandbox's namespace
+/// here yet, which the setup fixes first.
+fn next_steps(url: &str, unit: &str, namespaces: bool) -> String {
+    let first = if namespaces {
+        "lets bwrap start the user namespaces sandboxes run in, which this host does not allow \
+         yet; "
+    } else {
+        ""
+    };
+    format!(
+        "Next:\n  1. sudo yulius host setup --public-url {url}\n     ({first}writes {unit}, \
+         builds the sandbox base for this host, checks Docker, starts Yulius)\n  2. Copy other \
+         Environment= lines you changed in the old {unit} (keys), then `sudo systemctl restart \
+         {unit}`. Resource limits are sized for this host at the first start (Settings, \
+         Instance shows them): leave the old YULIUS_MAX_SESSIONS, YULIUS_CI_* and \
+         YULIUS_SANDBOX_*_GB numbers behind.\n  3. Point the reverse proxy and DNS here.\n  4. \
+         Keep the old instance frozen or stopped (`yulius instance export --move` does that): \
+         both would run the same agents on the same repositories."
+    )
 }
 
 /// Makes the service user and its ids with `host setup`'s items and maps the copy's ids to them.
@@ -257,15 +326,7 @@ pub(crate) fn prepare_host(
     target: &Path,
     user: Option<&str>,
 ) -> Result<IdMap, String> {
-    let opts = crate::host_setup::Options {
-        data_dir: target.to_path_buf(),
-        user: user.unwrap_or(&m.service.user).to_owned(),
-        public_url: None,
-        exe: std::env::current_exe().unwrap_or_default(),
-        smoke: false,
-        service: m.service.unit.clone(),
-        update_state: None,
-    };
+    let opts = host_options(m, target, user);
     let mut host = crate::host_setup::system::RealHost { quiet: false };
     let mut print = |line: &yulius_contracts::update::HostLine| {
         eprintln!("{}", crate::host_setup::format_line(line));
@@ -395,13 +456,12 @@ pub fn main(opts: &ImportOptions) -> ExitCode {
                 .as_deref()
                 .unwrap_or("https://yulius.example.com");
             eprintln!(
-                "Next:\n  1. sudo yulius host setup --public-url {url}\n     (writes {unit}, \
-                 builds the sandbox base for this host, checks Docker, starts Yulius)\n  2. Copy \
-                 other Environment= lines you changed in the old {unit} (keys, limits), then \
-                 `sudo systemctl restart {unit}`.\n  3. Point the reverse proxy and DNS here.\n  \
-                 4. Keep the old instance frozen or stopped (`yulius instance export --move` \
-                 does that): both would run the same agents on the same repositories.",
-                unit = m.service.unit
+                "{}",
+                next_steps(
+                    url,
+                    &m.service.unit,
+                    lacks_namespaces(&m, opts.user.as_deref())
+                )
             );
             ExitCode::SUCCESS
         }
