@@ -23,8 +23,7 @@ const RECHECK_MS: i64 = 30_000;
 const QUICK_RECHECKS: u32 = 10;
 /// After them the wait doubles with every such answer, this often at most (4 minutes).
 const MAX_DOUBLINGS: u32 = 3;
-/// A sign-in start, and a check started beside a read, reuse an answer this young, so visitors
-/// cannot make the instance ask GitHub more often.
+/// A check started by a read reuses an answer this young: one a demand got meanwhile.
 const REUSE_MS: i64 = 5_000;
 
 /// GitHub's answer about a callback URL.
@@ -281,11 +280,6 @@ impl App {
     /// Asks GitHub in the background, unless a background check is already on its way: at start,
     /// when the App was stored and when a read finds the answer due (SPEC-466 MVC-003).
     pub fn start_github_callback_check(self: &Arc<Self>) {
-        self.ask_github_beside(true);
-    }
-
-    /// Starts a check in the background; `false` when one is already on its way.
-    fn ask_github_beside(self: &Arc<Self>, by_a_read: bool) -> bool {
         /// Says that no background check is on its way any more, however it ended.
         struct Done(Arc<App>);
         impl Drop for Done {
@@ -297,15 +291,14 @@ impl App {
             }
         }
         if self.github_callback.refreshing.swap(true, Ordering::SeqCst) {
-            return false;
+            return;
         }
         let done = Done(Arc::clone(self));
         tokio::spawn(async move {
-            if let Err(err) = done.0.ask_github(None, REUSE_MS, by_a_read).await {
+            if let Err(err) = done.0.ask_github(None, REUSE_MS, true).await {
                 tracing::warn!(error = %err, "could not ask GitHub about the sign-in callback");
             }
         });
-        true
     }
 
     /// GitHub just exchanged a sign-in code for the instance's callback URL, so it is registered,
@@ -341,18 +334,6 @@ impl App {
     #[must_use]
     pub fn github_callback_missing(self: &Arc<Self>) -> bool {
         matches!(self.kept_callback(), Some((CallbackState::Missing, _)))
-    }
-
-    /// A GitHub sign-in starts. The check never stops it: what GitHub answers to a made-up code
-    /// is advice, and GitHub's own page stays the authority (SPEC-466 MVC-013). While the kept
-    /// answer is "missing" and older than 5 s, the instance asks GitHub again beside the
-    /// sign-in, as a demand, so the sign-in page stops saying so once the callback is there.
-    /// Whether GitHub is asked.
-    pub fn github_sign_in_started(self: &Arc<Self>) -> bool {
-        self.kept_answer().is_some_and(|kept| {
-            kept.state == CallbackState::Missing
-                && self.now().0.saturating_sub(kept.at.0) >= REUSE_MS
-        }) && self.ask_github_beside(false)
     }
 
     fn address_view(&self, github: Option<CallbackFacts>) -> AddressView {

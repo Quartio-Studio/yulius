@@ -277,43 +277,27 @@ async fn a_second_demand_takes_the_running_check_s_answer() -> TestResult {
     Ok(())
 }
 
-/// GitHub was asked `count` times: a check started by a sign-in has ended.
-async fn until_github_was_asked(h: &Harness, count: usize) -> TestResult {
-    for _ in 0..500 {
-        if asked(h) >= count {
-            return Ok(());
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    Err(format!("GitHub was asked {} times, not {count}", asked(h)).into())
-}
-
-/// MVC-013: the check never blocks sign-in: GitHub decides. A sign-in that starts while the
-/// callback is known as missing goes to GitHub like any other and makes the instance ask again,
-/// so the sign-in page stops saying so once the callback is there; password sign-in works
-/// throughout.
+/// MVC-013: the check never blocks sign-in and a start asks GitHub nothing: GitHub decides, and
+/// no visitor can make the instance ask. Password sign-in works throughout.
 #[tokio::test]
-async fn a_sign_in_start_always_goes_to_github_and_asks_again_about_a_missing_callback()
--> TestResult {
+async fn a_sign_in_start_always_goes_to_github_and_asks_nothing() -> TestResult {
     const GITHUB: &str = "https://github.test/login/oauth/authorize";
     let h = harness()?;
     let admin = setup_superadmin_creds(&h).await?;
     configure_github_app(&h).await?;
     register(&h, &[]);
-    // Nothing is known yet: a start asks nothing.
-    assert!(!h.app.github_sign_in_started());
+    // Nothing is known yet.
+    assert!(start_sign_in(&h).await?.starts_with(GITHUB));
+    assert_eq!(asked(&h), 0);
+
+    // Known as missing, however old the answer is.
     let missing = call(&h.router, Method::POST, CHECK, Some(json!({})), &admin).await?;
     assert_eq!(missing.body["github"]["state"], "missing");
-    assert!(says_missing(&h).await?);
-
-    // The answer is a moment old: GitHub is not asked again for every visitor.
-    assert!(!h.app.github_sign_in_started());
-    assert!(start_sign_in(&h).await?.starts_with(GITHUB));
-    // Older than 5 s: the start still goes to GitHub, and GitHub is asked again beside it.
-    later(&h, 6_000);
-    assert!(start_sign_in(&h).await?.starts_with(GITHUB));
-    until_github_was_asked(&h, 2).await?;
-    assert!(says_missing(&h).await?);
+    for age in [0, 6_000, 3_600_000] {
+        later(&h, age);
+        assert!(start_sign_in(&h).await?.starts_with(GITHUB), "{age}");
+    }
+    assert_eq!(asked(&h), 1);
 
     let password = call(
         &h.router,
@@ -325,26 +309,21 @@ async fn a_sign_in_start_always_goes_to_github_and_asks_again_about_a_missing_ca
     .await?;
     assert_eq!(password.status, StatusCode::OK);
 
-    // Registered at GitHub since: the next start makes the instance find out by itself.
-    register(&h, &[CALLBACK]);
-    later(&h, 6_000);
-    assert!(start_sign_in(&h).await?.starts_with(GITHUB));
-    until_github_was_asked(&h, 3).await?;
-    assert_eq!(github(&h, &admin).await?["state"], "registered");
-    assert!(!says_missing(&h).await?);
-
-    // An answer that is not "missing" is not asked for again by a start.
-    later(&h, 3_600_000);
-    assert!(!h.app.github_sign_in_started());
+    // GitHub gave no answer: the same.
     if let Ok(mut error) = h.github.callback_error.lock() {
         *error = Some("GitHub: timed out".into());
     }
     let unknown = call(&h.router, Method::POST, CHECK, Some(json!({})), &admin).await?;
     assert_eq!(unknown.body["github"]["state"], "unknown");
     later(&h, 3_600_000);
-    assert!(!h.app.github_sign_in_started());
     assert!(start_sign_in(&h).await?.starts_with(GITHUB));
-    assert_eq!(asked(&h), 4);
+    assert_eq!(asked(&h), 2);
+
+    // Counted at the end, after one more demand: had any start asked GitHub, beside itself or
+    // later, the total would be higher.
+    let last = call(&h.router, Method::POST, CHECK, Some(json!({})), &admin).await?;
+    assert_eq!(last.body["github"]["state"], "unknown");
+    assert_eq!(asked(&h), 3);
     Ok(())
 }
 
@@ -634,36 +613,22 @@ async fn a_callback_that_stays_missing_is_asked_for_less_often_until_someone_dem
     until_asked(&h, &admin, 16).await?;
     assert_eq!(asked(&h), 16);
 
-    // A sign-in that starts is a demand too.
+    // An answer that changes is news: it is asked for again quickly, whatever stood before.
     for look in 0..10 {
         later(&h, 30_000);
         until_asked(&h, &admin, look + 17).await?;
     }
     later(&h, 60_000);
     until_asked(&h, &admin, 27).await?;
-    later(&h, 6_000);
-    assert!(h.app.github_sign_in_started());
-    until_github_was_asked(&h, 28).await?;
-    later(&h, 30_000);
-    until_asked(&h, &admin, 29).await?;
-    assert_eq!(asked(&h), 29);
-
-    // An answer that changes is news: it is asked for again quickly, whatever stood before.
-    for look in 0..10 {
-        later(&h, 30_000);
-        until_asked(&h, &admin, look + 30).await?;
-    }
-    later(&h, 60_000);
-    until_asked(&h, &admin, 40).await?;
     if let Ok(mut error) = h.github.callback_error.lock() {
         *error = Some("GitHub: timed out".into());
     }
     later(&h, 120_000);
-    until_asked(&h, &admin, 41).await?;
+    until_asked(&h, &admin, 28).await?;
     until_state(&h, &admin, "unknown").await?;
     later(&h, 30_000);
-    until_asked(&h, &admin, 42).await?;
-    assert_eq!(asked(&h), 42);
+    until_asked(&h, &admin, 29).await?;
+    assert_eq!(asked(&h), 29);
     Ok(())
 }
 

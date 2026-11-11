@@ -92,9 +92,8 @@ pub async fn github_start(State(app): State<AppState>, Query(q): Query<StartQuer
             return sign_in_refused("failed", next, None);
         }
     }
-    // Never stopped by what the instance knows of its callback: GitHub decides. A start while
-    // the callback is known as missing makes the instance ask GitHub again (SPEC-466 MVC-013).
-    app.github_sign_in_started();
+    // Never stopped by what the instance knows of its callback, and no question to GitHub:
+    // GitHub decides, and a sign-in that completes proves the callback (SPEC-466 MVC-013).
     match app
         .github_sign_in_url(next.unwrap_or("/"), select_account)
         .await
