@@ -385,12 +385,15 @@ mod moves {
         out
     }
 
-    /// What the task `id` read (its status and activity) in each update published to the UI on
-    /// `events` so far, oldest first.
+    /// What a task read in one update published to the UI: its status and its activity.
+    type Read = (String, Option<String>);
+
+    /// What the task `id` read in each update published to the UI on `events` so far, oldest
+    /// first.
     fn published(
         events: &mut tokio::sync::broadcast::Receiver<Envelope>,
         id: &TaskId,
-    ) -> Result<Vec<(String, Option<String>)>, Box<dyn std::error::Error>> {
+    ) -> Result<Vec<Read>, Box<dyn std::error::Error>> {
         use tokio::sync::broadcast::error::TryRecvError;
         let mut read = Vec::new();
         loop {
