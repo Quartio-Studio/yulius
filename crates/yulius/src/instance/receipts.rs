@@ -66,6 +66,12 @@ pub trait Ledger {
     /// # Errors
     /// The record cannot be kept.
     fn kept(&mut self, path: Digest, state: Digest) -> io::Result<()>;
+    /// Makes the records durable: called before a stream's checksum is sent, so a stream the
+    /// new host acknowledges whole always has its whole record here.
+    ///
+    /// # Errors
+    /// The records cannot be written.
+    fn seal(&mut self) -> io::Result<()>;
 }
 
 /// A stream sent and not yet reconciled with the new host's marker.
@@ -330,23 +336,6 @@ impl Stage {
         Ok(())
     }
 
-    /// Makes the journal durable; call it before the stream's checksum is sent, so a stream the
-    /// new host acknowledges whole always has its whole journal here.
-    ///
-    /// # Errors
-    /// The journal cannot be written.
-    pub fn seal(&mut self) -> io::Result<()> {
-        let Some(journal) = &mut self.journal else {
-            return Ok(());
-        };
-        journal.file.sync_all()?;
-        if let Some(kept) = &mut journal.kept {
-            kept.flush()?;
-            kept.get_ref().sync_all()?;
-        }
-        Ok(())
-    }
-
     /// How many entries the pending stream's journal holds, and the stream's digest before
     /// its entry number `at`.
     fn journal(&self) -> (u64, impl Fn(u64) -> Option<String> + use<>) {
@@ -416,6 +405,11 @@ impl Stage {
                 // nothing else.
                 return self.replace(p);
             }
+            if last.cleared {
+                // It removed paths this host never sent and did not finish: nothing known of
+                // the staged copy holds any more. The stage goes on, with no receipts.
+                return self.unknown(p);
+            }
             self.meta.whole |= last.complete && take == count;
             (take, last.deferred.clone())
         } else {
@@ -470,6 +464,27 @@ impl Stage {
         let log = log.into_inner().map_err(|e| io(e.into_error()))?;
         log.sync_all().map_err(io)?;
         Ok(out)
+    }
+
+    /// The stage goes on with no receipts: the next pass sends everything again.
+    fn unknown(&mut self, pending: &Pending) -> Result<Reconciled, String> {
+        let revoked = self.held.len() as u64;
+        self.held.clear();
+        let old = std::mem::replace(
+            &mut self.meta.log,
+            format!("receipts-{}", self.meta.acked + 1),
+        );
+        self.meta.log_len = 0;
+        self.meta.acked += 1;
+        self.meta.whole = false;
+        self.meta.began = Some(pending.began);
+        self.settle()?;
+        let _ = std::fs::remove_file(self.dir.join(old));
+        Ok(Reconciled {
+            fresh: false,
+            adopted: 0,
+            revoked,
+        })
     }
 
     /// The receipts become what a completed frozen pass left alone (`pending.kept`).
@@ -553,6 +568,18 @@ impl Ledger for Stage {
         };
         kept.write_all(&path)?;
         kept.write_all(&state)
+    }
+
+    fn seal(&mut self) -> io::Result<()> {
+        let Some(journal) = &mut self.journal else {
+            return Ok(());
+        };
+        journal.file.sync_all()?;
+        if let Some(kept) = &mut journal.kept {
+            kept.flush()?;
+            kept.get_ref().sync_all()?;
+        }
+        Ok(())
     }
 }
 

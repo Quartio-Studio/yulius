@@ -200,6 +200,7 @@ struct Book {
     held: HashMap<Digest, Digest>,
     sent: Vec<(Digest, Option<Digest>)>,
     kept: Vec<(Digest, Digest)>,
+    sealed: u32,
 }
 
 impl Ledger for Book {
@@ -221,6 +222,11 @@ impl Ledger for Book {
 
     fn kept(&mut self, path: Digest, state: Digest) -> io::Result<()> {
         self.kept.push((path, state));
+        Ok(())
+    }
+
+    fn seal(&mut self) -> io::Result<()> {
+        self.sealed += 1;
         Ok(())
     }
 }
@@ -310,15 +316,7 @@ fn live(
     began: (i64, i64),
 ) -> Result<(Stream, Sent), Box<dyn std::error::Error>> {
     let mut out = Vec::new();
-    let sent = send_live(
-        root,
-        &pass(true),
-        &mut out,
-        book,
-        began,
-        &mut |_| {},
-        &mut |_| Ok(()),
-    )?;
+    let sent = send_live(root, &pass(true), &mut out, book, began, &mut |_| {})?;
     assert_eq!(sent.bytes, out.len() as u64);
     Ok((read(&out)?, sent))
 }
@@ -340,7 +338,7 @@ fn exact(root: &Path, book: &mut Book) -> Result<Stream, Box<dyn std::error::Err
         &mut out,
         Some(book),
         &mut |_| {},
-        &mut |_| Ok(()),
+        &mut || Ok(()),
     )?;
     assert_eq!((total, out.len() as u64), (plan.total, plan.total));
     let stream = read(&out)?;
@@ -361,6 +359,8 @@ fn a_first_warm_pass_sends_everything_and_the_next_only_what_changed() -> TestRe
         (sent.walked, sent.sent, sent.vanished, sent.torn),
         (8, 8, 0, 0)
     );
+    // The records were made durable before the checksum went out.
+    assert_eq!(book.sealed, 1);
     assert!(!first.paths().iter().any(|p| p.starts_with("data/system")));
     // Sent is not held: without the new host's word everything is sent again.
     let (again, _) = live(root, &mut Book::default(), later())?;
@@ -488,7 +488,6 @@ fn a_file_that_shrinks_while_it_is_read_is_padded_and_sent_again() -> TestResult
                     .is_ok();
             }
         },
-        &mut |_| Ok(()),
     )?;
     assert_eq!(sent.torn, 1);
     let stream = read(&out)?;
@@ -529,7 +528,6 @@ fn a_path_that_vanishes_during_a_warm_pass_does_not_fail_it() -> TestResult {
                 let _ = fs::remove_file(root.join("yulius.db"));
             }
         },
-        &mut |_| Ok(()),
     )?;
     let stream = read(&out)?;
     assert_eq!(sent.vanished, 2, "{:?}", stream.paths());
@@ -556,7 +554,7 @@ fn a_path_that_vanishes_during_a_warm_pass_does_not_fail_it() -> TestResult {
         Vec::new(),
         Some(&mut book),
         &mut |_| {},
-        &mut |_| Ok(()),
+        &mut || Ok(()),
     );
     assert!(err.is_err());
     Ok(())

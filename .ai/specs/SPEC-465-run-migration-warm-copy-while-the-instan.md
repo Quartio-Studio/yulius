@@ -154,7 +154,7 @@ Resume and bound
 - [x] Spec SPEC-465 and ADR-0303 for the warm copy
 - [x] Receipts on the old host: the map of what the new host holds, the journal of a stream, adoption
 - [x] Passes in the export: a live walk that tolerates change, an exact delta with the kept paths
-- [ ] Extraction onto a staged copy: replace, link to earlier files, keep directory times, defer or delete
+- [x] Extraction onto a staged copy: replace, link to earlier files, keep directory times, defer or delete
 - [ ] The import of a pass: stage marker, acknowledged prefix, deletions, sync
 - [ ] The move: warm passes, estimate and --max-downtime, the frozen delta, resume
 - [ ] Operations guide §7, architecture, product summary, changes, SPEC-460's pointer

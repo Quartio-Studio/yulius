@@ -36,6 +36,7 @@ fn landed(nonce: &str, entries: u64, complete: bool, live: bool) -> Landed {
         complete,
         live,
         deferred: Vec::new(),
+        cleared: false,
     }
 }
 
@@ -340,5 +341,32 @@ fn the_state_directory_is_private() -> TestResult {
     assert_eq!(mode("stage.json")?, 0o600);
     assert_ne!(token(), token());
     assert_eq!(token().len(), 16);
+    Ok(())
+}
+
+#[test]
+fn a_frozen_pass_that_removed_and_was_cut_leaves_nothing_known() -> TestResult {
+    let tmp = tempfile::tempdir()?;
+    let mut stage = new_stage(tmp.path())?;
+    send(&mut stage, "n1", true, &[1, 2, 3])?;
+    stage.reconcile(
+        Some(&mark("s1", 1, Some(landed("n1", 3, true, true)))),
+        BOOT,
+    )?;
+    // It replaced a directory by a file (what was below is gone there) and then broke.
+    stage.begin("n2", false, 2_000, BOOT)?;
+    stage.kept(d(1), d(101))?;
+    stage.sending(d(2), check(0))?;
+    stage.seal()?;
+    let mut last = landed("n2", 1, false, false);
+    last.cleared = true;
+    let found = stage.reconcile(Some(&mark("s1", 2, Some(last))), BOOT)?;
+    assert_eq!((found.fresh, found.adopted, found.revoked), (false, 0, 3));
+    assert_eq!(
+        (stage.id(), stage.acked(), stage.receipts(), stage.whole()),
+        (Some("s1"), 2, 0, false)
+    );
+    let again = Stage::open(&tmp.path().join("copy"));
+    assert_eq!((again.acked(), again.receipts()), (2, 0));
     Ok(())
 }

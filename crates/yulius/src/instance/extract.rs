@@ -166,6 +166,8 @@ pub struct Extractor {
     touched: HashMap<Vec<u8>, Timestamps>,
     /// The entries (by number) a warm pass left out.
     deferred: Vec<u64>,
+    /// Something of the staged copy was removed beside the entries' own paths.
+    cleared: bool,
     report: Report,
 }
 
@@ -218,6 +220,7 @@ impl Extractor {
             files: HashSet::new(),
             touched: HashMap::new(),
             deferred: Vec::new(),
+            cleared: false,
             report: Report::default(),
         })
     }
@@ -227,6 +230,14 @@ impl Extractor {
     #[must_use]
     pub fn deferred(&self) -> &[u64] {
         &self.deferred
+    }
+
+    /// Whether paths other than the entries' own were removed from the staged copy (what was
+    /// below a directory an entry replaced, or what [`Extractor::prune`] took): what the old
+    /// host knew of them no longer holds.
+    #[must_use]
+    pub fn cleared(&self) -> bool {
+        self.cleared
     }
 
     /// Remembers the time of the staged copy's directory `comps` before something in it
@@ -286,13 +297,16 @@ impl Extractor {
     /// Makes room at `name` for an entry: what is there goes, unless it is a directory and
     /// `keep_dir`. A directory in a file's way is an error in a new copy, stays in a warm pass
     /// and goes with everything below it in the frozen one.
-    fn clear(&self, dir: &OwnedFd, name: &OsStr, keep_dir: bool) -> io::Result<Way> {
+    fn clear(&mut self, dir: &OwnedFd, name: &OsStr, keep_dir: bool) -> io::Result<Way> {
         match rustix::fs::statat(dir, name, AtFlags::SYMLINK_NOFOLLOW) {
             Ok(st) if FileType::from_raw_mode(st.st_mode) == FileType::Directory => {
                 match (keep_dir, self.onto) {
                     (true, _) => Ok(Way::Dir),
                     (false, Onto::Warm) => Ok(Way::Blocked),
-                    (false, Onto::Frozen) => remove_tree(dir, name).map(|_| Way::Clear),
+                    (false, Onto::Frozen) => {
+                        self.cleared = true;
+                        remove_tree(dir, name).map(|_| Way::Clear)
+                    }
                     (false, Onto::New) => Err(io::Error::other(format!(
                         "{} is a directory where the copy has a file",
                         name.to_string_lossy()
@@ -545,6 +559,7 @@ impl Extractor {
                 let parents: Vec<&[u8]> =
                     comps[..comps.len() - 1].iter().map(Vec::as_slice).collect();
                 self.touch(&parents, dir)?;
+                self.cleared = true;
                 removed += remove_tree(dir, &name)?;
             } else if is_dir {
                 let fd = rustix::fs::openat(dir, &name, dir_flags(), Mode::empty())?;

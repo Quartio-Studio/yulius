@@ -10,11 +10,15 @@ use std::process::ExitCode;
 use serde::{Deserialize, Serialize};
 
 use super::archive::{Item, Reader};
-use super::extract::{Extractor, IdMap, Report};
-use super::{FORMAT, MANIFEST, MANIFEST_LEN, Manifest, Progress, REFUSED};
+use super::extract::{Extractor, IdMap, Onto, Report};
+use super::{FORMAT, KEPT, MANIFEST, MANIFEST_LEN, Manifest, Pass, Progress, REFUSED};
+use crate::wiring::update_files::write_atomic;
 
-/// The marker of an import that has not finished, at the data directory's top.
+/// The marker of an import that has not finished, at the data directory's top. A move's staged
+/// copy keeps its [`Mark`] in it until the copy is proven.
 pub const INCOMPLETE: &str = ".yulius-import-incomplete";
+/// The marker while it is rewritten ([`write_atomic`]).
+const INCOMPLETE_NEW: &str = "..yulius-import-incomplete.tmp";
 
 /// What the marker of a staged copy says (SPEC-465 WCP-005): the copy a move fills in passes
 /// until it is proven. An empty marker is a plain import that did not finish.
@@ -48,6 +52,10 @@ pub struct Landed {
     /// The entries (by number) that were not installed: a warm pass removes no directory.
     #[serde(default)]
     pub deferred: Vec<u64>,
+    /// Paths other than the stream's own entries were removed and the stream did not complete:
+    /// what the old host knew of the staged copy no longer holds.
+    #[serde(default)]
+    pub cleared: bool,
 }
 
 impl Mark {
@@ -168,6 +176,49 @@ fn existing_target(target: &Path, user: &str) -> Result<(), String> {
 /// # Errors
 /// Each refusal, saying why and what to do.
 pub fn check(m: &Manifest, target: &Path, user: &str, own_schema: u32) -> Result<(), String> {
+    if m.pass.is_some() {
+        return Err(
+            "the stream is one pass of `yulius instance migrate`, not a whole copy: only that \
+             command installs it"
+                .into(),
+        );
+    }
+    check_stream(m, target, own_schema)?;
+    if std::fs::symlink_metadata(target.join(INCOMPLETE)).is_ok() {
+        return Err(format!(
+            "an earlier import into {} did not finish: remove that directory (`sudo rm -rf {}`) \
+             and import again",
+            target.display(),
+            target.display()
+        ));
+    }
+    existing_target(target, user)?;
+    if let Some((bytes, inodes)) = free(target) {
+        if bytes < m.total_bytes {
+            return Err(format!(
+                "the copy needs {}, {} is free where {} goes",
+                yulius_import::human_bytes(m.total_bytes),
+                yulius_import::human_bytes(bytes),
+                target.display()
+            ));
+        }
+        if let Some(inodes) = inodes
+            && inodes < m.entries
+        {
+            return Err(format!(
+                "the copy has {} files and directories, the filesystem of {} has {inodes} inodes \
+                 free",
+                m.entries,
+                target.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// What holds for a whole copy and for a pass alike: a format and schema this build reads, and
+/// the target being the plain path the stream was read from.
+fn check_stream(m: &Manifest, target: &Path, own_schema: u32) -> Result<(), String> {
     if m.format != FORMAT {
         return Err(format!(
             "the copy is in format {}, this Yulius reads format {FORMAT}",
@@ -199,35 +250,6 @@ pub fn check(m: &Manifest, target: &Path, user: &str, own_schema: u32) -> Result
              worktrees, the database and sandbox files hold absolute paths under it",
             m.data_dir, m.data_dir
         ));
-    }
-    if std::fs::symlink_metadata(target.join(INCOMPLETE)).is_ok() {
-        return Err(format!(
-            "an earlier import into {} did not finish: remove that directory (`sudo rm -rf {}`) \
-             and import again",
-            target.display(),
-            target.display()
-        ));
-    }
-    existing_target(target, user)?;
-    if let Some((bytes, inodes)) = free(target) {
-        if bytes < m.total_bytes {
-            return Err(format!(
-                "the copy needs {}, {} is free where {} goes",
-                yulius_import::human_bytes(m.total_bytes),
-                yulius_import::human_bytes(bytes),
-                target.display()
-            ));
-        }
-        if let Some(inodes) = inodes
-            && inodes < m.entries
-        {
-            return Err(format!(
-                "the copy has {} files and directories, the filesystem of {} has {inodes} inodes \
-                 free",
-                m.entries,
-                target.display()
-            ));
-        }
     }
     Ok(())
 }
@@ -304,6 +326,291 @@ pub fn install(
     limits_mark(target, chown.then_some(owner)).map_err(failed)?;
     std::fs::remove_file(target.join(INCOMPLETE)).map_err(failed)?;
     Ok((m, report))
+}
+
+/// What a pass of a move left in the staged copy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Landing {
+    /// The stream's manifest.
+    pub manifest: Manifest,
+    /// What the extraction changed from the archive.
+    pub report: Report,
+    /// The marker as the pass left it: what the old host adopts.
+    pub mark: Mark,
+    /// Entries removed because the old host no longer holds them (the frozen pass).
+    pub removed: u64,
+}
+
+/// What a pass needs of the host it lands on.
+pub struct Ground<'a> {
+    /// Own files by their mapped ids (off only where the caller cannot: tests not run as
+    /// root).
+    pub chown: bool,
+    /// Syncs the filesystem that holds the data directory ([`super::export::sync`]).
+    pub sync: &'a mut dyn FnMut(&Path) -> io::Result<()>,
+    /// Gets the bytes read so far.
+    pub tick: &'a mut dyn FnMut(&Manifest, u64),
+}
+
+/// Installs one pass of a move read from `input` (SPEC-465 WCP-005, WCP-008, WCP-011): the
+/// checks a whole copy gets, `prepare` (the host's user and ids, then the id map), then
+/// [`take_in`].
+///
+/// # Errors
+/// [`Failure::Refused`] before anything was written, else [`Failure::Failed`]: the staged copy
+/// keeps what arrived, and its marker says how much.
+pub fn land(
+    input: impl Read,
+    target: &Path,
+    user: Option<&str>,
+    prepare: &mut dyn FnMut(&Manifest, &Path) -> Result<IdMap, String>,
+    ground: &mut Ground<'_>,
+) -> Result<Landing, Failure> {
+    let mut r = Reader::new(input);
+    let m = manifest(&mut r).map_err(Failure::Refused)?;
+    if m.pass.is_none() {
+        return Err(Failure::Refused(
+            "the stream is a whole copy, not a pass of a move".into(),
+        ));
+    }
+    check_stream(&m, target, yulius_store::schema_version()).map_err(Failure::Refused)?;
+    let user = user.unwrap_or(&m.service.user).to_owned();
+    // Before the host is touched: a stream that is not of the stage here changes nothing.
+    stage_of(&m, target).map_err(Failure::Refused)?;
+    let map = prepare(&m, target).map_err(Failure::Refused)?;
+    take_in(r, &m, target, &user, map, ground)
+}
+
+/// The staged copy's marker when the pass of `m` builds on it; `None` when the pass begins a
+/// stage in a data directory that holds none.
+fn stage_of(m: &Manifest, target: &Path) -> Result<Option<Mark>, String> {
+    let pass = m.pass.as_ref().ok_or("the stream is not a pass")?;
+    let shown = target.display();
+    let marked = std::fs::symlink_metadata(target.join(INCOMPLETE)).is_ok();
+    match Mark::read(target) {
+        Some(mark) if mark.stage == pass.stage && mark.acked == pass.seq => Ok(Some(mark)),
+        Some(mark) => Err(format!(
+            "{shown} holds the staged copy {} after {} passes; the stream is pass {} of {}",
+            mark.stage, mark.acked, pass.seq, pass.stage
+        )),
+        None if marked => Err(format!(
+            "an earlier import into {shown} did not finish and is not a move's staged copy"
+        )),
+        None if pass.seq == 0 => Ok(None),
+        None => Err(format!(
+            "{shown} holds no staged copy; the stream is pass {} of {}",
+            pass.seq, pass.stage
+        )),
+    }
+}
+
+fn write_mark(target: &Path, mark: &Mark) -> io::Result<()> {
+    let json = serde_json::to_vec(mark).map_err(io::Error::other)?;
+    write_atomic(&target.join(INCOMPLETE), &json, 0o600)?;
+    // The name too: the old host skips what this says is here.
+    File::open(target)?.sync_all()
+}
+
+/// The names at a staged copy's top that are this host's own: what a copy never carries and
+/// the marker.
+fn own_name(name: &[u8]) -> bool {
+    !super::walk::copied(name) || name == INCOMPLETE.as_bytes() || name == INCOMPLETE_NEW.as_bytes()
+}
+
+/// Takes the entries of a pass into the staged copy at `target`, after its manifest `m` was
+/// read from `r` and found fit for this host. The stream must be the next of the stage here,
+/// or the first into an empty directory. Whatever it ends with, the entries that arrived stay:
+/// the directories' times are set, the filesystem is synced and the marker then says how many
+/// entries were taken in and what the stream's digest was there, so the old host adopts
+/// exactly them. A frozen pass that arrived whole also removes what its kept paths do not name
+/// and leaves the limits mark.
+///
+/// # Errors
+/// [`Failure::Refused`] when the stream is not of the stage here (nothing was written), else
+/// [`Failure::Failed`].
+pub fn take_in<R: Read>(
+    mut r: Reader<R>,
+    m: &Manifest,
+    target: &Path,
+    user: &str,
+    map: IdMap,
+    ground: &mut Ground<'_>,
+) -> Result<Landing, Failure> {
+    let pass = m
+        .pass
+        .clone()
+        .ok_or_else(|| Failure::Refused("the stream is not a pass".into()))?;
+    let stage = stage_of(m, target).map_err(Failure::Refused)?;
+    if stage.is_none() {
+        existing_target(target, user).map_err(Failure::Refused)?;
+        std::fs::create_dir_all(target).map_err(|e| Failure::Refused(e.to_string()))?;
+        // Created new: a link planted at the marker's name is never followed.
+        let made = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(target.join(INCOMPLETE))
+            .and_then(|_| {
+                write_mark(
+                    target,
+                    &Mark {
+                        version: 1,
+                        stage: pass.stage.clone(),
+                        acked: 0,
+                        last: None,
+                    },
+                )
+            });
+        made.map_err(|e| Failure::Refused(format!("cannot mark the staged copy: {e}")))?;
+    }
+    let onto = if pass.live { Onto::Warm } else { Onto::Frozen };
+    let mut ex = Extractor::onto(target, map, ground.chown, onto)
+        .map_err(|e| Failure::Failed(e.to_string()))?;
+    let Arrived {
+        taken,
+        sums,
+        kept,
+        mut failure,
+    } = entries(&mut r, m, &pass, &mut ex, ground);
+    let whole = failure.is_none();
+    let mut removed = 0;
+    if let (true, Some(mut kept)) = (whole, kept) {
+        kept.sort_unstable();
+        match ex.prune(&kept, &own_name) {
+            Ok(count) => removed = count,
+            Err(e) => {
+                failure = Some(format!(
+                    "cannot remove what the old host no longer holds: {e}"
+                ))
+            }
+        }
+    }
+    let deferred = ex.deferred().to_vec();
+    let cleared = ex.cleared();
+    let report = ex.finish().unwrap_or_else(|e| {
+        failure.get_or_insert(format!("cannot set the directories' times: {e}"));
+        Report::default()
+    });
+    if failure.is_none()
+        && !pass.live
+        && let Err(e) = limits_mark(target, ground.chown.then_some((map.uid.1, map.gid.1)))
+    {
+        failure = Some(e.to_string());
+    }
+    let mark = Mark {
+        version: 1,
+        stage: pass.stage.clone(),
+        acked: pass.seq + 1,
+        last: Some(Landed {
+            nonce: pass.nonce.clone(),
+            entries: taken,
+            sums: sums.map(hex::encode),
+            complete: failure.is_none(),
+            live: pass.live,
+            deferred,
+            cleared,
+        }),
+    };
+    // Acknowledged only once it is on disk: first what arrived, then the marker that says so.
+    let acknowledged = (ground.sync)(target).and_then(|()| write_mark(target, &mark));
+    match (failure, acknowledged) {
+        (None, Ok(())) => Ok(Landing {
+            manifest: m.clone(),
+            report,
+            mark,
+            removed,
+        }),
+        (Some(why), Ok(())) => Err(Failure::Failed(format!(
+            "{why}; the staged copy in {} keeps the {taken} entries of this pass that arrived",
+            target.display()
+        ))),
+        (why, Err(e)) => Err(Failure::Failed(format!(
+            "{}the staged copy in {} could not be synced and marked ({e}): nothing of this pass \
+             counts",
+            why.map(|why| format!("{why}; ")).unwrap_or_default(),
+            target.display()
+        ))),
+    }
+}
+
+/// What arrived of a pass.
+struct Arrived {
+    /// Entries taken in.
+    taken: u64,
+    /// The stream's digest before the next entry, and before the last one taken.
+    sums: [[u8; 8]; 2],
+    /// The kept paths of an exact pass.
+    kept: Option<Vec<[u8; 16]>>,
+    /// Why the stream did not arrive whole.
+    failure: Option<String>,
+}
+
+/// Reads a pass's entries into `ex`.
+fn entries<R: Read>(
+    r: &mut Reader<R>,
+    m: &Manifest,
+    pass: &Pass,
+    ex: &mut Extractor,
+    ground: &mut Ground<'_>,
+) -> Arrived {
+    let mut taken = 0u64;
+    let mut sums = [r.sum(); 2];
+    let mut kept: Option<Vec<[u8; 16]>> = None;
+    let marker = [b"data/", INCOMPLETE.as_bytes()].concat();
+    let ended: io::Result<()> = loop {
+        let e = match r.next_item() {
+            Ok(Item::End) => break Ok(()),
+            Ok(Item::Entry(e)) => e,
+            Err(e) => break Err(e),
+        };
+        if kept.is_some() {
+            break Err(io::Error::other("an entry follows the kept paths"));
+        }
+        if e.path == KEPT {
+            let mut bytes = Vec::new();
+            if let Err(e) = r.data_reader().read_to_end(&mut bytes) {
+                break Err(e);
+            }
+            if pass.live || bytes.len() as u64 != pass.kept.saturating_mul(16) {
+                break Err(io::Error::other(
+                    "the kept paths are not what the manifest says",
+                ));
+            }
+            kept = Some(bytes.as_chunks::<16>().0.to_vec());
+            continue;
+        }
+        if e.path == marker {
+            break Err(io::Error::other(format!(
+                "the old data directory holds {INCOMPLETE}, the name of the staged copy's marker"
+            )));
+        }
+        if let Err(e) = ex
+            .put(&e, &mut r.data_reader())
+            .and_then(|()| r.end_entry())
+        {
+            break Err(e);
+        }
+        taken += 1;
+        sums = [r.sum(), sums[0]];
+        (ground.tick)(m, r.read_bytes());
+    };
+    let failure = match ended {
+        Err(e) => Some(e.to_string()),
+        Ok(()) if !pass.live && r.read_bytes() != m.total_bytes => Some(format!(
+            "the pass is {} bytes long, its manifest says {}",
+            r.read_bytes(),
+            m.total_bytes
+        )),
+        Ok(()) if !pass.live && kept.is_none() => {
+            Some("an exact pass came without its kept paths".to_owned())
+        }
+        Ok(()) => None,
+    };
+    Arrived {
+        taken,
+        sums,
+        kept,
+        failure,
+    }
 }
 
 /// Leaves the mark that makes the first start here size the limits for this host (SPEC-459

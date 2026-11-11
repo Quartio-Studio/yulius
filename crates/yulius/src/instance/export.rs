@@ -179,7 +179,7 @@ pub fn send(
     tick: &mut dyn FnMut(u64),
     before_end: &mut dyn FnMut() -> io::Result<()>,
 ) -> io::Result<u64> {
-    send_pass(root, plan, manifest, out, None, tick, &mut |_| before_end())
+    send_pass(root, plan, manifest, out, None, tick, before_end)
 }
 
 fn head(manifest: &Manifest, w: &mut Writer<impl Write>) -> io::Result<()> {
@@ -198,8 +198,8 @@ fn head(manifest: &Manifest, w: &mut Writer<impl Write>) -> io::Result<()> {
 
 /// [`send`] for an exact pass of a move planned with [`plan_pass`] (SPEC-465 WCP-007): with
 /// `ledger`, the entries the new host holds are left out and recorded as kept, each sent entry
-/// is recorded before it leaves, and the stream ends with the digests of every path.
-/// `before_end` gets the ledger back, to make its records durable before the checksum.
+/// is recorded before it leaves, and the stream ends with the digests of every path. The
+/// ledger is sealed before the checksum.
 ///
 /// # Errors
 /// As [`send`].
@@ -210,7 +210,7 @@ pub fn send_pass(
     out: impl Write,
     mut ledger: Option<&mut dyn Ledger>,
     tick: &mut dyn FnMut(u64),
-    before_end: &mut dyn FnMut(Option<&mut dyn Ledger>) -> io::Result<()>,
+    before_end: &mut dyn FnMut() -> io::Result<()>,
 ) -> io::Result<u64> {
     let mut manifest = manifest.clone();
     manifest.total_bytes = plan.total;
@@ -260,10 +260,11 @@ pub fn send_pass(
         // No trailer: the reader sees an incomplete copy.
         return Err(drifted());
     }
-    if ledger.is_some() {
+    if let Some(ledger) = ledger {
         w.entry(&kept_entry(plan.kept), Some(&mut paths.as_slice()), |_| {})?;
+        ledger.seal()?;
     }
-    before_end(ledger)?;
+    before_end()?;
     w.finish()
 }
 
@@ -319,12 +320,11 @@ fn same_inode(a: &std::fs::Metadata, b: &std::fs::Metadata) -> bool {
 /// gone is left out; a file's header is its open file's stat and exactly that many bytes
 /// follow. An entry earns a receipt when its stat did not move while it was read, it lies on
 /// `root`'s filesystem and it last changed [`RACY_SECS`] before `began`: the caller syncs that
-/// filesystem and then reads the clock, before the call. `manifest` names the pass; its totals
-/// stay estimates.
+/// filesystem after it read the clock, before the call. `manifest` names the pass; its totals
+/// stay estimates. The ledger is sealed before the checksum.
 ///
 /// # Errors
-/// A read or write error that is not a path being gone, a record `ledger` cannot keep, or
-/// `before_end`'s error.
+/// A read or write error that is not a path being gone, or a record `ledger` cannot keep.
 pub fn send_live(
     root: &Path,
     manifest: &Manifest,
@@ -332,7 +332,6 @@ pub fn send_live(
     ledger: &mut dyn Ledger,
     began: (i64, i64),
     tick: &mut dyn FnMut(u64),
-    before_end: &mut dyn FnMut(&mut dyn Ledger) -> io::Result<()>,
 ) -> io::Result<Sent> {
     let mut w = Writer::new(out);
     head(manifest, &mut w)?;
@@ -399,7 +398,7 @@ pub fn send_live(
     })?;
     sent.vanished += skipped.vanished;
     sent.special = skipped.special;
-    before_end(ledger)?;
+    ledger.seal()?;
     sent.bytes = w.finish()?;
     Ok(sent)
 }
