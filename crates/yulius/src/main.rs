@@ -569,6 +569,14 @@ enum HostAction {
         )]
         update_state: PathBuf,
     },
+    /// Move the sessions an earlier layout left in the server unit's own cgroup into its
+    /// sessions unit. Run as root by `<unit>-adopt.service` before every start of the server.
+    #[command(hide = true)]
+    AdoptSessions {
+        /// The server's systemd unit.
+        #[arg(long, default_value = "yulius.service")]
+        service: String,
+    },
 }
 
 fn host(action: HostAction) -> ExitCode {
@@ -614,6 +622,9 @@ fn host(action: HostAction) -> ExitCode {
             },
             json,
         ),
+        HostAction::AdoptSessions { service } => {
+            yulius::host_setup::session_units::adopt_main(&service)
+        }
     }
 }
 

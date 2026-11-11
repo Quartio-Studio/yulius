@@ -644,7 +644,9 @@ impl Manager {
 
     /// Keeps `sandbox`'s front serving in the mode it should (SPEC-196 DKL-003): started when the
     /// holder has none or it ended, replaced when the mode changed. An engine's other settings
-    /// change only with a new holder, so a running engine is never cut for them.
+    /// change only with a new holder, so a running engine is never cut for them; but a front
+    /// whose engine group is gone (the sandbox's groups moved to another unit, SPEC-458 LAY-005)
+    /// is replaced, since it could start no engine again.
     async fn keep_front(&self, sandbox: &str, state: &mut SandboxState) {
         let request = state
             .request
@@ -658,7 +660,15 @@ impl Manager {
             .front
             .as_ref()
             .map(|front| (front, crate::docker_front::is_front(front.pid, net_ns)));
-        let serve = match front_action(current, self.front_mode(&request, &live.record)) {
+        let wanted = self.front_mode(&request, &live.record);
+        // Only an engine front that runs is asked for its group: one file read per tick.
+        let moved = current.is_some_and(|(front, running)| running && front.mode == "engine")
+            && engine_group_moved(
+                served_engine_group(&StatePaths::new(self.state_dir(sandbox))).as_deref(),
+                &wanted,
+                Path::exists,
+            );
+        let serve = match front_action(current, wanted, moved) {
             FrontAction::Keep => {
                 // A restart of `yulius.service` prunes an idle engine's empty leaf, and a front
                 // from an older binary does not make it again (SPEC-201 DBX-006); a SPEC-187
@@ -1949,7 +1959,15 @@ fn holder_stops(
 /// The front decision (SPEC-196 DKL-003) from the current front (its record, whether it still
 /// runs) and the wanted mode. The wanted mode needs no cgroup write, so a failed one never cuts
 /// a running engine.
-fn front_action(current: Option<(&DockerFrontRecord, bool)>, wanted: DockerServe) -> FrontAction {
+///
+/// `moved` ([`engine_group_moved`]): the group an engine front starts its engine in is gone,
+/// because the sandbox's groups moved to another unit (SPEC-458 LAY-005). The move ended the
+/// engine, so replacing its front cuts nothing, and the next engine starts in the group of now.
+fn front_action(
+    current: Option<(&DockerFrontRecord, bool)>,
+    wanted: DockerServe,
+    moved: bool,
+) -> FrontAction {
     let running = current
         .filter(|(_, running)| *running)
         .map(|(front, _)| front);
@@ -1958,6 +1976,9 @@ fn front_action(current: Option<(&DockerFrontRecord, bool)>, wanted: DockerServe
         _ => None,
     };
     match running {
+        Some(front) if moved && front.mode == "engine" && wanted.kind() == "engine" => {
+            FrontAction::Replace(wanted)
+        }
         Some(front) if front.mode == wanted.kind() && front.reason.as_ref() == reason => {
             FrontAction::Keep
         }
@@ -1968,6 +1989,35 @@ fn front_action(current: Option<(&DockerFrontRecord, bool)>, wanted: DockerServe
         }
         Some(_) => FrontAction::Replace(wanted),
         None => FrontAction::Start(wanted),
+    }
+}
+
+/// The group the front of `paths` starts its engine in, from the spec it was started with;
+/// `None` for a front that serves no engine of its own, or without a readable spec.
+fn served_engine_group(paths: &StatePaths) -> Option<String> {
+    match read_json::<DockerFrontSpec>(&paths.docker_spec())
+        .ok()?
+        .serve
+    {
+        DockerServe::Engine { engine } => Some(engine.cgroup),
+        _ => None,
+    }
+}
+
+/// Whether a front that starts its engine in `served` does so in a group that is gone while the
+/// sandbox's engine group is another one now (`wanted`): the sandbox's groups moved to another
+/// unit (ADR-0298). A group that is still there (`exists`) may hold a running engine and is
+/// never given up.
+fn engine_group_moved(
+    served: Option<&str>,
+    wanted: &DockerServe,
+    exists: impl Fn(&Path) -> bool,
+) -> bool {
+    match (served, wanted) {
+        (Some(served), DockerServe::Engine { engine }) => {
+            served != engine.cgroup && !exists(Path::new(served))
+        }
+        _ => false,
     }
 }
 
@@ -2528,41 +2578,125 @@ while True:
         };
         let running = front("engine", None);
         assert_eq!(
-            front_action(Some((&running, true)), engine()),
+            front_action(Some((&running, true)), engine(), false),
             FrontAction::Keep
         );
         assert_eq!(
-            front_action(Some((&running, false)), engine()),
+            front_action(Some((&running, false)), engine(), false),
             FrontAction::Start(engine())
         );
-        assert_eq!(front_action(None, engine()), FrontAction::Start(engine()));
         assert_eq!(
-            front_action(Some((&running, true)), refuse("off")),
+            front_action(None, engine(), false),
+            FrontAction::Start(engine())
+        );
+        assert_eq!(
+            front_action(Some((&running, true)), refuse("off"), false),
             FrontAction::Replace(refuse("off"))
         );
         let refusing = front("refuse", Some("off"));
         assert_eq!(
-            front_action(Some((&refusing, true)), refuse("off")),
+            front_action(Some((&refusing, true)), refuse("off"), false),
             FrontAction::Keep
         );
         assert_eq!(
-            front_action(Some((&refusing, true)), refuse("other")),
+            front_action(Some((&refusing, true)), refuse("other"), false),
             FrontAction::Replace(refuse("other"))
         );
         assert_eq!(
-            front_action(Some((&refusing, true)), engine()),
+            front_action(Some((&refusing, true)), engine(), false),
             FrontAction::Replace(engine())
         );
         // SPEC-199 review round 1 (nit): `dockerd` gone from the sandbox's system for a moment
         // (a docker.io → docker-ce swap) never cuts a running engine and its containers.
         assert_eq!(
-            front_action(Some((&running, true)), refuse(DOCKER_NO_DOCKERD)),
+            front_action(Some((&running, true)), refuse(DOCKER_NO_DOCKERD), false),
             FrontAction::Keep
         );
         assert_eq!(
-            front_action(None, refuse(DOCKER_NO_DOCKERD)),
+            front_action(None, refuse(DOCKER_NO_DOCKERD), false),
             FrontAction::Start(refuse(DOCKER_NO_DOCKERD))
         );
+        // SPEC-458 LAY-005: the sandbox's groups moved to another unit, where the engine was
+        // ended: a front that would start the next engine in the group that is gone is replaced.
+        assert_eq!(
+            front_action(Some((&running, true)), engine(), true),
+            FrontAction::Replace(engine())
+        );
+        assert_eq!(
+            front_action(Some((&running, true)), refuse(DOCKER_NO_DOCKERD), true),
+            FrontAction::Keep,
+            "only an engine front that stays an engine front is replaced for its group"
+        );
+        assert_eq!(
+            front_action(Some((&refusing, true)), refuse("off"), true),
+            FrontAction::Keep
+        );
+    }
+
+    /// SPEC-458 LAY-005: a front's engine group counts as moved only when the front was given
+    /// another group than the sandbox's engine group now and that group is gone. One that is
+    /// still there may hold a running engine, which is never cut.
+    #[test]
+    fn an_engine_group_has_moved_only_when_the_fronts_own_is_gone() {
+        let wanted = DockerServe::Engine {
+            engine: EngineSpec {
+                command: vec!["/y".into()],
+                cgroup: "/new/sandboxes/s1/engine".into(),
+                idle_secs: 300,
+            },
+        };
+        let gone = |_: &Path| false;
+        let there = |_: &Path| true;
+        let old = Some("/old/sandboxes/s1/engine");
+        assert!(engine_group_moved(old, &wanted, gone));
+        assert!(!engine_group_moved(old, &wanted, there));
+        assert!(!engine_group_moved(
+            Some("/new/sandboxes/s1/engine"),
+            &wanted,
+            gone
+        ));
+        assert!(!engine_group_moved(None, &wanted, gone));
+        let refuse = DockerServe::Refuse {
+            reason: "off".into(),
+        };
+        assert!(!engine_group_moved(old, &refuse, gone));
+    }
+
+    /// The group a front was given is read from the spec it was started with.
+    #[test]
+    fn the_group_a_front_serves_is_read_from_its_spec() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let paths = StatePaths::new(dir.path().to_path_buf());
+        assert_eq!(served_engine_group(&paths), None, "no spec");
+        let mut spec = DockerFrontSpec {
+            version: HOLDER_RECORD_VERSION,
+            sandbox: "s1".into(),
+            state_dir: dir.path().to_string_lossy().into_owned(),
+            holder_pid: 7,
+            user_ns: 1,
+            net_ns: 2,
+            mnt_ns: 3,
+            cgroup: Some("/old/sandboxes/s1/system".into()),
+            serve: DockerServe::Engine {
+                engine: EngineSpec {
+                    command: vec!["/y".into()],
+                    cgroup: "/old/sandboxes/s1/engine".into(),
+                    idle_secs: 300,
+                },
+            },
+            bridge_forwards: Vec::new(),
+        };
+        write_json(&paths.docker_spec(), &spec)?;
+        assert_eq!(
+            served_engine_group(&paths).as_deref(),
+            Some("/old/sandboxes/s1/engine")
+        );
+        spec.serve = DockerServe::Refuse {
+            reason: "off".into(),
+        };
+        write_json(&paths.docker_spec(), &spec)?;
+        assert_eq!(served_engine_group(&paths), None, "not an engine front");
+        Ok(())
     }
 
     /// SPEC-196 DKL-004, review round 1 (medium): a run needing the directory is tried at most
