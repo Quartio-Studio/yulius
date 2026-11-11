@@ -441,8 +441,9 @@ struct FakeWorld {
     looks: u32,
     /// The boot and the clock the receipts are believed by.
     era: crate::instance::receipts::Era,
-    /// The clock is an hour behind once this event has happened.
-    set_back_at: Option<&'static str>,
+    /// The clock is an hour behind once this event has happened so many times (`sync`: the
+    /// data directory's filesystem was synced).
+    set_back_at: Option<(&'static str, usize)>,
 }
 
 impl World for FakeWorld {
@@ -505,13 +506,17 @@ impl World for FakeWorld {
 
     fn era(&mut self) -> crate::instance::receipts::Era {
         let mut era = self.era.clone();
-        if let Some(event) = self.set_back_at
-            && self
-                .events
-                .lock()
-                .is_ok_and(|events| events.iter().any(|seen| seen == event))
-        {
-            era.ahead = era.ahead.map(|ahead| ahead - 3_600_000);
+        if let Some((event, times)) = self.set_back_at {
+            let seen = if event == "sync" {
+                self.syncs as usize
+            } else {
+                self.events.lock().map_or(0, |events| {
+                    events.iter().filter(|seen| *seen == event).count()
+                })
+            };
+            if seen >= times {
+                era.ahead = era.ahead.map(|ahead| ahead - 3_600_000);
+            }
         }
         era
     }
@@ -2874,7 +2879,7 @@ fn after_a_restart_of_the_old_host_everything_is_sent_into_the_staged_copy_again
 fn a_clock_set_back_during_a_pass_makes_the_next_one_send_everything_again() -> TestResult {
     let mut s = setup()?;
     // While the first pass is on its way.
-    s.world.set_back_at = Some("new: copy warm");
+    s.world.set_back_at = Some(("new: copy warm", 1));
     assert_eq!(s.run()?, 0, "{}", s.shown());
     assert_eq!(
         s.shown()
@@ -2895,7 +2900,7 @@ fn a_clock_set_back_before_the_freeze_copies_nothing_while_frozen() -> TestResul
     let mut s = setup()?;
     // After the last warm pass was reconciled: the frozen pass would be planned on receipts
     // that are not believed any more.
-    s.world.set_back_at = Some("old: systemctl freeze");
+    s.world.set_back_at = Some(("old: systemctl freeze", 1));
     assert_eq!(s.run()?, 1);
     let status = s.status()?;
     let copy = line(&status, "copy").ok_or("no copy line")?;
@@ -2954,5 +2959,51 @@ fn an_abort_names_the_copy_on_the_new_host_also_when_this_host_dropped_what_it_k
     assert_eq!(s.status()?.phase, "Prepare");
     assert_eq!(s.abort()?, 0, "{}", s.shown());
     assert!(line(&s.status()?, "new host").is_none());
+    Ok(())
+}
+
+#[test]
+fn a_clock_set_back_while_a_pass_syncs_is_found_when_the_pass_ends() -> TestResult {
+    // The pass's start is read before the sync. A clock that goes back during the sync makes
+    // what changes after that start look older than it: the lead the pass is measured against
+    // is the one of its start, not one read after the sync.
+    let mut s = setup()?;
+    s.world.set_back_at = Some(("sync", 1));
+    assert_eq!(s.run()?, 0, "{}", s.shown());
+    assert_eq!(
+        s.shown()
+            .matches("this host's clock was set back since a pass began")
+            .count(),
+        1,
+        "{}",
+        s.shown()
+    );
+    assert_eq!(passes(&s), [(true, 13), (true, 13), (true, 0), (false, 0)]);
+    assert_eq!(content(&s.remote.copy_dir)?, content(&s.opts.data_dir)?);
+    Ok(())
+}
+
+#[test]
+fn a_pass_of_changes_that_lost_its_receipts_is_not_followed_by_a_freeze() -> TestResult {
+    // The clock goes back while the first pass of changes is on its way: its receipts and all
+    // before them are dropped when it ends. The move copies again; it does not freeze the
+    // instance for a pass that could not be sent.
+    let mut s = setup()?;
+    s.world.set_back_at = Some(("new: copy warm", 2));
+    assert_eq!(s.run()?, 0, "{}", s.shown());
+    assert_eq!(
+        passes(&s),
+        [(true, 13), (true, 0), (true, 13), (true, 0), (false, 0)]
+    );
+    let events = s.events();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| *e == "old: systemctl freeze")
+            .count(),
+        1
+    );
+    assert!(!events.contains(&"old: systemctl thaw".to_owned()));
+    assert_eq!(content(&s.remote.copy_dir)?, content(&s.opts.data_dir)?);
     Ok(())
 }

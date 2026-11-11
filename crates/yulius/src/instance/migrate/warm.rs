@@ -13,7 +13,7 @@ use crate::host_setup::Cmd;
 use crate::instance::export::{self, Sent};
 use crate::instance::freeze::Freeze;
 use crate::instance::inventory::{Counter, IdSpace, Inventory};
-use crate::instance::receipts::{self, Outdated, Reconciled, Stage};
+use crate::instance::receipts::{self, Era, Outdated, Reconciled, Stage};
 use crate::instance::{Manifest, Pass, Progress, walk};
 
 /// The delta passes one run makes before it freezes anyway, or stops when the freeze is bound.
@@ -246,7 +246,9 @@ impl Move<'_> {
             // Only a pass that began with a whole staged copy measures the changes.
             let delta = self.stage.whole();
             let measured = self.live_pass(p, zstd)?;
-            if !delta {
+            // Nor does a pass whose receipts were dropped when it ended (WCP-016): the staged
+            // copy is filled again before anything freezes.
+            if !delta || !self.stage.whole() {
                 continue;
             }
             deltas += 1;
@@ -308,17 +310,19 @@ impl Move<'_> {
                 .is_ok_and(|out| out.ok())
     }
 
-    /// Names the next stream in `manifest` and begins its journal.
+    /// Names the next stream in `manifest` and begins its journal. `began` and `at` are the
+    /// clock and its lead when the pass began: what its receipts are measured against.
     fn named(
         &mut self,
         mut manifest: Manifest,
         live: bool,
         began: (i64, i64),
+        at: &Era,
     ) -> Result<Manifest, Stop> {
-        let (nonce, at) = (receipts::token(), self.world.era());
+        let nonce = receipts::token();
         let began = u64::try_from(began.0).unwrap_or(0);
         self.stage
-            .begin(&nonce, live, began, &at)
+            .begin(&nonce, live, began, at)
             .map_err(|why| self.fail("copy", format!("{why}. Run the command again")))?;
         manifest.pass = Some(Pass {
             stage: self.stage.id().unwrap_or_default().to_owned(),
@@ -381,7 +385,9 @@ impl Move<'_> {
     fn live_pass(&mut self, p: &Profile, zstd: bool) -> Result<Measured, Stop> {
         let opts = self.opts;
         // The clock first, then the sync: what is written through a mapping after the sync is
-        // stamped after `began`, and earns no receipt in this pass.
+        // stamped after `began`, and earns no receipt in this pass. The clock's lead is read
+        // with it: a clock set back from here on is found when the pass ends.
+        let at = self.world.era();
         let began = self.world.now();
         if let Err(why) = self.world.sync(&opts.data_dir) {
             return Err(self.fail(
@@ -393,7 +399,7 @@ impl Move<'_> {
         let before = self.stage.began();
         let manifest = export::manifest_of(&opts.data_dir, &opts.service)
             .map_err(|why| self.fail("copy", why))?;
-        let manifest = self.named(manifest, true, began)?;
+        let manifest = self.named(manifest, true, began, &at)?;
         self.world.show(&format!(
             "Copying while the instance runs (pass {number}{}){}.",
             if delta { ": what changed" } else { "" },
@@ -489,7 +495,7 @@ impl Move<'_> {
         let plan = export::plan_pass(&opts.data_dir, Some(&self.stage), &mut |e| counter.add(e))
             .map_err(|e| self.fail("copy", format!("planning failed: {e}")))?;
         let old = counter.finish();
-        let mut manifest = self.named(manifest, false, began)?;
+        let mut manifest = self.named(manifest, false, began, &at)?;
         self.world.show(&format!(
             "Copying what changed: {} of {} entries, {}{}.",
             plan.entries,
