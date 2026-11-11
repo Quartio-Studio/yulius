@@ -13,6 +13,16 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   e2e "a folder chosen while the worktrees are read…" runs again: it types once the tab is open,
   and moves the disk once the server has the typing (a look that got there first took the disk's
   text as the saved one, and no conflict was asked).
+- Your own Anthropic key can be named `ANTHROPIC_API_KEY_<NAME>` or `ANTHROPIC_AUTH_TOKEN_<NAME>`
+  (not ending in `_FILE`), such as `ANTHROPIC_API_KEY_QUARTIO` (SPEC-455, task #437, ADR-0292, #1153); every other
+  `ANTHROPIC_` name stays reserved for the agent CLI. A refused name now says which prefix is
+  reserved and suggests one that works (`APP_<NAME>`), instead of the same bare refusal for every
+  name tried.
+- The default effort is high again (SPEC-462, task #444, ADR-0295); the default model stays Fable
+  5.2. A task, Cockpit or Superagent that names no effort runs at `high` from its next start, and
+  one that chose an effort, also Max, keeps it. The composer's and Settings' "Default" says High,
+  and the `task_create` tool now names the real defaults (it said "default Opus"); both are held to
+  the launch constants by tests. Production gets this with the next promotion and update.
 - `yulius tool` and `yulius remove` work in task sessions (SPEC-451, task #433, #1109). The
   `/yulius/bin/yulius` wrapper first on a session's `PATH` passed only `wait` and `security-scan`,
   so both commands the briefing names printed its usage line and exited 2. It now passes them too,

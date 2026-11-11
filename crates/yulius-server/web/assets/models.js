@@ -2,7 +2,7 @@
 // another harness's models can join the list; each provider names the harness that runs them.
 // Yulius runs Claude Code only today (TSK-003). A model id goes to Claude Code's `--model` and a
 // level to `--effort`; choosing "Default" sends neither and the task runs Yulius's default,
-// Fable 5.2 at max effort (SPEC-023).
+// Fable 5.2 at high effort (SPEC-023, SPEC-462).
 
 /** This browser's defaults for new tasks (the composer and Settings share them). */
 export const MODEL_PREF_KEY = 'yulius.composer.model';
@@ -68,7 +68,7 @@ export function modelMenuItems(selected, onPick) {
 /** Menu items to pick an effort level; `onPick(id|null)`. */
 export function effortMenuItems(selected, onPick) {
   return [
-    { label: 'Default', description: 'Max (none for Haiku)', checked: selected === null, onSelect: () => onPick(null) },
+    { label: 'Default', description: 'High (none for Haiku)', checked: selected === null, onSelect: () => onPick(null) },
     ...EFFORTS.map((effort) => ({ label: effort.name, description: effort.description, checked: effort.id === selected, onSelect: () => onPick(effort.id) })),
   ];
 }
