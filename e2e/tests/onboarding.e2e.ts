@@ -9,6 +9,8 @@ type Mocked = Window & { __release?: () => void; __yuliusMock: {
   holdApprove?: Promise<void>;
   holdRecovery?: Promise<void>;
   recoveryWaiting?: number;
+  recoveryAnswered?: number;
+  asked?: Record<string, number>;
   failPostPath?: string | null;
   failApprove?: boolean;
   startOnboarding(slug: string): void;
@@ -324,10 +326,15 @@ test('a composer left before its reads answer adds no second toast to the start'
   });
   await screen.getByRole('region', 'Onboard website first').getByRole('button', 'Start onboarding').click();
   await expect(screen.getByRole('region', 'Starting onboarding website')).toBeVisible();
-  await browser.evaluate(() => {
+  // Held once the recovery reads asked so far have answered (the app's and the first composer's):
+  // one still on its way would wait at the hold too, beside the read of the composer left below.
+  await expect.poll(() => browser.evaluate(() => {
     const w = window as unknown as Mocked & { __releaseRecovery?: () => void };
-    w.__yuliusMock.holdRecovery = new Promise<void>((resolve) => { w.__releaseRecovery = resolve; });
-  });
+    const db = w.__yuliusMock;
+    if (((db.asked || {})['/api/auth/recovery'] || 0) !== (db.recoveryAnswered || 0)) return false;
+    db.holdRecovery = new Promise<void>((resolve) => { w.__releaseRecovery = resolve; });
+    return true;
+  }), { message: 'the earlier recovery reads answered' }).toBe(true);
   await browser.evaluate(() => { location.hash = '#/s/website/tasks'; });
   await expect(browser).toHaveURL(/#\/s\/website\/tasks$/);
   await browser.evaluate(() => { location.hash = '#/s/website'; });
