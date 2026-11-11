@@ -84,7 +84,7 @@ and passes under load.
 - [x] The editor starts without a model, so nothing can be typed before the file is set
 - [x] The quarantined test waits for the open tab and runs again, 10 runs green under the probe
 - [x] The #1087 test moves the disk once the server has the typing: green under a late first edit
-- [x] Independent review answered and gates green
+- [x] Independent review answered; the gate's result recorded, Yulius CI decides the merge
 
 ## Acceptance criteria
 
@@ -163,7 +163,12 @@ reported on #1154 and PR #1155) and its waits for the Superagent tests are on de
 
 Review: round 1 at 52383b1c asked for changes (a places test waited on `editorShown` while holding
 the read: fixed in 508f11fa; the "redundant `aria-selected` wait" nit is kept, it is the condition
-the test types on). The second round approves the delivered head and is named in the merge.
+the test types on). Round 2 at c0423893 approved, with two minor findings and three nits, answered
+in the commit after it: the `editor.e2e.ts` row of `e2e/README.md` names the new test; the Plan's
+last item no longer says "gates green" (the local gate is not: see the table); the test's comment
+says "without the `model` option"; the `aria-selected` wait stays (above); the first view built
+after a released hold keeps the default wait, which the probe runs passed under load. Round 3
+confirms that commit and is named in the merge.
 
 After the merge of dev (e2dd441d, PR #1150) and the removal of its step-around wait (7d1b5547):
 `places` and `editor` (56 tests) with the join answered late: 5 of 5 runs, 56 passed; `editor`,
