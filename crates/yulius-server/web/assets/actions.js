@@ -172,13 +172,37 @@ export function continueTask(ctx, task) {
   return taskPost(ctx, task, 'continue', () => ctx.api.post(`/api/tasks/${enc(task.id)}/continue`, {}), `Continuing #${task.number}…`);
 }
 
-/** Why a subscription cannot take a task a person moves (SPEC-447 MOV-002), or null. */
-function cannotTake(account) {
+/** The weekly window of a model's own on a subscription's usage (its cap, or its allowance of usage credits), or null. */
+function modelWindow(usage, model) {
+  const name = String(model || '').toLowerCase();
+  if (name.includes('opus')) return usage.weekly_opus || null;
+  if (name.includes('sonnet')) return usage.weekly_sonnet || null;
+  if (name.includes('fable')) return usage.weekly_fable || null;
+  return null;
+}
+
+/** Whether a usage window is used up now: at 100% and not past its reset. */
+function usedUp(w) {
+  return Boolean(w) && Number(w.used_percent) >= 100 && !(w.resets_at && Date.parse(w.resets_at) <= Date.now());
+}
+
+/**
+ * Why a subscription cannot take a task a person moves (SPEC-447 MOV-002), or null. The windows
+ * that bind the task's model decide, as on the server: a subscription also reads "limited" while
+ * only the default model's window is used up, and a task of another model still runs on it
+ * (SPEC-464). A task whose model is not known is not let through on that.
+ */
+export function cannotTake(account, task) {
   if (['relogin', 'error', 'pending_login'].includes(account.status)) return 'Needs a new sign-in';
-  if (account.status === 'limited') return 'At its usage limit';
   const usage = account.usage || {};
-  const full = [usage.primary, usage.secondary].some((w) => w && Number(w.used_percent) >= 100);
-  return full ? 'At its usage limit' : null;
+  const known = Boolean(task && task.model);
+  const own = known ? modelWindow(usage, task.model) : null;
+  if ([usage.primary, usage.secondary, own].some(usedUp)) return 'At its usage limit';
+  if (account.status !== 'limited') return null;
+  // Limited, and no window binding this task says why: a limit Claude reported for the whole
+  // subscription, unless another model's window is the one used up.
+  const others = [usage.weekly_opus, usage.weekly_sonnet, usage.weekly_fable].filter((w) => w && w !== own);
+  return known && others.some(usedUp) ? null : 'At its usage limit';
 }
 
 /** "5 h 40% · week 12%", or that the use is not known yet. */
@@ -209,7 +233,7 @@ export async function openSubscriptionMenu(ctx, anchor, task) {
     { header: moving ? `Run #${task.number} on…` : `Continue #${task.number} on…` },
     ...accounts.map((account) => {
       const current = task.account_id ? account.id === task.account_id : account.label === task.account_label;
-      const why = cannotTake(account);
+      const why = cannotTake(account, task);
       // A running task is on it already; a waiting one may start on it all the same (MOV-002).
       const here = current && task.status === 'running';
       return {
