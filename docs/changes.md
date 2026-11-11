@@ -16,6 +16,16 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   ("sandbox namespaces") report a host where bwrap cannot start a sandbox, with the fix, by
   starting one, and `yulius instance import` names the step. Run `sudo yulius host setup` again
   after a release upgrade from 24.04 to 26.04.
+- The default effort is high again (SPEC-462, task #444, ADR-0295); the default model stays Fable
+  5.2. A task, Cockpit or Superagent that names no effort runs at `high` from its next start, and
+  one that chose an effort, also Max, keeps it. The composer's and Settings' "Default" says High,
+  and the `task_create` tool now names the real defaults (it said "default Opus"); both are held to
+  the launch constants by tests. Production gets this with the next promotion and update.
+- `yulius tool` and `yulius remove` work in task sessions (SPEC-451, task #433, #1109). The
+  `/yulius/bin/yulius` wrapper first on a session's `PATH` passed only `wait` and `security-scan`,
+  so both commands the briefing names printed its usage line and exited 2. It now passes them too,
+  its usage line lists all four, and a test fails when a new "In a task's session" subcommand is
+  left out of it. Running sessions see the new wrapper once the updated server starts any run.
 
 ## 2026-11-10
 

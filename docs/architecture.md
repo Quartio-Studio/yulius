@@ -886,7 +886,9 @@ A restart or an update is invisible to a task's session
   closed while it was silent, "Yulius's tools are reconnected; continue". A bridge heard but never
   pinged may be an older build that is alive, since a sandbox keeps the `yulius` of the base it
   started on: it is left alone ([decision 0280](decisions/0280-only-a-yulius-mcp-known-to-be-gone-is-reconnected.md)). Mid-turn, `yulius tool <name> '<json>'` calls
-  any Yulius tool from the shell.
+  any Yulius tool from the shell. In a session `yulius` is the `/yulius/bin` wrapper, which passes
+  only the session's commands (`wait`, `tool`, `security-scan`, `remove`) to the binary; a test
+  fails when a subcommand documented "In a task's session" is missing from it (SPEC-451).
 
 ```mermaid
 sequenceDiagram

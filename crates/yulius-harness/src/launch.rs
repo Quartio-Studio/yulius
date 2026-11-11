@@ -45,7 +45,7 @@ pub const BASH_TIMEOUT_ENV: [(&str, &str); 2] = [
     ("BASH_DEFAULT_TIMEOUT_MS", "600000"),
     ("BASH_MAX_TIMEOUT_MS", "1800000"),
 ];
-/// The model and effort of a task that names none (Fable 5.2 at max effort).
+/// The model and effort of a task that names none (Fable 5.2 at high effort).
 pub use yulius_domain::harness::{DEFAULT_CLAUDE_EFFORT, DEFAULT_CLAUDE_MODEL};
 /// Name of the always-attached Yulius MCP server.
 pub const YULIUS_MCP_NAME: &str = "yulius";
