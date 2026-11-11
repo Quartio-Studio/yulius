@@ -1019,6 +1019,29 @@ fn a_failed_step_is_undone_and_named() {
     );
     assert_eq!(fake.text(PROFILE_FILE), Some(older.as_str()));
     assert!(state(&fake) == before, "{:#?}", fake.log);
+
+    // One that AppArmor did not hold is not loaded by the undoing either.
+    let mut fake = resolute();
+    fake.file(PROFILE_FILE, &older);
+    fake.failing.push((
+        "ln -s",
+        Some(1),
+        "ln: failed to create symbolic link: Read-only file system",
+    ));
+    let before = state(&fake);
+    let lines = run(&mut fake, Mode::Setup);
+    assert_eq!(
+        item(&lines),
+        (
+            HostOutcome::Failed,
+            format!(
+                "`ln -s {SHIPPED} {SHIPPED_LINK}` failed: ln: failed to create symbolic link: \
+                 Read-only file system; /etc/apparmor.d/yulius-bwrap has its earlier text again"
+            )
+            .as_str()
+        )
+    );
+    assert!(state(&fake) == before, "{:#?}", fake.log);
 }
 
 /// BNS-005: a link alone does not unload the shipped profile (a person's link, an unload that

@@ -735,11 +735,9 @@ impl Host for Fake {
                 }
             }
             ["/usr/sbin/apparmor_parser", "-r", APPARMOR_D] => {
-                assert_eq!(
-                    cmd.timeout,
-                    super::bwrap_userns::BOOT_LOAD,
-                    "a directory's load may take longer than a command's usual bound"
-                );
+                // BNS-012: a cold cache and many profiles take longer than a command's usual
+                // bound.
+                assert_eq!(cmd.timeout, std::time::Duration::from_secs(300));
                 if self.parser_fails {
                     fail(1, "AppArmor parser error: Could not open 'abi/4.0'")
                 } else if self.load_directory() {

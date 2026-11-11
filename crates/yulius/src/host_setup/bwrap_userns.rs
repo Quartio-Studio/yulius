@@ -37,7 +37,7 @@ const RUNUSER: &str = "/usr/sbin/runuser";
 const PARSER: &str = "/usr/sbin/apparmor_parser";
 /// How long loading the whole directory may take: a second on a small host, minutes where the
 /// cache is cold and the profiles are many.
-pub(super) const BOOT_LOAD: Duration = Duration::from_secs(300);
+const BOOT_LOAD: Duration = Duration::from_secs(300);
 
 /// What Ubuntu ships for other programs that need user namespaces (`abi/4.0` is the first with
 /// the `userns` rule; later parsers read it too).
