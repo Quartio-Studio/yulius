@@ -1,11 +1,11 @@
 ---
 yulius-task: 82e50053-d61d-4639-b3a6-6950286a81d3
-status: in-progress
+status: done
 ---
 
 # SPEC-450: browser_screenshot never shows a secret typed with browser_fill_secret
 
-Status: in-progress
+Status: done
 Date: 2026-11-11
 Owner: Yulius task #432
 Scope authorization: task #432 (`/goal`, from task #430 working through open issues), "Solve
@@ -148,8 +148,8 @@ with `browser_fill_secret`. A password field, drawn as dots, keeps screenshots w
 - [x] Review round 5: a fill judged by its field, unseen edits expose, the snapshot bar
 - [x] Independent review round 6 approves the head
 - [x] Review round 6 minors: fills into unreadable frames, frames by origin, a navigation before typing
-- [ ] Independent review of the round 6 fixes approves the head
-- [ ] Gates green with evidence
+- [x] Independent review of the round 6 fixes approves the head
+- [x] Gates green with evidence
 
 ## Acceptance criteria
 
@@ -268,3 +268,44 @@ with `browser_fill_secret`. A password field, drawn as dots, keeps screenshots w
   read.
 - A never-filled agent secret inside a frame of another site.
 - A page changing and changing back between the two looks of one screenshot.
+
+## Evidence
+
+- **Regression first.** `ea114884` added `browser::a_screenshot_never_shows_a_secret_typed_into_a_page`
+  and the fake's field model; on `dev` (911e3127) it failed: `browser_screenshot` after a fill into
+  a text field returned the PNG (`"isError":false`, `"mimeType":"image/png"`). Each review round's
+  tests were committed before its fix and failed on the head before it (`f94c4421` on 17b646fc,
+  `75b584dd` and `e8fa42d2` on f7b9fb93 and 64832478).
+- **Mutation checks** (each rule removed by hand, the named tests then fail, restored): the
+  shown-value rule, origin exposure at fill time, the frame rule, `iframe` targets, a parent no
+  target lists, the edit check while typing, the second look after the capture, the input lock,
+  the redactor's check (instance and app), lines of multi-line values, PEM armour, the 32-value
+  cap, the memory kept across browser restarts and its "every screenshot" flag, and an
+  unloadable matcher becoming an empty one.
+- **Real Chromium** (`YULIUS_TEST_CHROMIUM` set to Google Chrome on this host, run as root through
+  a local `--no-sandbox` wrapper that is not committed):
+  `cargo nextest run -p yulius-browser --features fake -E 'test(drives_a_real_chromium)'` passed
+  on 3d3a06cf. A password fill keeps screenshots, its reveal and a text-field fill on another origin
+  refuse them, and a third site framing the filled one is refused. Seen on that Chrome:
+  `Page.getFrameTree` lists an out-of-process frame without its address
+  (`"securityOrigin":"://","url":""`) or not at all, while `Target.getTargets` lists it as an
+  `iframe` target with its URL and `parentFrameId`. The page's elements named `documentElement` and
+  `querySelectorAll` did not affect the probe in its isolated world even without the prototype
+  getters, which stay as defense.
+- **Gate.** `scripts/dev ci` at 3d3a06cf: 3302 tests passed (16 skipped), 152 script tests OK; it
+  failed only `cargo deny --locked check` on RUSTSEC-2026-0486 (rustix 1.1.5, new, failing every
+  pull request), fixed by `ada375dc` (`cargo update -p rustix@1.1.5`, lockfile only; `cargo deny
+  --locked check`: advisories ok, bans ok, licenses ok, sources ok). `scripts/dev ci` at ada375dc:
+  exit 0: fmt, clippy, the macOS build, 3302 tests passed (16 skipped), 152 script tests OK, `cargo deny` ok, docs built.
+- **Security scan.** `scripts/dev security`: "Security scan disabled: Vidoc is turned off in
+  Yulius, for this project or the whole instance; nothing was scanned" (exit 0): disabled, not
+  passed.
+- **Review.** Six independent review rounds in fresh sessions (read-only, no builds while the gate
+  ran); rounds 1 to 5 requested changes, each answered test-first in this branch; round 6 approved
+  64832478 with minors, fixed in `e8fa42d2`/`3d3a06cf`. Pre-existing findings, reported on #1113
+  (this task creates no issues): the redactor's exact matching lets an edit in place through
+  `browser_snapshot`; `browser_fill_secret` checks only the main frame's URL, so a focused
+  cross-origin frame receives the value.
+- **Not tested here.** macOS at run time (the gate only compiles for it), a person's display input,
+  and real sites (single-page sign-ins, framing with cookies) beyond the fake server and the local
+  Chromium pages.
