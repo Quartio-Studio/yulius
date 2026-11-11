@@ -69,7 +69,7 @@ typing the email, and SPEC-001 ROT-009 and UI-022. The rest of ADR-0185 stands.
   stored.
 - Removing an email that Claude gave makes the background round read it again, so it comes back
   within minutes: the line shows what the administrator typed, else what Claude shares.
-- Schema version 51 adds `accounts.email_typed`; every email stored before stays Claude's. An
+- Schema version 52 adds `accounts.email_typed`; every email stored before stays Claude's. An
   older build refuses the newer database, as for every schema change (ADR-0264).
 - An update no longer redraws the Subscriptions list while a name or an email field is open, also
   when the list was already being read as the field opened: the refresh waits, and is read once
