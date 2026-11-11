@@ -886,7 +886,7 @@ pub fn tool_specs() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: TOOL_SCREENSHOT,
-            description: "Screenshot of the tab's viewport as an image: PNG, or a smaller JPEG (lower quality, downscaled) when needed to fit the tool result limit; the accompanying text gives the scale.",
+            description: "Screenshot of the tab's viewport as an image: PNG, or a smaller JPEG (lower quality, downscaled) when needed to fit the tool result limit; the accompanying text gives the scale. Refused while the page may show an agent secret (one it shows, a site browser_fill_secret typed into outside a password field): read it with browser_snapshot.",
             input_schema: json!({"type": "object", "properties": {"tab_id": tab},
                 "required": ["tab_id"], "additionalProperties": false}),
         },
