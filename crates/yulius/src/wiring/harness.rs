@@ -343,6 +343,7 @@ fn snapshot(acc: &UsageAccumulator) -> UsageSnapshot {
     UsageSnapshot {
         tokens: acc.usage(),
         model: acc.model().map(str::to_owned),
+        cli_version: acc.cli_version().map(str::to_owned),
         turns: acc.turns(),
         active_ms: acc.active().total_ms(),
         turn_open_since: acc.active().open_since(),

@@ -266,6 +266,16 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
         // The instance Vidoc switch (SPEC-356 VIO-001).
         .route("/api/admin/vidoc/enabled", put(updates::set_vidoc_enabled))
         .route("/api/admin/vidoc/test", post(updates::test_vidoc))
+        // The Claude Code sandboxes get (SPEC-461).
+        .route("/api/admin/claude-code", get(updates::claude_code))
+        .route(
+            "/api/admin/claude-code/check",
+            post(updates::check_claude_code),
+        )
+        .route(
+            "/api/admin/claude-code/channel",
+            put(updates::set_claude_channel),
+        )
         .route("/api/github/repositories", get(projects::repositories))
         .route("/api/templates", get(projects::templates))
         .route("/api/sandboxes", post(projects::create))

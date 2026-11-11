@@ -410,14 +410,22 @@ TaskDetail = TaskSummary + {
   "account_email?": "…",
   "spec_path": "docs/specs/2026-10-07-checkout-api.md|null",
   "worktree": "…", "attempts": [{"seq","harness","account_label","account_email?","account_id (proposed)","launch_kind","state",
-                                  "started_at","ended_at","exit_code","exit_reason"}],
+                                  "started_at","ended_at","exit_code","exit_reason","model?","cli_version?"}],
   "steps_list": [Step], "metrics": Metrics, "feedback": [{"login","verdict","comment","at"}],
   "delivery": Delivery, "switches": [{"at","reason","from","to"}],
-  "request": "the whole request, queued messages included", "started": false
+  "request": "the whole request, queued messages included", "started": false,
+  "model": "claude-fable-5-2", "model_default": true, "effort?": "high",
+  "cli_version?": "2.1.311", "cli_moves_to?": "2.1.322"
 }
 Step = {"id","ordinal","title","status":"pending|in_progress|done|skipped|blocked","note","updated_by","updated_at","effort":1}
 Metrics = {"wall_ms","active_ms|null","input_tokens|null","output_tokens|null","cache_read_tokens|null","cache_write_tokens|null","models":["…"],"switches":0,"turns|null"}
 ```
+
+`model` and `effort` are what the task asks Claude Code for (its own, else Yulius's default:
+`model_default`); what answered is `metrics.models` and each attempt's `model`, read from the
+transcripts. `cli_version` is the Claude Code version the latest session's transcript names (each
+attempt has its own), and `cli_moves_to` the newer version a running session is restarted on when
+its turn ends (SPEC-461); a restart for it is no entry of `switches`.
 
 `wall_ms` is how long the task's sessions were open, idle included. `active_ms`, the tokens and
 `turns` come from each run's transcript (SPEC-087): active time is the union of its turns' spans
@@ -1504,6 +1512,9 @@ resolves to nothing, the run gets the server without that variable or token.
 | GET | `/api/admin/leftovers` | superadmin | → `LeftoversView` `{"items":[{"id","kind","path","bytes|null","sandbox|null","task|null","reason","auto","deletable"}],"scanned_at|null","total_bytes","safe_bytes","disk_used|null","disk_total|null","data_dir","job|null","next_auto_at|null","last_auto|null","kept":[{"id","slug","removed_at|null","bytes|null","purge_requested"}]}` (`last_auto`: the last automatic round since the start; `kept`: removed sandboxes whose files stay, SPEC-276): what is kept and what can go (SPEC-215, [operations](operations.md#leftovers-what-is-kept-what-is-cleaned-and-when)) |
 | POST | `/api/admin/leftovers/scan` | superadmin | rescans in the background → `LeftoversView`; 409 while a scan or deletion runs |
 | POST | `/api/admin/leftovers/delete` | superadmin | `{"ids":[…]}` or `{"all_safe":true}` → `LeftoversView`, deleting in the background (`job`); 409 while a scan or deletion runs, 422 for unknown ids or nothing to delete |
+| GET | `/api/admin/claude-code` | superadmin | → `ClaudeCodeView` `{"managed","unmanaged","channel","channel_source":"settings|config","config_channel","channel_set_by","channel_set_at","version","source":"yulius|host","host_version","latest","stable","checked_at","checking","result":"installed|up_to_date|refused|failed|null","result_text","default_model","models_read","unknown_models":[…],"problem","fix","refused":[{"version","missing":[…]}],"behind":[{"sandbox","number","title","version"}],"moves_stopped"}`: the Claude Code isolated sandboxes run, npm's `latest` and `stable` at the last check and what it did, the offered models that version does not know (`problem` and `fix` while the default model is among them), the releases refused for it, and the running tasks still on an older version (SPEC-461); `moves_stopped` is the sentence why running tasks are no longer moved to that version (a session could not continue on it), else null; `managed: false` with `unmanaged` saying why where Yulius keeps nothing current |
+| POST | `/api/admin/claude-code/check` | superadmin | → 202 `ClaudeCodeView` with `checking: true`: starts a check of npm now (a check that runs is the check); 409 where sandboxes are not isolated |
+| PUT | `/api/admin/claude-code/channel` | superadmin | `{"channel": "latest"\|"stable"\|"off"\|null}` → `ClaudeCodeView`: follows the channel from now on, stored (it wins over `YULIUS_CLAUDE_UPDATES`; `null` follows the server's configuration again; the field must be present), applied without a restart (the next run binds as it says, a check runs at once), audited `claude_code.channel`; 422 for another channel, 409 where sandboxes are not isolated |
 | GET | `/api/admin/sandbox-docker` | superadmin | → `SandboxDockerView` `{"ok","detail","isolated","base","host_dockerd","rebuild","own_engines","own_engine_fix","host_check","smoke"}`: whether sandboxes get Docker (SPEC-203) |
 | POST | `/api/admin/sandbox-docker/smoke` | superadmin | → 202 `SandboxDockerView`: starts the Docker smoke test; 409 while one runs or when sandboxes are not isolated |
 

@@ -269,8 +269,10 @@ enum Command {
         /// The reverse proxy's secret file (as for `serve`): checked, never shown.
         #[arg(long, env = "YULIUS_PROXY_SECRET_FILE")]
         proxy_secret_file: Option<PathBuf>,
-        /// Claude Code releases isolated sandboxes follow (as for `serve`, SPEC-421).
-        #[arg(long, env = "YULIUS_CLAUDE_UPDATES", default_value = "stable",
+        /// Claude Code releases isolated sandboxes follow (as for `serve`, SPEC-421), unless
+        /// one was chosen in Settings, Instance.
+        #[arg(long, env = "YULIUS_CLAUDE_UPDATES",
+              default_value = yulius::wiring::sandbox::DEFAULT_CHANNEL,
               value_parser = yulius::wiring::sandbox::parse_channel)]
         claude_updates: yulius_domain::agent_cli::Channel,
     },

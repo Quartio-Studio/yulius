@@ -14,8 +14,9 @@ use crate::model::{
     AccountChange, AccountRecord, AccountStatus, ApiTokenRecord, AttemptRecord, CachedAccess,
     ControlRequest, DeviceGrantBounds, DeviceGrantInsert, DeviceGrantRecord, FeedbackRecord,
     GitHubTokenRecord, InboxEntry, InstanceRecord, MessageRecord, MetricsRecord, PersonPause,
-    ProviderSessionRecord, RecordReservation, RecountOutcome, SandboxRecord, ScopeClaimRecord,
-    Sealed, StepRecord, SwitchDecisionRecord, TaskRecord, TaskTimes, UserRecord, WebSessionRecord,
+    ProviderSessionRecord, RecordReservation, RecountOutcome, RunFacts, SandboxRecord,
+    ScopeClaimRecord, Sealed, StepRecord, SwitchDecisionRecord, TaskRecord, TaskTimes, UserRecord,
+    WebSessionRecord,
 };
 
 /// Instance singleton and setup.
@@ -478,6 +479,21 @@ pub trait TaskStore: Send + Sync {
     ) -> AppResult<()>;
     /// Metrics of all attempts of a task.
     async fn task_metrics(&self, task: &TaskId) -> AppResult<Vec<MetricsRecord>>;
+    /// Records the agent CLI version a run's transcript names (SPEC-461 CCM-011), beside its
+    /// metrics; the other figures are left as they are.
+    async fn set_run_cli_version(
+        &self,
+        attempt: &AttemptId,
+        task: &TaskId,
+        version: &str,
+        at: Timestamp,
+    ) -> AppResult<()>;
+    /// What each run of a task ran on: its attempt, the model that answered and its agent CLI
+    /// version (each `None` while unknown).
+    async fn task_run_facts(&self, task: &TaskId) -> AppResult<Vec<RunFacts>>;
+    /// The agent CLI version of every live run that names one, with its task (SPEC-461
+    /// CCM-013).
+    async fn live_cli_versions(&self) -> AppResult<Vec<(TaskId, String)>>;
     /// Runs queued for one recount of their metrics from their transcripts: those recorded
     /// before schema version 23 and not recorded yet, oldest first (SPEC-091 RCT-003).
     async fn queued_metrics_recounts(&self) -> AppResult<Vec<AttemptId>>;

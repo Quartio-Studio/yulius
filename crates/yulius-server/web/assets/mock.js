@@ -171,6 +171,12 @@ function seed(params) {
     // `update=1` there is none until the update's), `docker=legacy` (sandboxes not isolated);
     // `smoke=fail` (the smoke's pull fails).
     docker: { mode: params.get('docker') || 'ok', smokeFails: params.get('smoke') === 'fail', smoke: null, hostCheck: undefined },
+    // The Claude Code sandboxes run (SPEC-461): `claude=incident` (runs get the host's 2.1.311,
+    // which does not know the default model; a check installs 2.1.322), `claude=ahead` (the
+    // newest release was refused for it too), `claude=gap` (2.1.400 lacks another offered
+    // model), `claude=failed` (the last check failed), `claude=unmanaged` (sandboxes are not
+    // isolated). `version` is what new runs get, `previous` what studio's #12 and #10 still run.
+    claude: { ...claudeState(params.get('claude') || 'ok'), channelFails: params.get('claude_channel_fail') === '1' },
     // Leftovers on the disk (SPEC-215): `leftovers=none` scans to an empty list.
     leftovers: { none: params.get('leftovers') === 'none', items: null, scannedAt: null, job: null },
     // `disk=low|critical` (SPEC-276 RDA-007): the server's data disk, 386 GiB, as the warning pill reads it.
@@ -610,15 +616,22 @@ const hasStarted = (task) => task.started ?? !['queued', 'chained', 'prepared'].
 /** Whether the mock's person administers the instance: subscription emails are theirs (UI-022). */
 const isAdmin = (db) => Boolean(db.me.user.is_instance_admin || db.me.user.is_superadmin);
 
+/** The Claude Code a mock task's session runs: studio's #12 and #10 started before the last
+ * release (SPEC-461 CCM-013), every other on the version new runs get. */
+const taskCli = (db, task) => (CLI_BEHIND.has(task.id) ? db.claude.previous : db.claude.version);
+const CLI_BEHIND = new Set(['tsk_studio_12', 'tsk_studio_10']);
+
 function detail(db, task) {
   const live = LIVE.has(task.status);
   const ran = hasStarted(task) && (task.origin !== 'onboarding' || task.stepsList.some((s) => s.status === 'done'));
+  const cli = ran ? taskCli(db, task) : null;
+  const answered = task.number === 6 ? null : task.model;
   return {
     ...summary(task),
     ...(isAdmin(db) && task.account_label && accountEmailOf(task.account_label) ? { account_email: accountEmailOf(task.account_label) } : {}),
     spec_path: task.stepsList.length && task.branch ? `docs/specs/2026-10-07-${task.branch.replace('feat/', '')}.md` : null,
     worktree: task.branch ? `/srv/yulius/sandboxes/${task.sandbox_id.slice(3)}/worktrees/${task.number}` : null,
-    attempts: ran ? [{ seq: 1, harness: task.harness, account_label: task.account_label || 'Claude #1', ...(isAdmin(db) && accountEmailOf(task.account_label || 'Claude #1') ? { account_email: accountEmailOf(task.account_label || 'Claude #1') } : {}), launch_kind: 'new', state: live ? 'live' : 'exited', started_at: task.created_at, ended_at: live ? null : task.updated_at, exit_code: live || task.status === 'stopped_crashed' ? null : 0, exit_reason: live ? null : task.status === 'stopped_crashed' ? 'exited code=None signal=Some(6) limit=pids' : 'normal' }] : [],
+    attempts: ran ? [{ seq: 1, harness: task.harness, account_label: task.account_label || 'Claude #1', ...(isAdmin(db) && accountEmailOf(task.account_label || 'Claude #1') ? { account_email: accountEmailOf(task.account_label || 'Claude #1') } : {}), launch_kind: 'new', state: live ? 'live' : 'exited', started_at: task.created_at, ended_at: live ? null : task.updated_at, exit_code: live || task.status === 'stopped_crashed' ? null : 0, exit_reason: live ? null : task.status === 'stopped_crashed' ? 'exited code=None signal=Some(6) limit=pids' : 'normal', ...(answered ? { model: answered } : {}), ...(cli ? { cli_version: cli } : {}) }] : [],
     steps_list: task.stepsList,
     // Unknown usage stays null (task #6 never reported tokens).
     metrics: task.number === 6
@@ -629,6 +642,12 @@ function detail(db, task) {
     switches: task.number === 9 ? [{ at: iso(2 * MIN), reason: 'account exhausted', from: 'Claude Code (Claude #2)', to: 'Claude Code (Claude #4)' }] : [],
     request: task.prompt ?? task.title,
     started: hasStarted(task),
+    // What the task asks for, and the Claude Code its latest session runs (SPEC-461 CCM-012).
+    model: task.model || 'claude-fable-5-2',
+    model_default: !task.model || task.effort === 'default',
+    ...(task.effort && task.effort !== 'default' ? { effort: task.effort } : { effort: 'high' }),
+    ...(cli ? { cli_version: cli } : {}),
+    ...(cli && live && cli !== db.claude.version ? { cli_moves_to: db.claude.version } : {}),
   };
 }
 
@@ -4449,6 +4468,96 @@ function sandboxDockerView(db) {
   const hostCheck = d.mode === 'kept' ? d.hostCheck : null;
   return { ...base, ok: true, isolated: true, host_dockerd: true, base: { id: 'base-9', dockerd: true }, host_check: hostCheck, detail: 'each isolated sandbox gets its own engine at /var/run/docker.sock (DOCKER_HOST) on first use; `sudo yulius doctor --docker-smoke` proves it on this host' };
 }
+
+// The Claude Code sandboxes run (SPEC-461 CCM-008..CCM-010).
+const CLAUDE_DEFAULT_MODEL = 'claude-fable-5-2';
+const CLAUDE_HOST_FIX = 'Yulius installs a release that knows it at its next check (every hour, or "Check now" in Settings, Instance, Claude Code); to fix it at once, install one on the host: `sudo npm install -g @anthropic-ai/claude-code@latest`.';
+
+function claudeState(mode) {
+  const base = { mode, channel: 'latest', chosen: null, configChannel: 'latest', version: '2.1.322', previous: '2.1.311', source: 'yulius', host: '2.1.311', latest: '2.1.322', stable: '2.1.311', checkedAt: Date.now() - 12 * MIN, checking: false, result: 'installed', unknown: [], refused: [], error: null, movesStopped: null };
+  if (mode === 'incident') return { ...base, version: '2.1.311', previous: '2.1.292', source: 'host', result: null, checkedAt: null, latest: null, stable: null, unknown: [CLAUDE_DEFAULT_MODEL] };
+  if (mode === 'ahead') return { ...base, version: '2.1.311', previous: '2.1.292', source: 'host', result: 'refused', unknown: [CLAUDE_DEFAULT_MODEL], refused: [{ version: '2.1.322', missing: [CLAUDE_DEFAULT_MODEL] }] };
+  if (mode === 'gap') return { ...base, version: '2.1.400', previous: '2.1.322', latest: '2.1.400', unknown: ['claude-haiku-4-5'], result: 'up_to_date', movesStopped: 'Running tasks are no longer moved to 2.1.400: the session of task #9 ended as it restarted on it. Sessions that start or continue still get it; choose Off to run the host’s Claude Code instead.' };
+  if (mode === 'failed') return { ...base, result: 'failed', error: 'registry.npmjs.org is unreachable' };
+  return base;
+}
+
+function claudeView(db) {
+  const c = db.claude;
+  if (c.mode === 'unmanaged') {
+    return { managed: false, unmanaged: 'sandboxes are not isolated on this server, so they run the host’s Claude Code as it is and Yulius keeps nothing current: run Yulius contained (YULIUS_CONTAINED=true in yulius.service) with the isolation prerequisites, which `sudo yulius host setup` installs', channel: 'latest', channel_source: 'config', config_channel: 'latest', channel_set_by: null, channel_set_at: null, version: null, source: null, host_version: null, latest: null, stable: null, checked_at: null, checking: false, result: null, result_text: null, default_model: CLAUDE_DEFAULT_MODEL, models_read: false, unknown_models: [], problem: null, fix: null, refused: [], behind: [], moves_stopped: null };
+  }
+  const lacksDefault = c.unknown.includes(CLAUDE_DEFAULT_MODEL);
+  const gap = (version, missing) => `${version} does not know ${missing.map((m) => (m === CLAUDE_DEFAULT_MODEL ? `${m} (Yulius's default model)` : m)).join(', ')}`;
+  const resultText = {
+    installed: `Installed ${c.version}: new runs use it.`,
+    up_to_date: `Up to date: runs get ${c.version}.`,
+    refused: `Refused, nothing was installed: ${c.refused.map((r) => gap(r.version, r.missing)).join('; ')}.`,
+    failed: `The check failed: ${c.error}.`,
+  }[c.result] || null;
+  const newestRefused = c.refused.length && c.refused[c.refused.length - 1].version === c.latest ? c.latest : null;
+  const off = c.channel === 'off';
+  return {
+    managed: true, unmanaged: null,
+    channel: c.channel, channel_source: c.chosen ? 'settings' : 'config', config_channel: c.configChannel,
+    channel_set_by: c.chosen ? c.chosen.by : null, channel_set_at: c.chosen ? c.chosen.at : null,
+    version: off ? c.host : c.version, source: off ? 'host' : c.source, host_version: c.host,
+    latest: c.latest, stable: c.stable, checked_at: c.checkedAt ? new Date(c.checkedAt).toISOString() : null,
+    checking: c.checking, result: off ? null : c.result, result_text: off ? null : resultText,
+    default_model: CLAUDE_DEFAULT_MODEL, models_read: true, unknown_models: c.unknown,
+    problem: lacksDefault ? `Claude Code ${c.version} does not know ${CLAUDE_DEFAULT_MODEL}, Yulius's default model: tasks still ask for it by id, but what a session picks by itself (its model picker, a model alias, its subagents) is an older model.` : null,
+    fix: !lacksDefault ? null
+      : newestRefused ? `No Claude Code release knows it yet (${newestRefused}, the newest, does not): the default model is ahead of Claude Code, so choose a model it knows for tasks until a release does.`
+        : off ? 'Claude Code updates are off: choose Latest in Settings, Instance, Claude Code, or install a newer one on the host: `sudo npm install -g @anthropic-ai/claude-code@latest`.'
+          : CLAUDE_HOST_FIX,
+    refused: c.result === 'refused' ? c.refused : [],
+    // Running tasks whose session started before the release (CCM-013).
+    behind: db.tasks.filter((t) => CLI_BEHIND.has(t.id) && t.status === 'running' && c.previous !== c.version)
+      .map((t) => ({ sandbox: t.sandbox_id.slice(3), number: t.number, title: t.title, version: c.previous })),
+    moves_stopped: c.movesStopped,
+  };
+}
+
+/** A mock check takes two seconds: the incident's ends with 2.1.322 installed, any other up to date. */
+function claudeCheck(db) {
+  const c = db.claude;
+  if (c.checking || c.channel === 'off') return;
+  c.checking = true;
+  later(() => {
+    c.checking = false;
+    c.checkedAt = Date.now();
+    c.latest = c.latest || '2.1.322';
+    c.stable = c.stable || '2.1.311';
+    if (c.mode === 'ahead') return;
+    if (c.unknown.includes(CLAUDE_DEFAULT_MODEL)) {
+      Object.assign(c, { previous: c.version, version: '2.1.322', source: 'yulius', unknown: [], refused: [], result: 'installed', error: null });
+    } else {
+      Object.assign(c, { result: 'up_to_date', error: null });
+    }
+  }, 2000);
+}
+
+route('GET', '/api/admin/claude-code', ({ db }) => { superadminOnly(db); return claudeView(db); });
+route('POST', '/api/admin/claude-code/check', ({ db }) => {
+  superadminOnly(db);
+  if (db.claude.mode === 'unmanaged') fail(409, 'conflict', claudeView(db).unmanaged);
+  claudeCheck(db);
+  return json(202, claudeView(db));
+});
+route('PUT', '/api/admin/claude-code/channel', ({ db, body }) => {
+  superadminOnly(db);
+  if (db.claude.mode === 'unmanaged') fail(409, 'conflict', claudeView(db).unmanaged);
+  // `claude_channel_fail=1`: the change is refused, until a test clears `claude.channelFails`.
+  if (db.claude.channelFails) fail(500, 'internal', 'the mock refused this change');
+  const channel = body ? body.channel : null;
+  if (channel !== null && !['latest', 'stable', 'off'].includes(channel)) fail(422, 'invalid', 'the channel must be latest, stable or off');
+  const c = db.claude;
+  c.channel = channel || c.configChannel;
+  c.chosen = channel ? { by: db.me.user.login, at: new Date().toISOString() } : null;
+  // A channel change is checked at once.
+  claudeCheck(db);
+  return claudeView(db);
+});
 
 route('GET', '/api/admin/sandbox-docker', ({ db }) => { superadminOnly(db); return sandboxDockerView(db); });
 route('POST', '/api/admin/sandbox-docker/smoke', ({ db }) => {

@@ -2,9 +2,9 @@
 // update offered from main (checked when the page opens, SPEC-149) with its new commits, "Update
 // now" and the update's progress (building → pausing tasks → restarting → resuming, with a
 // failure or rollback said plainly, and the new version's re-check of sandboxes' Docker), a
-// restart with the running version (pausing tasks → restarting → resuming, SPEC-432), whether
-// sandboxes get Docker (SPEC-203), the leftovers on the disk (SPEC-215), and the Jev and Vidoc
-// keys.
+// restart with the running version (pausing tasks → restarting → resuming, SPEC-432), the Claude
+// Code sandboxes run (SPEC-461), whether sandboxes get Docker (SPEC-203), the leftovers on the
+// disk (SPEC-215), and the Jev and Vidoc keys.
 
 import { h, icon, setChildren, toast, errorToast, confirmDialog, badge, skeleton } from '../dom.js';
 import { relLong, dateTime } from '../format.js';
@@ -12,6 +12,7 @@ import { BRAND } from '../brand.js';
 import { pageFrame } from './common.js';
 import { keySettingsCard } from '../instancekeys.js';
 import { sandboxDockerCard, hostCheckKeptDocker, hostCheckItems } from '../sandboxdocker.js';
+import { claudeCodeCard } from '../claudecode.js';
 import { leftoversCard } from '../leftovers.js';
 import { limitsCard } from '../instancelimits.js';
 import { confirmAndStartUpdate, UPDATE_OUTCOMES as OUTCOMES } from '../updates.js';
@@ -136,15 +137,16 @@ export function mountInstancePage(ctx) {
     frame.body.append(h('div', { class: 'card placeholder' }, 'Only the superadmin manages updates and the instance keys.'));
     return { el: frame.el };
   }
-  const frame = pageFrame({ title: 'Instance', sub: 'version, updates, resource limits, sandboxes’ Docker, leftovers, the Jev and Vidoc keys' });
+  const frame = pageFrame({ title: 'Instance', sub: 'version, updates, Claude Code, resource limits, sandboxes’ Docker, leftovers, the Jev and Vidoc keys' });
   const updatesBody = h('div', { class: 'settings-body instance-body' }, skeleton('Loading updates…', 3, { block: true }));
   const checkButton = h('button', { type: 'button', class: 'btn btn-sm', onClick: () => checkNow() }, icon('refresh', { size: 14 }), 'Check now');
   const updatesCard = h('section', { class: 'settings-section', 'aria-labelledby': 'updates-title' },
     h('div', { class: 'settings-head' }, icon('download', { size: 16 }), h('h2', { id: 'updates-title' }, 'Updates'), h('span', { class: 'muted small' }, 'from main of Quartio-Studio/yulius'), h('span', { class: 'spacer' }), checkButton),
     updatesBody);
+  const claude = claudeCodeCard(ctx);
   const docker = sandboxDockerCard(ctx);
   const leftovers = leftoversCard(ctx);
-  frame.body.append(updatesCard, limitsCard(ctx), docker.el, leftovers.el, keySettingsCard(ctx, 'jev'), keySettingsCard(ctx, 'vidoc'));
+  frame.body.append(updatesCard, claude.el, limitsCard(ctx), docker.el, leftovers.el, keySettingsCard(ctx, 'jev'), keySettingsCard(ctx, 'vidoc'));
 
   /** Whether a cancel is on its way to the server (its button is busy, SPEC-439). */
   let cancelling = false;
@@ -299,6 +301,7 @@ export function mountInstancePage(ctx) {
     el: frame.el,
     destroy() {
       off();
+      claude.destroy();
       docker.destroy();
       leftovers.destroy();
       if (ctx.updates) ctx.updates.setQuiet(false);

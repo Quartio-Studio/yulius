@@ -293,6 +293,19 @@ async fn seed_cohort(h: &support::Harness) -> TestResult {
         json!({"harness": "claude", "account": "acc-a"}),
     )
     .await?;
+    // A restart on a newer Claude Code keeps the subscription: it is no switch (SPEC-461).
+    h.store
+        .insert_switch(&SwitchDecisionRecord {
+            id: "d3".into(),
+            task_id: TaskId::parse("t2")?,
+            at: Timestamp(t2 + 12 * MIN),
+            reason: "claude_code".into(),
+            inputs: json!({"account": "acc-a"}).to_string(),
+            from_desc: String::new(),
+            to_desc: String::new(),
+            outcome: "completed".into(),
+        })
+        .await?;
     feedback(h, "t2", "u-alice", "incorrect").await?;
 
     task(
