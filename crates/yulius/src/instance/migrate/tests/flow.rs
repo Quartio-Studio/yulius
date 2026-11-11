@@ -1705,21 +1705,108 @@ fn a_finish_whose_answer_was_lost_is_recorded_when_the_key_no_longer_signs_in() 
 }
 
 #[test]
-fn a_recorded_start_goes_on_only_with_the_old_unit_frozen() -> TestResult {
-    // Not frozen any more, and the new instance reports the build: it is only asked, the move
-    // is recorded, and a person is told what to make sure of.
+fn a_recorded_start_never_ends_with_both_instances_running() -> TestResult {
+    // Thawed by hand since, and the new instance reports the build: it has taken over, so the
+    // old one is frozen again here and now, then disabled as after any start.
     let mut s = killed_while_starting()?;
     if let Ok(mut unit) = s.world.systemd.lock() {
         unit.frozen = false;
     }
     assert_eq!(s.run()?, 0, "{}", s.shown());
     let events = s.events();
-    assert_eq!(events.first().map(String::as_str), Some("new: health"));
+    let at = |what: &str| {
+        events
+            .iter()
+            .position(|e| e == what)
+            .ok_or(format!("no {what}: {events:?}"))
+    };
+    assert_eq!(at("new: health")?, 0, "{events:?}");
+    assert!(at("new: health")? < at("old: systemctl freeze")?);
+    assert!(at("old: systemctl freeze")? < at("old: systemctl disable")?);
     assert!(
         !events
             .iter()
-            .any(|e| e == "new: start" || e == "new: stop" || e.starts_with("old: systemctl"))
+            .any(|e| e == "new: start" || e == "new: stop" || e == "old: systemctl thaw"),
+        "{events:?}"
     );
+    assert_eq!(s.old_unit(), (true, true));
+    let shown = s.shown();
+    assert!(
+        shown.contains("yulius.service ran here beside the new instance"),
+        "{shown}"
+    );
+    assert!(
+        !shown.contains("Make sure nothing of the old one runs here"),
+        "{shown}"
+    );
+    let state = State::load(&s.opts.state_dir).ok_or("no state")?;
+    assert_eq!((state.cutover, state.finished), (Cutover::Moved, true));
+
+    // It cannot be frozen: a failure with the reason and the commands, never exit 0; the move
+    // is recorded all the same, for the new instance has taken over.
+    let mut s = killed_while_starting()?;
+    if let Ok(mut unit) = s.world.systemd.lock() {
+        unit.frozen = false;
+        unit.no_freeze = true;
+    }
+    assert_eq!(s.run()?, 1);
+    let shown = s.shown();
+    assert!(
+        shown.contains("runs beside the new instance and could not be frozen"),
+        "{shown}"
+    );
+    assert!(shown.contains("must be frozen and disabled now"), "{shown}");
+    assert!(
+        !shown.contains("Make sure nothing of the old one runs here"),
+        "{shown}"
+    );
+    // A freeze that fails undoes its own attempt and nothing else: the unit is as it was found.
+    assert_eq!(s.old_unit(), (false, true));
+    let state = State::load(&s.opts.state_dir).ok_or("no state")?;
+    assert_eq!(state.cutover, Cutover::Moved);
+
+    // systemd does not say what the old unit does: that is not "it does not run".
+    let mut s = killed_while_starting()?;
+    if let Ok(mut unit) = s.world.systemd.lock() {
+        unit.frozen = false;
+        unit.silent = true;
+    }
+    assert_eq!(s.run()?, 1);
+    let shown = s.shown();
+    assert!(
+        shown.contains("may run beside the new instance and could not be frozen"),
+        "{shown}"
+    );
+    assert!(shown.contains("must be frozen and disabled now"), "{shown}");
+    assert!(
+        !shown.contains("Make sure nothing of the old one runs here"),
+        "{shown}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_recorded_start_goes_on_only_with_the_old_unit_frozen() -> TestResult {
+    // The old host was restarted meanwhile (its disabled unit does not run) and the new instance
+    // reports the build: it is only asked, the move is recorded, and a person is told what to
+    // make sure of.
+    let stopped = || -> Result<Setup, Box<dyn std::error::Error>> {
+        let s = killed_while_starting()?;
+        if let Ok(mut unit) = s.world.systemd.lock() {
+            unit.frozen = false;
+            unit.stopped = true;
+        }
+        Ok(s)
+    };
+    let untouched = |s: &Setup| {
+        !s.events()
+            .iter()
+            .any(|e| e == "new: start" || e == "new: stop" || e.starts_with("old: systemctl"))
+    };
+    let mut s = stopped()?;
+    assert_eq!(s.run()?, 0, "{}", s.shown());
+    assert_eq!(s.events().first().map(String::as_str), Some("new: health"));
+    assert!(untouched(&s), "{:?}", s.events());
     assert!(
         s.shown()
             .contains("Make sure nothing of the old one runs here"),
@@ -1729,13 +1816,8 @@ fn a_recorded_start_goes_on_only_with_the_old_unit_frozen() -> TestResult {
     let state = State::load(&s.opts.state_dir).ok_or("no state")?;
     assert_eq!(state.cutover, Cutover::Moved);
 
-    // The old host was restarted meanwhile (its disabled unit does not run) and the new
-    // instance does not run either: nothing is started; the abort is the way back.
-    let mut s = killed_while_starting()?;
-    if let Ok(mut unit) = s.world.systemd.lock() {
-        unit.frozen = false;
-        unit.stopped = true;
-    }
+    // The new instance does not run either: nothing is started; the abort is the way back.
+    let mut s = stopped()?;
     s.remote.healthy = false;
     assert_eq!(s.run()?, 1);
     assert_eq!(s.events(), ["new: health"]);
@@ -1747,6 +1829,32 @@ fn a_recorded_start_goes_on_only_with_the_old_unit_frozen() -> TestResult {
     );
     let state = State::load(&s.opts.state_dir).ok_or("no state")?;
     assert_eq!(state.cutover, Cutover::Starting);
+
+    // The new host does not answer the question: that is not "the new instance does not run".
+    // Whatever the old unit does, nothing is touched, and the same command asks again.
+    for runs in [false, true] {
+        let mut s = stopped()?;
+        if let Ok(mut unit) = s.world.systemd.lock() {
+            unit.stopped = !runs;
+        }
+        s.remote.refuse = vec!["health"];
+        assert_eq!(s.run()?, 1);
+        let shown = s.shown();
+        assert!(
+            shown.contains("run the command again when the new host answers"),
+            "{shown}"
+        );
+        assert!(shown.contains("Connection timed out"), "{shown}");
+        assert!(!shown.contains("does not say that it runs"), "{shown}");
+        assert!(!shown.contains("--abort` goes back"), "{shown}");
+        assert!(untouched(&s), "{:?}", s.events());
+        let state = State::load(&s.opts.state_dir).ok_or("no state")?;
+        assert_eq!(state.cutover, Cutover::Starting);
+        // It answers again: the same command decides from the new instance's state.
+        assert_eq!(s.run()?, 0, "{}", s.shown());
+        let state = State::load(&s.opts.state_dir).ok_or("no state")?;
+        assert_eq!(state.cutover, Cutover::Moved);
+    }
     Ok(())
 }
 

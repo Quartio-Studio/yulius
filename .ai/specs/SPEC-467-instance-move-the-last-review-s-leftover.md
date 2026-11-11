@@ -149,8 +149,9 @@ messages and documents say what the code does.
   has taken over once it reports the build (MIG-004), so the old one must stop running, and the
   run can do that itself at once; a `FAIL` line alone would leave both running until a person
   reads it. The freeze is the export's own (`freeze::freeze`): it refuses while the update helper
-  runs and gives up after its bound, and then the line is the `FAIL` the review asked for. The
-  thaw is never tried here: a resumed run thaws nothing (SPEC-460).
+  runs and gives up after its bound, and then the line is the `FAIL` the review asked for. A
+  freeze that fails undoes its own attempt, as in an export (the unit is as it was found:
+  running); nothing else thaws in a resumed run (SPEC-460).
 - **Unknown is treated as running (LFT-002).** When systemd does not say what the old unit does,
   "it does not run" would be a guess that ends in exit 0; the run tries the freeze, and the check
   after it fails closed.

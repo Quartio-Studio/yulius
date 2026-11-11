@@ -1550,41 +1550,100 @@ impl<'a> Move<'a> {
     /// A run that ended after it ordered the start: the new instance's state decides.
     fn resume_start(&mut self, p: &Profile) -> Result<(), Stop> {
         self.phase("Cutover");
-        // The start was ordered by an earlier run: nothing here may thaw, and a unit that is
-        // not frozen any more is a person's to look at before anything goes on.
-        if self.old_frozen() {
+        // The start was ordered by an earlier run: nothing here may thaw, and nothing is started
+        // beside an old unit that is not frozen.
+        let state = self.old_unit();
+        if state.is_some_and(|(_, frozen)| frozen) {
             return self.start(p);
         }
         // Not frozen any more (this host was restarted, so its disabled unit does not run; or
         // someone thawed it): nothing is started on that. The new instance is only asked.
         let unit = self.opts.service.clone();
+        let not_frozen = if state.is_some() {
+            "is not frozen"
+        } else {
+            "is not known to be frozen"
+        };
         let asked = self.remote.call(&Request::Health {
             build: self.world.build(),
             health: self.health_address(p),
         });
         match asked {
             Ok(reply) if reply.started => {
-                self.manual(
-                    "old instance",
-                    format!(
-                        "{unit} is not frozen any more, and the new instance runs. Make sure \
-                         nothing of the old one runs here: `systemctl stop {unit}; systemctl \
-                         kill --kill-whom=all {unit}; systemctl disable {unit}`"
-                    ),
-                );
-                self.state.cutover = Cutover::Moved;
-                self.save_state()
+                if matches!(state, Some((false, _))) {
+                    self.manual(
+                        "old instance",
+                        format!(
+                            "{unit} does not run here any more, and the new instance runs. Make \
+                             sure nothing of the old one runs here: `systemctl stop {unit}; \
+                             systemctl kill --kill-whom=all {unit}; systemctl disable {unit}`"
+                        ),
+                    );
+                    self.state.cutover = Cutover::Moved;
+                    return self.save_state();
+                }
+                // It runs beside the new instance, which has taken over; or systemd does not
+                // say, and "it does not run" would be a guess. Frozen here and now, then
+                // disabled and checked as after any start.
+                self.freeze_beside_new(state.is_some());
+                self.moved()
             }
-            _ => {
+            Ok(_) => {
                 self.fail(
                     "old instance",
                     format!(
-                        "{unit} is not frozen although the new instance's start was ordered, \
+                        "{unit} {not_frozen} although the new instance's start was ordered, \
                          and the new instance does not say that it runs. Nothing was started \
                          or stopped: `yulius instance migrate --abort` goes back"
                     ),
                 );
                 Err(Stop::Failed)
+            }
+            // Silence is not "does not run": the abort would bring the old instance back
+            // beside a new one that may run.
+            Err(why) => {
+                self.fail(
+                    "new instance",
+                    format!(
+                        "the new host does not answer ({why}), so nobody knows whether the new \
+                         instance runs, and {unit} {not_frozen} here. Nothing was started or \
+                         stopped: run the command again when the new host answers (it decides \
+                         from the new instance's state); `yulius instance migrate --abort` only \
+                         once the new instance is known to be stopped"
+                    ),
+                );
+                Err(Stop::Failed)
+            }
+        }
+    }
+
+    /// Freezes an old unit that runs beside a new instance that has taken over (a recorded
+    /// start, the unit thawed or started since). The freeze stays whatever ends this run, and
+    /// [`Self::moved`] says whether it holds. `known`: systemd said that the unit runs.
+    fn freeze_beside_new(&mut self, known: bool) {
+        let opts = self.opts;
+        let unit = &opts.service;
+        match freeze::freeze(self.world.freezer(), unit, &opts.update_service) {
+            Ok(held) => {
+                let ours = held.ours();
+                held.leave_frozen();
+                if ours {
+                    self.changed(
+                        "old instance",
+                        format!(
+                            "{unit} ran here beside the new instance (thawed or started since \
+                             the start was ordered): it is frozen again. What its agents did \
+                             meanwhile is on this host only"
+                        ),
+                    );
+                }
+            }
+            Err(why) => {
+                let runs = if known { "runs" } else { "may run" };
+                self.fail(
+                    "old instance",
+                    format!("{unit} {runs} beside the new instance and could not be frozen: {why}"),
+                );
             }
         }
     }
