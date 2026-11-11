@@ -13,6 +13,7 @@
 //! directory loaded as a boot loads it, and taken back where bwrap does not start (BNS-012).
 
 use std::path::Path;
+use std::time::Duration;
 
 use yulius_sandbox::userns::{HOLDER_NAMESPACE, PROOF_COMMAND};
 
@@ -34,6 +35,9 @@ const RESTRICTED: &str = "/proc/sys/kernel/apparmor_restrict_unprivileged_userns
 /// Absolute: the update helper's `PATH` has no `sbin`.
 const RUNUSER: &str = "/usr/sbin/runuser";
 const PARSER: &str = "/usr/sbin/apparmor_parser";
+/// How long loading the whole directory may take: a second on a small host, minutes where the
+/// cache is cold and the profiles are many.
+pub(super) const BOOT_LOAD: Duration = Duration::from_secs(300);
 
 /// What Ubuntu ships for other programs that need user namespaces (`abi/4.0` is the first with
 /// the `userns` rule; later parsers read it too).
@@ -203,20 +207,13 @@ fn theirs(files: &[String]) -> String {
     )
 }
 
-/// What a person does about a profile for bwrap that Yulius cannot name. `ours`: Yulius's
-/// profile stands beside it (an earlier run wrote it), and may go instead.
-fn rival(ours: bool) -> String {
-    let or_ours = if ours {
-        format!(
-            " or take Yulius's away (`sudo {PARSER} -R {PROFILE_FILE} && sudo rm {PROFILE_FILE}`)"
-        )
-    } else {
-        String::new()
-    };
+/// What a person does about a profile for bwrap that Yulius cannot name, where bwrap starts
+/// neither beside Yulius's profile nor without it.
+fn rival() -> String {
     format!(
         "where another profile of {DIR} is for /usr/bin/bwrap, AppArmor applies neither it nor \
          Yulius's: disable that profile (`sudo ln -s <its file> {DIR}/disable/ && sudo {PARSER} \
-         -R <its file>`){or_ours}, then run `sudo yulius host setup` again"
+         -R <its file>`), then run `sudo yulius host setup` again"
     )
 }
 
@@ -415,32 +412,30 @@ impl Run<'_> {
             }
             // With the directory loaded as after a boot, a profile for bwrap that Yulius did
             // not read weighs as much as Yulius's: AppArmor applies neither.
-            Proof::Fails(why) if plan.write && self.limits().is_empty() => {
+            Proof::Fails(why) if plan.load && self.limits().is_empty() => {
                 self.without_ours(&plan, earlier.as_deref(), &done, &why);
             }
             Proof::Fails(why) => {
                 let cause = self.cause(&facts);
-                // A profile an earlier run wrote stays: the person chooses which one goes.
-                let rival = if plan.load && self.limits().is_empty() {
-                    format!("; {}", rival(true))
-                } else {
-                    String::new()
-                };
                 self.failed(
                     ITEM,
-                    format!("{done}, but bwrap still cannot start a user namespace as {user}: {why}{cause}{rival}"),
+                    format!(
+                        "{done}, but bwrap still cannot start a user namespace as {user}: \
+                         {why}{cause}"
+                    ),
                 );
             }
         }
     }
 
-    /// Takes back the profile this run wrote and proves once more: where bwrap starts without
-    /// it, a person's profile allows it and is adopted; where not, the host is left as it was
-    /// (BNS-012).
+    /// Proves once more with no profile of Yulius's, neither loaded nor on disk. Where bwrap
+    /// starts now, a person's profile lets it in and is adopted: Yulius's stays away, whichever
+    /// run wrote it. Where not, Yulius's is back as it was before this run (BNS-012).
     fn without_ours(&mut self, plan: &Plan, earlier: Option<&str>, done: &str, why: &str) {
         let user = self.service_name();
-        let back = self.ours_back(earlier);
-        if self.prove_namespace() == Proof::Works {
+        let held = self.unload_ours();
+        let (gone, mut back) = self.file_back(None);
+        if gone && held.is_none() && self.prove_namespace() == Proof::Works {
             // The shipped profile stays disabled, as beside a profile Yulius reads.
             let kept = Plan {
                 write: false,
@@ -456,11 +451,16 @@ impl Run<'_> {
                 &format!(
                     "{kept}loaded the profiles of {DIR} as a boot does: bwrap starts a user \
                      namespace as {user} with a profile that Yulius did not write; Yulius's \
-                     own, which AppArmor does not apply beside it, was taken back"
+                     own ({PROFILE_FILE}), which AppArmor does not apply beside it, was removed"
                 ),
                 "",
             );
         }
+        if let Some(text) = earlier {
+            back = self.file_back(Some(text)).1;
+            self.run_cmd(&Cmd::new(&[PARSER, "-r", PROFILE_FILE]));
+        }
+        let held = held.unwrap_or_default();
         let link = if plan.disable {
             self.link_back()
         } else {
@@ -470,8 +470,8 @@ impl Run<'_> {
             ITEM,
             format!(
                 "{done}, but bwrap still cannot start a user namespace as {user}: \
-                 {why}{back}{link}; {}",
-                rival(false)
+                 {why}{back}{held}{link}; {}",
+                rival()
             ),
         );
     }
@@ -617,15 +617,20 @@ impl Run<'_> {
                 .write(Path::new(PROFILE_FILE), PROFILE, 0o644)
                 .map_err(|why| format!("cannot write {PROFILE_FILE}: {why}"))?;
         }
-        let mut linked = false;
-        match self.apply_loaded(plan, &mut linked) {
+        let (mut linked, mut loaded) = (false, false);
+        match self.apply_loaded(plan, &mut linked, &mut loaded) {
             Ok(()) => Ok(earlier),
             Err(why) => {
                 let mut undone = String::new();
                 // A file AppArmor does not hold, or cannot read, would change or fail its
-                // next boot.
+                // next boot; a profile it holds without its file would be gone after one.
                 if plan.write {
-                    undone += &self.file_back(earlier.as_deref());
+                    let held = if loaded { self.unload_ours() } else { None };
+                    undone += &self.file_back(earlier.as_deref()).1;
+                    if loaded && earlier.is_some() {
+                        self.run_cmd(&Cmd::new(&[PARSER, "-r", PROFILE_FILE]));
+                    }
+                    undone += &held.unwrap_or_default();
                 }
                 if linked {
                     undone += &self.link_back();
@@ -635,15 +640,16 @@ impl Run<'_> {
         }
     }
 
-    /// Yulius's file as it was before this run: its earlier text, or gone. Says which.
-    fn file_back(&mut self, earlier: Option<&str>) -> String {
+    /// Yulius's file as it was before this run: its earlier text, or gone. Whether that
+    /// worked, and what to say of it.
+    fn file_back(&mut self, earlier: Option<&str>) -> (bool, String) {
         let (back, done, not) = match earlier {
             Some(text) => (
                 self.host
                     .write(Path::new(PROFILE_FILE), text, 0o644)
                     .is_ok(),
                 "has its earlier text again",
-                "keeps the text AppArmor did not load",
+                "could not get its earlier text back",
             ),
             None => (
                 self.run_cmd(&Cmd::new(&["rm", "-f", PROFILE_FILE])).ok(),
@@ -651,38 +657,47 @@ impl Run<'_> {
                 "could not be removed again",
             ),
         };
-        format!("; {PROFILE_FILE} {}", if back { done } else { not })
+        let says = format!("; {PROFILE_FILE} {}", if back { done } else { not });
+        (back, says)
     }
 
-    /// Yulius's profile as it was before this run, in AppArmor too: the profile this run
-    /// loaded is unloaded, or the earlier file's is loaded again. Says what the file is now.
-    fn ours_back(&mut self, earlier: Option<&str>) -> String {
-        // `-R` reads the file for the profile's name: before the file changes.
-        self.run_cmd(&Cmd::new(&[PARSER, "-R", PROFILE_FILE]));
-        let back = self.file_back(earlier);
-        if earlier.is_some() {
-            self.run_cmd(&Cmd::new(&[PARSER, "-r", PROFILE_FILE]));
-        }
-        back
+    /// Takes Yulius's profile out of AppArmor; what to say where AppArmor keeps it. `-R` reads
+    /// the file for the profile's name: before the file changes.
+    fn unload_ours(&mut self) -> Option<String> {
+        let out = self.run_cmd(&Cmd::new(&[PARSER, "-R", PROFILE_FILE]));
+        // Exit 254: it was not loaded.
+        (!out.ok() && out.code != 254)
+            .then(|| format!("; AppArmor still holds Yulius's profile ({})", out.why()))
     }
 
     /// The shipped profile enabled again, as before this run. Says so.
     fn link_back(&mut self) -> String {
         let link = format!("{DIR}/disable/{SHIPPED}");
-        let back = self.run_cmd(&Cmd::new(&["rm", "-f", &link])).ok()
-            && self
-                .run_cmd(&Cmd::new(&[PARSER, "-r", &format!("{DIR}/{SHIPPED}")]))
-                .ok();
-        if back {
+        if !self.run_cmd(&Cmd::new(&["rm", "-f", &link])).ok() {
+            return format!("; Ubuntu's AppArmor profile {SHIPPED} stays disabled by {link}");
+        }
+        let load = [PARSER, "-r", &format!("{DIR}/{SHIPPED}")];
+        let out = self.run_cmd(&Cmd::new(&load));
+        if out.ok() {
             format!("; Ubuntu's AppArmor profile {SHIPPED} is enabled again")
         } else {
-            format!("; Ubuntu's AppArmor profile {SHIPPED} stays disabled by {link}")
+            format!(
+                "; Ubuntu's AppArmor profile {SHIPPED} is enabled again and loads at the next \
+                 boot (`{}` failed: {})",
+                load.join(" "),
+                out.why()
+            )
         }
     }
 
     /// What changes the profiles AppArmor holds; `linked` once the shipped profile's link is
-    /// made.
-    fn apply_loaded(&mut self, plan: &Plan, linked: &mut bool) -> Result<(), String> {
+    /// made, `loaded` once AppArmor holds this version of Yulius's profile.
+    fn apply_loaded(
+        &mut self,
+        plan: &Plan,
+        linked: &mut bool,
+        loaded: &mut bool,
+    ) -> Result<(), String> {
         let shipped = format!("{DIR}/{SHIPPED}");
         if plan.disable {
             self.must(&["ln", "-s", &shipped, &format!("{DIR}/disable/{SHIPPED}")])?;
@@ -714,9 +729,19 @@ impl Run<'_> {
                     out.why()
                 ));
             }
+            *loaded = true;
             // What a boot loads beside it, so that the proof holds after one. A profile of
-            // someone else's that AppArmor refuses fails its boot too: the proof decides.
-            self.run_cmd(&Cmd::new(&[PARSER, "-r", DIR]));
+            // someone else's that AppArmor refuses fails its boot too (an exit status: the
+            // proof decides); a load that did not run to its end says nothing of a boot.
+            let mut all = Cmd::new(&[PARSER, "-r", DIR]);
+            all.timeout = BOOT_LOAD;
+            let out = self.run_cmd(&all);
+            if out.code == -1 {
+                return Err(format!(
+                    "`{PARSER} -r {DIR}` did not run to its end: {}",
+                    out.why()
+                ));
+            }
         }
         Ok(())
     }
