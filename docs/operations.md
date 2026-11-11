@@ -73,8 +73,8 @@ reason) or `FAIL`, then a summary; it exits 1 when an item failed. In order:
    AppArmor restricts user namespaces (Ubuntu 24.04 and later), it writes and loads
    `/etc/apparmor.d/yulius-bwrap`; on Ubuntu 26.04 it first disables the package's
    `bwrap-userns-restrict` with a link in `/etc/apparmor.d/disable/` (the file itself is never
-   edited). A rule a person wrote for `/usr/bin/bwrap` is left as it is and named. See
-   [Sandbox isolation](#sandbox-isolation).
+   edited). A step that fails is undone and the line says so. A rule a person wrote for
+   `/usr/bin/bwrap` is left as it is and named. See [Sandbox isolation](#sandbox-isolation).
 9. **yulius.service**: written from §3 and enabled when missing (`--public-url` is needed then).
    Otherwise, a drop-in `yulius.service.d/10-yulius-sandboxes.conf` adds `Delegate=yes`,
    `DelegateSubgroup=server` and `KillMode=process` if they are missing. The restart that applies
@@ -1705,11 +1705,15 @@ should set the commit it is built from: `YULIUS_BUILD_COMMIT=$(git rev-parse HEA
 
 ### Notes for specific upgrades
 
-- Upgrading to host setup's bwrap rule (SPEC-456, ADR-0296, 2026-11-11): nothing to do on a host
-  whose sandboxes work. A hand-written `/etc/apparmor.d/bwrap` keeps working and is reported as
-  adopted; `sudo yulius host setup` changes nothing there. A host whose sandboxes fail with
-  `setting up uid map: Permission denied` or a denied mount now says so in `yulius host check`,
-  Settings → Instance and `yulius doctor --contained`: run `sudo yulius host setup`. No migration.
+- Upgrading to host setup's bwrap rule (SPEC-456, ADR-0296, 2026-11-11): nothing to do on an
+  Ubuntu 24.04 or Debian host whose sandboxes work. A hand-written `/etc/apparmor.d/bwrap` keeps
+  working and is reported as adopted; `sudo yulius host setup` changes nothing there. On Ubuntu
+  26.04 run `sudo yulius host setup` once even when sandboxes work with a hand-written `bwrap`
+  profile: the package's `bwrap-userns-restrict` declares the same profile name and whichever
+  loads last wins, so until setup has disabled the shipped one `yulius host check` and Settings →
+  Instance report the item as failed. A host whose sandboxes fail with `setting up uid map:
+  Permission denied` or a denied mount now says so in `yulius host check`, Settings → Instance
+  and `yulius doctor --contained`: run `sudo yulius host setup`. No migration.
 
 - Upgrading to 1 GiB uploads (SPEC-325, ADR-0219, 2026-10-26): the default upload limit is now
   1 GiB. Raise the reverse proxy's request body limit to 1100 MB (§4: Caddy `max_size 1100MB`,
