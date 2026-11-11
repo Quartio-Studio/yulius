@@ -160,7 +160,7 @@ export async function terminalShown(browser: Browser): Promise<void> {
  * which shows the rail first when it is hidden. The rail's Superagent button closes it again.
  */
 export async function openSuperagent(browser: Browser, screen: Screen): Promise<void> {
-  // The page first: a Superagent opened before the page has its sandbox is the Global one.
+  // The page first: a Superagent opened before the page has its sandbox waits for it (SPEC-450).
   await firstShown(screen.getByRole('heading', { level: 1 }));
   if (await browser.locator('.rail:not([hidden])').count() === 0) await screen.getByRole('button', /^Show tools/).click();
   await screen.getByRole('navigation', 'Tools').getByRole('button', 'Superagent').click();
