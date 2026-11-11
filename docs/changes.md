@@ -12,6 +12,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   in which they took them and by the fixture's 8 s job limit. Now the integration branch's run and
   the pull request's first run pass before the test holds any job, the test asserts that, and its
   jobs have a limit of an hour: only the test ends them. Nothing in the product changes.
+- `yulius tool` and `yulius remove` work in task sessions (SPEC-451, task #433, #1109). The
+  `/yulius/bin/yulius` wrapper first on a session's `PATH` passed only `wait` and `security-scan`,
+  so both commands the briefing names printed its usage line and exited 2. It now passes them too,
+  its usage line lists all four, and a test fails when a new "In a task's session" subcommand is
+  left out of it. Running sessions see the new wrapper once the updated server starts any run.
 
 ## 2026-11-10
 
