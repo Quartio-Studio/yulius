@@ -234,6 +234,25 @@ test('the tool chosen last on the way into a sandbox opens there', async ({ app,
   await expect(tools.getByRole('button', 'Notes')).toHaveAttribute('aria-pressed', 'true');
 });
 
+// Review of SPEC-450 SSC-007: the tool waits for the sandbox whose page loaded when it was chosen,
+// and for no other: it opened a Shell in the sandbox the person went to instead.
+test('a tool chosen for a sandbox left while its page loads does not open in another', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12', studioTasks));
+  await studioLoading(screen);
+  const shell = await chooseShell(screen);
+  await expect(shell).toHaveAttribute('aria-pressed', 'true');
+  await screen.getByRole('navigation', 'Sandboxes').getByRole('link', /^product\b/).click();
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('New task');
+  await expect(screen.getByRole('region', 'Tool panel')).toBeHidden();
+  await expect(shell).toHaveAttribute('aria-pressed', 'false');
+
+  await releaseHeld(browser);
+  await screen.getByRole('navigation', 'Sandboxes').getByRole('link', /^studio\b/).click();
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#12 Checkout API');
+  await expect(screen.getByRole('region', 'Tool panel')).toBeHidden();
+  await expect(shell).toHaveAttribute('aria-pressed', 'false');
+});
+
 // SPEC-434 MTB-002/004: the terminal tabs move as the sandbox and Notes tabs do, and keep their order.
 const termStrip = '[role="tablist"][aria-label="Terminals"]';
 

@@ -116,6 +116,7 @@ struct FakeState {
     secret_probe_delay: Duration,
     child_frames: Vec<String>,
     sandboxed_frames: bool,
+    sandboxed_document: bool,
     frame_targets: Vec<Value>,
     enter_submits: bool,
     failing_after: HashMap<String, (usize, i64, String)>,
@@ -298,6 +299,7 @@ impl FakeCdpServer {
                 secret_probe_delay: Duration::ZERO,
                 child_frames: Vec::new(),
                 sandboxed_frames: false,
+                sandboxed_document: false,
                 frame_targets: Vec::new(),
                 enter_submits: false,
                 failing_after: HashMap::new(),
@@ -480,6 +482,12 @@ impl FakeCdpServer {
     pub fn set_sandboxed_child_frames(&self, urls: &[&str]) {
         self.set_child_frames(urls);
         lock(&self.shared.state).sandboxed_frames = true;
+    }
+
+    /// Whether every page's own document is sandboxed (`Content-Security-Policy: sandbox`): the
+    /// main frame's origin is opaque (`"null"`).
+    pub fn set_sandboxed_document(&self, sandboxed: bool) {
+        lock(&self.shared.state).sandboxed_document = sandboxed;
     }
 
     /// Whether pressing Enter submits the page's form: a new document, as a sign-in form does.
@@ -1000,9 +1008,14 @@ fn respond(
                 })
                 .collect();
             let loader = state.page(session_id).map_or(0, |page| page.loader);
+            let origin = if state.sandboxed_document {
+                "null".to_owned()
+            } else {
+                origin_of(&url)
+            };
             Ok(
                 json!({"frameTree": {"frame": {"id": "frame-1", "loaderId": format!("loader-{loader}"),
-                "url": url, "securityOrigin": origin_of(&url)}, "childFrames": children}}),
+                "url": url, "securityOrigin": origin}, "childFrames": children}}),
             )
         }
         "Input.insertText" => {

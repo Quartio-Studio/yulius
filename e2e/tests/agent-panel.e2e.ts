@@ -219,6 +219,27 @@ test('the Superagent chosen while its sandbox’s page loads is that sandbox’s
   await expect(browser.locator(agentTerminal)).toHaveText(/cwd: .*product/);
 });
 
+// Review of SPEC-450 SSC-007: the page ended outside a sandbox, so the Superagent that waited for
+// one is not wanted there: its button, the one the rail keeps outside a sandbox, is not pressed.
+test('the Superagent chosen for a sandbox is dropped when its page is left for Settings', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12', '&hold=/api/sandboxes/sb_studio/tasks'));
+  await expect(screen.getByRole('navigation', 'Sandboxes').getByRole('link', /^studio\b/)).toHaveAttribute('aria-current', 'page');
+  await screen.getByRole('button', /^Show tools/).click();
+  const superagent = screen.getByRole('navigation', 'Tools').getByRole('button', 'Superagent');
+  await superagent.click();
+  await expect(superagent).toHaveAttribute('aria-pressed', 'true');
+
+  await browser.evaluate(() => { window.location.hash = '#/settings'; });
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Settings');
+  await expect(superagent).toHaveAttribute('aria-pressed', 'false');
+  await expect(screen.getByRole('region', 'Tool panel')).toBeHidden();
+  // The read of studio's tasks answers a page that is gone: nothing opens.
+  await browser.evaluate(() => (window as unknown as { __yuliusMock: { release: () => void } }).__yuliusMock.release());
+  await expect.poll(() => browser.evaluate(() => (window as unknown as { __yuliusMock: { heldWaiting?: number } }).__yuliusMock.heldWaiting ?? 0)).toBe(0);
+  await expect(superagent).toHaveAttribute('aria-pressed', 'false');
+  await expect(screen.getByRole('region', 'Tool panel')).toBeHidden();
+});
+
 // Review round 3: the rail shown for a Superagent link becomes the person's when they use it for
 // another tool, and goes again when the Superagent is closed from the rail.
 test('a tool picked from the rail after a Superagent link keeps the rail', async ({ app, screen }) => {

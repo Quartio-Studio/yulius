@@ -1232,6 +1232,33 @@ async fn fills_that_cannot_be_placed_refuse_every_screenshot() -> TestResult {
     Ok(())
 }
 
+/// SPEC-450 (final review): a sandboxed frame is not readable from a page whose own origin is
+/// opaque too (`Content-Security-Policy: sandbox`): two opaque origins are never the same one.
+#[tokio::test]
+async fn a_sandboxed_frame_of_a_sandboxed_page_is_not_readable() -> TestResult {
+    let (fake, instance, tab) = setup().await?;
+    instance
+        .tool_navigate(&to(&tab, "https://m.example/login"))
+        .await?;
+    fake.set_password_field("#pw", true);
+    instance
+        .tool_type_secret(&fill(&tab, "#pw", "pw-secret-4471"))
+        .await?;
+    instance
+        .tool_navigate(&to(&tab, "https://m.example/home"))
+        .await?;
+    // The sandboxed page by itself keeps its screenshots: it frames nothing.
+    fake.set_sandboxed_document(true);
+    assert!(!refused(
+        instance.tool_screenshot_within(&shot(&tab), 100_000).await
+    ));
+    fake.set_sandboxed_child_frames(&["https://m.example/settings"]);
+    assert!(refused(
+        instance.tool_screenshot_within(&shot(&tab), 100_000).await
+    ));
+    Ok(())
+}
+
 /// SPEC-450 (review round 6): a probe failing before typing because a navigation committed
 /// meanwhile does not expose the site: the typing goes into the next document.
 #[tokio::test]
