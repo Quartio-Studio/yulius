@@ -569,12 +569,20 @@ fn what_took_a_file_s_place_is_never_followed_or_waited_on() -> TestResult {
     std::os::unix::fs::symlink(dir.path().join("secret"), dir.path().join("link"))?;
     let followed = open(&dir.path().join("link"));
     assert!(followed.as_ref().is_err_and(walk::gone), "{followed:?}");
-    // A FIFO nobody writes to: opened without waiting, and seen not to be a file.
+    // A FIFO nobody writes to: not waited on, and not a file.
     nix::unistd::mkfifo(&dir.path().join("fifo"), nix::sys::stat::Mode::S_IRWXU)?;
-    let fifo = open(&dir.path().join("fifo"))?;
-    assert!(!fifo.metadata()?.is_file());
+    let fifo = open(&dir.path().join("fifo"));
+    assert!(fifo.as_ref().is_err_and(walk::gone), "{fifo:?}");
     assert!(open(&dir.path().join("missing")).is_err_and(|e| walk::gone(&e)));
-    assert!(open(&dir.path().join("secret"))?.metadata()?.is_file());
+    let file = open(&dir.path().join("secret"))?;
+    assert!(file.metadata()?.is_file());
+    // A file is opened as any program opens it: an open that does not wait would fail on a
+    // file somebody holds a lease on, instead of waiting for the lease to be given up.
+    #[cfg(target_os = "linux")]
+    assert!(!rustix::fs::fcntl_getfl(&file)?.contains(rustix::fs::OFlags::NONBLOCK));
+    let mut text = String::new();
+    io::Read::read_to_string(&mut &file, &mut text)?;
+    assert_eq!(text, "not the instance's");
     // A socket cannot be opened: gone as well.
     let _socket = std::os::unix::net::UnixListener::bind(dir.path().join("sock"))?;
     assert!(open(&dir.path().join("sock")).is_err_and(|e| walk::gone(&e)));
@@ -884,5 +892,20 @@ fn a_file_is_read_in_the_directory_the_walk_listed_whatever_its_name_leads_to_no
         stream.content("data/sandboxes/sb/dir/b"),
         Some(&b"inside b"[..])
     );
+    Ok(())
+}
+
+#[test]
+fn a_pass_measures_what_it_sent_without_a_receipt() -> TestResult {
+    let dir = tree()?;
+    // Long after every change: every entry earns its receipt.
+    let (_, sent) = live(dir.path(), &mut Book::default(), later())?;
+    assert!(sent.sending > Duration::ZERO);
+    assert_eq!(sent.unearned, Duration::ZERO);
+    // A pass that began before the files last changed: nothing earns one, so the next pass
+    // sends all of it again, whether it changes or not.
+    let (_, sent) = live(dir.path(), &mut Book::default(), (0, 0))?;
+    assert!(sent.unearned > Duration::ZERO);
+    assert_eq!(sent.unearned, sent.sending);
     Ok(())
 }

@@ -32,6 +32,10 @@ pub struct Measured {
     pub walk: f64,
     /// The time it spent sending the entries that had changed.
     pub sending: f64,
+    /// The part of `sending` that went to entries that earned no receipt (they changed too
+    /// close to the pass or while they were read, or lie on another filesystem): the next
+    /// pass sends them again whatever happens.
+    pub again: f64,
     /// The time the new host took to finish the pass (its sync).
     pub tail: f64,
     /// The pass's length.
@@ -45,7 +49,8 @@ pub struct Measured {
 /// that for sending what will have changed. The tree is counted four times (planned and
 /// streamed on the old host, pruned and proven on the new one, at the old host's rate); the
 /// changes are the last pass's, scaled by how long they gathered for it against how long they
-/// gather now; then the new host's sync and the start.
+/// gather now, except what earned no receipt, which is sent again in full; then the new host's
+/// sync and the start.
 #[must_use]
 pub fn estimate(m: &Measured) -> (u64, u64) {
     let share = if m.window > 0.0 {
@@ -53,7 +58,8 @@ pub fn estimate(m: &Measured) -> (u64, u64) {
     } else {
         1.0
     };
-    let changes = m.sending * share;
+    let again = m.again.clamp(0.0, m.sending);
+    let changes = again + (m.sending - again) * share;
     let total = (4.0 * m.walk + m.tail + changes).round();
     (total as u64 + START_SECS, changes.round() as u64)
 }
@@ -79,6 +85,31 @@ pub fn sampled(root: &Path, cold: Duration) -> Option<(u64, f64)> {
     let (found, _) = walked(Some(cold), u64::MAX);
     let (again, took) = walked(None, found);
     (again > 0).then(|| (again, again as f64 / took.as_secs_f64().max(1e-6)))
+}
+
+/// The estimated freeze in words: what it is made of.
+fn freeze_said(measured: &Measured) -> String {
+    let (total, changes) = estimate(measured);
+    let again = measured.again.clamp(0.0, measured.sending).round() as u64;
+    let every = if again > 0 {
+        format!(
+            " ({} of it for entries that every pass sends: they change all the time, or lie on \
+             another filesystem)",
+            span(again)
+        )
+    } else {
+        String::new()
+    };
+    format!(
+        "about {} frozen: the entries are counted four times ({} each, twice on each host), \
+         what changes meanwhile takes about {} to send{every}, the new host's sync {}, and the \
+         start about {}",
+        span(total),
+        span(measured.walk.round() as u64),
+        span(changes),
+        span(measured.tail.round() as u64),
+        span(START_SECS)
+    )
 }
 
 fn span(secs: u64) -> String {
@@ -226,16 +257,7 @@ impl Move<'_> {
     /// Says the estimated freeze and decides: `true` to freeze now, `false` to copy again.
     fn short_enough(&mut self, measured: &Measured, deltas: u32) -> Result<bool, Stop> {
         let (total, changes) = estimate(measured);
-        let said = format!(
-            "about {} frozen: the entries are counted four times ({} each, twice on each host), \
-             what changes meanwhile takes about {} to send, the new host's sync {}, and the \
-             start about {}",
-            span(total),
-            span(measured.walk.round() as u64),
-            span(changes),
-            span(measured.tail.round() as u64),
-            span(START_SECS)
-        );
+        let said = freeze_said(measured);
         let last = deltas >= MAX_DELTA_PASSES;
         let above = |max: u64| total > max.saturating_mul(60);
         match self.opts.max_downtime {
@@ -412,6 +434,7 @@ impl Move<'_> {
         Ok(Measured {
             walk: (walked - sending).max(0.0),
             sending,
+            again: sent.unearned.as_secs_f64(),
             tail: (secs - walked).max(0.0),
             secs,
             window: before.map_or(0.0, |before| {
@@ -512,6 +535,7 @@ mod tests {
         let measured = Measured {
             walk: 60.0,
             sending: 30.0,
+            again: 0.0,
             tail: 10.0,
             secs: 100.0,
             window: 3600.0,
@@ -530,6 +554,23 @@ mod tests {
             ..measured
         };
         assert_eq!(estimate(&slow).1, 30);
+        // Of the 30 s, 12 s went to entries that earned no receipt (they change all the time,
+        // or lie on another filesystem): the freeze sends them whatever happens, and only the
+        // rest is scaled.
+        let unsettled = Measured {
+            again: 12.0,
+            ..measured
+        };
+        assert_eq!(estimate(&unsettled), (4 * 60 + 10 + 13 + START_SECS, 13));
+        assert!(freeze_said(&unsettled).contains(
+            "what changes meanwhile takes about 13 s to send (12 s of it for entries that \
+             every pass sends: they change all the time, or lie on another filesystem)"
+        ));
+        assert!(
+            freeze_said(&measured).contains("what changes meanwhile takes about 1 s to send, the"),
+            "{}",
+            freeze_said(&measured)
+        );
         assert_eq!(
             (span(119), span(120), span(121)),
             ("119 s".into(), "2 min".into(), "3 min".into())

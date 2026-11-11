@@ -161,8 +161,27 @@ fn at(path: &[u8], e: io::Error) -> io::Error {
     io::Error::new(e.kind(), format!("{}: {e}", String::from_utf8_lossy(path)))
 }
 
+/// Opens the file at `disk` for reading: never through a link, and never what took a file's
+/// place (a FIFO would be waited on, a device opened); such a path is gone ([`walk::gone`]).
+/// The file itself is opened as any program opens it, so a lease on it is waited for.
 fn open(disk: &Path) -> io::Result<File> {
-    // Never through a link, and never waiting on what took a file's place (a FIFO).
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::AsRawFd as _;
+        // A handle on whatever the name leads to: it opens nothing and waits for nothing.
+        let handle = File::options()
+            .read(true)
+            .custom_flags((nix::fcntl::OFlag::O_PATH | nix::fcntl::OFlag::O_NOFOLLOW).bits())
+            .open(disk)?;
+        if !handle.metadata()?.is_file() {
+            return Err(io::Error::from_raw_os_error(
+                rustix::io::Errno::NXIO.raw_os_error(),
+            ));
+        }
+        // That very file, whatever its name leads to by now.
+        File::open(format!("/proc/self/fd/{}", handle.as_raw_fd()))
+    }
+    #[cfg(not(target_os = "linux"))]
     File::options()
         .read(true)
         .custom_flags((nix::fcntl::OFlag::O_NOFOLLOW | nix::fcntl::OFlag::O_NONBLOCK).bits())
@@ -290,6 +309,9 @@ pub struct Sent {
     pub special: u64,
     /// The time spent sending entries; the rest of the pass was the walk.
     pub sending: Duration,
+    /// The part of `sending` that went to entries that earned no receipt: the next pass sends
+    /// them again whether they change or not.
+    pub unearned: Duration,
 }
 
 /// Whether an entry last changed at `ctime` is old enough at a pass that began at `began` to
@@ -394,11 +416,16 @@ pub fn send_live(
             (still && settled(seen.ctime, began))
                 .then(|| receipts::state(&headers(e), seen.ino, seen.ctime))
         };
-        if let Some(state) = earned.filter(|_| here) {
+        let earned = earned.filter(|_| here);
+        if let Some(state) = earned {
             ledger.earned(state)?;
         }
         sent.sent += 1;
-        sent.sending += started.elapsed();
+        let took = started.elapsed();
+        sent.sending += took;
+        if earned.is_none() {
+            sent.unearned += took;
+        }
         Ok(true)
     })?;
     sent.vanished += skipped.vanished;
