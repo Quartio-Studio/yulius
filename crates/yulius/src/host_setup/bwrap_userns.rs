@@ -313,14 +313,15 @@ impl Variables<'_> {
     }
 
     /// Whether a top-level header gives bwrap as its profile's program. After its keyword,
-    /// where it has one (`profile`, `hat`, `^`), stand the name and, where the next word
-    /// begins with a slash or a variable, the attachment: that is the program, else the name
-    /// is. What follows (`flags=(…)`, `xattrs=(…)`) names none. A person's profile is rather
-    /// seen than missed: one in a policy namespace (`:ns:name /path`) counts.
+    /// where it has one (`profile`, `hat`), stand the name (a hat's may begin with `^`) and,
+    /// where the next word begins with a slash or a variable, the attachment: that is the
+    /// program, else the name is. What follows (`flags=(…)`, `xattrs=(…)`) names none. A
+    /// person's profile is rather seen than missed: one in a policy namespace
+    /// (`:ns:name /path`) counts.
     fn header_attaches(&self, header: &[&str]) -> bool {
         let keyword = header
             .iter()
-            .position(|word| matches!(*word, "profile" | "hat" | "^"));
+            .position(|word| matches!(*word, "profile" | "hat"));
         let mut words = header[keyword.map_or(0, |at| at + 1)..]
             .iter()
             .map(|word| word.trim_matches('"'));
@@ -336,15 +337,12 @@ impl Variables<'_> {
         }
     }
 
-    /// Whether a profile's name is bwrap's path. A policy namespace before it (`:ns:name`,
-    /// `:ns://name`) is none of it; what follows its last `//`, which parts a child from its
-    /// parent, is the program, where the name begins with a slash or that part holds an
-    /// alternation.
+    /// Whether a profile's name is bwrap's path. A policy namespace before it (`:ns:name`)
+    /// is none of it; what follows its last `//`, which parts a child from its parent, is
+    /// the program, where the name begins with a slash or that part holds an alternation.
     fn name_attaches(&self, name: &str) -> bool {
-        let name = match name.strip_prefix(':').and_then(|rest| rest.split_once(':')) {
-            Some((_, name)) => name.strip_prefix("//").unwrap_or(name),
-            None => name,
-        };
+        let named = name.strip_prefix(':').and_then(|rest| rest.split_once(':'));
+        let name = named.map_or(name, |(_, name)| name);
         self.expanded(name).is_some_and(|name| {
             let mut local = name.as_str();
             while let Some(at) = local.find("//") {
@@ -1003,6 +1001,7 @@ mod tests {
             "profile b /usr/bin/bwrap xattrs=(user.x=1) {\n}\n",
             "profile \"my bwrap\" /usr/bin/bwrap {\n}\n",
             "@{d} = /usr/bin\nprofile @{d}/bwrap {\n}\n",
+            "profile /usr/bin/bwrap flags=(complain) {\n}\n",
             // A value's slash goes where the name has its own: no child's `//` is left.
             "@{d} = /usr/bin/\nprofile @{d}/bwrap {\n}\n",
             // In a policy namespace: seen rather than missed.
