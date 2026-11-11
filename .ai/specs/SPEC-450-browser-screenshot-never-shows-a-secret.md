@@ -150,6 +150,10 @@ with `browser_fill_secret`. A password field, drawn as dots, keeps screenshots w
 - [x] Review round 6 minors: fills into unreadable frames, frames by origin, a navigation before typing
 - [x] Independent review of the round 6 fixes approves the head
 - [x] Gates green with evidence
+- [x] Final review: untested fail-closed branches, sandboxed frames, restored pages
+- [ ] A tool chosen while its sandbox's page loads opens in that sandbox
+- [ ] The e2e job's other failures: production protection and the #1087 editor test
+- [ ] Independent review of the final head
 
 ## Acceptance criteria
 

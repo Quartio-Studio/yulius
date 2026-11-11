@@ -198,6 +198,23 @@ test('switching to a sandbox whose Superagent starts keeps the keyboard on the p
   await expect(screen.getByRole('textbox', 'Task prompt')).toBeFocused();
 });
 
+// SPEC-450 (the e2e job of #1113's pull request): chosen while the sandbox's page still loads, the
+// Superagent was the Global one, which then stayed in front in the sandbox and the next one
+// (SPEC-428 SAT-005). It waits for its sandbox and is that sandbox's own.
+test('the Superagent chosen while its sandbox’s page loads is that sandbox’s own', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12', '&hold=/api/sandboxes/sb_studio/tasks'));
+  await expect(screen.getByRole('navigation', 'Sandboxes').getByRole('link', /^studio\b/)).toHaveAttribute('aria-current', 'page');
+  await openSuperagent(browser, screen);
+  await expect(screen.getByRole('navigation', 'Tools').getByRole('button', 'Superagent')).toHaveAttribute('aria-pressed', 'true');
+  await expect(screen.getByRole('region', 'Tool panel')).toBeHidden();
+
+  await browser.evaluate(() => (window as unknown as { __yuliusMock: { release: () => void } }).__yuliusMock.release());
+  await expect(screen.getByRole('tab', 'This sandbox')).toHaveAttribute('aria-selected', 'true');
+  await expect(browser.locator(agentTerminal)).toHaveText(/cwd: .*studio/);
+  await screen.getByRole('navigation', 'Sandboxes').getByRole('link', /^product\b/).click();
+  await expect(browser.locator(agentTerminal)).toHaveText(/cwd: .*product/);
+});
+
 // Review round 3: the rail shown for a Superagent link becomes the person's when they use it for
 // another tool, and goes again when the Superagent is closed from the rail.
 test('a tool picked from the rail after a Superagent link keeps the rail', async ({ app, screen }) => {

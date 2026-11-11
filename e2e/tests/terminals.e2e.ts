@@ -152,6 +152,68 @@ test('the Shell of a sandbox first visited with it open leaves the keyboard on t
   expect(await browser.evaluate(() => Boolean(document.activeElement?.closest('.term-views')))).toBe(false);
 });
 
+// SPEC-450 (the e2e job of #1113's pull request): a sandbox's page that still loads is not the
+// tools' context yet. The Shell chosen then was the one outside a sandbox ("Open a sandbox first."),
+// shown again for the page without the keyboard; it waits for its sandbox and opens as chosen.
+const studioTasks = '&hold=/api/sandboxes/sb_studio/tasks';
+const studioLoading = (screen: Screen) => expect(screen.getByRole('navigation', 'Sandboxes').getByRole('link', /^studio\b/)).toHaveAttribute('aria-current', 'page');
+const releaseHeld = (browser: Browser) => browser.evaluate(() => (window as unknown as { __yuliusMock: { release: () => void } }).__yuliusMock.release());
+
+test('the Shell chosen while its sandbox’s page loads opens there with the keyboard', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12', studioTasks));
+  await studioLoading(screen);
+  await openShellPanel(screen);
+  const shell = screen.getByRole('navigation', 'Tools').getByRole('button', 'Shell');
+  await expect(shell).toHaveAttribute('aria-pressed', 'true');
+  await expect(screen.getByRole('region', 'Tool panel')).toBeHidden();
+
+  await releaseHeld(browser);
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#12 Checkout API');
+  await expect(shownInput(browser)).toBeFocused();
+  await expect(shell).toHaveAttribute('aria-pressed', 'true');
+});
+
+test('a tool chosen twice while its sandbox’s page loads does not open', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12', studioTasks));
+  await studioLoading(screen);
+  await openShellPanel(screen);
+  const shell = screen.getByRole('navigation', 'Tools').getByRole('button', 'Shell');
+  await expect(shell).toHaveAttribute('aria-pressed', 'true');
+  await expect(screen.getByRole('region', 'Tool panel')).toBeHidden();
+  await shell.click();
+  await expect(shell).toHaveAttribute('aria-pressed', 'false');
+
+  await releaseHeld(browser);
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#12 Checkout API');
+  await expect(screen.getByRole('region', 'Tool panel')).toBeHidden();
+  await expect(shell).toHaveAttribute('aria-pressed', 'false');
+});
+
+// On the way in from a page outside a sandbox (only the Superagent in the rail) the tools show
+// while the sandbox's page loads, and could not be chosen. The one chosen last opens there.
+test('the tool chosen last on the way into a sandbox opens there', async ({ app, browser, screen }) => {
+  await app.open(mock('/settings', studioTasks));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Settings');
+  await screen.getByRole('button', /^Show tools/).click();
+  const tools = screen.getByRole('navigation', 'Tools');
+  await expect(tools.getByRole('button', 'Superagent')).toBeVisible();
+  await expect(tools.getByRole('button', 'Shell')).toBeHidden();
+
+  await browser.evaluate(() => { window.location.hash = '#/s/studio/t/12'; });
+  await studioLoading(screen);
+  await tools.getByRole('button', 'Shell').click();
+  await expect(tools.getByRole('button', 'Shell')).toHaveAttribute('aria-pressed', 'true');
+  await tools.getByRole('button', 'Notes').click();
+  await expect(tools.getByRole('button', 'Notes')).toHaveAttribute('aria-pressed', 'true');
+  await expect(tools.getByRole('button', 'Shell')).toHaveAttribute('aria-pressed', 'false');
+  await expect(screen.getByRole('region', 'Tool panel')).toBeHidden();
+
+  await releaseHeld(browser);
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#12 Checkout API');
+  await expect(browser.locator('.panel .panel-title')).toHaveText('Notes');
+  await expect(tools.getByRole('button', 'Notes')).toHaveAttribute('aria-pressed', 'true');
+});
+
 // SPEC-434 MTB-002/004: the terminal tabs move as the sandbox and Notes tabs do, and keep their order.
 const termStrip = '[role="tablist"][aria-label="Terminals"]';
 
