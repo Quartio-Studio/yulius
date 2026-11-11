@@ -158,3 +158,22 @@ it holds end only when the test releases them, and nothing else competes with th
   - `842dd4a0` rewords one comment of the test; it passed 3 of 3 after it (1.7 s).
 - **The neighbours.** `cargo nextest run -p yulius -E 'binary_id(yulius::main) &
   test(/^local_ci::/)'`: 63 of 63 passed in 18.4 s.
+- **Gate.** `scripts/dev ci` at `96eca926`: exit 1, on failures outside this change that block
+  every pull request since the host move of 2026-11-11 (#1154; PR #1150 carries their fixes).
+  - Doctor, check, lint and the macOS compile passed.
+  - Tests: 3282 of 3284 passed, 16 skipped. The two that failed are
+    `first_message::a_draft_typed_during_the_opening_turn_is_left_alone` and
+    `first_message::focus_and_mouse_reports_do_not_keep_the_goal_out`, "timed out waiting for
+    the continued turn" (#1154).
+  - The stages the gate did not reach, run by hand: `scripts/doctests.py`, `cargo shear` and
+    `cargo doc` passed; `cargo deny` failed on one new advisory, RUSTSEC-2026-0486 (rustix).
+  - The gate is run again on top of dev once dev has those fixes.
+- **Security scan.** `yulius security-scan`: "Security scan disabled: Vidoc is turned off in
+  Yulius, for this project or the whole instance; nothing was scanned." Disabled, not passed.
+- **Limits, and what was not tested.**
+  - Yulius CI's own load cannot be produced on demand. The forced slot order, the slow polls
+    and the load runs stand for it.
+  - With a single CPU the test cannot pass, before or after this change. The sandbox's capacity
+    is then one CPU and its jobs run one at a time, so `quality` and `e2e` never run together.
+    Pinned to one idle CPU, `e2e` stayed `queued` for the 60 s; dev's version failed there too,
+    its jobs ended one after another by the 8 s limit. The scenario needs two CPUs.
