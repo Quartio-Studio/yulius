@@ -104,6 +104,7 @@ struct FakeState {
     secret_probe_delay: Duration,
     child_frames: Vec<String>,
     frame_targets: Vec<Value>,
+    enter_submits: bool,
     failing_after: HashMap<String, (usize, i64, String)>,
     loaders: u64,
     connections: Vec<Arc<Connection>>,
@@ -262,6 +263,7 @@ impl FakeCdpServer {
                 secret_probe_delay: Duration::ZERO,
                 child_frames: Vec::new(),
                 frame_targets: Vec::new(),
+                enter_submits: false,
                 failing_after: HashMap::new(),
                 loaders: 0,
                 connections: Vec::new(),
@@ -432,6 +434,11 @@ impl FakeCdpServer {
     /// The URLs of the frames every page holds (`Page.getFrameTree` child frames).
     pub fn set_child_frames(&self, urls: &[&str]) {
         lock(&self.shared.state).child_frames = urls.iter().map(|url| (*url).to_owned()).collect();
+    }
+
+    /// Whether pressing Enter submits the page's form: a new document, as a sign-in form does.
+    pub fn set_enter_submits(&self, submits: bool) {
+        lock(&self.shared.state).enter_submits = submits;
     }
 
     /// Out-of-process frames: `iframe` targets (`Target.getTargets`) at `url` whose parent frame
@@ -980,6 +987,18 @@ fn respond(
             Ok(json!({"data": data}))
         }
         "Accessibility.getFullAXTree" => Ok(json!({"nodes": lock(&shared.state).ax_nodes.clone()})),
+        "Input.dispatchKeyEvent" => {
+            let mut state = lock(&shared.state);
+            if state.enter_submits && text("type") == "keyDown" && text("key") == "Enter" {
+                let loader = state.next_loader();
+                if let Some(page) = state.page(session_id) {
+                    page.fields.clear();
+                    page.focused.clear();
+                    page.loader = loader;
+                }
+            }
+            Ok(json!({}))
+        }
         "Page.navigateToHistoryEntry" | "Page.reload" => {
             // Another document, as Chromium loads one (form state is not modelled).
             let mut state = lock(&shared.state);
@@ -1044,7 +1063,6 @@ fn respond(
         | "Runtime.releaseObject"
         | "Emulation.setDeviceMetricsOverride"
         | "Input.dispatchMouseEvent"
-        | "Input.dispatchKeyEvent"
         | "Browser.close" => Ok(json!({})),
         other => Err((-32601, format!("'{other}' wasn't found"))),
     }

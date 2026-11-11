@@ -969,11 +969,16 @@ async fn a_fill_outside_a_password_field_exposes_its_site() -> TestResult {
     Ok(())
 }
 
-/// SPEC-450 (review round 3): typing into a document a secret went into, though into a password
-/// field, can edit it (a character into its middle): unless it stays whole there, the site is
-/// exposed at once, so its next page (showing the edited copy it stored) is refused.
+/// SPEC-450 (review rounds 3 and 4): typing into a document a secret went into, though into a
+/// password field, can edit it (a character into its middle): a value whole there before the
+/// typing and not after exposes the site at once, so its next page (showing the edited copy it
+/// stored) is refused; checked after each line, before its Enter submits the form.
 #[tokio::test]
 async fn typing_into_a_filled_password_field_can_expose_its_site() -> TestResult {
+    let confined =
+        || json!({"shown": ["Fake page text"], "masked": ["pw-secret-4471"], "over": false});
+    let edited =
+        || json!({"shown": ["Fake page text"], "masked": ["pw-sec ret-4471"], "over": false});
     let (fake, instance, tab) = setup().await?;
     instance
         .tool_navigate(&to(&tab, "https://l.example/settings"))
@@ -990,10 +995,9 @@ async fn typing_into_a_filled_password_field_can_expose_its_site() -> TestResult
     instance
         .tool_screenshot_within(&shot(&tab), 100_000)
         .await?;
-    // Typed into its middle (the probe sees the edit), then saved: the next page is refused.
-    fake.set_secret_probe(probe(&["Fake page text"], &["pw-sec ret-4471"]));
+    // Typed into its middle, then saved: the next page is refused.
+    fake.queue_secret_probes(vec![confined(), edited()]);
     instance.tool_type(&fill(&tab, "#pw", " ")).await?;
-    fake.set_secret_probe(None);
     instance
         .tool_navigate(&to(&tab, "https://l.example/saved"))
         .await?;
@@ -1001,6 +1005,59 @@ async fn typing_into_a_filled_password_field_can_expose_its_site() -> TestResult
     assert!(refused(
         instance.tool_screenshot_within(&shot(&tab), 100_000).await
     ));
+
+    // An edit and its Enter in one call: checked before the Enter submits.
+    let (fake, instance, tab) = setup().await?;
+    instance
+        .tool_navigate(&to(&tab, "https://r.example/settings"))
+        .await?;
+    fake.set_password_field("#pw", true);
+    instance
+        .tool_type_secret(&fill(&tab, "#pw", "pw-secret-4471"))
+        .await?;
+    fake.set_enter_submits(true);
+    fake.queue_secret_probes(vec![confined(), edited()]);
+    instance.tool_type(&fill(&tab, "#pw", "x\n")).await?;
+    fake.set_secret_probe(probe(&["Current key: pw-sec ret-4471"], &[]));
+    assert!(refused(
+        instance.tool_screenshot_within(&shot(&tab), 100_000).await
+    ));
+    Ok(())
+}
+
+/// SPEC-450 (review round 4): a sign-in on a single-page app keeps screenshots. The password field
+/// goes away while the document stays (`pushState`); the page then shows the value nowhere, which
+/// is not an edit, and typing on the dashboard is not one either.
+#[tokio::test]
+async fn a_single_page_sign_in_keeps_screenshots() -> TestResult {
+    let (fake, instance, tab) = setup().await?;
+    instance
+        .tool_navigate(&to(&tab, "https://s.example/login"))
+        .await?;
+    fake.set_password_field("#pw", true);
+    instance
+        .tool_type_secret(&fill(&tab, "#pw", "pw-secret-4471"))
+        .await?;
+    instance
+        .tool_screenshot_within(&shot(&tab), 100_000)
+        .await?;
+    fake.set_secret_probe(probe(&["Dashboard"], &[]));
+    instance
+        .tool_screenshot_within(&shot(&tab), 100_000)
+        .await?;
+    instance
+        .tool_type(&fill(&tab, "#search", "invoices"))
+        .await?;
+    instance
+        .tool_screenshot_within(&shot(&tab), 100_000)
+        .await?;
+    fake.set_secret_probe(None);
+    instance
+        .tool_navigate(&to(&tab, "https://s.example/reports"))
+        .await?;
+    instance
+        .tool_screenshot_within(&shot(&tab), 100_000)
+        .await?;
     Ok(())
 }
 
@@ -1035,7 +1092,8 @@ async fn a_page_framing_a_filled_site_is_not_captured() -> TestResult {
     instance
         .tool_screenshot_within(&shot(&tab), 100_000)
         .await?;
-    // Out of process, the frame is a target of its own: of this tab, of no tab said, of another.
+    // Out of process, the frame is a target of its own: of this tab, of no tab said, of a frame
+    // nothing lists (a frame inside another out-of-process frame), of another tab.
     fake.set_frame_targets(&[(Some(tab.as_str()), "https://m.example/settings")]);
     assert!(refused(
         instance.tool_screenshot_within(&shot(&tab), 100_000).await
@@ -1044,7 +1102,18 @@ async fn a_page_framing_a_filled_site_is_not_captured() -> TestResult {
     assert!(refused(
         instance.tool_screenshot_within(&shot(&tab), 100_000).await
     ));
-    fake.set_frame_targets(&[(Some("OTHER-TAB"), "https://m.example/settings")]);
+    fake.set_frame_targets(&[(Some("UNLISTED-FRAME"), "https://m.example/settings")]);
+    assert!(refused(
+        instance.tool_screenshot_within(&shot(&tab), 100_000).await
+    ));
+    let other = instance
+        .tool_open(&OpenParams {
+            url: "https://elsewhere.example/".into(),
+        })
+        .await?
+        .tab
+        .id;
+    fake.set_frame_targets(&[(Some(other.as_str()), "https://m.example/settings")]);
     instance
         .tool_screenshot_within(&shot(&tab), 100_000)
         .await?;
