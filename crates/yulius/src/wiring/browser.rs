@@ -33,7 +33,8 @@ fn failure(error: BrowserError) -> BrowserFailure {
         | BrowserError::ToolParams(_)
         | BrowserError::InvalidSelector(_)
         | BrowserError::ElementNotFound
-        | BrowserError::ElementNotVisible => BrowserFailureKind::Invalid,
+        | BrowserError::ElementNotVisible
+        | BrowserError::SecretOnPage => BrowserFailureKind::Invalid,
         BrowserError::ResultTooLarge { .. } => BrowserFailureKind::TooLarge,
         BrowserError::Profile(_) | BrowserError::NotReaped { .. } => BrowserFailureKind::Internal,
         BrowserError::Spawn(_)
@@ -298,6 +299,10 @@ impl BrowserSession for Session {
         self.0.tool_type(params).await.map_err(failure)
     }
 
+    async fn tool_type_secret(&self, params: &TypeParams) -> Result<TypeResult, BrowserFailure> {
+        self.0.tool_type_secret(params).await.map_err(failure)
+    }
+
     async fn tool_snapshot(
         &self,
         params: &SnapshotParams,
@@ -309,10 +314,11 @@ impl BrowserSession for Session {
         &self,
         params: &ScreenshotParams,
         max_base64_bytes: usize,
+        vault: Option<&(dyn for<'s> Fn(&'s str) -> bool + Send + Sync)>,
     ) -> Result<Screenshot, BrowserFailure> {
         let shot = self
             .0
-            .tool_screenshot_within(params, max_base64_bytes)
+            .tool_screenshot_guarded(params, max_base64_bytes, vault)
             .await
             .map_err(failure)?;
         Ok(Screenshot {

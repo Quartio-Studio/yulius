@@ -284,16 +284,21 @@ pub trait BrowserSession: Send + Sync {
     async fn tool_click(&self, params: &ClickParams) -> Result<ClickResult, BrowserFailure>;
     /// `browser_type`.
     async fn tool_type(&self, params: &TypeParams) -> Result<TypeResult, BrowserFailure>;
+    /// `browser_fill_secret`'s typing: as `tool_type`, and screenshots of a page that may show
+    /// the text are refused (SPEC-450).
+    async fn tool_type_secret(&self, params: &TypeParams) -> Result<TypeResult, BrowserFailure>;
     /// `browser_snapshot`.
     async fn tool_snapshot(
         &self,
         params: &SnapshotParams,
     ) -> Result<SnapshotResult, BrowserFailure>;
-    /// `browser_screenshot` within `max_base64_bytes`.
+    /// `browser_screenshot` within `max_base64_bytes`, refused while the page may show a typed
+    /// secret or a text `vault` says holds one (SPEC-450).
     async fn tool_screenshot(
         &self,
         params: &ScreenshotParams,
         max_base64_bytes: usize,
+        vault: Option<&(dyn for<'s> Fn(&'s str) -> bool + Send + Sync)>,
     ) -> Result<Screenshot, BrowserFailure>;
     /// `browser_request_user_action`: marks the tab and notifies viewers.
     fn request_user_action(
