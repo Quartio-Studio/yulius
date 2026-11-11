@@ -129,6 +129,9 @@ the real unit in QEMU guests of both systems (SPEC-458, Evidence).
 - A rollback to a build without `host adopt-sessions` leaves the adopt unit failing, which the
   server's `Wants=` survives. That build places new sessions in the server's unit again, so on
   systemd 258 and later it must not be restarted while they run: update again instead.
+- Whatever takes the instance as a whole takes both units: `yulius instance export` freezes
+  and thaws both, and `yulius instance migrate` (SPEC-460) freezes, thaws, judges and stops
+  both, and carries the sessions unit's drop-ins.
 - cgroup paths in commands and documents change from
   `/sys/fs/cgroup/system.slice/yulius.service/sandboxes/…` to
   `/sys/fs/cgroup/yulius.slice/yulius-sandboxes.service/sandboxes/…`.

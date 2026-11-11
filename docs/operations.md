@@ -2040,7 +2040,9 @@ should set the commit it is built from: `YULIUS_BUILD_COMMIT=$(git rev-parse HEA
     `yulius-sandboxes.service`: `sudo systemctl set-property yulius-sandboxes.service
     TasksMax=…` applies at once (never restart that unit for it), and the server reads the task
     limit at its next start. Both units get systemd's default `TasksMax`, so nothing changes
-    without such a setting.
+    without such a setting. A move (`yulius instance migrate`) carries drop-ins you wrote under
+    `/etc/systemd/system/yulius-sandboxes.service.d/`, not what `set-property` wrote: set those
+    again on the new host.
   - **Rolling back to an older binary** leaves the units in place. Sessions already moved stay
     in `yulius-sandboxes.service`; the older binary starts new ones in `yulius.service`'s group
     again, and `yulius-adopt.service` fails with it ("unrecognized subcommand"), which the server

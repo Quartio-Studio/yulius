@@ -185,6 +185,26 @@ Two defects made it unusable meanwhile:
   unit and thaws both; a stopped server whose sessions unit is active is frozen there instead
   of being refused; `--move` leaves both frozen.
 
+### A move sees both units (SPEC-460)
+
+`yulius instance migrate` reached `dev` while this change was in review. It took the instance
+for one unit; with sessions in their own unit that is wrong in four places.
+
+- **MOV-001** Thawing the old instance thaws its sessions unit first, then the server's unit
+  (`freeze::thaw_instance`); a server's unit that does not run is left out, since systemd
+  refuses to thaw it. A signal during the cutover thaws the units the freeze covers.
+- **MOV-002** Two questions about the old instance. "Something of it is frozen" decides the
+  plan's refusal, whether there is anything to thaw, and the abort. "All of it is frozen" (the
+  server's unit, and its sessions unit where one runs) is what the new instance's start, a
+  recorded start and the move's last line wait for: one unit thawed alone starts nothing. A
+  server found stopped after the freeze gives back what the freeze took.
+- **MOV-003** The stop on the new host ends the sessions unit with the server's (kill, then
+  stop) and fails, naming the unit, while something of either still runs: "nothing of it runs"
+  comes before the old instance thaws.
+- **MOV-004** The sessions unit's own drop-ins under `/etc/systemd/system` travel like the
+  server unit's; the plan refuses a run from inside the sessions unit; the commands a person
+  is told to run name both units.
+
 ### A task that rests while its run is on record (#439)
 
 - **RUN-001** The start-up sweep rests only tasks the server before this one left live, whose
@@ -302,9 +322,9 @@ Ubuntu 24.04.5 (systemd 255.4, kernel 6.8) and Ubuntu 26.04.1 (systemd 259.5, ke
 Prepared as production was: the pre-fix binary (`911e3127`, the first merge base) installed as
 `/usr/local/bin/yulius` and set up by its own `yulius host setup --public-url http://vm.test
 --no-smoke`, which wrote and started `yulius.service`; the update helper installed from
-`deploy/systemd` as the guide says. The build with the fix is this branch at `00ff253f` (its
-code is that of `88c75bb3`, the last commit that changes code; the runs were repeated as the
-change grew, and the figures below are those of the last, complete run of that build).
+`deploy/systemd` as the guide says. The build with the fix is this branch at `82c3b2a5`, the
+last commit that changes code (the runs were repeated as the change grew, and the figures
+below are those of the last, complete run of that build).
 
 What stands in for what, because it cannot be had in a guest:
 
@@ -322,7 +342,7 @@ process was lost where one should be kept):
 | Scenario | 24.04 (systemd 255) | 26.04 (systemd 259) |
 | --- | --- | --- |
 | The incident: `systemctl restart yulius` with sessions in the server's unit, pre-fix binary | restarts, sessions kept | `Failed to spawn executor: Device or resource busy`, the restart counter rising, the unit's group as on production (`subtree_control = cpu memory pids`, no process in its root, no `server`); back only after every session process was ended |
-| The first restart that installs the fix: the three files of `deploy/systemd` put in place, then an `install` request handled by the pre-fix helper | `done`; "moved 18 processes in 11 groups … (2 Docker engines ended)" (14 sessions and the children alive at that moment); 14 of 14 kept; server in `yulius.slice/yulius.service/server`; old group gone | the same |
+| The first restart that installs the fix: the three files of `deploy/systemd` put in place, then an `install` request handled by the pre-fix helper | `done`; "moved 17 [or 18] processes in 11 groups … (2 Docker engines ended)" (14 sessions and the children alive at that moment); 14 of 14 kept; server in `yulius.slice/yulius.service/server`; old group gone | the same |
 | Then `systemctl restart`, `kill -9` of the server (`Restart=on-failure`), the helper's `restart` | 21 of 21 kept each time (a third sandbox added in the sessions unit by the service user) | the same |
 | An install whose build reports another commit, and one whose build cannot run at all (the adopt step fails with it) | both `rolled_back`, previous binary back and healthy, 21 of 21 kept | the same |
 | The fix installed without the units, sessions then running in the server's unit: the helper's `restart` and `install` | both go through (this systemd restarts it), sessions kept; the host check names the setup | both `failed`: "yulius.service would not start again: its sessions live in its own group, where systemd 259 starts no unit while one runs. Run `sudo yulius host setup` on the host once, then try again; nothing was stopped."; same server process, sessions kept |
@@ -333,7 +353,7 @@ process was lost where one should be kept):
 | `yulius host check`, then `sudo yulius host setup`, with the files in place and the sessions unit stopped | check fails the item: "yulius-sandboxes.service is not running, so sessions do not live in it"; setup: "started yulius-sandboxes.service, which was not running; restart yulius.service so that its sessions live there"; 7 of 7 kept | the same |
 | Restart asked of the server, after the sessions unit runs again | 202, "moved 9 processes in 6 groups", 7 of 7 kept; doctor and check ok | the same |
 | The three files copied in by hand without `systemctl daemon-reload`, sessions in the server's unit | `yulius host check` fails the item: "the units are written but systemd has not loaded them …"; the helper's restart goes through (255); `sudo yulius host setup`: "reloaded systemd, which had not loaded the units, and started yulius-sandboxes.service"; the unit then wants its adopt unit | the same, and the helper's `restart` is `failed` with the guard's first sentence until the setup ran |
-| Then one `systemctl restart yulius` with two sandboxes in the server's unit | "Stopped", then the adopt step ("moved 18 processes in 11 groups"), then "Started"; no failed attempt; 14 of 14 kept; old group gone | the same |
+| Then one `systemctl restart yulius` with two sandboxes in the server's unit | "Stopped", then the adopt step ("moved 17 [or 18] processes in 11 groups"), then "Started"; no failed attempt; 14 of 14 kept; old group gone | the same |
 | The adopt step alone (server stopped) | `cpu.max`, `memory.max`, `pids.max`, the owner and `frozen 1` of the paused run are the same in the sessions unit; engine processes gone; old group gone; the server's start then thaws the run (no update is open) | the same |
 | Update now without the units while sessions run | goes through (255) | `failed`: "Could not start yulius.service … The rollback failed too … Restore by hand from …", sessions still alive; the guide's way back (units, the staged build's `host adopt-sessions`, start) brings the previous version back with 7 of 7 kept; the second install is `done`, 7 of 7 kept |
 | After a rollback: the pre-fix binary with the units, sessions in `yulius.slice/yulius.service/sandboxes`; then the update again | the adopt unit fails with the pre-fix binary ("unrecognized subcommand 'adopt-sessions'") and the server starts regardless; the install is `done`, the sessions move out of the unit in place, 7 of 7 kept, also over a `systemctl restart` after it | the same |
@@ -360,14 +380,15 @@ on 259.
   systemd has not loaded, the sessions unit that does not run, and the adopt command over a
   fake tree and injected systemd answers); the restart guard's table and readers; the helper
   refusing before it stops anything; the server's 409 (`self_update`); the doctor's line; the
-  export's freeze with a sessions unit and the thaw of a whole instance; the migration
-  freezing, thawing and judging both units (3); the Docker front decision (3); and the
+  export's freeze with a sessions unit and the thaw of a whole instance (3); the migration
+  freezing, thawing, judging, stopping and carrying both units (flow 7, target 1, profile 1);
+  the Docker front decision (3); and the
   supervisor (`task_done`: the reconciliation during a launch, the sweep's two conditions, a
   refused start, a start during a launch, a start and a stop that settle a run no server
   holds).
-- `scripts/dev ci` at `00ff253f`: exit 0; formatting, clippy, the repository check, the macOS
-  compile check, `3579 tests run: 3579 passed, 16 skipped`, doctests and the documentation
-  build.
+- `scripts/dev ci` at `82c3b2a5`, the last commit that changes code: exit 0; formatting,
+  clippy, the repository check, the macOS compile check, `3587 tests run: 3587 passed, 16
+  skipped`, doctests and the documentation build.
 - `yulius security-scan`: "Security scan disabled: Vidoc is turned off in Yulius"; nothing was
   scanned, so this is not a pass.
 
@@ -397,8 +418,14 @@ skill; it was asked again after each set of fixes.
   not a third mechanism: the path is judged as it is named, without following a link, and a
   link gets no unit (`88c75bb3`, Decisions).
 - After round 3 `dev` brought `yulius instance migrate` (SPEC-460), which conflicted: the
-  merge (`5a38d09c`) makes its thaws and its "is it frozen" cover the sessions unit. Yulius
-  asked for a review of the new head; that review is of the head that holds this text.
+  merge (`5a38d09c`) made its thaws and its "is it frozen" cover the sessions unit, and Yulius
+  asked for a review of the new head.
+- That review (head `cf884254`): round 3 resolved; changes needed in the merge. High: the
+  move's stop on the new host ended only the server's unit, so after an abort the new
+  instance's agents ran on beside the thawed old one. Medium: the "still frozen" gates passed
+  with one of the two units frozen. Low: a stopped server's frozen sessions unit; drop-ins
+  that did not travel. Fixed test-first (`82c3b2a5`, MOV-001 to MOV-004); the review of that
+  is of the head that holds this text.
 
 Not shown, and why: production itself; real agent sessions, sandboxes and Docker engines (a
 guest has no GitHub App and no Claude subscription), so that the server attaches to a session's
