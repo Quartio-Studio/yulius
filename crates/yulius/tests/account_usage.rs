@@ -203,8 +203,10 @@ async fn a_reading_keeps_a_models_limit_and_the_status_follows_the_windows() -> 
             r#"{{"secondary":{{"used_percent":100.0,"window_minutes":10080,"resets_at":null}},"weekly_fable":{{"used_percent":100.0,"window_minutes":10080,"resets_at":{resets_at}}}}}"#
         )
     };
+    // Two days ahead: a reset is believed only as far as a window lasts.
+    let in_two_days = h.app.now().0 + 2 * 24 * 3_600_000;
     for (id, credential, stored) in [
-        ("a-out", "credential", Some(fable_full(4_100_000_000_000))),
+        ("a-out", "credential", Some(fable_full(in_two_days))),
         ("a-reset", "credential", Some(fable_full(1_000))),
         ("a-full", "full", None),
     ] {

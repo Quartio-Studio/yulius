@@ -654,27 +654,19 @@ impl App {
             .map(Secret)
             .ok_or_else(|| UsageFailure::new("the stored credential cannot be read"))?;
         match self.deps.usage.fetch(account.provider, &credential).await {
-            Ok(mut usage) => {
+            Ok(mut reading) => {
                 let now = self.now();
-                usage.observed_at = Some(now);
-                // A reading shows the 5-hour and weekly windows only: a model's own window (a
-                // limit Claude reported for it) stays until its reset (SPEC-464). What is
-                // stored is read now: a limit may have been recorded during the request (#72).
-                let usage = {
-                    let _writing = self.capacity.usage_writes.lock().await;
-                    let stored = match self.deps.store.account(&account.id).await {
-                        Ok(Some(current)) => account_usage(&current),
-                        _ => account_usage(account),
-                    };
-                    crate::race::reached(
-                        crate::race::Point::UsageRead,
-                        std::path::Path::new(account.id.as_str()),
-                    );
-                    let usage = usage.keeping_unread(&stored, now);
-                    self.record_account_usage(&account.id, &usage).await;
-                    usage
-                };
-                self.record_usage_samples(&account.id, &usage, crate::model::USAGE_FROM_PROBE)
+                reading.observed_at = Some(now);
+                // A reading replaces the windows it carries; a model's own window it does not
+                // carry (a limit Claude reported for it) stays until its reset (SPEC-464). What
+                // is stored is read now, under the lock: a limit may have been recorded during
+                // the request (#72).
+                self.change_account_usage(&account.id, |stored| {
+                    Some(reading.keeping_unread(&stored, now))
+                })
+                .await;
+                // What the provider said, not what was kept beside it.
+                self.record_usage_samples(&account.id, &reading, crate::model::USAGE_FROM_PROBE)
                     .await;
                 Ok(())
             }

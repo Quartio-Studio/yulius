@@ -3273,17 +3273,12 @@ impl App {
         family: ModelFamily,
     ) {
         crate::race::reached(crate::race::Point::LimitRecord, Path::new(account.as_str()));
-        let _writing = self.capacity.usage_writes.lock().await;
-        let mut usage = match self.deps.store.account(account).await {
-            Ok(Some(a)) => a
-                .usage_json
-                .as_deref()
-                .map(usage_json::from_json)
-                .unwrap_or_default(),
-            _ => AccountUsage::default(),
-        };
-        usage.record_limit(limit, family, self.now());
-        self.record_account_usage(account, &usage).await;
+        let now = self.now();
+        self.change_account_usage(account, |mut usage| {
+            usage.record_limit(limit, family, now);
+            Some(usage)
+        })
+        .await;
     }
 
     /// Switches a task whose turn a usage limit cut (SPEC-034): the session resumes on `account`

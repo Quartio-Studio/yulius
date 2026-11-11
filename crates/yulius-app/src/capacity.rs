@@ -107,10 +107,11 @@ pub struct CapacityState {
     /// none): when it changes, the paused tasks are shown again, so their `waits_for_account`
     /// follows (SPEC-246 CLA-004).
     accounts_seen: Mutex<Option<crate::account_gate::AgentAccounts>>,
-    /// Held while a subscription's stored usage is read, changed and written back (a limit Claude
-    /// reported, a session's reading, a provider's reading, a new sign-in), so none of them
-    /// writes over what another stored meanwhile: a limit recorded during a reading stays
-    /// (SPEC-464 UCL-004). Never held across a request to the provider.
+    /// Held while a subscription's stored usage is read, changed and written back
+    /// ([`App::change_account_usage`]: a limit Claude reported, a session's reading, a
+    /// provider's reading; and a new sign-in), so none of them writes over what another stored
+    /// meanwhile: a limit recorded during a reading stays (SPEC-464 UCL-004). Never held across
+    /// a request to the provider.
     pub(crate) usage_writes: tokio::sync::Mutex<()>,
 }
 
@@ -231,6 +232,30 @@ impl App {
             Ok(Some(task)) => model_family(task.model.as_deref()),
             _ => default_family(),
         }
+    }
+
+    /// Reads `account`'s stored usage, changes it with `change` and stores what that gives,
+    /// under the one lock every such change takes ([`CapacityState::usage_writes`]): a limit
+    /// Claude reported, a session's reading and a provider's reading each go through here, so
+    /// none writes over what another stored meanwhile (SPEC-464 UCL-004). `None` when the
+    /// account cannot be read (nothing is stored then) or `change` gives nothing to store.
+    pub(crate) async fn change_account_usage(
+        &self,
+        account: &AccountId,
+        change: impl FnOnce(AccountUsage) -> Option<AccountUsage> + Send,
+    ) -> Option<AccountUsage> {
+        let _writing = self.capacity.usage_writes.lock().await;
+        let stored = match self.deps.store.account(account).await {
+            Ok(Some(record)) => account_usage(&record),
+            _ => return None,
+        };
+        crate::race::reached(
+            crate::race::Point::UsageRead,
+            std::path::Path::new(account.as_str()),
+        );
+        let usage = change(stored)?;
+        self.record_account_usage(account, &usage).await;
+        Some(usage)
     }
 
     /// The subscription a run outside any task (a split proposal, a Cockpit) runs on: the best
@@ -370,16 +395,16 @@ impl App {
         let Some(sample) = self.session_reading_due(account, five_hour, seven_day, now) else {
             return;
         };
-        {
-            let _writing = self.capacity.usage_writes.lock().await;
-            let Ok(Some(record)) = self.deps.store.account(account).await else {
-                return;
-            };
-            let mut usage = account_usage(&record);
-            usage.primary = five_hour.or(usage.primary);
-            usage.secondary = seven_day.or(usage.secondary);
-            usage.observed_at = Some(now);
-            self.record_account_usage(account, &usage).await;
+        let stored = self
+            .change_account_usage(account, |mut usage| {
+                usage.primary = five_hour.or(usage.primary);
+                usage.secondary = seven_day.or(usage.secondary);
+                usage.observed_at = Some(now);
+                Some(usage)
+            })
+            .await;
+        if stored.is_none() {
+            return;
         }
         if sample {
             let windows = AccountUsage {
