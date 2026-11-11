@@ -1390,7 +1390,7 @@ people: the GitHub App and the DNS record if still
 open, `yulius remote login <new URL>` and `claude mcp add` for laptops, and that the old host
 still holds a frozen copy with `master.key` and every secret. A later run that finds the key
 already deleted on the old host (the finish was done and only its record was lost) records the
-finish and says so; it does not wait for the new host.
+finish and says so, whether or not the new host answers.
 
 **Abort.** `sudo yulius instance migrate --abort` on the old host stops and disables the new
 instance (through the key while the move is not finished; afterwards the key is gone: stop it
@@ -1416,8 +1416,9 @@ When that reports the build, the move stands: an old unit that runs (thawed or s
 is frozen again and disabled, and the checklist says that it ran beside the new instance (what
 its agents did meanwhile is on the old host only). If it cannot be frozen, that is a `FAIL` line
 with the reason and the two commands to run; nothing is thawed then either, and a freeze that
-did not complete within a minute is left on its way. An old unit that does not run is named for
-you to make sure nothing of it is left. When the new instance answers and does not run, `--abort`
+did not complete within a minute is left on its way. An old unit that has stopped (`inactive` or
+`failed`) is named for you to make sure nothing of it is left; one that systemd reports on its
+way up or down is not taken for stopped. When the new instance answers and does not run, `--abort`
 is the way back; when the new host does not answer the question, nothing is touched and the same
 command asks again once it does.
 

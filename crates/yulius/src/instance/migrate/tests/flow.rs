@@ -62,6 +62,11 @@ struct Systemd {
     no_freeze: bool,
     /// A freeze never completes (a process hangs in the kernel): the unit stays `freezing`.
     never_frozen: bool,
+    /// On its way up or down (`activating`: a restart after a crash, a start in progress).
+    /// systemd freezes no unit in that state.
+    starting: bool,
+    /// The unit has settled (it is `active`) by the time a freeze is asked for.
+    settles: bool,
     /// The freezer is on its way.
     freezing: bool,
 }
@@ -88,7 +93,13 @@ impl freeze::Host for FakeSystemd {
                 said(format!(
                     "LoadState=loaded\nActiveState={}\nFreezerState={}\n\
                      ControlGroup=/system.slice/yulius.service\n",
-                    if unit.stopped { "inactive" } else { "active" },
+                    if unit.stopped {
+                        "inactive"
+                    } else if unit.starting {
+                        "activating"
+                    } else {
+                        "active"
+                    },
                     if unit.frozen {
                         "frozen"
                     } else if unit.freezing {
@@ -100,9 +111,13 @@ impl freeze::Host for FakeSystemd {
             }
             "is-active" => Ok((3, "inactive\n".into())),
             verb => {
+                if verb == "freeze" && unit.settles {
+                    unit.starting = false;
+                }
                 match verb {
-                    // systemd refuses to freeze or thaw a unit that does not run.
-                    "freeze" if unit.no_freeze || unit.stopped => {
+                    // systemd refuses to freeze or thaw a unit that does not run, and to
+                    // freeze one that is on its way up or down.
+                    "freeze" if unit.no_freeze || unit.stopped || unit.starting => {
                         return Ok((1, String::new()));
                     }
                     "freeze" => {
@@ -186,12 +201,12 @@ fn step_name(request: &Request) -> String {
 
 impl Remote for FakeRemote {
     fn reachable(&mut self) -> Result<(), String> {
-        if self.down {
-            return Err(DOWN.into());
-        }
         if self.deleted {
-            // As the real connection: it does not even try without its key.
+            // As the real connection: without its key it does not even try, whatever the
+            // new host does.
             Err("there is no one-time key yet".into())
+        } else if self.down {
+            Err(DOWN.into())
         } else if self.key {
             Ok(())
         } else {
@@ -1631,7 +1646,7 @@ fn a_look_that_fails_right_after_the_freeze_thaws_and_says_what_is_known() -> Te
     assert_eq!(s.run()?, 1);
     let shown = s.shown();
     assert!(
-        shown.contains("yulius.service runs and is not frozen any more"),
+        shown.contains("yulius.service runs and is not frozen (thawed or started from outside"),
         "{shown}"
     );
     assert!(!shown.contains("is not running any more"), "{shown}");
@@ -1796,8 +1811,9 @@ fn a_limits_mark_left_on_the_old_host_does_not_fail_the_proof() -> TestResult {
 
 #[test]
 fn a_finish_that_was_done_but_not_recorded_is_found_done() -> TestResult {
-    // Whether the new URL answers from here or not (a DNS record still to change).
-    for https in [true, false] {
+    // Whether the new URL answers from here or not (a DNS record still to change), and whether
+    // the new host can be reached at all: the key's absence is this host's own record.
+    for (https, down) in [(true, false), (false, false), (false, true)] {
         let mut s = setup()?;
         assert_eq!(s.run()?, 0, "{}", s.shown());
         // The finish ran on both hosts; its record did not survive (a full disk, a kill).
@@ -1807,6 +1823,7 @@ fn a_finish_that_was_done_but_not_recorded_is_found_done() -> TestResult {
         state.save(&s.opts.state_dir)?;
         s.world.shown.clear();
         s.world.https = https;
+        s.remote.down = down;
         // The key is deleted here, which only a finish does: found done, not waited for.
         assert_eq!(s.run()?, 0, "{}", s.shown());
         let shown = s.shown();
@@ -1914,6 +1931,47 @@ fn a_recorded_start_never_ends_with_both_instances_running() -> TestResult {
     assert!(s.world.systemd.lock().is_ok_and(|unit| unit.freezing));
     let state = State::load(&s.opts.state_dir).ok_or("no state")?;
     assert_eq!(state.cutover, Cutover::Moved);
+
+    // On its way up or down (a restart after a crash, a start or a stop in progress): that
+    // is not "it does not run" either. systemd freezes no unit in that state, so the run
+    // fails with the commands instead of ending well on a guess.
+    let mut s = killed_while_starting()?;
+    if let Ok(mut unit) = s.world.systemd.lock() {
+        unit.frozen = false;
+        unit.starting = true;
+    }
+    assert_eq!(s.run()?, 1, "{}", s.shown());
+    let shown = s.shown();
+    assert!(
+        shown.contains("may run beside the new instance and could not be frozen"),
+        "{shown}"
+    );
+    assert!(shown.contains("must be frozen and disabled now"), "{shown}");
+    assert!(
+        !shown.contains("does not run here any more")
+            && !shown.contains("Make sure nothing of the old one runs here"),
+        "{shown}"
+    );
+    assert!(!s.events().contains(&"old: systemctl thaw".to_owned()));
+    let state = State::load(&s.opts.state_dir).ok_or("no state")?;
+    assert_eq!(state.cutover, Cutover::Moved);
+
+    // The same, settled by the time the freeze is asked for: frozen, and the line does not
+    // claim to know that it ran.
+    let mut s = killed_while_starting()?;
+    if let Ok(mut unit) = s.world.systemd.lock() {
+        unit.frozen = false;
+        unit.starting = true;
+        unit.settles = true;
+    }
+    assert_eq!(s.run()?, 0, "{}", s.shown());
+    assert!(
+        s.shown()
+            .contains("yulius.service may have run here beside the new instance"),
+        "{}",
+        s.shown()
+    );
+    assert_eq!(s.old_unit(), (true, true));
 
     // systemd does not say what the old unit does: that is not "it does not run".
     let mut s = killed_while_starting()?;

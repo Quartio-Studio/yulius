@@ -1271,8 +1271,9 @@ impl<'a> Move<'a> {
         proven.map(|_| ())
     }
 
-    /// What systemd says of the old unit: active, frozen; `None` when it does not say.
-    fn old_unit(&mut self) -> Option<(bool, bool)> {
+    /// What systemd says of the old unit: its `ActiveState`, and whether it is frozen; `None`
+    /// when it does not say.
+    fn old_state(&mut self) -> Option<(String, bool)> {
         let unit = self.opts.service.clone();
         let (code, said) = self
             .world
@@ -1285,7 +1286,13 @@ impl<'a> Move<'a> {
                 .map(str::to_owned)
         };
         let (active, freezer) = (value("ActiveState")?, value("FreezerState")?);
-        (code == 0).then_some((active == "active", freezer == "frozen"))
+        (code == 0).then_some((active, freezer == "frozen"))
+    }
+
+    /// What systemd says of the old unit: active, frozen; `None` when it does not say.
+    fn old_unit(&mut self) -> Option<(bool, bool)> {
+        self.old_state()
+            .map(|(active, frozen)| (active == "active", frozen))
     }
 
     /// Whether the old unit is known to be frozen. Not knowing is not frozen: nothing is
@@ -1375,7 +1382,7 @@ impl<'a> Move<'a> {
                      the move can freeze everything it runs"
                 ),
                 Some((true, _)) => format!(
-                    "{unit} runs and is not frozen any more (thawed from outside right after \
+                    "{unit} runs and is not frozen (thawed or started from outside right after \
                      the freeze): nothing is copied. Run the command again"
                 ),
                 None => format!(
@@ -1574,8 +1581,8 @@ impl<'a> Move<'a> {
         self.phase("Cutover");
         // The start was ordered by an earlier run: nothing here may thaw, and nothing is started
         // beside an old unit that is not frozen.
-        let state = self.old_unit();
-        if state.is_some_and(|(_, frozen)| frozen) {
+        let state = self.old_state();
+        if state.as_ref().is_some_and(|(_, frozen)| *frozen) {
             return self.start(p);
         }
         // Not frozen any more (this host was restarted, so its disabled unit does not run; or
@@ -1592,7 +1599,10 @@ impl<'a> Move<'a> {
         });
         match asked {
             Ok(reply) if reply.started => {
-                if matches!(state, Some((false, _))) {
+                let active = state.map(|(active, _)| active);
+                // Stopped for good, as systemd says. A unit on its way up or down (a restart
+                // after a crash, a start or a stop in progress) has not stopped.
+                if matches!(active.as_deref(), Some("inactive" | "failed")) {
                     self.manual(
                         "old instance",
                         format!(
@@ -1604,10 +1614,10 @@ impl<'a> Move<'a> {
                     self.state.cutover = Cutover::Moved;
                     return self.save_state();
                 }
-                // It runs beside the new instance, which has taken over; or systemd does not
-                // say, and "it does not run" would be a guess. Frozen here and now, then
-                // disabled and checked as after any start.
-                self.freeze_beside_new(state.is_some());
+                // It runs beside the new instance, which has taken over; or it is on its way
+                // up or down, or systemd does not say, and "it does not run" would be a guess.
+                // Frozen here and now, then disabled and checked as after any start.
+                self.freeze_beside_new(active.as_deref() == Some("active"));
                 self.moved()
             }
             Ok(_) => {
@@ -1655,8 +1665,13 @@ impl<'a> Move<'a> {
                      on this host only"
                 ),
             ),
-            // Whether it ran is not known: `moved` says that it is frozen.
-            Ok(()) => {}
+            Ok(()) => self.changed(
+                "old instance",
+                format!(
+                    "{unit} may have run here beside the new instance (systemd did not say \
+                     that it was frozen, or it was on its way up or down): it is frozen now"
+                ),
+            ),
             Err(why) => {
                 let runs = if known { "runs" } else { "may run" };
                 self.fail(
@@ -2107,8 +2122,9 @@ impl World for RealWorld {
                     freeze::Signal::LeaveToMain => {
                         let _ = writeln!(
                             err,
-                            "\nyulius instance migrate: signal {signal} ignored: the new \
-                             instance is being started, the move ends by itself"
+                            "\nyulius instance migrate: signal {signal} ignored: the move \
+                             has taken its end (the new instance is being started, or the \
+                             old one thawed) and ends by itself"
                         );
                     }
                     freeze::Signal::Exit(why) => {

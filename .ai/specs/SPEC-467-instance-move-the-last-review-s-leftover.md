@@ -55,17 +55,19 @@ messages and documents say what the code does.
 - LFT-001 **A look that fails right after the freeze thaws.** In the cutover, when the unit is
   not known to be frozen right after the freeze, nothing is copied and the line says what systemd
   said: the unit does not run (as before: "is not running any more: start it"), it runs unfrozen
-  (thawed from outside), or systemd does not say. In the last two cases the move thaws the unit
+  (thawed or started from outside), or systemd does not say. In the last two cases the move thaws the unit
   after it claimed the freeze's end, so the old instance runs on; the copy on the new host is not
   touched and the same command starts over. (Amends SPEC-460 MIG-004: "a failure … before the new
   instance is started thaws the old one".)
 - LFT-002 **A recorded start never ends in two running instances.** A run that goes on from a
   recorded start and finds the old unit not frozen asks the new instance, as before. When it
   reports the build:
-  - an old unit that does not run stays a `manual` line (make sure nothing of it runs) and the
-    move is recorded as done;
-  - an old unit that runs unfrozen, or whose state systemd does not say, is frozen by the run,
-    to stay (bounded by the freeze's wait), and then disabled and checked as after any start.
+  - an old unit that has stopped (systemd says `inactive` or `failed`) stays a `manual` line
+    (make sure nothing of it runs) and the move is recorded as done;
+  - an old unit that runs unfrozen, that is on its way up or down (`activating`, `reloading`,
+    `deactivating`: a restart after a crash, a start or a stop in progress), or whose state
+    systemd does not say, is frozen by the run, to stay (bounded by the freeze's wait), and
+    then disabled and checked as after any start.
     When it is frozen the checklist says that it ran beside the new instance (`changed`); when
     it cannot be frozen the line is `FAIL` with the reason and the commands, the move is still
     recorded as done (the new instance has taken over, MIG-004) and the run exits 1. Nothing
@@ -123,8 +125,9 @@ messages and documents say what the code does.
   freezes and disables the old unit, records `Moved`, shows no "Make sure nothing of the old one
   runs" line, and finishes with exit 0. The same with a freeze that systemd refuses, and with one
   that never completes: exit 1, a `FAIL` line with the reason, `Moved`, and no `systemctl thaw`.
-  With an old unit that does not run: the `manual` line, `Moved`, exit 0, and nothing frozen,
-  started or stopped.
+  With an old unit that has stopped: the `manual` line, `Moved`, exit 0, and nothing frozen,
+  started or stopped. With one that systemd reports `activating`: never the `manual` line; exit
+  1 with the `FAIL` lines while systemd refuses to freeze it, and frozen once it has settled.
 - A recorded start and a new host that cannot be reached, with the old unit frozen or not: exit
   1, a line with `ssh`'s reason and "run the command again when the new host answers", no
   sign-in and no "add this line", nothing done on either host, the state still `Starting`; once
@@ -179,7 +182,10 @@ messages and documents say what the code does.
   does not ask the update helper, which every run already refuses to start beside.
 - **Unknown is treated as running (LFT-002).** When systemd does not say what the old unit does,
   "it does not run" would be a guess that ends in exit 0; the run tries the freeze, and the check
-  after it fails closed.
+  after it fails closed. The same holds for a unit between states: the unit restarts after a
+  failure (`Restart=on-failure`, two seconds), so a thawed old instance that crashes is
+  `activating` for a moment and runs again right after. Only `inactive` and `failed` are
+  "stopped"; this was the last reviewer's candidate, found in its notes.
 - **An unreachable new host is said before the key is asked for (LFT-003).** With the real
   connection a host that is down fails the key's check, which comes before the question about
   the new instance: the run then tried the operator's sign-in again, printed "add this line to
