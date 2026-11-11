@@ -1,11 +1,11 @@
 ---
 yulius-task: 63aa8551-e6b8-4a74-bf89-2c12155c2ed0
-status: in-progress
+status: done
 ---
 
 # SPEC-461: Claude Code in sandboxes always knows the models Yulius offers
 
-Status: proposed
+Status: implemented
 Date: 2026-11-11
 Owner: Yulius task #443
 Scope authorization: the owner's goal for task #443 (critical, found on production 2026-11-11),
@@ -81,15 +81,16 @@ an older one.
 
 ## Plan
 
-- [ ] Spec and ADR written, the incident reproduced as a failing test
-- [ ] A release that lacks the default model is refused, and `latest` is the default channel
-- [ ] The version in use is checked and reported, and the doctor fails loudly on it
-- [ ] The channel is a stored setting that applies at once, with Check now
-- [ ] Settings, Instance shows the Claude Code card
-- [ ] Sessions record their Claude Code version and task info shows it with the models
-- [ ] A running task moves to the new Claude Code at its turn boundary
-- [ ] Operations guide, API reference, architecture and changes updated
-- [ ] Independent review answered and every gate green
+- [x] Spec and ADR written, the incident reproduced as a failing test
+- [x] A release that lacks the default model is refused, and `latest` is the default channel
+- [x] The version in use is checked and reported, and the doctor fails loudly on it
+- [x] The channel is a stored setting that applies at once, with Check now
+- [x] Settings, Instance shows the Claude Code card
+- [x] Sessions record their Claude Code version and task info shows it with the models
+- [x] A running task moves to the new Claude Code at its turn boundary
+- [x] Operations guide, API reference, architecture and changes updated
+- [x] Independent review round 1 answered, every finding fixed with its test
+- [x] Review approved on the final head and every gate green
 
 ## Acceptance criteria
 
@@ -235,3 +236,61 @@ an older one.
   `merge_train::a_member_that_cannot_merge_is_told_instead_of_tested_again` fail the same way on
   the base commit 911e3127 (run there in a second worktree); issue #1154 tracks them (they fail
   in a task sandbox and pass in Yulius CI).
+
+## Evidence
+
+- `scripts/dev ci` at e22a0d8a (after merging `dev` twice and the review fixes): exit 0.
+  Repository contracts, check, fmt, clippy `-D warnings` on Linux and for macOS, nextest 3325
+  passed / 16 skipped, doctests, `cargo deny` (advisories, bans, licenses, sources ok), `cargo
+  shear`, doc. An earlier run at a0f7ae35 passed too (3318 tests). The commit after e22a0d8a
+  changes this file only.
+- The incident as a test, seen failing first:
+  `claude_updates::a_release_that_lacks_the_default_model_is_refused` answered
+  `Ok(Installed(2.1.311))` on the base (a release without `claude-fable-5-2` became current); it
+  passes with the check.
+- Tests added or changed (all pass):
+  - `yulius-domain` `agent_cli` (13 unit tests): the default channel, the fall-forward tag,
+    where a model id ends, the gate and the reported gap, the problem and fix sentences,
+    `moves_now` with each refusal.
+  - `yulius` lib `wiring::claude_models` (5): the streaming scan and its per-file memory.
+    `yulius-harness` `observe`: the run's CLI version.
+  - `claude_updates` (21): AC1 with the refusal remembered, AC3 in four scenarios, AC4, AC2, the
+    composer's list equal to the server's, the status file and record after refused, installed,
+    up-to-date and failed checks, AC5 with the unknown-version and "no release knows it"
+    sentences, a channel change and "Check now" without a restart, requests that arrive together,
+    and SPEC-421's tests.
+  - `claude_code_admin` (3): AC6, the view's problem and fix, a body without the channel.
+  - `claude_code_moves` (8, real processes): AC8; AC9 in prompt and goal mode; the typing
+    refusals; a background shell and a `yulius wait`; a Done goal task's follow-up; the breaker;
+    the idle state after a person's move.
+  - `analytics`: a restart is no subscription switch.
+  - e2e `claude-code.e2e.ts` (6): AC7 and the task info rows, no WCAG violations; with
+    `update.e2e.ts` and `sandbox-docker.e2e.ts` (the same page): 37 passed.
+- Mutations, each caught by a test and reverted: `stable` never falls forward; the version in use
+  always counts as knowing the default; `stable` falls forward whenever its release was refused;
+  a `yulius wait` not counted as background work; typing not read again after the probes; the
+  breaker never set; the restarted run's version not recorded; a goal session moved at every
+  Stop.
+- Seen failing first: `moves::an_idle_session_is_idle_again_after_a_person_moves_it` and
+  `moves::a_running_task_moves_to_the_new_claude_code_when_its_turn_ends` ended "Running,
+  Working" before `rest_after_idle_switch`.
+- Stress: the move tests and the timing-dependent updater tests 6 times over, all passed.
+- The real binary: the scan run by hand over the installed Claude Code 2.1.322 (326 MB) found
+  every offered model in 30 ms (release build; 447 ms debug) and read the whole file for an id
+  no build knows in about 120 ms (1 s debug).
+- The real doctor on this sandbox (`yulius doctor --contained --data <empty dir>`): `ok    Claude
+  Code in sandboxes 2.1.322 from the host (/usr/local/lib/node_modules/@anthropic-ai/claude-code);
+  Yulius installs a newer release of npm's latest (YULIUS_CLAUDE_UPDATES=latest)`, in 0.8 s.
+- The registry on 2026-11-11: `{"stable":"2.1.311","latest":"2.1.322","next":"2.1.322"}`.
+- The UI in the sandbox browser (mock): the card in its incident, gap and healthy states.
+- Whole e2e suite once (before the review fixes): 905 passed, 2 skipped, 3 failed in files this
+  change does not touch: `agent-panel` and `queued-messages` (one keyboard-focus test each) passed
+  when rerun alone; `places` "the editor keeps open files…" was the load flake of #1157.
+- Review: round 1 (fresh session, at beb8fca9) requested changes, answered above; round 2 is
+  made on the head that holds this section, and its verdict goes with the merge.
+- `yulius security-scan`: "Security scan disabled: Vidoc is turned off in Yulius" (exit 0):
+  disabled, not passed.
+- Not tested: a real download and switch on a deployed instance; the move of a real Claude Code
+  session (the fake agent stands in), including what a real `--resume` writes as its version;
+  a refused move's silence in a terminal; a Claude Code whose binary no longer names its models
+  as plain text (the check would refuse every release, which the card and the doctor would say).
