@@ -565,6 +565,9 @@ there, which overrules the unit (`default`); the unit's `YULIUS_*` variable (`un
 host-sized (`default`). A superadmin saves a number, goes back to host-sized or removes the
 setting there, without editing the unit; each change is audited (`limits.set`,
 `limits.removed`). `0` for the sandbox disk quota means none.
+If the server could not read the saved limits at start (it warns: "the saved resource limits
+could not be read"), it runs on the unit's and the host's values, writes nothing over them and
+refuses changes until a restart reads them.
 
 **A host of another size.** Every pinned number is recorded with the host it was configured on
 (a unit value at the first start that sees it, a setting when it is saved). When a fact its
