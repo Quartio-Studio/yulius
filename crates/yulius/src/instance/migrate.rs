@@ -6,6 +6,7 @@
 pub mod profile;
 pub mod remote;
 pub mod target;
+pub mod warm;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -17,10 +18,10 @@ use yulius_contracts::update::{HostLine, HostOutcome};
 
 use self::profile::{Carried, Profile, TextFile};
 use self::remote::Remote;
-use self::target::{Expect, Facts, Instance, Reply, Request, Setup, SourceFile};
+use self::target::{Facts, Instance, Reply, Request, Setup, SourceFile};
+use super::REFUSED;
 use super::freeze::{self, Freeze};
-use super::inventory::{Counter, IdSpace};
-use super::{Progress, REFUSED, export};
+use super::receipts::Stage;
 use crate::host_setup::{self, Cmd, Host, Mode};
 use crate::wiring::update_files::write_atomic;
 
@@ -54,6 +55,8 @@ pub struct Options {
     pub update_service: String,
     /// The flow's own directory.
     pub state_dir: PathBuf,
+    /// The longest freeze the move may begin, in minutes: above it, it copies again.
+    pub max_downtime: Option<u64>,
 }
 
 /// What to do.
@@ -249,6 +252,15 @@ pub trait World {
     fn healthz(&mut self, url: &str, address: Option<&str>) -> Result<(), String>;
     /// Waits.
     fn sleep(&mut self, d: Duration);
+    /// The wall clock: seconds and nanoseconds since the epoch.
+    fn now(&mut self) -> (i64, i64);
+    /// Syncs the filesystem that holds `dir` ([`super::export::sync`]).
+    ///
+    /// # Errors
+    /// Why not.
+    fn sync(&mut self, dir: &Path) -> Result<(), String>;
+    /// This boot's id ([`super::receipts::boot_id`]).
+    fn boot(&self) -> String;
     /// This build's binary.
     fn exe(&self) -> PathBuf;
     /// This build's commit.
@@ -315,6 +327,8 @@ pub struct Move<'a> {
     remote: &'a mut dyn Remote,
     world: &'a mut dyn World,
     state: State,
+    /// What the new host holds of the staged copy (SPEC-465).
+    stage: Stage,
     phase: &'static str,
     lines: Vec<HostLine>,
 }
@@ -334,6 +348,7 @@ impl<'a> Move<'a> {
             remote,
             world,
             state,
+            stage: Stage::open(&opts.state_dir.join("copy")),
             phase: "Plan",
             lines: Vec::new(),
         }
@@ -478,6 +493,7 @@ impl<'a> Move<'a> {
                 }
                 self.confirm()?;
                 self.prepare(&profile, &facts)?;
+                self.warm(&profile, &facts)?;
                 self.cutover(&profile, &facts)?;
             }
         }
@@ -755,16 +771,11 @@ impl<'a> Move<'a> {
             Ok(took) => {
                 let rate = (LINK_TEST as f64 / took.as_secs_f64().max(0.001)) as u64;
                 self.ok("link", format!("{}/s to the new host", bytes(rate)));
-                let secs = p.used_bytes / rate.max(1) + 180;
-                self.ok(
-                    "downtime",
-                    format!(
-                        "about {} min frozen: up to {} at that rate, then the start; the old \
-                         instance answers nothing meanwhile",
-                        secs.div_ceil(60),
-                        bytes(p.used_bytes)
-                    ),
-                );
+                // What an earlier run staged there is found before the plan speaks of it.
+                if self.agree()? {
+                    self.stage.forget();
+                }
+                self.plan_downtime(p, rate);
             }
             Err(why) => {
                 self.fail("link", why);
@@ -1111,6 +1122,7 @@ impl<'a> Move<'a> {
             "data directory",
             &Request::DataDir {
                 setup: setup.clone(),
+                stage: self.stage.id().map(str::to_owned),
             },
         )?;
         self.call("yulius build", &Request::Binary { setup })?;
@@ -1168,85 +1180,60 @@ impl<'a> Move<'a> {
             "data directory",
             &Request::DataDir {
                 setup: self.setup(p),
+                stage: self.stage.id().map(str::to_owned),
             },
         )?;
         Ok(())
     }
 
-    /// The frozen copy and its proof; `Err` says why the old instance is to be thawed. The copy
-    /// stays marked unfinished on the new host until [`Request::Mark`].
+    /// The frozen pass and the proof of the whole copy; `Err` says why the old instance is to
+    /// be thawed. The copy stays marked unfinished on the new host until [`Request::Mark`].
     fn copy(&mut self, p: &Profile, facts: &Facts, held: &mut Freeze) -> Result<(), Stop> {
-        let opts = self.opts;
-        let manifest = export::manifest_of(&opts.data_dir, &opts.service)
-            .map_err(|why| self.fail("copy", why))?;
-        let mut counter = Counter::new(IdSpace::of(&manifest));
-        let plan = export::plan_observed(&opts.data_dir, &mut |e| counter.add(e))
-            .map_err(|e| self.fail("copy", format!("planning failed: {e}")))?;
-        let old = counter.finish();
-        let zstd = facts.zstd
-            && self
-                .local
-                .run(&Cmd::new(&["zstd", "--version"]))
-                .is_ok_and(|out| out.ok());
-        self.call(
-            "copy",
-            &Request::Expect(Expect {
-                data_dir: opts.data_dir.clone(),
-                zstd,
-            }),
-        )?;
-        self.world.show(&format!(
-            "Copying {} ({} entries){}.",
-            bytes(plan.total),
-            plan.entries,
-            if zstd { ", compressed with zstd" } else { "" }
-        ));
-        let mut progress = Progress::new("Sent", plan.total);
-        let sent = self.remote.send_copy(zstd, &mut |out| {
-            export::send(
-                &opts.data_dir,
-                &plan,
-                &manifest,
-                out,
-                &mut |done| progress.tick(done),
-                &mut || held.helper_idle().map_err(std::io::Error::other),
-            )
-            .map(|_| ())
-        });
-        progress.end();
-        let reply = sent.map_err(|why| self.fail("copy", why))?;
-        let stop = failed(&reply.lines);
+        const ITEM: &str = "copy proven";
+        let (old, manifest) = self.frozen_pass(facts, held)?;
+        let request = Request::Inventory {
+            manifest: Box::new(manifest),
+            old: old.clone(),
+            release: p.release.clone(),
+        };
+        let reply = match self.remote.call(&request) {
+            Ok(reply) => reply,
+            // Not counted is not disproven: the staged copy stays for the next run.
+            Err(why) => return Err(self.fail(ITEM, format!("the new host: {why}"))),
+        };
+        let mut differs = failed(&reply.lines);
         for line in reply.lines {
-            self.push(shown(line));
+            self.push_once(shown(line));
         }
-        if stop {
+        // The new host's word is not the proof: its count is compared here.
+        match reply.inventory.as_ref() {
+            Some(new) if *new == old => {}
+            Some(new) if !differs => {
+                differs = true;
+                self.fail(
+                    ITEM,
+                    super::inventory::difference(&old, new)
+                        .unwrap_or_else(|| "the new host's count is not this host's".into()),
+                );
+            }
+            None if !differs => {
+                differs = true;
+                self.fail(ITEM, "the new host sent no count of the copy");
+            }
+            _ => {}
+        }
+        if differs {
+            // Whatever made it differ, nothing more is built on that copy or on what this
+            // host believed of it.
+            self.stage.forget();
+            self.changed(
+                "copy",
+                "the staged copy on the new host is not this host's data and is dropped: the \
+                 next run copies everything again",
+            );
             return Err(Stop::Failed);
         }
-        let mut manifest = manifest;
-        manifest.total_bytes = plan.total;
-        manifest.entries = plan.entries;
-        let proven = self
-            .call(
-                "copy proven",
-                &Request::Inventory {
-                    manifest: Box::new(manifest),
-                    old: old.clone(),
-                    release: p.release.clone(),
-                },
-            )
-            .and_then(|reply| {
-                // The new host's word is not the proof: its count is compared here.
-                match reply.inventory.as_ref() {
-                    Some(new) if *new == old => Ok(reply),
-                    Some(new) => Err(self.fail(
-                        "copy proven",
-                        super::inventory::difference(&old, new)
-                            .unwrap_or_else(|| "the new host's count is not this host's".into()),
-                    )),
-                    None => Err(self.fail("copy proven", "the new host sent no count of the copy")),
-                }
-            });
-        proven.map(|_| ())
+        Ok(())
     }
 
     /// What systemd says of the old unit: active, frozen; `None` when it does not say.
@@ -1491,6 +1478,8 @@ impl<'a> Move<'a> {
             );
         }
         self.state.cutover = Cutover::Moved;
+        // The copy there is an instance now: nothing more is sent into it.
+        self.stage.forget();
         self.save_state()
     }
 
@@ -1920,6 +1909,7 @@ impl<'a> Move<'a> {
             for name in ["state.json", PROXY_BACKUP] {
                 let _ = std::fs::remove_file(self.opts.state_dir.join(name));
             }
+            self.stage.forget();
             self.phase = "aborted";
         }
         let summary = host_setup::summary(&self.lines, Mode::Setup);
@@ -2085,6 +2075,24 @@ impl World for RealWorld {
 
     fn sleep(&mut self, d: Duration) {
         std::thread::sleep(d);
+    }
+
+    fn now(&mut self) -> (i64, i64) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        (
+            i64::try_from(now.as_secs()).unwrap_or(i64::MAX),
+            i64::from(now.subsec_nanos()),
+        )
+    }
+
+    fn sync(&mut self, dir: &Path) -> Result<(), String> {
+        super::export::sync(dir).map_err(|e| e.to_string())
+    }
+
+    fn boot(&self) -> String {
+        super::receipts::boot_id()
     }
 
     fn exe(&self) -> PathBuf {

@@ -358,6 +358,10 @@ enum InstanceAction {
         /// Do not ask before moving.
         #[arg(long)]
         yes: bool,
+        /// The longest freeze to begin, in minutes: while the estimate is above it the move
+        /// copies again, and after five such passes it stops without freezing.
+        #[arg(long = "max-downtime", value_name = "MINUTES", value_parser = clap::value_parser!(u64).range(1..))]
+        max_downtime: Option<u64>,
         /// Print the recorded move and its checklist.
         #[arg(long, conflicts_with_all = ["abort", "target"])]
         status: bool,
@@ -850,6 +854,7 @@ fn main() -> ExitCode {
                     public_url,
                     data_disk,
                     yes,
+                    max_downtime,
                     status,
                     abort,
                     data_dir,
@@ -868,6 +873,7 @@ fn main() -> ExitCode {
                 service,
                 update_service,
                 state_dir,
+                max_downtime,
             },
             if status {
                 yulius::instance::migrate::Action::Status

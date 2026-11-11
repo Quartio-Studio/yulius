@@ -597,7 +597,10 @@ fn the_staged_build_is_installed_at_the_units_path() {
 
 #[test]
 fn the_data_directory_is_made_ready_for_a_copy() {
-    let request = Request::DataDir { setup: setup() };
+    let request = Request::DataDir {
+        setup: setup(),
+        stage: None,
+    };
     // Not there yet.
     let mut host = new_host();
     assert_eq!(only(&step(&mut host, &request)).0, HostOutcome::Ok);
@@ -1337,14 +1340,129 @@ fn a_start_still_in_flight_finds_the_stop_and_starts_nothing() {
     assert!(host.text(STOPPED).is_none());
 }
 
+/// The marker of a staged copy called `stage` after `acked` streams.
+fn staged_marker(stage: &str, acked: u64) -> String {
+    format!(r#"{{"version":1,"stage":"{stage}","acked":{acked},"last":null}}"#)
+}
+
 #[test]
-fn an_installed_copy_is_marked_unproven_once() -> Result<(), Box<dyn std::error::Error>> {
-    let dir = tempfile::tempdir()?;
-    mark_unproven(dir.path())?;
-    assert!(dir.path().join(".yulius-import-incomplete").is_file());
-    // Already there: something else is wrong, and it says so.
-    assert!(mark_unproven(dir.path()).is_err());
-    Ok(())
+fn this_move_s_staged_copy_stays_and_any_other_unfinished_copy_goes() {
+    let staged = |stage: &str| {
+        let mut host = new_host();
+        host.dir("/var/lib/yulius/sandboxes");
+        host.file("/var/lib/yulius/yulius.db", "staged");
+        host.file(
+            "/var/lib/yulius/.yulius-import-incomplete",
+            &staged_marker(stage, 3),
+        );
+        host
+    };
+    let mine = Request::DataDir {
+        setup: setup(),
+        stage: Some("s1".into()),
+    };
+    let mut host = staged("s1");
+    let reply = step(&mut host, &mine);
+    assert_eq!(
+        only(&reply),
+        (
+            HostOutcome::Ok,
+            "/var/lib/yulius holds this move's staged copy (3 passes acknowledged)"
+        )
+    );
+    assert!(host.runs("rm").is_empty());
+
+    // Another move's stage, a stage this host knows nothing of, a plain import's marker.
+    for (found, asked) in [("s2", Some("s1")), ("s1", None)] {
+        let mut host = staged(found);
+        let request = Request::DataDir {
+            setup: setup(),
+            stage: asked.map(str::to_owned),
+        };
+        let reply = step(&mut host, &request);
+        assert_eq!(only(&reply).0, HostOutcome::Changed, "{found} {asked:?}");
+        assert!(host.text("/var/lib/yulius/yulius.db").is_none());
+    }
+    let mut host = staged("s1");
+    host.file("/var/lib/yulius/.yulius-import-incomplete", "");
+    assert_eq!(only(&step(&mut host, &mine)).0, HostOutcome::Changed);
+}
+
+#[test]
+fn the_staged_copy_s_marker_is_read_once_no_stream_is_being_received() {
+    let trace = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let mut host = new_host();
+    host.file(
+        "/var/lib/yulius/.yulius-import-incomplete",
+        &staged_marker("s1", 2),
+    );
+    let noted = std::rc::Rc::clone(&trace);
+    let request = Request::Stage {
+        data_dir: "/var/lib/yulius".into(),
+    };
+    let ask = |host: &mut FakeHost| {
+        let mut env = Env {
+            address: None,
+            ssh_port: None,
+            peer: None,
+            hold: &mut |hold| {
+                noted.borrow_mut().push(format!("hold {hold:?}"));
+                Box::new(Noted(hold, std::rc::Rc::clone(&noted)))
+            },
+            health: &mut |_| None,
+            sleep: &mut |_| {},
+            count: &mut |_, old| Ok(old.clone()),
+            setup: &mut |_, _, _| Vec::new(),
+        };
+        handle(host, &mut env, &request)
+    };
+    let reply = ask(&mut host);
+    assert!(reply.lines.is_empty());
+    assert_eq!(
+        reply.stage.as_ref().map(|m| (m.stage.as_str(), m.acked)),
+        Some(("s1", 2))
+    );
+    // It waited for a receive in flight before it looked.
+    assert_eq!(*trace.borrow(), ["hold Received", "drop Received"]);
+
+    // No staged copy: a plain import's marker, or nothing.
+    host.file("/var/lib/yulius/.yulius-import-incomplete", "");
+    assert_eq!(ask(&mut host).stage, None);
+    host.files.remove(std::path::Path::new(
+        "/var/lib/yulius/.yulius-import-incomplete",
+    ));
+    assert_eq!(ask(&mut host).stage, None);
+}
+
+#[test]
+fn a_proven_copy_is_no_staged_copy_any_more() {
+    let mut host = new_host();
+    host.file(
+        "/var/lib/yulius/.yulius-import-incomplete",
+        &staged_marker("s1", 4),
+    );
+    host.file("/var/lib/yulius/..yulius-import-incomplete.tmp", "{");
+    let mark = Request::Mark {
+        setup: setup(),
+        from: None,
+        to: "https://new.example".into(),
+    };
+    assert_eq!(only(&step(&mut host, &mark)).0, HostOutcome::Changed);
+    assert!(
+        host.text("/var/lib/yulius/.yulius-import-incomplete")
+            .is_none()
+    );
+    assert!(
+        host.text("/var/lib/yulius/..yulius-import-incomplete.tmp")
+            .is_none()
+    );
+    let asked = step(
+        &mut host,
+        &Request::Stage {
+            data_dir: "/var/lib/yulius".into(),
+        },
+    );
+    assert_eq!(asked.stage, None);
 }
 
 /// What a hold's guard notes when it is taken and when it is dropped.
@@ -1438,8 +1556,35 @@ fn holds_exclude_as_the_protocol_needs() -> Result<(), Box<dyn std::error::Error
     drop(flight);
     heard.recv_timeout(Duration::from_secs(10))?;
     waiter.join().map_err(|_| "the waiter panicked")?;
+    // A look at the staged copy's marker waits for a stream being received, as long; a second
+    // stream waits for the first. A Start in flight is another matter.
+    let receiving = hold_in(dir.path(), Hold::Receive, long);
+    let started = std::time::Instant::now();
+    drop(hold_in(
+        dir.path(),
+        Hold::Received,
+        Duration::from_millis(400),
+    ));
+    assert!(
+        started.elapsed() >= Duration::from_millis(400),
+        "it did not wait for the receive"
+    );
+    drop(hold_in(dir.path(), Hold::Landed, long));
+    drop(hold_in(dir.path(), Hold::Flight, long));
+    let (received, heard) = mpsc::channel();
+    let path = dir.path().to_path_buf();
+    let waiters = std::thread::spawn(move || {
+        drop(hold_in(&path, Hold::Received, long));
+        drop(hold_in(&path, Hold::Receive, long));
+        let _ = received.send(());
+    });
+    assert!(heard.recv_timeout(Duration::from_millis(300)).is_err());
+    drop(receiving);
+    heard.recv_timeout(Duration::from_secs(10))?;
+    waiters.join().map_err(|_| "the waiters panicked")?;
     // Nothing in flight: at once. No such directory: nothing held, nothing waited for.
     let started = std::time::Instant::now();
+    drop(hold_in(dir.path(), Hold::Received, long));
     drop(hold_in(dir.path(), Hold::Landed, long));
     drop(hold_in(&dir.path().join("gone"), Hold::Switch, long));
     drop(hold_in(&dir.path().join("gone"), Hold::Landed, long));

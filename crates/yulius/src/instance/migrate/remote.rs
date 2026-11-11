@@ -406,6 +406,11 @@ impl Remote for Ssh {
         let end = ended("the import on the new host", &mut ssh);
         let reply = reader.join().ok().flatten();
         match (reply, sent, end) {
+            // What failed on this host (a file that cannot be read, a record that cannot be
+            // kept) is the cause; the import only saw the stream end.
+            (_, Err(e), _) if e.kind() != io::ErrorKind::BrokenPipe => {
+                Err(format!("the copy's stream failed: {e}"))
+            }
             // The import's own words win over a broken pipe they caused.
             (Some(reply), _, _) => Ok(reply),
             (None, Err(e), _) => Err(format!("the copy's stream failed: {e}")),

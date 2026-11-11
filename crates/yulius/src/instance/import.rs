@@ -255,7 +255,7 @@ fn check_stream(m: &Manifest, target: &Path, own_schema: u32) -> Result<(), Stri
 }
 
 /// Reads the manifest, the archive's first entry.
-fn manifest<R: Read>(r: &mut Reader<R>) -> Result<Manifest, String> {
+pub(crate) fn manifest<R: Read>(r: &mut Reader<R>) -> Result<Manifest, String> {
     let first = r.next_item().map_err(|e| e.to_string())?;
     let Item::Entry(e) = first else {
         return Err("not a Yulius export: it has no manifest".into());
