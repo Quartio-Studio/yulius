@@ -11,6 +11,10 @@ Owner: Yulius task #403
 Scope authorization: task #403, asked by the project's owner: "Claude should autoupdate when new
 version is released without logging out. Fix." Decision record:
 [ADR-0266](../../docs/decisions/0266-yulius-keeps-claude-code-current-in-its-data-directory.md).
+Amended by [SPEC-461](SPEC-461-claude-code-in-sandboxes-always-knows-yu.md) (2026-11-11): `latest`
+is the default channel (CCU-001), a release must also know the default model (CCU-002), a running
+task moves when its turn ends (CCU-003), and the doctor's line fails without the default model
+(CCU-006).
 
 ## Goal
 

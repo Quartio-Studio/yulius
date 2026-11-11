@@ -4,7 +4,10 @@
 
 Accepted. Specified in [SPEC-421](../../.ai/specs/SPEC-421-claude-should-autoupdate-when-new-versio.md);
 task #403 ("Claude should autoupdate when new version is released without logging out"). Amends
-SPEC-002's launch contract row "Updates" (the operator alone updated the CLI, #45).
+SPEC-002's launch contract row "Updates" (the operator alone updated the CLI, #45). Amended by
+[0293](0293-claude-code-follows-latest-and-must-know-the-default-model.md): `latest` is the
+default channel, a release must know the default model, the channel is an instance setting, and
+a running task moves at a turn boundary.
 
 ## Context
 

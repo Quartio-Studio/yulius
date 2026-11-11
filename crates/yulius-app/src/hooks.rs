@@ -455,6 +455,8 @@ impl App {
             .session_started
             .store(true, Ordering::SeqCst);
         crate::supervisor::mark_session_started(Path::new(&ctx.attempt.run_dir));
+        // A session restarted on a newer Claude Code that got here runs on it (SPEC-461).
+        self.claude_code_run_started(&ctx.task.id, &ctx.attempt.id);
         let briefing = self.briefing(&ctx.task, ctx.attempt.harness).await?;
         Ok(HookOutput::additional_context(
             events::SESSION_START,
@@ -796,6 +798,32 @@ impl App {
             } else {
                 false
             };
+        // A session that works on after this boundary (a gate's block, its goal) and runs an
+        // older Claude Code than runs get now restarts on the newer one here, as a move to
+        // another subscription does (SPEC-461 CCM-013): the resumed session gets the gate's
+        // reasons, and its goal again. An idle session moves once its turn has settled.
+        // A goal that is achieved, or not set, is not typed again for it: such a session waits
+        // for its next start.
+        let works_on = gate_continues || {
+            let runtime = self.runtime(&task.id);
+            task.mode == TaskMode::Goal
+                && runtime.goal_open.load(Ordering::SeqCst)
+                && !runtime.goal_achieved.load(Ordering::SeqCst)
+        };
+        if matches!(decision.0, Decision::Stay)
+            && works_on
+            && let Some(version) = self.claude_code_move_due(&task.id, &ctx.attempt.id).await
+        {
+            let continuation = gate_continues.then(|| reasons.join("\n\n"));
+            let app = Arc::clone(self);
+            let task_id = task.id.clone();
+            let run = (ctx.attempt.id.clone(), current.clone());
+            tokio::spawn(async move {
+                app.move_to_claude_code(&task_id, run, version, continuation)
+                    .await;
+            });
+            return Ok(self.hold_for(&task.id));
+        }
         let stays = match decision {
             (Decision::Stay, _) => true,
             (Decision::Switch { .. }, _) if busy => true,
