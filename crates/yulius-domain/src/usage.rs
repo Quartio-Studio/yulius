@@ -117,8 +117,9 @@ impl ReportedLimit {
     /// When the limit resets, if the report says so believably: at most
     /// [`LIMIT_RESET_MAX_MS`] ahead of `now`.
     #[must_use]
-    pub fn believed_reset(&self, _now: Timestamp) -> Option<Timestamp> {
+    pub fn believed_reset(&self, now: Timestamp) -> Option<Timestamp> {
         self.resets_at
+            .filter(|at| at.millis_since(now) <= LIMIT_RESET_MAX_MS)
     }
 }
 
@@ -189,31 +190,33 @@ impl AccountUsage {
     ///
     /// - a limit of the subscription fills its 5-hour or weekly window until the reset and is a
     ///   limit in effect ([`Self::limit_in_effect`]);
-    /// - a limit of one model family, with its reset, fills that family's weekly window: the
+    /// - a limit of one model family fills that family's weekly window until its reset: the
     ///   subscription's own windows keep their readings and other models still run on it
-    ///   (SPEC-464);
-    /// - a model's limit without a reset, or of a family without a window, is a limit in effect
-    ///   with no reset, as before: the next usage reading ends it.
+    ///   (SPEC-464). Without a reset the window is full until a provider's reading ends it
+    ///   ([`Self::keeping_unread`]);
+    /// - a model's limit of a family without a window is a limit of the subscription, its
+    ///   windows untouched.
+    ///
+    /// The reset is the one the report says believably ([`ReportedLimit::believed_reset`]).
     pub fn record_limit(&mut self, limit: ReportedLimit, family: ModelFamily, now: Timestamp) {
         self.observed_at = Some(now);
+        let resets_at = limit.believed_reset(now);
         let full = |minutes: u32| UsageWindow {
             used_percent: Some(100.0),
             window_minutes: Some(minutes),
-            resets_at: limit.resets_at,
+            resets_at,
         };
         if let LimitScope::Model(named) = limit.scope {
-            if limit.resets_at.is_some()
-                && let Some(slot) = self.model_slot(named.unwrap_or(family))
-            {
+            if let Some(slot) = self.model_slot(named.unwrap_or(family)) {
                 *slot = Some(full(WEEKLY_WINDOW_MINUTES));
-                return;
+            } else {
+                self.limit_reached = true;
+                self.limit_resets_at = resets_at;
             }
-            self.limit_reached = true;
-            self.limit_resets_at = limit.resets_at;
             return;
         }
         self.limit_reached = true;
-        self.limit_resets_at = limit.resets_at;
+        self.limit_resets_at = resets_at;
         match limit.window_minutes {
             Some(minutes) if minutes <= SESSION_WINDOW_MINUTES => {
                 self.primary = Some(full(minutes));
@@ -223,17 +226,19 @@ impl AccountUsage {
         }
     }
 
-    /// This reading with what no reading shows kept from `stored`: the weekly window of a model
-    /// family that the reading does not carry stays while its reset is ahead. It is a limit
-    /// Claude reported for that model, or the provider's last word on its cap; a reading of the
-    /// 5-hour and weekly windows says nothing about either (SPEC-464).
+    /// This reading with what it does not show kept from `stored`: the weekly window of a model
+    /// family that the reading does not carry stays while its reset is ahead, and no further
+    /// than a window lasts ([`LIMIT_RESET_MAX_MS`]). It is a limit Claude reported for that
+    /// model, or the provider's last word on its cap; a reading of the 5-hour and weekly
+    /// windows says nothing about either (SPEC-464). A window without a reset is not kept: a
+    /// provider's reading is what ends a model's limit nothing says the end of.
     #[must_use]
     pub fn keeping_unread(mut self, stored: &Self, now: Timestamp) -> Self {
         for family in ModelFamily::WITH_WINDOW {
-            let kept = stored
-                .model_window(family)
-                .copied()
-                .filter(|w| w.resets_at.is_some_and(|at| at > now));
+            let kept = stored.model_window(family).copied().filter(|w| {
+                w.resets_at
+                    .is_some_and(|at| at > now && at.millis_since(now) <= LIMIT_RESET_MAX_MS)
+            });
             if let Some(slot) = self.model_slot(family)
                 && slot.is_none()
             {
