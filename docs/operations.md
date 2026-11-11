@@ -1554,8 +1554,9 @@ usual.
   directories it opened: a directory that is renamed or replaced by a link while a pass walks
   it is left out of that pass and sent by the next.
 - The line `downtime` names what every pass sends again, when that takes a second or more:
-  entries that change all the time, and files on another filesystem. They are sent during the
-  freeze too, in full.
+  entries that change all the time, files on another filesystem, and a file that took the
+  place of a directory (the new host removes a directory only during the freeze). They are
+  sent during the freeze too, in full.
 - Do not update Yulius on the old host during the copy. An instance that reports another build
   before the freeze than in the plan is not frozen; run the command again with the build it runs
   (the staged copy is kept).

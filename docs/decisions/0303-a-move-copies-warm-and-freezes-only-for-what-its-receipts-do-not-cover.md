@@ -75,8 +75,9 @@ Accepted. Specified in
   are sent in the same pass, so the copy never holds two files where the old host has one.
 - **The freeze is estimated, and can be bounded.** After each delta pass the checklist shows the
   estimate; `--max-downtime` makes the move copy again while it is above the bound and stop
-  without freezing after 5 delta passes. What a pass sent without earning a receipt is counted
-  in full, since the frozen pass sends it whatever happens.
+  without freezing after 5 delta passes. What a pass sent without earning a receipt, and what
+  the new host could not install, is counted in full, since the frozen pass sends it whatever
+  happens.
 
 ## Alternatives
 
@@ -116,15 +117,21 @@ Accepted. Specified in
   a bound, and the move then stops without freezing.
 - Entries on another filesystem mounted inside the data directory get no receipt and are sent in
   every pass, the frozen one included.
-- The old host keeps 32 bytes per entry in its state directory and in memory during a pass; the
-  new host holds 16 bytes per entry in memory while it deletes.
-- The receipts rest on the inode change time. The 2 s margin covers filesystems that keep whole
-  seconds. A clock set back is found when a pass begins or ends (its lead over the boot's own
+- The old host keeps 32 bytes per entry in its state directory and in memory during a pass. A
+  stream in flight adds 40 bytes per entry it sends on disk and 4 in memory; around a frozen
+  pass the list of what it left alone and the log made of it come on top, 32 bytes per entry
+  each. The new host holds 16 bytes per entry in memory while it deletes.
+- The receipts rest on the inode change time, and on a sync that makes the next write through
+  a mapping stamp its file again: true of filesystems that write back to a disk (ext4, xfs,
+  btrfs), not of tmpfs, where a data directory would not outlive a restart anyway. The 2 s
+  margin covers filesystems that keep whole seconds. A clock set back is found when a pass
+  begins or ends (its lead over the boot's own
   time fell by 1.5 s or more); a clock set back and forward again between two such looks is
   not.
 - A restart of the old host during the copy, or a clock set back, costs one full pass into the
   staged copy that is there.
-- A live walk holds one open file for each level it is deep, and needs `/proc`.
+- A live walk holds one open file for each level it is deep and names its entries through
+  `/proc`. Every file that is sent, by the plain export too, is opened through `/proc`.
 - A cut stream's prefix is acknowledged on the stream's own digest at the last entry, not on the
   trailer, which was never sent.
 - A proof that fails still fails the move and thaws the old instance. The staged copy is not

@@ -66,7 +66,9 @@ Passes
   inode number. A pass skips an entry only when the receipt of its path is that digest. An entry
   earns a receipt only when (a) its stat was the same before and after it was read, (b) its change
   time is at least 2 s older than the start of the pass, which begins by syncing the data
-  directory's filesystem (so a later write through a mapping is stamped too), (c) it lies on that
+  directory's filesystem (so a later write through a mapping is stamped too: true of a
+  filesystem that writes back to a disk, as ext4, xfs and btrfs do, and not of tmpfs, which is
+  no place for a data directory), (c) it lies on that
   filesystem, and (d) the new host acknowledged it after syncing its own filesystem. Sending a
   path revokes the receipt it had. When a file with several links is sent, every other link of it
   is sent in the same pass.
@@ -130,7 +132,8 @@ Resume and bound
   `downtime`) before anything freezes: four counts of the tree at the measured rate (two on each
   host), the time to send what will have changed since the pass began (the last pass's sending
   time, scaled by how long changes gathered for it; the time for entries that earned no receipt
-  counts in full, since every pass sends them), the new host's sync and the start (30 s: the
+  or that the new host could not install counts in full, since every pass sends them), the new
+  host's sync and the start (30 s: the
   mark, the unit's start and its first answer took 10 to 21 s between two emulated hosts).
   The plan shows what is known then: the copy's size and time at the link's rate, the bound, and
   a first estimate of the freeze: the entries of the data directory's filesystem counted four
@@ -237,6 +240,8 @@ Resume and bound
 - A pass whose directories' times could not be put back on the new host leaves "nothing known",
   and the next pass sends everything.
 - `--abort` after a proof that differed names the copy on the new host.
+- A directory that became a large file is sent by every warm pass (the new host leaves it out
+  until the freeze); its time is in the estimate in full.
 
 ## Test plan
 
