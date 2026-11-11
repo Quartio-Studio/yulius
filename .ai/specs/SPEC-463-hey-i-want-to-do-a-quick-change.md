@@ -1,11 +1,11 @@
 ---
 yulius-task: 4aa3a527-c2da-49fd-bb26-1546636dce4a
-status: in-progress
+status: done
 ---
 
 # SPEC-463: A subscription's email is typed in place, like its name
 
-Status: in-progress
+Status: done
 Date: 2026-11-11
 Owner: Yulius task #448
 Scope authorization: task #448 (`/goal`, with a screenshot of the Subscriptions page: three
@@ -69,8 +69,8 @@ Confirmed against `dev` at dbec951d.
 - [x] PATCH /api/admin/accounts/{id} sets or removes the email for administrators
 - [x] The Subscriptions page edits the email line in place
 - [x] ADR-0300, architecture, API reference and product spec say the email can be typed
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -124,6 +124,78 @@ Confirmed against `dev` at dbec951d.
   refusal on both lines and an address outside ASCII. The `subscriptions` spec signs a
   subscription with a typed email in again and reads the toast.
 - Gates: `scripts/dev ci`, the e2e suite, `scripts/dev security`.
+
+## Review
+
+- **Spec review** (a fresh session given only the spec path; verdict: revise). Its findings and
+  what they changed:
+  - (high) The draft quoted real addresses from the request and the screenshot, in a public
+    repository: replaced by `example.com` ones, and the unpushed commits were rebuilt without
+    them.
+  - (high) The toast after a sign-in ("connected as *email*") was an unlisted reader that would
+    present a typed email as Claude's: EML-006 and `AccountView.email_typed`.
+  - (medium) Leaving an emptied field would have deleted the only copy of the address: removing
+    takes Enter (EML-002).
+  - (medium) A redraw while a field is open was not settled: EML-001's last sentences, with
+    tests.
+  - (medium) The context said ADR-0185 assumed Claude would give the email; it foresaw the
+    refusal: corrected.
+  - (low) The reworded "email unknown" hint in the Status panel went beyond the request:
+    reverted.
+- **Round 1** (REQUEST CHANGES on 377e9336; store, API, permissions and privacy held):
+  1. (high, pre-existing) The whole e2e run was red on `cd.e2e.ts` "a refusal after its view was
+     left…", and the note that pull request #1151 fixes it was wrong: #1151 merged without
+     touching it. It is a load-dependent failure of a test this change does not touch (it passes
+     alone, and failed before in another pull request's run). Filed as #1171; `dev` merged; the
+     whole suite then passed (Evidence).
+  2. (medium, own) An update that came while a field was open was never drawn after a save by
+     leaving: the field that closes then has no focus to lose, and only a `focusout` read the
+     waiting refresh. The page now reads it when the save settles. Test first: the initials kept
+     "CS" beside the new email, and another administrator's rename stayed undrawn.
+  3. (medium, own) Two "not sent" assertions could not fail, and no test showed a server
+     refusal: the tests count the changes the mock was sent and read what it stored, and a
+     refusal is tested on both lines.
+  4. (low, own) An `email` field returned a domain outside ASCII as punycode: it is a text field
+     with an email keyboard. Test first (`jan@bücher.example` came back as
+     `jan@xn--bcher-kva.example`).
+  5. (low, own) ADR-0300 said the list is never redrawn while a field is open, and the
+     architecture said every write is one statement: both reworded. SPEC-243 LGN-003 and SPEC-244
+     SUB-003 and SUB-006 now point here.
+  6. (low, own) A test waited two animation frames for "the read has landed": it waits until the
+     list says a refresh waits (`data-refresh="waiting"`).
+- **Round 2** is the review of the head that carries this record; its verdict goes with the
+  delivery.
+
+## Evidence
+
+- **Tests that fail without the change** (each was run red before its code was written):
+  - Store: `a_typed_account_email_stays_until_its_person_removes_it` failed with Claude's answer
+    in place of the typed email (`Some("claude@example.com")` for `Some("agent@example.com")`),
+    and `emails_stored_before_one_could_be_typed_stay_claudes` for lack of the migration.
+  - API: `an_administrator_types_changes_and_removes_a_subscriptions_email` and
+    `a_typed_email_outlives_sign_ins_until_it_is_removed` failed with 422 for `email`; the
+    `email_typed` assertions failed with `null` before the view carried it.
+  - e2e: the email tests failed with no "Change the email of …" button; the sign-in toast test
+    read "… is connected as agent@example.com"; "a field opened while the list is read again…"
+    failed with the name field gone; the round-1 tests failed as its findings say.
+- **`scripts/dev ci` at 1bd025b0** (`dev` 4ed1234f merged in) exited 0: repository contracts,
+  152 script tests, check, fmt, clippy (Linux and macOS), nextest 3395 passed and 16 skipped,
+  doctests, deny, shear, doc.
+- **Whole e2e suite at 1bd025b0** (`cd e2e && npx e2e run`): 929 passed, 1 skipped, exit 0, at a
+  load average of 28. `subscription-names.e2e.ts` (11 tests) also passed 6 runs of 6 alone. The
+  run at 377e9336 had 916 passed and the one `cd.e2e.ts` failure of #1171.
+- **`yulius security-scan --base origin/dev`**: "Security scan disabled" (Vidoc is switched off
+  for this project in Yulius). Disabled, not passed: nothing was scanned.
+- **Seen in the browser** (the mock, `/admin/accounts`): a card renamed to "Agent TEAM" with
+  "agent@example.com" typed under it reads those two lines, each with its pencil; "not an
+  address" is refused under the field.
+- **What could not be tested.**
+  - No real Claude sign-in runs in this sandbox, so Claude's profile answer is a fake, as in
+    SPEC-244. Whether Claude gives the email to a `setup-token` sign-in is known only from the
+    production instance, which shows "email unknown".
+  - The e2e suite is Chromium only; Firefox and Safari were not tried.
+  - Production's data was not touched: its subscriptions get their emails when an administrator
+    types them after the update.
 
 ## Decisions
 
