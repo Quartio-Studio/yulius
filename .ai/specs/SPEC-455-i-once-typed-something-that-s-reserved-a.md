@@ -135,8 +135,9 @@ name says what is reserved and a name that works, so nobody guesses one rename a
   miss their focus), the production protection switch's stored value read while it was sent, and
   text typed before README.md was in the editor (Monaco's placeholder model, "Model is
   disposed!", #1087, whose app fix is task #434's). `openSuperagent` and `openShellPanel` wait
-  for the page's heading; five tests wait for task #12's (the fifth, `terminal.e2e.ts` "file
-  names a shell prints open the editor", failed on CI run bc102d9d); one polls the stored switch; one waits
+  for the page's heading; six tests wait for task #12's (`terminal.e2e.ts` and the second Shell test
+  of `queued-messages.e2e.ts` failed on CI runs bc102d9d and b63bef6f); dev (#1150) carries the
+  first of these commits; one polls the stored switch; one waits
   for README.md's text. `npx e2e run`: 902 passed, 2 skipped; each fixed file 2 to 4 runs green.
   Other tests also open a tool right after loading but check nothing that depends on the sandbox
   being in yet; the app-side gap is #1158.
