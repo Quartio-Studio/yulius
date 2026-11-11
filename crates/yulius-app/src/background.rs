@@ -132,6 +132,8 @@ impl App {
         self.start_disk_upkeep();
         // Leftovers at every start (so after every update) and hourly (SPEC-215 LFT-009).
         self.start_leftovers_rounds();
+        // Whether GitHub accepts this address for sign-in: after a move it may not (SPEC-466).
+        self.start_github_callback_check();
         // Account usage in its own loop: a slow provider never delays queue draining.
         let app = Arc::clone(self);
         tokio::spawn(async move {

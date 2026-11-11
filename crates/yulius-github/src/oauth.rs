@@ -12,6 +12,12 @@ use crate::types::{GitHubUser, UserToken};
 use crate::validate;
 use crate::wire::WireUser;
 
+/// The code [`GitHubClient::callback_registered`] sends: never one GitHub issued.
+const CALLBACK_PROBE_CODE: &str = "yulius-callback-check";
+/// A callback URL no App can hold (`.invalid` is a reserved top-level domain): the control
+/// question of [`GitHubClient::callback_registered`].
+const CALLBACK_CONTROL_URI: &str = "https://callback-check.invalid/api/auth/github/callback";
+
 impl GitHubClient {
     fn oauth_app(&self) -> Result<&AppCredentials, GitHubError> {
         self.inner
@@ -73,6 +79,48 @@ impl GitHubClient {
         ];
         self.token_request(fields, &[app.client_secret.expose(), code])
             .await
+    }
+
+    /// Whether `redirect_uri` is one of the App's callback URLs (SPEC-466 MVC-001). GitHub has no
+    /// API to read them, but its token endpoint compares the URI before it looks at the code: a
+    /// made-up code answers `redirect_uri_mismatch` when the URI is not registered and
+    /// `bad_verification_code` when it is. "Registered" is believed only when GitHub also
+    /// refuses a URL that cannot be registered (one under the reserved `.invalid` domain): `None`
+    /// when it takes that one too, so it does not say for this App. One request, or two for a URI it takes,
+    /// with the App's own client and nobody's token.
+    ///
+    /// # Errors
+    /// Any other answer: another OAuth error (`incorrect_client_credentials`), an HTTP error, a
+    /// timeout.
+    pub async fn callback_registered(
+        &self,
+        redirect_uri: &str,
+    ) -> Result<Option<bool>, GitHubError> {
+        if !self.callback_taken(redirect_uri).await? {
+            return Ok(Some(false));
+        }
+        let compared = !self.callback_taken(CALLBACK_CONTROL_URI).await?;
+        Ok(compared.then_some(true))
+    }
+
+    /// Whether the token endpoint takes `redirect_uri` with a made-up code.
+    async fn callback_taken(&self, redirect_uri: &str) -> Result<bool, GitHubError> {
+        let app = self.oauth_app()?;
+        let fields = vec![
+            ("client_id", app.client_id.clone()),
+            ("client_secret", app.client_secret.expose().to_owned()),
+            ("code", CALLBACK_PROBE_CODE.to_owned()),
+            ("redirect_uri", redirect_uri.to_owned()),
+        ];
+        match self
+            .token_request(fields, &[app.client_secret.expose()])
+            .await
+        {
+            Err(GitHubError::OAuth(code)) if code == "bad_verification_code" => Ok(true),
+            Err(GitHubError::OAuth(code)) if code == "redirect_uri_mismatch" => Ok(false),
+            Err(other) => Err(other),
+            Ok(_) => Err(GitHubError::Decode("a made-up code was accepted".into())),
+        }
     }
 
     /// Exchanges a refresh token for a new token set (the old refresh token is consumed).
