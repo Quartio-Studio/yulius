@@ -1308,9 +1308,9 @@ test('another person’s worktree saves nothing, offers no writing menu items an
   await expect(tree.getByRole('treeitem', 'notes.txt')).toHaveCount(0);
 });
 
-// #1087 (SPEC-452): Monaco shows before the first file's read and join are back. Made with no model,
-// Monaco gave it an empty one of its own: text typed in that gap went into it, the file's model
-// replaced it, and the suggestions for the typed word threw "Model is disposed!" twice.
+// #1087 (SPEC-452): the editor is made before the first file's read and join are back. Made with no
+// model, Monaco gave it an empty one of its own: text typed in that gap went into it, the file's
+// model replaced it, and Monaco's inline suggestions threw "Model is disposed!" twice on it.
 type JoinsMock = Window & { __yuliusMock: { live: { holdJoins: boolean; joins: { path: string }[] }; releaseJoins(): void } };
 test('the editor offers nothing to type into until its first file is in it', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12'));

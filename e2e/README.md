@@ -110,7 +110,10 @@ rejection or `console.error` (`failOnPageErrors()` in `tests/support.ts`). In th
 `app.open` and `browser.reload` of a mock page return once the mock is installed, so a test can
 use `window.__yuliusMock` right away. A test that calls `window.monaco.editor` waits for
 `editorShown(browser)` first: the Editor's first opening loads Monaco (its own budget,
-`MONACO_LOAD_MS`), and an API call while it loads breaks the editor (#394, ADR-0122). A test
+`MONACO_LOAD_MS`), and an API call while it loads breaks the editor (#394, ADR-0122). The editor
+shows nothing before its first file's model is set (#1087), so `editorShown` is also when that
+file is in it; a test that holds the file's read or live join waits on that held request instead
+(`__yuliusMock.heldWaiting`, `__yuliusMock.live.joins`). A test
 that waits for a task terminal's first screen calls `terminalShown(browser)`: its budget
 (`TERMINAL_SHOW_MS`) outlasts the app's own reveal limit after the terminal core's load (#949,
 ADR-0251). A test's first look at the page it opened or reloaded calls `firstShown(locator,
