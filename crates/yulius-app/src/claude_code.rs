@@ -24,7 +24,7 @@ use yulius_domain::time::Timestamp;
 use crate::auth::{AuthContext, rfc3339};
 use crate::context::App;
 use crate::error::{AppError, AppResult};
-use crate::model::TaskMode;
+use crate::model::{TaskMode, TaskRecord};
 use crate::ports::agent_cli::{AgentCli, AgentCliStatus, CheckResult, CliSource};
 
 /// The audit target of channel changes (`claude_code.channel`).
@@ -518,6 +518,15 @@ impl App {
         );
     }
 
+    /// Whether the session of `task` holds a goal its person set in its terminal (`/goal …`)
+    /// that is still open (SPEC-468 CCF-001). Claude Code's goal lives in its process and a
+    /// prompt-mode resume types nothing of it, so a restart would lose it and nobody would be
+    /// told: such a session keeps its version until the goal is decided, or its next start. A
+    /// goal task's goal is Yulius's to type again.
+    pub(crate) fn keeps_own_goal(&self, task: &TaskRecord) -> bool {
+        task.mode == TaskMode::Prompt && self.goal_is_open(&task.id)
+    }
+
     /// An idle prompt-mode session whose turn just settled restarts on the Claude Code runs get
     /// now, with nothing typed (SPEC-461 CCM-013). A goal session is not restarted idle: its
     /// goal is typed again into a resumed session, which would start work nobody asked for; it
@@ -535,10 +544,12 @@ impl App {
             return;
         }
         let store = &self.deps.store;
-        let idle = |task: &crate::model::TaskRecord| {
+        // Idle, and with no goal of its person's that the restart would lose.
+        let idle = |task: &TaskRecord| {
             task.mode == TaskMode::Prompt
                 && task.status == TaskStatus::Running
                 && task.activity == Some(Activity::Waiting)
+                && !self.keeps_own_goal(task)
         };
         if !matches!(store.task(task_id).await, Ok(Some(task)) if idle(&task)) {
             return;

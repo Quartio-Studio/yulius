@@ -690,6 +690,168 @@ mod moves {
         Ok(())
     }
 
+    /// A prompt-mode session on 2.1.311 while runs get 2.1.322, whose turns end when `may_end`
+    /// exists and whose goal evaluator gives no verdict; with `code` changed in its worktree
+    /// and no spec, so the gate blocks its turn's end.
+    async fn session_with_own_goal(
+        data: &Path,
+        version: &Path,
+        may_end: &Path,
+        code: bool,
+    ) -> Result<Server, Box<dyn std::error::Error>> {
+        let options = FakeAgentOptions {
+            turn_hold_file: Some(may_end.to_path_buf()),
+            goal_verdict: Some("none"),
+            ..hooked()
+        };
+        let s = server(data, version, options, TaskMode::Prompt, "2.1.322").await?;
+        std::fs::write(version, "2.1.322\n")?;
+        if code {
+            change_code(&s).await?;
+        }
+        // Its person sets a goal of their own in the terminal; the goal's turn ends once
+        // Yulius read that the goal is set.
+        s.app
+            .send_input(&s.id, b"/goal keep the header blue\r")
+            .await?;
+        wait_for("the goal to be read", Duration::from_secs(60), || async {
+            s.app.goal_is_open(&s.id)
+        })
+        .await?;
+        Ok(s)
+    }
+
+    /// Code changed in the task's worktree, and no spec: the gate blocks the next turn's end.
+    async fn change_code(s: &Server) -> TestResult {
+        let task = s.app.deps.store.task(&s.id).await?.ok_or("the task")?;
+        let worktree = PathBuf::from(task.worktree_path.ok_or("a worktree")?);
+        std::fs::create_dir_all(worktree.join("src"))?;
+        std::fs::write(
+            worktree.join("src/lib.rs"),
+            "pub fn answer() -> u32 {\n    42\n}\n",
+        )?;
+        Ok(())
+    }
+
+    /// What became of a session that held its person's goal: its runs, how often its screen
+    /// says the goal was set, and whether the goal is still open.
+    async fn own_goal(s: &Server) -> (usize, usize, bool) {
+        let goals = screen(&s.app, &s.id).matches("GOAL SET").count();
+        (runs(s).await, goals, s.app.goal_is_open(&s.id))
+    }
+
+    /// SPEC-468 CCF-001 (review round 3, minor 1): a goal a person set in a prompt-mode session
+    /// lives in its process, and a prompt-mode resume types nothing. A turn that closes with
+    /// that goal open and no verdict leaves the task its person's turn: the session is not
+    /// restarted idle, or the goal would be gone and nobody told.
+    #[test]
+    fn a_persons_own_goal_keeps_an_idle_prompt_session_where_it_is() -> TestResult {
+        let (_dir, data) = data_dir()?;
+        let version = data.join("claude-version");
+        let may_end = data.join("turn-may-end");
+        let rt = runtime()?;
+        rt.block_on(async {
+            let s = session_with_own_goal(&data, &version, &may_end, false).await?;
+            let flag = decided(&s.id);
+            std::fs::write(&may_end, "")?;
+            until_decided(&flag).await?;
+            assert_eq!(
+                own_goal(&s).await,
+                (1, 1, true),
+                "{}",
+                screen(&s.app, &s.id)
+            );
+            settled(&s, Activity::Waiting).await?;
+            stop(&s.app, &s.id).await
+        })?;
+        rt.shutdown_timeout(Duration::from_secs(5));
+        Ok(())
+    }
+
+    /// SPEC-468 CCF-001: the same session at a Stop the gate blocks. A restart there would give
+    /// the resumed session the gate's reasons and no goal: the Stop is answered with the block
+    /// instead, and the session keeps its goal.
+    #[test]
+    fn a_persons_own_goal_keeps_the_session_at_a_stop_the_gate_blocks() -> TestResult {
+        let (_dir, data) = data_dir()?;
+        let version = data.join("claude-version");
+        let may_end = data.join("turn-may-end");
+        let rt = runtime()?;
+        rt.block_on(async {
+            let s = session_with_own_goal(&data, &version, &may_end, true).await?;
+            std::fs::write(&may_end, "")?;
+            // The Stop was answered: with the gate's block, or by a restart of the session.
+            wait_for("the Stop's answer", Duration::from_secs(60), || async {
+                screen(&s.app, &s.id).contains("STOP BLOCKED") || runs(&s).await > 1
+            })
+            .await?;
+            assert_eq!(
+                own_goal(&s).await,
+                (1, 1, true),
+                "{}",
+                screen(&s.app, &s.id)
+            );
+            assert!(
+                screen(&s.app, &s.id).contains("STOP BLOCKED"),
+                "the gate blocks as it would without a newer Claude Code"
+            );
+            stop(&s.app, &s.id).await
+        })?;
+        rt.shutdown_timeout(Duration::from_secs(5));
+        Ok(())
+    }
+
+    /// SPEC-468 CCF-002 (review round 3, minor 2; SPEC-461 CCM-013's "a gate's block"): a
+    /// session that works on after its turn because the gate blocks moves at that Stop, in the
+    /// same Claude session and subscription, and the restarted session is told the gate's
+    /// reasons; it is one switch decision, for Claude Code.
+    #[test]
+    fn a_session_the_gate_blocks_moves_at_that_stop_with_the_gates_reasons() -> TestResult {
+        let (_dir, data) = data_dir()?;
+        let version = data.join("claude-version");
+        let rt = runtime()?;
+        rt.block_on(async {
+            let s = server(&data, &version, hooked(), TaskMode::Prompt, "2.1.311").await?;
+            turn_that_stays(&s, "one").await?;
+            release(&s, &version, "2.1.322")?;
+            change_code(&s).await?;
+            turn(&s, "two").await?;
+            second_run_live(&s).await?;
+            let attempts = s.app.deps.store.attempts(&s.id).await?;
+            assert_eq!(attempts[1].launch_kind, LaunchKind::Resume);
+            assert_eq!(
+                attempts[0].provider_session_id, attempts[1].provider_session_id,
+                "the same Claude session"
+            );
+            assert_eq!(attempts[0].account_id, attempts[1].account_id);
+            // The restarted session is told why its turn could not end.
+            let launch =
+                std::fs::read_to_string(Path::new(&attempts[1].run_dir).join("fake-launch.txt"))?;
+            assert!(
+                launch.contains("prompt: Some(\"This task needs a spec"),
+                "{launch}"
+            );
+            wait_for("the switch to end", Duration::from_secs(60), || async {
+                let switches = s.app.deps.store.switches(&s.id).await;
+                switches.is_ok_and(|all| all.iter().all(|one| one.outcome != "started"))
+            })
+            .await?;
+            let switches = s.app.deps.store.switches(&s.id).await?;
+            let made: Vec<(&str, &str)> = switches
+                .iter()
+                .map(|one| (one.reason.as_str(), one.outcome.as_str()))
+                .collect();
+            assert_eq!(made, [("claude_code", "completed")]);
+            assert_eq!(
+                run_versions(&s.app, &s.id).await,
+                [Some("2.1.311".to_owned()), Some("2.1.322".to_owned())]
+            );
+            stop(&s.app, &s.id).await
+        })?;
+        rt.shutdown_timeout(Duration::from_secs(5));
+        Ok(())
+    }
+
     /// CCM-013 (review round 1, finding 3): a session that cannot continue on a version stops
     /// its task, and no other session is sent to that version: the card says so.
     #[test]
