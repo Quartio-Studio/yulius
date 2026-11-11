@@ -137,10 +137,11 @@ fn read_info(reader: OwnedFd) -> io::Result<u32> {
         .recv_timeout(INFO_TIMEOUT)
         .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "bwrap did not report"))?;
     info_child_pid(&text).ok_or_else(|| {
-        io::Error::other(format!(
-            "bwrap did not start its namespace ({})",
-            text.trim()
-        ))
+        let said = match text.trim() {
+            "" => String::new(),
+            said => format!(" ({said})"),
+        };
+        io::Error::other(format!("bwrap did not start its namespace{said}"))
     })
 }
 
@@ -337,5 +338,9 @@ mod tests {
             "{error}"
         );
         assert!(said.contains("option"), "the program's own words: {error}");
+        assert!(
+            !ours.contains("()"),
+            "nothing reported, nothing quoted: {error}"
+        );
     }
 }

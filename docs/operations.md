@@ -38,9 +38,8 @@ permissions and the session socket path budget (the data directory path must be 
 
 ## 2. Build and install
 
-Two commands on a fresh Ubuntu 24.04, Ubuntu 26.04 or Debian 12 or 13 host: install the binary,
-then run the host
-setup as root (SPEC-203, [ADR-0162](decisions/0162-one-host-setup-command-brings-and-keeps-docker-in-sandboxes.md)).
+Two commands on a fresh Ubuntu 24.04 or Ubuntu 26.04 (or Debian) host: install the binary, then
+run the host setup as root (SPEC-203, [ADR-0162](decisions/0162-one-host-setup-command-brings-and-keeps-docker-in-sandboxes.md)).
 
 ```sh
 cargo build --release -p yulius            # from a checkout; output: target/release/yulius
