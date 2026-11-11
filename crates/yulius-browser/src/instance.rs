@@ -97,9 +97,9 @@ const SECRET_PROBE_WORLD: &str = "yulius-secret-probe";
 /// open shadow roots and same-origin frames, objects and embeds, and the values and
 /// placeholders of fields drawn as text (`shown`), the values of password fields (`masked`),
 /// where typed text goes (`focus`: a password field and its value, a frame it cannot read,
-/// other), and how many frame documents at addresses of the page's own origin it read
-/// (`frames`); `over` past 4 000 000 characters. It takes nothing in: Yulius compares the typed
-/// values, which never reach the page. The marker comment names it for the fake.
+/// other), and how many frame documents at addresses of the page's own origin it read, PDFs
+/// apart (`frames`); `over` past 4 000 000 characters. It takes nothing in: Yulius compares the
+/// typed values, which never reach the page. The marker comment names it for the fake.
 const SECRET_PROBE_EXPRESSION: &str = "(() => {
   // yulius:secret-probe
   // Read through the prototypes: a page's named elements override a document's own properties.
@@ -110,6 +110,7 @@ const SECRET_PROBE_EXPRESSION: &str = "(() => {
   const inFragment = DocumentFragment.prototype.querySelectorAll;
   const textOf = getter(Node.prototype, 'textContent');
   const addressOf = getter(Document.prototype, 'URL');
+  const typeOf = getter(Document.prototype, 'contentType');
   const shown = [], masked = [];
   let size = 0, over = false, frames = 0;
   const add = (list, value) => {
@@ -135,9 +136,12 @@ const SECRET_PROBE_EXPRESSION: &str = "(() => {
       }
     }
   };
-  // A frame document at an address of the page's own origin, as the frame tree lists it.
+  // A frame document at an address of the page's own origin, as the frame tree lists it; not
+  // one that holds a PDF, which has no page text.
   const own = (doc) => {
-    try { return new URL(addressOf.call(doc)).origin === location.origin; } catch (_) { return false; }
+    try {
+      return typeOf.call(doc) !== 'application/pdf' && new URL(addressOf.call(doc)).origin === location.origin;
+    } catch (_) { return false; }
   };
   const text = (doc) => {
     const top = rootOf.call(doc);
@@ -585,6 +589,10 @@ fn origin_of(text: &str) -> Option<String> {
         .then(|| format!("{scheme}://{authority}").to_ascii_lowercase())
 }
 
+/// The address of Chrome's and Chromium's PDF viewer, a built-in extension: it shows a PDF in a
+/// frame of its own at the PDF's address.
+const PDF_VIEWER: &str = "chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai/";
+
 /// The document a tab's main frame shows, from `Page.getFrameTree`.
 struct Document {
     frame: String,
@@ -596,8 +604,9 @@ struct Document {
     /// the tree may list without their address or not at all, and its own host when the probe
     /// did not read every frame of its own origin ([`Document::add_unread_frames`]).
     framed: Vec<String>,
-    /// Its frames at addresses of its own origin. The frame tree says the origin of a frame's
-    /// address, sandboxed or not, so only the probe tells whether it read them.
+    /// Its frames at addresses of its own origin, those holding a PDF apart (no page text). The
+    /// frame tree says the origin of a frame's address, sandboxed or not, so only the probe tells
+    /// whether it read them.
     own_frames: usize,
     /// Ids of its frames, the main one included.
     frames: Vec<String>,
@@ -634,7 +643,9 @@ impl Document {
             }
             let child_origin = child.get("frame").and_then(origin);
             if child_origin.is_some() && child_origin == own_origin {
-                own_frames += 1;
+                let pdf = child.pointer("/frame/mimeType").and_then(Value::as_str)
+                    == Some("application/pdf");
+                own_frames += usize::from(!pdf);
             } else if let Some(child_host) = child.get("frame").and_then(host)
                 && !framed.contains(&child_host)
             {
@@ -660,7 +671,8 @@ impl Document {
     /// belong to the tab `tab`: `iframe` targets whose parent frame is one of its frames, nested
     /// ones too, and, failing closed, any whose parent is not said or is no target listed (a
     /// frame inside another out-of-process frame). Also on the page's own host: the probe reads
-    /// no frame in another process (Chrome runs a sandboxed frame in one).
+    /// no frame in another process (Chrome runs a sandboxed frame in one). Not the PDF viewer's
+    /// frames: a PDF is pixels, as an image is, with no page text.
     fn add_frame_targets(&mut self, tab: &TabId, targets: &Value) {
         let iframes: Vec<&Value> = targets
             .get("targetInfos")
@@ -684,6 +696,7 @@ impl Document {
             .unwrap_or_default();
         let mut ours: Vec<String> = self.frames.clone();
         ours.push(tab.as_str().to_owned());
+        let mut viewers: Vec<&str> = Vec::new();
         let mut taken = vec![false; iframes.len()];
         let mut grew = true;
         while grew {
@@ -702,10 +715,20 @@ impl Document {
                 }
                 taken[index] = true;
                 grew = true;
-                if let Some(id) = info.get("targetId").and_then(Value::as_str) {
+                let id = info.get("targetId").and_then(Value::as_str);
+                if let Some(id) = id {
                     ours.push(id.to_owned());
                 }
-                if let Some(host) = info.get("url").and_then(Value::as_str).and_then(host_of)
+                let url = info.get("url").and_then(Value::as_str).unwrap_or_default();
+                if url.starts_with(PDF_VIEWER) {
+                    viewers.extend(id);
+                    continue;
+                }
+                // The viewer's frame at the PDF's address.
+                if parent.is_some_and(|parent| viewers.contains(&parent)) {
+                    continue;
+                }
+                if let Some(host) = host_of(url)
                     && !self.framed.contains(&host)
                 {
                     self.framed.push(host);
