@@ -211,17 +211,24 @@ Confirmed against `dev` at dbec951d.
   - e2e: the email tests failed with no "Change the email of …" button; the sign-in toast test
     read "… is connected as agent@example.com"; "a field opened while the list is read again…"
     failed with the name field gone; the round-1 tests failed as its findings say.
-- **`scripts/dev ci` at 1bd025b0** (`dev` 4ed1234f merged in) exited 0: repository contracts,
-  152 script tests, check, fmt, clippy (Linux and macOS), nextest 3395 passed and 16 skipped,
-  doctests, deny, shear, doc.
-- **Whole e2e suite at 1bd025b0** (`cd e2e && npx e2e run`): 929 passed, 1 skipped, exit 0, at a
-  load average of 28. `subscription-names.e2e.ts` (11 tests) also passed 6 runs of 6 alone. The
-  run at 377e9336 had 916 passed and the one `cd.e2e.ts` failure of #1171.
+  - e2e, round 2 and the probe: after a name saved with Tab the keyboard was not on "Change the
+    email of Agent TEAM"; after the usage answer the pencil had lost the keyboard; at 360 px the
+    pencil was on a second line (that test fails again with the `max-width` taken out).
+- **`scripts/dev ci` at 4eeaedfc** (`dev` 4f90a309 merged in) exited 0: repository contracts,
+  152 script tests, check, fmt, clippy (Linux and macOS), nextest 3493 passed and 16 skipped,
+  doctests, deny, shear, doc. The head after it adds this record only.
+- **Whole e2e suite at 4eeaedfc** (`cd e2e && npx e2e run`): 935 passed, 1 skipped, exit 0, at a
+  load average of 30 to 50. The two subscription specs (37 tests) also passed 6 runs of 6 alone
+  (`target/e2e-subscriptions-repeat.log`). Earlier whole runs: 929 passed at 1bd025b0; 916 passed
+  at 377e9336 with the one `cd.e2e.ts` failure of #1171.
 - **`yulius security-scan --base origin/dev`**: "Security scan disabled" (Vidoc is switched off
   for this project in Yulius). Disabled, not passed: nothing was scanned.
 - **Seen in the browser** (the mock, `/admin/accounts`): a card renamed to "Agent TEAM" with
   "agent@example.com" typed under it reads those two lines, each with its pencil; "not an
   address" is refused under the field.
+- **#1174 on `dev`'s own assets** (`git archive origin/dev crates/yulius-server/web`, served as
+  they are, a Playwright script): a name emptied, then one click on Remove of the same card: the
+  refusal shows, Remove is 20 px lower and no dialog opens. The same on this branch.
 - **What could not be tested.**
   - No real Claude sign-in runs in this sandbox, so Claude's profile answer is a fake, as in
     SPEC-244. Whether Claude gives the email to a `setup-token` sign-in is known only from the
