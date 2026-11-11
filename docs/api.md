@@ -1350,7 +1350,7 @@ resolves to nothing, the run gets the server without that variable or token.
     <newest conversation>] --model claude-fable-5-2 --effort high [--dangerously-skip-permissions]`
     (SPEC-023; the bypass with `IS_SANDBOX=1` on a contained server, SPEC-208) in the sandbox
     repository, as the caller's sandbox identity, with the token of the pool's best subscription
-    for Opus and `CLAUDE_CONFIG_DIR=~/.claude`, otherwise a
+    (no per-model weekly cap binds the default model) and `CLAUDE_CONFIG_DIR=~/.claude`, otherwise a
     terminal's environment (Git as the caller); no Yulius lifecycle hooks, status line or briefing:
     its `--settings` hold only the `PostToolUse` redaction hook and `disabledMcpjsonServers`
     (SPEC-147, SPEC-095). It

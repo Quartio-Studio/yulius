@@ -170,7 +170,8 @@ watching, steering and unblocking.
   outlive server restarts. Yulius keeps that CLI current by itself: a new Claude Code release
   (npm's `stable` by default) reaches every new or resumed session within about an hour, with no
   one signing in again (SPEC-421). A task, Cockpit or Superagent that names no model or effort runs
-  Fable 5.2 at high effort (SPEC-023, SPEC-462); the composer and Settings choose another. Task intake splits mixed requests, holds scope changes and chains
+  Fable 5.2 at high effort (SPEC-023, SPEC-462); the composer and Settings choose another.
+  Task intake splits mixed requests, holds scope changes and chains
   dependent tasks, also by a logical rule such as "#12 done and #13 done", which the composer
   builds from picked conditions (a task, its state, all or any).
   A task that waits and has not started yet takes queued messages: each is added to its request,

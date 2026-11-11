@@ -4,7 +4,8 @@
 
 Superseded by [ADR-0289](0289-tasks-default-to-fable-5-2-at-max-effort.md) for the model
 (Fable 5.2); the effort is `high` again since
-[ADR-0295](0295-the-default-effort-is-high-again.md). The rest stands. Supersedes the `opus` alias of SPEC-011 HRN-012; specified in
+[ADR-0295](0295-the-default-effort-is-high-again.md). The rest stands. Supersedes the `opus`
+alias of SPEC-011 HRN-012; specified in
 [SPEC-023](../../.ai/specs/SPEC-023-make-sure-the-default-model-is-always-op.md).
 
 ## Context

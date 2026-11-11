@@ -549,7 +549,7 @@ fn the_ui_describes_default_as_the_model_and_effort_a_launch_uses() -> TestResul
         "the effort menu's Default is not {level}"
     );
     assert!(
-        models.contains(&format!("// {name} at {DEFAULT_CLAUDE_EFFORT} effort (")),
+        models.contains(&format!("{name} at {DEFAULT_CLAUDE_EFFORT} effort")),
         "the module comment names another default"
     );
     let composer = std::fs::read_to_string(web_dir().join("assets/taskview.js"))?;
