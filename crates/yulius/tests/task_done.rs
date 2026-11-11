@@ -1143,10 +1143,7 @@ fn a_goal_whose_stop_races_its_transcript_prompt_is_done() -> TestResult {
             activity(&app, &id).await == Some(Activity::Done)
         })
         .await?;
-        assert!(
-            raced.load(SeqCst),
-            "the Stop came while the watcher's prompt was past its check"
-        );
+        assert!(raced.load(SeqCst), "both points were reached");
         stop(&app, &id).await
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));

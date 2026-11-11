@@ -1,11 +1,11 @@
 ---
 yulius-task: d8beda05-6739-4c5a-9afd-7f58aeb205cf
-status: in-progress
+status: done
 ---
 
 # SPEC-453: A prompt read from the transcript never undoes its own turn's clean Stop
 
-Status: in-progress
+Status: done
 Date: 2026-11-11
 Owner: Yulius task #435
 Scope authorization: task #435, fixing #1066 ("Flaky a third time:
@@ -82,7 +82,7 @@ task reads Your turn, instead of staying Working for good with the agent idle.
 - [x] Fix: the transcript's prompt and the clean Stop take the turn order
 - [x] Proof on the original test: the forced race and the phase loop pass with the fix
 - [x] ADR, architecture, changes entry and the full gate
-- [ ] Independent review and its findings answered
+- [x] Independent review and its findings answered
 
 ## Acceptance criteria
 
@@ -108,7 +108,10 @@ the watcher has no entry of its own.
   With the fix the Stop waits for the turn order, the watcher's 2 s run out, the prompt starts its
   turn, the Stop opens its wait after it, and "met" settles Done. The test also checks that both
   points were reached, so it never passes without the race. Either order of arrival at the two
-  points gives the same result.
+  points gives the same result with the whole fix and with none of it. (When the watcher reaches
+  its point before the Stop arrives, a few ms of each second, the Stop already waits at
+  `hook_event`'s lock, so that run would not notice the lock around the Stop's stamp alone
+  missing.)
 - TPO-002: a prompt task that reads Your turn after an ordinary first turn gets a line typed
   whose prompt hook never reaches Yulius (the test layer answers it 503, and the hook client
   fails open). Its Stop is parked at
@@ -175,3 +178,18 @@ the watcher has no entry of its own.
   failed on four tests this change does not touch (`first_message` three times, `merge_train`
   once); they fail the same way on dev's code at `911e3127` and were fixed on dev by #1150.
 - `yulius security-scan`: "Security scan disabled" (Vidoc is turned off for the project), exit 0.
+- **Independent review** (a fresh read-only session, `om-code-review`) of `6298a351`: approve, no
+  blocker or major. It ran the full gate itself (3287 passed), each new test 12 times with all
+  24 at once (24 of 24 passed), and the three mutation checks in a copy, with the results above.
+  Its findings:
+  1. Own code, nit: the goal test's last assertion proves that both points were reached, not the
+     order of arrival, and with the watcher first the test would miss the stamp's lock alone
+     missing. Answered: the message now says so, and the test plan names the case.
+  2. Own code, nit: the prompt test proves nothing when the watcher applied the prompt before the
+     Stop read the task (it only errs toward passing; already in the test plan). No change asked.
+  3. Pre-existing, minor: `turn_interrupted` and `settle_unanswered_turn` stamp the last Stop
+     without the turn order (not in this diff; no failure reproduced). In Decisions and on #1066.
+  4. Pre-existing, nit: the watcher's prompt resets `turn_moved_ms`, the armed retry and the
+     achieved goal before its last-Stop check (unchanged lines). Noted on #1066.
+  The head delivered adds to the reviewed one only clean merges of dev, the reworded assertion
+  message and this spec; a second review covers it (in the pull request).
