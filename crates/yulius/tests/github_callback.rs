@@ -513,3 +513,49 @@ async fn the_adapter_asks_the_fake_github() -> TestResult {
     fake.shutdown().await;
     Ok(())
 }
+
+/// MVC-021: the question of `yulius instance migrate` reaches the running server's loopback
+/// listener, and its answer makes the plan's line with the App's own link.
+#[tokio::test]
+async fn the_move_s_question_is_answered_by_the_running_server() -> TestResult {
+    use yulius::instance::migrate::github::{asked_instance, line};
+    use yulius_contracts::update::HostOutcome;
+    let h = harness()?;
+    setup_superadmin_creds(&h).await?;
+    configure_github_app(&h).await?;
+    register(&h, &[CALLBACK]);
+    h.app.write_leftovers_key()?;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?.to_string();
+    let router = h.internal.clone();
+    tokio::spawn(async move { axum::serve(listener, router).await });
+
+    let data = h.app.config.data_dir.clone();
+    let (new, own) = tokio::task::spawn_blocking(move || {
+        (
+            asked_instance(&data, &address, Some("https://new.example")),
+            asked_instance(&data, &address, None),
+        )
+    })
+    .await?;
+    assert_eq!(own?.ok_or("no App")?.state, "registered");
+    let (outcome, detail) = line(new, "https://new.example");
+    assert_eq!(outcome, HostOutcome::Manual);
+    assert!(
+        detail.contains(
+            "open https://github.com/organizations/Quartio-Studio/settings/apps/yulius-test and \
+             add the callback URL https://new.example/api/auth/github/callback and set the \
+             homepage https://new.example"
+        ),
+        "{detail}"
+    );
+    assert_eq!(
+        h.github
+            .callback_asked
+            .lock()
+            .map(|a| a.clone())
+            .unwrap_or_default(),
+        ["https://new.example/api/auth/github/callback", CALLBACK]
+    );
+    Ok(())
+}
