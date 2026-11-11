@@ -602,7 +602,8 @@ impl Document {
                 .find_map(|field| frame.get(*field).and_then(Value::as_str).and_then(host_of))
         };
         // A frame of another origin (another host, port or scheme) is one the probe cannot read,
-        // and so is one whose own origin is opaque (sandboxed), whatever its address.
+        // and so is one whose own origin is opaque (sandboxed), whatever its address and whatever
+        // the page's own origin: two opaque origins are never the same one.
         let origin = |frame: &Value| match frame.get("securityOrigin").and_then(Value::as_str) {
             Some(own) => origin_of(own),
             None => frame.get("url").and_then(Value::as_str).and_then(origin_of),
@@ -620,8 +621,9 @@ impl Document {
             if let Some(id) = child.pointer("/frame/id").and_then(Value::as_str) {
                 frames.push(id.to_owned());
             }
+            let child_origin = child.get("frame").and_then(origin);
             if let Some(child_host) = child.get("frame").and_then(host)
-                && child.get("frame").and_then(origin) != own_origin
+                && (child_origin.is_none() || child_origin != own_origin)
                 && !framed.contains(&child_host)
             {
                 framed.push(child_host);
