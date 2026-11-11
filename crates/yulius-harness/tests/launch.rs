@@ -251,12 +251,12 @@ fn claude_resume_uncontained_never_skips_permissions() -> TestResult {
             "--mcp-config",
             "/data/runs/a1/mcp.json",
             "--strict-mcp-config",
-            // No model or effort named: Fable 5.2 at max effort, pinned so neither drifts with
+            // No model or effort named: Fable 5.2 at high effort, pinned so neither drifts with
             // Claude Code's aliases or a subscription's defaults (task #21).
             "--model",
             "claude-fable-5-2",
             "--effort",
-            "max",
+            "high",
             "--",
             "--continue after the limit",
         ]
@@ -468,7 +468,7 @@ fn planned_file_write_is_private_and_replaces_atomically() -> TestResult {
 }
 
 #[test]
-fn a_named_model_without_effort_runs_at_max_effort_unless_it_takes_none() -> TestResult {
+fn a_named_model_without_effort_runs_at_high_effort_unless_it_takes_none() -> TestResult {
     let mut request = claude_request(
         LaunchMode::New {
             session_id: None,
@@ -484,7 +484,7 @@ fn a_named_model_without_effort_runs_at_max_effort_unless_it_takes_none() -> Tes
         at("--effort")
             .and_then(|i| argv.get(i + 1))
             .map(String::as_str),
-        Some("max"),
+        Some("high"),
         "{argv:?}"
     );
     // Haiku takes no effort level, so none is sent.
@@ -493,17 +493,20 @@ fn a_named_model_without_effort_runs_at_max_effort_unless_it_takes_none() -> Tes
     assert!(!argv.iter().any(|a| a == "--effort"), "{argv:?}");
     // An effort the task chose is kept.
     request.model = None;
-    request.effort = Some("low".into());
-    let argv = plan_launch(&request)?.argv;
-    assert!(
-        argv.windows(2).any(|w| w == ["--effort", "low"]),
-        "{argv:?}"
-    );
-    assert!(
-        argv.windows(2)
-            .any(|w| w == ["--model", "claude-fable-5-2"]),
-        "{argv:?}"
-    );
+    for chosen in ["max", "low"] {
+        request.effort = Some(chosen.into());
+        let argv = plan_launch(&request)?.argv;
+        assert!(
+            argv.windows(2).any(|w| w == ["--effort", chosen]),
+            "{argv:?}"
+        );
+        assert_eq!(argv.iter().filter(|a| *a == "--effort").count(), 1);
+        assert!(
+            argv.windows(2)
+                .any(|w| w == ["--model", "claude-fable-5-2"]),
+            "{argv:?}"
+        );
+    }
     Ok(())
 }
 
@@ -524,11 +527,11 @@ fn a_cockpit_is_plain_claude_code_with_the_token_only_in_its_environment() -> Te
     };
     let plan = plan_cockpit(&request)?;
     // No Yulius settings (hooks, status line), MCP or prompt (SPEC-021 CKP-002), and uncontained
-    // no approval bypass (SPEC-208 BYP-004): on the default Fable 5.2 at max effort (SPEC-023
+    // no approval bypass (SPEC-208 BYP-004): on the default Fable 5.2 at high effort (SPEC-023
     // DEF-004); `/model` and `/effort` still change it.
     assert_eq!(
         plan.argv,
-        ["claude", "--model", "claude-fable-5-2", "--effort", "max"]
+        ["claude", "--model", "claude-fable-5-2", "--effort", "high"]
     );
     assert_eq!(plan.cwd, PathBuf::from("/data/sandboxes/s1/repo"));
     assert!(plan.files.is_empty());
@@ -572,7 +575,7 @@ fn a_cockpit_is_plain_claude_code_with_the_token_only_in_its_environment() -> Te
             "--model",
             "claude-fable-5-2",
             "--effort",
-            "max"
+            "high"
         ]
     );
     assert_eq!(resumed.session_id.as_deref(), Some(SESSION));
@@ -654,7 +657,7 @@ fn a_contained_cockpit_bypasses_approvals_as_root_of_its_sandbox() -> TestResult
             "--model",
             "claude-fable-5-2",
             "--effort",
-            "max",
+            "high",
             "--dangerously-skip-permissions"
         ]
     );
@@ -710,7 +713,7 @@ fn a_cockpit_reaches_the_yulius_tools_with_its_token_only_in_its_environment() -
             "--model",
             "claude-fable-5-2",
             "--effort",
-            "max"
+            "high"
         ]
     );
     assert!(plan.files.is_empty());
@@ -787,7 +790,7 @@ fn a_cockpit_rejects_the_repository_mcp_servers_instead_of_asking() -> TestResul
     );
     assert_eq!(
         &plan.argv[at + 2..],
-        ["--model", "claude-fable-5-2", "--effort", "max"]
+        ["--model", "claude-fable-5-2", "--effort", "high"]
     );
     assert!(!plan.argv.iter().any(|a| a == "--strict-mcp-config"));
     Ok(())
