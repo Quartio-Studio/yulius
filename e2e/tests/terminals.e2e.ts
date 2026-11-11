@@ -253,6 +253,24 @@ test('a tool chosen for a sandbox left while its page loads does not open in ano
   await expect(shell).toHaveAttribute('aria-pressed', 'false');
 });
 
+// Review of SPEC-450 SSC-007: the wait is for the sandbox, not for the page: another page of
+// that sandbox starting to load keeps the tool chosen.
+test('a tool chosen while its sandbox’s page loads opens beside the page shown in the end', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12', studioTasks));
+  await studioLoading(screen);
+  const shell = await chooseShell(screen);
+  await expect(shell).toHaveAttribute('aria-pressed', 'true');
+  await browser.evaluate(() => { window.location.hash = '#/s/studio/t/11'; });
+  await expect(browser).toHaveURL(/#\/s\/studio\/t\/11$/);
+  await expect(shell).toHaveAttribute('aria-pressed', 'true');
+  await expect(screen.getByRole('region', 'Tool panel')).toBeHidden();
+
+  await releaseHeld(browser);
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#11 3D model viewer');
+  await expect(shownInput(browser)).toBeFocused();
+  await expect(shell).toHaveAttribute('aria-pressed', 'true');
+});
+
 // Review of SPEC-450 SSC-007: with the pages of two sandboxes loading, the tool waits for the one
 // whose page started loading last, and another sandbox's page starting to load ends its wait.
 test('a tool waits for the sandbox whose page started loading last', async ({ app, browser, screen }) => {
