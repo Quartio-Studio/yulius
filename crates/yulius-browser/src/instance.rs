@@ -95,9 +95,10 @@ const SECRET_PROBE_WORLD: &str = "yulius-secret-probe";
 
 /// Reads what a page can show (SPEC-450 SSC-003): the text of its documents (all but `head`),
 /// open shadow roots and same-origin frames, objects and embeds, and the values and
-/// placeholders of fields drawn as text (`shown`), the values of password fields (`masked`), and
+/// placeholders of fields drawn as text (`shown`), the values of password fields (`masked`),
 /// where typed text goes (`focus`: a password field and its value, a frame it cannot read,
-/// other); `over` past 4 000 000 characters. It takes nothing in: Yulius compares the typed
+/// other), and how many frame documents at addresses of the page's own origin it read
+/// (`frames`); `over` past 4 000 000 characters. It takes nothing in: Yulius compares the typed
 /// values, which never reach the page. The marker comment names it for the fake.
 const SECRET_PROBE_EXPRESSION: &str = "(() => {
   // yulius:secret-probe
@@ -108,8 +109,9 @@ const SECRET_PROBE_EXPRESSION: &str = "(() => {
   const inDocument = Document.prototype.querySelectorAll;
   const inFragment = DocumentFragment.prototype.querySelectorAll;
   const textOf = getter(Node.prototype, 'textContent');
+  const addressOf = getter(Document.prototype, 'URL');
   const shown = [], masked = [];
-  let size = 0, over = false;
+  let size = 0, over = false, frames = 0;
   const add = (list, value) => {
     const text = value == null ? '' : String(value);
     if (!text) return;
@@ -129,9 +131,13 @@ const SECRET_PROBE_EXPRESSION: &str = "(() => {
       if (name === 'iframe' || name === 'frame' || name === 'object' || name === 'embed') {
         let doc = null;
         try { doc = el.contentDocument || (el.getSVGDocument ? el.getSVGDocument() : null); } catch (_) {}
-        if (doc) { text(doc); walk(doc); }
+        if (doc) { if (own(doc)) frames += 1; text(doc); walk(doc); }
       }
     }
+  };
+  // A frame document at an address of the page's own origin, as the frame tree lists it.
+  const own = (doc) => {
+    try { return new URL(addressOf.call(doc)).origin === location.origin; } catch (_) { return false; }
   };
   const text = (doc) => {
     const top = rootOf.call(doc);
@@ -158,7 +164,7 @@ const SECRET_PROBE_EXPRESSION: &str = "(() => {
   };
   text(document);
   walk(document);
-  return { shown, masked, over, focus: focus() };
+  return { shown, masked, over, focus: focus(), frames };
 })()";
 
 const TEXT_FALLBACK_EXPRESSION: &str =
@@ -585,10 +591,14 @@ struct Document {
     loader: String,
     /// Its host; `None` for an opaque origin.
     host: Option<String>,
-    /// Hosts of its frames on other hosts, which the probe cannot read: from the frame tree,
-    /// and from the `iframe` targets of out-of-process frames ([`Document::add_frame_targets`]),
-    /// which the tree may list without their address or not at all.
+    /// Hosts of its frames the probe cannot read: those of another origin in the frame tree,
+    /// the `iframe` targets of out-of-process frames ([`Document::add_frame_targets`]), which
+    /// the tree may list without their address or not at all, and its own host when the probe
+    /// did not read every frame of its own origin ([`Document::add_unread_frames`]).
     framed: Vec<String>,
+    /// Its frames at addresses of its own origin. The frame tree says the origin of a frame's
+    /// address, sandboxed or not, so only the probe tells whether it read them.
+    own_frames: usize,
     /// Ids of its frames, the main one included.
     frames: Vec<String>,
 }
@@ -602,8 +612,8 @@ impl Document {
                 .find_map(|field| frame.get(*field).and_then(Value::as_str).and_then(host_of))
         };
         // A frame of another origin (another host, port or scheme) is one the probe cannot read,
-        // and so is one whose own origin is opaque (sandboxed), whatever its address and whatever
-        // the page's own origin: two opaque origins are never the same one.
+        // and so is one the tree calls opaque (sandboxed), whatever its address and whatever the
+        // page's own origin: two opaque origins are never the same one.
         let origin = |frame: &Value| match frame.get("securityOrigin").and_then(Value::as_str) {
             Some(own) => origin_of(own),
             None => frame.get("url").and_then(Value::as_str).and_then(origin_of),
@@ -611,6 +621,7 @@ impl Document {
         let own = host(main);
         let own_origin = origin(main);
         let mut framed = Vec::new();
+        let mut own_frames = 0;
         let mut frames = Vec::new();
         let mut stack: Vec<&Value> = tree
             .pointer("/frameTree/childFrames")
@@ -622,8 +633,9 @@ impl Document {
                 frames.push(id.to_owned());
             }
             let child_origin = child.get("frame").and_then(origin);
-            if let Some(child_host) = child.get("frame").and_then(host)
-                && (child_origin.is_none() || child_origin != own_origin)
+            if child_origin.is_some() && child_origin == own_origin {
+                own_frames += 1;
+            } else if let Some(child_host) = child.get("frame").and_then(host)
                 && !framed.contains(&child_host)
             {
                 framed.push(child_host);
@@ -639,6 +651,7 @@ impl Document {
             loader: main.get("loaderId")?.as_str()?.to_owned(),
             host: own,
             framed,
+            own_frames,
             frames,
         })
     }
@@ -646,7 +659,8 @@ impl Document {
     /// Adds the hosts of the out-of-process frames among `targets` (`Target.getTargets`) that
     /// belong to the tab `tab`: `iframe` targets whose parent frame is one of its frames, nested
     /// ones too, and, failing closed, any whose parent is not said or is no target listed (a
-    /// frame inside another out-of-process frame).
+    /// frame inside another out-of-process frame). Also on the page's own host: the probe reads
+    /// no frame in another process (Chrome runs a sandboxed frame in one).
     fn add_frame_targets(&mut self, tab: &TabId, targets: &Value) {
         let iframes: Vec<&Value> = targets
             .get("targetInfos")
@@ -692,12 +706,22 @@ impl Document {
                     ours.push(id.to_owned());
                 }
                 if let Some(host) = info.get("url").and_then(Value::as_str).and_then(host_of)
-                    && Some(&host) != self.host.as_ref()
                     && !self.framed.contains(&host)
                 {
                     self.framed.push(host);
                 }
             }
+        }
+    }
+
+    /// Adds the page's own host when `page`'s probe read fewer frames of the page's origin than
+    /// the frame tree lists: one of them is out of its reach (sandboxed, or the page is).
+    fn add_unread_frames(&mut self, page: &PageText) {
+        if page.frames < self.own_frames
+            && let Some(host) = &self.host
+            && !self.framed.contains(host)
+        {
+            self.framed.push(host.clone());
         }
     }
 }
@@ -814,6 +838,8 @@ struct PageText {
     focused_password: Option<Zeroizing<String>>,
     /// The focused element is a frame the probe cannot read.
     focused_frame: bool,
+    /// The frame documents at addresses of the page's own origin it read; none when not said.
+    frames: usize,
 }
 
 impl PageText {
@@ -838,11 +864,16 @@ impl PageText {
             .and_then(|focus| focus.get("kind"))
             .and_then(Value::as_str)
             == Some("frame");
+        let frames = value
+            .get("frames")
+            .and_then(Value::as_u64)
+            .map_or(0, |frames| usize::try_from(frames).unwrap_or(usize::MAX));
         Some(Self {
             shown: strings("shown")?,
             masked: strings("masked")?,
             focused_password,
             focused_frame,
+            frames,
         })
     }
 
@@ -2779,6 +2810,9 @@ impl BrowserInstance {
             Some(document) => self.read_page(session, &document.frame).await,
             None => None,
         };
+        if let (Some(document), Some(page)) = (document.as_mut(), page.as_ref()) {
+            document.add_unread_frames(page);
+        }
         // Searched outside the memory's lock: a page holds up to 4 000 000 characters.
         let shows_vault = page
             .as_ref()
