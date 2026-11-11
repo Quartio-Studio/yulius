@@ -46,6 +46,10 @@ whatever woke it. "Send the task a message…" is shown only while nothing goes 
   second and Claude Code closed the turn without a new notice. Model output does.
 - Why the tests missed it: SPEC-333's tests end when the task reads Needs you. None lets the
   session go on afterwards without a typed prompt.
+- What the stale request also held back: while a request is open Yulius types nothing into the
+  task, because a person must act first. The working session heard nothing of its pull request (a
+  red run, a conflict, the merge; `pr_watch.rs`), was not woken after an outage (`outage.rs`) and
+  got no reconnect nudge for a lost MCP bridge (`mcp_watch.rs`).
 - What else the cause could break: the other requests Yulius opens itself. "No subscription
   left" already ends when the task runs again (SPEC-447 MOV-006, `end_no_subscription_request`).
   The host move's "Continue this task" is on a stopped task, which only a person continues, and
@@ -60,20 +64,28 @@ whatever woke it. "Send the task a message…" is shown only while nothing goes 
 
 - GPW-001: the request Yulius opened for a goal Claude Code stopped retrying ends once the
   session's agent works after the pause: an assistant record of the session that is the model's
-  own (not an API error, not a line Claude Code writes itself, not a sub-agent's). It does not
-  matter what started that work: Claude Code's own wake-up, a prompt Yulius typed, or a session
-  Yulius restarted. The task then reads Working like any working task, and `task.needs_you.resolved`
-  is audited for `system`.
+  own, a line of its work or its answer (not an API error, not a line Claude Code writes itself,
+  not a sub-agent's). It does not matter what started that work: Claude Code's own wake-up, a
+  prompt Yulius typed, a session Yulius restarted, or no prompt anyone sees. The task then reads
+  Working like any working task, also when no prompt was seen to start the turn (the pause's flag
+  is answered by work, as a notice's is, STA-003), and `task.needs_you.resolved` is audited for
+  `system`.
 - GPW-002: a turn that starts after the pause and brings no work (the API refuses again, with or
   without a new notice) leaves the request open.
 - GPW-003: every other open request stays: the agent's own, "no subscription left", the host
-  move's.
+  move's. The request is ended by its action in one store statement, so a request made between a
+  read and the write is never the one ended. A task that already read Needs you when the pause
+  came keeps that flag through the agent's work.
 - GPW-004: the same across a restart of Yulius. A session still paused keeps its request, and
-  work that comes later ends it. Work the session did while Yulius was down ends it when the
-  transcript is read again, and a task that still read Needs you from the pause follows its
-  session (Working while the turn is open, settled once it closed).
-- GPW-005: the fake agent replays a session woken after its goal pause, when the test says so:
-  a turn that works, and one that dies on the API error again.
+  work that comes later ends it, also for a request an older Yulius left open. Work the session
+  did while Yulius was down ends it when the transcript is read again, and a task that reads
+  Needs you since before that work follows its session (Working while the turn is open, settled
+  once it closed). A flag raised after that work began stays.
+- GPW-005: the fake agent replays a session that goes on after its goal pause, when the test says
+  so: a woken turn that works, one that dies on the API error again, and one with no visible
+  prompt.
+- GPW-006: a store failure while the request is ended loses nothing: it is tried again at the
+  agent's next work.
 
 ## Plan
 
@@ -98,11 +110,13 @@ whatever woke it. "Send the task a message…" is shown only while nothing goes 
   after `GOAL PAUSED`, as Claude Code wakes an idle session when background work ends (the
   `<task-notification>` prompt and its hook, a tool call, `WOKEN`; the turn ends once
   `--turn-hold-file` exists). With `--paused-wake-dies` the woken turn gets the API error again
-  and closes with no work and no notice (`WAKE DIED`). CLI tests cover both.
+  and closes with no work and no notice (`WAKE DIED`). With `--paused-wake-hidden` the session
+  goes on with a hidden `isMeta` prompt and no prompt hook. CLI tests cover the three.
 - Integration tests in `crates/yulius/tests/task_done.rs`, each from spent retries (Needs you,
   with the request):
   - Claude Code wakes the session and it works: the request is gone and the task reads Working
-    while the turn runs, then waits with no request.
+    while the turn runs, then waits with no request; the end is audited.
+  - The session goes on with no visible prompt: the request is gone and the task reads Working.
   - Yulius restarts the session (`switch_task_now`) and the API works again in the resumed one:
     the request stays until the resumed session's first answer, and is gone after it.
   - The woken turn dies again: the request stays, with Claude Code's words.
@@ -111,8 +125,15 @@ whatever woke it. "Send the task a message…" is shown only while nothing goes 
   - Yulius restarts while the session is paused, then Claude Code wakes it: the request ends.
   - Claude Code wakes the session while Yulius is down: after the start the request is gone and
     the task reads Working, then settles when the turn ends.
-- Unit tests (`finish`): the transcript's fold says whether the agent worked after the last goal
-  pause (a prompt alone, a sub-agent's answer and a pause after the work do not count).
+- Unit tests:
+  - `finish`: the transcript's fold says when the agent first worked after the last goal pause
+    (a prompt alone, a sub-agent's answer, work without a time and work before the pause do not
+    count; the session's answer ends the pause's last word); only a flag older than that work is
+    lifted.
+  - `yulius-store`: a request ends by its action only while it is the open one, its wait is
+    measured as answered, and a row that is not JSON is left alone.
+- Mutation checks: each part of the fix is removed in turn and the integration tests are run
+  (`target/t453/mutate.py`); each mutation must fail a test.
 
 ## Decisions
 
@@ -120,5 +141,11 @@ whatever woke it. "Send the task a message…" is shown only while nothing goes 
   would hide what the person still has to do (GPW-002).
 - Only the request Yulius opened for the pause ends this way; it is told by its action text, as
   "no subscription left" is (SPEC-447).
+- The task follows its session after a restart only when it reads Needs you since before the
+  agent's work: the pause raised that flag, or the wake-up would have lifted it anyway (a prompt
+  lifts any flag). A flag raised after the work began was raised by something the session did
+  later, and no prompt is known to have followed it.
+- A session Yulius restarts keeps the request until it answers: the restart alone does not show
+  that the API works again. Task #449's move past a usage limit is a separate, earlier exit.
 - [ADR-0304](../../docs/decisions/0304-a-request-yulius-opens-for-a-goal-pause-ends-when-the-agent-works-again.md):
   a request Yulius opens for a state ends when that state does.

@@ -6,6 +6,15 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-11
 
+- A task whose session works again after a goal pause leaves Needs you by itself (SPEC-469, task
+  #453, fixes #1183, ADR-0304). When Claude Code stops retrying a goal ("Goal paused · the request
+  was rate limited", "Goal paused after 3 automatic retries"), Yulius asks a person to send the
+  task a message. That request ended only when a person typed, so a session that Claude Code
+  woke, or that Yulius restarted, kept "Needs you: Send the task a message…" while its agent
+  worked (task #154 of another project: 33 minutes into its turn). It now ends at the agent's
+  first work after the pause, whatever woke the session, and the task reads Working. A woken turn
+  the API refuses again keeps the request, and a request the agent made itself stays. Tasks an
+  older Yulius left in that state lose the request at the first start with this change.
 - A restart of the server keeps its sessions on systemd 258 and later (SPEC-458, task #440,
   ADR-0298). On Ubuntu 26.04 (systemd 259) `yulius.service` could be stopped but not started
   again while one session ran, so a restart or an update took the instance down until every
