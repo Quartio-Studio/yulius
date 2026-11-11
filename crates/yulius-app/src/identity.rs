@@ -851,10 +851,10 @@ mod tests {
         Ok(exe)
     }
 
-    /// SPEC-195 VSC-001: the agent's `yulius` offers `wait` and `security-scan`, passing their
-    /// arguments through, and nothing else.
+    /// SPEC-195 VSC-001, SPEC-451 WRP-001: the agent's `yulius` offers `wait`, `tool`,
+    /// `security-scan` and `remove`, passing their arguments through, and nothing else.
     #[test]
-    fn the_agent_yulius_shim_offers_wait_and_the_security_scan() -> TestResult {
+    fn the_agent_yulius_shim_offers_the_session_commands() -> TestResult {
         let exe = fake_exe(r#"echo "ran $*"; exit 3"#)?;
         let dir = unique_dir("yulius-agent-shim");
         std::fs::create_dir_all(&dir)?;
@@ -880,9 +880,21 @@ mod tests {
             run(&["security-scan", "--all", "--report", "r.json"])?,
             (3, "ran security-scan --all --report r.json\n".into())
         );
+        assert_eq!(
+            run(&["tool", "steps_get", "{}"])?,
+            (3, "ran tool steps_get {}\n".into())
+        );
+        assert_eq!(run(&["remove", "a", "b"])?, (3, "ran remove a b\n".into()));
         let (code, text) = run(&["serve"])?;
         assert_eq!(code, 2);
-        assert!(text.contains("yulius security-scan"), "{text}");
+        for usage in [
+            "yulius wait [--minutes N]",
+            "yulius tool <name> [<json>]",
+            "yulius security-scan [--all]",
+            "yulius remove <paths>",
+        ] {
+            assert!(text.contains(usage), "{text}");
+        }
         let _ = std::fs::remove_dir_all(&dir);
         Ok(())
     }
