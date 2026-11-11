@@ -86,7 +86,9 @@ fn profiles_in(text: &str) -> Vec<(String, Profile)> {
         .map(|header| {
             let name = header.split(' ').next().unwrap_or_default().to_owned();
             let profile = Profile {
-                bwrap: header.contains(" /usr/bin/bwrap "),
+                bwrap: [" /usr/bin/bwrap ", " @{bin}/bwrap "]
+                    .iter()
+                    .any(|path| header.contains(path)),
                 unconfined: header.contains("flags=(unconfined)"),
                 userns: ["  userns,\n", "  allow userns,\n", "{ userns, }"]
                     .iter()

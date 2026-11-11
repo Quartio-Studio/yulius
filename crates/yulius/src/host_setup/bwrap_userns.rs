@@ -124,17 +124,19 @@ fn skipped(name: &str) -> bool {
 const BWRAP: &str = "/usr/bin/bwrap";
 /// Stands for the values a variable gets in a file this one includes: no path.
 const UNKNOWN: &str = "\0";
-/// A file past these is not read: the bytes its variables and alternations may come to, and
-/// how deep one may stand in another.
+/// A file past these is not read (it is no profile a person wrote): the bytes its variables
+/// and alternations may come to in all, and how many may stand one in another.
 const MOST_TEXT: usize = 4 * 1024 * 1024;
 const DEEPEST: usize = 64;
 
 /// Whether a profile in `text` attaches to `/usr/bin/bwrap`: a header at the top level
-/// (`profile name /path flags=(…) {`, or `/path {`) whose path, read as AppArmor reads it, is
-/// bwrap's. The header's brace may open the profile on the same line, before a comment or on
-/// the next line (with its `flags = (…)`); the path may use variables the file sets and
-/// alternations (`@{bin}={/usr,}/bin`, `@{bin}/bwrap`). A rule that only names bwrap
-/// (`/usr/bin/bwrap mr,`), a header's attributes and a profile inside another one are none.
+/// (`profile name /path flags=(…) {`, or `/path {`) whose path, read as `apparmor_parser`
+/// 5.0 reads it, is bwrap's. The header's brace may open the profile on the same line, before
+/// a comment or on the next line (with its `flags = (…)`); the path may use variables the
+/// file sets and alternations (`@{bin}={/usr,}/bin`, `@{bin}/bwrap`). A rule that only names
+/// bwrap (`/usr/bin/bwrap mr,`), a header's attributes and a profile inside another one are
+/// none. Not read, so such a profile is not seen (SPEC-456, Decisions): a glob (`*`, `?`,
+/// `[…]`), an `alias`, and a variable set in an included file other than `@{bin}`.
 fn attaches_bwrap(text: &str) -> bool {
     // Blocks open, and the words since the last rule or block at the top level.
     let mut depth = 0_usize;
@@ -299,8 +301,8 @@ impl Variables<'_> {
 
     /// Whether a top-level header gives bwrap as its profile's program: its attachment where
     /// it has one (`profile name /path`, `/name /path`), else its name (`profile /path`,
-    /// `/path`). In a layout not known here any word may be the program: a person's profile
-    /// is rather seen than missed.
+    /// `/path`). A person's profile is rather seen than missed: one in a policy namespace
+    /// (`:ns:name /path`) counts, and in a layout not known here any word may be the program.
     fn header_attaches(&self, header: &[&str]) -> bool {
         let named = (0..header.len())
             .find(|&at| attribute(header[at], header.get(at + 1).copied()))
@@ -355,13 +357,14 @@ impl Variables<'_> {
                     }
                 })
                 .collect();
+            let size: usize = trimmed.iter().map(|value| value.len() + 1).sum();
+            if !self.spend(size + after.len()) {
+                return None;
+            }
             let put = match trimmed.as_slice() {
                 [one] => (*one).to_owned(),
                 many => format!("{{{}}}", many.join(",")),
             };
-            if !self.spend(put.len() + after.len()) {
-                return None;
-            }
             done.push_str(before);
             text = format!("{put}{after}");
         }
@@ -377,9 +380,11 @@ impl Variables<'_> {
             return None;
         }
         let var = self.vars.get(name);
-        let mut raw: Vec<String> = var.map_or_else(Vec::new, |var| {
-            var.values.iter().map(|value| (*value).to_owned()).collect()
-        });
+        let own = var.map_or(&[][..], |var| &var.values[..]);
+        if !self.spend(own.iter().map(|value| value.len() + 1).sum()) {
+            return None;
+        }
+        let mut raw: Vec<String> = own.iter().map(|value| (*value).to_owned()).collect();
         if !var.is_some_and(|var| var.declared) {
             raw.push(if name == "bin" { "/usr/bin" } else { UNKNOWN }.to_owned());
         }
@@ -402,8 +407,8 @@ impl Variables<'_> {
     }
 
     /// Whether `pattern` spells `path`, each of its alternations (`{a,b}`, also one inside
-    /// another: `deep`) tried in turn. A `*`, `?` or `[` stands for itself: a profile
-    /// attached by a glob is not taken for bwrap's (SPEC-456, Decisions).
+    /// another) tried in turn; `deep` counts those already opened. A `*`, `?` or `[` stands
+    /// for itself: a glob is not read.
     fn spells(&self, pattern: &str, path: &str, deep: usize) -> bool {
         let mut depth = 0_usize;
         let (mut open, mut start) = (0, 0);
@@ -592,10 +597,12 @@ impl Run<'_> {
             };
         }
         if self.mode != Mode::Setup {
-            // Setup's steps alone do not let bwrap in past a kernel limit.
+            // Setup's steps alone do not let bwrap in past a kernel limit, proven or not.
             let limits: String = match first {
-                Proof::Fails(_) => self.limits().iter().map(|l| format!("; {l}")).collect(),
-                Proof::Works | Proof::NotRun(_) => String::new(),
+                Proof::Works => String::new(),
+                Proof::Fails(_) | Proof::NotRun(_) => {
+                    self.limits().iter().map(|l| format!("; {l}")).collect()
+                }
             };
             let steps = plan.steps(false);
             if self.mode == Mode::DryRun {
@@ -875,6 +882,7 @@ mod tests {
             "  profile bwrap \"/usr/bin/bwrap\" {",
             "/usr/bin/bwrap {",
             "profile b /{usr/,}bin/bwrap flags=(attach_disconnected) {",
+            // `@{bin}` as a file the profile includes sets it (the apparmor.d project's).
             "profile b @{bin}/bwrap {",
         ] {
             assert!(attaches_bwrap(&format!(
@@ -912,6 +920,7 @@ mod tests {
             "@{prog}=/usr/bin/x\n@{prog}+=/usr/bin/bwrap\nprofile b @{prog} {\n}\n",
             "profile bwrap /usr/bin/bwrap\nflags = (unconfined) {\n  userns,\n}\n",
             "profile bwrap /usr/bin/bwrap flags = (attach_disconnected, unconfined) {\n}\n",
+            // AppArmor refuses a header that starts with a variable: read all the same.
             "@{bin}/bwrap flags=(unconfined) {\n  userns,\n}\n",
             "@prog = /usr/bin/bwrap\nprofile b @{prog} {\n  userns,\n}\n",
             "@{dir} = /usr/bin\nprofile b @{dir}/bwrap {\n}\n",
@@ -943,6 +952,7 @@ mod tests {
             "@{exec_path} = @{bin}/bwrap\nprofile fbwrap flags=(attach_disconnected) {\n  \
              @{exec_path} mr,\n}\n",
             "@{bin} = /opt/bin\nprofile x @{bin}/bwrap {\n}\n",
+            // AppArmor refuses a variable that names itself: no profile.
             "@{a} = @{a}/bwrap\nprofile x @{a} {\n}\n",
             "profile x /usr/bin/x xattrs = (user.t = /usr/bin/bwrap ) {\n}\n",
         ] {
@@ -958,6 +968,7 @@ mod tests {
             // Ubuntu 26.04's own spelling (its `hostname` profile).
             "@{bin}={/usr,}/bin\nprofile b @{bin}/bwrap {\n  userns,\n}\n",
             "@{bin}={/usr,}/bin\n@{exec}={bwrap,x}\nprofile b @{bin}/@{exec} {\n}\n",
+            "@{bin}=/{,usr/}{,s}bin\nprofile b @{bin}/bwrap {\n}\n",
             // Added to what an included file sets: that file's values are not seen here.
             "include <tunables/global>\n@{bin} += /usr/local/bin\nprofile b @{bin}/bwrap {\n}\n",
             "@{exec} = bwrap\nprofile b @{bin}/@{exec} {\n}\n",
@@ -970,11 +981,17 @@ mod tests {
             "profile b /{,usr/}{,s}bin/bwrap {\n}\n",
             "profile b /usr/{bin,sbin}/bwrap {\n}\n",
             "profile b /{usr/{bin,sbin},opt}/bwrap {\n}\n",
+            "profile b /usr/bin/{bwrap,x} {\n}\n",
             "profile b /usr/bin///bwrap {\n}\n",
+            "profile b ///usr/bin/bwrap {\n}\n",
             "profile b /usr/bin/bwrap (unconfined) {\n}\n",
             "/usr/bin/x /usr/bin/bwrap {\n}\n",
             "profile \"my bwrap\" /usr/bin/bwrap {\n}\n",
             "@{d} = /usr/bin\nprofile @{d}/bwrap {\n}\n",
+            // A value's slash goes where the name has its own: no child's `//` is left.
+            "@{d} = /usr/bin/\nprofile @{d}/bwrap {\n}\n",
+            // In a policy namespace: seen rather than missed.
+            "profile :ns:b /usr/bin/bwrap {\n}\n",
         ] {
             assert!(attaches_bwrap(whole), "{whole}");
         }
@@ -995,11 +1012,39 @@ mod tests {
             "@{p} = /usr/bin//bwrap\nprofile @{p} {\n}\n",
             // Beside an attachment the name is none.
             "profile /usr/bin/bwrap /usr/bin/x {\n}\n",
-            // A glob gives way to a profile that names the path.
+            // A glob is not read (SPEC-456, Decisions).
             "profile b /usr/bin/bw* {\n}\n",
         ] {
             assert!(!attaches_bwrap(other), "{other}");
         }
+    }
+
+    /// A file whose variables never end is no profile, and is found out at once; a long list
+    /// of values is one.
+    #[test]
+    fn variables_without_end_are_no_profile() {
+        let mut doubling = String::from("@{v0} = /usr/bin/bwrap /usr/bin/x\n");
+        for n in 1..40 {
+            doubling += &format!("@{{v{n}}} = @{{v{}}}@{{v{}}}\n", n - 1, n - 1);
+        }
+        assert!(!attaches_bwrap(&format!(
+            "{doubling}profile b @{{v39}} {{\n}}\n"
+        )));
+        let circle = "@{a} = @{b}\n@{b} = @{a} /usr/bin/bwrap\nprofile b @{b} {\n}\n";
+        assert!(!attaches_bwrap(circle));
+        let forks = format!("profile b /usr/bin/bwrap{}x {{\n}}\n", "{,}".repeat(40));
+        assert!(!attaches_bwrap(&forks));
+
+        let dirs: String = (0..2000).map(|n| format!(" /opt/{n}")).collect();
+        assert!(attaches_bwrap(&format!(
+            "@{{dirs}} ={dirs} /usr/bin\nprofile b @{{dirs}}/bwrap {{\n}}\n"
+        )));
+        let chain: String = (1..=20)
+            .map(|n| format!("@{{v{n}}} = @{{v{}}}\n", n - 1))
+            .collect();
+        assert!(attaches_bwrap(&format!(
+            "@{{v0}} = /usr/bin/bwrap\n{chain}profile b @{{v20}} {{\n}}\n"
+        )));
     }
 
     #[test]

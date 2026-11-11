@@ -53,6 +53,16 @@ profile bwrap /usr/bin/bwrap flags=(unconfined) {
 /// The same rule as a person may also write it: on one line.
 const ONE_LINE_TEXT: &str = "profile bwrap /usr/bin/bwrap flags=(unconfined) { userns, }\n";
 
+/// The same rule with its path as Ubuntu 26.04's own profiles spell one (`hostname`).
+const VARIABLE_TEXT: &str = "\
+abi <abi/4.0>,
+include <tunables/global>
+@{bin}={/usr,}/bin
+profile bwrap @{bin}/bwrap flags=(unconfined) {
+  userns,
+}
+";
+
 /// Ubuntu 26.04's profile for glycin's loaders: it names bwrap in rules, attaches to nothing.
 const GLYCIN_TEXT: &str = "\
 abi <abi/4.0>,
@@ -406,7 +416,7 @@ fn a_hand_written_rule_is_adopted() {
 
     // Written but never loaded: loaded once, as a boot would. However it is spelled, it is
     // theirs and ours does not join it.
-    for text in [HAND_WRITTEN_TEXT, ONE_LINE_TEXT] {
+    for text in [HAND_WRITTEN_TEXT, ONE_LINE_TEXT, VARIABLE_TEXT] {
         let mut fake = noble();
         fake.file(HAND_WRITTEN, text);
         let lines = run(&mut fake, Mode::Setup);
@@ -780,6 +790,30 @@ fn a_namespace_limit_is_named() {
         )
     );
     assert!(!touched(&fake));
+
+    // Nor is the limit left out where nothing can be started yet.
+    let mut fake = noble();
+    fake.file("/proc/sys/user/max_user_namespaces", "0\n");
+    let lines = run(&mut fake, Mode::DryRun);
+    assert_eq!(
+        item(&lines),
+        (
+            HostOutcome::Changed,
+            "would write and load /etc/apparmor.d/yulius-bwrap; user.max_user_namespaces is 0 \
+             (no user namespaces at all: raise it in /etc/sysctl.d)"
+        )
+    );
+    let lines = run(&mut fake, Mode::Check);
+    assert_eq!(
+        item(&lines),
+        (
+            HostOutcome::Failed,
+            "the AppArmor rules for bwrap are not what setup leaves; user.max_user_namespaces \
+             is 0 (no user namespaces at all: raise it in /etc/sysctl.d); setup would write and \
+             load /etc/apparmor.d/yulius-bwrap; run `sudo yulius host setup`"
+        )
+    );
+    assert!(!touched(&fake) && !fake.ran("/usr/sbin/runuser"));
 
     let mut fake = set_up(noble());
     fake.links.insert(
