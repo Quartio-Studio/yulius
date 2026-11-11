@@ -1603,7 +1603,10 @@ fn a_failed_look_right_after_the_freeze_thaws_the_sessions_unit_too() -> TestRes
             shown.contains("is not running any more: start it"),
             "{shown}"
         );
+        // No thaw is reported as failed, none is left for a person to run, and a server's
+        // unit that does not run is not said to run as before.
         assert!(!shown.contains("systemctl thaw"), "{shown}");
+        assert!(!shown.contains("it runs as before"), "{shown}");
         assert_eq!(units(&s)?, (false, Some(false)));
         assert!(
             s.events()
@@ -1613,27 +1616,6 @@ fn a_failed_look_right_after_the_freeze_thaws_the_sessions_unit_too() -> TestRes
             s.events()
         );
     }
-    let mut s = right_after_the_freeze(|unit| {
-        unit.frozen = false;
-        unit.stopped = true;
-    })?;
-    sessions(&s, false)?;
-    assert_eq!(s.run()?, 1);
-    let shown = s.shown();
-    assert!(
-        shown.contains("is not running any more: start it"),
-        "{shown}"
-    );
-    // No thaw is reported as failed, and none is left for a person to run.
-    assert!(!shown.contains("systemctl thaw"), "{shown}");
-    assert_eq!(units(&s)?, (false, Some(false)));
-    assert!(
-        s.events()
-            .contains(&"old: systemctl thaw sessions".to_owned())
-            && !s.events().contains(&"old: systemctl thaw".to_owned()),
-        "{:?}",
-        s.events()
-    );
     Ok(())
 }
 

@@ -1,11 +1,11 @@
 ---
 yulius-task: 6c1a1301-0997-4895-b6fb-112ea0720a93
-status: in-progress
+status: done
 ---
 
 # SPEC-467: Instance move: the last review's leftovers (two minors, five nits)
 
-Status: in-progress
+Status: done
 Date: 2026-11-11
 Owner: Yulius task #450 (runs after #442)
 Scope authorization: task #450, asked by the project's owner: "Fix the findings the independent
@@ -135,7 +135,7 @@ messages and documents say what the code does.
 - [x] A real move between two QEMU guests through the fixed paths
 - [x] A freeze beside a running new instance never thaws, and a new host that cannot be reached is waited for
 - [x] Gates green and the independent review answered
-- [ ] The fixes carried onto the sessions unit of #1173, gated and reviewed again
+- [x] The fixes carried onto the sessions unit of #1173, gated and reviewed again
 
 ## Acceptance criteria
 
@@ -282,56 +282,80 @@ messages and documents say what the code does.
   `dev` after that and asked the new instance about the App's callback at the start of the
   finish, before this change's question whether the one-time key is still there: git merged
   the two without a conflict, and a finish found done sent a step over the missing key again.
-  The key is asked first; a finish found done names the App with its link and values as the
-  plan does, which is what #1184 does whenever the new instance cannot be asked.
-- **No new ADR.** ADR-0297's decisions stand (the start is the point of no automatic return; the
-  inventory is the proof); these are corrections inside them.
+  The key is asked first; a finish found done names the way to the App's settings and the two
+  values to register (the App's own link is known only to the instance), which is what #1184
+  does whenever the new instance cannot be asked.
 
 ## Evidence
 
-Head of the gate: `4f67fb21` (2026-11-11), which holds `dev` up to `eb2e8a4e` (#1167). #1169 had
-been squash-merged meanwhile: its final head `e38828ea` was merged first (its tree equals the
-squash `4f90a309`), then `dev` itself. The commit after `4f67fb21` changes this document only.
+Head of the gate: `59fe14fa` (2026-11-11), which holds `dev` up to `143d6084`. The commit after
+it changes this document and adds one assertion to a flow test (and drops a block that tested
+the same case twice); the instance tests, clippy and rustfmt were run on it. While this change
+waited for its merge `dev` moved under it four times: #1169 (squash-merged; its final head was
+merged first, the trees being equal, then `dev`), #1167, #1173 with #1168 (the sessions unit:
+conflicts in the functions of findings 1 and 2, see Decisions), and #1184 (the GitHub App's
+callback: one conflict git merged without a word, see Decisions).
 
-- `scripts/dev ci`: exit 0; nextest 3540 tests run, 3540 passed, 16 skipped;
+- `scripts/dev ci` at `59fe14fa`: exit 0; nextest 3696 tests run, 3696 passed, 16 skipped;
   doctests, `cargo deny`, `cargo shear` and the docs built. Earlier runs: `6793e524` failed at
   clippy (`type_complexity` on a field of the tests' fake systemd; a named type fixed it);
-  `605b51d1` and `3ab24053` (3498 passed, 16 skipped each) and `e3ea9cc4` (3540 passed, 16
-  skipped) were green.
-- `cargo test -p yulius --lib instance::`: 173 passed (89 in `instance::migrate`, 39 of them flow
-  tests; 19 freeze, 19 import, 10 inventory, 5 walk).
+  `605b51d1`, `3ab24053` (3498 passed each), `e3ea9cc4`, `4f67fb21` (3540 each) and `b2d73341`
+  (3647) were green. Yulius CI passed at `37e344ee`, `b2d73341` and `59fe14fa`.
+- `cargo test -p yulius --lib instance::` at the last head: 216 passed (117 in
+  `instance::migrate`, 57 of them flow tests; 34 freeze, 19 import, 10 inventory, 5 walk).
+  `cargo clippy -p yulius --all-targets --all-features -- -D warnings` and `cargo fmt --check`:
+  clean.
 - Each fix has a test that fails without it (seen failing before the change, or with the change
   taken back):
   - LFT-001: `flow::a_look_that_fails_right_after_the_freeze_thaws_and_says_what_is_known`
-    (before: the unit stayed frozen behind "is not running any more").
+    (before: the unit stayed frozen behind "is not running any more"; after the merge onto two
+    units: a failed thaw of a sessions unit the host does not have) and
+    `flow::a_failed_look_right_after_the_freeze_thaws_the_sessions_unit_too` (each unit thawed
+    alone, a server's unit stopped or on its way up at that look), with
+    `flow::the_cutover_says_why_the_instance_is_not_frozen_after_its_freeze` and
+    `freeze::thawing_named_units_asks_systemd_nothing`.
   - LFT-002: `flow::a_recorded_start_never_ends_with_both_instances_running` (before: no freeze
     and exit 0; with the export's freeze: a `systemctl thaw` after a refused or slow freeze; with
     every state but `active` taken for stopped: the `manual` line and exit 0 for a unit that is
-    `activating`) and `freeze::a_freeze_to_stay_never_thaws_and_asks_no_helper`.
+    `activating`), `flow::a_recorded_start_freezes_whatever_unit_runs_beside_the_new_instance`
+    and `flow::a_recorded_start_with_a_stopped_server_freezes_its_sessions` (the two units, each
+    half alone), `freeze::a_freeze_to_stay_never_thaws_and_asks_no_helper`,
+    `freeze::a_freeze_to_stay_takes_the_sessions_unit_too` and
+    `freeze::a_freeze_to_stay_tells_what_it_froze_beside_what_it_could_not`.
   - LFT-003: `flow::a_recorded_start_goes_on_only_with_the_old_unit_frozen` (before: the silent
     host got the `--abort` line; the key was tried twice; with `failed` not taken for stopped the
     test fails too) and `flow::a_recorded_start_waits_for_a_new_host_that_cannot_be_reached`
     (before: "add this line" and exit 0).
   - LFT-004: `flow::a_finish_that_was_done_but_not_recorded_is_found_done` (before: "Run the
-    command again", exit 1; before the last fix: two steps tried over the missing key) and
-    `remote::a_connection_without_its_key_says_so_and_a_forgotten_key_is_such_a_one`.
+    command again", exit 1; later: steps tried over the missing key, again after the merge of
+    #1184) and `remote::a_connection_without_its_key_says_so_and_a_forgotten_key_is_such_a_one`.
   - LFT-005: with the mark taken out of `walk::left_out` four tests fail:
     `inventory::a_limits_mark_left_on_the_old_host_is_not_the_copy`,
     `walk::the_imports_limits_mark_is_left_out_at_the_top_only`,
     `import::a_link_the_copy_brings_at_the_limits_mark_is_replaced_not_followed` and
     `flow::a_limits_mark_left_on_the_old_host_does_not_fail_the_proof`.
   - LFT-006 is documentation: `python3 scripts/check_repository.py` passes, and the index holds
-    294 records, each once, in numeric order from 0284 on.
+    296 records, each once, in numeric order from 0284 on.
+  - Mutations of the merged logic, each failing at least one of these tests: eleven of mine
+    (no second look after the freeze beside the new instance; a stopped server taken for
+    "nothing runs" whatever its sessions do; the freeze to stay without the sessions unit; an
+    unanswered sessions unit taken for absent; one unit's failed freeze keeping the other from
+    being frozen; the sessions left frozen by the cutover when the server is down; what was
+    frozen forgotten when another unit failed; systemd asked again in the unanswered case; a
+    server's unit that does not run sent a thaw; the callback asked whatever the key does; "runs
+    as before" said of a server's unit that does not run), the first four at both merged heads,
+    and the reviewer's, below.
 - A flaky test met on the way and fixed: `flow::one_run_at_a_time_holds_the_state_directory` took
   the lock again right after dropping it, while a test beside it that starts a process holds a
   copy of the descriptor between its fork and its exec: 9 failures in 300 runs of the instance
   tests. It now waits for the release, with a bound: 0 in 400.
 - `yulius security-scan`: "Security scan disabled" (Vidoc is off for this project): disabled, not
   passed.
-- Real hosts: two Ubuntu 26.04.1 guests (QEMU, systemd 259, kernel 7.0) as in SPEC-460's
-  Evidence, the old one with a running instance, two drop-ins, a key file, Caddy, ufw,
-  sandbox-like data and a `.yulius-limits-adapt` dated 2023; the new one fresh. `yulius instance
-  migrate root@10.0.2.2 --ssh-port 20107 --public-url https://b-10-0-2-15.sslip.io --yes`:
+- Real hosts, before the sessions unit: two Ubuntu 26.04.1 guests (QEMU, systemd 259, kernel
+  7.0) as in SPEC-460's Evidence, the old one with a running instance, two drop-ins, a key file,
+  Caddy, ufw, sandbox-like data and a `.yulius-limits-adapt` dated 2023; the new one fresh.
+  `yulius instance migrate root@10.0.2.2 --ssh-port 20107 --public-url
+  https://b-10-0-2-15.sslip.io --yes`:
   - At `a160608d`:
     - LFT-001, with a `systemctl` in the run's PATH whose `show
       --property=ActiveState,FreezerState` fails once the unit was frozen: "FAIL old instance
@@ -357,61 +381,100 @@ squash `4f90a309`), then `dev` itself. The commit after `4f67fb21` changes this 
       exit 0);
     - the new guest powered off: "FAIL new host cannot be reached (ssh ended with exit status:
       255: ssh: connect to host 10.0.2.2 port 20107: Connection refused) … run the command again
-      when the new host answers", exit 1, no sign-in, the old unit untouched, still `Starting`;
-    - the new guest up again: "changed old instance yulius.service ran here beside the new
-      instance … it is frozen again" (`freeze::freeze_to_stay` on systemd 259), "stays frozen
-      and is disabled", the finish, exit 0.
-  - What systemd 259 answers in the states the resumed start tells apart (the old guest alone;
-    the fake systemd of the flow tests answers the same):
-    - a unit that is `activating` (an `ExecStartPre` that sleeps) or `deactivating` (an
-      `ExecStop` that sleeps): `systemctl freeze` fails with "Unit has a pending job", exit 1,
-      and the state stays; `systemctl stop` and `systemctl kill --kill-whom=all` end it (no
-      cgroup left);
-    - a unit stopped by hand with a process left in its cgroup (`KillMode=process`):
-      `ActiveState=inactive`, `ControlGroup` still set, `cgroup.events` "populated 1";
-      `systemctl freeze` fails with "Unit is not active". The resumed start does not look at
-      that cgroup: issue #1178 (present before this change, see the review below);
-    - such a process that ignores SIGTERM (a shell with `trap "" TERM`): `systemctl kill
-      --kill-whom=all` leaves it ("populated 1"); `systemctl kill --kill-whom=all
-      --signal=SIGKILL`, which both lines name, ends it (no cgroup left).
+      when the new host answers", exit 1, no sign-in, the old unit untouched, still `Starting`.
+- Real hosts, with the sessions unit (after the merge of #1173): one Ubuntu 26.04.1 guest
+  (systemd 259) on which `yulius host setup` of this branch's build wrote `yulius.service` and
+  `yulius-sandboxes.service`. One host plays both roles: a start recorded to `127.0.0.1`, the
+  one-time key added, the build staged, the old host's state in a directory of its own
+  (`--state-dir`; in a first try both roles shared `/var/lib/yulius-migrate`, which the new
+  host's finish removes, so that run printed the lines below and then "FAIL state cannot write
+  …/state.json", exit 1). A process in a group below the sessions unit writes the time every
+  second. At `59fe14fa` (the first two also at `b2d73341`, with the same outcome):
+  - both units run beside a new instance that reports the build: "changed old instance
+    yulius.service and yulius-sandboxes.service ran here beside the new instance (thawed or
+    started since the start was ordered): they are frozen again", "yulius.service stays frozen
+    and is disabled", the finish, exit 0; both units `FreezerState=frozen`, the process stands
+    still, the state `Moved` and finished;
+  - the server's unit stopped, its sessions unit running, a new instance (the same build,
+    started by hand) answering: "yulius-sandboxes.service ran here beside the new instance …: it
+    is frozen again", then "manual old instance yulius.service does not run here any more … Make
+    sure nothing of the old one runs here: `systemctl stop yulius.service
+    yulius-sandboxes.service; systemctl kill --kill-whom=all --signal=SIGKILL yulius.service
+    yulius-sandboxes.service; systemctl disable yulius.service`", exit 0; the sessions unit
+    `frozen`, the process stands still;
+  - the server's unit on its way up (an `ExecStartPre` that sleeps), its sessions unit running,
+    a new instance answering: systemd's "Failed to freeze unit yulius.service: Unit has a
+    pending job", then "yulius-sandboxes.service ran here beside the new instance …: it is
+    frozen again", "FAIL old instance yulius.service may run beside the new instance and could
+    not be frozen: `systemctl freeze yulius.service` failed (exit 1). If a freeze keeps failing
+    … stop it for good instead: `systemctl stop yulius.service yulius-sandboxes.service;
+    systemctl kill --kill-whom=all --signal=SIGKILL yulius.service yulius-sandboxes.service`",
+    the "must be frozen and disabled now" line, exit 1; the sessions unit `frozen`.
+- What systemd 259 answers in the states this change tells apart (the guest alone; the tests'
+  fake systemd answers the same):
+  - a unit that is `activating` (an `ExecStartPre` that sleeps) or `deactivating` (an `ExecStop`
+    that sleeps): `systemctl freeze` fails with "Unit has a pending job", exit 1, and so does
+    `systemctl thaw` of a unit that is `activating`; its sessions unit freezes and thaws
+    meanwhile; `systemctl stop` and `systemctl kill --kill-whom=all` end the unit (no cgroup
+    left);
+  - a unit stopped by hand with a process left in its cgroup (`KillMode=process`):
+    `ActiveState=inactive`, `ControlGroup` still set, `cgroup.events` "populated 1"; `systemctl
+    freeze` fails with "Unit is not active". The resumed start does not look at that cgroup:
+    issue #1178;
+  - such a process that ignores SIGTERM (a shell with `trap "" TERM`): `systemctl kill
+    --kill-whom=all` leaves it ("populated 1"); `systemctl kill --kill-whom=all
+    --signal=SIGKILL`, which both lines name, ends it (no cgroup left).
 - Independent review, in fresh read-only sessions given the diff range, this spec and
-  `om-code-review`. The account's usage limit ended three of them before they reported; the
-  fourth kept notes and, resumed, approved `048ffc3e`: no blocker and no major. It read every
-  requirement against the code, made twelve mutations in a copy of the tree that each make a
-  test fail, ran the 173 instance tests (and 250 repeats, none failing), and checked the
-  documents and this section against the code, the gate's log and the real-host logs. Its
-  findings, all answered:
-  - from its notes, before the approval: a unit between states taken for stopped, the wording
-    after a freeze that did not hold, a freeze of a unit whose state was not known said as
-    "ran", and the tests' fake connection looking at the host before its key: fixed with tests
-    in `3ab24053`, together with a signal's word after the move took its end, which no test
-    reaches (`RealWorld`); the key tried twice in a resumed start, the advice after a failed
+  `om-code-review`. The account's usage limit ended reviewer sessions several times before they
+  reported; the one that kept notes was resumed each time and approved four heads, each without
+  a blocker or a major: `048ffc3e`, `37e344ee` (after its nits were fixed), `b2d73341` (the
+  merge onto #1173's two units) and `59fe14fa` (the merge of #1184 and its findings fixed). It
+  read every requirement against the code, made mutations in a copy of the tree (twelve, eleven,
+  eleven and twelve in the four rounds; all caught but one on a gap that was there before, see
+  #1179, and two on the guard of the cutover's "runs as before" line: the missing assertion
+  below, and its "nothing was covered" half, which needs three rare things at once), ran the
+  instance tests each time, and checked the documents and this section against the code, the
+  gate's log and the real-host logs. Its findings, all answered:
+  - before the first approval, from its notes: a unit between states taken for stopped, the
+    wording after a freeze that did not hold, a freeze of a unit whose state was not known said
+    as "ran", and the tests' fake connection looking at the host before its key: fixed with
+    tests in `3ab24053`, together with a signal's word after the move took its end, which no
+    test reaches (`RealWorld`); the key tried twice in a resumed start, the advice after a failed
     freeze that systemd would refuse again, and `failed` without a test: fixed with tests in
     `e3ea9cc4`;
-  - nits of the approval, own code: this section had said that the signal's wording was fixed
-    "with tests" (corrected above); a finish found done tried two steps over the missing key,
-    and the advised kill sent SIGTERM: fixed with tests in `4f67fb21`;
-  - there before this change, so outside it: an old unit stopped by hand that left processes
-    behind (`KillMode=process`) still gets the `manual` line and exit 0 in a resumed start
-    (issue #1178); a run that could not freeze or disable the old unit is still recorded as
-    finished, so the next run says "finished" and exits 0, and the line of a first start for a
-    new host that stopped answering offers `--abort` without saying when it is safe (issue
-    #1179);
+  - with the first approval: two steps tried over the missing key in a finish found done, and
+    the advised kill sending SIGTERM: fixed with tests in `4f67fb21`;
+  - with the approval of the merge onto two units (two minors, six nits, all in this change's
+    resolution): a failed thaw reported for a sessions unit the host does not have, a thaw sent
+    to a server's unit on its way up, a frozen unit not named when the other's freeze failed,
+    the freezes sent one after the other, three wordings and the fake's thaw of a starting unit:
+    fixed with tests in `59fe14fa`;
+  - with the last approval: one missing assertion (a server's unit that does not run is not
+    said to "run as before") and a block that tested one case twice: in the commit of this
+    section, as the reviewer allowed beside it. Four cosmetic nits in this change's lines (two
+    double-fault corners of the cutover's thaw, a comment, a plural, a sentence of the guide)
+    were left so that the approved, green head could merge: issue #1187;
+  - there before this change, so outside it: a stopped old unit that left processes behind
+    still gets the `manual` line and exit 0 in a resumed start (#1178); a run that could not
+    freeze or disable the old unit is still recorded as finished, with a wording of the first
+    start and a missing test of the finish's refused-key guard (#1179); and three notes on
+    #1173's own thaw and "does it run" readings (#1187);
   - decided, no change: a resumed start whose key the new host refuses and that cannot sign
     in ends as a plan does, with the line to add and exit 0 (LFT-003).
 
-  `4f67fb21` and this section went back to the same reviewer for the confirmation of the exact
-  head, which the merge requires.
+  The last head went back to the same reviewer for the confirmation of the exact head, which
+  the merge requires.
 
 Not tested here:
 
-- A `systemctl show` that fails by itself (a shim made it fail), and a freeze that never
-  completes on a real host: the fake systemd and `freeze::tests` cover them.
-- The resumed start at the last head on real hosts: the runs above are at `a160608d` and
-  `605b51d1`. What changed since is which states count as stopped (`inactive`, `failed`), one
-  try of the key instead of two, the key asked before the steps of a finish found done, and
-  wordings; the flow tests cover them, and systemd's answers they rely on were checked on the
-  real guest.
+- A `systemctl show` that fails by itself (a shim made it fail), a freeze that never completes
+  on a real host, and the cutover's failed look on a host with both units (it needs a second
+  host for the plan): the fake systemd and `freeze::tests` cover them, and the verbs are plain
+  `systemctl thaw` and `freeze` of the two units, which the real runs above use.
+- A whole move between two real hosts after the merges of #1173 and #1184: the two-guest runs
+  above are older, and the one-guest runs cover the resumed start only. What those merges
+  changed in a first run (the freeze of two units, the callback's question) is #1173's and
+  #1184's own, tested there.
 - Ctrl-C in a resumed run on real hosts: the change is to the guide; such a run arms no signal
   handler (`World::arm` is called by the cutover's freeze alone).
 - The HTTPS check from the old host: both guests have the same private address, as in SPEC-460,
