@@ -1463,8 +1463,9 @@ command = 'while [ ! -f "{release}" ]; do sleep 0.05; done'
     )
     .await?;
     let release = f.data.join("release");
-    // The integration branch's run and the pull request's first one go ahead, released: held,
-    // their jobs took the three job slots from the runs below until the limit ended them (#1079).
+    // The other runs go first, released: the integration branch's and the pull request's at its
+    // present head. Held, the branch's three jobs kept the job slots from the run under test
+    // until their limit ended them (#1079).
     std::fs::write(&release, "")?;
     f.h.app.ci_sync_sandbox(&f.sandbox).await?;
     f.settle().await?;
