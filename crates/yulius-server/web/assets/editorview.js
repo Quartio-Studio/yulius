@@ -670,6 +670,9 @@ export function createEditorView(ctx, sandbox, getTask) {
     }
     defineEditorTheme(monaco); // the host is in place now: take its theme
     editor = monaco.editor.create(host, {
+      // No model until a file's is set: Monaco's own empty one took typing that the file's then
+      // replaced, and disposed it under the suggestions for it (#1087).
+      model: null,
       theme: 'yulius',
       automaticLayout: true,
       fontFamily: token('--font-mono'),
