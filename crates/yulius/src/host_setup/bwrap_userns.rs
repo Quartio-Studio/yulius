@@ -125,7 +125,7 @@ const BWRAP: &str = "/usr/bin/bwrap";
 /// Stands for the values a variable gets in a file this one includes: no path.
 const UNKNOWN: &str = "\0";
 /// A file past these is not read (it is no profile a person wrote): the bytes its variables
-/// and alternations may come to in all, and how many may stand one in another.
+/// and alternations may come to in all, and how many variables may stand one in another.
 const MOST_TEXT: usize = 4 * 1024 * 1024;
 const DEEPEST: usize = 64;
 
@@ -252,12 +252,35 @@ fn attribute(word: &str, next: Option<&str>) -> bool {
     word.starts_with('(') || keyed("flags") || keyed("xattrs")
 }
 
-/// Where the first `@{name}` of `text` starts and ends: the last `@{` before the first `}`
-/// that follows one.
+/// Where the first `@{name}` of `text` starts and ends.
 fn variable(text: &str) -> Option<(usize, usize)> {
-    let first = text.find("@{")?;
-    let end = text[first..].find('}')? + first;
-    Some((text[..end].rfind("@{")?, end))
+    let at = text.find("@{")?;
+    Some((at, text[at..].find('}')? + at))
+}
+
+/// A pattern's first alternation (`{a,b}`, which may hold others): the text before it, its
+/// alternatives and the text after it.
+fn alternation(pattern: &str) -> Option<(&str, Vec<&str>, &str)> {
+    let open = pattern.find('{')?;
+    let mut depth = 0_usize;
+    let mut start = open + 1;
+    let mut alternatives = Vec::new();
+    for (at, c) in pattern[open..].char_indices().map(|(at, c)| (at + open, c)) {
+        match c {
+            '{' => depth += 1,
+            ',' if depth == 1 => {
+                alternatives.push(&pattern[start..at]);
+                start = at + 1;
+            }
+            '}' if depth == 1 => {
+                alternatives.push(&pattern[start..at]);
+                return Some((&pattern[..open], alternatives, &pattern[at + 1..]));
+            }
+            '}' => depth -= 1,
+            _ => {}
+        }
+    }
+    None
 }
 
 /// A path as AppArmor reads its slashes: several are one, except exactly two at the start.
@@ -324,7 +347,7 @@ impl Variables<'_> {
             while let Some(at) = path.find("//").filter(|_| name) {
                 path = &path[at + 2..];
             }
-            self.spells(&one_slash(path), BWRAP, 0)
+            self.spells(&one_slash(path), BWRAP)
         })
     }
 
@@ -406,42 +429,28 @@ impl Variables<'_> {
         Some(done)
     }
 
-    /// Whether `pattern` spells `path`, each of its alternations (`{a,b}`, also one inside
-    /// another) tried in turn; `deep` counts those already opened. A `*`, `?` or `[` stands
-    /// for itself: a glob is not read.
-    fn spells(&self, pattern: &str, path: &str, deep: usize) -> bool {
-        let mut depth = 0_usize;
-        let (mut open, mut start) = (0, 0);
-        let mut alternatives = Vec::new();
-        for (at, c) in pattern.char_indices() {
-            match c {
-                '{' => {
-                    depth += 1;
-                    if depth == 1 {
-                        (open, start) = (at, at + 1);
-                    }
+    /// Whether `pattern` spells `path`, each of its alternations tried in turn. A `*`, `?` or
+    /// `[` stands for itself: a glob is not read.
+    fn spells(&self, pattern: &str, path: &str) -> bool {
+        let mut tries = vec![(pattern.to_owned(), path)];
+        while let Some((pattern, path)) = tries.pop() {
+            let Some((before, alternatives, after)) = alternation(&pattern) else {
+                if pattern == path {
+                    return true;
                 }
-                ',' if depth == 1 => {
-                    alternatives.push(&pattern[start..at]);
-                    start = at + 1;
+                continue;
+            };
+            let Some(path) = path.strip_prefix(before) else {
+                continue;
+            };
+            for alternative in alternatives {
+                if !self.spend(alternative.len() + after.len()) {
+                    return false;
                 }
-                '}' if depth == 1 => {
-                    alternatives.push(&pattern[start..at]);
-                    let rest = &pattern[at + 1..];
-                    let Some(path) = path.strip_prefix(&pattern[..open]) else {
-                        return false;
-                    };
-                    return deep < DEEPEST
-                        && alternatives.iter().any(|alternative| {
-                            self.spend(alternative.len() + rest.len())
-                                && self.spells(&format!("{alternative}{rest}"), path, deep + 1)
-                        });
-                }
-                '}' => depth = depth.saturating_sub(1),
-                _ => {}
+                tries.push((format!("{alternative}{after}"), path));
             }
         }
-        depth == 0 && pattern == path
+        false
     }
 }
 
@@ -972,6 +981,7 @@ mod tests {
             // Added to what an included file sets: that file's values are not seen here.
             "include <tunables/global>\n@{bin} += /usr/local/bin\nprofile b @{bin}/bwrap {\n}\n",
             "@{exec} = bwrap\nprofile b @{bin}/@{exec} {\n}\n",
+            "@{d} = /bwrap /x\nprofile b /usr/bin/@{d} {\n}\n",
             "@{prog} = /usr/bin/bwrap\n@{prog} += /usr/bin/x\nprofile b @{prog} {\n}\n",
             "@{b} = @{a}\n@{a} = /usr/bin/bwrap\nprofile b @{b} {\n}\n",
             "@{paths} = /usr/bin/x \\\n  /usr/bin/bwrap\nprofile b @{paths} {\n}\n",
@@ -1004,11 +1014,17 @@ mod tests {
             "profile b //usr/bin/bwrap {\n}\n",
             "@{dir} = /usr/bin\nprofile b /@{dir}/bwrap {\n}\n",
             "@{dirs} = /opt /usr/bin\nprofile b /@{dirs}/bwrap {\n}\n",
+            // What stands before a variable no longer counts for the next one.
+            "@{s} = /\n@{d} = /bwrap /x\nprofile b /usr/bin@{s}@{d} {\n}\n",
+            // A variable an included file sets, other than `@{bin}`, is not known here.
+            "include <tunables/global>\nprofile x @{etc_ro}/bwrap {\n}\n",
             "profile b /{usr/,}/bin/bwrap {\n}\n",
             "profile b /usr/bin/bwrap/ {\n}\n",
             // In a name, `//` parts a child from its parent.
             "/usr/bin//bwrap {\n}\n",
             "include <tunables/global>\nprofile /usr/bin//bwrap (complain) {\n}\n",
+            "include <tunables/global>\n/usr/bin//bwrap {\n}\n",
+            "$flag = true\n/usr/bin//bwrap {\n}\n",
             "@{p} = /usr/bin//bwrap\nprofile @{p} {\n}\n",
             // Beside an attachment the name is none.
             "profile /usr/bin/bwrap /usr/bin/x {\n}\n",
@@ -1039,12 +1055,15 @@ mod tests {
         assert!(attaches_bwrap(&format!(
             "@{{dirs}} ={dirs} /usr/bin\nprofile b @{{dirs}}/bwrap {{\n}}\n"
         )));
-        let chain: String = (1..=20)
-            .map(|n| format!("@{{v{n}}} = @{{v{}}}\n", n - 1))
-            .collect();
-        assert!(attaches_bwrap(&format!(
-            "@{{v0}} = /usr/bin/bwrap\n{chain}profile b @{{v20}} {{\n}}\n"
-        )));
+        let chain = |links: usize| {
+            let chain: String = (1..=links)
+                .map(|n| format!("@{{v{n}}} = @{{v{}}}\n", n - 1))
+                .collect();
+            format!("@{{v0}} = /usr/bin/bwrap\n{chain}profile b @{{v{links}}} {{\n}}\n")
+        };
+        assert!(attaches_bwrap(&chain(20)));
+        // Deeper than any profile goes: given up, not followed down the stack.
+        assert!(!attaches_bwrap(&chain(100_000)));
     }
 
     #[test]
