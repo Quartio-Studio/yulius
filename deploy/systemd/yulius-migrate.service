@@ -1,0 +1,33 @@
+# The Yulius move helper (SPEC-470; docs/operations.md "Move from Settings → Instance"), started
+# by yulius-migrate.path. It checks the request the server wrote and runs `yulius instance
+# migrate` for it: the plan, the move (it freezes yulius.service, copies the instance to the new
+# host and starts it there) or its abort. The checklist is in /var/lib/yulius-migrate/status.json.
+# Install: /etc/systemd/system/yulius-migrate.service (root, 0644). Adjust the lines marked
+# "local" to the server.
+[Unit]
+Description=Yulius move helper
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/bin/yulius migrate-helper
+# local: the service's data directory and its units.
+Environment=YULIUS_DATA=/var/lib/yulius
+Environment=YULIUS_MIGRATE_STATE=/var/lib/yulius-migrate
+Environment=YULIUS_MIGRATE_SERVICE=yulius.service
+Environment=YULIUS_MIGRATE_UPDATE_SERVICE=yulius-update.service
+# local, optional: the only hosts a request may name (commas between them). Without it the
+# superadmin names the host on the page.
+#Environment=YULIUS_MIGRATE_TARGETS=new-host.example.com
+Environment=HOME=/root
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# A copy takes as long as the data needs: no bound on the run. A stop (or a shutdown) reaches the
+# command as SIGTERM: before the new instance's start is ordered it thaws the old one and ends;
+# after that it finishes the cutover, for which it gets ten minutes.
+TimeoutStartSec=infinity
+TimeoutStopSec=10min
+# The command reads the whole host (its packages, units, proxy and firewall), writes the proxy's
+# configuration and freezes units, as it does from a root shell: no file system sandboxing here.
+UMask=0022

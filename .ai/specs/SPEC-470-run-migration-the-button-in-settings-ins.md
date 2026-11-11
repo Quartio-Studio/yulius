@@ -208,7 +208,7 @@ Settings → Instance
 - [x] Spec SPEC-470 and ADR-0305
 - [x] The request's contract and field rules, shared by the server and the helper
 - [x] `yulius migrate-helper`: owner checks, one request once, never during an update, runs the command, reports, stops a run on an abort
-- [ ] Units in `deploy/systemd`, carried by a move and enabled on the new host as on the old one
+- [x] Units in `deploy/systemd`, carried by a move and enabled on the new host as on the old one
 - [ ] The command tells readers the key line and the new URL, and the finished checklist travels to the new host
 - [ ] Application and API: the view, plan, move and abort for the superadmin, audited, updates and moves refuse each other
 - [ ] The card "Move to another host": form, plan with the key line, typed confirmation, live checklist, abort, on the mock with e2e

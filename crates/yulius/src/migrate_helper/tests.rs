@@ -769,3 +769,51 @@ fn a_child_that_outlives_the_command_does_not_hold_the_helper() -> TestResult {
     assert_eq!(env.said()?.exit_code, Some(0));
     Ok(())
 }
+
+/// MVB-007: the units the repository ships start this helper, as root, on the request file the
+/// server writes, with no bound on how long a move takes.
+#[test]
+fn the_shipped_units_start_the_helper_on_the_request_file() {
+    let path = include_str!("../../../../deploy/systemd/yulius-migrate.path");
+    let service = include_str!("../../../../deploy/systemd/yulius-migrate.service");
+    let has = |text: &str, line: &str| text.lines().any(|l| l.trim() == line);
+    assert!(has(
+        path,
+        &format!("PathChanged=/var/lib/yulius/{REQUEST_DIR}/{REQUEST_FILE}")
+    ));
+    assert!(has(path, "Unit=yulius-migrate.service"));
+    assert!(has(path, "WantedBy=multi-user.target"));
+    for line in [
+        "Type=oneshot",
+        "User=root",
+        "ExecStart=/usr/local/bin/yulius migrate-helper",
+        "Environment=YULIUS_DATA=/var/lib/yulius",
+        "Environment=YULIUS_MIGRATE_STATE=/var/lib/yulius-migrate",
+        "Environment=YULIUS_MIGRATE_SERVICE=yulius.service",
+        "Environment=YULIUS_MIGRATE_UPDATE_SERVICE=yulius-update.service",
+        "TimeoutStartSec=infinity",
+        "TimeoutStopSec=10min",
+    ] {
+        assert!(has(service, line), "{line}");
+    }
+    // The command reads the whole host and writes the proxy's configuration: nothing here
+    // may hide the file system from it, and no list of targets is set for everyone.
+    for line in service.lines().map(str::trim) {
+        assert!(
+            !line.starts_with("ProtectSystem=")
+                && !line.starts_with("PrivateTmp=")
+                && !line.starts_with("Environment=YULIUS_MIGRATE_TARGETS"),
+            "{line}"
+        );
+    }
+    // Its name is the server unit's, as the command derives it to carry it.
+    assert_eq!(
+        yulius_sandbox::units::migrate_unit("yulius.service").as_deref(),
+        Some("yulius-migrate.service")
+    );
+    assert_eq!(
+        yulius_sandbox::units::migrate_path_unit("yulius.service").as_deref(),
+        Some("yulius-migrate.path")
+    );
+    assert_eq!(yulius_sandbox::units::migrate_path_unit("yulius"), None);
+}

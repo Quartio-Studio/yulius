@@ -184,6 +184,9 @@ pub struct Profile {
     pub stale: Vec<PathBuf>,
     /// The update helper is installed.
     pub helper: bool,
+    /// The move helper (SPEC-470): `None` without its units, else whether its path unit is
+    /// enabled.
+    pub move_helper: Option<bool>,
     /// The reverse proxy.
     pub proxy: Carried,
     /// The firewall.
@@ -522,6 +525,7 @@ impl Profile {
         };
         p.read_unit(host)?;
         p.read_helper(host, update_unit);
+        p.read_move_helper(host);
         p.release = Release::parse(&host.read(Path::new("/etc/os-release")).unwrap_or_default());
         p.arch = said(host, &["uname", "-m"]).unwrap_or_default();
         p.coreutils = coreutils(host);
@@ -690,6 +694,31 @@ impl Profile {
         if host.is_file(&installed) {
             push_path(&mut self.files, installed);
         }
+    }
+
+    /// The move helper's units (SPEC-470 MVB-008), named after the server's unit: carried when
+    /// the host has them, with whether its path unit is enabled.
+    fn read_move_helper(&mut self, host: &mut dyn Host) {
+        let (Some(service), Some(path_unit)) = (
+            yulius_sandbox::units::migrate_unit(&self.unit),
+            yulius_sandbox::units::migrate_path_unit(&self.unit),
+        ) else {
+            return;
+        };
+        let show = "--property=LoadState,FragmentPath,DropInPaths";
+        let shown = run(host, &["systemctl", "show", &service, show]);
+        let props = properties(&shown.stdout);
+        if !shown.ok() || property(&props, "LoadState") != "loaded" {
+            return;
+        }
+        let mut units = own_units(&props);
+        let watch = run(host, &["systemctl", "show", &path_unit, show]);
+        units.extend(own_units(&properties(&watch.stdout)));
+        for unit in units {
+            push_path(&mut self.files, unit);
+        }
+        let enabled = run(host, &["systemctl", "is-enabled", &path_unit]);
+        self.move_helper = Some(enabled.stdout.trim() == "enabled");
     }
 
     fn read_sources(&mut self, host: &mut dyn Host) {

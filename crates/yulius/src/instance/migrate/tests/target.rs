@@ -1590,3 +1590,65 @@ fn holds_exclude_as_the_protocol_needs() -> Result<(), Box<dyn std::error::Error
     assert!(started.elapsed() < Duration::from_secs(5));
     Ok(())
 }
+
+/// SPEC-470 MVB-008: the old host asks for the move helper's path unit to be enabled, once the
+/// new instance runs.
+#[test]
+fn a_unit_the_old_host_names_is_enabled() {
+    let request = Request::Enable {
+        name: "move helper".into(),
+        unit: "yulius-migrate.path".into(),
+    };
+    let mut host = new_host();
+    let reply = step(&mut host, &request);
+    assert_eq!(reply.lines[0].name, "move helper");
+    assert_eq!(
+        only(&reply),
+        (HostOutcome::Changed, "yulius-migrate.path is enabled")
+    );
+    assert!(host.ran("systemctl enable --now yulius-migrate.path"));
+
+    // Already enabled and waiting (a run that goes on): said, not done again.
+    let mut host = new_host();
+    host.says(
+        &["systemctl", "is-enabled", "yulius-migrate.path"],
+        "enabled\n",
+    );
+    host.says(
+        &["systemctl", "is-active", "yulius-migrate.path"],
+        "active\n",
+    );
+    let reply = step(&mut host, &request);
+    assert_eq!(
+        only(&reply),
+        (HostOutcome::Ok, "yulius-migrate.path is enabled")
+    );
+    assert!(!host.ran("systemctl enable"));
+
+    let mut host = new_host();
+    host.fails(
+        &["systemctl", "enable", "--now", "yulius-migrate.path"],
+        "Unit yulius-migrate.path not found",
+    );
+    let reply = step(&mut host, &request);
+    let (outcome, detail) = only(&reply);
+    assert_eq!(outcome, HostOutcome::Failed);
+    assert!(
+        detail.starts_with("`systemctl enable --now yulius-migrate.path` failed: "),
+        "{detail}"
+    );
+
+    // Only a unit's name: nothing else is given to systemctl.
+    for unit in ["--now", "a b.path", "", "../x.path", "x.path; id"] {
+        let mut host = new_host();
+        let reply = step(
+            &mut host,
+            &Request::Enable {
+                name: "move helper".into(),
+                unit: unit.into(),
+            },
+        );
+        assert_eq!(only(&reply).0, HostOutcome::Failed, "{unit:?}");
+        assert!(!host.ran("systemctl"), "{unit:?}");
+    }
+}

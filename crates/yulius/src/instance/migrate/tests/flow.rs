@@ -2262,3 +2262,117 @@ fn no_app_or_no_new_url_leaves_nothing_to_register() -> TestResult {
     assert!(!s.events().contains(&"new: callback".to_owned()));
     Ok(())
 }
+
+/// The old host has the move helper's units (SPEC-470), with its path unit `enabled` or not.
+fn with_move_helper(host: &mut FakeHost, enabled: bool) {
+    host.says(
+        &["systemctl", "show", "yulius-migrate.service"],
+        "LoadState=loaded\nFragmentPath=/etc/systemd/system/yulius-migrate.service\nDropInPaths=\n",
+    );
+    host.says(
+        &["systemctl", "show", "yulius-migrate.path"],
+        "LoadState=loaded\nFragmentPath=/etc/systemd/system/yulius-migrate.path\nDropInPaths=\n",
+    );
+    host.says(
+        &["systemctl", "is-enabled", "yulius-migrate.path"],
+        if enabled { "enabled\n" } else { "disabled\n" },
+    );
+}
+
+/// SPEC-470 MVB-008: the move helper's units travel with a move, and its path unit is enabled
+/// on the new host exactly when it was on the old one; the checklist says which.
+#[test]
+fn the_move_helper_travels_and_is_enabled_as_on_the_old_host() -> TestResult {
+    let said = |s: &Setup| -> Result<Vec<(HostOutcome, String)>, Box<dyn std::error::Error>> {
+        Ok(s.status()?
+            .lines
+            .into_iter()
+            .filter(|l| l.name == "move helper")
+            .map(|l| (l.outcome, l.detail))
+            .collect())
+    };
+    let sent = |s: &Setup| {
+        s.remote
+            .sent
+            .iter()
+            .filter_map(|p| p.to_str())
+            .filter(|p| p.contains("migrate"))
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
+    };
+    const ENABLE: &str = "systemctl enable --now yulius-migrate.path";
+
+    // None on the old host: said in the plan, nothing sent, nothing enabled.
+    let mut s = setup()?;
+    assert_eq!(s.run()?, 0);
+    assert_eq!(
+        said(&s)?,
+        [(
+            HostOutcome::Ok,
+            "none on the old host: the new one offers no move from Settings → Instance either"
+                .to_owned()
+        )]
+    );
+    assert!(sent(&s).is_empty() && !s.remote.host.ran(ENABLE));
+
+    // Enabled here: carried, and enabled there once the new instance runs.
+    let mut s = setup()?;
+    with_move_helper(&mut s.local, true);
+    assert_eq!(s.run()?, 0);
+    assert_eq!(
+        said(&s)?,
+        [
+            (
+                HostOutcome::Ok,
+                "its units are carried, and its path unit is enabled on the new host as it is \
+                 here"
+                    .to_owned()
+            ),
+            (
+                HostOutcome::Changed,
+                "yulius-migrate.path is enabled".to_owned()
+            ),
+        ]
+    );
+    assert_eq!(
+        sent(&s),
+        [
+            "/etc/systemd/system/yulius-migrate.path",
+            "/etc/systemd/system/yulius-migrate.service",
+        ]
+    );
+    let events = s.world.events.lock().map_err(|e| e.to_string())?.clone();
+    let at = |what: &str| events.iter().position(|e| e == what);
+    assert!(at("new: start") < at("new: enable"), "{events:?}");
+    assert!(at("new: enable") < at("new: finish"), "{events:?}");
+
+    // Switched off here: carried, and off there.
+    let mut s = setup()?;
+    with_move_helper(&mut s.local, false);
+    assert_eq!(s.run()?, 0);
+    assert_eq!(
+        said(&s)?,
+        [(
+            HostOutcome::Ok,
+            "its units are carried; its path unit is not enabled here, so it is not enabled on \
+             the new host"
+                .to_owned()
+        )]
+    );
+    assert_eq!(sent(&s).len(), 2);
+    assert!(!s.remote.host.ran(ENABLE));
+
+    // What fails there after the start is a line, never the end of the move.
+    let mut s = setup()?;
+    with_move_helper(&mut s.local, true);
+    s.remote.host.fails(
+        &["systemctl", "enable", "--now", "yulius-migrate.path"],
+        "Unit yulius-migrate.path not found",
+    );
+    assert_eq!(s.run()?, 1);
+    let lines = said(&s)?;
+    assert_eq!(lines.last().map(|l| l.0), Some(HostOutcome::Failed));
+    assert_eq!(s.state()?.cutover, Cutover::Moved);
+    assert!(s.state()?.finished);
+    Ok(())
+}

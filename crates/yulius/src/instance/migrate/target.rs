@@ -206,6 +206,14 @@ pub enum Request {
         /// The instance's public URL, for the note when it cannot be asked.
         public_url: String,
     },
+    /// Enable a unit the old host had enabled, once the instance runs: the move helper's path
+    /// unit (SPEC-470 MVB-008).
+    Enable {
+        /// The line's name.
+        name: String,
+        /// The unit.
+        unit: String,
+    },
     /// Remove the one-time key and the flow's files; enable the firewall.
     Finish {
         /// The key's comment in `authorized_keys`.
@@ -1652,6 +1660,35 @@ fn tasks(host: &mut dyn Host, env: &mut Env<'_>, data_dir: &Path, wait_secs: u64
     }
 }
 
+/// Enables and starts the path unit `unit` (SPEC-470 MVB-008); nothing but a unit's name is
+/// given to `systemctl`.
+fn enable(host: &mut dyn Host, name: &str, unit: &str, l: &mut Lines) {
+    let named = unit
+        .strip_suffix(".path")
+        .is_some_and(|stem| host_setup::service_name_ok(&format!("{stem}.service")));
+    if !named {
+        return l.failed(name, "not enabled: the old host named no path unit");
+    }
+    let says = |host: &mut dyn Host, verb: &str| {
+        sh(host, &["systemctl", verb, unit])
+            .stdout
+            .trim()
+            .to_owned()
+    };
+    if says(host, "is-enabled") == "enabled" && says(host, "is-active") == "active" {
+        return l.ok(name, format!("{unit} is enabled"));
+    }
+    let out = sh(host, &["systemctl", "enable", "--now", unit]);
+    if out.ok() {
+        l.changed(name, format!("{unit} is enabled"));
+    } else {
+        l.failed(
+            name,
+            format!("`systemctl enable --now {unit}` failed: {}", out.why()),
+        );
+    }
+}
+
 fn finish(host: &mut dyn Host, env: &Env<'_>, key: &str, firewall: bool, l: &mut Lines) {
     let keys = Path::new("/root/.ssh/authorized_keys");
     let text = host.read(keys).unwrap_or_default();
@@ -1795,6 +1832,7 @@ pub fn handle(host: &mut dyn Host, env: &mut Env<'_>, request: &Request) -> Repl
             let (outcome, detail) = super::github::line(asked, public_url);
             l.push("GitHub App", outcome, detail);
         }
+        Request::Enable { name, unit } => enable(host, name, unit, &mut l),
         Request::Finish { key, firewall } => finish(host, env, key, *firewall, &mut l),
     }
     reply.lines = l.0;

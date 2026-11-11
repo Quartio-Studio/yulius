@@ -1035,6 +1035,24 @@ impl<'a> Move<'a> {
                 "none on the old host: the new one offers no Update now either",
             );
         }
+        // The helper of Settings → Instance's "Move to another host" (SPEC-470 MVB-008).
+        self.ok(
+            "move helper",
+            match p.move_helper {
+                Some(true) => {
+                    "its units are carried, and its path unit is enabled on the new host as it \
+                     is here"
+                }
+                Some(false) => {
+                    "its units are carried; its path unit is not enabled here, so it is not \
+                     enabled on the new host"
+                }
+                None => {
+                    "none on the old host: the new one offers no move from Settings → Instance \
+                     either"
+                }
+            },
+        );
         let host = self
             .state
             .new_url
@@ -1784,6 +1802,19 @@ impl<'a> Move<'a> {
                     wait_secs: TASKS_WAIT,
                 },
             )?;
+        }
+        if !refused
+            && p.move_helper == Some(true)
+            && let Some(unit) = yulius_sandbox::units::migrate_path_unit(&self.opts.service)
+        {
+            // What fails here is a line: the new instance has taken over.
+            let _ = self.call(
+                "move helper",
+                &Request::Enable {
+                    name: "move helper".into(),
+                    unit,
+                },
+            );
         }
         self.redirect(p, &new);
         Ok(())
