@@ -122,6 +122,16 @@ pub enum Point {
     /// The start-up reconciliation (SPEC-458): every run on record was gone through; the sweep
     /// of tasks without a run has not begun. The path is the data directory.
     ReconcileSweep,
+    /// A turn's end (SPEC-461) looked at the background work of a session on an older Claude
+    /// Code, whatever it found; who typed and what pauses it are not read again yet. The path is
+    /// the task id.
+    ClaudeMoveProbed,
+    /// A settled turn (SPEC-461) decided whether its idle session restarts on a newer Claude
+    /// Code, and made that restart if so. The path is the task id.
+    ClaudeMoveSettled,
+    /// The time a session restarted on a newer Claude Code had to start there passed (SPEC-461),
+    /// and whether that version gets other sessions was decided. The path is the task id.
+    ClaudeMoveStartJudged,
 }
 
 #[cfg(feature = "test-support")]

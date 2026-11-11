@@ -13,7 +13,7 @@ been performed or verified** as part of the implementation work.
 | Linux x86_64 or arm64, systemd | the service | macOS works for development (runs are "not contained"). |
 | `git` ≥ 2.40 | sandboxes, worktrees, delivery | on `PATH` of the service; `yulius host setup` installs it. |
 | Docker Engine (`docker-ce` with `docker-buildx-plugin` and `docker-compose-plugin`) | Docker in sandboxes: every new base copies `dockerd`, buildx and compose | from Docker's apt repository; `yulius host setup` installs it and stops the host's own daemon, which nothing uses (see [Docker in sandboxes](#docker-in-sandboxes)). |
-| Claude Code (`claude`) | Claude tasks and Claude account login | installed with npm system-wide (`npm install -g @anthropic-ai/claude-code`; verified with 2.1.292). Isolated sandboxes then get newer releases by themselves: see [Claude Code updates](#claude-code-updates). |
+| Claude Code (`claude`) | Claude tasks and Claude account login | installed with npm system-wide (`npm install -g @anthropic-ai/claude-code`; verified with 2.1.292 and 2.1.322). Isolated sandboxes then get newer releases by themselves, each checked for Yulius's default model first: see [Claude Code updates](#claude-code-updates). |
 | GitHub CLI (`gh`) ≥ 2.82.1 | `gh` in every sandbox, logged in as the person (their shells) or the task's creator (agents) | install it on the host from [GitHub's package repository](https://github.com/cli/cli/blob/trunk/docs/install_linux.md), not the distribution's package: Ubuntu 24.04 ships 2.45, and since GitHub retired Projects (classic) `gh pr edit` and `gh issue view --comments` fail with a GraphQL error before 2.82.1. Sandboxes copy the host system, so rebuild the base afterwards (`yulius sandbox-base build`). `yulius doctor` warns without it or below 2.82.1. |
 | bubblewrap (`bwrap`) | containment (`--contained`) | strongly recommended in production; without it runs are marked "not contained". `yulius host setup` installs it. |
 | An AppArmor rule that lets `/usr/bin/bwrap` create user namespaces | every sandbox, on Ubuntu 24.04 and later (`kernel.apparmor_restrict_unprivileged_userns = 1`) | `yulius host setup` writes `/etc/apparmor.d/yulius-bwrap` and, on Ubuntu 26.04, disables the shipped `bwrap-userns-restrict`; never write one by hand (see [Sandbox isolation](#sandbox-isolation)). Debian needs none. |
@@ -670,7 +670,7 @@ other instead of overlapping.
 | `YULIUS_SANDBOX_DISK_GB` | a quarter of the data disk, at least 100, at most half the disk; a [resource limit](#resource-limits) | Soft quota: the sandbox directory plus its installed packages, measured every 10 minutes (again when a refusal would rest on a reading older than a minute); from 90 % Yulius prunes the build caches of idle tasks, ended tasks' caches and closed or cancelled tasks' worktrees always (every 5 minutes), see [SPEC-008](../.ai/specs/SPEC-008-sandbox-disk.md); above it, new sessions are refused (live ones continue). `0` turns it off. Persistent CI job checkouts, and each one's own `YULIUS_CI_CACHE` (`ci/cache/<checkout>`, SPEC-351), are pruned the same way while no CI run executes, and one job's cache beyond a quarter of the quota at once. A project declares its own caches in `yulius.toml`: `[disk]` `caches = "target build/cache"`. Caches are found and removed only with no link from the sandbox directory down, and on Linux only ([SPEC-263](../.ai/specs/SPEC-263-disk-upkeep-refuses-links-at-worktrees-a.md)). |
 | `YULIUS_SANDBOX_FORWARD` | — | Extra host loopback ports reachable inside every sandbox at the same port (for example a loopback MCP server), comma-separated. |
 | `YULIUS_SANDBOX_IDLE_MINUTES` | 5 | A holder without runs is stopped after this long; the next run starts a fresh one on the newest base. A sandbox's Docker engine stops after this long without a client and without a running container. |
-| `YULIUS_CLAUDE_UPDATES` | `stable` | Claude Code releases isolated sandboxes follow: `stable` or `latest` (npm's dist-tags), or `off` (the host's install only). See [Claude Code updates](#claude-code-updates). |
+| `YULIUS_CLAUDE_UPDATES` | `latest` | Claude Code releases isolated sandboxes follow: `latest` or `stable` (npm's dist-tags), or `off` (the host's install only). A channel chosen in Settings, Instance wins over it. See [Claude Code updates](#claude-code-updates). |
 | `YULIUS_SANDBOX_DOCKER` | `on` | `on`: every isolated sandbox gets its own Docker engine when its system has `dockerd` and the cgroup delegation is on; `off`: none (the briefing then says there is no engine, and `docker` answers why). |
 
 **Where things live.**
@@ -740,29 +740,65 @@ the host-sized values by itself (audited as `limits.adapted` by `migration`).
 
 Claude Code's own updater is off in every session (it cannot write the system install from a
 contained run). Yulius updates it instead ([ADR-0266](decisions/0266-yulius-keeps-claude-code-current-in-its-data-directory.md),
-SPEC-421), with no root step and no sign-in again:
+SPEC-421; [ADR-0293](decisions/0293-claude-code-follows-latest-and-must-know-the-default-model.md),
+SPEC-461), with no root step and no sign-in again:
 
-- About every hour (the first check 2 minutes after a start) the server reads npm's
-  `YULIUS_CLAUDE_UPDATES` dist-tag (`stable` by default) of `@anthropic-ai/claude-code` from
-  `registry.npmjs.org`. A newer version than the one runs get is downloaded as its platform
-  package (`@anthropic-ai/claude-code-linux-x64`, `-linux-arm64`, or their `-musl` builds), checked
-  against the registry's sha512, and its binary must be an ELF for this platform that embeds that
-  version (it is never run on the host).
+- **Channel.** About every hour (the first check 2 minutes after a start, and at once when the
+  channel changes or a superadmin presses "Check now") the server reads npm's dist-tags of
+  `@anthropic-ai/claude-code` from `registry.npmjs.org` and follows `latest` by default. A
+  superadmin chooses Latest, Stable or Off in **Settings, Instance, Claude Code**; the choice is
+  stored in the database, wins over `YULIUS_CLAUDE_UPDATES` and needs no restart ("Use the
+  server's" goes back to the unit's value).
+- **Checked before it is used.** A newer version than the one runs get is downloaded as its
+  platform package (`@anthropic-ai/claude-code-linux-x64`, `-linux-arm64`, or their `-musl`
+  builds), checked against the registry's sha512, and its binary must be an ELF for this platform
+  that embeds that version and names Yulius's default model (`claude-fable-5-2` today). It is
+  read, never run on the host. A release that does not know the default model is refused and
+  reported; one that lacks another model the composer offers is installed and the gap reported.
+  On `stable`, `latest`'s release is taken when neither the version in use nor stable's release
+  knows the default model.
 - It lands in `<data>/claude-code/versions/<version>/bin/claude.exe`; `<data>/claude-code/current`
   points at it. The version before it is kept, older ones are removed once no process runs them
   (about 300 MB each). Only a host install laid out as `bin/claude.exe` is updated over.
   Whether a process runs a version is read from `/proc/<pid>/exe`: keep `/proc` readable to the
   service user (no `hidepid=` mount option, no `ProtectProc=` in `yulius.service`), or a version a
   running session uses could be removed under it.
-- Every run that joins an isolated sandbox (tasks, Superagent, shells, CI jobs, dev CD runs) binds
-  the newer of that version and the host's npm install at the host package's path, when it starts.
-  Running sessions keep their version until they next start (Continue, a resume after a pause);
-  subscriptions stay signed in.
+- **New runs.** Every run that joins an isolated sandbox (tasks, Superagent, shells, CI jobs, dev
+  CD runs) binds the newer of that version and the host's npm install at the host package's path,
+  when it starts (with Off: the host's install). Subscriptions stay signed in.
+- **Running tasks.** A task's session keeps the version it started with until a turn of it ends:
+  then Yulius restarts it on the version new runs get, in the same Claude session and on the
+  same subscription, and says so in one line in its terminal. It waits while the session has
+  background shells, agents or monitors (they would be lost; a `yulius wait` counts) or a person
+  typed into it in the last minute, and tries once per version. A goal session moves at a turn
+  it works on after, while its goal is set and not yet achieved; an idle one, and a goal task
+  that is Done, keep their version until their next start. The card lists the
+  tasks still on an older version, and each task's info shows the version each session ran.
+  Yulius does not know a schedule a session set for itself (Claude Code's `/loop`): such a
+  session is restarted like any other, and the schedule ends with its process.
+- **A version a session cannot continue on gets no other running session.** That is: the
+  restart could not be started, the restarted session ended by itself before it started, or it
+  did not start within two minutes (a dialog a release opens on; that session is left as it is,
+  for its person). The card names the task and what happened. Sessions that start or continue
+  still get that version, so choose Off (the host's install) when it does not work at all. A
+  newer version, or a restart of the server, lifts it. A restart that cannot be made right now
+  (the subscription is at its limit, the sandbox cannot be joined) says nothing, is no entry in
+  the task's switches, and is tried again at a turn's end ten minutes later or more.
+- **When the version in use does not know the default model**, the card shows a red banner with
+  the fix and `yulius doctor --contained` prints "Claude Code in sandboxes" as `FAIL`. The fix is
+  the next check (or "Check now"), which installs a release that knows it; or, at once, a newer
+  install on the host: `sudo npm install -g @anthropic-ai/claude-code@latest` (runs get the newer
+  of the host's and Yulius's). If npm's newest release does not know it either (it was refused,
+  or it is what runs get), no release knows the model yet: choose a model Claude Code knows for
+  tasks until one does. The card and the doctor say that only from the server's own read of the
+  registry in the last two hours: not with Off, and not after a check that failed.
 - The host's install is never changed; updating it by hand past Yulius's version makes runs use it.
   Without an npm install on the host, sandboxes have no Claude Code and nothing is updated.
-- `yulius doctor --contained` prints "Claude Code in sandboxes" with the version runs get. A failed
-  check is logged ("Claude Code was not updated") and tried again an hour later; the server's
-  egress needs `registry.npmjs.org` on port 443.
+- The server writes what it last knew (channel, npm's `latest` and `stable`, what the last check
+  did, the version in use and the offered models it lacks) to `<data>/claude-code/status.json`:
+  `yulius doctor --contained` reads the channel in effect from it and warns about a refused
+  release. A failed check is logged ("Claude Code was not updated"), shown on the card and tried
+  again an hour later; the server's egress needs `registry.npmjs.org` on port 443.
 
 ### Docker in sandboxes
 

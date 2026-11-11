@@ -65,6 +65,8 @@ signal-hook = { workspace = true, features = ["iterator"] }
 # Claude Code releases (SPEC-421): the platform package's tarball.
 tar = { workspace = true }
 flate2 = { workspace = true }
+# One pass over a Claude Code binary for its version and the offered model ids (SPEC-461).
+aho-corasick = { workspace = true }
 
 [dev-dependencies]
 yulius-app = { workspace = true, features = ["test-support"] }
