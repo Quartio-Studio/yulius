@@ -991,6 +991,8 @@ mod tests {
             "profile b /usr/bin/{bwrap,x} {\n}\n",
             "profile b /usr/bin///bwrap {\n}\n",
             "profile b ///usr/bin/bwrap {\n}\n",
+            // One value stands as it is: its slash is the third, and three are one.
+            "@{d} = /usr/bin/bwrap\nprofile b //@{d} {\n}\n",
             "profile b /usr/bin/bwrap (unconfined) {\n}\n",
             "/usr/bin/x /usr/bin/bwrap {\n}\n",
             // An include's line and a switch's are no part of the header that follows.
@@ -1017,6 +1019,8 @@ mod tests {
             "profile b //usr/bin/bwrap {\n}\n",
             "@{dir} = /usr/bin\nprofile b /@{dir}/bwrap {\n}\n",
             "@{dirs} = /opt /usr/bin\nprofile b /@{dirs}/bwrap {\n}\n",
+            // Several values stand as an alternation, which keeps its slashes apart.
+            "@{d} = /usr/bin/bwrap /x\nprofile b //@{d} {\n}\n",
             // What stands before a variable no longer counts for the next one.
             "@{s} = /\n@{d} = /bwrap /x\nprofile b /usr/bin@{s}@{d} {\n}\n",
             // A variable an included file sets, other than `@{bin}`, is not known here.
