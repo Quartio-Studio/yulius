@@ -183,9 +183,10 @@ Run on 2026-11-11 in the task's worktree; the logs are in the ignored `target/ev
 - Tests first: the formula, precedence and staleness tests failed before the domain code; each
   review fix has a test that failed before it (`target/evidence/test-review-red.log`,
   `test-review2-red.log`, `e2e-limits-review-red.log`, `e2e-limits-review2-red.log`). Mutation
-  checks: without the slot resize the lowered-CI-limit test fails; with a request sent beside a
-  refusal, or the focus left alone after a failed save, the two browser assertions fail
-  (`e2e-limits-review3-mutated.log`).
+  checks: without the slot resize the raised-CI-limit and queued-task tests fail
+  (`mutation-step4.log`; the lowered-limit test, added later, failed the same way in a run that
+  kept no log); with a request sent beside a refusal, or the focus left alone after a failed
+  save, the two browser assertions fail (`e2e-limits-review3-mutated.log`).
 - `cargo test -p yulius --test main limits::`: 18 passed (two hosts, the mark, adapt, keep,
   settings over unit, refusals, audit, restart, the queued task starting, unreadable and
   unparseable records, a failed save, a failed audit).
@@ -193,9 +194,13 @@ Run on 2026-11-11 in the task's worktree; the logs are in the ignored `target/ev
   nothing was scanned, so it is reported as disabled, not as passed.
 - Independent review in fresh read-only sessions, three rounds: `246cbcb7` approved with minor
   findings, `7157c7b7` approved with minor findings, `1a54ad18` changes requested (one browser
-  assertion that could not fail); all own-code findings were fixed test-first, and the reviewer
-  confirmed the head that carries the last fix. Left as it was, with the reviewer's agreement:
-  the unit's `YULIUS_*` values have no range check (so before this change too).
+  assertion that could not fail); the reviewer then approved `edced321`, the head carrying the
+  last fix (after it only this section's wording changed). All own-code findings were fixed
+  test-first or, with the reviewer's agreement, left: a member's malformed body gets the
+  extractor's 422 before the 403 (nothing is told), the start-warning test has no setting-pin
+  case (the integration test covers that path), and the focus after a redraw without a refusal
+  follows the sibling cards. Pre-existing and left: the unit's `YULIUS_*` values have no range
+  check.
 - Not tested: a real move between two machines (the detection and the start after an import run
   on a real store with a probe reporting the two real hosts' sizes); the sandbox memory limit
   reaching running sandboxes (it applies at a restart by design).
