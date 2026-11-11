@@ -769,7 +769,7 @@ Cleanup request = {"items": [{"kind", "name"}] (empty: every safe item), "force"
   every new integration and production head is tested once per commit. The integration branch's
   configuration applies; while it has none, a pull request that adds CI is tested with its own
   (`source: pull_request`). A newer head cancels the active run of the same reference ("superseded
-  by …"). Up to `YULIUS_CI_LANES` runs of one sandbox (default 2) execute at once, each in its own job
+  by …"). Up to `YULIUS_CI_LANES` runs of one sandbox (host-sized, 2 below 32 CPUs) execute at once, each in its own job
   checkouts; their jobs share the instance's job slots (`YULIUS_CI_MAX_JOBS`).
 - **Commit status** `yulius/ci` on the commit: `pending` (queued, running), `success`, `failure`
   (names the failed job and exit code), `error` (errors and cancellations), linking to
@@ -1485,6 +1485,11 @@ resolves to nothing, the run gets the server without that variable or token.
 | POST | `/api/admin/update/cancel` | superadmin | while building or pausing tasks: the build stops (ADR-0283), nothing is installed, paused tasks go on → `UpdateView`; 409 otherwise |
 | POST | `/api/admin/update/proceed` | superadmin | while pausing tasks: restart without waiting for tasks still in a turn → `UpdateView`; 409 otherwise |
 | POST | `/api/admin/restart` | superadmin | `{"confirm":true}` → 202 `UpdateView`: restarts the server with the build it runs, as an update without building or installing: tasks pause (frozen), the helper's `restart` stops, starts and checks that build, tasks resume; its run has `"restart": true`; 422 without `confirm`, 409 without an installed helper or a known build, or while a run is open (SPEC-432) |
+| GET | `/api/admin/limits` | superadmin | → `LimitsView` `{"host": {"cpus", "memory_bytes", "disk_bytes"}, "limits": [LimitView]}` (SPEC-459): the six resource limits (`max_sessions`, `ci_max_jobs`, `ci_lanes`, `sandbox_memory_gb`, `sandbox_disk_gb`, `cd_run_disk_gb`). `LimitView` = `{"key", "label", "env", "suffix": ""\|"GiB"\|"GB", "value", "source": "default"\|"unit"\|"settings", "host_sized", "formula", "unit_value"\|null, "setting": {"value"\|null, "set_by", "set_at"}\|null, "configured_on": host\|null, "stale", "min", "max", "live", "restart_needed"}`: `stale` = the pinned number in force was configured on a host of another size and is not what this one would get; `setting.value: null` = host-sized saved here, overruling the unit. 409 before the server loaded its limits |
+| PUT | `/api/admin/limits/{key}` | superadmin | `{"value": n}` pins the limit (it wins over the unit's `YULIUS_*` variable); `{"value": null}` makes it host-sized whatever the unit says → `LimitsView`. In force at once (sessions: queued tasks start; CI jobs: running ones finish), the sandbox memory at the next restart (`restart_needed`). 422 outside `min`…`max` (the message names the range; sandbox memory at most the host's) and for a body without `value` or with anything but a whole number or `null`, 404 for an unknown key. Audited `limits.set`. Every change answers 409 when the saved limits could not be read at this start, or were no limits document (nothing is written over them; see operations.md, "Resource limits") |
+| DELETE | `/api/admin/limits/{key}` | superadmin | forgets the setting: the unit's value is in force again, else the host-sized one → `LimitsView`. Audited `limits.removed` |
+| POST | `/api/admin/limits/adapt` | superadmin | host-sized for every `stale` limit (as `PUT … {"value": null}` for each) → `LimitsView`. Audited `limits.adapted` |
+| POST | `/api/admin/limits/keep` | superadmin | keeps every `stale` limit's number and records it for this host → `LimitsView`. Audited `limits.kept` |
 | GET | `/api/admin/jev` | superadmin | → `JevKeyView` (never the key) |
 | PUT | `/api/admin/jev` | superadmin | `{"key"}` (8–4096 printable characters, no spaces; 422 otherwise) → `JevKeyView`: sealed with the master key, used by task intake at once (ADM-002) |
 | DELETE | `/api/admin/jev` | superadmin | removes the saved key (the `YULIUS_JEV_API_KEY_FILE` key is used again, if any) → `JevKeyView` |

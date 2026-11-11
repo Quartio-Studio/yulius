@@ -6,10 +6,12 @@
 //! reason it is not automatic) or `failed`. [`Mode::Setup`] fixes everything it safely can,
 //! installs packages and builds the base; [`Mode::Check`] (the update helper's re-check, HST-012)
 //! applies only the safe, idempotent fixes (the needrestart rule, the host's Docker units, the
-//! modules file and loading, the binary's owner) and reports the rest; [`Mode::DryRun`] changes
+//! modules file and loading, the binary's owner) and reports the rest (the AppArmor rule of
+//! "bwrap namespaces" among it, SPEC-456: the helper cannot write it); [`Mode::DryRun`] changes
 //! nothing and says what setup would change. The last line is the "sandbox Docker" verdict
 //! (`yulius_sandbox::docker_status`), the doctor's words.
 
+mod bwrap_userns;
 pub mod system;
 #[cfg(test)]
 mod tests;
@@ -468,6 +470,7 @@ impl<'a> Run<'a> {
         self.kernel_modules();
         self.service_user();
         self.subordinate_ids();
+        self.bwrap_namespaces();
         self.service_unit();
         self.helper_unit();
         self.binary();
@@ -489,6 +492,17 @@ impl<'a> Run<'a> {
         }
         self.service_user();
         self.subordinate_ids();
+        self.lines
+    }
+
+    /// Only whether bwrap can start a sandbox's namespace, for the next steps of `yulius
+    /// instance import` (SPEC-456 BNS-010). The service user comes first: the proof runs as it.
+    pub fn namespaces(mut self) -> Vec<HostLine> {
+        if !self.data_dir_ok() {
+            return self.lines;
+        }
+        self.service_user();
+        self.bwrap_namespaces();
         self.lines
     }
 
@@ -1675,6 +1689,14 @@ pub fn free_sub_range(texts: &[&str]) -> Option<u32> {
 #[must_use]
 pub fn passed(lines: &[HostLine]) -> bool {
     lines.iter().all(|l| l.outcome != HostOutcome::Failed)
+}
+
+/// Whether the "bwrap namespaces" item failed: this host cannot start a sandbox yet.
+#[must_use]
+pub fn lacks_namespaces(lines: &[HostLine]) -> bool {
+    lines
+        .iter()
+        .any(|l| l.name == bwrap_userns::ITEM && l.outcome == HostOutcome::Failed)
 }
 
 /// The report of `yulius host check --json`.
