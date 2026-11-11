@@ -324,6 +324,21 @@ async fn the_start_after_an_import_adapts_by_itself() -> TestResult {
     let disk = limit(&v, "sandbox_disk_gb");
     assert_eq!(disk["unit_value"], 300);
     assert_eq!(disk["stale"], false);
+
+    // A mark found again (a second import of the same copy) has nothing left to adapt.
+    let (h, admin, _) = restarted(&h, NEW, &OLD_PINS, true).await?;
+    assert_eq!(
+        in_force(&view(&h, &admin).await?),
+        defaults([34, 12, 4, 660, 875, 175])
+    );
+    assert!(!h.app.config.data_dir.join(ADAPT_MARK).exists());
+    assert_eq!(
+        h.store
+            .audit_details(AUDIT_TARGET, "limits.adapted", 5)
+            .await?
+            .len(),
+        1
+    );
     Ok(())
 }
 
@@ -468,12 +483,26 @@ async fn a_number_out_of_range_an_unknown_limit_and_other_people_are_refused() -
     assert_eq!(r.status, StatusCode::OK, "{}", r.body);
     let r = put(&h, &admin, "sandbox_pids", json!(9000)).await?;
     assert_eq!(r.status, StatusCode::NOT_FOUND);
+    // Host-sized is said with `null`: a body without the value, or with another kind of
+    // value, is refused and never read as host-sized.
+    for body in [
+        json!({}),
+        json!({ "vlaue": 40 }),
+        json!({ "value": "40" }),
+        json!({ "value": 1.5 }),
+        json!({ "value": -3 }),
+    ] {
+        let path = "/api/admin/limits/max_sessions";
+        let r = call(&h.router, Method::PUT, path, Some(body.clone()), &admin).await?;
+        assert_eq!(r.status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    }
     let v = view(&h, &admin).await?;
     assert_eq!(
         limit(&v, "max_sessions")["value"],
         8,
         "a refusal changes nothing"
     );
+    assert_eq!(limit(&v, "max_sessions")["setting"], Value::Null);
 
     configure_github_app(&h).await?;
     let alice = admit_and_sign_in(&h, &admin, "alice", 11, true).await?;
@@ -485,6 +514,13 @@ async fn a_number_out_of_range_an_unknown_limit_and_other_people_are_refused() -
             Some(json!({ "value": 99 })),
         ),
         (Method::DELETE, "/api/admin/limits/sandbox_disk_gb", None),
+        // Not even which limits exist: an unknown key is refused the same way.
+        (
+            Method::PUT,
+            "/api/admin/limits/sandbox_pids",
+            Some(json!({ "value": 9000 })),
+        ),
+        (Method::DELETE, "/api/admin/limits/sandbox_pids", None),
         (Method::POST, "/api/admin/limits/adapt", None),
         (Method::POST, "/api/admin/limits/keep", None),
     ] {
@@ -532,17 +568,9 @@ async fn an_instance_that_is_not_set_up_starts_with_host_sized_limits() -> TestR
 #[tokio::test]
 async fn a_queued_task_is_started_when_the_session_limit_is_raised() -> TestResult {
     use yulius_app::ports::store::TaskStore as _;
-    use yulius_domain::task::TaskStatus;
     let (h, admin) = instance(OLD, &[(Limit::Sessions, 1)]).await?;
-    support::add_sandbox(&h, "s1", "studio", 20000).await?;
-    support::user_with_token(&h, "u-alice", "alice", false).await?;
-    support::seed_task(&h, "t-run", "s1", "u-alice", TaskStatus::Running, None).await?;
-    support::seed_live_attempt(&h, "t-run", "tok-run").await?;
-    let waiting = support::seed_task(&h, "t-wait", "s1", "u-alice", TaskStatus::Queued, None)
-        .await?
-        .id;
     // The one slot is taken: a pass of the queue starts nothing.
-    h.app.drain_queue_now().await;
+    let waiting = one_runs_one_waits(&h).await?;
     let status = call(&h.router, Method::GET, "/api/status", None, &admin).await?;
     assert_eq!(
         status.body["sessions"],
@@ -552,20 +580,183 @@ async fn a_queued_task_is_started_when_the_session_limit_is_raised() -> TestResu
 
     let r = put(&h, &admin, "max_sessions", json!(2)).await?;
     assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    until_started(&h, &waiting).await?;
+    let status = call(&h.router, Method::GET, "/api/status", None, &admin).await?;
+    assert_eq!(status.body["sessions"]["limit"], 2);
+    Ok(())
+}
+
+/// Waits until the queued task `id` is offered a session.
+async fn until_started(h: &Harness, id: &yulius_domain::ids::TaskId) -> TestResult {
+    use yulius_app::ports::store::TaskStore as _;
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
     loop {
-        let task = h.store.task(&waiting).await?.ok_or("task")?;
-        if task.status != TaskStatus::Queued {
-            break;
+        let task = h.store.task(id).await?.ok_or("task")?;
+        if task.status != yulius_domain::task::TaskStatus::Queued {
+            return Ok(());
         }
         assert!(
             tokio::time::Instant::now() < deadline,
-            "still queued under a limit of 2"
+            "still queued under the raised limit"
         );
         tokio::task::yield_now().await;
     }
-    let status = call(&h.router, Method::GET, "/api/status", None, &admin).await?;
-    assert_eq!(status.body["sessions"]["limit"], 2);
+}
+
+/// One running and one queued task of `h` under a session limit of 1; answers the queued one.
+async fn one_runs_one_waits(h: &Harness) -> Fallible<yulius_domain::ids::TaskId> {
+    use yulius_domain::task::TaskStatus;
+    support::add_sandbox(h, "s1", "studio", 20000).await?;
+    support::user_with_token(h, "u-alice", "alice", false).await?;
+    support::seed_task(h, "t-run", "s1", "u-alice", TaskStatus::Running, None).await?;
+    support::seed_live_attempt(h, "t-run", "tok-run").await?;
+    let waiting = support::seed_task(h, "t-wait", "s1", "u-alice", TaskStatus::Queued, None)
+        .await?
+        .id;
+    h.app.drain_queue_now().await;
+    Ok(waiting)
+}
+
+/// A set-up instance on a database file, started on `host` with the unit's `pins`, and a
+/// second connection to that database (to break what the server reads or writes).
+async fn file_instance(
+    host: (u32, u64, u64),
+    pins: &[(Limit, u64)],
+) -> Fallible<(Harness, Creds, rusqlite::Connection, tempfile::TempDir)> {
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("yulius.db");
+    let h = harness_with(HarnessOptions {
+        store: Some(yulius_store::SqliteStore::open(&file)?),
+        ..HarnessOptions::default()
+    })?;
+    let admin = setup_superadmin_creds(&h).await?;
+    start(&h, host, pins).await;
+    Ok((h, admin, rusqlite::Connection::open(&file)?, dir))
+}
+
+/// A start that cannot read the saved limits (the read fails; the document may be fine) runs
+/// on the unit's and the host's values and leaves everything as it is: the record is not
+/// replaced by an empty one, the import's mark waits for a start that can read, and Settings
+/// refuses to save over it.
+#[tokio::test]
+async fn limits_that_cannot_be_read_are_not_overwritten_and_the_mark_waits() -> TestResult {
+    let (old, admin, db, _file) = file_instance(OLD, &OLD_PINS).await?;
+    let r = put(&old, &admin, "ci_max_jobs", json!(6)).await?;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    // Bytes where the server reads text: its read fails.
+    db.execute("UPDATE instance SET limits = CAST(limits AS BLOB)", [])?;
+
+    let (h, admin, _) = restarted(&old, NEW, &OLD_PINS, true).await?;
+    assert_eq!(h.app.max_live_sessions(), 8, "the unit's number");
+    assert_eq!(h.app.ci_max_jobs(), 12, "host-sized without the record");
+    assert!(
+        h.app.config.data_dir.join(ADAPT_MARK).exists(),
+        "the mark waits for a start that can read the limits"
+    );
+    let r = put(&h, &admin, "max_sessions", json!(40)).await?;
+    assert_eq!(r.status, StatusCode::CONFLICT, "{}", r.body);
+    assert!(
+        r.body.to_string().contains("could not be read"),
+        "{}",
+        r.body
+    );
+    let (kind, kept): (String, String) = db.query_row(
+        "SELECT typeof(limits), CAST(limits AS TEXT) FROM instance",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    assert_eq!(kind, "blob", "not written");
+    assert!(kept.contains("ci_max_jobs"), "{kept}");
+
+    // Readable again: the setting is still there, and the move is adapted to.
+    db.execute("UPDATE instance SET limits = CAST(limits AS TEXT)", [])?;
+    let (h, _, _) = restarted(&h, NEW, &OLD_PINS, true).await?;
+    assert_eq!(h.app.max_live_sessions(), 34);
+    assert!(!h.app.config.data_dir.join(ADAPT_MARK).exists());
+    let audit = h
+        .store
+        .audit_details(AUDIT_TARGET, "limits.adapted", 5)
+        .await?;
+    assert_eq!(audit.len(), 1, "{audit:?}");
+    assert!(audit[0].contains("ci_max_jobs 6 → 12"), "{audit:?}");
+    Ok(())
+}
+
+/// A change that cannot be saved is not put in force either.
+#[tokio::test]
+async fn a_change_that_cannot_be_saved_changes_nothing() -> TestResult {
+    let (h, admin, db, _file) = file_instance(OLD, &[]).await?;
+    db.execute_batch(
+        "CREATE TRIGGER limits_refused BEFORE UPDATE OF limits ON instance \
+         BEGIN SELECT RAISE(ABORT, 'the disk is full'); END;",
+    )?;
+    let r = put(&h, &admin, "max_sessions", json!(3)).await?;
+    assert!(!r.status.is_success(), "{} {}", r.status, r.body);
+    assert_eq!(h.app.max_live_sessions(), 8);
+    db.execute_batch("DROP TRIGGER limits_refused")?;
+    let v = view(&h, &admin).await?;
+    assert_eq!(limit(&v, "max_sessions")["value"], 8);
+    assert_eq!(limit(&v, "max_sessions")["source"], "default");
+    Ok(())
+}
+
+/// A raise that is saved and in force starts the queued task also when its audit entry
+/// cannot be written: the answer is the error, the task does not wait for another event.
+#[tokio::test]
+async fn a_raise_whose_audit_fails_still_starts_the_queued_task() -> TestResult {
+    let (h, admin, db, _file) = file_instance(OLD, &[(Limit::Sessions, 1)]).await?;
+    let waiting = one_runs_one_waits(&h).await?;
+    db.execute_batch(
+        "CREATE TRIGGER audit_refused BEFORE INSERT ON audit_log \
+         WHEN NEW.action = 'limits.set' \
+         BEGIN SELECT RAISE(ABORT, 'the disk is full'); END;",
+    )?;
+    let r = put(&h, &admin, "max_sessions", json!(2)).await?;
+    assert!(!r.status.is_success(), "{} {}", r.status, r.body);
+    assert_eq!(h.app.max_live_sessions(), 2);
+    until_started(&h, &waiting).await
+}
+
+/// HSL-003, HSL-004: a number saved in Settings remembers its host like a unit value: on a
+/// host of another size it is flagged, "keep" records it for this host (the setting stays as
+/// it was saved), "adapt" makes it host-sized.
+#[tokio::test]
+async fn a_number_saved_in_settings_on_another_host_is_flagged_kept_or_adapted() -> TestResult {
+    let (old, admin) = instance(OLD, &[]).await?;
+    let r = put(&old, &admin, "max_sessions", json!(6)).await?;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+
+    let (h, admin, _) = restarted(&old, NEW, &[], false).await?;
+    let v = view(&h, &admin).await?;
+    let sessions = limit(&v, "max_sessions");
+    assert_eq!(sessions["value"], 6);
+    assert_eq!(sessions["source"], "settings");
+    assert_eq!(sessions["stale"], true);
+    assert_eq!(sessions["configured_on"]["cpus"], 12);
+    let saved_at = sessions["setting"]["set_at"].clone();
+
+    let v = post(&h, &admin, "keep").await?;
+    let sessions = limit(&v, "max_sessions");
+    assert_eq!(sessions["value"], 6);
+    assert_eq!(sessions["source"], "settings");
+    assert_eq!(sessions["stale"], false);
+    assert_eq!(sessions["configured_on"]["cpus"], 64);
+    assert_eq!(sessions["setting"]["set_at"], saved_at);
+    assert_eq!(h.app.max_live_sessions(), 6);
+
+    // Back on the small host the number kept for the big one is flagged again.
+    let (h, admin, _) = restarted(&h, OLD, &[], false).await?;
+    assert_eq!(
+        limit(&view(&h, &admin).await?, "max_sessions")["stale"],
+        true
+    );
+    let v = post(&h, &admin, "adapt").await?;
+    let sessions = limit(&v, "max_sessions");
+    assert_eq!(sessions["value"], 8);
+    assert_eq!(sessions["source"], "default");
+    assert_eq!(sessions["stale"], false);
+    assert_eq!(sessions["setting"]["value"], Value::Null);
+    assert_eq!(h.app.max_live_sessions(), 8);
     Ok(())
 }
 

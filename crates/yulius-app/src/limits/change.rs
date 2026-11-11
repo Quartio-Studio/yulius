@@ -102,6 +102,7 @@ impl App {
         key: &str,
         value: Option<u64>,
     ) -> AppResult<LimitsView> {
+        self.require_superadmin(ctx)?;
         let limit = limit_of(key)?;
         self.change_limits(ctx, |loaded, by, at| {
             if let Some(value) = value {
@@ -137,6 +138,7 @@ impl App {
         ctx: &AuthContext,
         key: &str,
     ) -> AppResult<LimitsView> {
+        self.require_superadmin(ctx)?;
         let limit = limit_of(key)?;
         self.change_limits(ctx, |loaded, _, _| {
             Ok(loaded.record.settings.remove(limit.key()).map(|was| Done {
@@ -200,6 +202,13 @@ impl App {
                 "this server did not load its resource limits".into(),
             ));
         };
+        if current.unread {
+            return Err(AppError::Conflict(
+                "the saved resource limits could not be read when this server started: \
+                 restart it before changing them"
+                    .into(),
+            ));
+        }
         let mut next = current.clone();
         let Some(done) = change(&mut next, &login, now)? else {
             return Ok(current.view());
@@ -209,7 +218,9 @@ impl App {
         let raised = self.put_in_force(current);
         let view = current.view();
         drop(guard);
-        self.deps
+        // The change is in force: what it lets start starts, whatever the audit's write says.
+        let audited = self
+            .deps
             .store
             .audit(
                 now,
@@ -218,13 +229,14 @@ impl App {
                 Some(done.target),
                 Some(&done.detail),
             )
-            .await?;
+            .await;
         if raised.sessions {
             self.drain_queue().await;
         }
         if raised.lanes {
             self.ci_dispatch().await;
         }
+        audited?;
         Ok(view)
     }
 }

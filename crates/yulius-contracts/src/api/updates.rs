@@ -272,7 +272,9 @@ pub struct LimitSettingView {
 /// `PUT /api/admin/limits/{key}`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SetLimit {
-    /// The number to pin; `null`: host-sized, whatever the unit says.
+    /// The number to pin; `null`: host-sized, whatever the unit says. The field is required:
+    /// a body without it is not read as host-sized.
+    #[serde(deserialize_with = "Option::deserialize")]
     pub value: Option<u64>,
 }
 

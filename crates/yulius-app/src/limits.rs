@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 use yulius_contracts::api::updates::{LimitSettingView, LimitView, LimitsHost, LimitsView};
-use yulius_domain::limits::{Host, Limit, Pin, Resolved, Setting};
+use yulius_domain::limits::{Host, Limit, Pin, Resolved, Setting, Source};
 use yulius_domain::time::Timestamp;
 
 use crate::auth::rfc3339;
@@ -81,6 +81,9 @@ struct Loaded {
     record: Record,
     /// The sandbox memory (GiB) the sandboxes were sized with.
     memory_at_start: u64,
+    /// The saved record could not be read at this start: `record` is not what is saved, so
+    /// nothing is written over it.
+    unread: bool,
 }
 
 /// The saved record (`instance.limits`).
@@ -285,6 +288,20 @@ fn amount(limit: Limit, value: u64) -> String {
     }
 }
 
+/// What the start says about a pin that no longer fits: its number and source, the host it
+/// was configured on, and what `now` would get.
+fn stale_words(limit: Limit, pin: Pin, source: Source, now: Host) -> String {
+    format!(
+        "{} is pinned to {} ({}), sized for another host ({}); this host would get {}: take it \
+         or keep the number in Settings → Instance",
+        limit.label().to_lowercase(),
+        amount(limit, pin.value),
+        source.as_str(),
+        host_words(pin.host),
+        amount(limit, limit.host_sized(now))
+    )
+}
+
 impl App {
     /// Live agent sessions at once.
     #[must_use]
@@ -326,11 +343,16 @@ impl App {
     /// Returns what the sandbox isolation is built with.
     pub async fn load_limits(self: &Arc<Self>, unit: UnitLimits) -> StartLimits {
         let host = self.host();
-        let saved = match self.deps.store.limits().await {
-            Ok(doc) => doc,
+        // A read that fails says nothing about what is saved: this start then runs on the
+        // unit's and the host's values, writes nothing over the record and leaves the mark.
+        let (saved, unread) = match self.deps.store.limits().await {
+            Ok(doc) => (doc, false),
             Err(err) => {
-                tracing::warn!("the saved resource limits could not be read: {err}");
-                None
+                tracing::warn!(
+                    "the saved resource limits could not be read; this start uses the unit's \
+                     and the host's values and saves none: {err}"
+                );
+                (None, true)
             }
         };
         let record = saved
@@ -348,17 +370,19 @@ impl App {
             unit,
             record,
             memory_at_start: 0,
+            unread,
         };
         loaded.record_unit();
 
         let mark = self.config.data_dir.join(ADAPT_MARK);
-        let moved = tokio::fs::try_exists(&mark).await.unwrap_or(false);
+        let moved = !unread && tokio::fs::try_exists(&mark).await.unwrap_or(false);
         let adapted = if moved {
             loaded.adapt(true, MIGRATION, self.now())
         } else {
             Vec::new()
         };
-        let stored = loaded.record == before || self.save_limits(&loaded.record).await.is_ok();
+        let stored =
+            !unread && (loaded.record == before || self.save_limits(&loaded.record).await.is_ok());
         if moved && stored {
             if !adapted.is_empty() {
                 let detail = adapted.join(", ");
@@ -463,15 +487,7 @@ impl App {
                 .pin(limit)
                 .filter(|pin| pin.stale(limit, loaded.host))
             {
-                tracing::warn!(
-                    "{} is pinned to {} ({}), sized for another host ({}); this host would get \
-                     {}: take it or keep the number in Settings → Instance",
-                    limit.label().to_lowercase(),
-                    amount(limit, pin.value),
-                    resolved.source.as_str(),
-                    host_words(pin.host),
-                    amount(limit, limit.host_sized(loaded.host))
-                );
+                tracing::warn!("{}", stale_words(limit, pin, resolved.source, loaded.host));
             }
         }
     }
@@ -482,5 +498,38 @@ impl App {
         loaded.as_ref().map(Loaded::view).ok_or_else(|| {
             AppError::Conflict("this server did not load its resource limits".into())
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const GIB: u64 = 1 << 30;
+
+    /// HSL-004: the warning names the limit, its number and source, the host it was configured
+    /// on and the host-sized value.
+    #[test]
+    fn the_start_warning_names_the_pin_its_host_and_the_host_sized_value() {
+        let old = Host {
+            cpus: Some(12),
+            memory: Some(47 * GIB),
+            disk: Some(387 * GB),
+        };
+        let new = Host {
+            cpus: Some(64),
+            memory: Some(755 * GIB),
+            disk: Some(3500 * GB),
+        };
+        let pin = Pin {
+            value: 300,
+            host: old,
+        };
+        assert_eq!(
+            stale_words(Limit::SandboxDisk, pin, Source::Unit, new),
+            "sandbox disk quota is pinned to 300 GB (unit), sized for another host (12 CPUs, \
+             47 GiB, 387 GB); this host would get 875 GB: take it or keep the number in \
+             Settings → Instance"
+        );
     }
 }
