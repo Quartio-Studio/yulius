@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-11
 
+- A turn whose Stop meets its own prompt still ends (SPEC-453, task #435, ADR-0299). On a loaded
+  host a goal task could stay Working for good after Claude Code recorded its goal as met: the
+  transcript watcher, applying the turn's prompt, cleared the verdict wait the turn's Stop had
+  just opened. A task without a goal could stay Working the same way when the Stop had read it
+  before the watcher's prompt. The watcher's prompt and a clean Stop now take the task's turn
+  order (ADR-0234), and the Stop settles the task as it reads after that. This was the third
+  report of `task_done::a_goal_the_tui_dropped_is_submitted_again` timing out in the full suite
+  (#1066): it failed 2 of 48 runs under probe delays and passes 96 of 96 with the fix.
 - Nothing is typed into the Editor before its file is in it (SPEC-452, task #434, #1087). The
   editor is made with no model, so it shows no text to type into while the first file's read and
   live join are on their way. Before, Monaco's own empty model took that typing, the file's model
