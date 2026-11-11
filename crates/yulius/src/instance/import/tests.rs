@@ -30,10 +30,19 @@ fn manifest_for(target: &Path) -> Manifest {
 
 /// The export of a small instance, addressed to `target`.
 fn exported(target: &Path) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    exported_with(target, &|_| Ok(()))
+}
+
+/// The same, after `more` added to the instance's data directory.
+fn exported_with(
+    target: &Path,
+    more: &dyn Fn(&Path) -> io::Result<()>,
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let src = tempfile::tempdir()?;
     fs::create_dir_all(src.path().join("sandboxes/sb/home"))?;
     fs::write(src.path().join("yulius.db"), vec![9u8; 3000])?;
     fs::write(src.path().join("sandboxes/sb/home/.bashrc"), b"echo\n")?;
+    more(src.path())?;
     let p = plan(src.path())?;
     let mut out = Vec::new();
     send(
@@ -330,6 +339,46 @@ fn a_link_at_the_marker_is_refused_and_not_followed() -> TestResult {
         return Err("expected a refusal".into());
     };
     assert!(why.contains("did not finish"), "{why}");
+    assert!(!elsewhere.exists());
+    Ok(())
+}
+
+#[test]
+fn a_finished_import_leaves_the_limits_mark_for_the_first_start() -> TestResult {
+    use std::os::unix::fs::MetadataExt;
+    let host = tempfile::tempdir()?;
+    let target = host.path().join("yulius");
+    let bytes = exported(&target)?;
+    run(&bytes, &target).map_err(|f| format!("{f:?}"))?;
+    let mark = fs::symlink_metadata(target.join(yulius_app::limits::ADAPT_MARK))?;
+    assert!(mark.is_file());
+    assert_eq!((mark.uid(), mark.gid()), (ids().uid.1, ids().gid.1));
+    Ok(())
+}
+
+#[test]
+fn an_import_that_did_not_finish_leaves_no_limits_mark() -> TestResult {
+    let host = tempfile::tempdir()?;
+    let target = host.path().join("yulius");
+    let bytes = exported(&target)?;
+    let Err(Failure::Failed(_)) = run(&bytes[..bytes.len() - 2048], &target) else {
+        return Err("expected a failure".into());
+    };
+    assert!(!target.join(yulius_app::limits::ADAPT_MARK).exists());
+    Ok(())
+}
+
+#[test]
+fn a_link_the_copy_brings_at_the_limits_mark_is_replaced_not_followed() -> TestResult {
+    let host = tempfile::tempdir()?;
+    let target = host.path().join("yulius");
+    let elsewhere = host.path().join("planted");
+    let bytes = exported_with(&target, &|src| {
+        std::os::unix::fs::symlink(&elsewhere, src.join(yulius_app::limits::ADAPT_MARK))
+    })?;
+    run(&bytes, &target).map_err(|f| format!("{f:?}"))?;
+    let mark = fs::symlink_metadata(target.join(yulius_app::limits::ADAPT_MARK))?;
+    assert!(mark.is_file(), "the mark is a file of its own");
     assert!(!elsewhere.exists());
     Ok(())
 }

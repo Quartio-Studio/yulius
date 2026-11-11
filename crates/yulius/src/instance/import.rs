@@ -210,6 +210,7 @@ pub fn install(
     let user = user.unwrap_or(&m.service.user);
     check(&m, target, user, yulius_store::schema_version()).map_err(Failure::Refused)?;
     let map = prepare(&m, target).map_err(Failure::Refused)?;
+    let owner = (map.uid.1, map.gid.1);
     let failed = |e: io::Error| {
         Failure::Failed(format!(
             "{e}; {} holds an incomplete copy: remove it (`sudo rm -rf {}`) before importing \
@@ -243,8 +244,28 @@ pub fn install(
             m.total_bytes
         ))));
     }
+    limits_mark(target, chown.then_some(owner)).map_err(failed)?;
     std::fs::remove_file(target.join(INCOMPLETE)).map_err(failed)?;
     Ok((m, report))
+}
+
+/// Leaves the mark that makes the first start here size the limits for this host (SPEC-459
+/// HSL-005), owned by the service user. Whatever the copy brought at its name is replaced, a
+/// link never followed.
+fn limits_mark(target: &Path, owner: Option<(u32, u32)>) -> io::Result<()> {
+    let mark = target.join(yulius_app::limits::ADAPT_MARK);
+    match std::fs::remove_file(&mark) {
+        Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
+        _ => {}
+    }
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&mark)?;
+    if let Some((uid, gid)) = owner {
+        std::os::unix::fs::fchown(&file, Some(uid), Some(gid))?;
+    }
+    Ok(())
 }
 
 /// Makes the service user and its ids with `host setup`'s items and maps the copy's ids to them.
@@ -384,8 +405,10 @@ pub fn main(opts: &ImportOptions) -> ExitCode {
             eprintln!(
                 "Next:\n  1. sudo yulius host setup --public-url {url}\n     (writes {unit}, \
                  builds the sandbox base for this host, checks Docker, starts Yulius)\n  2. Copy \
-                 other Environment= lines you changed in the old {unit} (keys, limits), then \
-                 `sudo systemctl restart {unit}`.\n  3. Point the reverse proxy and DNS here.\n  \
+                 other Environment= lines you changed in the old {unit} (keys), then `sudo \
+                 systemctl restart {unit}`. Resource limits are sized for this host at the \
+                 first start (Settings, Instance shows them): leave the old YULIUS_MAX_SESSIONS, \
+                 YULIUS_CI_* and YULIUS_SANDBOX_*_GB numbers behind.\n  3. Point the reverse proxy and DNS here.\n  \
                  4. Keep the old instance frozen or stopped (`yulius instance export --move` \
                  does that): both would run the same agents on the same repositories.",
                 unit = m.service.unit
