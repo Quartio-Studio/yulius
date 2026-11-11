@@ -479,9 +479,10 @@ impl<'a> Run<'a> {
         self.subordinate_ids();
         self.bwrap_namespaces();
         self.service_unit();
+        // Before the sessions unit: its adopt unit runs this binary as root (SPEC-458 HST-003).
+        self.binary();
         self.session_units();
         self.helper_unit();
-        self.binary();
         self.base();
         self.start_service();
         let docker_ok = self.verdict();
@@ -1348,6 +1349,70 @@ impl<'a> Run<'a> {
         );
     }
 
+    /// Whether the service user, or anyone, may write the directory `dir`: it owns it, a group
+    /// it is in may write it, or everyone may. Whoever may write a directory may replace what is
+    /// in it.
+    fn dir_open_to_service(&self, dir: &Path) -> bool {
+        let Some((owner, mode)) = self.host.stat(dir) else {
+            return false;
+        };
+        let service_uid = self
+            .service
+            .as_ref()
+            .and_then(|s| s.uid)
+            .unwrap_or(u32::MAX);
+        if owner == service_uid || mode & 0o002 != 0 {
+            return true;
+        }
+        mode & 0o020 != 0
+            && self.host.gid(dir).is_some_and(|gid| {
+                self.service.as_ref().is_some_and(|s| {
+                    groups_of(
+                        &self.host.read(Path::new("/etc/passwd")).unwrap_or_default(),
+                        &self.host.read(Path::new("/etc/group")).unwrap_or_default(),
+                        &s.name,
+                    )
+                    .contains(&gid)
+                })
+            })
+    }
+
+    /// Why the service user could replace the binary `exe` (its link target), or `None`: a
+    /// directory on its path is open to it ([`Run::dir_open_to_service`]), or the file is not
+    /// root's alone. A unit that runs `exe` as root must not be written then (SPEC-458 HST-003).
+    /// In a dry run the file's owner is not judged: the "yulius binary" item only says what it
+    /// would fix.
+    pub(super) fn replaceable_by_service(&self, exe: &Path) -> Option<String> {
+        let target = self
+            .host
+            .canonical(exe)
+            .unwrap_or_else(|| exe.to_path_buf());
+        if let Some(dir) = target
+            .ancestors()
+            .skip(1)
+            .find(|dir| self.dir_open_to_service(dir))
+        {
+            return Some(format!(
+                "{} is under {}, which the service user or others may write",
+                target.display(),
+                dir.display()
+            ));
+        }
+        if self.mode == Mode::DryRun {
+            return None;
+        }
+        let service_uid = self
+            .service
+            .as_ref()
+            .and_then(|s| s.uid)
+            .unwrap_or(u32::MAX);
+        match self.host.stat(&target) {
+            Some((0, mode)) if !exe_writable(0, mode, service_uid) => None,
+            Some(_) => Some(format!("{} is not root's alone to write", target.display())),
+            None => Some(format!("{} cannot be inspected", target.display())),
+        }
+    }
+
     /// The binaries Yulius runs: owned by root, writable by root alone (HST-010).
     fn binary(&mut self) {
         const ITEM: &str = "yulius binary";
@@ -1362,13 +1427,6 @@ impl<'a> Run<'a> {
             .as_ref()
             .and_then(|s| s.uid)
             .unwrap_or(u32::MAX);
-        let service_groups = self.service.as_ref().map_or_else(Vec::new, |s| {
-            groups_of(
-                &self.host.read(Path::new("/etc/passwd")).unwrap_or_default(),
-                &self.host.read(Path::new("/etc/group")).unwrap_or_default(),
-                &s.name,
-            )
-        });
         let mut fixed = Vec::new();
         let mut fine = Vec::new();
         // A link is judged, and fixed, at its target, as the server and the doctor judge it.
@@ -1386,15 +1444,7 @@ impl<'a> Run<'a> {
             // Fixing the file is pointless where the service user may replace it: a directory
             // it owns, one writable by a group it is in, or by anyone.
             if let Some(dir) = path.parent()
-                && self.host.stat(dir).is_some_and(|(owner, mode)| {
-                    owner == service_uid
-                        || mode & 0o002 != 0
-                        || (mode & 0o020 != 0
-                            && self
-                                .host
-                                .gid(dir)
-                                .is_some_and(|gid| service_groups.contains(&gid)))
-                })
+                && self.dir_open_to_service(dir)
             {
                 return self.failed(
                     ITEM,

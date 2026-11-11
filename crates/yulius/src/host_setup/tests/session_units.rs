@@ -1,12 +1,12 @@
 //! The sessions unit, the adopt unit and the server's second drop-in (SPEC-458 HST-001).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use yulius_contracts::update::HostOutcome;
 
 use super::super::session_units::{adopt_unit_text, drop_in_text, sessions_unit_text};
 use super::super::{Mode, Options, Run};
-use super::{Fake, line, options, outcome, passed, run};
+use super::{EXE, Fake, SERVICE_UID, line, options, outcome, passed, run};
 
 const ITEM: &str = "sessions unit";
 const SESSIONS: &str = "/etc/systemd/system/yulius-sandboxes.service";
@@ -162,6 +162,85 @@ fn a_check_reports_it_and_a_dry_run_says_what_it_would_write() {
     assert!(item.detail.starts_with("would write"), "{}", item.detail);
     assert!(!fake.has(SESSIONS) && !fake.has(ADOPT) && !fake.has(DROP_IN));
     assert!(!fake.ran("systemctl start"), "{:#?}", fake.log);
+}
+
+/// Review of SPEC-458 (high): the adopt unit runs the server's binary as root before every
+/// start. Where the service user could replace that binary, the unit would hand it root, so
+/// nothing is written and the item fails naming the directory.
+#[test]
+fn a_binary_the_service_user_could_replace_gets_no_root_unit() {
+    let mut fake = before_the_sessions_unit();
+    fake.files.insert(
+        PathBuf::from("/usr/local/bin"),
+        (String::new(), SERVICE_UID, 0o040_755),
+    );
+    fake.files
+        .insert(PathBuf::from(EXE), (String::new(), SERVICE_UID, 0o100_755));
+    for mode in [Mode::Setup, Mode::Check, Mode::DryRun] {
+        let lines = run(&mut fake, mode);
+        let item = line(&lines, ITEM);
+        assert_eq!(item.outcome, HostOutcome::Failed, "{mode:?}: {lines:#?}");
+        assert!(
+            item.detail.contains("/usr/local/bin") && item.detail.contains("as root"),
+            "{mode:?}: {}",
+            item.detail
+        );
+        assert!(
+            !fake.has(SESSIONS) && !fake.has(ADOPT) && !fake.has(DROP_IN),
+            "{mode:?}"
+        );
+        assert!(!fake.ran("systemctl start yulius-sandboxes.service"));
+    }
+}
+
+/// A directory further up counts as well: whoever may rename it may put another binary there.
+#[test]
+fn a_directory_above_the_binary_counts_too() {
+    let mut fake = before_the_sessions_unit();
+    fake.files.insert(
+        PathBuf::from("/usr/local"),
+        (String::new(), SERVICE_UID, 0o040_755),
+    );
+    let lines = run(&mut fake, Mode::Setup);
+    let item = line(&lines, ITEM);
+    assert_eq!(item.outcome, HostOutcome::Failed, "{lines:#?}");
+    assert!(item.detail.contains("under /usr/local,"), "{}", item.detail);
+    assert!(!fake.has(ADOPT) && !fake.has(DROP_IN));
+}
+
+/// Units an earlier run wrote do not make an unsafe binary safe: the item fails all the same.
+#[test]
+fn units_already_there_do_not_excuse_a_replaceable_binary() {
+    let mut fake = Fake::set_up();
+    fake.files.insert(
+        PathBuf::from("/usr/local/bin"),
+        (String::new(), SERVICE_UID, 0o040_755),
+    );
+    let lines = run(&mut fake, Mode::Check);
+    assert_eq!(outcome(&lines, ITEM), HostOutcome::Failed, "{lines:#?}");
+}
+
+/// A binary that only has the wrong owner is made root's by the setup's own item first, and
+/// the units follow in the same run.
+#[test]
+fn a_binary_made_roots_in_the_same_run_gets_the_units() {
+    let mut fake = before_the_sessions_unit();
+    fake.files
+        .insert(PathBuf::from(EXE), (String::new(), SERVICE_UID, 0o100_755));
+    let lines = run(&mut fake, Mode::Setup);
+    assert_eq!(
+        outcome(&lines, "yulius binary"),
+        HostOutcome::Changed,
+        "{lines:#?}"
+    );
+    assert_eq!(outcome(&lines, ITEM), HostOutcome::Changed, "{lines:#?}");
+    let position = |command: &str| fake.log.iter().position(|c| c == command);
+    let owned = position(&format!("own {EXE}"));
+    assert!(
+        owned.is_some() && owned < position(&format!("write {ADOPT}")),
+        "{:#?}",
+        fake.log
+    );
 }
 
 /// Units that are there but not what this build writes (another build's, or an operator's own):

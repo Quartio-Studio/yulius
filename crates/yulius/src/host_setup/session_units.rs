@@ -102,6 +102,19 @@ impl Run<'_> {
                 "the user or the binary's path has characters a unit file cannot hold",
             );
         }
+        // The adopt unit runs this binary as root before every start: where the service user
+        // could put another one in its place, the unit would hand it root (SPEC-458 HST-003).
+        if let Some(why) = self.replaceable_by_service(&exe) {
+            return self.failed(
+                ITEM,
+                format!(
+                    "{adopt} would run {} as root, but {why}: install yulius in a root-owned \
+                     directory such as /usr/local/bin (docs/operations.md §2) and run the setup \
+                     again; nothing was written",
+                    exe.display()
+                ),
+            );
+        }
         let system = Path::new("/etc/systemd/system");
         let wanted: [(PathBuf, String); 3] = [
             (
