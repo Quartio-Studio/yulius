@@ -131,7 +131,7 @@ Resume and bound
   host), the time to send what will have changed since the pass began (the last pass's sending
   time, scaled by how long changes gathered for it; the time for entries that earned no receipt
   counts in full, since every pass sends them), the new host's sync and the start (30 s: the
-  mark, the unit's start and its first answer took under 20 s between two emulated hosts).
+  mark, the unit's start and its first answer took 10 to 21 s between two emulated hosts).
   The plan shows what is known then: the copy's size and time at the link's rate, the bound, and
   a first estimate of the freeze: the entries of the data directory's filesystem counted four
   times at the rate of a sample (what a walk reaches in 2 s, walked again and timed, so that the

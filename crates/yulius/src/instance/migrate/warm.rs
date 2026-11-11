@@ -19,7 +19,7 @@ use crate::instance::{Manifest, Pass, Progress, walk};
 /// The delta passes one run makes before it freezes anyway, or stops when the freeze is bound.
 pub const MAX_DELTA_PASSES: u32 = 5;
 /// What the estimate allows for what follows the proof: the mark, the last items of
-/// `host setup`, the unit's start and its first answer. They took under ten seconds between two
+/// `host setup`, the unit's start and its first answer. They took 10 to 21 s between two
 /// emulated hosts (SPEC-465's Evidence).
 const START_SECS: u64 = 30;
 /// Without a bound the move copies again while the changes alone take longer than this to send.
