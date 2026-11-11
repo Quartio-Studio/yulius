@@ -333,3 +333,34 @@ fn a_link_at_the_marker_is_refused_and_not_followed() -> TestResult {
     assert!(!elsewhere.exists());
     Ok(())
 }
+
+/// SPEC-456 BNS-010: the next steps name what `host setup` does for bwrap only on a host that
+/// lacks it, and never tell anyone to write a rule by hand.
+#[test]
+fn the_next_steps_name_the_namespace_rule_only_when_the_host_lacks_it() {
+    let url = "https://yulius.example.org";
+    let lacking = next_steps(url, "yulius.service", true);
+    assert!(
+        lacking.starts_with(
+            "Next:\n  1. sudo yulius host setup --public-url https://yulius.example.org\n     \
+             (lets bwrap start the user namespaces sandboxes run in, which this host does not \
+             allow yet; writes yulius.service, builds the sandbox base for this host, checks \
+             Docker, starts Yulius)\n  2. "
+        ),
+        "{lacking}"
+    );
+    let ready = next_steps(url, "yulius.service", false);
+    assert!(
+        ready.starts_with(
+            "Next:\n  1. sudo yulius host setup --public-url https://yulius.example.org\n     \
+             (writes yulius.service, builds the sandbox base for this host, checks Docker, \
+             starts Yulius)\n  2. "
+        ),
+        "{ready}"
+    );
+    assert!(!ready.contains("bwrap"), "{ready}");
+    for text in [&lacking, &ready] {
+        assert!(!text.contains("apparmor"), "{text}");
+        assert!(text.contains("\n  4. Keep the old instance"), "{text}");
+    }
+}

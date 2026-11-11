@@ -495,6 +495,17 @@ impl<'a> Run<'a> {
         self.lines
     }
 
+    /// Only whether bwrap can start a sandbox's namespace, for the next steps of `yulius
+    /// instance import` (SPEC-456 BNS-010). The service user comes first: the proof runs as it.
+    pub fn namespaces(mut self) -> Vec<HostLine> {
+        if !self.data_dir_ok() {
+            return self.lines;
+        }
+        self.service_user();
+        self.bwrap_namespaces();
+        self.lines
+    }
+
     /// Whether the data directory is absolute, else a failed line: the setup passes it to
     /// `install`, `useradd`, `chmod` and the helper commands as an argument, where a relative path
     /// such as `-x` would read as an option (SPEC-398 VSH-004, #677).
@@ -1678,6 +1689,14 @@ pub fn free_sub_range(texts: &[&str]) -> Option<u32> {
 #[must_use]
 pub fn passed(lines: &[HostLine]) -> bool {
     lines.iter().all(|l| l.outcome != HostOutcome::Failed)
+}
+
+/// Whether the "bwrap namespaces" item failed: this host cannot start a sandbox yet.
+#[must_use]
+pub fn lacks_namespaces(lines: &[HostLine]) -> bool {
+    lines
+        .iter()
+        .any(|l| l.name == bwrap_userns::ITEM && l.outcome == HostOutcome::Failed)
 }
 
 /// The report of `yulius host check --json`.

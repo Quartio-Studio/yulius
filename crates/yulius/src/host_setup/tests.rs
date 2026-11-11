@@ -8,7 +8,7 @@ use yulius_sandbox::docker_status::{ENGINE_MODULES, MODULES_FILE, modules_file_c
 
 use super::{
     Cmd, DOCKER_CE, DOCKER_SOURCE, HELPER_DROP_IN, Host, Mode, NEEDRESTART_RULE_FILE, Options, Out,
-    Run, UNIT_DROP_IN, UNIT_FILE, free_sub_range, passed, summary,
+    Run, UNIT_DROP_IN, UNIT_FILE, free_sub_range, lacks_namespaces, passed, summary,
 };
 
 const DATA: &str = "/var/lib/yulius";

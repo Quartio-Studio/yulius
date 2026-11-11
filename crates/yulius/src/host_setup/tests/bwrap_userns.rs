@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use yulius_contracts::update::{HostLine, HostOutcome};
 
 use super::super::bwrap_userns::{PROFILE, PROFILE_FILE};
-use super::{Fake, Mode, line, passed, run};
+use super::{Fake, Mode, Run, lacks_namespaces, line, options, passed, run};
 
 const ITEM: &str = "bwrap namespaces";
 const ENABLED: &str = "/sys/module/apparmor/parameters/enabled";
@@ -651,4 +651,28 @@ fn a_dry_run_says_what_it_would_do() {
             "allowed by /etc/apparmor.d/yulius-bwrap; not proven: bubblewrap is not installed yet"
         )
     );
+}
+
+/// BNS-010: after its copy, `yulius instance import` asks whether the new host lacks the rule,
+/// with the service user it made and nothing else of the setup, and changes nothing.
+#[test]
+fn the_import_learns_whether_the_host_lacks_the_rule() {
+    for (name, mut fake, lacks) in [
+        ("noble", noble(), true),
+        ("resolute", resolute(), true),
+        ("debian", debian(), false),
+        ("no AppArmor", Fake::fresh(), false),
+    ] {
+        let made = Run::new(&mut fake, Mode::Setup, options(), &mut |_| {}).user_and_ids();
+        assert!(passed(&made), "{made:#?}");
+        fake.log.clear();
+        let lines = Run::new(&mut fake, Mode::Check, options(), &mut |_| {}).namespaces();
+        let names: Vec<&str> = lines.iter().map(|l| l.name.as_str()).collect();
+        assert_eq!(names, ["service user", ITEM], "{name}: {lines:#?}");
+        assert_eq!(lacks_namespaces(&lines), lacks, "{name}: {lines:#?}");
+        assert!(!touched(&fake), "{name}: {:#?}", fake.log);
+    }
+    let mut fake = set_up(noble());
+    let lines = Run::new(&mut fake, Mode::Check, options(), &mut |_| {}).namespaces();
+    assert!(!lacks_namespaces(&lines), "{lines:#?}");
 }

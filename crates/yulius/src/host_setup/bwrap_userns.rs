@@ -16,7 +16,7 @@ use yulius_sandbox::userns::{HOLDER_NAMESPACE, PROOF_COMMAND};
 
 use super::{Cmd, Mode, Run};
 
-const ITEM: &str = "bwrap namespaces";
+pub(super) const ITEM: &str = "bwrap namespaces";
 /// AppArmor's profiles; the unit loads every file here at boot, except those linked in
 /// `disable/`.
 const DIR: &str = "/etc/apparmor.d";
