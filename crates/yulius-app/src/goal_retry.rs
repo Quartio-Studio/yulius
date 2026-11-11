@@ -12,7 +12,7 @@
 //! A pause that follows a usage limit in the same turn is not such a pause (SPEC-464): Claude
 //! Code answers the refusal of a model for its usage credits with "Goal paused · the request was
 //! rate limited", and the limit path already moves the task or resumes it at the reset. Its
-//! notice is held ([`LimitGoalPause`]): when the move is refused before it ends the session, the
+//! notice is held (`LimitGoalPause`): when the move is refused before it ends the session, the
 //! session stays at the refusal, nothing goes on by itself, and the pause needs a person after
 //! all.
 
