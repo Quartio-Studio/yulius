@@ -1,11 +1,11 @@
 ---
 yulius-task: 34165c5e-1d18-4e09-ab9d-c25b750f0d82
-status: in-progress
+status: done
 ---
 
 # SPEC-454: The security-job no-cancel test holds its jobs itself, not by the 8 s job limit
 
-Status: in-progress
+Status: done
 Date: 2026-11-11
 Owner: Yulius task #436, issue #1079
 Scope authorization: the request of task #436 (from task #430, which works through open issues):
@@ -71,8 +71,8 @@ it holds end only when the test releases them, and nothing else competes with th
 
 - [x] Reproduce the defect and find its root cause
 - [x] Write the fix spec and the regression test that fails
-- [ ] Fix the cause until the regression test and every gate pass
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] Fix the cause until the regression test and every gate pass
+- [x] Independent review in a fresh session, findings fixed test-first
 
 ## Acceptance criteria
 
@@ -86,8 +86,9 @@ it holds end only when the test releases them, and nothing else competes with th
 ## Test plan
 
 - **Regression, committed first (red).** The test asserts, while the pull request's jobs are
-  held, that every other run passed. Today it fails in every slot order: the branch's run is
-  still running behind the held jobs, or was ended by the limit (`error`).
+  held, that every other run passed. Today the test fails in every slot order: on this
+  assertion when the branch's run is still running behind the held jobs or was ended by the
+  limit (`error`), and before it, in `until_jobs`, in the mixed order.
 - **Probes, never committed.**
   - R1: the test does not look for 20 s before its first poll.
   - R1b: the test does not look for 12 s before the second phase's poll.
@@ -112,9 +113,10 @@ it holds end only when the test releases them, and nothing else competes with th
   and the process host ends a run whose directory is gone (seen after a failed run: the jobs'
   processes gone within 9 s, their process hosts within 35 s).
 - **The regression test is an assertion in the test itself.** The defect is the test's scenario,
-  so the guard states what the scenario needs (the other runs passed while the jobs are held) and
-  fails without the fix in every order, with no probe. The limit has no such guard: only a wait
-  longer than 8 s could show it, and the probes do.
+  so the guard states what the scenario needs (the other runs passed while the jobs are held).
+  Without the fix the test fails in every order with no probe: on the guard, or before it in the
+  mixed order. The limit has no such guard: only a wait longer than 8 s could show it, and the
+  probes do.
 - **The other tests that hold jobs stay as they are.** The issue is this test; their window is a
   full 8 s and none has failed for this cause. Named in Context and on the issue, not changed
   (one concern per pull request).
@@ -143,7 +145,8 @@ it holds end only when the test releases them, and nothing else competes with th
   "another run holds job slots or was ended by its time limit": 4 with the branch's run in
   `error` (after 8.8 s), 2 with it still `running` (after 0.8 s).
 - **With the fix** (`2e4b9244`):
-  - At rest: 20 of 20 passed, in 1.56 to 1.72 s.
+  - At rest: 20 of 20 passed, in 1.56 to 1.72 s; later 60 of 60 more at `a20a573c`, and 3 of 3
+    once dev was merged in.
   - Under R2: 5 of 5 passed (3.0 s). Under R1 + R1b: 2 of 2 (33.3 s, 32 s of them the probes).
     Under all three: 2 of 2 (33.8 s).
   - Each half of the fix is needed (mutations, not committed). With the limit back at 8 s the
@@ -155,25 +158,37 @@ it holds end only when the test releases them, and nothing else competes with th
     9.2 s a run, five times the time at rest) and 5 of 5 with 120 loops (0.03 of a CPU; 29 to
     33 s a run). No job ended in `error`. For scale: SPEC-441 records the unchanged test at 16
     to 18 s alone after its gate hit the flake; here it took 9 s at rest.
-  - `842dd4a0` rewords one comment of the test; it passed 3 of 3 after it (1.7 s).
+  - `842dd4a0` and `de5607b6` change only comments of the test; it passed 3 of 3 after each
+    (1.6 to 1.7 s).
 - **The neighbours.** `cargo nextest run -p yulius -E 'binary_id(yulius::main) &
-  test(/^local_ci::/)'`: 63 of 63 passed in 18.4 s.
-- **Gate.** `scripts/dev ci` at `96eca926`: exit 1, on failures outside this change that block
-  every pull request since the host move of 2026-11-11 (#1154; PR #1150 carries their fixes).
-  - Doctor, check, lint and the macOS compile passed.
-  - Tests: 3282 of 3284 passed, 16 skipped. The two that failed are
-    `first_message::a_draft_typed_during_the_opening_turn_is_left_alone` and
-    `first_message::focus_and_mouse_reports_do_not_keep_the_goal_out`, "timed out waiting for
-    the continued turn" (#1154).
-  - The stages the gate did not reach, run by hand: `scripts/doctests.py`, `cargo shear` and
-    `cargo doc` passed; `cargo deny` failed on one new advisory, RUSTSEC-2026-0486 (rustix).
-  - The gate is run again on top of dev once dev has those fixes.
+  test(/^local_ci::/)'`: 63 of 63 passed in 18.4 s, and in each of 5 more runs.
+- **Review round 1** (a fresh session with `om-code-review`, on `a20a573c`, reading only): no
+  blocker or major in the change; "request changes" for the gate alone, red at that head. Its
+  findings, all taken:
+  - Minor: "the scenario needs two CPUs" understated the limit. Measured, and reworded below.
+  - Minor: the gate's failures were described by more than their sources show. Reworded below.
+  - Nit: the comment on the hour sat twenty lines above it. Moved (`de5607b6`).
+  - Nit: "fails in every slot order" was said of the assertion, but in the mixed order the
+    test fails before it. Reworded in the Test plan and in Decisions.
+- **Final review.** A fresh session reviews the head that is delivered and runs the gate
+  itself. Its verdict and that head are in the pull request: a commit recording them here
+  could not be the head it reviewed.
+- **Gate.** `scripts/dev ci` at `de5607b6`, with dev `e2dd441d` merged in (`3d0e14f9`): exit 0;
+  doctor, check, lint, the macOS compile, 3285 tests passed and 16 skipped, deps, docs.
+  The commits after it change only this spec.
+  - Before that merge, at `96eca926`, the gate exited 1 on failures outside this change. Two
+    `first_message` tests timed out "waiting for the continued turn"; #1154 reports them on
+    unchanged dev `911e3127`. `cargo deny` failed on RUSTSEC-2026-0486 against dev's own
+    lockfile (rustix 1.1.5). PR #1150 fixed both in dev.
 - **Security scan.** `yulius security-scan`: "Security scan disabled: Vidoc is turned off in
   Yulius, for this project or the whole instance; nothing was scanned." Disabled, not passed.
 - **Limits, and what was not tested.**
   - Yulius CI's own load cannot be produced on demand. The forced slot order, the slow polls
     and the load runs stand for it.
-  - With a single CPU the test cannot pass, before or after this change. The sandbox's capacity
-    is then one CPU and its jobs run one at a time, so `quality` and `e2e` never run together.
-    Pinned to one idle CPU, `e2e` stayed `queued` for the 60 s; dev's version failed there too,
-    its jobs ended one after another by the 8 s limit. The scenario needs two CPUs.
+  - The test needs three CPUs, before and after this change: each of a run's three jobs
+    reserves a third of the sandbox's capacity, one CPU at least, and that capacity is the CPUs
+    the test process sees. Pinned to three idle CPUs it passed 8 of 8. Pinned to two it passed
+    7 of 8: in the failure `quality` and `e2e` held both CPUs and `security` stayed `queued`,
+    so the result depends on which jobs reserve first. Pinned to one it cannot pass: `e2e`
+    stayed `queued`, and dev's version failed there too, its jobs ended one after another by
+    the 8 s limit. Yulius CI gives each of a run's jobs 21 CPUs (its job log says so).
