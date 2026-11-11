@@ -189,6 +189,20 @@ test('a tool chosen twice while its sandbox’s page loads does not open', async
   await expect(shell).toHaveAttribute('aria-pressed', 'false');
 });
 
+test('a tool chosen while its sandbox’s page loads does not open once the tools are hidden', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12', studioTasks));
+  await studioLoading(screen);
+  await openShellPanel(screen);
+  await expect(screen.getByRole('navigation', 'Tools').getByRole('button', 'Shell')).toHaveAttribute('aria-pressed', 'true');
+  await expect(screen.getByRole('region', 'Tool panel')).toBeHidden();
+  await screen.getByRole('button', /^Hide tools/).click();
+
+  await releaseHeld(browser);
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#12 Checkout API');
+  await expect(screen.getByRole('region', 'Tool panel')).toBeHidden();
+  await expect(screen.getByRole('navigation', 'Tools')).toBeHidden();
+});
+
 // On the way in from a page outside a sandbox (only the Superagent in the rail) the tools show
 // while the sandbox's page loads, and could not be chosen. The one chosen last opens there.
 test('the tool chosen last on the way into a sandbox opens there', async ({ app, browser, screen }) => {

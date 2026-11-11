@@ -96,6 +96,8 @@ export function createPanelHost(ctx) {
     rail.hidden = !visible;
     const app = rail.closest('.app');
     if (app) app.classList.toggle('rail-hidden', !visible);
+    // The tools hidden: the one waiting for its sandbox is not wanted any more.
+    if (!visible && chosen) { chosen = null; press(); }
     if (!visible && !panel.hidden) close();
     if (persist) writeJson(RAIL_KEY, visible);
     if (ctx.onRailChange) ctx.onRailChange(visible);
@@ -125,6 +127,9 @@ export function createPanelHost(ctx) {
   let recent = []; // sandbox ids whose views are kept, the one used last first
   const toolOf = new Map(); // sandbox id → the tool it had open, or null (SPEC-113 KST-005)
   const arriving = new Set(); // sandbox ids whose page is loading, not the context yet (SPEC-170)
+  // The tool the person chose while a sandbox's page loads and none is the context yet, and how
+  // (`{ kind, opts }`): it opens in the sandbox that arrives (SPEC-450).
+  let chosen = null;
   // The page's one Global Superagent view, held by whichever Superagent panel shows its tab (SPEC-428).
   let globalAgent = null;
   const sharedGlobal = () => globalAgent || (globalAgent = createAgentView(ctx, null));
@@ -224,12 +229,30 @@ export function createPanelHost(ctx) {
     }
     const savedMax = readJson(MAX_KEY, {}) || {};
     setMaximized(Boolean(savedMax[k]));
-    for (const [name, button] of buttons) {
-      button.classList.toggle('active', name === k);
-      button.setAttribute('aria-pressed', String(name === k));
-    }
+    press();
     if (view.resume) view.resume();
     if (view.show) view.show(opts);
+  }
+
+  /** The rail says which tool is open, or chosen and waiting for its sandbox. */
+  function press() {
+    const pressed = chosen ? chosen.kind : (panel.hidden ? null : kind);
+    for (const [name, button] of buttons) {
+      button.classList.toggle('active', name === pressed);
+      button.setAttribute('aria-pressed', String(name === pressed));
+    }
+  }
+
+  /**
+   * Opens tool `k` for the person (rail, link, shortcut). While a sandbox's page loads and no
+   * sandbox is the context yet, it waits for that sandbox: opened now it would be the tool of no
+   * sandbox ("Open a sandbox first.", the Global Superagent), shown again for the sandbox as its
+   * context's, without the keyboard (SPEC-170 TKS-002, SPEC-428 SAT-005).
+   */
+  function open(k, opts = {}) {
+    if (sandbox || !arriving.size) { show(k, opts); return; }
+    chosen = { kind: k, opts };
+    press();
   }
 
   function close() {
@@ -239,10 +262,7 @@ export function createPanelHost(ctx) {
     if (ctx.fitSidebar) ctx.fitSidebar(); // the sidebar grows back to its width
     kind = null;
     if (sandbox) toolOf.set(sandbox.id, null);
-    for (const button of buttons.values()) {
-      button.classList.remove('active');
-      button.setAttribute('aria-pressed', 'false');
-    }
+    press();
     for (const view of views.values()) if (view.hide) view.hide();
     if (railForPanel) {
       railForPanel = false;
@@ -258,8 +278,10 @@ export function createPanelHost(ctx) {
   }
 
   function toggle(k, opts) {
-    if (kind === k && !panel.hidden) close();
-    else show(k, opts);
+    // Chosen again while it waits for its sandbox: not wanted after all.
+    if (chosen && chosen.kind === k) { chosen = null; press(); }
+    else if (kind === k && !panel.hidden) close();
+    else open(k, opts);
   }
 
   function destroyWhere(predicate) {
@@ -299,8 +321,9 @@ export function createPanelHost(ctx) {
     const write = sandbox && allows(sandbox.access, 'write');
     for (const [k] of KINDS) {
       const button = buttons.get(k);
-      // Outside a sandbox only the Superagent, the Global one, is there (SPEC-427 GSA-006).
-      button.disabled = !sandbox && k !== 'agent';
+      // Outside a sandbox only the Superagent, the Global one, is there (SPEC-427 GSA-006); the
+      // tools of a sandbox whose page loads can be chosen already.
+      button.disabled = !sandbox && !arriving.size && k !== 'agent';
       // Readers still edit the team's notes.
       button.classList.toggle('readonly', Boolean(sandbox) && !write && k !== 'notes');
     }
@@ -330,7 +353,10 @@ export function createPanelHost(ctx) {
     mounted() { setRailVisible(railVisible, { persist: false }); },
     get kind() { return panel.hidden ? null : kind; },
     /** A sandbox's page started loading: setContext comes once it has, unless the person left first. */
-    arrive(next) { arriving.add(next.id); },
+    arrive(next) {
+      arriving.add(next.id);
+      if (!sandbox) updateBadges();
+    },
     setContext(nextSandbox, nextTask) {
       // A sandbox left while its page loaded never was the context: it comes back with no tool,
       // unless it kept one from an earlier visit (SPEC-170 TKS-001, #489).
@@ -338,6 +364,8 @@ export function createPanelHost(ctx) {
         if (id !== (nextSandbox && nextSandbox.id) && id !== (sandbox && sandbox.id) && !toolOf.has(id)) toolOf.set(id, null);
       }
       arriving.clear();
+      const wish = chosen;
+      chosen = null;
       const sandboxChanged = (nextSandbox && nextSandbox.id) !== (sandbox && sandbox.id);
       const taskChanged = (nextTask && nextTask.id) !== (task && task.id);
       const left = sandbox;
@@ -367,7 +395,10 @@ export function createPanelHost(ctx) {
       // The Global Superagent in front: it stays open from page to page, in and out of sandboxes,
       // and a sandbox entered starts no session of its own (SPEC-428 SAT-005).
       const globalOpen = !panel.hidden && kind === 'agent' && (!left || agentTab === 'global');
-      if (!sandbox) {
+      if (wish && sandbox) {
+        // Chosen while this sandbox's page loaded: opened now, as the person asked then.
+        show(wish.kind, wish.opts);
+      } else if (!sandbox) {
         if (globalOpen && sandboxChanged) show('agent', { context: true });
         else if (!panel.hidden && kind !== 'agent') close();
         else if (!panel.hidden && sandboxChanged) close();
@@ -381,9 +412,11 @@ export function createPanelHost(ctx) {
         else if (!panel.hidden) close();
       // Shown again for the new context, not opened by the person: the keyboard stays with the page.
       } else if (!panel.hidden && kind && (sandboxChanged || taskChanged)) show(kind, { context: true });
+      // A tool chosen for a sandbox that did not arrive is not pressed any more.
+      if (wish) press();
       updateBadges();
     },
-    open: show,
+    open,
     toggle,
     close,
     updateBadges,
