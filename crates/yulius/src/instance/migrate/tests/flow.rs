@@ -406,6 +406,10 @@ struct FakeWorld {
     no_sync: bool,
     /// Syncs asked for.
     syncs: u32,
+    /// The old instance is updated to this build after the plan looked at it.
+    updated_to: Option<&'static str>,
+    /// Looks at the old instance's build.
+    looks: u32,
 }
 
 impl World for FakeWorld {
@@ -468,6 +472,14 @@ impl World for FakeWorld {
 
     fn boot(&self) -> String {
         "boot".into()
+    }
+
+    fn running(&mut self, _: &str) -> Option<String> {
+        self.looks += 1;
+        match self.updated_to {
+            Some(newer) if self.looks > 1 => Some(newer.to_owned()),
+            _ => Some(build()),
+        }
     }
 
     fn exe(&self) -> PathBuf {
@@ -631,6 +643,8 @@ fn setup() -> Result<Setup, Box<dyn std::error::Error>> {
             ahead: 3600,
             no_sync: false,
             syncs: 0,
+            updated_to: None,
+            looks: 0,
         },
         _tmp: tmp,
     })
@@ -2219,5 +2233,88 @@ fn a_rolled_back_move_leaves_no_staged_copy_to_go_on_with() -> TestResult {
         "{}",
         refusal.detail
     );
+    Ok(())
+}
+
+#[test]
+fn a_rerun_does_not_ask_again_for_the_room_the_staged_copy_already_takes() -> TestResult {
+    let mut s = setup()?;
+    s.opts.max_downtime = Some(1);
+    assert_eq!(s.run()?, 1);
+    // The staged copy fills most of the new disk: less is free than the data takes.
+    s.remote
+        .host
+        .says(&["stat", "-f", "-c"], "4096 1000 30000000\n");
+    s.opts.max_downtime = None;
+    assert_eq!(s.run()?, 0, "{}", s.shown());
+    let status = s.status()?;
+    let space = line(&status, "disk space").ok_or("no line")?;
+    assert_eq!(space.outcome, HostOutcome::Ok);
+    assert!(
+        space.detail.contains("the staged copy is there already"),
+        "{}",
+        space.detail
+    );
+
+    // Without a staged copy the same disk is too small, as before.
+    let mut s = setup()?;
+    s.remote
+        .host
+        .says(&["stat", "-f", "-c"], "4096 1000 30000000\n");
+    assert_eq!(s.run()?, 1);
+    assert_eq!(
+        outcome(&s.status()?, "disk space"),
+        Some(HostOutcome::Failed)
+    );
+    Ok(())
+}
+
+#[test]
+fn an_abort_before_the_cutover_names_the_staged_copy_left_on_the_new_host() -> TestResult {
+    let mut s = setup()?;
+    s.opts.max_downtime = Some(1);
+    assert_eq!(s.run()?, 1);
+    assert!(s.opts.state_dir.join("copy/stage.json").exists());
+    assert_eq!(s.abort()?, 0, "{}", s.shown());
+    let status = s.status()?;
+    let left = line(&status, "new host").ok_or("no line of the new host")?;
+    assert_eq!(left.outcome, HostOutcome::Manual);
+    assert!(
+        left.detail
+            .contains("still holds master.key and every secret"),
+        "{}",
+        left.detail
+    );
+    // What this host knew of it goes with the move.
+    assert!(!s.opts.state_dir.join("copy").exists());
+    assert_eq!(s.old_unit(), (false, false));
+    Ok(())
+}
+
+#[test]
+fn an_instance_updated_during_the_copy_is_not_frozen() -> TestResult {
+    let mut s = setup()?;
+    s.world.updated_to = Some("another-build");
+    assert_eq!(s.run()?, 1);
+    let status = s.status()?;
+    let old = line(&status, "old instance").ok_or("no line")?;
+    assert_eq!(old.outcome, HostOutcome::Failed);
+    assert!(
+        old.detail.contains("reports build another-build now")
+            && old.detail.contains("Nothing is frozen"),
+        "{}",
+        old.detail
+    );
+    assert_eq!(s.old_unit(), (false, false));
+    assert!(
+        !s.events()
+            .iter()
+            .any(|e| e.starts_with("old: systemctl") || e == "new: copy frozen")
+    );
+    // The staged copy stays for the run with the new build.
+    assert!(Mark::read(&s.remote.copy_dir).is_some());
+    s.world.updated_to = None;
+    s.world.looks = 0;
+    assert_eq!(s.run()?, 0, "{}", s.shown());
     Ok(())
 }

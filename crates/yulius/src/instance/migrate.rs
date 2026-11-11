@@ -261,6 +261,9 @@ pub trait World {
     fn sync(&mut self, dir: &Path) -> Result<(), String>;
     /// This boot's id ([`super::receipts::boot_id`]).
     fn boot(&self) -> String;
+    /// The commit the instance listening at the loopback `address` reports; `None` while it
+    /// does not answer.
+    fn running(&mut self, address: &str) -> Option<String>;
     /// This build's binary.
     fn exe(&self) -> PathBuf;
     /// This build's commit.
@@ -329,6 +332,8 @@ pub struct Move<'a> {
     state: State,
     /// What the new host holds of the staged copy (SPEC-465).
     stage: Stage,
+    /// The build the old instance reported when the plan looked.
+    ran: Option<String>,
     phase: &'static str,
     lines: Vec<HostLine>,
 }
@@ -349,6 +354,7 @@ impl<'a> Move<'a> {
             world,
             state,
             stage: Stage::open(&opts.state_dir.join("copy")),
+            ran: None,
             phase: "Plan",
             lines: Vec::new(),
         }
@@ -766,15 +772,14 @@ impl<'a> Move<'a> {
                 ),
             );
         }
+        // What an earlier run staged there is found before the plan speaks of room and time.
+        self.agree()?;
+        self.ran = self.world.running(&self.health_address(p));
         self.space(p, &facts);
         match self.remote.measure(LINK_TEST) {
             Ok(took) => {
                 let rate = (LINK_TEST as f64 / took.as_secs_f64().max(0.001)) as u64;
                 self.ok("link", format!("{}/s to the new host", bytes(rate)));
-                // What an earlier run staged there is found before the plan speaks of it.
-                if self.agree()? {
-                    self.stage.forget();
-                }
                 self.plan_downtime(p, rate);
             }
             Err(why) => {
@@ -862,6 +867,17 @@ impl<'a> Move<'a> {
                 );
             }
             return;
+        }
+        if self.stage.id().is_some() {
+            // Its room was found when the copy began; what is free now is for what changed.
+            return self.ok(
+                ITEM,
+                format!(
+                    "the staged copy is there already; {} more is free where the data \
+                     directory goes",
+                    bytes(facts.free_bytes)
+                ),
+            );
         }
         let inodes = facts.free_inodes == 0 || facts.free_inodes >= p.used_inodes;
         if facts.free_bytes >= p.used_bytes && inodes {
@@ -1327,6 +1343,21 @@ impl<'a> Move<'a> {
     fn cutover(&mut self, p: &Profile, facts: &Facts) -> Result<(), Stop> {
         self.phase("Cutover");
         let unit = self.opts.service.clone();
+        // The copy took a while. An instance that was updated meanwhile holds data the build
+        // staged on the new host may not read.
+        let runs = self.world.running(&self.health_address(p));
+        if let (Some(ran), Some(runs)) = (&self.ran, &runs)
+            && ran != runs
+        {
+            return Err(self.fail(
+                "old instance",
+                format!(
+                    "{unit} reported build {ran} when the copy began and reports build {runs} \
+                     now (an update during the copy). Nothing is frozen; the staged copy \
+                     stays: run the command again with the build the instance runs"
+                ),
+            ));
+        }
         let mut held = self.freeze()?;
         if !self.old_frozen() {
             // Stopped since the plan: found before the copy, not after it.
@@ -1888,7 +1919,7 @@ impl<'a> Move<'a> {
                 },
             );
         }
-        if started {
+        if started || self.stage.id().is_some() {
             self.manual(
                 "new host",
                 format!(
@@ -2093,6 +2124,10 @@ impl World for RealWorld {
 
     fn boot(&self) -> String {
         super::receipts::boot_id()
+    }
+
+    fn running(&mut self, address: &str) -> Option<String> {
+        target::reported_commit(address)
     }
 
     fn exe(&self) -> PathBuf {
