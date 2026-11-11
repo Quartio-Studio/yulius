@@ -7,12 +7,65 @@ use std::io::{self, BufReader, Read};
 use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
 
+use serde::{Deserialize, Serialize};
+
 use super::archive::{Item, Reader};
 use super::extract::{Extractor, IdMap, Report};
 use super::{FORMAT, MANIFEST, MANIFEST_LEN, Manifest, Progress, REFUSED};
 
 /// The marker of an import that has not finished, at the data directory's top.
 pub const INCOMPLETE: &str = ".yulius-import-incomplete";
+
+/// What the marker of a staged copy says (SPEC-465 WCP-005): the copy a move fills in passes
+/// until it is proven. An empty marker is a plain import that did not finish.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Mark {
+    /// 1.
+    pub version: u32,
+    /// The staged copy's id.
+    pub stage: String,
+    /// Streams acknowledged: installed (wholly or up to where they were cut) and synced.
+    pub acked: u64,
+    /// What the last of them installed.
+    #[serde(default)]
+    pub last: Option<Landed>,
+}
+
+/// What one stream left in a staged copy.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Landed {
+    /// The stream's own name.
+    pub nonce: String,
+    /// Its entries taken in, in stream order.
+    pub entries: u64,
+    /// The stream's digest (8 bytes, hex) before its entry number `entries`, and before the
+    /// entry before that one: the old host adopts receipts only up to a digest it recorded.
+    pub sums: [String; 2],
+    /// The whole stream arrived and its checksum matched.
+    pub complete: bool,
+    /// It was read while the instance ran.
+    pub live: bool,
+    /// The entries (by number) that were not installed: a warm pass removes no directory.
+    #[serde(default)]
+    pub deferred: Vec<u64>,
+}
+
+impl Mark {
+    /// The marker of the data directory `target`; `None` when there is none or it names no
+    /// stage.
+    #[must_use]
+    pub fn read(target: &Path) -> Option<Self> {
+        Self::parse(&std::fs::read_to_string(target.join(INCOMPLETE)).ok()?)
+    }
+
+    /// A marker's text as a stage; `None` for a plain import's empty marker.
+    #[must_use]
+    pub fn parse(text: &str) -> Option<Self> {
+        serde_json::from_str::<Self>(text)
+            .ok()
+            .filter(|mark| mark.version == 1 && !mark.stage.is_empty())
+    }
+}
 
 /// Options of `yulius instance import`.
 #[derive(Debug, Clone)]

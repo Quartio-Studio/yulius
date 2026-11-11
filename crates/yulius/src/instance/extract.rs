@@ -11,13 +11,11 @@ use std::os::fd::{AsFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt as _;
 use std::path::Path;
 
-use sha2::{Digest as _, Sha256};
-
 use rustix::fs::{
     AtFlags, CWD, FileType, Gid, Mode, OFlags, RawMode, Timespec, Timestamps, Uid, XattrFlags,
 };
 
-use super::archive::{Entry, Kind};
+use super::archive::{Entry, Kind, path_digest as path_hash};
 use super::walk::ROOT;
 
 /// How ids move from the exporting host to this one.
@@ -87,14 +85,6 @@ fn whiteout(_: &OwnedFd, name: &OsStr, _: u32) -> io::Result<()> {
         "{}: an overlay whiteout needs Linux",
         name.to_string_lossy()
     )))
-}
-
-/// A path's digest: the first 128 bits of its SHA-256, so two paths of one copy never share it.
-fn path_hash(path: &[u8]) -> [u8; 16] {
-    let digest = Sha256::digest(path);
-    let mut out = [0u8; 16];
-    out.copy_from_slice(&digest[..16]);
-    out
 }
 
 /// Whether an extended attribute is restored (IMP-003): overlay layers' and users' own; the rest

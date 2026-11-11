@@ -86,6 +86,15 @@ impl Entry {
     }
 }
 
+/// A path's digest: the first 128 bits of its SHA-256, so two paths of one copy never share it.
+#[must_use]
+pub fn path_digest(path: &[u8]) -> [u8; 16] {
+    let digest = Sha256::digest(path);
+    let mut out = [0u8; 16];
+    out.copy_from_slice(&digest[..16]);
+    out
+}
+
 /// `n` rounded up to whole blocks.
 #[must_use]
 pub fn padded(n: u64) -> u64 {

@@ -188,6 +188,7 @@ pub(crate) fn manifest_of(data_dir: &Path, unit: &str) -> Result<Manifest, Strin
         },
         subuid: range("/etc/subuid"),
         subgid: range("/etc/subgid"),
+        pass: None,
     })
 }
 
