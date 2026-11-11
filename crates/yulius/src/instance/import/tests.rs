@@ -1067,3 +1067,26 @@ fn a_frozen_pass_that_removed_a_tree_and_broke_leaves_nothing_known() -> TestRes
     assert_eq!(crate::instance::inventory::difference(&old, &new), None);
     Ok(())
 }
+
+#[test]
+fn a_pass_says_of_the_host_only_what_is_news() {
+    use yulius_contracts::update::{HostLine, HostOutcome};
+    let line = |outcome| HostLine {
+        name: "service user".into(),
+        outcome,
+        detail: String::new(),
+    };
+    // A whole copy says every line; a pass, which comes many times, only what changed or failed.
+    for outcome in [
+        HostOutcome::Ok,
+        HostOutcome::Changed,
+        HostOutcome::Manual,
+        HostOutcome::Failed,
+    ] {
+        assert!(worth_saying(&line(outcome), false));
+        assert_eq!(
+            worth_saying(&line(outcome), true),
+            outcome != HostOutcome::Ok
+        );
+    }
+}

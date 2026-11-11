@@ -693,16 +693,26 @@ fn next_steps(url: &str, unit: &str, namespaces: bool) -> String {
     )
 }
 
+/// Whether a line of the host's preparation is said: all of them for a whole copy, only what
+/// is not `ok` for a pass of a move, which comes many times (`only_news`).
+fn worth_saying(line: &yulius_contracts::update::HostLine, only_news: bool) -> bool {
+    !only_news || line.outcome != yulius_contracts::update::HostOutcome::Ok
+}
+
 /// Makes the service user and its ids with `host setup`'s items and maps the copy's ids to them.
+/// With `only_news` it says only what it changed or could not do.
 pub(crate) fn prepare_host(
     m: &Manifest,
     target: &Path,
     user: Option<&str>,
+    only_news: bool,
 ) -> Result<IdMap, String> {
     let opts = host_options(m, target, user);
     let mut host = crate::host_setup::system::RealHost { quiet: false };
     let mut print = |line: &yulius_contracts::update::HostLine| {
-        eprintln!("{}", crate::host_setup::format_line(line));
+        if worth_saying(line, only_news) {
+            eprintln!("{}", crate::host_setup::format_line(line));
+        }
     };
     let lines = crate::host_setup::Run::new(
         &mut host,
@@ -784,7 +794,7 @@ pub fn main(opts: &ImportOptions) -> ExitCode {
                 m.os_release.as_deref().unwrap_or_default()
             );
         }
-        prepare_host(m, target, opts.user.as_deref())
+        prepare_host(m, target, opts.user.as_deref(), false)
     };
     let result = install(
         input,

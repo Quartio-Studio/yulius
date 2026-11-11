@@ -2087,7 +2087,7 @@ pub fn receive() -> Reply {
         input,
         &expect.data_dir,
         None,
-        &mut |m, target| prepare_host(m, target, None),
+        &mut |m, target| prepare_host(m, target, None, true),
         &mut Ground {
             chown: true,
             sync: &mut |dir| crate::instance::export::sync(dir),
