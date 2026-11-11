@@ -500,7 +500,7 @@ pub struct TaskDetail {
     pub cli_moves_to: Option<String>,
     /// Running tasks are no longer moved to that version (a session could not continue on it):
     /// this one gets it at its next start, not when its turn ends (SPEC-468 CCF-003).
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[serde(default)]
     pub cli_moves_stopped: bool,
 }
 

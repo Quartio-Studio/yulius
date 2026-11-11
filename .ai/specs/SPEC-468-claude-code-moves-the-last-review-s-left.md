@@ -81,7 +81,7 @@ The question of direction: the restart waits only while a person typed in the la
 | CCF-007 | **The card says when the binary could not be read.** When Yulius keeps Claude Code current and the binary runs get cannot be read for the models it knows, the card shows a warning badge and a sentence saying that whether it knows the default model is not known (`ClaudeCodeView.models_unread`), as `yulius doctor` warns. |
 | CCF-008 | **An idle restart is no news.** A prompt-mode session that was idle and is restarted with nothing typed never reads Working: its task goes from switching back to the activity it had, and what Claude Code last recorded of the session's goal (unfinished or not) still counts, so the task reads as it did. The notification center remembers a task's state through a switch, so a task that reads after it as it did before gets no second notification, in the bell or on the desktop. |
 | CCF-009 | **SPEC-461 says what is true.** Its Context quotes the owner's goal; CCM-008, CCM-011, CCM-012 and CCM-013 state the rules of this spec; ADR-0293, the operations guide and the API reference follow. |
-| CCF-010 | **A draft keeps the session.** A session a person typed into since its last prompt was submitted (and since it started) is not restarted, however long ago they typed: what they typed may still sit in its prompt box. A prompt submitted by a person or by Yulius empties the box; Claude Code's own wake-up does not. The minute after any keystroke stays as well (a person who just sent a prompt is still at the keyboard). |
+| CCF-010 | **A draft keeps the session.** A session a person typed into since its last prompt was submitted (and since it started) is not restarted, however long ago they typed: what they typed may still sit in its prompt box. A prompt submitted by a person or by Yulius empties the box, once: a prompt that is held at its submit (an update, a pause, no subscription with room) is sent again by the hook client until it goes on, which is the same submit, so what is typed meanwhile is a draft. Claude Code's own wake-up empties nothing. The minute after any keystroke stays as well (a person who just sent a prompt is still at the keyboard). |
 
 ## Plan
 
@@ -126,7 +126,9 @@ The question of direction: the restart waits only while a person typed in the la
   it reads differently notifies.
 - AC9 (CCF-010). With a keystroke five minutes old that came after the last submitted prompt,
   the turn's end does not look at the session at all; after the next submitted prompt it does.
-  A keystroke before the last prompt, or before the run started, keeps nothing.
+  A keystroke before the last prompt, or before the run started, keeps nothing. What is typed
+  while a prompt is held for a subscription with room is a draft through every request of
+  that prompt and after it went on, until the next prompt is submitted.
 
 ## Test plan
 
@@ -143,7 +145,8 @@ The question of direction: the restart waits only while a person typed in the la
   task detail, and a new run's empty prompt box (AC9).
 - Integration with the test clock, `claude_code_moves.rs`: AC9 (hooks to the internal listener,
   the clock moved five minutes on, the race points `ClaudeMoveProbed` and `ClaudeMoveSettled`;
-  no process runs, so a restart that is tried is refused, which shows the try).
+  no process runs, so a restart that is tried is refused, which shows the try), and a prompt
+  held at a usage limit, asked for again and let through once the limit reset.
 - Integration, `crates/yulius/tests/claude_code_admin.rs`: AC7's view.
 - e2e, `e2e/tests/claude-code.e2e.ts` (mock): AC3 (`claude=gap`), AC7 (`claude=unread`);
   `e2e/tests/notifications.e2e.ts`: AC8's UI half (`ambient=0`, the test changes the tasks).
@@ -151,7 +154,8 @@ The question of direction: the restart waits only while a person typed in the la
   gate's block; `gate_continues` dropped from `works_on`; the reasons not passed on; the start
   not noticed; the caps removed; the slot not taken; a session already sent restarted again;
   starts without an identity; the draft not asked, a submit not emptying the box, a launch not
-  emptying it, a wake-up emptying it; the launch reading Working; the goal's state not carried;
+  emptying it, a wake-up emptying it, a held prompt emptying it at every request; the launch
+  reading Working; the goal's state not carried;
   the rest held over a new turn; the notification center not remembering through a switch; the
   card's and task info's old words; the unread binary not said.
 - Not testable here: a real Claude Code's goal across `--resume` (the fake agent stands in: its
@@ -184,7 +188,17 @@ The question of direction: the restart waits only while a person typed in the la
   until a turn ends with nothing typed since its prompt, or its next start. That errs toward
   the person at the keyboard, and costs one turn. The alternative, the minute alone, loses what
   a person typed ahead during a long turn. The minute stays for the person who just sent a
-  prompt and is about to type the next.
+  prompt and is about to type the next. A message typed and entered while a turn runs, which
+  Claude Code queues until the turn ends, is covered the same way: its submit comes after
+  that turn's end. Limits: the server keeps what was typed in memory, so after its own restart
+  no draft is known until someone types again (as for the minute); and a prompt Claude Code
+  submits by itself without a tag (a schedule the session set for itself) reads as a submit.
+- **How two decisions for one task overlap.** The review read the race and did not reproduce
+  it. It has an everyday trigger: a Stop hook that decided a restart is answered with a hold,
+  and the hook client sends a held hook again every 10 s, while the switch waits up to 60 s
+  for the old process to end. That second request decides again, with the same version and
+  run. Two turn ends of one idle session (a prompt sent while the first's settling looks at
+  the session) do the same, which is how the tests hold it.
 - **One restart of a task at a time** rather than identity alone: with identity alone the
   second decision's entry would still replace the first's in the watch, and its switch would be
   asked for and refused (or, after the first ended, made a second time). The slot is held from

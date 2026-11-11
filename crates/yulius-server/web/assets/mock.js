@@ -648,7 +648,8 @@ function detail(db, task) {
     model_default: !task.model || task.effort === 'default',
     ...(task.effort && task.effort !== 'default' ? { effort: task.effort } : { effort: 'high' }),
     ...(cli ? { cli_version: cli } : {}),
-    ...(cli && live && cli !== db.claude.version ? { cli_moves_to: db.claude.version, ...(db.claude.movesStopped ? { cli_moves_stopped: true } : {}) } : {}),
+    ...(cli && live && cli !== db.claude.version ? { cli_moves_to: db.claude.version } : {}),
+    cli_moves_stopped: Boolean(cli && live && cli !== db.claude.version && db.claude.movesStopped),
   };
 }
 

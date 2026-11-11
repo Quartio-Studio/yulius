@@ -415,7 +415,7 @@ TaskDetail = TaskSummary + {
   "delivery": Delivery, "switches": [{"at","reason","from","to"}],
   "request": "the whole request, queued messages included", "started": false,
   "model": "claude-fable-5-2", "model_default": true, "effort?": "high",
-  "cli_version?": "2.1.311", "cli_moves_to?": "2.1.322", "cli_moves_stopped?": true
+  "cli_version?": "2.1.311", "cli_moves_to?": "2.1.322", "cli_moves_stopped": false
 }
 Step = {"id","ordinal","title","status":"pending|in_progress|done|skipped|blocked","note","updated_by","updated_at","effort":1}
 Metrics = {"wall_ms","active_ms|null","input_tokens|null","output_tokens|null","cache_read_tokens|null","cache_write_tokens|null","models":["…"],"switches":0,"turns|null"}

@@ -152,6 +152,11 @@ pub struct TaskRuntime {
     /// launch, or the last prompt submitted from it. What a person typed after that may still
     /// sit there (SPEC-468 CCF-010).
     pub(crate) box_emptied_ms: AtomicI64,
+    /// The task's last prompt hook was answered with a hold: the next one is that prompt sent
+    /// again by the hook client, not another submit. A hold the CLI gave up leaves this set
+    /// until the next prompt is answered, which then counts as no submit: the session reads as
+    /// holding a draft for one turn longer, never as holding none.
+    pub(crate) prompt_held: AtomicBool,
     /// Whose personal MCP servers the current run was started with (SPEC-332 MSC-009): a live
     /// run keeps its MCP configuration, so a hand-over restarts it, and only that person messages
     /// it meanwhile.
@@ -397,6 +402,7 @@ impl TaskRuntime {
             merged_covers: Mutex::new(None),
             typed_at_ms: AtomicI64::new(0),
             box_emptied_ms: AtomicI64::new(0),
+            prompt_held: AtomicBool::new(false),
             typed_by: Mutex::new(None),
             personal_mcp_of: Mutex::new(None),
             goal_achieved: AtomicBool::new(false),

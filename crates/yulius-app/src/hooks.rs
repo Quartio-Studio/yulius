@@ -233,6 +233,32 @@ impl App {
         input: &HookInput,
         sent: i64,
     ) -> AppResult<HookReply> {
+        if event != events::USER_PROMPT_SUBMIT {
+            return self.answer_event(ctx, event, input, sent).await;
+        }
+        // A prompt submitted from the session's prompt box empties it: what was typed before
+        // it is no draft any more (SPEC-468 CCF-010). Once per submit: a prompt that is held
+        // (an update, a pause, no subscription with room) is sent again every few seconds,
+        // stamped anew, until it goes on, and what a person types meanwhile is a draft.
+        let runtime = self.runtime(&ctx.task.id);
+        let sent_again = runtime.prompt_held.load(Ordering::SeqCst);
+        if !sent_again && crate::finish::from_prompt_box(input.prompt.as_deref()) {
+            runtime.box_emptied_ms.fetch_max(sent, Ordering::SeqCst);
+        }
+        let reply = self.answer_event(ctx, event, input, sent).await;
+        let held = matches!(reply, Ok(HookReply::Hold { .. }));
+        runtime.prompt_held.store(held, Ordering::SeqCst);
+        reply
+    }
+
+    /// [`Self::answer_hook`], for every event alike.
+    async fn answer_event(
+        self: &Arc<Self>,
+        ctx: &AgentContext,
+        event: &str,
+        input: &HookInput,
+        sent: i64,
+    ) -> AppResult<HookReply> {
         // This run reports its turn boundaries through hooks: the Stop hook decides switches
         // and pauses, not the transcript.
         self.runtime(&ctx.task.id)
@@ -620,13 +646,6 @@ impl App {
         sent: i64,
     ) -> AppResult<HookReply> {
         let store = &self.deps.store;
-        // A prompt submitted from the session's prompt box empties it, also one held below:
-        // what was typed before it is no draft any more (SPEC-468 CCF-010).
-        if crate::finish::from_prompt_box(input.prompt.as_deref()) {
-            self.runtime(&ctx.task.id)
-                .box_emptied_ms
-                .fetch_max(sent, Ordering::SeqCst);
-        }
         // A person wrote to the task (they typed it, even a prompt held below): what its agent
         // asked a person is answered (SPEC-134 CDT-004). Prompts Yulius types do not count.
         if crate::finish::is_typed_prompt(input.prompt.as_deref())

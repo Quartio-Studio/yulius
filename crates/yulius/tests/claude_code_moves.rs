@@ -627,24 +627,103 @@ mod moves {
         Ok(())
     }
 
-    /// A hook of the run whose token is `token`, sent now, over the internal listener.
+    /// The task token of the run [`on_the_test_clock`] seeds.
+    const CLOCK_TOKEN: &str = "task-token-for-claude-move-tests-0123456789";
+    const MINUTE: i64 = 60_000;
+
+    /// A prompt-mode task on the test's clock, with no process: its live run names Claude Code
+    /// 2.1.311, runs get 2.1.322, and its hooks come over the internal listener ([`hook`]). Its
+    /// subscription has room, or with `limited` is at a usage limit that resets in an hour.
+    async fn on_the_test_clock(
+        limited: bool,
+    ) -> Result<(crate::support::Harness, TaskId), Box<dyn std::error::Error>> {
+        use crate::support::{harness, seed_github_user, seed_sandbox, seed_task};
+        use yulius_app::model::{AccountRecord, AccountStatus, AttemptRecord};
+        use yulius_domain::harness::{Harness, Provider};
+        use yulius_domain::ids::{AccountId, AttemptId};
+        use yulius_domain::time::Timestamp;
+        let h = harness()?;
+        seed_github_user(&h, "u-alice", "alice").await?;
+        seed_sandbox(&h, "s1", "fixture", "u-alice").await?;
+        let now = h.app.now();
+        let usage = limited.then(|| {
+            serde_json::json!({"primary": null, "secondary": null, "limit_reached": true,
+                "limit_resets_at": now.0 + 60 * MINUTE, "observed_at": now.0})
+            .to_string()
+        });
+        let account = AccountId::parse("acc-1")?;
+        let store = &h.app.deps.store;
+        store
+            .insert_account(&AccountRecord {
+                id: account.clone(),
+                provider: Provider::Anthropic,
+                label: "Claude acc-1".into(),
+                credential: Some(h.app.deps.crypto.seal(b"acc-1")?),
+                status: AccountStatus::Ok,
+                usage_json: usage,
+                last_error: None,
+                created_at: Timestamp(1),
+                updated_at: Timestamp(1),
+                email: None,
+                email_checked_at: None,
+            })
+            .await?;
+        let task = seed_task(&h, "t-draft", "s1", "u-alice", TaskStatus::Running, None).await?;
+        let run = AttemptId::parse("a-t-draft")?;
+        store
+            .insert_attempt(&AttemptRecord {
+                id: run.clone(),
+                task_id: task.id.clone(),
+                seq: 1,
+                harness: Harness::ClaudeCode,
+                account_id: Some(account),
+                provider_session_id: None,
+                launch_kind: LaunchKind::New,
+                state: AttemptState::Live,
+                run_dir: "/nonexistent/run".into(),
+                token_hash: h.app.deps.crypto.sha256_hex(CLOCK_TOKEN.as_bytes()),
+                host_token: h.app.deps.crypto.seal(&[1u8; 32])?,
+                ptyhost_pid: None,
+                child_pid: None,
+                started_at: now,
+                ended_at: None,
+                exit_code: None,
+                exit_reason: None,
+            })
+            .await?;
+        store
+            .set_run_cli_version(&run, &task.id, "2.1.311", now)
+            .await?;
+        let installed = Arc::new(Installed(Mutex::new(Some(v("2.1.322")))));
+        assert!(h.app.set_agent_cli(installed as Arc<_>, Channel::Latest));
+        Ok((h, task.id))
+    }
+
+    /// A hook of that run, sent now: its turn's Stop, or with `prompt` the submit of that
+    /// prompt. The status it is answered with: 200, or 202 while it is held.
     async fn hook(
         h: &crate::support::Harness,
-        token: &str,
-        event: &str,
-        body: serde_json::Value,
-    ) -> TestResult {
+        prompt: Option<&str>,
+    ) -> Result<axum::http::StatusCode, Box<dyn std::error::Error>> {
         use tower::ServiceExt as _;
+        let (event, body) = match prompt {
+            Some(text) => (
+                "UserPromptSubmit",
+                serde_json::json!({"hook_event_name": "UserPromptSubmit", "session_id": "s",
+                    "prompt": text}),
+            ),
+            None => (
+                "Stop",
+                serde_json::json!({"hook_event_name": "Stop", "session_id": "s",
+                    "stop_hook_active": false}),
+            ),
+        };
         let request = axum::http::Request::post(format!("/hooks/claude/{event}"))
-            .header("authorization", format!("Bearer {token}"))
+            .header("authorization", format!("Bearer {CLOCK_TOKEN}"))
             .header("content-type", "application/json")
             .header("x-yulius-hook-sent-ms", h.app.now().0.to_string())
             .body(axum::body::Body::from(body.to_string()))?;
-        let status = h.internal.clone().oneshot(request).await?.status();
-        if status != axum::http::StatusCode::OK {
-            return Err(format!("the {event} hook answered {status}").into());
-        }
-        Ok(())
+        Ok(h.internal.clone().oneshot(request).await?.status())
     }
 
     /// SPEC-468 CCF-010 (the review's question of direction): a draft that sits in a session's
@@ -655,82 +734,74 @@ mod moves {
     /// is tried is refused (the sandbox has no repository), which is what shows the try.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_draft_typed_since_the_last_prompt_keeps_the_session() -> TestResult {
-        use crate::support::{harness, seed_github_user, seed_sandbox, seed_task};
-        use yulius_app::model::AttemptRecord;
-        use yulius_domain::ids::AttemptId;
-        const TOKEN: &str = "task-token-for-claude-move-tests-0123456789";
-        const MINUTE: i64 = 60_000;
-        let prompt = |text: &str| {
-            serde_json::json!({"hook_event_name": "UserPromptSubmit", "session_id": "s",
-                "prompt": text})
-        };
-        let stop = || {
-            serde_json::json!({"hook_event_name": "Stop", "session_id": "s",
-                "stop_hook_active": false})
-        };
-        let h = harness()?;
-        seed_github_user(&h, "u-alice", "alice").await?;
-        seed_sandbox(&h, "s1", "fixture", "u-alice").await?;
-        let account = crate::pool_supervision::add_account(&h.app, "acc-1").await?;
-        let task = seed_task(&h, "t-draft", "s1", "u-alice", TaskStatus::Running, None).await?;
-        let run = AttemptId::parse("a-t-draft")?;
-        let store = &h.app.deps.store;
-        store
-            .insert_attempt(&AttemptRecord {
-                id: run.clone(),
-                task_id: task.id.clone(),
-                seq: 1,
-                harness: yulius_domain::harness::Harness::ClaudeCode,
-                account_id: Some(account),
-                provider_session_id: None,
-                launch_kind: LaunchKind::New,
-                state: AttemptState::Live,
-                run_dir: "/nonexistent/run".into(),
-                token_hash: h.app.deps.crypto.sha256_hex(TOKEN.as_bytes()),
-                host_token: h.app.deps.crypto.seal(&[1u8; 32])?,
-                ptyhost_pid: None,
-                child_pid: None,
-                started_at: h.app.now(),
-                ended_at: None,
-                exit_code: None,
-                exit_reason: None,
-            })
-            .await?;
-        // Its session runs 2.1.311, and runs get 2.1.322.
-        store
-            .set_run_cli_version(&run, &task.id, "2.1.311", h.app.now())
-            .await?;
-        let installed = Arc::new(Installed(Mutex::new(Some(v("2.1.322")))));
-        assert!(h.app.set_agent_cli(installed as Arc<_>, Channel::Latest));
+        use axum::http::StatusCode;
+        let (h, task) = on_the_test_clock(false).await?;
         let alice = UserId::parse("u-alice")?;
 
         // A prompt is submitted and its turn runs. Meanwhile its person types the next message
         // and does not send it.
-        hook(&h, TOKEN, "UserPromptSubmit", prompt("first")).await?;
+        assert_eq!(hook(&h, Some("first")).await?, StatusCode::OK);
         h.clock.0.fetch_add(1_000, Ordering::SeqCst);
-        h.app.record_typing(&task.id, &alice);
-        assert!(h.app.has_draft(&task.id));
+        h.app.record_typing(&task, &alice);
+        assert!(h.app.has_draft(&task));
         // The turn ends five minutes later: the minute after a keystroke is long over.
         h.clock.0.fetch_add(5 * MINUTE, Ordering::SeqCst);
-        let probed = reached(Point::ClaudeMoveProbed, &task.id);
-        let flag = decided(&task.id);
-        hook(&h, TOKEN, "Stop", stop()).await?;
+        let probed = reached(Point::ClaudeMoveProbed, &task);
+        let flag = decided(&task);
+        assert_eq!(hook(&h, None).await?, StatusCode::OK);
         until_decided(&flag).await?;
         assert!(
-            !probed.load(Ordering::SeqCst) && !h.app.claude_move_cooling(&task.id),
+            !probed.load(Ordering::SeqCst) && !h.app.claude_move_cooling(&task),
             "a session with a draft is not looked at, and no restart is tried"
         );
 
         // They send it: the box is empty again, and that turn's end restarts the session.
         h.clock.0.fetch_add(1_000, Ordering::SeqCst);
-        hook(&h, TOKEN, "UserPromptSubmit", prompt("second")).await?;
-        assert!(!h.app.has_draft(&task.id), "typed, then submitted");
+        assert_eq!(hook(&h, Some("second")).await?, StatusCode::OK);
+        assert!(!h.app.has_draft(&task), "typed, then submitted");
         h.clock.0.fetch_add(5 * MINUTE, Ordering::SeqCst);
-        let flag = decided(&task.id);
-        hook(&h, TOKEN, "Stop", stop()).await?;
+        let flag = decided(&task);
+        assert_eq!(hook(&h, None).await?, StatusCode::OK);
         until_decided(&flag).await?;
         assert!(probed.load(Ordering::SeqCst), "the session was looked at");
-        assert!(h.app.claude_move_cooling(&task.id), "the restart was tried");
+        assert!(h.app.claude_move_cooling(&task), "the restart was tried");
+        Ok(())
+    }
+
+    /// SPEC-468 CCF-010: a prompt that is held at its submit (here: no subscription has room)
+    /// is sent again by the hook client every ten seconds, stamped anew each time, until it
+    /// goes on. That is one submit: what a person types while it is held is a draft, and it
+    /// is one still when the prompt goes on. Each request used to count as a submit, so the
+    /// draft was forgotten ten seconds after it was typed.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_draft_typed_while_a_prompt_is_held_stays_a_draft() -> TestResult {
+        use axum::http::StatusCode;
+        let (h, task) = on_the_test_clock(true).await?;
+        let alice = UserId::parse("u-alice")?;
+
+        // The prompt waits for a subscription with room, and its person types on meanwhile.
+        assert_eq!(hook(&h, Some("first")).await?, StatusCode::ACCEPTED);
+        h.clock.0.fetch_add(1_000, Ordering::SeqCst);
+        h.app.record_typing(&task, &alice);
+        assert!(h.app.has_draft(&task));
+        // The hook client asks again: the same submit, still held.
+        h.clock.0.fetch_add(10_000, Ordering::SeqCst);
+        assert_eq!(hook(&h, Some("first")).await?, StatusCode::ACCEPTED);
+        assert!(
+            h.app.has_draft(&task),
+            "a prompt that is held is one submit"
+        );
+        // The limit resets and the prompt goes on: what was typed meanwhile is still there.
+        h.clock.0.fetch_add(61 * MINUTE, Ordering::SeqCst);
+        let _ = h.app.resume_round().await;
+        assert_eq!(hook(&h, Some("first")).await?, StatusCode::OK);
+        assert!(h.app.has_draft(&task), "it went on, and the draft stays");
+        // The next prompt they send empties the box.
+        h.clock.0.fetch_add(1_000, Ordering::SeqCst);
+        h.app.record_typing(&task, &alice);
+        h.clock.0.fetch_add(1_000, Ordering::SeqCst);
+        assert_eq!(hook(&h, Some("second")).await?, StatusCode::OK);
+        assert!(!h.app.has_draft(&task), "typed, then submitted");
         Ok(())
     }
 
