@@ -43,6 +43,22 @@ pub fn walk(
     root: &Path,
     visit: &mut dyn FnMut(&Entry, &Path) -> io::Result<()>,
 ) -> io::Result<Skipped> {
+    walk_top(
+        root,
+        &|name| !LEFT_OUT.iter().any(|l| name == l.as_bytes()),
+        visit,
+    )
+}
+
+/// [`walk`] over the top-level names `keep` accepts (and everything below them).
+///
+/// # Errors
+/// As [`walk`].
+pub fn walk_top(
+    root: &Path,
+    keep: &dyn Fn(&[u8]) -> bool,
+    visit: &mut dyn FnMut(&Entry, &Path) -> io::Result<()>,
+) -> io::Result<Skipped> {
     let mut skipped = Skipped::default();
     let mut first_paths: HashMap<(u64, u64), Vec<u8>> = HashMap::new();
     let meta = std::fs::symlink_metadata(root)?;
@@ -65,7 +81,7 @@ pub fn walk(
             stack.pop();
             continue;
         };
-        if top_level && LEFT_OUT.iter().any(|l| name.as_bytes() == l.as_bytes()) {
+        if top_level && !keep(name.as_bytes()) {
             continue;
         }
         let disk = dir.join(&name);

@@ -3053,6 +3053,56 @@ sequenceDiagram
   O->>I: then yulius host setup on the new VM
 ```
 
+## Moving an instance
+
+`yulius instance migrate` (SPEC-460, ADR-0297, module `crates/yulius/src/instance/migrate/`) moves
+an instance to another host as one resumable checklist. It runs as root on the old host and reaches
+the new one only through `ssh` with a one-time key and a handful of constant remote commands
+(`remote.rs`): every value travels as JSON or as a stream on standard input, never in a command
+line. The new host's steps (`target.rs`) are Rust code over `host_setup::Host`, run there by the
+same build, which the flow copies first (`yulius instance migrate-target`). The old host's profile
+(`profile.rs`: the unit and its drop-ins, key files, apt sources and the manual package list,
+software outside apt, the update helper, Caddy, ufw) is read live and fitted to the new host by
+pure rewrites (release codename, public URL, host name). The copy is the export's own stream into
+the import; both hosts then count the copy's inventory (`inventory.rs`: entries and bytes per
+top-level folder and a fingerprint over every entry's metadata, as the import installs it and in
+the old host's ids), and the new instance is started only when they are equal. Only the move's
+identity and the cutover's progress are stored (`/var/lib/yulius-migrate/state.json`); every step
+reads the facts and acts if needed, so the same command continues a move. The copy carries a mark
+(`move-pending.json`): the first start that finds it queues the tasks whose runs were lost with the
+old host (`yulius-app::host_move`).
+
+```mermaid
+sequenceDiagram
+  participant O as Operator (root, SSH)
+  participant M as yulius instance migrate (old host)
+  participant D as systemd (old host)
+  participant T as yulius instance migrate-target (new host)
+  participant S as New yulius.service
+  O->>M: sudo yulius instance migrate root@new-host
+  M->>T: one-time key, this build, facts (release, space, disks, ports)
+  M->>O: Plan: what a person must do, then "Proceed?"
+  M->>T: Prepare: data disk, apt sources, packages, software, host items, unit, proxy
+  M->>D: systemctl freeze yulius.service
+  M->>T: the export's stream into the import
+  T->>M: inventory of the copy
+  alt inventories differ or a step fails
+    M->>D: systemctl thaw (the old instance runs on)
+  else equal
+    M->>T: mark the copy, finish host setup, start
+    T->>S: systemctl enable, start, wait for the build to answer
+    alt not healthy
+      M->>T: stop and disable
+      M->>D: systemctl thaw
+    else healthy
+      M->>D: systemctl disable (stays frozen)
+      S->>S: first start: queue the tasks that were live
+      M->>M: old proxy redirects to the new URL
+      M->>T: remove the key, enable the firewall
+    end
+  end
+```
+
 ## Agent primitives
 
 Repository skills are APM primitives ([ADR-0016](decisions/0016-apm-for-agent-primitives.md),

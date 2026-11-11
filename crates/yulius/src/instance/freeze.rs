@@ -292,6 +292,12 @@ impl Freeze {
         self.thaw_now().map_or(Ok(()), Err)
     }
 
+    /// Leaves the units frozen without disabling the server's: a move whose new instance may
+    /// still run must not thaw the old one (SPEC-460 MIG-004).
+    pub fn leave_frozen(mut self) {
+        self.frozen.clear();
+    }
+
     /// For a move: leaves the units as they are (frozen) and disables the server's, so a reboot
     /// does not start the old instance beside the new one (its sessions unit starts only with
     /// it).
@@ -308,6 +314,41 @@ impl Freeze {
                 self.unit
             )),
         }
+    }
+}
+
+/// Whether the sessions unit of the server's unit `unit` (SPEC-458) runs frozen; `false` when
+/// the host has none or systemd does not say.
+pub fn sessions_frozen(host: &mut dyn Host, unit: &str) -> bool {
+    yulius_sandbox::units::sessions_unit(unit).is_some_and(|name| {
+        show(host, &name)
+            .is_ok_and(|found| found.load == "loaded" && runs(&found) && found.freezer == "frozen")
+    })
+}
+
+/// The units to thaw to bring the instance of the server's unit `unit` back, in that order: its
+/// sessions unit first, when the host has one that runs, then `unit` (SPEC-458 EXP-001).
+pub fn thaw_units(host: &mut dyn Host, unit: &str) -> Vec<String> {
+    let mut units = Vec::new();
+    if let Some(name) = yulius_sandbox::units::sessions_unit(unit)
+        && show(host, &name).is_ok_and(|found| found.load == "loaded" && runs(&found))
+    {
+        units.push(name);
+    }
+    units.push(unit.to_owned());
+    units
+}
+
+/// Thaws the instance of the server's unit `unit`, whoever froze it: every unit of
+/// [`thaw_units`] is tried.
+///
+/// # Errors
+/// A thaw failed; the message names the command to run by hand.
+pub fn thaw_instance(host: &mut dyn Host, unit: &str) -> Result<(), String> {
+    let units = thaw_units(host, unit);
+    match thaw(host, units.iter()) {
+        None => Ok(()),
+        Some(why) => Err(format!("{why} (`systemctl thaw {}`)", units.join(" "))),
     }
 }
 

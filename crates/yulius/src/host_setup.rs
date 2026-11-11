@@ -55,7 +55,7 @@ pub struct Cmd {
 }
 
 impl Cmd {
-    fn new(argv: &[&str]) -> Self {
+    pub(crate) fn new(argv: &[&str]) -> Self {
         Self {
             argv: argv.iter().map(|&a| a.to_owned()).collect(),
             env: Vec::new(),
@@ -64,19 +64,19 @@ impl Cmd {
         }
     }
 
-    fn arg(mut self, arg: impl Into<String>) -> Self {
+    pub(crate) fn arg(mut self, arg: impl Into<String>) -> Self {
         self.argv.push(arg.into());
         self
     }
 
-    fn shown(mut self, timeout: Duration) -> Self {
+    pub(crate) fn shown(mut self, timeout: Duration) -> Self {
         self.show = true;
         self.timeout = timeout;
         self
     }
 
     /// Non-interactive apt with needrestart suspended (HST-003, HST-006).
-    fn apt(args: &[&str]) -> Self {
+    pub(crate) fn apt(args: &[&str]) -> Self {
         let mut cmd = Self::new(&["apt-get"]).shown(Duration::from_secs(30 * 60));
         cmd.argv.extend(args.iter().map(|&a| a.to_owned()));
         cmd.env = [
@@ -102,12 +102,12 @@ pub struct Out {
 }
 
 impl Out {
-    fn ok(&self) -> bool {
+    pub(crate) fn ok(&self) -> bool {
         self.code == 0
     }
 
     /// The last non-empty line of its error, else of its output.
-    fn why(&self) -> String {
+    pub(crate) fn why(&self) -> String {
         let last = |text: &str| {
             text.lines()
                 .rev()
@@ -223,7 +223,7 @@ pub fn needrestart_rule(service: &str) -> String {
 }
 
 /// Whether `service` is a unit name the setup accepts (`[A-Za-z0-9@._-]+.service`).
-fn service_name_ok(service: &str) -> bool {
+pub(crate) fn service_name_ok(service: &str) -> bool {
     service.strip_suffix(".service").is_some_and(|stem| {
         !stem.is_empty()
             && !stem.starts_with('-')
@@ -461,13 +461,69 @@ impl<'a> Run<'a> {
 
     /// Every item in order; the verdict last. Returns the lines.
     pub fn all(mut self) -> Vec<HostLine> {
-        if !self.data_dir_ok() {
+        if self.host_part() {
+            self.instance_part();
+            self.running_part();
+        }
+        self.lines
+    }
+
+    /// The items that need neither the data directory's content nor the unit: packages, Docker,
+    /// kernel modules, the service user and its ids. A move runs them on the new host before the
+    /// copy (SPEC-460 MIG-024).
+    pub fn host_items(mut self) -> Vec<HostLine> {
+        self.host_part();
+        self.lines
+    }
+
+    /// Everything up to the sandbox base, for a caller that starts the service itself.
+    pub fn before_start(mut self) -> Vec<HostLine> {
+        if self.host_part() {
+            self.instance_part();
+        }
+        self.lines
+    }
+
+    /// The items of a running service: its state, the verdict, the contained doctor and the
+    /// Docker smoke.
+    pub fn after_start(mut self) -> Vec<HostLine> {
+        if !self.checked() {
             return self.lines;
+        }
+        self.docker_off = self.unit_env("YULIUS_SANDBOX_DOCKER").as_deref() == Some("off");
+        self.service_user();
+        if !passed(&self.lines) {
+            return self.lines;
+        }
+        // The user's line belongs to the items before the start.
+        self.lines.clear();
+        match self.read_unit() {
+            Ok(unit) => self.unit = unit,
+            Err(why) => {
+                self.failed("yulius.service", format!("systemd does not answer: {why}"));
+                return self.lines;
+            }
+        }
+        self.running_part();
+        self.lines
+    }
+
+    /// Whether the options can be acted on, else a failed line.
+    fn checked(&mut self) -> bool {
+        if !self.data_dir_ok() {
+            return false;
         }
         if !service_name_ok(&self.opts.service) {
             let service = self.opts.service.clone();
             self.failed("yulius.service", format!("{service:?} is not a unit name"));
-            return self.lines;
+            return false;
+        }
+        true
+    }
+
+    fn host_part(&mut self) -> bool {
+        if !self.checked() {
+            return false;
         }
         self.docker_off = self.unit_env("YULIUS_SANDBOX_DOCKER").as_deref() == Some("off");
         self.needrestart();
@@ -477,20 +533,28 @@ impl<'a> Run<'a> {
         self.kernel_modules();
         self.service_user();
         self.subordinate_ids();
+        // Sandboxes need it before anything of the instance (SPEC-456): a move proves the
+        // host with it before the copy.
         self.bwrap_namespaces();
+        true
+    }
+
+    fn instance_part(&mut self) {
         self.service_unit();
         // Before the sessions unit: its adopt unit runs this binary as root (SPEC-458 HST-003).
         self.binary();
         self.session_units();
         self.helper_unit();
         self.base();
+    }
+
+    fn running_part(&mut self) {
         self.start_service();
         let docker_ok = self.verdict();
         if self.mode == Mode::Setup {
             self.contained_doctor();
             self.smoke(docker_ok);
         }
-        self.lines
     }
 
     /// Only the service user and its subordinate ids, for `yulius instance import` (SPEC-329

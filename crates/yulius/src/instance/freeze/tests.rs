@@ -453,6 +453,44 @@ fn units_frozen_before_the_export_are_named_as_they_are() -> TestResult {
     Ok(())
 }
 
+/// SPEC-458 EXP-001, for `yulius instance migrate` (SPEC-460): thawing the instance by its
+/// server's unit thaws its sessions unit too, first, and leaves one that is not there alone.
+#[test]
+fn thawing_the_instance_thaws_its_sessions_unit_first() -> TestResult {
+    let mut fake = Fake::new(&[("active", "frozen")]).with_sessions(&[("active", "frozen")]);
+    assert!(sessions_frozen(&mut fake, UNIT));
+    assert_eq!(thaw_units(&mut fake, UNIT), [SESSIONS, UNIT]);
+    thaw_instance(&mut fake, UNIT)?;
+    assert_eq!(
+        fake.calls(),
+        ["thaw yulius-sandboxes.service", "thaw yulius.service"]
+    );
+
+    let mut plain = Fake::new(&[("active", "frozen")]);
+    assert!(!sessions_frozen(&mut plain, UNIT));
+    assert_eq!(thaw_units(&mut plain, UNIT), [UNIT]);
+    thaw_instance(&mut plain, UNIT)?;
+    assert_eq!(plain.calls(), ["thaw yulius.service"]);
+
+    // A sessions unit that runs unfrozen is not the frozen instance.
+    let mut running = Fake::new(&[("active", "frozen")]).with_sessions(&[("active", "running")]);
+    assert!(!sessions_frozen(&mut running, UNIT));
+    Ok(())
+}
+
+#[test]
+fn a_failed_thaw_of_the_instance_names_the_command_for_both_units() {
+    let mut fake = Fake::new(&[("active", "frozen")]).with_sessions(&[("active", "frozen")]);
+    fake.codes.insert("thaw".into(), 1);
+    let why = thaw_instance(&mut fake, UNIT).err().unwrap_or_default();
+    assert!(
+        why.contains("systemctl thaw yulius-sandboxes.service yulius.service"),
+        "{why}"
+    );
+    // Both were tried.
+    assert_eq!(fake.calls().len(), 2);
+}
+
 #[test]
 fn a_move_keeps_both_units_frozen_and_disables_the_server() -> TestResult {
     let fake = Fake::new(&[("active", "running"), ("active", "frozen")])
