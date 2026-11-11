@@ -543,6 +543,24 @@ pub fn proxy_secret_check(path: &Path) -> Check {
     }
 }
 
+/// What isolated runs bind (SPEC-421): Yulius's up-to-date copy of Claude Code or the host's;
+/// a failure when it does not know Yulius's default model, with the fix (SPEC-461 CCM-007).
+#[must_use]
+pub fn claude_code_check(
+    root: &Path,
+    host_dir: Option<&Path>,
+    claude_updates: yulius_domain::agent_cli::Channel,
+) -> Check {
+    use crate::wiring::claude_service::{Health, doctor_line};
+    let (health, detail) = doctor_line(root, host_dir, claude_updates);
+    let level = match health {
+        Health::Ok => Level::Ok,
+        Health::Warn => Level::Warn,
+        Health::Fail => Level::Fail,
+    };
+    check("Claude Code in sandboxes", level, detail)
+}
+
 /// `yulius doctor`: prints the checks; exits 1 when any check fails.
 pub fn doctor(
     data_dir: &Path,
@@ -553,15 +571,10 @@ pub fn doctor(
 ) -> ExitCode {
     let mut checks = run_checks(data_dir, contained, extra);
     if contained {
-        // What isolated runs bind (SPEC-421): Yulius's up-to-date copy or the host's.
-        checks.push(check(
-            "Claude Code in sandboxes",
-            Level::Ok,
-            crate::wiring::claude_cli::describe(
-                &data_dir.join("claude-code"),
-                crate::wiring::sandbox::agent_cli_dir().as_deref(),
-                claude_updates,
-            ),
+        checks.push(claude_code_check(
+            &data_dir.join("claude-code"),
+            crate::wiring::sandbox::agent_cli_dir().as_deref(),
+            claude_updates,
         ));
     }
     checks.extend(proxy_secret_file.map(proxy_secret_check));

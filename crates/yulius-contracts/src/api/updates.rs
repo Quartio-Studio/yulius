@@ -371,6 +371,94 @@ pub struct VidocTestResult {
     pub latency_ms: Option<u64>,
 }
 
+/// `GET /api/admin/claude-code` (superadmin; SPEC-461 CCM-008): the Claude Code sandboxes get,
+/// whether it knows the models Yulius offers, the release channel and the last check.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClaudeCodeView {
+    /// Yulius keeps Claude Code current for sandboxes on this server.
+    pub managed: bool,
+    /// Why not, when it does not (no isolation, no npm install on the host, another layout).
+    pub unmanaged: Option<String>,
+    /// The channel in effect: `latest`, `stable` or `off`.
+    pub channel: String,
+    /// Where it is set: `settings` (chosen here) or `config` (`YULIUS_CLAUDE_UPDATES`).
+    pub channel_source: String,
+    /// The channel of the server's configuration, followed when none is chosen here.
+    pub config_channel: String,
+    /// Who chose it here (login).
+    pub channel_set_by: Option<String>,
+    /// When it was chosen here (RFC 3339).
+    pub channel_set_at: Option<String>,
+    /// The version a run starting now gets.
+    pub version: Option<String>,
+    /// Where it comes from: `yulius` (kept current in the data directory) or `host`.
+    pub source: Option<String>,
+    /// The host's own version.
+    pub host_version: Option<String>,
+    /// npm's `latest` at the last check.
+    pub latest: Option<String>,
+    /// npm's `stable` at the last check.
+    pub stable: Option<String>,
+    /// When the registry was last asked (RFC 3339).
+    pub checked_at: Option<String>,
+    /// A check runs now.
+    pub checking: bool,
+    /// What the last check did: `installed`, `up_to_date`, `refused` or `failed`; none before
+    /// the first, or while nothing is checked (`off`).
+    pub result: Option<String>,
+    /// The same in one sentence.
+    pub result_text: Option<String>,
+    /// Yulius's default model: the one a release must know.
+    pub default_model: String,
+    /// Whether the version in use could be read for the models it knows.
+    pub models_read: bool,
+    /// The offered models the version in use does not know, the default first.
+    pub unknown_models: Vec<String>,
+    /// What is wrong while it does not know the default model.
+    pub problem: Option<String>,
+    /// And the fix.
+    pub fix: Option<String>,
+    /// The releases the last check refused, in the order tried.
+    pub refused: Vec<ClaudeCodeRefused>,
+    /// Tasks whose running session still runs an older Claude Code (SPEC-461 CCM-013): each
+    /// moves when its turn ends, or at its next start.
+    pub behind: Vec<ClaudeCodeBehind>,
+    /// Why running tasks are no longer moved to the version in use, when a session could not
+    /// continue on it.
+    pub moves_stopped: Option<String>,
+}
+
+/// A task whose running session runs an older Claude Code than runs get now.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClaudeCodeBehind {
+    /// Its sandbox's slug.
+    pub sandbox: String,
+    /// Its number in the sandbox.
+    pub number: u32,
+    /// Its title.
+    pub title: String,
+    /// The Claude Code version its session runs.
+    pub version: String,
+}
+
+/// A Claude Code release that was not taken.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClaudeCodeRefused {
+    /// The release.
+    pub version: String,
+    /// The offered models it does not know, the default first.
+    pub missing: Vec<String>,
+}
+
+/// `PUT /api/admin/claude-code/channel` (SPEC-461 CCM-009).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetClaudeChannel {
+    /// `latest`, `stable` or `off`; `null` follows the server's configuration again. The field
+    /// must be there: a body without it (a misspelt name) changes nothing.
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub channel: Option<String>,
+}
+
 /// `GET /api/admin/sandbox-docker` (superadmin; SPEC-203 HST-014): whether isolated sandboxes
 /// get Docker on this server, why not and the fix, in `yulius doctor`'s words.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

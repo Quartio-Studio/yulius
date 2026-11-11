@@ -47,6 +47,40 @@ fn claude_session_counts_each_message_once_including_sidechains() {
     );
     assert_eq!(acc.malformed_lines(), 0);
     assert_eq!(acc.model(), Some("claude-opus-4-1"));
+    // The Claude Code that wrote the session's prompt records (SPEC-461 CCM-011).
+    assert_eq!(acc.cli_version(), Some("2.1.292"));
+}
+
+/// SPEC-461 CCM-011: a run names the Claude Code of its latest prompt record (a resumed session
+/// continues on a newer one), a sub-agent's lines name nothing for the session, and a record
+/// without a version leaves the last one known.
+#[test]
+fn the_cli_version_is_the_latest_prompt_records() {
+    let prompt = |version: Option<&str>| {
+        let mut record = serde_json::json!({
+            "type": "user",
+            "sessionId": "s1",
+            "cwd": "/work",
+            "timestamp": "2026-11-11T10:00:00.000Z",
+            "message": {"role": "user", "content": "go on"},
+        });
+        if let Some(version) = version {
+            record["version"] = version.into();
+        }
+        record.to_string()
+    };
+    let mut acc = UsageAccumulator::new();
+    assert_eq!(acc.cli_version(), None);
+    acc.observe_all(claude::observe_line(&prompt(Some("2.1.311"))).iter());
+    assert_eq!(acc.cli_version(), Some("2.1.311"));
+    acc.observe_all(claude::observe_line(&prompt(None)).iter());
+    assert_eq!(acc.cli_version(), Some("2.1.311"), "kept without a version");
+    for side in claude::observe_line(&prompt(Some("9.9.9"))) {
+        acc.observe_side(&side);
+    }
+    assert_eq!(acc.cli_version(), Some("2.1.311"), "a sub-agent's line");
+    acc.observe_all(claude::observe_line(&prompt(Some("2.1.322"))).iter());
+    assert_eq!(acc.cli_version(), Some("2.1.322"));
 }
 
 #[test]

@@ -7,6 +7,8 @@ use yulius_contracts::api::common::UserRef;
 use yulius_contracts::api::tasks::{
     AttemptView, FeedbackView, Metrics, StepProgress, StepView, SwitchView, TaskDetail, TaskSummary,
 };
+use yulius_domain::agent_cli::Version;
+use yulius_domain::harness::{DEFAULT_CLAUDE_MODEL, claude_effort};
 use yulius_domain::ids::{SandboxId, TaskId};
 use yulius_domain::permission::Action;
 use yulius_domain::task::{Activity, TaskStatus};
@@ -492,6 +494,11 @@ impl App {
         let mut attempts = Vec::new();
         let mut wall_ms: i64 = 0;
         let now = self.now();
+        // What each run ran on: the model that answered and its Claude Code (SPEC-461 CCM-011).
+        let ran = store.task_run_facts(&task.id).await?;
+        // The latest session that names its Claude Code, and whether it is the one that runs.
+        let mut cli_version = None;
+        let mut live_cli = None;
         for a in store.attempts(&task.id).await? {
             wall_ms =
                 wall_ms.saturating_add(a.ended_at.unwrap_or(now).millis_since(a.started_at).max(0));
@@ -502,6 +509,12 @@ impl App {
             let (account_label, account_email) = account.map_or((None, None), |acc| {
                 (Some(acc.label), acc.email.filter(|_| admin))
             });
+            let facts = ran.iter().find(|facts| facts.attempt == a.id);
+            let ran_on = facts.and_then(|facts| facts.cli_version.clone());
+            if ran_on.is_some() {
+                cli_version.clone_from(&ran_on);
+                live_cli = (!a.state.is_terminal()).then(|| ran_on.clone()).flatten();
+            }
             attempts.push(AttemptView {
                 seq: a.seq,
                 harness: a.harness.as_str().to_owned(),
@@ -513,14 +526,31 @@ impl App {
                 ended_at: a.ended_at.map(rfc3339),
                 exit_code: a.exit_code,
                 exit_reason: a.exit_reason.clone(),
+                model: facts.and_then(|facts| facts.model.clone()),
+                cli_version: ran_on,
             });
         }
+        // A running session on an older Claude Code than runs get now moves at its turn's end.
+        let cli_moves_to = live_cli
+            .as_deref()
+            .and_then(Version::parse)
+            .zip(self.claude_code_for_new_runs())
+            .filter(|(runs, newest)| runs < newest)
+            .map(|(_, newest)| newest.to_string());
+        let model = task
+            .model
+            .clone()
+            .unwrap_or_else(|| DEFAULT_CLAUDE_MODEL.to_owned());
+        let effort = claude_effort(&model, task.effort.as_deref()).map(str::to_owned);
         let mut metrics = sum_metrics(&store.task_metrics(&task.id).await?);
         metrics.wall_ms = u64::try_from(wall_ms).unwrap_or(0);
         let switches: Vec<SwitchView> = store
             .switches(&task.id)
             .await?
             .into_iter()
+            // A restart on a newer Claude Code keeps the subscription: its session's row says
+            // which Claude Code it runs (SPEC-461 CCM-013).
+            .filter(|s| s.reason != crate::claude_code::MOVE_REASON)
             .map(|s| SwitchView {
                 at: rfc3339(s.at),
                 reason: s.reason,
@@ -552,6 +582,11 @@ impl App {
             switches,
             request: task.prompt.clone(),
             started,
+            model,
+            model_default: task.model.is_none(),
+            effort,
+            cli_version,
+            cli_moves_to,
         })
     }
 

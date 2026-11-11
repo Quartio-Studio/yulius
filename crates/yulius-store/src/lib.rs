@@ -128,6 +128,9 @@ const MIGRATIONS: &[&str] = &[
     // Schema version 50 (SPEC-459). The file is 0051, the number `record_number` gave this
     // task (0050 went to another reservation); a version is a migration's place in this list.
     include_str!("migrations/0051_instance_limits.sql"),
+    // Schema version 51 (SPEC-461): the file number 0050 was reserved first, version 50 merged
+    // first; it goes after it, never before (the position is the version).
+    include_str!("migrations/0050_claude_code.sql"),
 ];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
