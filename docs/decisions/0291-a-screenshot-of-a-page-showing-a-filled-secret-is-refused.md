@@ -71,7 +71,8 @@ involved; that is outside what a screenshot guard can close.
     out-of-process frame without its address or not at all in the tree and runs a sandboxed
     frame in a process of its own; or a frame of the page's own origin the probe did not read
     (it read fewer than the tree lists), as the tree says the origin of a frame's address
-    whether or not the frame, or the page, is sandboxed;
+    whether or not the frame, or the page, is sandboxed. The frames of Chrome's PDF viewer and
+    a frame that holds a PDF are not counted: a PDF is pixels, as an image is;
   - `shown` holds a remembered value, which also exposes the host;
   - `shown` holds any agent secret the redactor's matcher finds for the sandbox (values, their
     encodings, lines);
@@ -106,6 +107,8 @@ involved; that is outside what a screenshot guard can close.
 - **Tell a sandboxed frame by the frame tree's origin**: Chrome (157) says the origin of the
   frame's address there, never the opaque one, so a sandboxed frame of the site signed in to
   looked readable and was captured.
+- **Count the PDF viewer's frames as any other**: the viewer shows a PDF in a frame at the PDF's
+  own address, so every PDF of a site signed in to lost its screenshots.
 - **Record at fill time whether the field was a password field**: it misses a revealed password
   and a value restored by history navigation.
 - **Send the value (or its hash) into the page to search it**: hands the value to whatever origin
@@ -122,9 +125,11 @@ involved; that is outside what a screenshot guard can close.
   Yulius restarts; so does an agent whose page framed a site it signed in to. A page of another
   site is refused only while it shows an agent secret, even scrolled out of view. A password
   sign-in keeps screenshots.
-- A page of a site signed in to that holds a sandboxed frame of the same site (a message, a
-  preview), or is sandboxed itself and frames its own site, loses its screenshots: the frame
-  cannot be read.
+- A page of a site signed in to loses its screenshots when a frame of that site is out of the
+  probe's reach: sandboxed (a message, a preview), on a page that is sandboxed itself, inside a
+  closed shadow root, an HTML page in an `embed`, or under another site's frame. A frame of
+  that site added or removed between the look at the frame tree and the probe refuses that one
+  screenshot. A PDF of that site keeps its screenshots.
 - A screenshot in a sandbox with agent secrets costs a `Page.getFrameTree`, a `Target.getTargets`,
   an isolated world and a probe, twice; one without any captures as before. Agent input waits for a
   screenshot's capture.
@@ -133,7 +138,7 @@ involved; that is outside what a screenshot guard can close.
   screenshots.
 - Not detected: frames with an opaque origin and no host (`data:`, a sandboxed `srcdoc`) as
   framed hosts; every edit that defeats exact matching (a snapshot returns it as text already);
-  a value drawn in a canvas, an image, through CSS (`content: attr(…)`) or in a
+  a value drawn in a canvas, an image, a PDF, through CSS (`content: attr(…)`) or in a
   closed shadow root; an edited copy on another host, kept by the site past a Yulius restart, seen
   from another sandbox's browser, or made by the page or the site after a fill that stayed in a
   password field; a never-filled agent secret in a frame of another site; a page that changes and

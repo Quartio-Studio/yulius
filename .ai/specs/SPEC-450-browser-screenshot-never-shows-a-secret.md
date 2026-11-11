@@ -145,7 +145,12 @@ with `browser_fill_secret`. A password field, drawn as dots, keeps screenshots w
       many such frame documents it read (`frames`; none when it does not say), and fewer than
       the tree lists counts as a frame of the page's own host out of reach: a sandboxed frame
       kept in the page's process, or any frame of a page sandboxed by its
-      `Content-Security-Policy`;
+      `Content-Security-Policy`.
+
+    A PDF is pixels, as an image is, so it is no frame to read: the frames of Chrome's PDF viewer
+    (its extension frame and, under it, a frame at the PDF's address) are not counted, and a
+    frame that holds a PDF is left out of both counts. A PDF of a site signed in to keeps its
+    screenshots;
   - its `shown` holds a remembered value or line, which also exposes its host;
   - its `shown` holds any agent secret the redactor hides for the sandbox (its matcher: values,
     their encodings and lines). That also covers a stored key nobody filled.
@@ -231,7 +236,9 @@ with `browser_fill_secret`. A password field, drawn as dots, keeps screenshots w
   them, and a third site framing the filled one is refused, so the probe expression, the isolated
   world, the frame tree and the `iframe` targets work in Chromium. A page of a site signed in to
   that frames its own origin keeps its screenshots; with that frame sandboxed, or the page
-  itself (`Content-Security-Policy: sandbox`), it is refused. The page's named elements shadow
+  itself (`Content-Security-Policy: sandbox`), it is refused. A PDF of that site keeps them, as
+  the page and in a frame, once the viewer's frames are there; beside one, an `embed` of the
+  site's own page (not read) still refuses. The page's named elements shadow
   `document.documentElement` and `document.querySelectorAll`, which the probe reads through the
   prototypes.
 - `crates/yulius-browser/tests/instance.rs`:
@@ -266,6 +273,8 @@ with `browser_fill_secret`. A password field, drawn as dots, keeps screenshots w
     screenshots. The fake answers as Chrome 157 does (the origin of the frame's address).
   - `a_frame_the_tree_calls_opaque_is_not_readable`: a frame tree that says `null`, also for the
     page itself, whatever the probe says it read.
+  - `a_pdf_of_a_site_signed_in_to_keeps_its_screenshots`: as the page and in a frame (read or
+    not); a frame beside the viewer, or under another extension's frame, still refuses.
   - `a_page_showing_any_hidden_secret_is_not_captured`.
 - `crates/yulius-browser/tests/manager.rs`: `typed_secrets_outlive_the_browser`,
   `a_lost_secret_refuses_screenshots_after_a_restart`.
@@ -322,6 +331,14 @@ with `browser_fill_secret`. A password field, drawn as dots, keeps screenshots w
   origin (a sandboxed frame of the site signed in to was captured on Chrome); counting every
   frame element the probe could not read (any ad or captcha frame would cost such a site its
   screenshots).
+- **A PDF is pixels.** Chrome shows a PDF through its viewer: an extension frame and, under it,
+  a frame at the PDF's address, a target on the page's own host; the frame that holds a PDF has
+  no page text. Counted as frames to read, they cost a site signed in to the screenshots of its
+  PDFs, which the issue keeps working, for text that is out of the probe's reach as an image's
+  is. Only the viewer's own frames are left out, told by the viewer's address
+  (`chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai/`, the same in Chrome and Chromium); a
+  frame beside the viewer counts, and a PDF of another site in a frame is still that site's
+  frame.
 - **Compare in Yulius, read in an isolated world, look again after the capture.** Sending the
   value into the page would hand it to whatever origin the tab shows by then; the isolated world
   keeps page scripts from spoofing the probe; the second look catches a page that changed by
@@ -338,8 +355,8 @@ with `browser_fill_secret`. A password field, drawn as dots, keeps screenshots w
 - Pixels a person sees (the viewer's live view), and input a person gives on the virtual display
   (XTest mouse and keys, which do not pass through the instance's lock): the person may see what
   they allowed.
-- A value drawn in a canvas or an image, or shown through CSS (`content: attr(…)`), or in a
-  closed shadow root.
+- A value drawn in a canvas, an image or a PDF (Chrome's viewer draws it), or shown through CSS
+  (`content: attr(…)`), or in a closed shadow root.
 - Every edit of a filled value that defeats exact matching: `browser_snapshot` returns such a copy
   as text already (pre-existing). Edits typed into a password field holding it, and typing where
   an edit cannot be seen, are caught; others are not (a value already moved by the page into a
@@ -388,6 +405,14 @@ with `browser_fill_secret`. A password field, drawn as dots, keeps screenshots w
   tree; `contentDocument` is `null` for each. The test, with a page framing its own origin
   (captured), a sandboxed frame of it and a sandboxed page (refused), failed at the sandboxed
   frame on `1c26954f` and passes with `ed174310`, with both ways of running sandboxed frames.
+  Asked for the third review of the final head: a PDF, as the page or in a frame, comes with an
+  `iframe` target at the viewer's `chrome-extension://` address and, under it, one at the PDF's
+  own address, made after the page's load; the frame that holds it says `mimeType`
+  `application/pdf`, as its document's `contentType` does. A `blob:` frame and a frame written
+  with `document.open()` are listed with the page's origin and counted by the probe alike. An
+  `embed` of an HTML page is a frame in the tree the probe cannot read. A page restored from
+  the back/forward cache (`pageshow` persisted, its field's text kept) keeps its `loaderId`,
+  as the fake says.
 - **Gate.** `scripts/dev ci` at 3d3a06cf: 3302 tests passed (16 skipped), 152 script tests OK; it
   failed only `cargo deny --locked check` on RUSTSEC-2026-0486 (rustix 1.1.5, new, failing every
   pull request), fixed by `ada375dc` (`cargo update -p rustix@1.1.5`, lockfile only; `cargo deny
@@ -435,7 +460,19 @@ with `browser_fill_secret`. A password field, drawn as dots, keeps screenshots w
   152 script tests OK, `cargo deny` ok, docs built; the whole e2e suite there: exit 0, 911
   passed, 2 skipped. With `dev` (dbec951d) merged again: `cargo clippy --workspace --all-features
   --all-targets -- -D warnings` ok, the browser and app crates' tests (580 passed) and the whole
-  e2e suite (exit 0, 913 passed, 1 skipped); the whole gate at the final head is Yulius CI's.
+  e2e suite (exit 0, 913 passed, 1 skipped). `scripts/dev ci` at 2f836f70: exit 0, 3313 tests
+  passed (16 skipped), 152 script tests OK.
+- **The third review of the final head** (2f836f70) found both answered and one consequence of
+  `ed174310`: a PDF of a site signed in to lost its screenshots, as Chrome's viewer shows it in
+  a frame at the PDF's own address (above). Tests first (`995f8164`: the fake's, and the Chrome
+  test once the viewer's frames are there), the fix in `07cb434e`. Removed by hand, each rule
+  fails a test (restored after): the viewer's frame left out (also on Chrome), the frame under
+  it (also on Chrome), the viewer told by its address, a frame holding a PDF left out of the
+  tree's count (also on Chrome) and of the probe's (on Chrome). After it, with `dev` (bbd65665)
+  merged: `scripts/dev ci` at 92362993: exit 0, 3391 tests passed (16 skipped), 152 script tests
+  OK, `cargo deny` ok, docs built; the real Chromium test with both ways of running sandboxed
+  frames; the whole e2e suite: exit 0, 922 passed, 1 skipped. The whole gate at the final head
+  is Yulius CI's.
 - **Security scan.** `scripts/dev security`: "Security scan disabled: Vidoc is turned off in
   Yulius, for this project or the whole instance; nothing was scanned" (exit 0): disabled, not
   passed.
