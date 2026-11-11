@@ -196,6 +196,17 @@ impl GitHubPort for GitHubAdapter {
         })
     }
 
+    async fn callback_registered(
+        &self,
+        app: &GitHubAppConfig,
+        redirect_uri: &str,
+    ) -> AppResult<bool> {
+        self.client(app)?
+            .callback_registered(redirect_uri)
+            .await
+            .map_err(map_err)
+    }
+
     async fn refresh_token(
         &self,
         app: &GitHubAppConfig,

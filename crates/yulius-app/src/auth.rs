@@ -572,7 +572,7 @@ impl App {
     }
 
     fn github_redirect_uri(&self) -> String {
-        format!("{}/api/auth/github/callback", self.config.public_url)
+        crate::github_callback::callback_url(&self.config.public_url)
     }
 
     /// Starts GitHub sign-in; returns the authorization URL. `select_account` makes GitHub show

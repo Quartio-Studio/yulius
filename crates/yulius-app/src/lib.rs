@@ -36,6 +36,7 @@ pub mod events;
 pub mod files;
 pub mod finish;
 pub mod github_admin;
+pub mod github_callback;
 pub mod global_superagent;
 pub mod goal_retry;
 pub mod hooks;
