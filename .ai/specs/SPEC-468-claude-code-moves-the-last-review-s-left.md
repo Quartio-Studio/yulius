@@ -34,8 +34,11 @@ in that change's own code, and one question of direction. Where things are:
 - A restart is a subscription switch with the reason `claude_code` (`switch_from` in
   `supervisor.rs`): the old process ends, `claude --resume` starts, and a prompt-mode session
   gets nothing typed, a goal-mode session its goal again.
-- Claude Code's goal (`/goal …`) lives in the process: a resumed session has none until it is
-  typed again. Yulius reads its state from the transcript (`goal_open`: set or not met yet).
+- Yulius reads a goal's state (`/goal …`) from the transcript lines of the run at hand
+  (`goal_open`: set or not met yet), so a new run knows no goal until a record names one; it
+  types a goal task's goal again after a resume and nothing into a prompt-mode session.
+  Claude Code itself restores an open goal when it resumes a session; the tests' fake agent
+  forgets it (Decisions, "What a real Claude Code does").
 - Yulius knows when a person typed into a session's terminal (`typed_at_ms`, keystrokes only,
   SPEC-068) and when a prompt was submitted (the `UserPromptSubmit` hook).
 - The tests with real processes are `crates/yulius/tests/claude_code_moves.rs`; the card is
@@ -47,7 +50,9 @@ The findings, as the review gave them:
 1. (minor) A prompt-mode session whose person set a goal of their own loses it at the idle
    restart: the turn closes with the goal open and no verdict, the task reads "Your turn", the
    session restarts, nothing is typed, the goal is gone and nobody is told. Reproduced by the
-   reviewer: expected `(runs, "GOAL SET" on the screen) == (1, 1)`, got `(2, 0)`.
+   reviewer: expected `(runs, "GOAL SET" on the screen) == (1, 1)`, got `(2, 0)`. (With the
+   fake agent. With a real Claude Code the goal comes back by itself and what is lost is
+   Yulius's reading of it: Decisions.)
 2. (minor) CCM-013's "a gate's block" case has no test: dropping `gate_continues` from
    `works_on` in `hook_stop`, or not passing the gate's reasons on, fails nothing.
 3. (nit) With moves stopped the card says "Running tasks are no longer moved to X" and, below
@@ -72,7 +77,7 @@ The question of direction: the restart waits only while a person typed in the la
 
 | ID | Requirement |
 | --- | --- |
-| CCF-001 | **A person's own goal keeps a prompt-mode session.** While Claude Code's goal is open (set or not met yet) in a prompt-mode session, the session is not restarted for a newer Claude Code: not idle after a settled turn, and not at a Stop the gate blocks (the resumed session would get the gate's reasons and no goal). Both ask once the turn's lines were read, so a goal set in that very turn counts; a goal known before saves the look at the session. It moves at a later turn's end once the goal is met, failed or cleared, or at its next start. Goal-mode tasks are as before (their goal is typed again). |
+| CCF-001 | **A person's own goal keeps a prompt-mode session.** While Claude Code's goal is open (set or not met yet) in a prompt-mode session, the session is not restarted for a newer Claude Code (Yulius could not follow the goal across the restart: it types nothing into such a session and reads a goal only from the new run's lines; and a Claude Code that does not restore an open goal at a resume would lose it): not idle after a settled turn, and not at a Stop the gate blocks (the resumed session would get the gate's reasons and no goal). Both ask once the turn's lines were read, so a goal set in that very turn counts; a goal known before saves the look at the session. It moves at a later turn's end once the goal is met, failed or cleared, or at its next start. Goal-mode tasks are as before (their goal is typed again). |
 | CCF-002 | **The gate's block case is tested.** With code changed in the worktree and no spec, a session on an older Claude Code moves at the Stop the gate blocks: its second run starts by resume in the same Claude session, that run's launch prompt is the gate's reasons, and one switch decision `claude_code` / `completed` is stored. |
 | CCF-003 | **Only the next start is promised while moves are stopped.** While running tasks are no longer moved to the version runs get, the card's list of tasks on an older version says that each gets that version at its next start, and a task's info says the same instead of "when its turn ends" (`GET /api/tasks/{tid}`: `cli_moves_stopped`). |
 | CCF-004 | **The "started in time" test does not depend on the machine's speed.** A restarted session's start (its SessionStart hook) takes the restart off the breaker's watch at a race point (`ClaudeMoveStarted`); the test asserts there that the restart is no longer watched, with a time to start it cannot reach. |
@@ -167,21 +172,42 @@ The question of direction: the restart waits only while a person typed in the la
   stop of moves read for every version; a finished restart keeping the task's slot; the
   notification center not remembering through a switch; the card's and task info's old
   words; the unread binary not said.
-- Not testable here: a real Claude Code's goal across `--resume` (the fake agent stands in: its
-  goal lives in its process, as Claude Code's does), and a real prompt box (Yulius sees
-  keystrokes and submitted prompts, not the box).
+- Checked against real artifacts instead of the fake agent (Evidence): what Claude Code does
+  with an open goal and with an unsent prompt across a restart, read in the binaries of three
+  releases and in the transcripts of this instance's real sessions.
+- Not testable here: a restart Yulius makes of a real, signed-in Claude Code session (no
+  subscription can be signed in for a test), so the fake agent stands in for the process, and
+  the stand-in for the browser's `Notification` for an operating system's notification.
 
 ## Decisions
 
-- **Keep the session, do not type a person's goal again.** Yulius could read the goal's
-  condition from the transcript and type `/goal …` into the resumed session, as it does for a
-  goal task. But a goal a person set is theirs: typing it again starts work in a session that
-  was waiting for its person (the reason idle goal sessions are not restarted, SPEC-461), and a
-  condition replayed from a record may not be what they would type now. The session keeps its
-  version until the goal is decided or its next start; the card lists it.
+- **What a real Claude Code does, and what that makes of finding 1.** The review reproduced
+  the lost goal with the fake agent, whose goal lives in its process. Claude Code restores an
+  open goal by itself when a session is resumed: its start-up restore calls
+  `restoreGoalFromTranscript`, which takes the condition of the conversation's last
+  `goal_status` record that is neither met nor failed and registers the goal's Stop hook
+  again (`tengu_goal_restored_on_resume`), unless the workspace is not trusted or hooks are
+  restricted by policy. That is in the binaries of 2.1.292, 2.1.311 and 2.1.322 (read, never
+  run), and one real session of this instance shows it: restarted from 2.1.311 on 2.1.322 it
+  worked on for about 2,000 lines and its goal's "not met" verdict came before any new
+  `/goal`. So with a real Claude Code the restart does not lose the goal. What it loses is
+  Yulius's reading of it: the new run's lines name no goal, so until Claude Code records the
+  next verdict Yulius takes a clean Stop for the turn's end and reads the task as waiting for
+  its person, or as answered. The goal itself is lost only by a Claude Code that does not
+  restore it: the fake agent, an untrusted workspace, restricted hooks.
+- **Keep the session all the same.** It is what the request asked for, it holds whatever a
+  Claude Code release does at a resume, and it keeps Yulius's reading true. Its cost is a
+  later move: such a session keeps its version until the goal is met, failed or cleared, or
+  its next start (stop and continue moves it at once), and the card lists it. Rejected: move
+  it and carry Yulius's reading over, which would be faster and right with the releases read
+  here, but stakes a person's goal and Yulius's waiting for its verdict on behavior Claude
+  Code does not document, and needs a fake agent that restores goals to be tested at all.
+  Rejected: type the goal again as for a goal task, since a goal a person set is theirs, a
+  condition replayed from a record may not be what they would type now, and it would start
+  work in a session that waits for its person.
 - **The same rule at the gate's block.** The finding names the idle path; the Stop a gate
-  blocks restarts a prompt-mode session too (with the gate's reasons), and loses the goal the
-  same way. One rule covers both (`keeps_own_goal`).
+  blocks restarts a prompt-mode session too (with the gate's reasons), with the same loss of
+  Yulius's reading. One rule covers both (`keeps_own_goal`).
 - **The Stop asks about the goal twice** (review round 1 of this change, minor 1): once
   before its look at the session, which a goal known by then saves (the look waits for the
   transcript and asks the session's processes, inside the Stop hook), and once after it,
@@ -193,25 +219,35 @@ The question of direction: the restart waits only while a person typed in the la
 - **A goal that failed does not keep the session.** Claude Code's goal is over then; what is
   left is Yulius's reading of the task ("Your turn": work is unfinished, SPEC-429), which the
   idle restart carries over (CCF-008).
-- **A subscription switch loses a person's goal too** (older code, SPEC-034 and SPEC-447: a
-  prompt-mode resume types nothing). Confirmed by a probe with real processes (a person's move
-  of such a session: one run with the goal set and open before, two runs and no goal after)
-  and reported as issue #1182: it is not this change's code, and a move away from a
-  subscription at its limit cannot simply wait as this restart can.
+- **A subscription switch leaves Yulius without its reading of a person's goal too** (older
+  code, SPEC-034 and SPEC-447: a prompt-mode resume types nothing). A probe with real
+  processes showed it with the fake agent (a person's move of such a session: one run with
+  the goal set and open before, two runs and no goal known after). Reported as issue #1182,
+  whose text was corrected once the binaries were read: with a real Claude Code the goal
+  stays in force there and only Yulius's reading is missing until the next verdict. It is not
+  this change's code, and a move away from a subscription at its limit cannot simply wait as
+  this restart can.
 - **A draft is "typed since the last submitted prompt".** Yulius cannot read the prompt box,
   but it sees every keystroke of a viewer and every submitted prompt, so it can tell that
   something was typed and not sent. Keystrokes that are no draft (an answer to a permission
   dialog, a command that submits no prompt) count as one: the session then keeps its version
   until a turn ends with nothing typed since its prompt, or its next start. That errs toward
   the person at the keyboard, and usually costs one turn. The alternative, the minute alone, loses what
-  a person typed ahead during a long turn. The minute stays for the person who just sent a
+  a person typed ahead during a long turn: the binary of 2.1.322 keeps an unsent prompt on
+  disk only for background jobs (`CLAUDE_JOB_DIR`), not for a session as Yulius runs it, and
+  puts a prompt a hook blocked into a warning line, not back into the box. The minute stays for the person who just sent a
   prompt and is about to type the next. "One turn" holds for a session that is prompted
   again; a goal session nobody prompts keeps its version until its next start after a single
-  keystroke. A message typed and entered while a turn runs, which
-  Claude Code queues until the turn ends, is covered the same way: its submit comes after
-  that turn's end. Limits: the server keeps what was typed in memory, so after its own restart
-  no draft is known until someone types again (as for the minute); and a prompt Claude Code
-  submits by itself without a tag (a schedule the session set for itself) reads as a submit.
+  keystroke. A message typed and entered while a turn runs is covered the same way. Claude
+  Code queues it and runs its submit hook only when it hands the message to the model: inside
+  the running turn after a tool call ("prompt.submit at the fold" in the binary of 2.1.322) or
+  after the turn's end (in the 423 transcripts, each of the ten prompts that waited over 5 s
+  between its own enqueue and dequeue records has its prompt record within a second of the
+  dequeue). Until then Yulius counts it as a draft, so a turn that ends with the message
+  still queued restarts nothing, and the message is not lost with the old process. Limits:
+  the server keeps what was typed in memory, so after its own restart no draft is known until
+  someone types again (as for the minute); and a prompt Claude Code submits by itself without
+  a tag (a schedule the session set for itself) reads as a submit.
 - **How two decisions for one task overlap.** The review read the race and did not reproduce
   it. It has an everyday trigger: a Stop hook that decided a restart is answered with a hold,
   and the hook client sends a held hook again every 10 s, while the switch waits up to 60 s

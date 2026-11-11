@@ -1159,10 +1159,12 @@ mod moves {
         (runs(s).await, goals, s.app.goal_is_open(&s.id))
     }
 
-    /// SPEC-468 CCF-001 (review round 3, minor 1): a goal a person set in a prompt-mode session
-    /// lives in its process, and a prompt-mode resume types nothing. A turn that closes with
-    /// that goal open and no verdict leaves the task its person's turn: the session is not
-    /// restarted idle, or the goal would be gone and nobody told.
+    /// SPEC-468 CCF-001 (review round 3, minor 1): Yulius types nothing into a prompt-mode
+    /// session it restarts and reads a goal only from the new run's lines, so it could not
+    /// follow a goal its person set there across a restart; and the fake agent, unlike the
+    /// Claude Code binaries read (2.1.292, 2.1.311, 2.1.322), forgets a goal when it is
+    /// resumed. A turn that closes with that goal open and no verdict leaves the task its
+    /// person's turn: the session is not restarted idle, so the goal stays in force and known.
     #[test]
     fn a_persons_own_goal_keeps_an_idle_prompt_session_where_it_is() -> TestResult {
         let (_dir, data) = data_dir()?;
@@ -1226,7 +1228,8 @@ mod moves {
     /// turn whose Stop the gate blocks, and that Stop comes before Yulius read the goal's
     /// record: the transcript is read once a second, and this turn takes milliseconds. The
     /// Stop asks again once the turn's lines were read, and the session stays. It asked only
-    /// before, so the session was restarted with the gate's reasons and the goal was gone.
+    /// before, so the session was restarted with the gate's reasons and Yulius no longer knew
+    /// the goal (which the fake agent had forgotten as well).
     /// That the record was unread when the Stop came is not asserted: in the rare run in which
     /// a read falls between the two, the first question keeps the session, and it must stay
     /// either way.

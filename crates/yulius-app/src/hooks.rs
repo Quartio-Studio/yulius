@@ -829,11 +829,11 @@ impl App {
         // another subscription does (SPEC-461 CCM-013): the resumed session gets the gate's
         // reasons, and its goal again. An idle session moves once its turn has settled.
         // A goal that is achieved, or not set, is not typed again for it: such a session waits
-        // for its next start. Nor is a goal its person set in a prompt-mode session, which the
-        // restart would lose: that session stays, and the gate blocks as usual (SPEC-468
-        // CCF-001). A goal known by now saves the look at the session; one set in this very
-        // turn may not be read yet, so it is asked again after the look, which reads the
-        // turn's lines.
+        // for its next start. Nor while a goal its person set in a prompt-mode session is open,
+        // which Yulius could not follow across the restart: that session stays, and the gate
+        // blocks as usual (SPEC-468 CCF-001). A goal known by now saves the look at the session;
+        // one set in this very turn may not be read yet, so it is asked again after the look,
+        // which reads the turn's lines.
         let works_on = !self.keeps_own_goal(task)
             && (gate_continues || {
                 let runtime = self.runtime(&task.id);

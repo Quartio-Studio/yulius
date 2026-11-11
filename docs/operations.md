@@ -776,12 +776,15 @@ SPEC-461), with no root step and no sign-in again:
   version, one restart of a task at a time. A goal session moves at a turn it works on after,
   while its goal is set and not yet achieved; an idle one, and a goal task that is Done, keep
   their version until their next start. A prompt-mode session in which a person set a goal of
-  their own (`/goal …` in its terminal) keeps its version while that goal is open: the goal
-  lives in the session's process and nothing would set it again, so the session moves at a
-  later turn's end, once the goal is met, failed or cleared, or at its next start. An idle
-  session that is restarted reads "Continuing" for a moment and then as it did: its person is
-  not notified a second time. The card lists the
-  tasks still on an older version, and each task's info shows the version each session ran.
+  their own (`/goal …` in its terminal) keeps its version while that goal is open: Yulius
+  types nothing into such a session and learns of a goal only from what the new process
+  writes, so after a restart it would not know the goal any more (Claude Code restores an
+  open goal by itself when a session is resumed, at least since 2.1.292; Yulius does not rely
+  on it). The session moves at a later turn's end, once the goal is met, failed or cleared,
+  or at its next start: stop the task and continue it to move it at once. An idle session
+  that is restarted reads "Continuing" for a moment and then as it did: its person is not
+  notified a second time. The card lists the tasks still on an older version, and each task's
+  info shows the version each session ran.
   Yulius does not know a schedule a session set for itself (Claude Code's `/loop`): such a
   session is restarted like any other, and the schedule ends with its process.
 - **A version a session cannot continue on gets no other running session.** That is: the

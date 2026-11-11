@@ -644,10 +644,15 @@ impl App {
     }
 
     /// Whether the session of `task` holds a goal its person set in its terminal (`/goal …`)
-    /// that is still open (SPEC-468 CCF-001). Claude Code's goal lives in its process and a
-    /// prompt-mode resume types nothing of it, so a restart would lose it and nobody would be
-    /// told: such a session keeps its version until the goal is decided, or its next start. A
-    /// goal task's goal is Yulius's to type again.
+    /// that is still open (SPEC-468 CCF-001). Yulius types nothing into such a session it
+    /// restarts and reads a goal only from the lines of the run at hand, so after a restart it
+    /// would not know the goal any more: until Claude Code records the goal's next verdict it
+    /// would take a clean Stop of the session for its turn's end and read the task as waiting
+    /// for its person, or as answered. Claude Code restores an open goal by itself when it
+    /// resumes a session (read in the binaries of 2.1.292, 2.1.311 and 2.1.322); a build that
+    /// does not, as the tests' fake agent, would lose the goal itself. Either way such a
+    /// session keeps its version until the goal is decided, or its next start. A goal task's
+    /// goal is Yulius's to type again.
     pub(crate) fn keeps_own_goal(&self, task: &TaskRecord) -> bool {
         task.mode == TaskMode::Prompt && self.goal_is_open(&task.id)
     }
@@ -669,7 +674,8 @@ impl App {
             return;
         }
         let store = &self.deps.store;
-        // Idle, and with no goal of its person's that the restart would lose.
+        // Idle, and with no goal of its person's open, which Yulius could not follow across
+        // the restart.
         let idle = |task: &TaskRecord| {
             task.mode == TaskMode::Prompt
                 && task.status == TaskStatus::Running
