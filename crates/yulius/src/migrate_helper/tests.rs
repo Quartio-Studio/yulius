@@ -1,0 +1,771 @@
+//! The root move helper against a fake command, a fake `systemctl` and real files and signals
+//! (SPEC-470 MVB-003 to MVB-006).
+
+use std::os::unix::fs::symlink;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
+
+use yulius_contracts::migrate::{
+    HELPER_STATUS_FILE, MAX_REQUEST_BYTES, MoveAction, MoveHelperState, MoveHelperStatus,
+    MoveRequest, REQUEST_DIR, REQUEST_FILE, REQUEST_TTL_MS, STATUS_FILE, VERSION,
+};
+
+use super::*;
+
+type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+const NOW: i64 = 1_800_000_000_000;
+
+fn script(path: &Path, body: &str) -> TestResult {
+    std::fs::write(path, format!("#!/bin/sh\n{body}\n"))?;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))?;
+    Ok(())
+}
+
+fn plan(id: &str) -> MoveRequest {
+    MoveRequest {
+        version: VERSION,
+        id: id.into(),
+        action: MoveAction::Plan,
+        target: Some("root@new.example".into()),
+        ssh_port: Some(2222),
+        public_url: Some("https://new.example".into()),
+        data_disks: vec!["/dev/vdc".into(), "/dev/vdd".into()],
+        requested_at: now_ms(),
+    }
+}
+
+fn abort(id: &str) -> MoveRequest {
+    MoveRequest {
+        action: MoveAction::Abort,
+        target: None,
+        ssh_port: None,
+        public_url: None,
+        data_disks: Vec::new(),
+        ..plan(id)
+    }
+}
+
+/// Waits until `met` says so; a test that never gets there fails with `what`.
+fn until(what: &str, mut met: impl FnMut() -> bool) -> TestResult {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !met() {
+        if Instant::now() > deadline {
+            return Err(format!("never happened: {what}").into());
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    Ok(())
+}
+
+/// A data directory of an unprivileged owner, a state directory, a fake `systemctl` whose
+/// `is-active` answers what `bin/update-state` holds, and a fake command that writes each
+/// argument on its own line to `bin/command.log` and then does what `bin/command.do` says.
+struct Env {
+    _dir: tempfile::TempDir,
+    bin: PathBuf,
+    args: MoveHelperArgs,
+}
+
+impl Env {
+    fn new() -> Result<Self, Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let root = dir.path().canonicalize()?;
+        let data = root.join("data");
+        std::fs::create_dir_all(&data)?;
+        if nix::unistd::getuid().is_root() {
+            // The helper reads only requests of the (unprivileged) data directory's owner.
+            nix::unistd::chown(&data, Some(nix::unistd::Uid::from_raw(65534)), None)?;
+        }
+        let bin = root.join("bin");
+        std::fs::create_dir_all(&bin)?;
+        script(
+            &bin.join("systemctl"),
+            r#"d="$(dirname "$0")"
+echo "$*" >> "$d/systemctl.log"
+case "$1" in
+  is-active) state="$(cat "$d/update-state" 2>/dev/null || echo inactive)"; echo "$state"; [ "$state" = active ] || exit 3 ;;
+  *) exit 1 ;;
+esac"#,
+        )?;
+        script(
+            &bin.join("command"),
+            r#"d="$(dirname "$0")"
+echo run >> "$d/command.runs"
+printf '%s\n' "$@" > "$d/command.log"
+[ -f "$YULIUS_TEST_STATE/status.json" ] && echo yes > "$d/status-was-there"
+if [ -f "$d/command.do" ]; then . "$d/command.do"; fi"#,
+        )?;
+        let args = MoveHelperArgs {
+            data_dir: data,
+            state_dir: root.join("state"),
+            service: "yqa-test.service".into(),
+            update_service: "yqa-test-update.service".into(),
+            targets: Vec::new(),
+            systemctl: bin.join("systemctl"),
+            program: Some(bin.join("command")),
+        };
+        Ok(Self {
+            _dir: dir,
+            bin,
+            args,
+        })
+    }
+
+    fn request(&self, request: &MoveRequest) -> TestResult {
+        self.raw_request(&serde_json::to_vec(request)?)
+    }
+
+    /// Written aside and renamed into place, as the server does.
+    fn raw_request(&self, bytes: &[u8]) -> TestResult {
+        let dir = self.args.data_dir.join(REQUEST_DIR);
+        std::fs::create_dir_all(&dir)?;
+        let staged = dir.join("request.json.new");
+        std::fs::write(&staged, bytes)?;
+        if nix::unistd::getuid().is_root() {
+            nix::unistd::chown(&staged, Some(nix::unistd::Uid::from_raw(65534)), None)?;
+        }
+        std::fs::rename(&staged, dir.join(REQUEST_FILE))?;
+        Ok(())
+    }
+
+    fn helper(&self) -> Helper {
+        let mut helper = Helper::new(self.args.clone());
+        helper.pace = Pace {
+            poll: Duration::from_millis(5),
+            watch: Duration::from_millis(20),
+            heartbeat: Duration::from_millis(30),
+        };
+        // The fake command looks for the checklist where the helper keeps it.
+        helper.env = vec![(
+            "YULIUS_TEST_STATE".into(),
+            self.args.state_dir.clone().into_os_string(),
+        )];
+        helper
+    }
+
+    fn run(&self) -> TestResult {
+        Ok(self.helper().run()?)
+    }
+
+    fn status(&self) -> Option<MoveHelperStatus> {
+        let bytes = std::fs::read(self.args.state_dir.join(HELPER_STATUS_FILE)).ok()?;
+        serde_json::from_slice(&bytes).ok()
+    }
+
+    fn said(&self) -> Result<MoveHelperStatus, Box<dyn std::error::Error>> {
+        Ok(self.status().ok_or("the helper wrote no status")?)
+    }
+
+    /// The arguments of the command's last run.
+    fn argv(&self) -> Vec<String> {
+        std::fs::read_to_string(self.bin.join("command.log"))
+            .map(|text| text.lines().map(str::to_owned).collect())
+            .unwrap_or_default()
+    }
+
+    fn runs(&self) -> usize {
+        std::fs::read_to_string(self.bin.join("command.runs"))
+            .map_or(0, |text| text.lines().count())
+    }
+
+    fn does(&self, body: &str) -> TestResult {
+        Ok(std::fs::write(self.bin.join("command.do"), body)?)
+    }
+
+    fn unit_options(&self) -> Vec<String> {
+        vec![
+            "--data-dir".into(),
+            self.args.data_dir.display().to_string(),
+            "--service".into(),
+            "yqa-test.service".into(),
+            "--update-service".into(),
+            "yqa-test-update.service".into(),
+            "--state-dir".into(),
+            self.args.state_dir.display().to_string(),
+        ]
+    }
+}
+
+fn json(change: impl FnOnce(&mut serde_json::Value)) -> Vec<u8> {
+    let mut value = serde_json::to_value(MoveRequest {
+        requested_at: NOW,
+        ..plan("0123abcd-plan")
+    })
+    .unwrap_or_default();
+    change(&mut value);
+    serde_json::to_vec(&value).unwrap_or_default()
+}
+
+/// MVB-003: the exact schema, the version, the id and the age; then the field rules.
+#[test]
+fn a_request_is_parsed_strictly() -> TestResult {
+    let request = parse_request(&json(|_| {}), NOW)?;
+    assert_eq!(request.target.as_deref(), Some("root@new.example"));
+    let refused = |change: &dyn Fn(&mut serde_json::Value), now: i64| {
+        parse_request(&json(|v| change(v)), now)
+            .err()
+            .unwrap_or_default()
+    };
+    assert_eq!(
+        refused(&|v| v["yes"] = true.into(), NOW),
+        "the request is not a valid request"
+    );
+    assert_eq!(
+        refused(&|v| v["action"] = "install".into(), NOW),
+        "the request is not a valid request"
+    );
+    assert_eq!(
+        parse_request(b"{", NOW).err().unwrap_or_default(),
+        "the request is not a valid request"
+    );
+    assert_eq!(
+        refused(&|v| v["version"] = 2.into(), NOW),
+        "the request has another protocol version"
+    );
+    for id in ["short", "has space-1", "../../etc/x"] {
+        assert_eq!(
+            refused(&|v| v["id"] = id.into(), NOW),
+            "the request id is malformed"
+        );
+    }
+    // 15 minutes old at most, 60 s ahead at most.
+    assert_eq!(refused(&|_| {}, NOW + REQUEST_TTL_MS), "");
+    assert_eq!(
+        refused(&|_| {}, NOW + REQUEST_TTL_MS + 1),
+        "the request is stale"
+    );
+    assert_eq!(refused(&|_| {}, NOW - 60_000), "");
+    assert_eq!(refused(&|_| {}, NOW - 60_001), "the request is stale");
+    // The field rules (MVB-002) are the server's.
+    assert_eq!(
+        refused(&|v| v["target"] = "-oProxyCommand=evil".into(), NOW),
+        "the new host must be `root@host` or `host`"
+    );
+    assert_eq!(
+        refused(&|v| v["action"] = "abort".into(), NOW),
+        "an abort names no host, port, URL or disk"
+    );
+    Ok(())
+}
+
+/// MVB-004: each value is one argument, the target comes after `--`, and only a move says yes.
+#[test]
+fn the_command_gets_each_value_as_one_argument() -> TestResult {
+    let env = Env::new()?;
+    let mut expected = vec!["instance".to_owned(), "migrate".to_owned()];
+    expected.extend(env.unit_options());
+    expected.extend(
+        [
+            "--ssh-port=2222",
+            "--public-url=https://new.example",
+            "--data-disk=/dev/vdc",
+            "--data-disk=/dev/vdd",
+            "--",
+            "root@new.example",
+        ]
+        .map(str::to_owned),
+    );
+    assert_eq!(command_args(&env.args, &plan("0123abcd-plan")), expected);
+
+    let moved = MoveRequest {
+        action: MoveAction::Move,
+        public_url: None,
+        data_disks: Vec::new(),
+        ..plan("0123abcd-move")
+    };
+    let mut expected = vec!["instance".to_owned(), "migrate".to_owned()];
+    expected.extend(env.unit_options());
+    expected.extend(["--ssh-port=2222", "--yes", "--", "root@new.example"].map(str::to_owned));
+    assert_eq!(command_args(&env.args, &moved), expected);
+
+    // An abort is of the recorded move, and nobody answers its question for a person.
+    let mut expected = vec![
+        "instance".to_owned(),
+        "migrate".to_owned(),
+        "--abort".to_owned(),
+    ];
+    expected.extend(env.unit_options());
+    let args = command_args(&env.args, &abort("0123abcd-abort"));
+    assert_eq!(args, expected);
+    assert!(!args.iter().any(|arg| arg == "--yes"));
+    Ok(())
+}
+
+/// MVB-003, MVB-004, MVB-005: an accepted request runs the command once and is reported.
+#[test]
+fn a_plan_runs_the_command_once_and_reports_how_it_ended() -> TestResult {
+    let env = Env::new()?;
+    std::fs::create_dir_all(&env.args.state_dir)?;
+    std::fs::write(
+        env.args.state_dir.join(STATUS_FILE),
+        "{\"an\":\"earlier run\"}",
+    )?;
+    let request = plan("0123abcd-plan");
+    env.request(&request)?;
+    env.run()?;
+
+    assert_eq!(env.argv(), command_args(&env.args, &request));
+    assert!(
+        !env.bin.join("status-was-there").exists(),
+        "the checklist of an earlier run is removed before the command starts"
+    );
+    let said = env.said()?;
+    assert_eq!(said.id, "0123abcd-plan");
+    assert_eq!(said.action, MoveAction::Plan);
+    assert!(request.same_values(&said.values));
+    assert_eq!(said.state, MoveHelperState::Ended);
+    assert_eq!(said.exit_code, Some(0));
+    assert_eq!(said.error, None);
+    assert!(said.ended_at.is_some_and(|at| at >= said.started_at));
+    let mode = |path: &Path| std::fs::metadata(path).map(|m| m.permissions().mode() & 0o7777);
+    assert_eq!(mode(&env.args.state_dir.join(HELPER_STATUS_FILE))?, 0o644);
+    assert_eq!(mode(&env.args.state_dir)?, 0o711);
+
+    // The same file again (the path unit fires on every change): nothing runs.
+    env.run()?;
+    env.request(&request)?;
+    env.run()?;
+    assert_eq!(env.runs(), 1);
+    assert_eq!(env.said()?, said);
+    // And no request at all.
+    std::fs::remove_file(env.args.data_dir.join(REQUEST_DIR).join(REQUEST_FILE))?;
+    env.run()?;
+    assert_eq!(env.runs(), 1);
+    Ok(())
+}
+
+/// MVB-003: a request that breaks a rule runs nothing; its report gives the reason without the
+/// request's text, and it is not looked at twice.
+#[test]
+fn a_refused_request_runs_nothing_and_is_reported_without_its_text() -> TestResult {
+    let env = Env::new()?;
+    let cases: [(&str, serde_json::Value, &str); 6] = [
+        (
+            "target",
+            "-oProxyCommand=evil".into(),
+            "the new host must be",
+        ),
+        ("target", "admin@new.example".into(), "reached as root"),
+        ("ssh_port", 0.into(), "the SSH port"),
+        (
+            "public_url",
+            "https://new.example/evil".into(),
+            "the public URL",
+        ),
+        (
+            "data_disks",
+            serde_json::json!(["/etc/evil"]),
+            "a data disk",
+        ),
+        ("requested_at", 5.into(), "stale"),
+    ];
+    for (n, (field, value, why)) in cases.into_iter().enumerate() {
+        let id = format!("0123abcd-bad-{n}");
+        let mut bad = serde_json::to_value(plan(&id))?;
+        bad[field] = value;
+        env.raw_request(&serde_json::to_vec(&bad)?)?;
+        env.run()?;
+        let said = env.said()?;
+        assert_eq!(said.id, id, "{field}");
+        assert_eq!(said.state, MoveHelperState::Refused, "{field}");
+        let error = said.error.clone().unwrap_or_default();
+        assert!(error.starts_with("The request was refused: "), "{error}");
+        assert!(error.contains(why), "{field}: {error}");
+        assert!(!error.contains("evil"), "{error}");
+        // The report echoes no value of a request that was not accepted.
+        assert_eq!(said.values, Values::default(), "{field}");
+        assert_eq!(said.exit_code, None);
+        // Not acted on again, and its report stays.
+        std::fs::remove_file(env.args.state_dir.join(HELPER_STATUS_FILE))?;
+        env.run()?;
+        assert!(env.status().is_none(), "{field}: looked at twice");
+    }
+    assert_eq!(env.runs(), 0);
+    Ok(())
+}
+
+/// MVB-003: a file that is not the service user's own regular file, or too large, or that names
+/// no usable id, is not read into a report and runs nothing.
+#[test]
+fn a_file_that_is_not_the_service_users_request_is_ignored() -> TestResult {
+    let env = Env::new()?;
+    let dir = env.args.data_dir.join(REQUEST_DIR);
+    let path = dir.join(REQUEST_FILE);
+
+    // A link to a valid request elsewhere.
+    env.request(&plan("0123abcd-link"))?;
+    let elsewhere = env.args.data_dir.join("elsewhere.json");
+    std::fs::rename(&path, &elsewhere)?;
+    symlink(&elsewhere, &path)?;
+    env.run()?;
+    assert!(env.status().is_none(), "a link was read");
+    std::fs::remove_file(&path)?;
+
+    // Larger than 16 KiB.
+    let mut big = serde_json::to_value(plan("0123abcd-big"))?;
+    big["id"] = format!("0123abcd-{}", "x".repeat(MAX_REQUEST_BYTES as usize)).into();
+    env.raw_request(&serde_json::to_vec(&big)?)?;
+    env.run()?;
+    assert!(env.status().is_none(), "an oversized file was read");
+
+    // Not JSON, and JSON without a usable id.
+    for bytes in [&b"not json"[..], br#"{"id":"../x","action":"plan"}"#] {
+        env.raw_request(bytes)?;
+        env.run()?;
+        assert!(env.status().is_none());
+    }
+
+    // Owned by someone else than the data directory's owner (needs root to arrange).
+    if nix::unistd::getuid().is_root() {
+        env.request(&plan("0123abcd-root"))?;
+        nix::unistd::chown(&path, Some(nix::unistd::Uid::from_raw(0)), None)?;
+        env.run()?;
+        assert!(env.status().is_none(), "root's own file was read");
+        // And a data directory that is root's is nobody's to ask from.
+        env.request(&plan("0123abcd-own"))?;
+        nix::unistd::chown(
+            &env.args.data_dir,
+            Some(nix::unistd::Uid::from_raw(0)),
+            None,
+        )?;
+        env.run()?;
+        assert!(
+            env.status().is_none(),
+            "a root-owned data directory was trusted"
+        );
+    }
+    assert_eq!(env.runs(), 0);
+    Ok(())
+}
+
+/// MVB-003: never while an update runs. A oneshot unit whose command runs is `activating`.
+#[test]
+fn nothing_runs_while_an_update_runs() -> TestResult {
+    let env = Env::new()?;
+    for (n, state) in ["activating", "active", "reloading"]
+        .into_iter()
+        .enumerate()
+    {
+        std::fs::write(env.bin.join("update-state"), state)?;
+        for (request, kind) in [
+            (plan(&format!("0123abcd-plan-{n}")), "plan"),
+            (abort(&format!("0123abcd-abort-{n}")), "abort"),
+        ] {
+            env.request(&request)?;
+            env.run()?;
+            let said = env.said()?;
+            assert_eq!(said.state, MoveHelperState::Refused, "{state} {kind}");
+            assert_eq!(
+                said.error.as_deref(),
+                Some(
+                    "The request was refused: an update is running (yqa-test-update.service): \
+                     ask again once it has finished."
+                ),
+                "{state} {kind}"
+            );
+        }
+    }
+    assert_eq!(env.runs(), 0);
+    let asked = std::fs::read_to_string(env.bin.join("systemctl.log"))?;
+    assert!(
+        asked
+            .lines()
+            .all(|line| line == "is-active yqa-test-update.service"),
+        "{asked}"
+    );
+
+    for state in ["inactive", "failed"] {
+        std::fs::write(env.bin.join("update-state"), state)?;
+        env.request(&plan(&format!("0123abcd-{state}")))?;
+        env.run()?;
+        assert_eq!(env.said()?.state, MoveHelperState::Ended, "{state}");
+    }
+    assert_eq!(env.runs(), 2);
+
+    // A systemd that cannot be asked does not say that no update runs.
+    let mut blind = Env::new()?;
+    blind.args.systemctl = blind.bin.join("missing");
+    blind.request(&plan("0123abcd-blind"))?;
+    blind.run()?;
+    let said = blind.said()?;
+    assert_eq!(said.state, MoveHelperState::Refused);
+    assert!(
+        said.error
+            .unwrap_or_default()
+            .contains("cannot ask systemd")
+    );
+    assert_eq!(blind.runs(), 0);
+    Ok(())
+}
+
+/// MVB-003: the root-owned unit may list the only hosts a request may name.
+#[test]
+fn only_listed_hosts_when_the_unit_lists_them() -> TestResult {
+    let mut env = Env::new()?;
+    env.args.targets = vec![" a.example ".into(), String::new(), "10.0.0.7".into()];
+    env.request(&plan("0123abcd-other"))?;
+    env.run()?;
+    let said = env.said()?;
+    assert_eq!(said.state, MoveHelperState::Refused);
+    assert_eq!(
+        said.error.as_deref(),
+        Some(
+            "The request was refused: this unit allows a move only to the hosts of \
+             YULIUS_MIGRATE_TARGETS, and the new host is not one of them."
+        )
+    );
+    assert_eq!(env.runs(), 0);
+
+    for (n, target) in ["root@a.example", "a.example", "root@10.0.0.7"]
+        .into_iter()
+        .enumerate()
+    {
+        env.request(&MoveRequest {
+            target: Some(target.into()),
+            ..plan(&format!("0123abcd-listed-{n}"))
+        })?;
+        env.run()?;
+        assert_eq!(env.said()?.state, MoveHelperState::Ended, "{target}");
+    }
+    assert_eq!(env.runs(), 3);
+    // An abort names no host: it goes back to this one.
+    env.request(&abort("0123abcd-abort"))?;
+    env.run()?;
+    assert_eq!(env.said()?.state, MoveHelperState::Ended);
+    assert_eq!(env.runs(), 4);
+    Ok(())
+}
+
+/// MVB-005: while the command runs the report says so and its time advances; then how it ended.
+#[test]
+fn a_running_command_is_reported_with_a_heartbeat_and_then_its_exit_code() -> TestResult {
+    let env = Env::new()?;
+    env.does(r#"while [ ! -f "$d/go" ]; do sleep 0.02; done; exit 1"#)?;
+    env.request(&plan("0123abcd-slow"))?;
+    let helper = env.helper();
+    let run = std::thread::spawn(move || helper.run());
+    until("the command runs", || env.runs() == 1)?;
+    until("the report says running", || {
+        env.status()
+            .is_some_and(|s| s.state == MoveHelperState::Running)
+    })?;
+    let first = env.said()?;
+    assert_eq!((first.exit_code, first.ended_at), (None, None));
+    until("the heartbeat advances", || {
+        env.status()
+            .is_some_and(|s| s.updated_at > first.updated_at)
+    })?;
+    assert_eq!(env.said()?.state, MoveHelperState::Running);
+
+    std::fs::write(env.bin.join("go"), "")?;
+    run.join().map_err(|_| "the helper panicked")??;
+    let said = env.said()?;
+    assert_eq!(said.state, MoveHelperState::Ended);
+    assert_eq!(said.exit_code, Some(1));
+    assert_eq!(
+        said.error, None,
+        "a failed step is in the checklist, not here"
+    );
+    assert_eq!(said.started_at, first.started_at);
+    Ok(())
+}
+
+/// MVB-006: an abort that arrives while a command runs ends it by SIGTERM and is handled after
+/// it; another request meanwhile, or the same one written again, stops nothing.
+#[test]
+fn an_abort_stops_the_run_and_is_handled_after_it() -> TestResult {
+    let env = Env::new()?;
+    // The move: runs until it is told to stop, as the command does before it freezes.
+    env.does(
+        r#"case "$*" in
+  *--abort*) echo aborted >> "$d/order"; exit 0 ;;
+esac
+trap 'echo terminated >> "$d/order"; exit 1' TERM
+while :; do sleep 0.02; done"#,
+    )?;
+    let moved = MoveRequest {
+        action: MoveAction::Move,
+        ..plan("0123abcd-move")
+    };
+    env.request(&moved)?;
+    let helper = env.helper();
+    let run = std::thread::spawn(move || helper.run());
+    until("the move runs", || {
+        env.status()
+            .is_some_and(|s| s.state == MoveHelperState::Running)
+    })?;
+
+    // The same request written again, another plan, an unreadable file: the move runs on.
+    let path = env.args.data_dir.join(REQUEST_DIR).join(REQUEST_FILE);
+    env.request(&moved)?;
+    std::thread::sleep(Duration::from_millis(80));
+    env.request(&plan("0123abcd-other-plan"))?;
+    std::thread::sleep(Duration::from_millis(80));
+    env.raw_request(b"not json")?;
+    std::thread::sleep(Duration::from_millis(80));
+    assert!(!env.bin.join("order").exists(), "the move was stopped");
+    assert_eq!(env.said()?.id, "0123abcd-move");
+
+    env.request(&abort("0123abcd-abort"))?;
+    assert!(path.exists());
+    run.join().map_err(|_| "the helper panicked")??;
+    assert_eq!(
+        std::fs::read_to_string(env.bin.join("order"))?,
+        "terminated\naborted\n"
+    );
+    assert_eq!(env.runs(), 2);
+    let said = env.said()?;
+    assert_eq!(said.id, "0123abcd-abort");
+    assert_eq!(said.action, MoveAction::Abort);
+    assert_eq!(said.state, MoveHelperState::Ended);
+    assert_eq!(said.exit_code, Some(0));
+    assert_eq!(
+        env.argv(),
+        command_args(&env.args, &abort("0123abcd-abort"))
+    );
+    Ok(())
+}
+
+/// MVB-006: a command that ignores the signal (the new instance's start is ordered) ends by
+/// itself; the helper waits for it and only then handles the abort.
+#[test]
+fn a_command_that_ignores_the_signal_ends_by_itself_first() -> TestResult {
+    let env = Env::new()?;
+    env.does(
+        r#"case "$*" in
+  *--abort*) echo aborted >> "$d/order"; exit 0 ;;
+esac
+trap 'echo ignored >> "$d/order"' TERM
+while [ ! -f "$d/go" ]; do sleep 0.02; done
+echo moved >> "$d/order"; exit 0"#,
+    )?;
+    env.request(&MoveRequest {
+        action: MoveAction::Move,
+        ..plan("0123abcd-move")
+    })?;
+    let helper = env.helper();
+    let run = std::thread::spawn(move || helper.run());
+    until("the move runs", || {
+        env.status()
+            .is_some_and(|s| s.state == MoveHelperState::Running)
+    })?;
+    env.request(&abort("0123abcd-abort"))?;
+    until("the signal arrived", || env.bin.join("order").exists())?;
+    assert_eq!(env.said()?.id, "0123abcd-move", "the abort did not wait");
+    assert_eq!(env.said()?.state, MoveHelperState::Running);
+    std::fs::write(env.bin.join("go"), "")?;
+    run.join().map_err(|_| "the helper panicked")??;
+    let order = std::fs::read_to_string(env.bin.join("order"))?;
+    // Sent once, however long the command takes.
+    assert_eq!(order, "ignored\nmoved\naborted\n");
+    Ok(())
+}
+
+/// MVB-006: a stop of the helper itself (systemd stops the unit) is passed on to the command,
+/// and the helper ends after it with its report written.
+#[test]
+fn a_stop_of_the_helper_ends_the_command_first() -> TestResult {
+    let env = Env::new()?;
+    env.does(
+        r#"trap 'echo terminated >> "$d/order"; exit 1' TERM
+while :; do sleep 0.02; done"#,
+    )?;
+    env.request(&plan("0123abcd-plan"))?;
+    let mut helper = env.helper();
+    let stop = Arc::new(AtomicBool::new(false));
+    helper.stop = Arc::clone(&stop);
+    let run = std::thread::spawn(move || helper.run());
+    until("the command runs", || {
+        env.status()
+            .is_some_and(|s| s.state == MoveHelperState::Running)
+    })?;
+    // A request that waits behind the command is not taken by a helper that was stopped.
+    env.request(&plan("0123abcd-next"))?;
+    stop.store(true, Ordering::SeqCst);
+    run.join().map_err(|_| "the helper panicked")??;
+    assert_eq!(
+        std::fs::read_to_string(env.bin.join("order"))?,
+        "terminated\n"
+    );
+    let said = env.said()?;
+    assert_eq!(said.id, "0123abcd-plan");
+    assert_eq!(said.state, MoveHelperState::Ended);
+    assert_eq!(said.exit_code, Some(1));
+    assert_eq!(env.runs(), 1);
+    Ok(())
+}
+
+/// MVB-005: a command that refuses before its checklist says why on standard error; a signal
+/// leaves no exit code; a program that cannot be started is said.
+#[test]
+fn a_command_that_ends_before_its_checklist_is_reported_with_its_words() -> TestResult {
+    let env = Env::new()?;
+    env.does(
+        r#"echo "Warning: Permanently added 'new.example' to the list of known hosts." >&2
+echo "yulius instance migrate: a move to root@old.example is recorded here: finish it with the same command" >&2
+exit 2"#,
+    )?;
+    env.request(&plan("0123abcd-refused"))?;
+    env.run()?;
+    let said = env.said()?;
+    assert_eq!(
+        (said.state, said.exit_code),
+        (MoveHelperState::Ended, Some(2))
+    );
+    assert_eq!(
+        said.error.as_deref(),
+        Some("a move to root@old.example is recorded here: finish it with the same command")
+    );
+
+    // Exit 2 with other words only: nothing is made up.
+    env.does(r#"echo "something else" >&2; exit 2"#)?;
+    env.request(&plan("0123abcd-quiet"))?;
+    env.run()?;
+    assert_eq!(env.said()?.error, None);
+
+    // Words that carry control characters reach the report without them.
+    env.does(r#"printf 'yulius instance migrate: a\033[31mb\tc\n' >&2; exit 2"#)?;
+    env.request(&plan("0123abcd-control"))?;
+    env.run()?;
+    assert_eq!(env.said()?.error.as_deref(), Some("a [31mb c"));
+
+    env.does(r#"kill -KILL $$"#)?;
+    env.request(&plan("0123abcd-killed"))?;
+    env.run()?;
+    let said = env.said()?;
+    assert_eq!((said.state, said.exit_code), (MoveHelperState::Ended, None));
+
+    let mut missing = Env::new()?;
+    missing.args.program = Some(missing.bin.join("missing"));
+    missing.request(&plan("0123abcd-missing"))?;
+    missing.run()?;
+    let said = missing.said()?;
+    assert_eq!((said.state, said.exit_code), (MoveHelperState::Ended, None));
+    assert!(
+        said.error
+            .unwrap_or_default()
+            .starts_with("the command could not be started: "),
+    );
+    Ok(())
+}
+
+/// A command whose child keeps its error output open (an `ssh` step still running on the new
+/// host after the command died) does not hold the helper.
+#[test]
+fn a_child_that_outlives_the_command_does_not_hold_the_helper() -> TestResult {
+    let env = Env::new()?;
+    env.does(r#"(sleep 30 &) ; exit 0"#)?;
+    env.request(&plan("0123abcd-orphan"))?;
+    let started = Instant::now();
+    env.run()?;
+    assert!(
+        started.elapsed() < Duration::from_secs(20),
+        "{:?}",
+        started.elapsed()
+    );
+    assert_eq!(env.said()?.exit_code, Some(0));
+    Ok(())
+}
