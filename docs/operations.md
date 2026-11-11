@@ -80,16 +80,18 @@ reason) or `FAIL`, then a summary; it exits 1 when an item failed. In order:
    Otherwise, a drop-in `yulius.service.d/10-yulius-sandboxes.conf` adds `Delegate=yes`,
    `DelegateSubgroup=server` and `KillMode=process` if they are missing. The restart that applies
    it is manual: run it when it suits. A unit file systemd has not loaded is never overwritten.
-10. **sessions unit**: `yulius-sandboxes.service`, `yulius-adopt.service` and the drop-in
+10. **yulius binary**: the running binary and the unit's, links resolved, are made root-owned,
+    writable by root alone. A binary in a directory the service user or others may write fails
+    instead: fixing the file would not stop it being replaced.
+11. **sessions unit**: `yulius-sandboxes.service`, `yulius-adopt.service` and the drop-in
     `yulius.service.d/20-yulius-sessions.conf` ([Where sessions live](#where-sessions-live),
     [ADR-0298](decisions/0298-sessions-live-in-their-own-unit.md)) are written when they differ,
     and the sessions unit is started. A running server is not restarted: its next restart moves
-    its sessions there and keeps them. `yulius host check` only reports this item.
-11. **update helper**: when `yulius-update.service` is installed, a drop-in lets its re-check
+    its sessions there and keeps them. The adopt unit runs the server's binary as root, so the
+    item writes nothing and fails while the service user could replace that binary (the file or
+    any directory above it). `yulius host check` only reports this item.
+12. **update helper**: when `yulius-update.service` is installed, a drop-in lets its re-check
     write `/etc/modules-load.d` and `/etc/needrestart/conf.d` (§8).
-12. **yulius binary**: the running binary and the unit's, links resolved, are made root-owned,
-    writable by root alone. A binary in a directory the service user or others may write fails
-    instead: fixing the file would not stop it being replaced.
 13. **sandbox base**: built now, as the service user, when there is none, when it lacks the
     host's `dockerd`, or when it no longer matches the host. Live sandboxes' bases are kept
     ([ADR-0161](decisions/0161-a-base-a-live-holder-mounts-is-never-collected.md)), so this is
@@ -261,14 +263,21 @@ Slice=yulius.slice
 
 - **`yulius-sandboxes.service`** holds every sandbox's groups, under
   `/sys/fs/cgroup/yulius.slice/yulius-sandboxes.service/sandboxes/<sandbox>/`. Its one process is
-  a `sleep` that belongs to root, so nothing of the service user can end it. **Stopping or
-  restarting this unit ends every agent session, terminal and sandbox engine.** Nothing does so
-  by itself: the needrestart rule of §2 names it.
+  a `sleep` that belongs to root, so no signal of the service user reaches it (a stray `pkill`
+  cannot end it). **Stopping or restarting this unit ends every agent session, terminal and
+  sandbox engine.** Nothing does so by itself: the needrestart rule of §2 names it. If it was
+  stopped or restarted all the same, restart `yulius.service` afterwards: the server prepares
+  the unit's groups only when it starts, and sandboxes started before that restart run without
+  their limits ("cannot apply the sandbox's limits" in the log).
 - **`yulius-adopt.service`** runs before every start of `yulius.service` (`yulius host
-  adopt-sessions`, as root). Sessions that an earlier layout left in `yulius.service`'s own group
-  move to the sessions unit with their limits; a sandbox's Docker engine found there is ended
-  with its containers and starts again on demand. Nothing to move is the normal case. Its output
-  is in `journalctl -u yulius-adopt`.
+  adopt-sessions`, as root, at most 2 minutes). Sessions that an earlier layout left in
+  `yulius.service`'s own group move to the sessions unit with their limits; a sandbox's Docker
+  engine found there is killed with its containers (no shutdown: what a container had not
+  written is lost) and starts again on demand. Nothing to move is the normal case, and while the
+  server runs the step moves nothing (`systemctl start` on a running unit starts it again). Its
+  output is in `journalctl -u yulius-adopt`. Because it runs the server's binary as root, that
+  binary must be root's alone in root-owned directories (§2); `yulius host setup` refuses to
+  write the unit otherwise.
 - `systemctl restart yulius`, a crash (`Restart=on-failure`), Restart… and an update then keep
   every session, on systemd 255 and on 259.
 - `yulius doctor` says which holds in its line "restart with sessions", and `yulius host check`
@@ -278,7 +287,8 @@ Slice=yulius.slice
   (`/sys/fs/cgroup/system.slice/yulius.service/sandboxes/…`). That still restarts on systemd 257
   and earlier. On 258 and later, Restart… and Update now are refused while a session runs
   ("yulius.service would not start again: … nothing was stopped"), by the server and again by
-  the update helper before it stops anything. `sudo yulius host setup` writes the files and
+  the update helper before it stops anything; they are refused the same way where the files are
+  there but `yulius-sandboxes.service` does not run (the adopt step needs it). `sudo yulius host setup` writes the files and
   restarts nothing; the next restart then moves the sessions and keeps them. A plain `systemctl
   restart yulius` is not guarded: on such a host it leaves the server down until the steps under
   "the way back" in §8 are done.
@@ -1880,8 +1890,14 @@ should set the commit it is built from: `YULIUS_BUILD_COMMIT=$(git rev-parse HEA
      systemctl show yulius.service --property=Wants    # names yulius-adopt.service
      ```
 
-     The files are for `yulius.service`, the user `yulius` and `/usr/local/bin/yulius`. With
+     The files are for `yulius.service`, the user `yulius` and `/usr/local/bin/yulius`, which
+     must be root's alone in root-owned directories (the adopt unit runs it as root). With
      other values, let a binary of the new version write them: `sudo <that binary> host setup`.
+
+     **Between this step and the update the host is not safe yet**: the installed binary is
+     still the old one, which has no adopt step, so `yulius-adopt.service` fails with it and a
+     restart, a crash or Restart… still leaves the server down while sessions run, as before.
+     Do the update next; the way back below applies until then.
   2. **Update now**, as always. `journalctl -u yulius-adopt` then says "moved N processes in M
      groups from /sys/fs/cgroup/system.slice/yulius.service to
      /sys/fs/cgroup/yulius.slice/yulius-sandboxes.service", and `yulius doctor` says "restart
@@ -1891,8 +1907,9 @@ should set the commit it is built from: `YULIUS_BUILD_COMMIT=$(git rev-parse HEA
 
   What changes with it:
 
-  - Every sandbox Docker engine is ended once, at that first start, with its containers, as
-    after a host reboot; it starts again on demand. Sessions, terminals and browsers go on.
+  - Every sandbox Docker engine is killed once, at that first start, with its containers. They
+    get no shutdown (as at a power loss: stop a container that must close its files first); the
+    engine starts again on demand. Sessions, terminals and browsers go on.
   - cgroup paths in this guide are those of the sessions unit. On a host without the units they
     start with `/sys/fs/cgroup/system.slice/yulius.service/` instead.
   - Limits that bound all sandboxes together are the sessions unit's now. `TasksMax=`,

@@ -35,7 +35,7 @@ the real unit in QEMU guests of both systems (SPEC-458, Evidence).
   `<stem>-sandboxes.service`: one keeper process (`sleep infinity`) whose delegated group holds
   every sandbox's groups (`sandboxes/<sandbox>/…`, unchanged below that). It is delegated to the
   service user (`User=`, `Delegate=yes`, `DelegateSubgroup=keeper`), while the keeper itself is
-  root's (`ExecStart=+…`), so nothing of the service user can end it. It keeps the default
+  root's (`ExecStart=+…`), so no signal of the service user reaches it. It keeps the default
   `KillMode`: stopping it ends every session, on purpose, since a unit that keeps processes over
   its stop is exactly what cannot start again.
 - **One slice for both.** The server and the sessions unit live in `<name>.slice` (the stem
@@ -54,13 +54,24 @@ the real unit in QEMU guests of both systems (SPEC-458, Evidence).
   state, owner), their processes move, the emptied groups go, and the step waits until systemd
   names the old group no more. A dependency is the only thing that runs before a start on
   systemd 258: nothing inside the failing unit does. Nothing to move is success, so the step is
-  the migration and a restart otherwise touches nothing of a session.
+  the migration and a restart otherwise touches nothing of a session. Nothing is frozen for the
+  move, so a group is read again until a read finds no new process (a fork between the read and
+  the move leaves a child behind, and one process left is enough to keep the unit from
+  starting). While the server runs the step moves nothing: `systemctl start` on an active unit
+  starts its `Wants=` again. The unit has `TimeoutStartSec=120`, and systemd is asked with a
+  bound.
+- **No root unit for a binary the service user could replace.** The adopt unit runs the
+  server's binary as root. `yulius host setup` makes that binary root's first and writes the
+  units only when neither the file nor a directory above it is the service user's to write.
 - **Engines end at the move.** A sandbox's Docker engine runs in a cgroup namespace rooted at
-  its `engine` group and could not manage containers from another place. The step ends it; it
-  starts again on demand, and a Docker front that was given the old group is replaced so that it
-  does.
-- **A guard.** A restart would leave the server down when systemd is 258 or later, the unit's
-  own `sandboxes` group holds processes and the unit does not pull in its adopt unit. The
+  its `engine` group and could not manage containers from another place. The step kills it
+  (`cgroup.kill`, the one way to end a whole group without racing its forks and reused process
+  ids); it starts again on demand, and a Docker front that was given the old group is replaced
+  so that it does.
+- **A guard.** A restart would leave the server down when systemd is 258 or later, the unit
+  holds processes outside the server's own subgroup (its `sandboxes`, or what an earlier server
+  left), and either the unit does not pull in its adopt unit or the sessions unit, which the
+  adopt unit requires, does not run. The
   update helper checks this before it stops the service (restart and install), and the server
   when Restart or Update now is asked (409, before a task pauses or anything is built). `yulius
   doctor` has a line for it, and `yulius host check` reports the missing units.
@@ -101,8 +112,13 @@ the real unit in QEMU guests of both systems (SPEC-458, Evidence).
 - A host set up before this needs `sudo yulius host setup` once (it restarts nothing), or the
   three files. Until then the layout is the old one: fine on systemd 255, refused by the guard
   on 258 and later while sessions run.
-- At the move every running Docker engine ends once. A holder from before ADR-0158 that serves
-  an engine itself keeps the old group: its sandbox has no Docker until it restarts.
+- At the move every running Docker engine is killed once, with its containers and without a
+  shutdown. A holder from before ADR-0158 that serves an engine itself keeps the old group: its
+  sandbox has no Docker until it restarts.
+- The server prepares the sessions unit's groups when it starts. After that unit was stopped or
+  restarted (which ends every session), the server has to be restarted as well.
+- The keeper is safe from the service user's signals, not from the service user: the group is
+  delegated to it, and whoever owns a group can end what is in it through the group's files.
 - Memory a process used before the move stays charged to its old group until it is freed
   (cgroup v2 moves no charges), so a sandbox's `memory.max` counts less for a while. One time.
 - The service user can move its processes between the two units of its slice. Nothing else
@@ -113,4 +129,7 @@ the real unit in QEMU guests of both systems (SPEC-458, Evidence).
 - cgroup paths in commands and documents change from
   `/sys/fs/cgroup/system.slice/yulius.service/sandboxes/…` to
   `/sys/fs/cgroup/yulius.slice/yulius-sandboxes.service/sandboxes/…`.
-- The guard does not check that the sessions unit itself can start.
+- The guard knows whether the adopt unit is pulled in and the sessions unit runs, not whether
+  the adopt step will succeed: a binary that cannot run it, or a group it cannot move, still
+  leaves the server down on systemd 258 and later, and the unit then says why
+  (`systemctl status yulius-adopt`).

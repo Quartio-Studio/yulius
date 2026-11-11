@@ -114,7 +114,17 @@ Two defects made it unusable meanwhile:
   systemd sweeps the emptied groups too and gives the unit's group up without removing it where
   that sweep crosses the step's own, so the group being there says nothing. A group that cannot
   be made or emptied is reported (the unit fails, which the server's `Wants=` survives) and the
-  others still move. Bounded: 4096 groups, depth 8. Nothing to adopt is success.
+  others still move. Nothing to adopt is success; the old unit's controllers are taken also
+  then (a unit that keeps its place with a process left in `server/` still passes them down).
+  systemd's own subgroups (`.control`) are not moved.
+  - While the server runs (`MainPID` of the unit is not 0) nothing is moved and the step says
+    so: `systemctl start` on an active unit starts its `Wants=` again, and a move then would
+    take the sandboxes from under the running server and its own processes to `legacy/`.
+  - Nothing is frozen for the move. A group's processes are read again until a read finds none
+    that was not placed yet (a fork between the read and the move leaves a child in the old
+    group), and the old tree is looked through again after the move, each at most 16 times.
+  - Bounded: 4096 groups, depth 8; `systemctl` is asked with the doctor's bound; the unit has
+    `TimeoutStartSec=120`, below the three minutes the helper gives `systemctl start`.
 - **LAY-005** A sandbox's `engine` group is not moved: its Docker engine runs in a cgroup
   namespace rooted there and could not manage containers from elsewhere. Adopt kills it
   (`cgroup.kill`), waits up to 10 s for it to empty and removes it; the engine starts again on
@@ -128,13 +138,18 @@ Two defects made it unusable meanwhile:
 ### Host setup, check and doctor
 
 - **HST-001** `yulius host setup` writes the two units and the drop-in when they differ,
-  reloads systemd and starts the sessions unit; a running server is not restarted, and a manual
-  line says the next restart moves the sessions and keeps them. The item is unsafe: `host check`
+  reloads systemd and starts the sessions unit; a running server is not restarted, and the
+  item's line says the next restart moves the sessions and keeps them. The item is unsafe: `host check`
   only reports it (failed, "run `sudo yulius host setup`"), since the update helper cannot write
   unit files: that sessions live in the server's own group when a file is missing, and only
   which files differ when all are there. `deploy/systemd` holds the three files as the setup
   writes them for `yulius.service`, the user `yulius` and `/usr/local/bin/yulius` (pinned by a
   test), for the first restart on a host that has no binary with this change yet.
+- **HST-003** The adopt unit runs the server unit's binary as root. The "yulius binary" item
+  therefore runs before this one (it makes the binary root's), and the sessions item writes
+  nothing and fails, naming the directory, while the service user could replace that binary:
+  the file is not root's alone, or a directory above it is the service user's, writable by a
+  group it is in or by everyone. Units an earlier run wrote do not excuse it.
 - **HST-002** `yulius doctor` has a line "restart with sessions": ok with the sessions unit in
   use; a warning naming `sudo yulius host setup` when sessions live in the server's unit, which
   says that a restart fails while sessions run when systemd is 258 or later.
@@ -142,10 +157,13 @@ Two defects made it unusable meanwhile:
 ### Restart and Update now
 
 - **RST-001** `restart_safety::blocker`: a restart of the server's unit would fail when systemd
-  is 258 or later, `sandboxes` below one of the unit's groups (LAY-004's list) has processes,
-  and the unit does not `Wants=` its adopt unit. Pure over the facts (the first line of
-  `systemctl --version`, `cgroup.events`, `LoadState`, `ControlGroup` and `Wants` of `systemctl
-  show`). A systemd that cannot be asked blocks nothing.
+  is 258 or later, a subgroup of one of the unit's groups (LAY-004's list) other than `server`
+  and systemd's own holds processes (`sandboxes`, or `legacy`), and either the unit does not
+  `Wants=` its adopt unit or the sessions unit, which the adopt unit requires, is not active.
+  Pure over the facts (the first line of `systemctl --version`, `cgroup.events`, `LoadState`,
+  `ControlGroup` and `Wants` of the unit and `ActiveState` of the sessions unit from `systemctl
+  show`). A systemd that cannot be asked blocks nothing. The doctor's line warns in the same
+  cases, and whenever the units are written but the sessions unit does not run.
 - **RST-002** The update helper checks it before it stops the service, for `restart` and
   `install`: it fails the request with the reason and stops nothing.
 - **RST-003** The server checks it when Restart or Update now is asked: `409` with the reason,
@@ -166,7 +184,8 @@ Two defects made it unusable meanwhile:
   moves ("the task still has a live run: stop it first"). A run no server holds is settled
   first, as a restarted server does (ADR-0050): exited, ended and counted; host or agent
   alive, terminated and then lost; gone, lost. A run that cannot be ended still refuses the
-  start.
+  start. A run this server is launching counts as held: between its record and its attach it
+  is neither attached nor watched.
 - **RUN-003** Stop on a resting task with a live run on record ends that run (held: asked to
   shut down, with the escalation armed; not held: settled as in RUN-002) instead of answering
   "task is …".
@@ -248,6 +267,15 @@ Two defects made it unusable meanwhile:
 - Adopt asks systemd whether it let go of the old group instead of waiting for the group to
   vanish: found on 26.04, where the first restart with two sandboxes left the emptied group
   behind and the step reported a failure that was none.
+- Engines are killed, not shut down: `cgroup.kill` ends a whole group in the kernel, while
+  signalling its processes one by one as root would race their forks and reused process ids.
+  The guide says so and tells to stop containers that must close their files first.
+- After a stop or restart of the sessions unit the server is restarted by hand (the guide says
+  so) rather than bound to it with `PartOf=`: that would also stop the server with it, and was
+  not run in the guests.
+- The doctor's line is about `yulius.service`, as its other unit checks are; a server under
+  another unit name is covered by `yulius host check --service` and by the guard, which takes
+  the unit from the server's own cgroup.
 - One pull request although it passes 400 lines: the layout, its setup, the adopt step and the
   guard are one fix that is unsafe in parts; the #439 recovery was asked for in the same fix.
 
