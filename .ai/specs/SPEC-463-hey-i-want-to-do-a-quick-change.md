@@ -302,19 +302,21 @@ Confirmed against `dev` at dbec951d.
     subscription stayed listed behind a refused field; one change had been sent after the
     window's `blur`; the email field had lost the keyboard after the name's late answer; the
     refused field had no `aria-invalid`.
-- **`scripts/dev ci` at 7aacc0e8** exited 0: repository contracts, 152 script tests, check, fmt,
-  clippy (Linux and macOS), nextest 3639 passed and 16 skipped, doctests, deny, shear, doc. That
-  head has `dev` 4b59bce3 merged in (no conflict). The two commits after it are a merge of `dev`
-  63819769 (no conflict; `cargo check` of the workspace, the repository check, the 99 store
-  tests and the 18 account tests passed on it) and this record. The gate also passed at
-  23a11eab (3535 tests), where `dev` eb2e8a4e was merged with its two conflicts resolved: the
-  store port's imports, and the migrations list, where this change's migration goes after
-  `dev`'s two as schema version 52.
-- **Whole e2e suite at 7aacc0e8** (`cd e2e && npx e2e run`): 947 passed, 1 skipped, exit 0, at a
-  load average of 45 to 50. The two subscription specs (42 tests) also passed 8 runs of 8 beside
-  each other. Earlier whole runs: 942 passed at 23a11eab; 935 at 4eeaedfc; 929 at 1bd025b0; 916
-  at 377e9336 with the one `cd.e2e.ts` failure of #1171. The logs are in the worktree's ignored
-  `target/`.
+- **`scripts/dev ci` at b6a979d8** exited 0: repository contracts, 152 script tests, check, fmt,
+  clippy (Linux and macOS), nextest 3691 passed and 16 skipped, doctests, deny, shear, doc. That
+  head has `dev` b72c7f76 merged in (no conflict); the commit after it adds this record only.
+  Earlier gate runs passed at 7aacc0e8 (3639 tests) and at 23a11eab (3535 tests), where `dev`
+  eb2e8a4e was merged with its two conflicts resolved: the store port's imports, and the
+  migrations list, where this change's migration goes after `dev`'s two as schema version 52.
+  The round-4 reviewer's own gate at 2380b603 failed once on #1190 and passed when run again.
+- **Whole e2e suite at b6a979d8** (`cd e2e && npx e2e run`): 963 passed, 1 skipped, exit 0, at a
+  load average of 20 to 25. The three subscription specs (47 tests, the touch ones included)
+  also passed 6 runs of 6 beside each other. Earlier whole runs: 947 passed at 7aacc0e8 (and
+  again in the round-4 reviewer's run at 2380b603); 942 at 23a11eab; 935 at 4eeaedfc; 929 at
+  1bd025b0; 916 at 377e9336 with the one `cd.e2e.ts` failure of #1171. The logs are in the
+  worktree's ignored `target/`.
+- **Real taps, by the round-4 reviewer's own script** (`hasTouch`, 360x800, rerun on the fixed
+  code): the three taps that missed open the Remove dialog and the email's field.
 - **`yulius security-scan --base origin/dev`**: "Security scan disabled" (Vidoc is switched off
   for this project in Yulius). Disabled, not passed: nothing was scanned.
 - **Seen in the browser** (the mock, `/admin/accounts`): a card renamed to "Agent TEAM" with
