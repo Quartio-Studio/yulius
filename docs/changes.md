@@ -10,7 +10,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   editor is made with no model, so it shows no text to type into while the first file's read and
   live join are on their way. Before, Monaco's own empty model took that typing, the file's model
   replaced it (the text was lost) and Monaco threw "Model is disposed!" twice. The quarantined
-  e2e "a folder chosen while the worktrees are read…" runs again and waits for the open tab.
+  e2e "a folder chosen while the worktrees are read…" runs again: it types once the tab is open,
+  and moves the disk once the server has the typing (a look that got there first took the disk's
+  text as the saved one, and no conflict was asked).
 
 ## 2026-11-10
 

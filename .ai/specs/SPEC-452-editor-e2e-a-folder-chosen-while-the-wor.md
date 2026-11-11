@@ -31,16 +31,38 @@ and passes under load.
   placeholder model, so for the length of those awaits a visible, focusable, editable "Editor
   content" textbox exists (the host is not hidden before the first file). Text typed there goes into
   the placeholder; `setModel` replaces it and Monaco disposes the placeholder it owns, so the text is
-  gone and the tab is never modified. The word-based suggestions Monaco started for the typed word
-  then read the disposed model: the two uncaught `Error: Model is disposed!`
-  (`_assertNotDisposed` ← `getVersionId` ← the suggest fetch), which are the "2 errors logged".
+  gone and the tab is never modified. Monaco's inline-suggestions model, started by the typing,
+  then recomputes on the disposed model: the two uncaught `Error: Model is disposed!`
+  (`_assertNotDisposed` ← `getVersionId` in its fetch, and ← `getLineLength` in a value derived from
+  it), which are the "2 errors logged". They need the typing; without it nothing throws.
+- **Who meets it.** A person at the keyboard, not only a test: from the clicked tree row two Tab
+  presses (row → "Resize explorer" → "Editor content") put the keyboard in the placeholder while
+  the file loads. The pointer cannot reach it: the "Open a file from the explorer." hint covers the
+  host until the first file shows.
 - **Why the tests missed it.** `editorShown` (`e2e/tests/support.ts`) waits only for
-  `.ed-host .monaco-editor`, which exists from `createEditor` on; the other tests wait for the tab
+  `.ed-host .monaco-editor`, which existed from `createEditor` on; the other tests wait for the tab
   to be selected before typing, this one did not. On an idle machine the read and join resolve
   before the typing; on a loaded one the join can still be on its way.
-- **Reproduction (probe, not load).** Holding the live join in the mock
-  (`__yuliusMock.live.holdJoins = true`, released after typing) fails the test's first check every
-  time, with the same two errors.
+- **Reproduction (probe, not load).** The mock's join answered 1.5 s late (or held with
+  `__yuliusMock.live.holdJoins = true` and released after typing) fails the test's first check
+  every time, with the same two errors.
+- **What else the cause broke.** `places.e2e.ts` "the editor keeps open files and unsaved text
+  across a sandbox switch, without feeding the other sandbox" types after `editorShown` in the same
+  way: it failed in the Yulius CI runs e753bd7a (PR #1150) and ae55e33c (PR #1151) on 2026-11-11
+  with the missing `README.md, modified` tab and the same two errors, frame for frame. The fix
+  covers it without a change: with no model Monaco builds no view, so `editorShown` now also means
+  the first file is in the editor. For the same reason a test that holds the file's read or join
+  can no longer wait on `editorShown`: `places.e2e.ts` "a file opened just before a sandbox switch
+  shows when the sandbox is back" waits on the held read instead.
+- **A second race, in the test only.** With the first one gone the test goes on the moment the file
+  is activated, while the activation's look at the disk (`refreshFromDisk`) is on its way. The mock
+  answers every request 50-200 ms late, so the test's `repoFile` could move the disk before the
+  first edit was answered; a look whose `POST /files/live/disk` then reached the server first found
+  saved text, which follows the disk (SPEC-411 EDT-020): the typing landed on the disk's text and
+  no conflict was ever asked (`README.md Saving… Ln 1, Col 9`, never "Changed on disk"; 2 of 16
+  probe runs on a loaded machine). That is the app working as designed, and the order `conflictOn`
+  already keeps since #422: the server has the typing before the disk moves. Reproduced every time
+  by answering the first edit 3 s late.
 - **Not the cause.** The `hold=` on `/files/roots`: it holds only that GET, and `loadRoots` does not
   block `loadFile`.
 
@@ -48,9 +70,10 @@ and passes under load.
 
 | ID | Requirement | Evidence |
 | --- | --- | --- |
-| FE-001 | Before the Editor's first file is in it, the editor has no model: no "Editor content" textbox to type into, and nothing Monaco owns that can be disposed under a pending request. | e2e "typing before the first file is in the editor goes nowhere and loses nothing" |
+| FE-001 | Before the Editor's first file is in it, the editor has no model: no "Editor content" textbox to type into, and nothing Monaco owns that can be disposed under a pending request. | e2e "the editor offers nothing to type into until its first file is in it" |
 | FE-002 | Once the file is there, typed text marks its tab modified, as before. | same test; the unskipped #1087 test |
 | FE-003 | The #1087 test runs again and waits on the open tab, not on Monaco's node, before typing. | `editor.e2e.ts`, 10 runs green under the probe |
+| FE-004 | The #1087 test moves the disk only once the server's document has the typed text. | 10 runs green with the first edit answered late; 3 of 3 fail without the wait |
 
 ## Plan
 
@@ -58,22 +81,30 @@ and passes under load.
 - [x] Regression test: typing while the file's join is held loses nothing and logs no error
 - [x] The editor starts without a model, so nothing can be typed before the file is set
 - [x] The quarantined test waits for the open tab and runs again, 10 runs green under the probe
+- [ ] The #1087 test moves the disk once the server has the typing: green under a late first edit
 - [ ] Independent review answered and gates green
 
 ## Acceptance criteria
 
 - With the live join held, the Editor offers no "Editor content" textbox; after release, typing
   marks `README.md, modified`, and no page error is logged.
-- The #1087 test is unskipped and passes 10 runs in a row with the join held at the typing point.
+- The #1087 test is unskipped and passes 10 runs in a row under each probe: the join answered
+  late, the file's read answered late, the first edit answered late.
 - The rest of `editor.e2e.ts` and `live-editor.e2e.ts` pass.
 
 ## Test plan
 
-- New e2e in `e2e/tests/editor.e2e.ts`: hold the join, open README.md, Monaco shows, the textbox
-  is absent; release, the tab is selected, type, the tab shows modified (`failOnPageErrors` fails
-  on the two errors). Fails before the fix (the textbox is there; the typing is lost).
-- The #1087 test, unskipped, waits for `aria-selected="true"` on the README.md tab before typing.
-- Its 10-run proof uses the probe (join held across the typing point, released by the test).
+- New e2e in `e2e/tests/editor.e2e.ts`: hold the join, open README.md, wait until the join is
+  asked (the editor is made, the file read), the textbox is absent; release, the tab is selected,
+  type, the tab shows modified (`failOnPageErrors` fails on the two errors). Fails before the fix
+  (the textbox is there).
+- The #1087 test, unskipped, waits for `aria-selected="true"` on the README.md tab before typing,
+  and for the typed text in the mock's document (`liveDoc`) before it moves the disk.
+- The proof uses probes in `mock.js`, never committed: the join answered 1.5 s late, the file's
+  read answered 1.5 s late, the first edit answered 3 s late; ten runs of both tests under each.
+  The same probes with the fix or a wait taken out show each one is needed.
+- The Editor-opening e2e files (`editor`, `live-editor`, `places`, `terminal`, `filedrop`) run
+  under each probe, to find other tests that depended on the old timing.
 
 ## Decisions
 
@@ -84,6 +115,13 @@ and passes under load.
 - **Typing in the gap is not kept.** It has no place in a file that is not read yet; with no
   textbox there is nothing to type into, so nothing is lost silently.
 - **The test waits on the tab**, the condition the sibling tests use, not on a sleep.
+- **The second race is ordered in the test, not changed in the app.** Saved text following the disk
+  while a person's first keystroke is on its way is EDT-020 as designed (the typing is kept, on the
+  newer text); only the test needs the conflict, so it waits until the server has the typing, as
+  `conflictOn` does.
+- **`editorShown` keeps its name and gains a meaning.** It now returns only once the first file is
+  in the editor; its comment and `e2e/README.md` say so, and say what a test that holds the read or
+  join waits on instead.
 
 ## Evidence
 
