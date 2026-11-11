@@ -174,6 +174,8 @@ struct FakeRemote {
     down: bool,
     /// How often the key was tried ([`Remote::reachable`]).
     asked: u32,
+    /// Steps tried although the key's file is gone: `ssh` can only complain about it.
+    keyless: u32,
     /// The key's file was deleted on the old host ([`Remote::forget`]).
     deleted: bool,
     healthy: bool,
@@ -250,6 +252,9 @@ impl Remote for FakeRemote {
     }
 
     fn call(&mut self, request: &Request) -> Result<Reply, String> {
+        if self.deleted {
+            self.keyless += 1;
+        }
         if self.down {
             return Err(DOWN.into());
         }
@@ -617,6 +622,7 @@ fn setup() -> Result<Setup, Box<dyn std::error::Error>> {
             signs_in: true,
             down: false,
             asked: 0,
+            keyless: 0,
             deleted: false,
             healthy: true,
             tamper: None,
@@ -1840,8 +1846,10 @@ fn a_finish_that_was_done_but_not_recorded_is_found_done() -> TestResult {
             "{shown}"
         );
         assert!(!shown.contains("Run the command again"), "{shown}");
-        // Nothing is deleted a second time.
+        // Nothing is deleted a second time, and nothing is tried over a key that is gone
+        // (`ssh` would only complain about it before the line that says all is done).
         assert!(!shown.contains("one-time key (old host)"), "{shown}");
+        assert_eq!(s.remote.keyless, 0);
         let state = State::load(&s.opts.state_dir).ok_or("no state")?;
         assert!(state.finished);
         assert_eq!(s.old_unit(), (true, true));
@@ -1853,9 +1861,14 @@ fn a_finish_that_was_done_but_not_recorded_is_found_done() -> TestResult {
     Ok(())
 }
 
-/// The way out a failed freeze beside a running new instance names.
+/// The way out a failed freeze beside a running new instance names. SIGKILL: a process that
+/// ignores SIGTERM (an interactive shell) would be left.
 const STOP_FOR_GOOD: &str = "stop it for good instead: `systemctl stop yulius.service; systemctl \
-                             kill --kill-whom=all yulius.service`";
+                             kill --kill-whom=all --signal=SIGKILL yulius.service`";
+/// What the line for an old unit that has stopped tells to run.
+const MAKE_SURE: &str = "Make sure nothing of the old one runs here: `systemctl stop \
+                         yulius.service; systemctl kill --kill-whom=all --signal=SIGKILL \
+                         yulius.service; systemctl disable yulius.service`";
 
 #[test]
 fn a_recorded_start_never_ends_with_both_instances_running() -> TestResult {
@@ -2077,12 +2090,7 @@ fn a_recorded_start_goes_on_only_with_the_old_unit_frozen() -> TestResult {
     assert_eq!(s.run()?, 0, "{}", s.shown());
     assert_eq!(s.events().first().map(String::as_str), Some("new: health"));
     assert!(untouched(&s), "{:?}", s.events());
-    assert!(
-        s.shown()
-            .contains("Make sure nothing of the old one runs here"),
-        "{}",
-        s.shown()
-    );
+    assert!(s.shown().contains(MAKE_SURE), "{}", s.shown());
     let state = State::load(&s.opts.state_dir).ok_or("no state")?;
     assert_eq!(state.cutover, Cutover::Moved);
 
@@ -2094,12 +2102,7 @@ fn a_recorded_start_goes_on_only_with_the_old_unit_frozen() -> TestResult {
     }
     assert_eq!(s.run()?, 0, "{}", s.shown());
     assert!(untouched(&s), "{:?}", s.events());
-    assert!(
-        s.shown()
-            .contains("Make sure nothing of the old one runs here"),
-        "{}",
-        s.shown()
-    );
+    assert!(s.shown().contains(MAKE_SURE), "{}", s.shown());
 
     // The new instance does not run either: nothing is started; the abort is the way back.
     let mut s = stopped()?;

@@ -1627,7 +1627,8 @@ impl<'a> Move<'a> {
                         format!(
                             "{unit} does not run here any more, and the new instance runs. Make \
                              sure nothing of the old one runs here: `systemctl stop {unit}; \
-                             systemctl kill --kill-whom=all {unit}; systemctl disable {unit}`"
+                             systemctl kill --kill-whom=all --signal=SIGKILL {unit}; systemctl \
+                             disable {unit}`"
                         ),
                     );
                     self.state.cutover = Cutover::Moved;
@@ -1695,14 +1696,15 @@ impl<'a> Move<'a> {
                 let runs = if known { "runs" } else { "may run" };
                 // The freeze `moved` asks for may fail again: systemd freezes only a unit
                 // that runs, not one on its way up or down or with a process stuck in the
-                // kernel. Stopping and killing ends the old instance in every state.
+                // kernel. Stopping it (so it is not restarted) and killing what is left, with
+                // SIGKILL as the new host's own stop does, ends the old instance in every state.
                 self.fail(
                     "old instance",
                     format!(
                         "{unit} {runs} beside the new instance and could not be frozen: {why}. \
                          If a freeze keeps failing (systemd freezes only a unit that runs), \
                          stop it for good instead: `systemctl stop {unit}; systemctl kill \
-                         --kill-whom=all {unit}`"
+                         --kill-whom=all --signal=SIGKILL {unit}`"
                     ),
                 );
             }
@@ -1715,17 +1717,26 @@ impl<'a> Move<'a> {
             return Ok(());
         };
         let host = profile::host_of(&new).unwrap_or_default();
-        let address = self
+        // Asked first: over a key that is gone (an earlier run's finish removed it there and
+        // deleted it here) nothing is tried, `ssh` could only complain about it.
+        let key_gone = self
             .remote
-            .call(&Request::Facts {
-                data_dir: self.opts.data_dir.clone(),
-                service: self.opts.service.clone(),
-                ports: Vec::new(),
-            })
-            .ok()
-            .and_then(|r| r.facts)
-            .and_then(|f| f.address)
-            .unwrap_or_default();
+            .reachable()
+            .is_err_and(|why| why.contains(remote::KEY_REFUSED) || why.contains(remote::NO_KEY));
+        let address = if key_gone {
+            String::new()
+        } else {
+            self.remote
+                .call(&Request::Facts {
+                    data_dir: self.opts.data_dir.clone(),
+                    service: self.opts.service.clone(),
+                    ports: Vec::new(),
+                })
+                .ok()
+                .and_then(|r| r.facts)
+                .and_then(|f| f.address)
+                .unwrap_or_default()
+        };
         let leads = self.world.addresses(&host);
         let direct = !address.is_empty() && !leads.contains(&address);
         let url = format!("{new}/healthz");
@@ -1766,13 +1777,9 @@ impl<'a> Move<'a> {
                 ),
             ),
         }
-        // Skipped only when the key is gone (an earlier run's finish removed it there and
-        // deleted it here): any other failure to reach the new host is said by the step itself.
-        let refused = self
-            .remote
-            .reachable()
-            .is_err_and(|why| why.contains(remote::KEY_REFUSED) || why.contains(remote::NO_KEY));
-        if !refused {
+        // Skipped only when the key is gone: any other failure to reach the new host is said
+        // by the step itself.
+        if !key_gone {
             self.call(
                 "tasks",
                 &Request::Tasks {
@@ -1857,44 +1864,51 @@ impl<'a> Move<'a> {
             key: self.state.key_comment(),
             firewall: p.firewall == Carried::Yes,
         };
-        let mut deleted_before = false;
-        match self.remote.call(&finish) {
-            Ok(reply) => {
-                for line in reply.lines {
-                    self.push(shown(line));
+        // Deleted here, which only a finish does, once the new host's finish answered: that
+        // run's record did not survive. Asked before the step, which could only fail on it, and
+        // nothing is waited for.
+        let deleted_before = self
+            .remote
+            .reachable()
+            .is_err_and(|why| why.contains(remote::NO_KEY));
+        if deleted_before {
+            self.manual(
+                "one-time key",
+                format!(
+                    "is gone from this host: an earlier run deleted it once the finish on the \
+                     new host was done, and only its record was not kept. Look at the new \
+                     host's firewall once (`ufw status`); if the key was removed here by hand \
+                     instead, also remove its line ({}) from root's authorized_keys there, and \
+                     {}",
+                    self.state.key_comment(),
+                    target::STATE_DIR
+                ),
+            );
+        } else {
+            match self.remote.call(&finish) {
+                Ok(reply) => {
+                    for line in reply.lines {
+                        self.push(shown(line));
+                    }
                 }
-            }
-            Err(why) => {
-                let key = self.remote.reachable().err().unwrap_or_default();
-                if key.contains(remote::NO_KEY) {
-                    // Deleted here, which only a finish does, once the new host's finish
-                    // answered: that run's record did not survive. Nothing is waited for.
-                    deleted_before = true;
-                    self.manual(
-                        "one-time key",
-                        format!(
-                            "is gone from this host: an earlier run deleted it once the finish \
-                             on the new host was done, and only its record was not kept. Look \
-                             at the new host's firewall once (`ufw status`); if the key was \
-                             removed here by hand instead, also remove its line ({}) from \
-                             root's authorized_keys there, and {}",
-                            self.state.key_comment(),
-                            target::STATE_DIR
-                        ),
-                    );
-                } else if key.contains(remote::KEY_REFUSED)
-                    && self.state.new_url.clone().is_some_and(|url| {
-                        self.world.healthz(&format!("{url}/healthz"), None).is_ok()
-                    })
+                // The key no longer signs in and the new instance answers: an earlier run's
+                // finish was done there and only its answer was lost.
+                Err(_)
+                    if self
+                        .remote
+                        .reachable()
+                        .is_err_and(|why| why.contains(remote::KEY_REFUSED))
+                        && self.state.new_url.clone().is_some_and(|url| {
+                            self.world.healthz(&format!("{url}/healthz"), None).is_ok()
+                        }) =>
                 {
-                    // The key no longer signs in and the new instance answers: an earlier
-                    // run's finish was done there and only its answer was lost.
                     self.manual(
                         "one-time key",
                         "no longer signs in to the new host and the new instance answers: the \
                          finish there was done. Look at its firewall once (`ufw status`)",
                     );
-                } else {
+                }
+                Err(why) => {
                     // Not done there: the key stays on both hosts, and the same command tries
                     // again.
                     self.fail(

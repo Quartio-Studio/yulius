@@ -1452,7 +1452,8 @@ When that reports the build, the move stands: an old unit that runs (thawed or s
 is frozen again and disabled, and the checklist says that it ran beside the new instance (what
 its agents did meanwhile is on the old host only). If it cannot be frozen, that is a `FAIL` line
 with the reason, the two commands to run and, for a freeze that keeps failing, the commands that
-stop the old unit for good (`systemctl stop`, `systemctl kill --kill-whom=all`); nothing is
+stop the old unit for good (`systemctl stop`, `systemctl kill --kill-whom=all
+--signal=SIGKILL`); nothing is
 thawed then either, and a freeze that did not complete within a minute is left on its way. An old unit that has stopped (`inactive` or
 `failed`) is named for you to make sure nothing of it is left; one that systemd reports on its
 way up or down is not taken for stopped. When the new instance answers and does not run, `--abort`
