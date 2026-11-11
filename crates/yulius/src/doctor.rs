@@ -496,7 +496,7 @@ fn browser_display_checks() -> Vec<Check> {
 }
 
 /// The whole stdout of a short command (at most 1 MiB), when it succeeds in time.
-fn output_of(program: &Path, args: &[&str]) -> Option<String> {
+pub(crate) fn output_of(program: &Path, args: &[&str]) -> Option<String> {
     let mut child = Command::new(program)
         .args(args)
         .stdin(Stdio::null())

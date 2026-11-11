@@ -124,9 +124,53 @@ pub fn read(root: &Path, service: &str, systemctl: &dyn Fn(&[&str]) -> Option<St
     }
 }
 
+/// The service unit a process in the group `own` (its path in `/proc/self/cgroup`) belongs to:
+/// the innermost `*.service` on the path.
+#[must_use]
+pub fn own_service(own: &str) -> Option<&str> {
+    own.split('/')
+        .rev()
+        .find(|part| part.len() > ".service".len() && part.ends_with(".service"))
+}
+
+/// Why a restart of the unit this server runs in would leave it down (SPEC-458 RST-003); `None`
+/// when it would come back, and outside a service unit.
+#[must_use]
+pub fn of_this_server() -> Option<String> {
+    let own = std::fs::read_to_string("/proc/self/cgroup").ok()?;
+    let own = yulius_sandbox::cgroup::own_path(&own)?;
+    let service = own_service(&own)?;
+    let root = Path::new(yulius_sandbox::cgroup::CGROUP_ROOT);
+    let facts = read(root, service, &|args: &[&str]| {
+        crate::doctor::output_of(Path::new("systemctl"), args)
+    });
+    blocker(service, &facts)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_own_service_is_the_innermost_unit_on_the_path() {
+        let cases = [
+            (
+                "/system.slice/yulius.service/server",
+                Some("yulius.service"),
+            ),
+            ("/yulius.slice/yulius.service", Some("yulius.service")),
+            (
+                "/system.slice/a.service/x/b.service/server",
+                Some("b.service"),
+            ),
+            ("/user.slice/user-1000.slice/session-3.scope", None),
+            ("/system.slice/.service/server", None),
+            ("/", None),
+        ];
+        for (own, service) in cases {
+            assert_eq!(own_service(own), service, "{own}");
+        }
+    }
 
     fn facts(systemd: Option<u32>, sessions_in_unit: bool, adopt_wired: bool) -> Facts {
         Facts {

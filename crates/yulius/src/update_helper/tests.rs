@@ -100,6 +100,9 @@ printf '    Finished `release` profile\n' >&2"#,
         script(
             &bin.join("systemctl"),
             r#"d="$(dirname "$0")"
+case "$1" in
+  --version|show) cat "$d/$1" 2>/dev/null || exit 1; exit 0 ;;
+esac
 echo "$*" >> "$d/systemctl.log"
 case "$1" in
   stop) rm -f "$d/active" ;;
@@ -131,6 +134,7 @@ esac"#,
             git: PathBuf::from("git"),
             systemctl: bin.join("systemctl"),
             host_check: None,
+            cgroup_root: root.join("cgroup"),
         };
         Ok(Self {
             a: commits[0].clone(),
@@ -140,6 +144,21 @@ esac"#,
             dir,
             args,
         })
+    }
+
+    /// A host of the old layout on systemd 259: sessions run in the unit's own group, and the
+    /// unit pulls in `wants`.
+    fn old_layout_with_sessions(&self, wants: &str) -> TestResult {
+        let unit = "system.slice/yqa-test.service";
+        let sandboxes = self.args.cgroup_root.join(unit).join("sandboxes");
+        std::fs::create_dir_all(&sandboxes)?;
+        std::fs::write(sandboxes.join("cgroup.events"), "populated 1\nfrozen 0\n")?;
+        std::fs::write(self.bin("--version"), "systemd 259 (259.5-0ubuntu1)\n")?;
+        std::fs::write(
+            self.bin("show"),
+            format!("LoadState=loaded\nControlGroup=/{unit}\nWants={wants}\n"),
+        )?;
+        Ok(())
     }
 
     fn bin(&self, name: &str) -> PathBuf {
@@ -787,6 +806,71 @@ fn a_restart_stops_and_starts_the_same_build() -> TestResult {
     assert_eq!(verbs, ["stop", "start"]);
     assert!(!env.args.state_dir.join("backups").exists());
     assert!(env.bin("active").exists());
+    Ok(())
+}
+
+/// SPEC-458 RST-002: where the unit would not start again, the restart is refused before the
+/// stop.
+#[test]
+fn a_restart_that_would_leave_the_server_down_is_refused_before_the_stop() -> TestResult {
+    let mut env = Env::new()?;
+    env.health(None)?;
+    env.old_layout_with_sessions("network-online.target")?;
+    std::fs::create_dir_all(&env.args.state_dir)?;
+    std::fs::write(env.args.state_dir.join("installed-commit"), OLD)?;
+    env.request("run-0022-restart", HelperAction::Restart, OLD)?;
+    let status = env.run()?;
+    assert_eq!(status.state, HelperState::Failed, "{status:?}");
+    let message = status.error.unwrap_or_default();
+    assert!(
+        message.contains("yqa-test.service would not start again"),
+        "{message}"
+    );
+    assert!(message.contains("systemd 259"), "{message}");
+    assert!(message.contains("`sudo yulius host setup`"), "{message}");
+    assert!(message.ends_with("nothing was stopped."), "{message}");
+    assert!(
+        !env.bin("systemctl.log").exists(),
+        "nothing was asked of the unit"
+    );
+    assert!(env.bin("active").exists());
+    Ok(())
+}
+
+/// SPEC-458 RST-002: so is an install, with the staged build kept for the next try.
+#[test]
+fn an_install_that_would_leave_the_server_down_is_refused_before_the_stop() -> TestResult {
+    let mut env = Env::new()?;
+    env.health(None)?;
+    env.stage(&env.c)?;
+    env.old_layout_with_sessions("")?;
+    env.request("run-0023-install", HelperAction::Install, &env.c)?;
+    let status = env.run()?;
+    assert_eq!(status.state, HelperState::Failed, "{status:?}");
+    let message = status.error.unwrap_or_default();
+    assert!(message.contains("would not start again"), "{message}");
+    assert!(message.ends_with("nothing was stopped."), "{message}");
+    assert!(
+        !env.bin("systemctl.log").exists(),
+        "nothing was asked of the unit"
+    );
+    assert_eq!(std::fs::read_to_string(&env.args.binary)?, OLD);
+    assert!(!env.args.state_dir.join("backups").exists());
+    assert!(env.args.state_dir.join("staged").join("yulius").is_file());
+    Ok(())
+}
+
+/// SPEC-458 RST-002: with the adopt unit pulled in, the same host restarts.
+#[test]
+fn a_restart_goes_ahead_where_the_adopt_unit_moves_the_sessions() -> TestResult {
+    let mut env = Env::new()?;
+    env.health(None)?;
+    env.old_layout_with_sessions("yqa-test-sandboxes.service yqa-test-adopt.service")?;
+    std::fs::create_dir_all(&env.args.state_dir)?;
+    std::fs::write(env.args.state_dir.join("installed-commit"), OLD)?;
+    env.request("run-0024-restart", HelperAction::Restart, OLD)?;
+    let status = env.run()?;
+    assert_eq!(status.state, HelperState::Done, "{status:?}");
     Ok(())
 }
 
