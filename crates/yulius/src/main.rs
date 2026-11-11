@@ -836,8 +836,9 @@ mod tests {
 
     use super::Cli;
 
-    /// SPEC-451 WRP-002: every subcommand made for a task's session gets through the agent's
-    /// `yulius` wrapper at `/yulius/bin`, which is first on a session's `PATH`.
+    /// SPEC-451 WRP-002: every subcommand documented "In a task's session" gets through the
+    /// agent's `yulius` wrapper at `/yulius/bin`, which is first on a session's `PATH`, and
+    /// every command the wrapper passes is a subcommand.
     #[test]
     fn the_agent_wrapper_passes_every_session_command() {
         let shim = yulius_app::identity::agent_yulius_shim(std::path::Path::new("/bin/yulius"));
@@ -846,7 +847,11 @@ mod tests {
             .find_map(|line| line.trim().split_once(") exec "))
             .map(|(names, _)| names.split('|').collect())
             .unwrap_or_default();
-        let session: Vec<String> = Cli::command()
+        let cli = Cli::command();
+        for name in &passed {
+            assert!(cli.find_subcommand(name).is_some(), "{name} is no subcommand");
+        }
+        let session: Vec<String> = cli
             .get_subcommands()
             .filter(|command| {
                 command
