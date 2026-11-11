@@ -175,7 +175,7 @@ function seed(params) {
     // newest release was refused for it too), `claude=gap` (2.1.400 lacks another offered
     // model), `claude=failed` (the last check failed), `claude=unmanaged` (sandboxes are not
     // isolated). `version` is what new runs get, `previous` what studio's #12 and #10 still run.
-    claude: claudeState(params.get('claude') || 'ok'),
+    claude: { ...claudeState(params.get('claude') || 'ok'), channelFails: params.get('claude_channel_fail') === '1' },
     // Leftovers on the disk (SPEC-215): `leftovers=none` scans to an empty list.
     leftovers: { none: params.get('leftovers') === 'none', items: null, scannedAt: null, job: null },
     // `disk=low|critical` (SPEC-276 RDA-007): the server's data disk, 386 GiB, as the warning pill reads it.
@@ -4466,7 +4466,7 @@ function claudeState(mode) {
   const base = { mode, channel: 'latest', chosen: null, configChannel: 'latest', version: '2.1.322', previous: '2.1.311', source: 'yulius', host: '2.1.311', latest: '2.1.322', stable: '2.1.311', checkedAt: Date.now() - 12 * MIN, checking: false, result: 'installed', unknown: [], refused: [], error: null, movesStopped: null };
   if (mode === 'incident') return { ...base, version: '2.1.311', previous: '2.1.292', source: 'host', result: null, checkedAt: null, latest: null, stable: null, unknown: [CLAUDE_DEFAULT_MODEL] };
   if (mode === 'ahead') return { ...base, version: '2.1.311', previous: '2.1.292', source: 'host', result: 'refused', unknown: [CLAUDE_DEFAULT_MODEL], refused: [{ version: '2.1.322', missing: [CLAUDE_DEFAULT_MODEL] }] };
-  if (mode === 'gap') return { ...base, version: '2.1.400', previous: '2.1.322', latest: '2.1.400', unknown: ['claude-haiku-4-5'], result: 'up_to_date', movesStopped: 'Running tasks are no longer moved to 2.1.400: task #9 could not continue on it (the session did not start).' };
+  if (mode === 'gap') return { ...base, version: '2.1.400', previous: '2.1.322', latest: '2.1.400', unknown: ['claude-haiku-4-5'], result: 'up_to_date', movesStopped: 'Running tasks are no longer moved to 2.1.400: the session of task #9 ended as it restarted on it. Sessions that start or continue still get it; choose Off to run the host’s Claude Code instead.' };
   if (mode === 'failed') return { ...base, result: 'failed', error: 'registry.npmjs.org is unreachable' };
   return base;
 }
@@ -4536,6 +4536,8 @@ route('POST', '/api/admin/claude-code/check', ({ db }) => {
 route('PUT', '/api/admin/claude-code/channel', ({ db, body }) => {
   superadminOnly(db);
   if (db.claude.mode === 'unmanaged') fail(409, 'conflict', claudeView(db).unmanaged);
+  // `claude_channel_fail=1`: the change is refused, until a test clears `claude.channelFails`.
+  if (db.claude.channelFails) fail(500, 'internal', 'the mock refused this change');
   const channel = body ? body.channel : null;
   if (channel !== null && !['latest', 'stable', 'off'].includes(channel)) fail(422, 'invalid', 'the channel must be latest, stable or off');
   const c = db.claude;

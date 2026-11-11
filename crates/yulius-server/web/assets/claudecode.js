@@ -49,12 +49,16 @@ function checkLine(view) {
   if (view.checking) {
     return h('p', { class: 'muted small claude-check', role: 'status' }, h('span', { class: 'spinner', 'aria-hidden': 'true' }), ' Checking npm for a newer release…');
   }
+  // Nothing reads npm with updates off: what an earlier check saw is not said as today's.
+  if (view.channel === 'off') return h('p', { class: 'muted xs' }, 'Updates are off: nothing is checked.');
   const newest = [view.latest ? `latest ${view.latest}` : null, view.stable ? `stable ${view.stable}` : null].filter(Boolean).join(' · ');
   const when = view.checked_at ? `Checked ${relLong(view.checked_at)}` : null;
   if (!when && !newest) {
-    return h('p', { class: 'muted xs' }, view.channel === 'off' ? 'Updates are off: nothing is checked.' : 'Checked two minutes after the server starts, then every hour.');
+    return h('p', { class: 'muted xs' }, 'Checked two minutes after the server starts, then every hour.');
   }
-  return h('p', { class: 'muted small claude-check' }, [when, newest ? `npm has ${newest}` : null].filter(Boolean).join(': '), '. ', view.result === 'installed' || view.result === 'up_to_date' ? view.result_text : null);
+  // A check that failed read nothing: the releases are the ones an earlier check saw.
+  const has = !newest ? null : view.result === 'failed' ? `npm had ${newest} when it was last read` : `npm has ${newest}`;
+  return h('p', { class: 'muted small claude-check' }, [when, has].filter(Boolean).join(': '), '. ', view.result === 'installed' || view.result === 'up_to_date' ? view.result_text : null);
 }
 
 /** The warnings below the danger banner: another gap, a refused release, a failed check. */
@@ -161,8 +165,10 @@ export function claudeCodeCard(ctx) {
     try {
       render(await ctx.api.post(`${API}/check`, {}));
     } catch (error) {
-      checkButton.disabled = false;
       errorToast(error, 'Couldn’t check for a Claude Code release');
+      // Drawn again from what the server says now, the button with it.
+      drawn = '';
+      refresh();
     }
   }
 
@@ -179,6 +185,9 @@ export function claudeCodeCard(ctx) {
     } catch (error) {
       saving = false;
       errorToast(error, 'Couldn’t change the channel');
+      // The select shows the refused choice and is off: the card is drawn again from what the
+      // server says, also when that reads as before.
+      drawn = '';
       refresh();
     }
   }

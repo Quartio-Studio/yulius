@@ -78,12 +78,16 @@ test('a refused release, another unknown model, a failed check and stopped moves
   await firstShown(screen.getByText('an offered model unknown'));
   text = await cardText(browser);
   expect(text).toMatch(/Claude Code 2\.1\.400 does not know Haiku 4\.5 \(claude-haiku-4-5\), which the composer offers/);
-  expect(text).toMatch(/Running tasks are no longer moved to 2\.1\.400: task #9 could not continue on it/);
+  expect(text).toMatch(/Running tasks are no longer moved to 2\.1\.400: the session of task #9 ended as it restarted on it\. Sessions that start or continue still get it; choose Off/);
   expect(await browser.locator('.claude-problem').count()).toBe(0);
   expect(await axeViolations(browser)).toEqual([]);
 
+  // A failed check read nothing: the releases are an earlier check's, and said so.
   await app.open(mock('/admin/instance', '&claude=failed'));
   await firstShown(screen.getByText(/The check failed: registry\.npmjs\.org is unreachable\./));
+  text = await cardText(browser);
+  expect(text).toMatch(/Checked .* ago: npm had latest 2\.1\.322 · stable 2\.1\.311 when it was last read\./);
+  expect(text).not.toMatch(/npm has/);
 });
 
 test('the channel is changed in place: Stable, back to the server’s, and Off', async ({ app, browser, screen }) => {
@@ -109,6 +113,34 @@ test('the channel is changed in place: Stable, back to the server’s, and Off',
   await expect(screen.getByText('Claude Code 2.1.311')).toBeVisible();
   await expect(screen.getByText('the host’s install')).toBeVisible();
   await expect(screen.getByRole('button', CHECK)).toBeDisabled();
+  // What an earlier check read is not said as today's (once the check that ran has ended).
+  await expect(screen.getByText('Updates are off: nothing is checked.')).toBeVisible({ timeout: 10000 });
+  expect(await cardText(browser)).not.toMatch(/npm has|Checked/);
+});
+
+test('a channel change or a check the server refuses leaves the card as the server has it, and usable', async ({ app, browser, screen }) => {
+  await app.open(mock('/admin/instance', '&claude_channel_fail=1&failpost=/api/admin/claude-code/check'));
+  await firstShown(screen.getByText('Claude Code 2.1.322'));
+  const select = () => browser.evaluate(() => {
+    const el = document.getElementById('claude-channel') as HTMLSelectElement;
+    return `${el.value} ${el.disabled ? 'off' : 'on'}`;
+  });
+  await screen.getByRole('combobox', 'Release channel').selectOption({ label: 'Stable' });
+  await expect(screen.getByText(/Couldn’t change the channel/)).toBeVisible();
+  // The select is back on the channel in effect and can be used again.
+  await expect.poll(select).toBe('latest on');
+
+  await screen.getByRole('button', CHECK).click();
+  await expect(screen.getByText(/Couldn’t check for a Claude Code release/)).toBeVisible();
+  await expect.poll(() => browser.evaluate(() => (document.querySelector('.claude-code .settings-head button') as HTMLButtonElement).disabled)).toBe(false);
+
+  // The server takes the change again: the same choice goes through.
+  await browser.evaluate(() => {
+    (window as unknown as { __yuliusMock: { claude: { channelFails: boolean } } }).__yuliusMock.claude.channelFails = false;
+  });
+  await screen.getByRole('combobox', 'Release channel').selectOption({ label: 'Stable' });
+  await expect(screen.getByText(/Claude Code follows Stable now\. Checking for a release…/)).toBeVisible();
+  await expect.poll(select).toBe('stable on');
 });
 
 test('a server that does not isolate sandboxes says why nothing is kept current', async ({ app, browser, screen }) => {
@@ -128,7 +160,7 @@ test('a task’s info shows the model asked for, what answered and the Claude Co
     document.querySelectorAll('.ti-kv dt').forEach((dt) => { out[(dt as HTMLElement).innerText] = (dt.nextElementSibling as HTMLElement).innerText; });
     return out;
   });
-  await expect.poll(async () => (await details())['Claude Code']).toBe('2.1.311 · moves to 2.1.322 when its turn ends');
+  await expect.poll(async () => (await details())['Claude Code']).toBe('2.1.311 · moves to 2.1.322 when its turn ends, or at its next start');
   const rows = await details();
   expect(rows.Model).toBe('Opus 4 · High effort');
   expect(rows['Answered by']).toBe('Opus 4');
