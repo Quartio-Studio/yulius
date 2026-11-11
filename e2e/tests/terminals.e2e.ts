@@ -253,6 +253,49 @@ test('a tool chosen for a sandbox left while its page loads does not open in ano
   await expect(shell).toHaveAttribute('aria-pressed', 'false');
 });
 
+// Review of SPEC-450 SSC-007: with the pages of two sandboxes loading, the tool waits for the one
+// whose page started loading last, and another sandbox's page starting to load ends its wait.
+test('a tool waits for the sandbox whose page started loading last', async ({ app, browser, screen }) => {
+  type Held = { __yuliusMock: { holdPath: string; heldWaiting?: number; asked?: Record<string, number> } };
+  // The reads of both sandboxes' tasks asked so far wait at the hold (a read's latency comes
+  // before it, so the held path changes only once they are there).
+  const allHeld = () => expect.poll(() => browser.evaluate(() => {
+    const db = (window as unknown as Held).__yuliusMock;
+    const asked = db.asked ?? {};
+    return (asked['/api/sandboxes/sb_studio/tasks'] ?? 0) + (asked['/api/sandboxes/sb_product/tasks'] ?? 0) - (db.heldWaiting ?? 0);
+  }), { message: 'every read of the tasks waits at the hold' }).toBe(0);
+  const hold = (path: 'sb_studio' | 'sb_product') => (path === 'sb_studio'
+    ? browser.evaluate(() => { (window as unknown as Held).__yuliusMock.holdPath = '/api/sandboxes/sb_studio/tasks'; })
+    : browser.evaluate(() => { (window as unknown as Held).__yuliusMock.holdPath = '/api/sandboxes/sb_product/tasks'; }));
+  const sandboxes = screen.getByRole('navigation', 'Sandboxes');
+
+  await app.open(mock('/s/studio/t/12', studioTasks));
+  await studioLoading(screen);
+  const shell = await chooseShell(screen);
+  await expect(shell).toHaveAttribute('aria-pressed', 'true');
+  await allHeld();
+
+  // Product's page starts loading: the Shell chosen for studio is not wanted there.
+  await hold('sb_product');
+  await browser.evaluate(() => { window.location.hash = '#/s/product/t/4'; });
+  await expect(sandboxes.getByRole('link', /^product\b/)).toHaveAttribute('aria-current', 'page');
+  await expect(shell).toHaveAttribute('aria-pressed', 'false');
+  await allHeld();
+
+  // Back to studio, its page loading again: the Shell chosen now waits for studio, not product.
+  await hold('sb_studio');
+  await browser.evaluate(() => { window.location.hash = '#/s/studio/t/12'; });
+  await studioLoading(screen);
+  await shell.click();
+  await expect(shell).toHaveAttribute('aria-pressed', 'true');
+  await expect(screen.getByRole('region', 'Tool panel')).toBeHidden();
+
+  await releaseHeld(browser);
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#12 Checkout API');
+  await expect(shownInput(browser)).toBeFocused();
+  await expect(shell).toHaveAttribute('aria-pressed', 'true');
+});
+
 // SPEC-434 MTB-002/004: the terminal tabs move as the sandbox and Notes tabs do, and keep their order.
 const termStrip = '[role="tablist"][aria-label="Terminals"]';
 
