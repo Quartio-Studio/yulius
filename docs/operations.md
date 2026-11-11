@@ -527,7 +527,8 @@ bwrap and mount inside. `host check` and the doctor only report, with
 `sudo yulius host setup` as the fix. A profile for `/usr/bin/bwrap` that a person wrote (a
 hand-written `/etc/apparmor.d/bwrap`, for example) is never changed: when bwrap works with it,
 it is adopted ("not written by Yulius, left as it is"); when it does not, the item fails and
-prints the two commands that disable it. To move from such a rule to Yulius's, disable it
+prints the two commands that disable it (for a file AppArmor's parser refuses: the parser's
+words, and the file is to be corrected first, since the parser cannot unload it either). To move from such a rule to Yulius's, disable it
 (`sudo ln -s /etc/apparmor.d/bwrap /etc/apparmor.d/disable/ && sudo apparmor_parser -R /etc/apparmor.d/bwrap`)
 and run the setup again. **After a release upgrade from 24.04 to 26.04**, run
 `sudo yulius host setup` once: the upgrade installs the shipped profile next to Yulius's, and

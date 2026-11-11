@@ -486,7 +486,8 @@ fn a_hand_written_rule_that_fails_is_named_not_touched() {
     );
     assert!(!fake.has(PROFILE_FILE));
 
-    // A file of theirs the parser refuses: the same commands, and the shipped profile is back.
+    // A file of theirs the parser refuses cannot be unloaded by its file either: the line asks
+    // for a correct file, and the shipped profile is back.
     for (mut fake, back) in [
         (noble(), ""),
         (
@@ -508,8 +509,9 @@ fn a_hand_written_rule_that_fails_is_named_not_touched() {
                 HostOutcome::Failed,
                 format!(
                     "`/usr/sbin/apparmor_parser -r /etc/apparmor.d/bwrap` failed: AppArmor \
-                     parser error for /etc/apparmor.d/bwrap at line 3: syntax error; \
-                     {THEIRS}{back}"
+                     parser error for /etc/apparmor.d/bwrap at line 3: syntax error; Yulius \
+                     does not change a profile it did not write: correct \
+                     /etc/apparmor.d/bwrap, then run `sudo yulius host setup` again{back}"
                 )
                 .as_str()
             )

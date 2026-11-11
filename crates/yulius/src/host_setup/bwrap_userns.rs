@@ -550,8 +550,13 @@ impl Run<'_> {
         }
         for name in &plan.reload {
             let file = format!("{DIR}/{name}");
-            self.must(&[PARSER, "-r", &file])
-                .map_err(|why| format!("{why}; {}", theirs(std::slice::from_ref(&file))))?;
+            // A file the parser refuses cannot be unloaded by its file either (`-R` reads it).
+            self.must(&[PARSER, "-r", &file]).map_err(|why| {
+                format!(
+                    "{why}; Yulius does not change a profile it did not write: correct {file}, \
+                     then run `sudo yulius host setup` again"
+                )
+            })?;
         }
         if plan.load {
             let out = self.run_cmd(&Cmd::new(&[PARSER, "-r", PROFILE_FILE]));
