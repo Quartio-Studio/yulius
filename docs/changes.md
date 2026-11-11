@@ -22,6 +22,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   or going elsewhere cancels it. Found by the `e2e` job on the faster host, together with three
   test-only races (production protection, the places editor test of #1087, the left-composer
   onboarding test).
+- Your own Anthropic key can be named `ANTHROPIC_API_KEY_<NAME>` or `ANTHROPIC_AUTH_TOKEN_<NAME>`
+  (not ending in `_FILE`), such as `ANTHROPIC_API_KEY_QUARTIO` (SPEC-455, task #437, ADR-0292, #1153); every other
+  `ANTHROPIC_` name stays reserved for the agent CLI. A refused name now says which prefix is
+  reserved and suggests one that works (`APP_<NAME>`), instead of the same bare refusal for every
+  name tried.
 - The default effort is high again (SPEC-462, task #444, ADR-0295); the default model stays Fable
   5.2. A task, Cockpit or Superagent that names no effort runs at `high` from its next start, and
   one that chose an effort, also Max, keeps it. The composer's and Settings' "Default" says High,

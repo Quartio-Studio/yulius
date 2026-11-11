@@ -135,6 +135,8 @@ test('a Shell that took the keyboard keeps it when the task terminal asked earli
     w.__yuliusHoldShell = new Promise<void>((resolve) => { w.__releaseShell = resolve; });
   });
   await app.open(mock('/s/studio/t/12'));
+  // Task #12's page first: a tool opened before the page has its sandbox opens without one.
+  await firstShown(screen.getByRole('heading', { level: 1 }), '#12 Checkout API');
   await screen.getByRole('button', /^Show tools/).click();
   await screen.getByRole('button', 'Shell').click();
 
