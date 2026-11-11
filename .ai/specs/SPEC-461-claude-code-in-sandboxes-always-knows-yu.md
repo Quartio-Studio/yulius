@@ -490,6 +490,11 @@ an older one.
 - `scripts/dev ci` at f9b2b5ce (the review's answers, with `dev` up to 4b59bce3 merged): exit
   0, nextest 3639 passed / 16 skipped, and every other step as above; the reviewer ran it at
   fc6ff2f3 with the same result, and the new restart test 26 times (20 alone, 6 with its file).
+- `scripts/dev ci` at f30d6c05 (the second look's answers, with `dev` up to 63819769 merged):
+  exit 0, nextest 3640 passed / 16 skipped, and every other step as above. The commit after it
+  changes this file only. Mutations, each caught by a test and reverted: the version kept
+  whole; a recount dropping the version; and, for the restart test's last check, a restart
+  whenever the versions differ (3 runs instead of 2).
 - `yulius security-scan`: "Security scan disabled: Vidoc is turned off in Yulius" (exit 0):
   disabled, not passed.
 - Not tested: anything that needs a signed-in Claude subscription, which the guest has none
