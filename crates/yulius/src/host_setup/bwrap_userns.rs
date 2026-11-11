@@ -136,7 +136,8 @@ const DEEPEST: usize = 64;
 /// file sets and alternations (`@{bin}={/usr,}/bin`, `@{bin}/bwrap`). A rule that only names
 /// bwrap (`/usr/bin/bwrap mr,`), a header's attributes and a profile inside another one are
 /// none. Not read, so such a profile is not seen (SPEC-456, Decisions): a glob (`*`, `?`,
-/// `[…]`), an `alias`, and a variable set in an included file other than `@{bin}`.
+/// `[…]`; a broad one gives way to a profile that names the path), an `alias`, and a
+/// variable set in an included file other than `@{bin}`.
 fn attaches_bwrap(text: &str) -> bool {
     // Blocks open, and the words since the last rule or block at the top level.
     let mut depth = 0_usize;
@@ -316,8 +317,7 @@ impl Variables<'_> {
     /// where it has one (`profile`, `hat`), stand the name (a hat's may begin with `^`) and,
     /// where the next word begins with a slash or a variable, the attachment: that is the
     /// program, else the name is. What follows (`flags=(…)`, `xattrs=(…)`) names none. A
-    /// person's profile is rather seen than missed: one in a policy namespace
-    /// (`:ns:name /path`) counts.
+    /// profile in a policy namespace (`:ns:name`) confines nothing on the host itself.
     fn header_attaches(&self, header: &[&str]) -> bool {
         let keyword = header
             .iter()
@@ -325,7 +325,7 @@ impl Variables<'_> {
         let mut words = header[keyword.map_or(0, |at| at + 1)..]
             .iter()
             .map(|word| word.trim_matches('"'));
-        let Some(name) = words.next() else {
+        let Some(name) = words.next().filter(|name| !name.starts_with(':')) else {
             return false;
         };
         match words.next() {
@@ -337,12 +337,10 @@ impl Variables<'_> {
         }
     }
 
-    /// Whether a profile's name is bwrap's path. A policy namespace before it (`:ns:name`)
-    /// is none of it; what follows its last `//`, which parts a child from its parent, is
-    /// the program, where the name begins with a slash or that part holds an alternation.
+    /// Whether a profile's name is bwrap's path: what follows its last `//`, which parts a
+    /// child from its parent, is the program, where the name begins with a slash or that
+    /// part holds an alternation.
     fn name_attaches(&self, name: &str) -> bool {
-        let named = name.strip_prefix(':').and_then(|rest| rest.split_once(':'));
-        let name = named.map_or(name, |(_, name)| name);
         self.expanded(name).is_some_and(|name| {
             let mut local = name.as_str();
             while let Some(at) = local.find("//") {
@@ -1004,9 +1002,6 @@ mod tests {
             "profile /usr/bin/bwrap flags=(complain) {\n}\n",
             // A value's slash goes where the name has its own: no child's `//` is left.
             "@{d} = /usr/bin/\nprofile @{d}/bwrap {\n}\n",
-            // In a policy namespace: seen rather than missed.
-            "profile :ns:b /usr/bin/bwrap {\n}\n",
-            "profile :ns:/usr/bin/bwrap {\n}\n",
             // A hat at the top level is a profile with that keyword.
             "hat /usr/bin/bwrap {\n}\n",
             "hat x /usr/bin/bwrap {\n}\n",
@@ -1040,8 +1035,11 @@ mod tests {
             "@{p} = /usr/bin//bwrap\nprofile @{p} {\n}\n",
             // Beside an attachment the name is none.
             "profile /usr/bin/bwrap /usr/bin/x {\n}\n",
-            // After `:ns://` stands a name that begins with no slash.
-            "profile :ns://usr/bin/bwrap {\n}\n",
+            // A profile in a policy namespace confines nothing on the host itself (asked of
+            // a 26.04 kernel: bwrap runs unconfined beside it).
+            "profile :ns:b /usr/bin/bwrap {\n}\n",
+            "profile :ns:/usr/bin/bwrap {\n}\n",
+            ":ns:/usr/bin/bwrap {\n}\n",
             // A child's name that only ends in bwrap's path.
             "profile x///usr/bin/bwrap {\n}\n",
             // A glob is not read (SPEC-456, Decisions).
