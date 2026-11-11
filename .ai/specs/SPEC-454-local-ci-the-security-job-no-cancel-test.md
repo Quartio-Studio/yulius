@@ -85,10 +85,12 @@ it holds end only when the test releases them, and nothing else competes with th
 
 ## Test plan
 
-- **Regression, committed first (red).** The test asserts, while the pull request's jobs are
-  held, that every other run passed. Today the test fails in every slot order: on this
-  assertion when the branch's run is still running behind the held jobs or was ended by the
-  limit (`error`), and before it, in `until_jobs`, in the mixed order.
+- **Regression, committed first (red).** The test asserts that every run other than the one
+  under test has passed. At `3273fbae`, which adds the assertion alone, after the first wait,
+  the test fails in every slot order: on the assertion when the branch's run is still running
+  behind the held jobs or was ended by the limit (`error`), and before it, in `until_jobs`, in
+  the mixed order. Since `6d573adf` the assertion comes before that wait, as soon as the run
+  under test is queued, so without the fix the test fails on it at once in every order.
 - **Probes, never committed.**
   - R1: the test does not look for 20 s before its first poll.
   - R1b: the test does not look for 12 s before the second phase's poll.
@@ -113,10 +115,10 @@ it holds end only when the test releases them, and nothing else competes with th
   and the process host ends a run whose directory is gone (seen after a failed run: the jobs'
   processes gone within 9 s, their process hosts within 35 s).
 - **The regression test is an assertion in the test itself.** The defect is the test's scenario,
-  so the guard states what the scenario needs (the other runs passed while the jobs are held).
-  Without the fix the test fails in every order with no probe: on the guard, or before it in the
-  mixed order. The limit has no such guard: only a wait longer than 8 s could show it, and the
-  probes do.
+  so the guard states what the scenario needs: when the run under test is queued, every other
+  run has passed. Without the fix the test fails on it at once, in every order and with no
+  probe. The limit has no such guard: only a wait longer than 8 s could show it, and the probes
+  do.
 - **The other tests that hold jobs stay as they are.** The issue is this test; their window is a
   full 8 s and none has failed for this cause. Named in Context and on the issue, not changed
   (one concern per pull request).
@@ -159,7 +161,8 @@ it holds end only when the test releases them, and nothing else competes with th
     33 s a run). No job ended in `error`. For scale: SPEC-441 records the unchanged test at 16
     to 18 s alone after its gate hit the flake; here it took 9 s at rest.
   - `842dd4a0` and `de5607b6` change only comments of the test; it passed 3 of 3 after each
-    (1.6 to 1.7 s).
+    (1.6 to 1.7 s). `6d573adf` moves the assertion before the first wait; the test passed 5 of
+    5 after it (1.6 to 1.8 s).
 - **The neighbours.** `cargo nextest run -p yulius -E 'binary_id(yulius::main) &
   test(/^local_ci::/)'`: 63 of 63 passed in 18.4 s, and in each of 5 more runs.
 - **Review round 1** (a fresh session with `om-code-review`, on `a20a573c`, reading only): no
@@ -170,12 +173,25 @@ it holds end only when the test releases them, and nothing else competes with th
   - Nit: the comment on the hour sat twenty lines above it. Moved (`de5607b6`).
   - Nit: "fails in every slot order" was said of the assertion, but in the mixed order the
     test fails before it. Reworded in the Test plan and in Decisions.
+- **Review round 2** (another fresh session, on `fc1f7f88`): approve. It ran the gate itself
+  (exit 0, 3285 tests passed) and the test: 10 of 10 at rest, 5 of 5 pinned to three CPUs and
+  to two, 4 of 4 under load; the assertion alone failed 7 of 7; with the limit back at 8 s
+  and a 12 s pause the test failed 2 of 2, and passed 2 of 2 with the hour; without the runs
+  going ahead it failed 4 of 4; two product mutations (a failed `quality` also cancels
+  `security`, a failed `security` stops the others) each made it fail. Its findings:
+  - Minor, not from this change: the test needs three CPUs. Under Limits below, and reported
+    on the issue.
+  - Nit: "Today the test fails" in a finished spec. Reworded in the Test plan.
+  - Nit: after the first wait, the assertion was reached only in some slot orders when the
+    other runs had not gone first; in the others the test failed after 60 s in `until_jobs`
+    (3 of 4 runs here, 2 of 4 in the review). Moved before the wait (`6d573adf`): without the
+    runs going ahead the test now fails on it within a second, 6 of 6 times.
 - **Final review.** A fresh session reviews the head that is delivered and runs the gate
   itself. Its verdict and that head are in the pull request: a commit recording them here
   could not be the head it reviewed.
-- **Gate.** `scripts/dev ci` at `de5607b6`, with dev `e2dd441d` merged in (`3d0e14f9`): exit 0;
+- **Gate.** `scripts/dev ci` at `6d573adf`, with dev `e2dd441d` merged in (`3d0e14f9`): exit 0;
   doctor, check, lint, the macOS compile, 3285 tests passed and 16 skipped, deps, docs.
-  The commits after it change only this spec.
+  The commits after it change only this spec. It had passed at `de5607b6` the same way.
   - Before that merge, at `96eca926`, the gate exited 1 on failures outside this change. Two
     `first_message` tests timed out "waiting for the continued turn"; #1154 reports them on
     unchanged dev `911e3127`. `cargo deny` failed on RUSTSEC-2026-0486 against dev's own
