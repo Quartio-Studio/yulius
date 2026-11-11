@@ -297,6 +297,21 @@ keeper with `User=` keeps the delegation and cannot be signalled by the user; sy
 259 let go of a stopped unit's emptied group at once, also while its start job waits; the old
 layout restarts on 255 and not on 259.
 
+### Tests and gates
+
+- New tests fail without their change and pass with it: `cgroup::detect` and the unit names
+  (`yulius-sandbox`), `adopt` and `let_go` on fake cgroup trees (11), the host setup item (10,
+  with the deploy files and the operations guide pinned to what the setup writes), the restart
+  guard's table and readers, the helper refusing before it stops anything, the server's 409
+  (`self_update`), the doctor's line, the export's freeze with a sessions unit, the Docker front
+  decision (3), and the supervisor (`task_done`: the reconciliation during a launch, a refused
+  start, a start and a stop that settle a run no server holds).
+- `scripts/dev ci` at `c27ce1fa`: exit 0; formatting, clippy, the repository check, the macOS
+  compile check, `3393 tests run: 3393 passed, 16 skipped`, doctests and the documentation
+  build.
+- `yulius security-scan`: "Security scan disabled: Vidoc is turned off in Yulius"; nothing was
+  scanned, so this is not a pass.
+
 Not shown, and why: production itself; real agent sessions, sandboxes and Docker engines (a
 guest has no GitHub App, no Claude subscription and no sandbox base), so that the server
 attaches to a session's terminal again and that an engine starts again after the move rest on
