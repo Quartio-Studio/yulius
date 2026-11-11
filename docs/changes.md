@@ -4,6 +4,22 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-11
+
+- Sandboxes never run a Claude Code that does not know Yulius's default model (SPEC-461, task
+  #443, ADR-0293). On production the default model (Fable 5.2) had outrun the Claude Code that
+  npm's `stable` offered (2.1.311), so a session's own model picker and its `fable` alias meant
+  Fable 5.1. Yulius now follows npm's `latest`, reads each release for the models the composer
+  offers before it becomes current and refuses one without the default model, and on `stable`
+  takes `latest`'s release when stable's does not know it. Settings, Instance has a Claude Code
+  card: the version sandboxes run, npm's newest releases, the last check, "Check now", the
+  channel (Latest, Stable, Off) changed there without editing the unit, a red banner with the
+  fix while the default model is unknown, and the tasks still on an older version. `yulius
+  doctor` fails on it too. A running task moves to the new Claude Code when its turn ends, in
+  the same session, and a task's info shows the model it asks for, the models that answered and
+  the Claude Code each session ran. Also fixed: an idle task a person moved to another
+  subscription read "working" until its next turn.
+
 ## 2026-11-10
 
 - Text stays inside its box (SPEC-449, task #431, ADR-0290). A long URL, path or identifier

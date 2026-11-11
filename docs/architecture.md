@@ -248,23 +248,45 @@ flowchart LR
 
 Sessions run with Claude Code's own updater off (#45). The server keeps the CLI current instead,
 as its service user ([SPEC-421](../.ai/specs/SPEC-421-claude-should-autoupdate-when-new-versio.md),
-[decision 0266](decisions/0266-yulius-keeps-claude-code-current-in-its-data-directory.md)): the
-adapter `wiring/claude_cli.rs` checks npm's dist-tag hourly, installs a newer platform binary
-under `<data>/claude-code` after its sha512, ELF and embedded-version checks (never running it),
-and switches `current`
-atomically; the version policy (channels, versions, platform package, what to keep) is
-`yulius_domain::agent_cli`. `NamespaceIsolation` puts the newer of the host's npm package and
-`current` into each join's `extra_binds`, read-only at the host package's path, and agent runs,
-shells, CI jobs and dev CD runs add it to their binds, so a run gets the version current when it
-starts and keeps it while it runs. Sign-ins are sealed tokens, untouched by a new binary.
+[decision 0266](decisions/0266-yulius-keeps-claude-code-current-in-its-data-directory.md);
+[SPEC-461](../.ai/specs/SPEC-461-claude-code-in-sandboxes-always-knows-yu.md),
+[decision 0293](decisions/0293-claude-code-follows-latest-and-must-know-the-default-model.md)).
+
+- `wiring/claude_cli.rs` (the updater) reads npm's dist-tags, installs a newer platform binary
+  under `<data>/claude-code` after its sha512, ELF, embedded-version and default-model checks
+  (never running it), and switches `current` atomically. `wiring/claude_models.rs` reads a binary
+  for the model ids the composer offers (`OFFERED_CLAUDE_MODELS`), in chunks, once per file.
+- `wiring/claude_service.rs` (`ClaudeCode`, the app's `AgentCli` port) holds the channel in
+  effect, runs the checks (hourly, at a channel change, on demand, one at a time), records what
+  the last one did and writes `status.json` for `yulius doctor`.
+- The policy is `yulius_domain::agent_cli`: channels (`latest` by default), versions, the platform
+  package, what to keep, which gap refuses a release (the default model), when `stable` falls
+  forward to `latest`, and when a running session moves (`moves_now`).
+- `yulius_app::claude_code` is Settings, Instance: the view, the stored channel
+  (`instance.claude_channel`, which wins over `YULIUS_CLAUDE_UPDATES`), "Check now", and the move
+  of running tasks. Each run records the Claude Code version its transcript names
+  (`metrics.cli_version`); when a turn ends and that is older than what runs get now, the session
+  is restarted on the newer one through the subscription switch (reason `claude_code`), at the
+  Stop hook of a turn it works on after, or once an idle prompt-mode session's turn has settled.
+
+`NamespaceIsolation` puts the newer of the host's npm package and `current` into each join's
+`extra_binds`, read-only at the host package's path, as the channel says when the run starts
+(`off`: the host's), and agent runs, shells, CI jobs and dev CD runs add it to their binds.
+Sign-ins are sealed tokens, untouched by a new binary.
 
 ```mermaid
 flowchart LR
-  REG["registry.npmjs.org"] -->|"hourly: dist-tag, then the platform tarball"| UPD["claude_cli updater (server)"]
-  UPD -->|"sha512, ELF, embedded version, then rename"| CUR["data dir: claude-code/current → versions/X.Y.Z"]
-  HOST["host npm install (operator)"] --> PICK{"newer of the two"}
+  REG["registry.npmjs.org"] -->|"hourly, on demand: dist-tags, then the platform tarball"| UPD["claude_cli updater (server)"]
+  UPD -->|"sha512, ELF, embedded version, default model, then rename"| CUR["data dir: claude-code/current → versions/X.Y.Z"]
+  UPD -.->|"without the default model: refused"| ST["status.json and the Instance card"]
+  SET["Settings, Instance: channel, Check now"] --> SVC["claude_service (channel in effect, checks)"]
+  SVC --> UPD
+  SVC --> ST
+  HOST["host npm install (operator)"] --> PICK{"newer of the two (off: the host's)"}
   CUR --> PICK
   PICK -->|"SandboxJoin.extra_binds, read-only at the host package path"| RUN["new run: agent, shell, CI job, dev CD"]
+  PICK -->|"a running task's turn ends on an older version: restart by resume"| RUN
+  ST --> DOC["yulius doctor: FAIL without the default model"]
 ```
 
 ## Sandbox browser DevTools

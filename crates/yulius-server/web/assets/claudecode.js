@@ -7,6 +7,7 @@
 import { h, icon, setChildren, toast, errorToast, badge, skeleton } from './dom.js';
 import { relLong } from './format.js';
 import { modelLabel } from './models.js';
+import { BRAND } from './brand.js';
 
 const API = '/api/admin/claude-code';
 /** While a check runs the card asks again this often (ms); after a failed read, it tries again. */
@@ -34,7 +35,7 @@ function versionLine(view) {
       : view.unknown_models.length ? badge('an offered model unknown', 'warn')
         : badge('knows every offered model', 'ok');
   const from = view.source === 'yulius'
-    ? `kept current by Yulius${view.host_version ? ` · the host has ${view.host_version}` : ''}`
+    ? `kept current by ${BRAND.name}${view.host_version ? ` · the host has ${view.host_version}` : ''}`
     : view.source === 'host' ? 'the host’s install' : '';
   return h('div', { class: 'instance-version' },
     h('span', { class: 'muted small' }, 'Sandboxes run'),
@@ -116,7 +117,7 @@ export function claudeCodeCard(ctx) {
   function render(view) {
     checkButton.disabled = !view.managed || view.checking || view.channel === 'off';
     checkButton.classList.toggle('busy', Boolean(view.checking));
-    checkButton.title = !view.managed ? 'Yulius keeps nothing current on this server' : view.channel === 'off' ? 'Updates are off' : '';
+    checkButton.title = !view.managed ? `${BRAND.name} keeps nothing current on this server` : view.channel === 'off' ? 'Updates are off' : '';
     const parts = [
       view.problem ? h('div', { class: 'banner banner-danger claude-problem', role: 'alert' }, icon('warn', { size: 16 }),
         h('div', { class: 'banner-text' }, h('strong', null, view.problem), ' ', view.fix)) : null,

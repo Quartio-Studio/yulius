@@ -306,6 +306,11 @@ impl App {
         if self.agent_cli.get().is_none() {
             return;
         }
+        // A session a person paused, or one an instance update is about to freeze, is left as
+        // it is: the restart would end the pause (SPEC-191 PER-005) or outrun the update.
+        if self.is_paused_by_person(task_id).await || self.update_holds_starts() {
+            return;
+        }
         let store = &self.deps.store;
         let idle = |task: &crate::model::TaskRecord| {
             task.mode == TaskMode::Prompt

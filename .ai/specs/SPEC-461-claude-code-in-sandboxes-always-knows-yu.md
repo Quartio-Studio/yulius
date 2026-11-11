@@ -75,9 +75,9 @@ an older one.
 | CCM-008 | **Instance page.** Settings, Instance has a "Claude Code" card (superadmin): the channel and where it is set, the version in use and where it comes from, the host's version, npm's `latest` and `stable` at the last check, when it was checked and what it did; a danger banner with the fix while the version in use does not know the default model; a warning for another unknown offered model, a refused release and a failed check; "Check now"; the channel as a choice of Latest, Stable and Off; and the tasks that still run an older Claude Code (CCM-013). |
 | CCM-009 | **Channel in Settings.** `PUT /api/admin/claude-code/channel {"channel": "latest"\|"stable"\|"off"\|null}` (superadmin) stores the channel in the database (`null`: back to `YULIUS_CLAUDE_UPDATES`). A stored channel wins over the unit's. It applies at once, without a restart: the next check runs now, runs started from then on bind as the channel says (`off`: the host's install), and it is audited `claude_code.channel`. An unknown channel is refused (422). |
 | CCM-010 | **Check now.** `POST /api/admin/claude-code/check` (superadmin) starts a check at once and answers 202 with the view saying it runs; one check runs at a time (a second request joins the running one). The hourly check and the first check 2 minutes after a start stay. `GET /api/admin/claude-code` answers the view. |
-| CCM-011 | **Sessions record what ran.** Each session of a task records the Claude Code version its transcript lines name, beside the model that answered (kept already). Both survive a server restart (they are read from the run's transcript lines again). |
-| CCM-012 | **Task info.** A task's info shows the model it asked for (or "Default" with the default's name), the models that answered, and the Claude Code version of its latest session, with "moves to X at the end of its turn" while it runs an older one; each row of its Sessions table shows that session's Claude Code version and model. |
-| CCM-013 | **A running task moves.** When a turn of a running task ends and its session runs an older Claude Code than runs get now, Yulius restarts the session on the newer one in the same Claude session (`claude --resume`, same subscription, the path a subscription move takes at a turn boundary) and says so in one line in its terminal. Not while its background shells or agents run, not while a person typed into it in the last minute, not within the cooldown of a refused switch, and once per version per task. A session that could not continue on a version stops further moves to that version (the card says so). A task that is idle keeps its version until its next turn ends or its next start. The Superagent, shells and CI jobs get the newer version when they next start, as before. |
+| CCM-011 | **Sessions record what ran.** Each session of a task records the Claude Code version its transcript's prompt records name (`metrics.cli_version`), beside the model that answered (kept already), as soon as a line names it. |
+| CCM-012 | **Task info.** A task's info shows the model it asks for with its effort (marked "default" when the task names none), the models that answered, and the Claude Code version of its latest session, with "moves to X when its turn ends" while its running session is on an older one; each row of its Sessions table shows what that session ran on (its Claude Code version and model). `GET /api/tasks/{tid}` carries them (`model`, `model_default`, `effort`, `cli_version`, `cli_moves_to`; per attempt `model`, `cli_version`). |
+| CCM-013 | **A running task moves.** When a turn of a running task ends and its session runs an older Claude Code than runs get now, Yulius restarts the session on the newer one in the same Claude session (`claude --resume`, same subscription, the path a subscription move takes at a turn boundary) and says so in one line in its terminal. A session that works on after the turn (a gate's block, a goal task) moves at that turn's Stop hook and gets the gate's reasons, and its goal again, as after a subscription move; a prompt-mode session that goes idle moves once the turn has settled (its pull request opened, chains advanced), with nothing typed, and is idle again. Not while its background shells, agents or monitors run, not while a person typed into it in the last minute, not within the cooldown of a refused switch, and once per version per task. A session that could not continue on a version stops further moves to that version (the card says so). A task that is idle keeps its version until its next turn ends or its next start, and so does a run without hooks. The Superagent, shells and CI jobs get the newer version when they next start, as before. A restart for a newer Claude Code is no subscription switch in the task's info. |
 
 ## Plan
 
@@ -113,33 +113,43 @@ an older one.
   fix when the default model is unknown, a refused release, the channel choice, "Check now" and
   the tasks on an older version (e2e against the mock).
 - AC8 (CCM-011, CCM-012). A session whose transcript names a version shows it in the task's detail
-  (`AttemptView.cli_version`, `TaskDetail.cli_version`), after a server restart too; task info
+  (`AttemptView.cli_version`, `TaskDetail.cli_version`), also once the run has ended; task info
   shows the model asked for, the models that answered and the version.
 - AC9 (CCM-013). A running task whose session runs 2.1.311 while runs get 2.1.322 is restarted at
   the end of its turn: a second run of the same Claude session and subscription, launched by
-  resume, with one terminal line; nothing is restarted again at the next turn end, nor while a
-  background shell runs, nor when the versions are equal.
+  resume, with one terminal line, idle again afterwards (prompt mode) or with its goal set again
+  and achieved (goal mode); nothing is restarted again at the next turn end, nor when the
+  versions are equal, nor under a person who typed in the last minute; background work, a
+  refused switch and a version a session could not continue on keep it where it is.
 
 ## Test plan
 
 - Unit, `crates/yulius-domain/src/agent_cli.rs`: the channel default (AC2); which channel falls
-  forward to `latest`; the refusal's and the fix's words. `crates/yulius-domain/src/harness.rs`:
-  the offered list starts with the default.
+  forward to `latest`; where a model id ends; the gate (default model) and the reported gap; the
+  problem's and the fix's words per channel; when a session moves (`moves_now`: every refusal of
+  AC9). `crates/yulius-domain/src/harness.rs`: the offered list starts with the default.
 - Unit, `crates/yulius/src/wiring/claude_models.rs`: the streaming model scan (ids across chunk
   boundaries, at the end of the file, followed by a digit, a letter or a hyphen, absent) and its
-  per-file memory.
+  per-file memory. `crates/yulius-harness/tests/observe.rs`: the run's CLI version is its latest
+  prompt record's, never a sub-agent's.
 - Integration, `crates/yulius/tests/claude_updates.rs` (the registry stub of SPEC-421, whose
-  binary stand-in now embeds the offered model ids): AC1, AC3, AC4, the status file after each
-  outcome, AC5 (the doctor's level and text), the composer's list equal to the server's
-  (`models.js`), the channel applied at once to binds, Check now joining a running check, and
-  every SPEC-421 test unchanged in meaning.
-- Integration, `crates/yulius/tests/claude_code_admin.rs`: AC6 over the app (store round trip of
-  the channel, the superadmin gate, the audit entry, the view from a fake adapter) and AC8.
-- Integration, `crates/yulius/tests/claude_code_moves.rs` (real processes, the fake agent with
-  hooks and a transcript that names a version): AC9 and its three refusals.
-- e2e, `e2e/tests/claude-code.e2e.ts` (mock): AC7; `sessions`/task info e2e for AC8's rows.
-- Not testable here: a real download from npm and a real 341 MB binary in CI (the stub's stand-in
-  is small); the move of a real Claude Code session (the fake agent stands in for it).
+  binary stand-in now embeds the offered model ids): AC1, AC3, AC4, the status file and the
+  in-memory record after each outcome, AC5 (the doctor's level and text), the composer's list
+  equal to the server's (`models.js`), the declared channel default, a channel change applied at
+  once to binds, "Check now" waking the loop, and every SPEC-421 test unchanged in meaning.
+- Integration, `crates/yulius/tests/claude_code_admin.rs`: AC6 over the HTTP API with a fake
+  adapter (the superadmin gate, the store round trip of the channel, the audit entries, an unknown
+  channel, the view's problem and fix, 202 on "Check now", a server without isolation).
+- Integration, `crates/yulius/tests/claude_code_moves.rs` (real processes: the fake agent runs
+  Claude Code's hooks against a served app, and its transcript names the version a file holds
+  when it starts): AC8; AC9 in prompt mode and in goal mode; the typing refusal; and the idle
+  state after a person's move of an idle task (the defect met on the way).
+- e2e, `e2e/tests/claude-code.e2e.ts` (mock): AC7 and AC8's task info rows.
+- Not testable here: a real download from npm and a real 340 MB binary in CI (the stub's stand-in
+  is small; the scan was run by hand against the installed 2.1.322, see Evidence); the move of a
+  real Claude Code session (the fake agent stands in for it); the background-work refusal with
+  real processes (it reuses `background_work_now`, covered by the task-done suites, and the
+  decision is unit-tested).
 
 ## Decisions
 
@@ -167,6 +177,29 @@ an older one.
 - **The move reuses the subscription switch** (same subscription, reason `claude_code`) instead of
   a new restart path: its preflight, its hand-over to a stop or close that overtakes it, and its
   refusal to end background work are the hard part, and they exist and are tested.
-- **Idle sessions are not restarted in place.** A resumed goal session gets its goal typed again,
-  which would start work nobody asked for in an idle task; an idle task moves at the end of its
-  next turn, or at its next start.
+- **Idle sessions are not restarted when a release arrives.** A resumed goal session gets its
+  goal typed again, which would start work nobody asked for in an idle task; a session moves at
+  the end of a turn: a goal session at the Stop of a turn it works on after (the goal typed again
+  is what happens next anyway), a prompt-mode session once its turn has settled, with nothing
+  typed.
+- **A clean turn end settles before an idle session moves.** Moving at the Stop hook, as a
+  subscription move does, skips what a clean turn end does (the task's activity, its pull request,
+  its chains). Rare for a subscription move, it would happen to every prompt-mode task once per
+  release, so the move runs after `settle_clean_turn`'s work.
+- **Runs without hooks do not move.** Their turn end is read from the transcript after the fact;
+  every supported Claude Code runs Yulius's hooks, so only test runs lack them.
+- **The version is the transcript's word**, stored in `metrics.cli_version` through its own store
+  call: `AttemptRecord` and `MetricsRecord` are built in dozens of places (and in parallel pull
+  requests), so neither got a field.
+- **The move decision is a pure function** (`agent_cli::moves_now`), so each refusal is unit-tested
+  without processes; the app only gathers its facts, the cheap ones first.
+- **Met on the way, fixed here:** a prompt-mode session that was idle read "working" after a move
+  that types nothing, also a person's move to another subscription (SPEC-447 MOV-002): the launch
+  marks every run working and no turn ended to say otherwise. The switch now puts such a session
+  back to idle (`rest_after_idle_switch`); the move of CCM-013 depends on it.
+- **Not from this change:** `first_message::{a_draft_typed_during_the_opening_turn_is_left_alone,
+  focus_and_mouse_reports_do_not_keep_the_goal_out,
+  trust_words_after_the_session_started_are_no_trust_prompt}` and
+  `merge_train::a_member_that_cannot_merge_is_told_instead_of_tested_again` fail the same way on
+  the base commit 911e3127 (run there in a second worktree); issue #1154 tracks them (they fail
+  in a task sandbox and pass in Yulius CI).
