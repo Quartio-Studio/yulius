@@ -154,6 +154,9 @@ impl TranscriptFacts {
                 self.turn_open = Some(false);
                 self.goal_retry = None;
             }
+            // A pause at a usage limit or a refused subscription is the limit's (SPEC-464
+            // UCL-007): nobody is asked to send a message for it.
+            Observation::GoalRetry { armed: false, .. } if self.limit_pending => {}
             Observation::GoalRetry { armed, notice } => {
                 self.goal_retry = Some(if *armed {
                     GoalRetryFact::Armed
@@ -1462,6 +1465,43 @@ mod tests {
             armed,
             notice: "Goal paused after 3 automatic retries · the API was unavailable".into(),
         }
+    }
+
+    /// SPEC-464 UCL-007: Claude Code answers the refusal of a model for its usage credits with
+    /// "Goal paused · the request was rate limited". After a usage limit, or a refused
+    /// subscription, of the same turn that pause is the limit's: the replay keeps the limit and
+    /// asks nobody. With no limit before it, it is a pause nobody handles, as before; and a
+    /// limit a later turn overtook does not hide that turn's pause.
+    #[test]
+    fn a_goal_pause_at_a_usage_limit_is_the_limits() {
+        let paused = Observation::GoalRetry {
+            armed: false,
+            notice: "Goal paused · the request was rate limited".into(),
+        };
+        let limit = Observation::LimitReached {
+            resets_at: None,
+            message: "You're out of usage credits. /model to switch models.".into(),
+            window_minutes: None,
+            scope: LimitScope::Model(None),
+            at: Some(Timestamp(2)),
+        };
+        let refused = Observation::AccessLost {
+            message: "Your organization has disabled Claude subscription access".into(),
+            at: Some(Timestamp(2)),
+        };
+        for cut in [limit.clone(), refused] {
+            let facts = reduce(&[PROMPT, cut.clone(), paused.clone(), ENDED]);
+            assert_eq!(facts.goal_retry, None, "{cut:?}");
+            assert!(facts.limit_pending, "{cut:?}");
+        }
+        assert_eq!(
+            reduce(&[PROMPT, paused.clone(), ENDED]).goal_retry,
+            Some(GoalRetryFact::Stopped(
+                "Goal paused · the request was rate limited".into()
+            ))
+        );
+        let later = reduce(&[PROMPT, limit, ENDED, PROMPT, paused, ENDED]);
+        assert!(later.goal_retry.is_some() && !later.limit_pending);
     }
 
     /// SPEC-333: a replay keeps the retry Claude Code armed over the record that closes the error

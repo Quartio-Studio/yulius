@@ -8,6 +8,10 @@
 //! retries"), or pauses the goal on an API error it does not retry, nothing goes on by itself:
 //! the task is in Needs you. Yulius types nothing itself, so no prompt of its own races Claude
 //! Code's check-in.
+//!
+//! A pause that follows a usage limit in the same turn is not such a pause (SPEC-464): Claude
+//! Code answers the refusal of a model for its usage credits with "Goal paused · the request was
+//! rate limited", and the limit path already moves the task or resumes it at the reset.
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -51,6 +55,13 @@ impl App {
             return;
         }
         if !armed {
+            // A pause at a usage limit, or at a refused subscription, is the limit's: Yulius
+            // moves the task past it or resumes it at the reset, and nobody has to send a
+            // message (SPEC-464 UCL-007).
+            if runtime.at_limit.load(Ordering::SeqCst) {
+                tracing::info!(task = %task_id, notice, "Claude Code paused the goal at a usage limit: the limit path goes on");
+                return;
+            }
             self.goal_retries_spent(&task, notice).await;
             return;
         }
