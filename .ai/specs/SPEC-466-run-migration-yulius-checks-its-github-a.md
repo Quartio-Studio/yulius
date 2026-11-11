@@ -1,11 +1,11 @@
 ---
 yulius-task: 25decd3b-ed8e-4fcf-ab8e-a49ca9c2b1c2
-status: in-progress
+status: done
 ---
 
 # SPEC-466: Run migration: Yulius checks its GitHub App callback, Settings → Instance shows the move, the remote CLI follows it
 
-Status: in-progress
+Status: done
 Date: 2026-11-11
 Owner: Yulius task #446 (slice C of #442)
 Scope authorization: task #446, asked by the project's owner: "After a move changes the public
@@ -69,8 +69,8 @@ The check
   demand or a changed answer makes it 30 s again. A GitHub sign-in that completes proves the
   callback: GitHub exchanged a code for it, so the answer is "registered" at once, without
   another question, and an answer that was on its way meanwhile does not undo it. One check runs
-  at a time: a second request waits for it and takes its
-  answer, and a check that dies does not stop the next ones.
+  at a time: a second request waits for it and takes its answer, and a check that dies does not
+  stop the next ones.
 
 Settings → Instance and the sign-in page
 
@@ -87,8 +87,8 @@ Settings → Instance and the sign-in page
   host is retired, and a re-read every 5 s until it is registered (said in place, no reload; the
   latest read wins, and one that fails keeps what the card shows); coming back to the page
   (another tab, GitHub's settings) asks GitHub at once; unknown: the reason and "Check again".
-  After a move: where the instance came from, when, and
-  what the first start did with the tasks (back in the queue, left stopped, could not be queued).
+  After a move: where the instance came from, when, and what the first start did with the tasks
+  (back in the queue, left stopped, could not be queued).
 - MVC-012 **Sign-in page.** `GET /api/setup/status` says `github_callback_missing` (true only for
   the answer "missing"). The page then says, in a fixed sentence, that GitHub says it does not
   know this address, that GitHub sign-in will not complete until the superadmin adds it to the
@@ -127,8 +127,9 @@ Remote clients
   it.` on standard error and repeats the call once there. A redirect answered again is an error.
 - MVC-031 **Nothing else is followed.** The new origin must be `https` (plain `http` only when the
   old URL was itself a loopback development server), with no credentials, path, query or
-  fragment, and another URL than the one asked. Without the header, with another `Location`, or with a header that is not such an
-  origin, the redirect is the error it is today and the token is sent nowhere else.
+  fragment, and another URL than the one asked. Without the header, with another `Location`, or
+  with a header that is not such an origin, the redirect is the error it is today and the token
+  is sent nowhere else.
 - MVC-032 **The old name keeps working.** The store remembers the move (`moved` in
   `remote-credentials.json`), so a command that names the old URL (`--server`, `YULIUS_SERVER`)
   uses the sign-in at the new one. `yulius remote login` at a URL forgets a move recorded from it.
@@ -147,8 +148,8 @@ Remote clients
   `unknown`/`missing` (owner: whoever reads next once it is due, or a demand; exit: `registered`),
   `registered` (kept until the next start or demand).
 - **Move** (`instance/migrate/github.rs`). `asked_instance` reads the key file and sends one
-  HTTP/1.0 request to the loopback listener (connecting, sending and each read bounded at 30 s,
-  above the 20 s the server needs at worst for a check behind another; a
+  HTTP/1.0 request to the loopback listener (connecting, sending and the whole answer each
+  bounded at 30 s, above the 20 s the server needs at worst for a check behind another; a
   `public_url` that is not `https://host` is never sent); `line` makes the checklist's "GitHub
   App" line of the answer. The plan asks through `World::github` (the old instance, the new URL);
   before the finish the flow sends `Request::Callback` to the new host, whose step asks the
@@ -161,15 +162,15 @@ Remote clients
 ## Plan
 
 - [x] Spec SPEC-466 and ADR-0302
-- [ ] The GitHub client asks whether a callback URL is registered, against the fake GitHub
-- [ ] The instance keeps its callback's answer: at start, on demand, re-checked while missing
-- [ ] Address API: the answer, the App's link and values, the move's report
-- [ ] Settings → Instance shows the Address card, with e2e on the mock
-- [ ] The sign-in page says when GitHub does not know the address, and sign-in start re-checks
-- [ ] Internal endpoint; the move's plan and final checklist check the new URL's callback
-- [ ] `yulius remote` follows a move's redirect and the store remembers it
-- [ ] Operations guide §5 and §7, remote control, API, architecture, product summary, changes
-- [ ] Gates green and the independent review answered
+- [x] The GitHub client asks whether a callback URL is registered, against the fake GitHub
+- [x] The instance keeps its callback's answer: at start, on demand, re-checked while missing
+- [x] Address API: the answer, the App's link and values, the move's report
+- [x] Settings → Instance shows the Address card, with e2e on the mock
+- [x] The sign-in page says when GitHub does not know the address; the check never stops a sign-in
+- [x] Internal endpoint; the move's plan and final checklist check the new URL's callback
+- [x] `yulius remote` follows a move's redirect and the store remembers it
+- [x] Operations guide §5 and §7, remote control, API, architecture, product summary, changes
+- [x] Gates green and the independent review answered
 
 ## Acceptance criteria
 
@@ -247,3 +248,79 @@ Remote clients
   import client and its own credentials file) do not follow a move: MIG-043 names `yulius
   remote`; they say the redirect and take `--server <new URL>`. Claude Code's own MCP connection
   (`claude mcp add`) cannot be changed from the server: the checklist keeps its line.
+
+## Evidence
+
+Head of the gates: `b451719f` (2026-11-11), which holds `dev` up to `eb2e8a4e` (#1167); the
+commits after it change this document only.
+
+- `scripts/dev ci`: exit 0; nextest 3568 tests run, 3568 passed, 16 skipped; clippy, doctests,
+  docs and the repository check.
+- e2e: the whole suite (`cd e2e && npx e2e run`) at `8e687075`, the merge of `dev`: 79 files
+  passed, 1 skipped; 940 tests passed, 1 skipped. At the gates' head, where only comments of the
+  pages changed since: `sign-in`, `instance-address`, `instance-limits` and `claude-code`,
+  36 tests passed. New: `instance-address.e2e.ts` (8) and three in `sign-in.e2e.ts`.
+- The tests of this change, by requirement:
+  - MVC-001: `yulius-github` `tests/client.rs`
+    `a_callback_url_is_registered_missing_or_not_known`,
+    `a_callback_question_ends_when_github_does_not_answer`; through the production adapter,
+    `github_callback::the_adapter_asks_the_fake_github`.
+  - MVC-002, MVC-003, MVC-010, MVC-012, MVC-013, MVC-020: `crates/yulius/tests/github_callback.rs`
+    (15 tests) and `yulius-app` `github_callback::tests` (3, the schedule of re-checks among them).
+  - MVC-011, MVC-012: the e2e tests above.
+  - MVC-021, MVC-022: `instance::migrate::tests::github` (7), four flow tests
+    (`a_callback_github_accepts_is_ok_in_the_plan_and_at_the_finish` and the three after it),
+    `github_callback::the_move_s_question_is_answered_by_the_running_server`.
+  - MVC-030 to MVC-032: `yulius-import` `remote::tests` (3), `token_store::tests` (2 new),
+    `remote_mcp::the_cli_follows_an_instance_that_moved` (the `yulius` binary).
+- Each behaviour's test was seen to fail without it: before its code was written, or by a
+  mutation of it (55 mutations of the kept answer and its schedule, the routes, the pages, the
+  move's question and the remote client with its store). Two survived at first and got their
+  tests (a URL that is not a host reaching the request line; the count of equal answers not reset
+  by a changed one); a third was an equivalent change.
+- `yulius security-scan`: "Security scan disabled" (Vidoc is off for this project): disabled, not
+  passed.
+- Real runs (2026-11-11, at `f9590767`, before the later fixes to the schedule and the pages):
+  - GitHub's live token endpoint through `GitHubClient::callback_registered`, with the GitHub
+    CLI's public OAuth client: its registered callback `Ok(true)` (249 ms), another URL
+    `Ok(false)`, a wrong secret `Err(OAuth("incorrect_client_credentials"))`.
+  - A real `yulius serve` on loopback: `GET /api/setup/status` has
+    `"github_callback_missing":false`; `/internal/github-callback` answers 401 without the key,
+    `{"github":null}` with the key of `leftovers-cli.key` and 422 for `public_url=http://…`; the
+    address API shows a `moved.json`. `yulius instance migrate-target` with the step `callback`
+    (the command the move runs on the new host) answered `ok` "no GitHub App is connected" from
+    that server, and `manual` with the reason for a data directory without the key.
+  - A real Caddy 2.11.9 with the site block the move writes (`header X-Yulius-Moved-To`, `redir
+    … 307`) in front of that server: `yulius remote status` printed `yulius:
+    http://127.0.0.1:20110 moved to http://127.0.0.1:20108; the saved sign-in follows it.`,
+    answered from the new URL (exit 0), said nothing the second time, worked with `--server <old
+    URL>`, and left `remote-credentials.json` (0600) with the token under the new URL and the old
+    name in `moved`.
+- Independent review: asked of a fresh read-only session for the head that holds this section.
+  The merge (`delivery_merge`) is refused without its approval of the exact head and records its
+  verdict.
+
+Changed while it was built, and why:
+
+- A sign-in start first returned to the sign-in page while the callback was known as missing.
+  The answer rests on what GitHub says to a made-up code, measured with an OAuth app and promised
+  nowhere for a GitHub App, so it may not be able to stop a sign-in: a start always goes to
+  GitHub and asks nothing, and a sign-in that completes proves the callback.
+- Reads asked GitHub again every 30 s for as long as a page stayed open; the wait now doubles
+  after eleven equal answers, up to 4 minutes.
+
+Not tested here:
+
+- GitHub's answer for a real GitHub App: a sandbox holds no App secret. The endpoint, the order of
+  its checks and the three answers were measured with an OAuth app's public client. This is why
+  the answer is advice only (MVC-013): were it wrong for an App, a page would say so wrongly and
+  sign-in would work all the same. On an instance with an App, Settings → Instance → Address shows
+  the answer at once.
+- A real move between two hosts whose instance has a GitHub App, and the plan's question on a real
+  old host (the root command needs systemd and a unit to freeze): covered by the fake-host flow
+  tests and by the real `migrate-target` step above.
+- `https` between the CLI and a moved instance (the real run used loopback `http`, which the
+  client allows only there); the `https`-only rule is covered by `no_other_redirect_is_a_move`.
+- That the sign-in page and the Address card ask nothing in a loop over hours (the e2e runner has
+  no clock to turn): the single delayed read and the 5 s re-read are covered, their absence
+  afterwards is not.
