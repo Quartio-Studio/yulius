@@ -89,8 +89,8 @@ The question of direction: the restart waits only while a person typed in the la
 - [x] A person's own goal keeps a prompt-mode session, and the gate's block case is tested (findings 1 and 2)
 - [x] Two turn ends that decide at once make one watched restart, and the start test no longer depends on speed (findings 4 and 6)
 - [x] A draft typed since the last prompt keeps the session (the question of direction)
-- [ ] The version and the model name a transcript names are capped (finding 5)
-- [ ] The card and task info promise only the next start while moves are stopped, and the card says when the binary could not be read (findings 3 and 7)
+- [x] The version and the model name a transcript names are capped (finding 5)
+- [x] The card and task info promise only the next start while moves are stopped, and the card says when the binary could not be read (findings 3 and 7)
 - [ ] An idle restart never reads Working and notifies nobody again (finding 8)
 - [ ] SPEC-461, ADR-0293, the operations guide, the API reference and the changes log say so (finding 9)
 - [ ] Gate green and the independent review answered
