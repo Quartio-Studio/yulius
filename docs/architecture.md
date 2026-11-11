@@ -3004,6 +3004,10 @@ flowchart LR
   sent each hook (`x-yulius-hook-sent-ms`): a prompt hook sent before a Stop that reached Yulius
   or a goal verdict it applied belongs to a turn that is over and changes nothing
   ([ADR-0234](decisions/0234-a-prompt-hook-sent-before-its-turn-ended-changes-nothing.md)).
+  A prompt the transcript watcher reads takes the same per-task turn order as a clean Stop: the
+  Stop remembers its time and settles after a prompt that is being applied, and a prompt read
+  after it is not a new turn
+  ([ADR-0299](decisions/0299-a-transcript-prompt-and-its-turns-clean-stop-share-the-turn-order.md)).
 - A stop or close asks the attached run to shut down; one that comes while the run is launching
   (spawned, not attached yet) is asked by the launch once it attaches, so it never waits for the
   escalation ([SPEC-140](../.ai/specs/SPEC-140-fix-404-464-353-443-task-done-supervisio.md)).

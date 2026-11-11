@@ -5,7 +5,9 @@
 Accepted. Specified in [SPEC-074](../../.ai/specs/SPEC-074-i-just-hit-usage-limit-in-the-agent-it-s.md)
 (task #69). Extends [ADR-0020](0020-cockpit-as-a-plain-shell-session.md) and
 [ADR-0027](0027-step-back-past-a-usage-limit.md); renames the UI name of
-[ADR-0036](0036-agent-in-the-right-panel.md).
+[ADR-0036](0036-agent-in-the-right-panel.md). Amended by
+[ADR-0289](0289-tasks-default-to-fable-5-2-at-max-effort.md): the Cockpit's default model is Fable
+5.2, so a spent weekly Opus cap no longer makes the rotation skip a subscription.
 
 ## Context
 

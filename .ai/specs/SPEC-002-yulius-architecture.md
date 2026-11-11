@@ -1934,7 +1934,7 @@ warning) while nothing answers to it.
 
 | Concern | Claude Code (verified 2.1.292 flags) |
 | --- | --- |
-| New session | `claude --session-id <uuid> --settings <run>/claude-settings.json --mcp-config <run>/mcp.json --model <m, default claude-opus-5-5> [--effort <e, default high; none for Haiku>] [--dangerously-skip-permissions when contained] "<prompt>"` |
+| New session | `claude --session-id <uuid> --settings <run>/claude-settings.json --mcp-config <run>/mcp.json --model <m, default claude-fable-5-2> [--effort <e, default high; none for Haiku>] [--dangerously-skip-permissions when contained] "<prompt>"` |
 | Resume | `claude --resume <uuid> … ["<continuation>"]` |
 | Credentials | `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`); `CLAUDE_CONFIG_DIR=<sandbox>/home/.claude` |
 | Updates | `DISABLE_AUTOUPDATER=1` in every session and sign-in terminal: a contained session could only fail to update itself (#45). The server keeps the CLI of isolated runs current instead, under `<data>/claude-code`, and each run binds the newer of it and the host's npm install (SPEC-421, ADR-0266; docs/operations.md) |
