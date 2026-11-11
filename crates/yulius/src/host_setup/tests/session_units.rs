@@ -216,30 +216,92 @@ fn a_directory_above_the_binary_counts_too() {
     assert!(!fake.has(ADOPT) && !fake.has(DROP_IN));
 }
 
-/// Review round 2 of SPEC-458 (medium): the server's unit may name its binary through a link,
-/// and whoever may write the link's directory can point it elsewhere. The adopt unit therefore
-/// gets the binary the link leads to, which is what was judged, never the link.
+/// Review rounds 2 and 3 of SPEC-458 (medium): the server's unit may name its binary through a
+/// link. What a link leads to can change, and judging what it leads to now is a second look at
+/// a path someone else may be swapping. The path is judged as the unit names it, without
+/// following a link, and a link gets no root unit: nothing is written.
 #[test]
-fn the_adopt_unit_runs_the_binary_a_link_leads_to_not_the_link() {
-    let mut fake = before_the_sessions_unit();
-    let target = PathBuf::from("/opt/yulius/bin/yulius");
-    fake.files.remove(Path::new(EXE));
-    fake.files
-        .insert(target.clone(), (String::new(), 0, 0o100_755));
-    fake.links.insert(PathBuf::from(EXE), target);
-    // The link's own directory is the service user's.
-    fake.files.insert(
-        PathBuf::from("/usr/local/bin"),
-        (String::new(), SERVICE_UID, 0o040_755),
-    );
+fn a_binary_named_through_a_link_gets_no_root_unit() {
+    for link_dir_owner in [SERVICE_UID, 0] {
+        let mut fake = before_the_sessions_unit();
+        let target = PathBuf::from("/opt/yulius/bin/yulius");
+        fake.files.remove(Path::new(EXE));
+        for dir in ["/opt", "/opt/yulius", "/opt/yulius/bin"] {
+            fake.files
+                .insert(PathBuf::from(dir), (String::new(), 0, 0o040_755));
+        }
+        fake.files
+            .insert(target.clone(), (String::new(), 0, 0o100_755));
+        fake.links.insert(PathBuf::from(EXE), target);
+        fake.files.insert(
+            PathBuf::from("/usr/local/bin"),
+            (String::new(), link_dir_owner, 0o040_755),
+        );
+        let lines = run(&mut fake, Mode::Setup);
+        let item = line(&lines, ITEM);
+        assert_eq!(item.outcome, HostOutcome::Failed, "{lines:#?}");
+        assert!(
+            item.detail.contains("as root") && item.detail.contains("nothing was written"),
+            "{}",
+            item.detail
+        );
+        if link_dir_owner == 0 {
+            assert!(item.detail.contains("is a link"), "{}", item.detail);
+        }
+        assert!(!fake.has(SESSIONS) && !fake.has(ADOPT) && !fake.has(DROP_IN));
+    }
+}
+
+/// The unit names the binary as the server's unit does: a path that only root can change needs
+/// no second look, and a later change of the file behind it is root's own.
+#[test]
+fn the_adopt_unit_names_the_binary_as_the_servers_unit_does() {
+    let mut fake = Fake::fresh();
     let lines = run(&mut fake, Mode::Setup);
     assert_eq!(outcome(&lines, ITEM), HostOutcome::Changed, "{lines:#?}");
     let adopt = fake.text(ADOPT).unwrap_or_default();
     assert!(
-        adopt.contains("ExecStart=/opt/yulius/bin/yulius host adopt-sessions"),
+        adopt.contains(&format!("ExecStart={EXE} host adopt-sessions")),
         "{adopt}"
     );
-    assert!(!adopt.contains(EXE), "{adopt}");
+}
+
+/// A directory on the way that cannot be looked at is not taken on trust.
+#[test]
+fn a_directory_that_cannot_be_inspected_gets_no_root_unit() {
+    let mut fake = before_the_sessions_unit();
+    fake.files.remove(Path::new("/usr/local"));
+    let lines = run(&mut fake, Mode::Setup);
+    let item = line(&lines, ITEM);
+    assert_eq!(item.outcome, HostOutcome::Failed, "{lines:#?}");
+    assert!(
+        item.detail.contains("/usr/local cannot be inspected"),
+        "{}",
+        item.detail
+    );
+    assert!(!fake.has(ADOPT));
+}
+
+/// Review round 3 of SPEC-458 (low): the three files copied in by hand without a
+/// `systemctl daemon-reload` are as the setup writes them, but systemd does not know the
+/// drop-in: the guard refuses and names the setup, so the setup must be what fixes it.
+#[test]
+fn units_systemd_has_not_loaded_are_reported_and_loaded() {
+    let mut fake = Fake::set_up();
+    fake.drop_in_loaded = false;
+    let lines = run(&mut fake, Mode::Check);
+    let item = line(&lines, ITEM);
+    assert_eq!(item.outcome, HostOutcome::Failed, "{lines:#?}");
+    assert!(item.detail.contains("has not loaded"), "{}", item.detail);
+    assert!(!fake.ran("systemctl daemon-reload"), "{:#?}", fake.log);
+
+    let lines = run(&mut fake, Mode::Setup);
+    assert_eq!(outcome(&lines, ITEM), HostOutcome::Changed, "{lines:#?}");
+    assert!(fake.ran("systemctl daemon-reload"));
+    fake.log.clear();
+    let lines = run(&mut fake, Mode::Setup);
+    assert_eq!(outcome(&lines, ITEM), HostOutcome::Ok, "{lines:#?}");
+    assert!(!fake.ran("systemctl daemon-reload"), "{:#?}", fake.log);
 }
 
 /// Review round 2 of SPEC-458 (low): a directory of any account but root above the binary lets

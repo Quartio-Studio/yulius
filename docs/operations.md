@@ -87,11 +87,13 @@ reason) or `FAIL`, then a summary; it exits 1 when an item failed. In order:
     `yulius.service.d/20-yulius-sessions.conf` ([Where sessions live](#where-sessions-live),
     [ADR-0298](decisions/0298-sessions-live-in-their-own-unit.md)) are written when they differ,
     and the sessions unit is started. A running server is not restarted: its next restart moves
-    its sessions there and keeps them. The adopt unit runs the server's binary as root (a
-    linked one at the link's target), so the item writes nothing and fails while anyone but
-    root could replace that binary: the file, or a directory above it that is not root's alone
-    to write. A sessions unit that does not run is started. `yulius host check` only reports
-    this item, also when the files are there and the sessions unit does not run.
+    its sessions there and keeps them. The adopt unit runs the server's binary as root, so the
+    item writes nothing and fails unless the path the server's unit names is a regular file
+    that only root may write, in directories that are root's and not writable by everyone or
+    by a group the service user is in. A path through a link is refused: name the file itself
+    in `ExecStart=`. Units that systemd has not loaded (files copied in without `systemctl
+    daemon-reload`) are loaded, and a sessions unit that does not run is started. `yulius host
+    check` only reports this item, in each of these cases.
 12. **update helper**: when `yulius-update.service` is installed, a drop-in lets its re-check
     write `/etc/modules-load.d` and `/etc/needrestart/conf.d` (§8).
 13. **sandbox base**: built now, as the service user, when there is none, when it lacks the
@@ -278,8 +280,9 @@ Slice=yulius.slice
   written is lost) and starts again on demand. Nothing to move is the normal case, and while the
   server runs the step moves nothing (`systemctl start` on a running unit starts it again). Its
   output is in `journalctl -u yulius-adopt`. Because it runs the server's binary as root, that
-  binary must be root's alone in root-owned directories (§2); `yulius host setup` refuses to
-  write the unit otherwise.
+  binary must be a regular file only root may write, reached through directories that are
+  root's (§2, item 11), and not through a link; `yulius host setup` refuses to write the unit
+  otherwise.
 - `systemctl restart yulius`, a crash (`Restart=on-failure`), Restart… and an update then keep
   every session, on systemd 255 and on 259.
 - `yulius doctor` says which holds in its line "restart with sessions", and `yulius host check`
@@ -2006,8 +2009,10 @@ should set the commit it is built from: `YULIUS_BUILD_COMMIT=$(git rev-parse HEA
      ```
 
      The files are for `yulius.service`, the user `yulius` and `/usr/local/bin/yulius`, which
-     must be root's alone in root-owned directories (the adopt unit runs it as root). With
-     other values, let a binary of the new version write them: `sudo <that binary> host setup`.
+     must be a regular file only root may write, in directories that are root's (the adopt
+     unit runs it as root). With other values, let a binary of the new version write them:
+     `sudo <that binary> host setup`. Without the `daemon-reload` systemd does not know the
+     files, and Restart… stays refused; `sudo yulius host setup` of the new version does it.
 
      **Between this step and the update the host is not safe yet**: the installed binary is
      still the old one, which has no adopt step, so `yulius-adopt.service` fails with it and a

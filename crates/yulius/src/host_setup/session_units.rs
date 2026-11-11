@@ -97,14 +97,12 @@ impl Run<'_> {
         if !self.unit.loaded {
             return;
         }
-        let named = self
+        // As the server's unit names it: the path is judged below exactly as it is written here.
+        let exe = self
             .unit
             .exec
             .clone()
             .unwrap_or_else(|| self.opts.exe.clone());
-        // The adopt unit gets the binary itself, never a link to it: whoever may write a link's
-        // directory can point the link elsewhere, and the unit runs what it names as root.
-        let exe = self.host.canonical(&named).unwrap_or(named);
         if !unit_safe(&user) || !unit_safe(&exe.display().to_string()) {
             return self.failed(
                 ITEM,
@@ -113,13 +111,13 @@ impl Run<'_> {
         }
         // The adopt unit runs this binary as root before every start: where someone but root
         // could put another one in its place, the unit would hand them root (SPEC-458 HST-003).
-        if let Some(why) = self.replaceable_by_service(&exe) {
+        if let Some(why) = self.not_roots_alone(&exe) {
             return self.failed(
                 ITEM,
                 format!(
-                    "{adopt} would run {} as root, but {why}: install yulius in a root-owned \
-                     directory such as /usr/local/bin (docs/operations.md §2) and run the setup \
-                     again; nothing was written",
+                    "{adopt} would run {} as root, but {why}: install yulius as a file in a \
+                     root-owned directory such as /usr/local/bin (docs/operations.md §2) and run \
+                     the setup again; nothing was written",
                     exe.display()
                 ),
             );
@@ -144,42 +142,73 @@ impl Run<'_> {
             .filter(|(path, text)| self.host.read(path).as_deref() != Some(text.as_str()))
             .collect();
         if stale.is_empty() {
-            // The files being there is not the unit running: the doctor and the restart guard
-            // ask for it, so this item does too (SPEC-458, review round 2).
+            // The files being there is neither systemd knowing them (files copied in without a
+            // `daemon-reload`) nor the sessions unit running: the doctor and the restart guard
+            // ask for both, so this item does too (SPEC-458, review rounds 2 and 3).
+            let loaded = self
+                .run_cmd(&Cmd::new(&[
+                    "systemctl",
+                    "show",
+                    &service,
+                    "--property=Wants",
+                    "--value",
+                ]))
+                .stdout
+                .split_whitespace()
+                .any(|unit| unit == adopt);
             let running = self
                 .run_cmd(&Cmd::new(&["systemctl", "is-active", &sessions]))
                 .ok();
-            if running {
+            if loaded && running {
                 return self.ok(
                     ITEM,
                     format!("sessions live in {sessions}: a restart of {service} keeps them"),
                 );
             }
+            let what = if loaded {
+                format!("{sessions} is not running, so sessions do not live in it")
+            } else {
+                format!(
+                    "the units are written but systemd has not loaded them (`systemctl \
+                     daemon-reload`), so {service} does not pull in {adopt}"
+                )
+            };
             if self.mode == Mode::Check {
-                return self.needs_setup(
-                    ITEM,
-                    &format!("{sessions} is not running, so sessions do not live in it"),
-                );
+                return self.needs_setup(ITEM, &what);
             }
             if self.may(false) {
-                let out = self.run_cmd(&Cmd::new(&["systemctl", "start", &sessions]));
-                if !out.ok() {
-                    return self.failed(
-                        ITEM,
-                        format!(
-                            "{sessions} is not running and `systemctl start {sessions}` failed: {}",
-                            out.why()
-                        ),
-                    );
+                let mut cmds = Vec::new();
+                if !loaded {
+                    cmds.push(Cmd::new(&["systemctl", "daemon-reload"]));
+                }
+                cmds.push(Cmd::new(&["systemctl", "start", &sessions]));
+                for cmd in cmds {
+                    let out = self.run_cmd(&cmd);
+                    if !out.ok() {
+                        return self.failed(
+                            ITEM,
+                            format!("{what}, and `{}` failed: {}", cmd.argv.join(" "), out.why()),
+                        );
+                    }
                 }
             }
+            let (did, would) = if loaded {
+                (
+                    format!("started {sessions}, which was not running"),
+                    format!("start {sessions}, which is not running"),
+                )
+            } else {
+                (
+                    format!(
+                        "reloaded systemd, which had not loaded the units, and started {sessions}"
+                    ),
+                    format!("reload systemd, which has not loaded the units, and start {sessions}"),
+                )
+            };
             return self.changed(
                 ITEM,
-                &format!(
-                    "started {sessions}, which was not running; restart {service} so that its \
-                     sessions live there"
-                ),
-                &format!("start {sessions}, which is not running"),
+                &format!("{did}; restart {service} so that its sessions live there"),
+                &would,
             );
         }
         let files = stale

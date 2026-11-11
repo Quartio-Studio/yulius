@@ -47,6 +47,9 @@ struct Fake {
     service_active: bool,
     /// Whether the sessions unit runs (SPEC-458): started by the setup, asked with `is-active`.
     sessions_active: bool,
+    /// Whether systemd has loaded the server unit's sessions drop-in: after a `daemon-reload`
+    /// that found it, not for files copied in by hand.
+    drop_in_loaded: bool,
     /// The smoke test fails.
     smoke_fails: bool,
     /// apt's package lists know Docker's repository (an `apt-get update` after its source).
@@ -116,6 +119,7 @@ impl Fake {
             helper: true,
             service_active: false,
             sessions_active: false,
+            drop_in_loaded: false,
             smoke_fails: false,
             docker_lists: false,
             systemd_down: false,
@@ -130,6 +134,10 @@ impl Fake {
         };
         fake.files
             .insert(PathBuf::from(EXE), (String::new(), 0, 0o100_755));
+        for dir in ["/", "/usr", "/usr/local", "/usr/local/bin"] {
+            fake.files
+                .insert(PathBuf::from(dir), (String::new(), 0, 0o040_755));
+        }
         fake.file(
             "/etc/passwd",
             "root:x:0:0:root:/root:/bin/bash\nubuntu:x:1000:1000::/home/ubuntu:/bin/bash\n",
@@ -589,7 +597,23 @@ impl Host for Fake {
                     ok("LoadState=not-found\nReadWritePaths=\n")
                 }
             }
-            ["systemctl", "daemon-reload"] => ok(""),
+            ["systemctl", "daemon-reload"] => {
+                self.drop_in_loaded = self
+                    .files
+                    .keys()
+                    .any(|path| path.ends_with("20-yulius-sessions.conf"));
+                ok("")
+            }
+            ["systemctl", "show", service, "--property=Wants", "--value"] => {
+                let stem = service.trim_end_matches(".service");
+                if self.drop_in_loaded {
+                    ok(&format!(
+                        "network-online.target {stem}-sandboxes.service {stem}-adopt.service\n"
+                    ))
+                } else {
+                    ok("network-online.target\n")
+                }
+            }
             ["systemctl", "enable", service] if service.ends_with(".service") => ok(""),
             ["systemctl", "start", unit] if unit.ends_with("-sandboxes.service") => {
                 self.sessions_active = true;
@@ -1641,7 +1665,13 @@ fn a_move_runs_the_setup_in_three_parts() {
     let names: Vec<&str> = before.iter().map(|l| l.name.as_str()).collect();
     assert_eq!(names.last(), Some(&"sandbox base"), "{names:?}");
     assert!(fake.has(UNIT_FILE));
-    assert!(!fake.ran("systemctl start"), "{:#?}", fake.log);
+    // The server is not started. Its sessions unit is (SPEC-458): a keeper that holds no session
+    // without the server, and that the server's start would pull in anyway.
+    assert!(
+        !fake.ran("systemctl start yulius.service"),
+        "{:#?}",
+        fake.log
+    );
     assert_eq!(
         names,
         whole[..names.len()],

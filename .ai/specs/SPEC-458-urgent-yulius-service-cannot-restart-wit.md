@@ -147,15 +147,19 @@ Two defects made it unusable meanwhile:
   test), for the first restart on a host that has no binary with this change yet.
 - **HST-003** The adopt unit runs the server unit's binary as root. The "yulius binary" item
   therefore runs before this one (it makes the binary root's), and the sessions item writes
-  nothing and fails, naming the directory, while anyone but root could replace that binary:
-  the file is not root's alone, or a directory above it is not root's, or is writable by a
-  group the service user is in or by everyone. A binary the unit names through a link is
-  judged at the link's target, and the adopt unit names that target, never the link (whoever
-  may write the link's directory could point it elsewhere). Units an earlier run wrote do not
-  excuse it.
-- **HST-004** The files being as the setup writes them is not the sessions unit running. With
-  the files in place and the unit not active, a check fails the item ("… is not running", as
-  the doctor warns and the guard refuses), and the setup starts the unit.
+  nothing and fails, saying why, unless the path the server's unit names is root's alone: it
+  is walked from the root as it is written, without following a link; every directory on the
+  way must be a directory, root's, and not writable by everyone or by a group the service user
+  is in; the file must be a regular file that only root may write. A directory or the file
+  that cannot be inspected, and a link anywhere on the way, are refused: what only root can
+  change cannot change between this look and the unit's start, and a link would need a second
+  look at what it leads to. The adopt unit names the path as the server's unit does. Units an
+  earlier run wrote do not excuse it.
+- **HST-004** The files being as the setup writes them is neither systemd knowing them nor
+  the sessions unit running. With the files in place, the item asks whether the loaded server
+  unit wants its adopt unit and whether the sessions unit is active. A check fails the item
+  otherwise ("… systemd has not loaded them", "… is not running"), as the doctor warns and the
+  guard refuses; the setup reloads systemd and starts the unit.
 - **HST-002** `yulius doctor` has a line "restart with sessions": ok with the sessions unit in
   use; a warning naming `sudo yulius host setup` when sessions live in the server's unit, which
   says that a restart fails while sessions run when systemd is 258 or later.
@@ -282,6 +286,10 @@ Two defects made it unusable meanwhile:
 - The doctor's line is about `yulius.service`, as its other unit checks are; a server under
   another unit name is covered by `yulius host check --service` and by the guard, which takes
   the unit from the server's own cgroup.
+- A server unit that names its binary through a link gets no adopt unit. Supporting it means
+  judging what the link leads to, again whenever it changes, and each way of doing that had a
+  hole in review (a target pinned at setup time, a path resolved twice). The strict rule has
+  none, the guide's own install is a plain file, and the message says what to change.
 - One pull request although it passes 400 lines: the layout, its setup, the adopt step and the
   guard are one fix that is unsafe in parts; the #439 recovery was asked for in the same fix.
 

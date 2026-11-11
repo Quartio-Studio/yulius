@@ -1441,39 +1441,74 @@ impl<'a> Run<'a> {
             })
     }
 
-    /// Why someone but root could replace the binary `exe` (its link target), or `None`: a
-    /// directory on its path is not root's, or is open to the service user
-    /// ([`Run::dir_open_to_service`]), or the file is not root's alone. A unit that runs `exe` as
-    /// root must not be written then (SPEC-458 HST-003). This is stricter than the "yulius
-    /// binary" item, which asks only about the service user: here the file runs as root. In a
-    /// dry run the file's owner is not judged: that item only says what it would fix.
-    pub(super) fn replaceable_by_service(&self, exe: &Path) -> Option<String> {
-        let target = self
-            .host
-            .canonical(exe)
-            .unwrap_or_else(|| exe.to_path_buf());
-        if let Some(dir) = target.ancestors().skip(1).find(|dir| {
-            self.dir_open_to_service(dir)
-                || self.host.stat(dir).is_some_and(|(owner, _)| owner != 0)
-        }) {
-            return Some(format!(
-                "{} is under {}, which is not root's alone to write",
-                target.display(),
-                dir.display()
-            ));
+    /// Why the binary at `path`, which a unit would run as root, is not root's alone, or `None`
+    /// (SPEC-458 HST-003).
+    ///
+    /// The path is judged as the unit names it, walked from the root without following a link:
+    /// every directory on the way must be a directory that is root's and not open to the service
+    /// user ([`Run::dir_open_to_service`]), and the file itself a regular file that only root may
+    /// write. What only root can change cannot change between this look and the unit's start,
+    /// so there is nothing to race. A link anywhere is refused: what it leads to would have to
+    /// be judged again whenever it changes, and a second look at a path is what a swap needs.
+    /// In a dry run the file's owner is not judged: the "yulius binary" item only says what it
+    /// would fix.
+    pub(super) fn not_roots_alone(&self, path: &Path) -> Option<String> {
+        use std::path::Component;
+        const KIND: u32 = 0o170_000;
+        const DIRECTORY: u32 = 0o040_000;
+        const LINK: u32 = 0o120_000;
+        const REGULAR: u32 = 0o100_000;
+        let shown = path.display();
+        let mut names = Vec::new();
+        for part in path.components() {
+            match part {
+                Component::RootDir => {}
+                Component::Normal(name) if path.is_absolute() => names.push(name),
+                _ => return Some(format!("{shown} is not a plain absolute path")),
+            }
         }
-        if self.mode == Mode::DryRun {
-            return None;
+        let file = names.pop()?;
+        let mut dir = PathBuf::from("/");
+        let mut names = names.into_iter();
+        loop {
+            match self.host.stat(&dir) {
+                None => return Some(format!("{} cannot be inspected", dir.display())),
+                Some((_, mode)) if mode & KIND == LINK => {
+                    return Some(format!("{} is a link", dir.display()));
+                }
+                Some((_, mode)) if mode & KIND != DIRECTORY => {
+                    return Some(format!("{} is not a directory", dir.display()));
+                }
+                Some((owner, _)) if owner != 0 || self.dir_open_to_service(&dir) => {
+                    return Some(format!(
+                        "{shown} is under {}, which is not root's alone to write",
+                        dir.display()
+                    ));
+                }
+                Some(_) => {}
+            }
+            match names.next() {
+                Some(name) => dir.push(name),
+                None => break,
+            }
         }
         let service_uid = self
             .service
             .as_ref()
             .and_then(|s| s.uid)
             .unwrap_or(u32::MAX);
-        match self.host.stat(&target) {
+        match self.host.stat(&dir.join(file)) {
+            None => Some(format!("{shown} cannot be inspected")),
+            Some((_, mode)) if mode & KIND == LINK => Some(format!(
+                "{shown} is a link, and what it leads to can change: name the file itself in \
+                 the server unit's ExecStart="
+            )),
+            Some((_, mode)) if mode & KIND != REGULAR => {
+                Some(format!("{shown} is not a regular file"))
+            }
+            Some(_) if self.mode == Mode::DryRun => None,
             Some((0, mode)) if !exe_writable(0, mode, service_uid) => None,
-            Some(_) => Some(format!("{} is not root's alone to write", target.display())),
-            None => Some(format!("{} cannot be inspected", target.display())),
+            Some(_) => Some(format!("{shown} is not root's alone to write")),
         }
     }
 

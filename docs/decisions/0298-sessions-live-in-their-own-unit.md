@@ -61,10 +61,11 @@ the real unit in QEMU guests of both systems (SPEC-458, Evidence).
   starts its `Wants=` again. The unit has `TimeoutStartSec=120`, and systemd is asked with a
   bound.
 - **No root unit for a binary someone but root could replace.** The adopt unit runs the
-  server's binary as root. `yulius host setup` makes that binary root's first and writes the
-  units only when the file and every directory above it are root's alone to write; a binary
-  the server's unit names through a link is judged, and named in the adopt unit, at the
-  link's target.
+  server's binary as root. `yulius host setup` makes that binary root's first, and writes the
+  units only when the path the server's unit names is a regular file that only root may write,
+  reached through directories that are root's and not writable by everyone or by a group the
+  service user is in. The path is walked as it is written, without following a link, so there
+  is no second look that a swap could slip between; a path through a link gets no unit.
 - **Engines end at the move.** A sandbox's Docker engine runs in a cgroup namespace rooted at
   its `engine` group and could not manage containers from another place. The step kills it
   (`cgroup.kill`, the one way to end a whole group without racing its forks and reused process
