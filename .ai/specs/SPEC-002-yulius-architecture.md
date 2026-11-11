@@ -720,7 +720,10 @@ subscription, or the models of one family (the one a per-model cap names, else t
 model the task is launched with). A model's limit fills that family's weekly window in
 the stored usage (`weekly_opus`, `weekly_sonnet`, `weekly_fable`) until the reset Claude named and
 binds only that model's tasks; a usage reading replaces the windows it carries and keeps these
-until their reset.
+until their reset. A reset is believed at most a week and a day ahead (the record is the agent's
+own file); without one the window is full until the provider's next reading, and a task with
+nowhere to go is tried once more, then a person is asked (`task.limit_without_end`). Every change
+of a subscription's stored usage takes one lock (`App::change_account_usage`).
 
 **Where the readings come from (F 2026-10-10, #143).** The usage endpoint needs the OAuth scope
 `user:profile`. Yulius signs subscriptions in with `claude setup-token`, whose token Claude Code
@@ -2644,7 +2647,9 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 - 2026-11-11 (task #449, #1172; SPEC-464, ADR-0301): §7.2 a limit says what it binds
   (`LimitScope`); `ModelFamily::Fable` and `AccountUsage::weekly_fable` (the weekly allowance of
   usage credits, known from the CLI's `model_requires_usage_credits` record); a usage reading
-  keeps the per-model windows it does not carry; a goal pause that follows a limit is the limit's.
+  keeps the per-model windows it does not carry; a reset is believed a week and a day ahead; one
+  lock for the stored usage; one blind retry, then a person; a goal pause that follows a limit is
+  the limit's.
 
 - 2026-10-21 (task #238, #626; SPEC-252, ADR-0191): the sandbox Chromium speaks DevTools over
   `--remote-debugging-pipe` and has no DevTools port; R-07 closed; ADR-09's CDP-capable MCPs and

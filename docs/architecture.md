@@ -480,29 +480,43 @@ names none. So is Claude Code's refusal "You're out of usage credits"
 or a reset.
 
 A model's limit fills that family's own weekly window in the stored usage (`weekly_opus`,
-`weekly_sonnet`, `weekly_fable`) until the reset Claude named. The pool's policy counts that
-window only for tasks of that family, so other models still run on the subscription, and the
-subscription is usable for the model again the moment the window resets. No usage reading shows
-these windows: a reading replaces the 5-hour and weekly windows and keeps the per-model ones
-until their reset, and a new sign-in of the subscription drops them (they were the previous
-sign-in's). A model's limit without a reset is kept as a limit of the subscription that
-the next reading ends. A subscription reads `limited` while the default model cannot run on it.
-A reported limit, a session's reading, a provider's reading and a new sign-in each read, change
-and write a subscription's stored usage under one lock (`CapacityState::usage_writes`, never
-held across a request to the provider), so a limit recorded while a reading is under way is
-kept.
+`weekly_sonnet`, `weekly_fable`), at 100 % until the reset Claude named. The pool's policy counts
+that window only for tasks of that family, so other models still run on the subscription, and the
+subscription is usable for the model again the moment the window resets. A reset is believed only
+as far as a window lasts, a week and a day ahead (`LIMIT_RESET_MAX_MS`): the limit record comes
+from the session's transcript, which is the agent's own file. Without a believable reset the
+window is full with no reset time.
+
+Such a window ends at its reset, at a new sign-in of the subscription (it was the previous
+sign-in's) or with a provider's reading: one that carries the window replaces it (the usage
+endpoint reports the Opus and Sonnet caps when the plan has them; nothing reports the allowance of
+usage credits), and one that does not keeps it only while its reset is ahead, so a window without
+a reset ends with the next provider's reading. A session's reading replaces the 5-hour and weekly
+windows only. A subscription reads `limited` while the default model cannot run on it. A reported
+limit, a session's reading and a provider's reading read, change and store a subscription's usage
+through one helper under one lock (`App::change_account_usage`, `CapacityState::usage_writes`),
+which a new sign-in takes too; it is never held across a request to the provider, so a limit
+recorded while a reading is under way is kept.
+
+A model's limit nothing says the end of, with no subscription the task can go to, makes the task
+wait, and the provider's reading that ends it lets the pool try the task once
+(`BLIND_LIMIT_RETRIES`). Refused the same way again with no answer in between, the task is not
+paused again: its session stays at the refusal and Yulius asks a person
+(`task.limit_without_end`), so no session is restarted at every reading with nobody told.
 
 ```mermaid
 flowchart TD
     R["Claude Code's limit record<br/>(usage_limit_reached, or model_requires_usage_credits)"] --> S{"What it binds<br/>(LimitScope)"}
     S -->|"the subscription:<br/>five_hour, seven_day, unknown"| A["5-hour or weekly window full,<br/>limit in effect until the reset"]
-    S -->|"one model family:<br/>seven_day_opus, seven_day_sonnet (named),<br/>seven_day_overage_included (the task's model)"| K{"Reset named?"}
+    S -->|"one model family:<br/>seven_day_opus, seven_day_sonnet (named),<br/>seven_day_overage_included (the task's model)"| K{"Reset named,<br/>at most 8 days ahead?"}
     K -->|yes| M["that family's weekly window full<br/>until the reset; other windows kept"]
-    K -->|no| A2["limit of the subscription with no reset:<br/>the next reading ends it"]
+    K -->|no| A2["that family's window full, no reset:<br/>a provider's reading ends it"]
     A --> P["Pool: the task moves past the cut turn,<br/>or waits and resumes at the reset"]
     M --> P
-    A2 --> P
-    U["Usage reading<br/>(session status line, probe)"] -->|"replaces the 5-hour and weekly windows,<br/>keeps per-model windows until their reset"| M
+    A2 --> B{"Nowhere to go, and refused<br/>again after one retry?"}
+    B -->|no| P
+    B -->|yes| N["The session stays at the refusal:<br/>Yulius asks a person"]
+    U["Usage reading"] -->|"a provider's: replaces the windows it carries,<br/>keeps other per-model windows until their reset.<br/>A session's: the 5-hour and weekly windows only"| M
 ```
 
 ```mermaid
@@ -590,7 +604,9 @@ path already moves the task or resumes it at the reset, so nobody is asked
 ([decision 0301](decisions/0301-a-models-usage-credits-are-a-limit-of-that-model.md)). Its notice
 is held meanwhile (`LimitGoalPause`): when the switch past the limit is refused before it ends the
 session, the session stays at the refusal, and the held pause puts the task in Needs you after
-all; a later move past the limit ends that request.
+all; a later move past the limit ends that request. It is asked and audited once per limit: an
+audit entry written at or after Claude Code recorded the limit says the limit was asked about, so
+a restart that reads the same pause again only puts the task back under Needs you.
 
 ```mermaid
 stateDiagram-v2

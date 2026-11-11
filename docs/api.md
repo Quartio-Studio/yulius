@@ -1534,9 +1534,12 @@ Account = {"id","provider","label",
 `primary` is the 5-hour window, `secondary` the weekly one, `weekly_opus` / `weekly_sonnet` the
 per-model weekly caps when the plan has them. `weekly_fable` is the weekly allowance of usage
 credits the Fable models run on: no reading shows it, so it is `null` until Claude reports it used
-up, then at 100 until its `resets_at` (SPEC-464). `status` is `limited` while the default model
-cannot run on the subscription: a limit Claude reported is in effect, or a window that binds that
-model is at 100. Unknown usage is `null`, never zero. Credentials are
+up, then at 100 until its `resets_at` (SPEC-464). Its `resets_at` is `null` when Claude did not
+say when it ends, or named a time further ahead than a window lasts: the next provider's reading
+of the subscription ends it then. `status` is `limited` while the default model cannot run on the
+subscription: a limit Claude reported is in effect, or a window that binds that model is at 100.
+A task of another model can still be moved there (`POST /api/tasks/{tid}/switch` goes by the
+windows that bind the task's own model). Unknown usage is `null`, never zero. Credentials are
 never returned. `email` is the email of the Claude account behind the subscription (SPEC-244,
 ADR-0185). After a sign-in stores a credential, Yulius reads it from Claude's profile
 (`GET /api/oauth/profile`, `account.email`) with that credential. The background usage round
@@ -1662,8 +1665,10 @@ sum the headroom below 98 % over subscriptions with known use (`null` when none 
 hour of readings); `runs_out_at` is when the weekly headroom runs out at `burn_24h`, walking through
 each subscription's weekly reset, if within 7 days; `paused_hours_7d` / `active_hours_7d` are
 task-hours; `needed` = ⌈max(burn_24h × 168 ÷ 98, subscriptions × (active + paused) ÷ active)⌉ and
-`add` = needed − subscriptions (SPEC-002 ADR-17 §2.4). `resumes_at` is set while no subscription is
-available. `id` and `in_use_by` are for instance administrators only.
+`add` = needed − subscriptions (SPEC-002 ADR-17 §2.4). `available` (the count and each account's)
+is for a task of the default model: its own weekly window counts beside the 5-hour and weekly ones
+(SPEC-464). `resumes_at` is set while no subscription is available: the earliest known reset that
+makes one available for such a task. `id` and `in_use_by` are for instance administrators only.
 
 The `*_per_day` lists and `tokens.per_day` are seven rolling 24-hour periods, oldest first, the last
 ending now (SPEC-110). A run's tokens count in each period by the share of its lifetime (start to

@@ -16,10 +16,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   itself. The limit is kept as the model's own ("Fable this week" on the subscription's card)
   until the reset Claude named; it used to be stored as the week at 100 %, and the next usage
   reading wiped it, so the pool sent tasks back to the exhausted subscription. A subscription
-  reads "Limit reached" while the default model cannot run on it. The goal pause that follows a
-  usage limit opens no Needs you, unless the move past the limit is refused and the session
-  stays there. A limit a person lifts early (bought credits) stays until its reset for now; the
-  Subscriptions page's manual refresh is task #451.
+  reads "Limit reached" while the default model cannot run on it, and "Run #N on…" still lets a
+  task of another model go there. The goal pause that follows a usage limit opens no Needs you,
+  unless the move past the limit is refused and the session stays there. When Claude names no
+  reset (or one further ahead than a window lasts, which is not believed), the limit ends with
+  the next usage reading; a task with nowhere else to go is tried once more and then asks a
+  person instead of being restarted at every reading. A limit a person lifts early (bought
+  credits) stays until its reset or a new sign-in for now; the Subscriptions page's manual
+  refresh is task #451.
 - A restart of the server keeps its sessions on systemd 258 and later (SPEC-458, task #440,
   ADR-0298). On Ubuntu 26.04 (systemd 259) `yulius.service` could be stopped but not started
   again while one session ran, so a restart or an update took the instance down until every

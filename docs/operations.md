@@ -1060,7 +1060,11 @@ Vidoc off, it also says `Vidoc scans are switched off for the instance`.
    reads "Limit reached" with "Fable this week" at 100 % until the reset Claude named, its tasks
    of that model move on or wait for the reset by themselves, and tasks of other models still
    run on it. A usage reading does not end that limit, so one lifted early (credits bought)
-   holds until its reset (SPEC-464).
+   holds until its reset or until the subscription is signed in again. When Claude names no
+   reset (an older Claude Code, or credits switched off), the card shows no reset time, the
+   next usage reading of the subscription ends the limit, and a task with nowhere else to go is
+   tried once more; refused again, it is under Needs you until a person runs it elsewhere or
+   sends it a message (audit `task.limit_without_end`; SPEC-464).
    Do this before importing: until a Claude account is usable, Yulius refuses every agent start a
    person asks for, Start onboarding included (SPEC-246, ADR-0190).
 6. Import or create projects (sandboxes). Product and Studio are detected and get the `product` and

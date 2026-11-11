@@ -239,7 +239,10 @@ watching, steering and unblocking.
   on a weekly allowance of them) is at that model's limit: its tasks of that model move on or
   wait for the reset by themselves, the pool sends it no such task until then whatever its
   5-hour and weekly usage read, and nobody is asked to send "continue"; its card shows the
-  allowance as "Fable this week" (SPEC-464). Its Capacity card says what
+  allowance as "Fable this week", and a task of another model can still be run on it. When
+  Claude does not say when such a limit ends and no other subscription can take the task,
+  Yulius tries it once more after the next usage reading and then asks a person instead of
+  trying on (SPEC-464). Its Capacity card says what
   is left, how fast it burns, the tokens it used and what they would cost at Claude API list
   prices, with a 7-day chart for each. Administrators rename each subscription in place ("work
   Max", "personal") and see the email of its Claude account wherever it is named. Connecting one
