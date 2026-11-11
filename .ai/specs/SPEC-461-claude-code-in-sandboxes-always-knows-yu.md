@@ -1,6 +1,6 @@
 ---
 yulius-task: 63aa8551-e6b8-4a74-bf89-2c12155c2ed0
-status: draft
+status: in-progress
 ---
 
 # SPEC-461: Claude Code in sandboxes always knows the models Yulius offers
@@ -67,17 +67,17 @@ an older one.
 | --- | --- |
 | CCM-001 | **Channel default.** `YULIUS_CLAUDE_UPDATES` (`--claude-updates`) defaults to `latest`; `stable` and `off` stay. |
 | CCM-002 | **Offered models.** The server knows the Claude models the composer offers (one list, the default first; a test keeps `models.js` equal to it). A Claude Code build *knows* a model when its binary holds the model id as text not followed by a letter, a digit or a hyphen (so `claude-fable-5-2` is not read in `claude-fable-5-20`, nor `claude-fable-5` in `claude-fable-5-2`; in 2.1.322 every offered id stands that way at least 26 times, mostly before a quote). The binary is read, never run. |
-| CCM-003 | **Verified before current.** A downloaded release is checked for every offered model in the same pass as its version. One that does not know the default model is refused: nothing is installed, `current` stays, no temporary directory is left, and the refusal names the release and the model. One that knows the default model but not another offered model becomes current and the gap is reported (CCM-006). |
+| CCM-003 | **Verified before current.** A downloaded release is checked for every offered model in the same pass as its version. One that does not know the default model is refused: nothing is installed, `current` stays, no temporary directory is left, and the refusal names the release and the model. One that knows the default model but not another offered model becomes current and the gap is reported (CCM-006). A refused release is not downloaded again while the server runs (a published version never changes). |
 | CCM-004 | **`stable` never falls behind the default model.** On `stable`, when neither the version runs get nor stable's release knows the default model, `latest`'s release is taken instead, under CCM-003, and the report says so. On `latest` there is nothing newer to take: the refusal is reported. On `off` nothing is installed. |
 | CCM-005 | **The version in use is checked too.** The Claude Code runs get (the newer of the host's install and Yulius's `current`) is read for the offered models when the server starts, after every check and when the channel changes (cached per file while it does not change). |
 | CCM-006 | **Reported.** After every check the server records the channel, the time, npm's `latest` and `stable`, what the check did (installed, up to date, refused with the release and its missing models, or failed with the reason), the version in use, where it comes from and the offered models it does not know, in `<data>/claude-code/status.json` (for `yulius doctor`) and in memory (for the Instance page). A refusal is logged as a warning and a version in use that does not know the default model as an error. |
 | CCM-007 | **Doctor.** `yulius doctor --contained` prints "Claude Code in sandboxes" as `FAIL` when the version runs get does not know the default model, naming the version, the model and the fix (what Yulius does at its next check, "Check now" in Settings, and `sudo npm install -g @anthropic-ai/claude-code@latest` on the host); as `warn` when it lacks another offered model or the last release was refused; else `ok`. It names the channel in effect: the one chosen in Settings (read from the status file) or `YULIUS_CLAUDE_UPDATES`. |
 | CCM-008 | **Instance page.** Settings, Instance has a "Claude Code" card (superadmin): the channel and where it is set, the version in use and where it comes from, the host's version, npm's `latest` and `stable` at the last check, when it was checked and what it did; a danger banner with the fix while the version in use does not know the default model; a warning for another unknown offered model, a refused release and a failed check; "Check now"; the channel as a choice of Latest, Stable and Off; and the tasks that still run an older Claude Code (CCM-013). |
-| CCM-009 | **Channel in Settings.** `PUT /api/admin/claude-code/channel {"channel": "latest"\|"stable"\|"off"\|null}` (superadmin) stores the channel in the database (`null`: back to `YULIUS_CLAUDE_UPDATES`). A stored channel wins over the unit's. It applies at once, without a restart: the next check runs now, runs started from then on bind as the channel says (`off`: the host's install), and it is audited `claude_code.channel`. An unknown channel is refused (422). |
+| CCM-009 | **Channel in Settings.** `PUT /api/admin/claude-code/channel {"channel": "latest"\|"stable"\|"off"\|null}` (superadmin) stores the channel in the database (`null`: back to `YULIUS_CLAUDE_UPDATES`; a body without the field is refused, 422). A stored channel wins over the unit's. It applies at once, without a restart: the next check runs now, runs started from then on bind as the channel says (`off`: the host's install), and it is audited `claude_code.channel`. An unknown channel is refused (422). |
 | CCM-010 | **Check now.** `POST /api/admin/claude-code/check` (superadmin) starts a check at once and answers 202 with the view saying it runs; one check runs at a time (a second request joins the running one). The hourly check and the first check 2 minutes after a start stay. `GET /api/admin/claude-code` answers the view. |
 | CCM-011 | **Sessions record what ran.** Each session of a task records the Claude Code version its transcript's prompt records name (`metrics.cli_version`), beside the model that answered (kept already), as soon as a line names it. |
 | CCM-012 | **Task info.** A task's info shows the model it asks for with its effort (marked "default" when the task names none), the models that answered, and the Claude Code version of its latest session, with "moves to X when its turn ends" while its running session is on an older one; each row of its Sessions table shows what that session ran on (its Claude Code version and model). `GET /api/tasks/{tid}` carries them (`model`, `model_default`, `effort`, `cli_version`, `cli_moves_to`; per attempt `model`, `cli_version`). |
-| CCM-013 | **A running task moves.** When a turn of a running task ends and its session runs an older Claude Code than runs get now, Yulius restarts the session on the newer one in the same Claude session (`claude --resume`, same subscription, the path a subscription move takes at a turn boundary) and says so in one line in its terminal. A session that works on after the turn (a gate's block, a goal task) moves at that turn's Stop hook and gets the gate's reasons, and its goal again, as after a subscription move; a prompt-mode session that goes idle moves once the turn has settled (its pull request opened, chains advanced), with nothing typed, and is idle again. Not while its background shells, agents or monitors run, not while a person typed into it in the last minute, not within the cooldown of a refused switch, and once per version per task. A session that could not continue on a version stops further moves to that version (the card says so). A task that is idle keeps its version until its next turn ends or its next start, and so does a run without hooks. The Superagent, shells and CI jobs get the newer version when they next start, as before. A restart for a newer Claude Code is no subscription switch in the task's info. |
+| CCM-013 | **A running task moves.** When a turn of a running task ends and its session runs an older Claude Code than runs get now, Yulius restarts the session on the newer one in the same Claude session (`claude --resume`, same subscription, the path a subscription move takes at a turn boundary) and says so in one line in its terminal. A session that works on after the turn (a gate's block, a goal that is set and not yet achieved) moves at that turn's Stop hook and gets the gate's reasons, and its goal again, as after a subscription move; a goal task that is Done keeps its session at a follow-up's end (its goal would be typed again); a prompt-mode session that goes idle moves once the turn has settled (its pull request opened, chains advanced), with nothing typed, and is idle again. Not while its background shells, agents or monitors run, a shell that only runs `yulius wait` included (its news would never arrive), not while a person typed into it in the last minute or paused it, not while an instance update holds the runs, not within the cooldown of a refused switch, and once per version per task. A restart that cannot start now says nothing and is tried at a later turn's end. A session that could not continue on a version stops further moves to that version (the card says so). A task that is idle keeps its version until its next turn ends or its next start, and so does a run without hooks. The Superagent, shells and CI jobs get the newer version when they next start, as before. A restart for a newer Claude Code is no subscription switch in the task's info. |
 
 ## Plan
 
@@ -197,6 +197,38 @@ an older one.
   that types nothing, also a person's move to another subscription (SPEC-447 MOV-002): the launch
   marks every run working and no turn ended to say otherwise. The switch now puts such a session
   back to idle (`rest_after_idle_switch`); the move of CCM-013 depends on it.
+- **Review round 1** (independent reviewer, fresh session, at beb8fca9: request changes; twelve
+  findings and five nits, all own code, all answered, each fix with a test that fails without it
+  where a test can show it):
+  1. (high) An idle session whose only background shell ran `yulius wait` was restarted and lost
+     its wait. A wait now counts as background work for the move (`background_or_wait_now`);
+     `a_session_with_background_work_or_a_yulius_wait_is_not_restarted` (real processes).
+  2. A restart counted as a subscription switch in analytics: the query leaves `claude_code`
+     out (`analytics` cohort test).
+  3. The breaker had no server-side test:
+     `a_version_a_session_could_not_continue_on_gets_no_other_session` (a launch that fails after
+     the old run ended).
+  4. Two lines for a move, said before the preflight, and "Switching subscriptions was not
+     possible" for a refusal: one line, from the switch once it is under way; a refused restart
+     says and records nothing.
+  5. "Checking" could stick when requests arrived together (wake-ups do not stack): the loop
+     runs the follow-up itself (`requests_that_arrive_together_do_not_leave_it_checking`).
+  6. Typing, a person's pause and an update hold are read again after the probes (the typing
+     case through the race point `ClaudeMoveProbed`).
+  7. A Done goal task got its goal typed again at a follow-up's Stop: the move there needs a
+     goal that is open and unmet (`a_done_goal_task_keeps_its_session_after_a_follow_up`).
+  8. The fix promised a check and the host's install when runs already get npm's newest: it
+     says no release knows the model (`the_doctor_says_when_no_release_knows_the_default_model`,
+     the admin view test).
+  9. A refused release was downloaded again at every check: remembered while the server runs.
+  10. Tests waited on pauses: they wait on the race points `ClaudeMoveSettled` and `StopClean`.
+  11. Task info showed the old version after an idle move: the restarted run counts as on the
+      version it was sent to until its transcript names one.
+  12. Docs: this Evidence section, the status, and ADR-0293's consequence (Stable does not move
+      `current` back; Off does change what runs get).
+  Nits: `PUT …/channel` needs the field; the doctor leaves out a refusal the host's install has
+  overtaken; a version that is not plain is not waited for; the card redraws only on a change
+  (focus and the alert stay); what was sent to older versions is forgotten at the next move.
 - **Not from this change:** `first_message::{a_draft_typed_during_the_opening_turn_is_left_alone,
   focus_and_mouse_reports_do_not_keep_the_goal_out,
   trust_words_after_the_session_started_are_no_trust_prompt}` and

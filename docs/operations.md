@@ -570,17 +570,19 @@ SPEC-461), with no root step and no sign-in again:
 - **Running tasks.** A task's session keeps the version it started with until a turn of it ends:
   then Yulius restarts it on the version new runs get, in the same Claude session and on the
   same subscription, and says so in one line in its terminal. It waits while the session has
-  background shells, agents or monitors (they would be lost) or a person typed into it in the
-  last minute, and tries once per version. A goal session moves at a turn it works on after; an
-  idle one keeps its version until its next turn ends or its next start. The card lists the
+  background shells, agents or monitors (they would be lost; a `yulius wait` counts) or a person
+  typed into it in the last minute, and tries once per version. A goal session moves at a turn
+  it works on after, while its goal is set and not yet achieved; an idle one, and a goal task
+  that is Done, keep their version until their next start. The card lists the
   tasks still on an older version, and each task's info shows the version each session ran. If
   a session cannot continue on a version, no other is sent to it and the card says so.
 - **When the version in use does not know the default model**, the card shows a red banner with
   the fix and `yulius doctor --contained` prints "Claude Code in sandboxes" as `FAIL`. The fix is
   the next check (or "Check now"), which installs a release that knows it; or, at once, a newer
   install on the host: `sudo npm install -g @anthropic-ai/claude-code@latest` (runs get the newer
-  of the host's and Yulius's). If the newest release was refused for it too, no release knows the
-  model yet: choose a model Claude Code knows for tasks until one does.
+  of the host's and Yulius's). If npm's newest release does not know it either (it was refused,
+  or it is what runs get), no release knows the model yet: choose a model Claude Code knows for
+  tasks until one does.
 - The host's install is never changed; updating it by hand past Yulius's version makes runs use it.
   Without an npm install on the host, sandboxes have no Claude Code and nothing is updated.
 - The server writes what it last knew (channel, npm's `latest` and `stable`, what the last check

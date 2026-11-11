@@ -607,9 +607,15 @@ mod moves {
             let s = server(&data, &version, hooked(), TaskMode::Goal, "2.1.311").await?;
             settled(&s, Activity::Done).await?;
             release(&s, &version, "2.1.322")?;
-            let flag = decided(&s.id);
+            // The follow-up's own Stop: a move at it would hold the hook before this point, and
+            // the next clean Stop would be the restarted session's.
+            let stopped = Arc::new(AtomicBool::new(false));
+            let set = Arc::clone(&stopped);
+            race::on(Point::StopClean, Path::new(s.id.as_str()), move || {
+                set.store(true, Ordering::SeqCst);
+            });
             turn(&s, "one more thing").await?;
-            until_decided(&flag).await?;
+            until_decided(&stopped).await?;
             assert_eq!(runs(&s).await, 1, "the goal is not set again");
             let goals = screen(&s.app, &s.id).matches("GOAL SET").count();
             assert_eq!(goals, 1, "{}", screen(&s.app, &s.id));

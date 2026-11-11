@@ -36,9 +36,10 @@ knows as plain text (2.1.322 holds `claude-fable-5-2` 26 times, 2.1.311 not once
 - **A running task moves at a turn boundary.** Each session records the Claude Code version its
   transcript names. When a turn ends and the session runs an older one than runs get now, Yulius
   restarts it on the newer one in the same Claude session, on the same subscription, through the
-  subscription switch (reason `claude_code`): never while background work runs or a person typed
-  in the last minute, once per version, and a version a session could not continue on gets no
-  further moves.
+  subscription switch (reason `claude_code`): never while background work runs (a `yulius wait`
+  included) or a person typed in the last minute, once per version, and a version a session
+  could not continue on gets no further moves. A goal session moves only while its goal is set
+  and unmet.
 
 ## Alternatives
 
@@ -60,8 +61,12 @@ knows as plain text (2.1.322 holds `claude-fable-5-2` 26 times, 2.1.311 not once
 
 - Sandboxes get each Claude Code release within an hour of its publication, and running tasks at
   the end of their next turn. A release that breaks sessions reaches them sooner than under
-  `stable`: `stable` and `off` are a click away on the Instance page, and the version before is
-  kept on disk.
+  `stable`. Choosing Stable then keeps later releases away but does not move `current` back; Off
+  is the click that changes what runs get (the host's install), and a session that cannot
+  continue on a version stops further moves to it.
+- The check reads model ids as plain text in the binary. A Claude Code that stopped naming them
+  so would be refused release after release, loudly; the host's install, which runs get when it
+  is newer, is the way through until the check is adapted.
 - A default model newer than every Claude Code release is refused loudly instead of being run
   half-known; the default should not move before a release knows it.
 - The model check reads the downloaded binary once (about 340 MB) and the version in use once per
