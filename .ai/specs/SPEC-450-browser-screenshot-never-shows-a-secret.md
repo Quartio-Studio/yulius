@@ -98,7 +98,8 @@ with `browser_fill_secret`. A password field, drawn as dots, keeps screenshots w
   value is nowhere in `shown`, its host (before and after a navigation meanwhile) is exposed:
   every page of it is refused from then on. A value typed into a cross-origin frame or a closed
   shadow root, or cut or reformatted by the field, is therefore refused, whatever another
-  password field holds. Any other typing into a document a value went into (`browser_type`, a
+  password field holds; typed into a frame the probe cannot read, the hosts of the page's frames
+  are exposed too, so another site framing them is refused. Any other typing into a document a value went into (`browser_type`, a
   user name) may edit it (a character into its middle):
   - before the typing, a page that shows such a value (a password revealed) or cannot be read
     exposes its host, as an edit would go unseen;
@@ -115,8 +116,8 @@ with `browser_fill_secret`. A password field, drawn as dots, keeps screenshots w
   The screenshot is refused when:
   - the page's host is exposed;
   - it frames a host a value was typed into, or an exposed one, in a frame the probe cannot read
-    (other hosts from the frame tree, and the `iframe` targets whose parent frame is the tab's, or
-    is not said);
+    (frames of another origin in the frame tree, and the `iframe` targets whose parent frame is
+    the tab's, is not said, or is no target listed);
   - its `shown` holds a remembered value or line, which also exposes its host;
   - its `shown` holds any agent secret the redactor hides for the sandbox (its matcher: values,
     their encodings and lines). That also covers a stored key nobody filled.
@@ -145,7 +146,9 @@ with `browser_fill_secret`. A password field, drawn as dots, keeps screenshots w
 - [x] Review round 3: edits in filled documents, memory across browser restarts, framed sites
 - [x] Review round 4: a single-page sign-in keeps screenshots, edits checked as typed
 - [x] Review round 5: a fill judged by its field, unseen edits expose, the snapshot bar
-- [ ] Independent review round 6 approves the head
+- [x] Independent review round 6 approves the head
+- [x] Review round 6 minors: fills into unreadable frames, frames by origin, a navigation before typing
+- [ ] Independent review of the round 6 fixes approves the head
 - [ ] Gates green with evidence
 
 ## Acceptance criteria
@@ -261,6 +264,7 @@ with `browser_fill_secret`. A password field, drawn as dots, keeps screenshots w
   - seen from another sandbox's browser signed in to the same account;
   - made by the page or the site itself after a fill that stayed whole in a password field (a
     script reformatting it, a server truncating it).
-  Exact copies are still refused by the redactor's matcher.
+  Exact copies are still refused by the redactor's matcher, outside frames the probe cannot
+  read.
 - A never-filled agent secret inside a frame of another site.
 - A page changing and changing back between the two looks of one screenshot.

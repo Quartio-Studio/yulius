@@ -38,14 +38,15 @@ involved; that is outside what a screenshot guard can close.
   - each document it went into, by the main frame's loader id from `Page.getFrameTree`, before and
     after typing (256), forgotten with the browser process.
   A fill into a document that cannot be told, or beyond 32 values, is refused before anything is
-  typed; past another bound every screenshot of that browser is refused.
+  typed; past another bound every screenshot of the sandbox's browsers is refused.
 - **Hide in pixels what a snapshot hides in text.** A screenshot shows nothing that a snapshot of
   the same page would redact. The edit checks below are defense in depth.
 - **Only a password field keeps a value out of the pixels.** Right after typing, the page is read
   with the focused element the typing went into (through open shadow roots and same-origin
   frames). Unless that is a password field holding the value whole, and the value is shown
   nowhere, its host is exposed, and every page of it is refused from then on; another password
-  field holding it says nothing of where this typing went. Any other typing into a document a
+  field holding it says nothing of where this typing went. Typed into a frame the probe cannot
+  read, the hosts of the page's frames are exposed too. Any other typing into a document a
   value went into may edit it in place:
   - a page that shows such a value (revealed) or cannot be read before the typing exposes the
     host;
@@ -64,7 +65,7 @@ involved; that is outside what a screenshot guard can close.
   `browser_snapshot`, in any of these cases:
   - the page's host is exposed;
   - it frames a host a value went into, or an exposed one, where the probe cannot read: another
-    host in the frame tree, or an `iframe` target (`Target.getTargets`) whose parent frame is the
+    origin in the frame tree, or an `iframe` target (`Target.getTargets`) whose parent frame is the
     tab's, not said, or no target listed, as Chromium lists an out-of-process frame without its
     address or not at all in the tree;
   - `shown` holds a remembered value, which also exposes the host;
@@ -122,6 +123,7 @@ involved; that is outside what a screenshot guard can close.
   closed shadow root; an edited copy on another host, kept by the site past a Yulius restart, seen
   from another sandbox's browser, or made by the page or the site after a fill that stayed in a
   password field; a never-filled agent secret in a frame of another site; a page that changes and
-  changes back between the two looks. Exact copies are still refused by the redactor's matcher.
+  changes back between the two looks. Exact copies are still refused by the redactor's matcher,
+  outside frames the probe cannot read.
   Input a person gives on the virtual display does not take the lock; the person's own live view
   is not affected.

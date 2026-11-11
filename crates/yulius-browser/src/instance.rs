@@ -568,6 +568,17 @@ fn host_of(origin: &str) -> Option<String> {
     (!host.is_empty()).then(|| host.to_ascii_lowercase())
 }
 
+/// `scheme://host[:port]` of an origin or URL, lowercased; `None` for opaque ones.
+fn origin_of(text: &str) -> Option<String> {
+    let (scheme, rest) = text.split_once("://")?;
+    let authority = rest.split(['/', '?', '#']).next()?;
+    let authority = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host);
+    (!scheme.is_empty() && !authority.is_empty())
+        .then(|| format!("{scheme}://{authority}").to_ascii_lowercase())
+}
+
 /// The document a tab's main frame shows, from `Page.getFrameTree`.
 struct Document {
     frame: String,
@@ -590,7 +601,17 @@ impl Document {
                 .iter()
                 .find_map(|field| frame.get(*field).and_then(Value::as_str).and_then(host_of))
         };
+        // A frame of another origin (another host, port or scheme) is one the probe cannot read.
+        let origin = |frame: &Value| {
+            ["securityOrigin", "url"].iter().find_map(|field| {
+                frame
+                    .get(*field)
+                    .and_then(Value::as_str)
+                    .and_then(origin_of)
+            })
+        };
         let own = host(main);
+        let own_origin = origin(main);
         let mut framed = Vec::new();
         let mut frames = Vec::new();
         let mut stack: Vec<&Value> = tree
@@ -603,7 +624,7 @@ impl Document {
                 frames.push(id.to_owned());
             }
             if let Some(child_host) = child.get("frame").and_then(host)
-                && Some(&child_host) != own.as_ref()
+                && child.get("frame").and_then(origin) != own_origin
                 && !framed.contains(&child_host)
             {
                 framed.push(child_host);
@@ -792,6 +813,8 @@ struct PageText {
     /// The value of the focused element when it is a password field (`None`: it is not, or it
     /// is a frame the probe cannot read).
     focused_password: Option<Zeroizing<String>>,
+    /// The focused element is a frame the probe cannot read.
+    focused_frame: bool,
 }
 
 impl PageText {
@@ -812,10 +835,15 @@ impl PageText {
             .filter(|focus| focus.get("kind").and_then(Value::as_str) == Some("password"))
             .and_then(|focus| focus.get("value").and_then(Value::as_str))
             .map(|text| Zeroizing::new(text.to_owned()));
+        let focused_frame = focus
+            .and_then(|focus| focus.get("kind"))
+            .and_then(Value::as_str)
+            == Some("frame");
         Some(Self {
             shown: strings("shown")?,
             masked: strings("masked")?,
             focused_password,
+            focused_frame,
         })
     }
 
@@ -2575,11 +2603,20 @@ impl BrowserInstance {
             typed.record(Some(&before), &params.text);
         }
         let typed = self.type_lines(&session, params, None).await;
-        let after = self.document(&session).await;
+        let mut after = self.document(&session).await;
         let page = match &after {
             Some(document) => self.read_page(&session, &document.frame).await,
             None => None,
         };
+        // Typed into a frame the probe cannot read: the frames' hosts are where it went.
+        let into_frame = page.as_ref().is_some_and(|page| page.focused_frame);
+        let mut frames_known = true;
+        if into_frame && let Some(document) = after.as_mut() {
+            match self.cdp.call("Target.getTargets", json!({})).await {
+                Ok(targets) => document.add_frame_targets(&params.tab_id, &targets),
+                Err(_) => frames_known = false,
+            }
+        }
         let mut secrets = self.secrets.lock();
         // A navigation meanwhile may have put it into the next document.
         if after.as_ref().map(|d| d.loader.as_str()) != Some(before.loader.as_str()) {
@@ -2592,10 +2629,16 @@ impl BrowserInstance {
             .is_some_and(|page| page.received(&params.text))
         {
             let after_host = after.as_ref().and_then(|d| d.host.as_ref());
-            for host in before.host.iter().chain(after_host) {
+            let framed: &[String] = match (&after, into_frame) {
+                (Some(document), true) => &document.framed,
+                _ => &[],
+            };
+            let mut exposed = false;
+            for host in before.host.iter().chain(after_host).chain(framed) {
                 secrets.expose(Some(host));
+                exposed = true;
             }
-            if page.is_none() {
+            if page.is_none() || !exposed || !frames_known {
                 secrets.expose(None);
             }
         }
@@ -2620,7 +2663,13 @@ impl BrowserInstance {
             return None;
         }
         let Some(page) = self.read_page(session, &document.frame).await else {
-            self.secrets.lock().expose(document.host.as_deref());
+            // A navigation committing meanwhile (its context gone): the typing goes into the
+            // next document, which holds none of them.
+            match self.document(session).await {
+                Some(now) if now.loader != document.loader => {}
+                Some(_) => self.secrets.lock().expose(document.host.as_deref()),
+                None => self.secrets.lock().expose(None),
+            }
             return None;
         };
         if values.iter().any(|value| page.shows(value)) {
