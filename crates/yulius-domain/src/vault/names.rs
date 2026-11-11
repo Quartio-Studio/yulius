@@ -139,4 +139,38 @@ mod tests {
             Ok("KEY".into())
         );
     }
+
+    #[test]
+    fn own_anthropic_names_are_accepted_and_the_cli_s_are_reserved() {
+        for own in [
+            "ANTHROPIC_API_KEY_QUARTIO",
+            "ANTHROPIC_KEY_PROD",
+            "ANTHROPIC_TOKEN",
+            "ANTHROPIC_MODEL_FOR_APP",
+        ] {
+            assert!(SecretName::parse(own).is_ok(), "{own}");
+        }
+        for read in [
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_AUTH_TOKEN",
+            "ANTHROPIC_BASE_URL",
+            "ANTHROPIC_MODEL",
+            "ANTHROPIC_BETAS",
+            "ANTHROPIC_LOG",
+            "ANTHROPIC_UNIX_SOCKET",
+            "ANTHROPIC_CUSTOM_HEADERS",
+            "ANTHROPIC_DEFAULT_OPUS_MODEL",
+            "ANTHROPIC_SMALL_FAST_MODEL",
+            "ANTHROPIC_SMALL_FAST_MODEL_AWS_REGION",
+            "ANTHROPIC_BEDROCK_BASE_URL",
+            "ANTHROPIC_VERTEX_PROJECT_ID",
+            "ANTHROPIC_FOUNDRY_API_KEY",
+        ] {
+            let refused = SecretName::parse(read);
+            assert!(
+                matches!(&refused, Err(VaultError::Name(m)) if m.contains("reserved")),
+                "{read}: {refused:?}"
+            );
+        }
+    }
 }
