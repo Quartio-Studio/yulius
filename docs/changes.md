@@ -19,6 +19,20 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   while a field was open was not drawn after a save by leaving the field; and the keyboard left a
   subscription's pencil when its usage was read again or, after a rename that moved its card,
   could land on another subscription's control.
+- One command moves the instance to another host (SPEC-460, task #442, ADR-0297): `sudo yulius
+  instance migrate root@new-host` on the old host. It plans first and asks people only there (the
+  SSH sign-in, a DNS record, the GitHub App's callback, blank disks to use), then sets up the new
+  host like the old one (data disk as ext4 or an mdadm mirror, third-party apt sources and the
+  manual package list fitted to the new release, coreutils flavour, `/usr/local`, unowned `/opt`,
+  root's Rust toolchain, the unit with its drop-ins and key files, the update helper, Caddy for
+  the new host name, ufw), copies the data while the old instance is frozen, starts the new
+  instance only when both hosts count the same copy (entries, bytes and a fingerprint per folder),
+  redirects the old URL and removes its own key. A failure before the new instance runs thaws the
+  old one; a new instance that does not come up is stopped first. `--status` shows the checklist,
+  `--abort` goes back, and the same command continues a move that stopped. On the new host the
+  tasks that were live come back by themselves. The operations guide §7 describes it. To come:
+  a warm copy (the freeze still takes the whole copy), the GitHub App check and the Settings →
+  Instance button.
 - `browser_screenshot` never shows an agent secret typed with `browser_fill_secret` (SPEC-450,
   task #432, ADR-0291, #1113). Yulius reads each page before and after capturing it and refuses
   the screenshot, pointing to `browser_snapshot`, while the page shows any agent secret or cannot
