@@ -347,11 +347,13 @@ Settings → Instance (slice D)
 
 ## Evidence
 
-Head of the gate and of the last real run: `45031ebc` (2026-11-11); the commits after it change this document only.
+Head of the gate and of the last real run: `d5ef0803` (2026-11-11), which holds `dev` up to
+`bbd65665` (SPEC-456's bwrap item and SPEC-459's limits mark); the commit after it changes this
+document only.
 
-- `scripts/dev ci`: exit 0; nextest 3388 tests run, 3388 passed, 16 skipped; doctests and docs
-  built.
-- `cargo test -p yulius --lib instance::`: the move's unit and flow tests (82 in
+- `scripts/dev ci`: exit 0; nextest 3466 tests run, 3466 passed, 16 skipped; doctests and docs
+  built (also green before the merge of `dev`, at `45031ebc`: 3388 passed).
+- `cargo test -p yulius --lib instance::`: the move's unit and flow tests (85 in
   `instance::migrate`, 9 in `instance::inventory`, the export, import, walk, extract and freeze
   tests): all pass. `cargo test -p yulius --test main host_move::`: 3 passed.
   `cargo test -p yulius --test main cli::instance_migrate`: 1 passed.
@@ -364,10 +366,14 @@ Head of the gate and of the last real run: `45031ebc` (2026-11-11); the commits 
   directory, GitHub's apt source with its key, Caddy (`tls internal`), ufw, GNU coreutils selected,
   software in `/usr/local` and `/opt`, and sandbox-like data (hard link, link, `user.` attribute,
   subordinate owners, an overlay whiteout and opaque directory, a setuid file of root); the new
-  one fresh, with two blank disks. The bwrap AppArmor rule of SPEC-456 was put on both by hand.
+  one fresh, with two blank disks. The bwrap AppArmor rule of SPEC-456 was put on both by hand
+  until `dev` brought it; in the last run the new host had AppArmor as shipped again.
   - `yulius instance migrate root@10.0.2.2 --ssh-port 20102 --data-disk /dev/vdc --data-disk
-    /dev/vdd --public-url https://b-10-0-2-15.sslip.io --yes`, four times end to end (the last at
-    this head): exit 0, "changed 15, left alone 37, manual 6, failed 0" in the last. Without a terminal the
+    /dev/vdd --public-url https://b-10-0-2-15.sslip.io --yes`, five times end to end (the last at
+    this head): exit 0, "changed 16, left alone 38, manual 6, failed 0" in the last, where the
+    move itself made bwrap able to start namespaces on the new host ("disabled Ubuntu's AppArmor
+    profile bwrap-userns-restrict …, wrote and loaded /etc/apparmor.d/yulius-bwrap") before it
+    built the sandbox base, and the new instance consumed the limits mark at its first start. Without a terminal the
     first run printed the key line; added by hand, the same command went on.
   - On the new host afterwards: `/dev/md127` (RAID1 of the two disks, ext4) mounted at the data
     directory from `fstab`, the array in `mdadm.conf`; GNU coreutils (`ls (GNU coreutils) 9.7`);
@@ -386,7 +392,7 @@ Head of the gate and of the last real run: `45031ebc` (2026-11-11); the commits 
     site answers `HTTP/2 307`, `location: https://b-10-0-2-15.sslip.io/s/x?y=1`,
     `x-yulius-moved-to`, with its `tls internal` kept; `state.json` 0600 and `status.json` 0644 in
     a 0711 directory.
-  - `--abort` (three times): refused while nobody said the new instance is stopped ("does not prove that
+  - `--abort` (four times): refused while nobody said the new instance is stopped ("does not prove that
     it is stopped"); after `systemctl disable --now` on the new host and `--abort --yes`: unit
     running and enabled, the earlier Caddyfile back, state removed. With the old unit stopped by
     hand the move was refused before anything ("is not running: start it").
@@ -395,7 +401,8 @@ Head of the gate and of the last real run: `45031ebc` (2026-11-11); the commits 
     transaction; a noisy first probe; an empty `/opt` entry carried; `host setup` failing on the
     sandbox base only after the copy (the base is now built before the freeze).
 - Independent review: three rounds in fresh read-only sessions (at `3da54b56`, `f580a4ba` and
-  `d8e9e795`: 2 blockers and 11 majors in all), then the last reviewer's confirmation of the fixes.
+  `d8e9e795`: 2 blockers and 11 majors in all), then the last reviewer's approval at `76e0e3e9`
+  with three minors, fixed with tests in `d5ef0803`, and its confirmation of the merged head.
   Every finding is answered in code with a test, or with the reason here: moving an old unit that
   does not run was taken out again (it is refused before anything; what it left running could
   not be frozen);
