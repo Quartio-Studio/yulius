@@ -7,12 +7,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 ## 2026-11-11
 
 - `browser_screenshot` never shows an agent secret typed with `browser_fill_secret` (SPEC-450,
-  task #432, ADR-0291, #1113). Once a value was filled, Yulius reads each page before capturing
-  it and refuses the screenshot, pointing to `browser_snapshot`, while the page shows the value
-  (in any tab) or cannot be read. On the page the value was typed into, it also refuses unless the
-  value sits whole in a password field, so an edited value, one in a cross-origin frame and a
-  revealed password stay out of the pixels. Password sign-ins keep screenshots working. This
-  covers a task's agent and both Superagents.
+  task #432, ADR-0291, #1113). Yulius reads each page before and after capturing it and refuses
+  the screenshot, pointing to `browser_snapshot`, while the page shows any agent secret or cannot
+  be read. A value filled anywhere but a password field also refuses every page of that site
+  until the browser stops, so an edited value, one in a cross-origin frame and a revealed
+  password stay out of the pixels. Password sign-ins keep screenshots working. This covers a
+  task's agent and both Superagents.
 
 ## 2026-11-10
 

@@ -15,30 +15,48 @@ the name. `browser_screenshot` returns pixels, which no redactor reads. After a 
 drawn as text (an API-key input), a screenshot showed the value to the agent. Nothing connected
 the fill to later captures.
 
-The value can also be on the page somewhere other than the field it was typed into: the page's
-script may echo it, "show password" may turn a password field into a text field, history
-navigation may restore it, and a cross-origin frame or a closed shadow root keeps it out of the
-main document's reach.
+The value can also be on a page somewhere other than the field it was typed into:
+- the page's script may echo it;
+- "show password" may turn a password field into a text field;
+- history navigation may restore it, or the server may render an edited copy into the next page;
+- a settings page may show the stored key in any tab, also after the browser restarted;
+- a cross-origin frame or a closed shadow root keeps it out of the main document's reach.
+
+The agent drives tabs, clicks and typing, and can run tools concurrently.
 
 ## Decision
 
-- **Refuse, do not mask.** `browser_fill_secret` of a value (not a user name or TOTP code, which
-  the redactor does not hide either) types through `tool_type_secret`. The browser instance
-  remembers each value (at most 32) and each document it went into (the main frame's loader id
-  from `Page.getFrameTree`, before and after typing; at most 256) in `Zeroizing` strings, until the
-  browser stops, whatever its tabs do. A fill into a document that cannot be told, or beyond the
-  bounds, is refused before anything is typed.
-- **Look at the page before every capture.** Once a value was typed, a probe reads the page about
-  to be captured, in any tab: `shown` is the `textContent` of its body, open shadow roots and
-  same-origin frames plus the values of fields drawn as text, and `masked` is password field
-  values. The screenshot is a tool error (`BrowserError::SecretOnPage`) pointing to
-  `browser_snapshot` when `shown` holds a remembered value, or when the page is a document a
-  value was typed into and that value is not found whole in a password field. That covers a value
-  edited in place, cut or reformatted, typed into a cross-origin frame, or revealed.
-- **Fail closed and leave no gap.** An unknown document, a probe that fails, throws, answers
-  malformed or reads over 4 000 000 characters is refused. The probe runs in an isolated world
-  (`Page.createIsolatedWorld`), out of reach of page scripts. A screenshot holds the instance's
-  input lock from the probe to its last capture, and typing and clicks take it too.
+- **Refuse, do not mask.** `browser_fill_secret` of a value types through `tool_type_secret`. A
+  user name or TOTP code is typed unguarded, as the redactor does not hide them either. The browser
+  instance remembers until it stops, whatever its tabs do, all in `Zeroizing` strings:
+  - each value and each line of a multi-line one (32 texts);
+  - each document it went into, by the main frame's loader id from `Page.getFrameTree`, before and
+    after typing (256).
+  A fill into a document that cannot be told, or beyond the bounds, is refused before anything is
+  typed.
+- **Only a password field keeps a value out of the pixels.** Right after typing, the page is read.
+  Unless the value is whole in a password field and shown nowhere, its origin is exposed, and every
+  page of it is refused until the browser stops. A page that cannot be read then refuses every
+  screenshot.
+- **Look at every page before the capture.** Once a value was typed or the sandbox has agent
+  secrets, a probe reads the page about to be captured, in any tab. It runs in an isolated world
+  (`Page.createIsolatedWorld`), and returns:
+  - `shown`: the `textContent` of the body, open shadow roots and same-origin frames, and the
+    values and placeholders of fields drawn as text;
+  - `masked`: the values of password fields;
+  - the page's origin.
+- **When it refuses.** The screenshot is a tool error (`BrowserError::SecretOnPage`) pointing to
+  `browser_snapshot`, in any of these cases:
+  - the page's origin is exposed;
+  - `shown` holds a remembered value, which also exposes the origin;
+  - the page is a document a value was typed into, and that value is not whole in a password field
+    and shown nowhere, which also exposes the origin;
+  - `shown` holds any agent secret the redactor's matcher finds for the sandbox (values, their
+    encodings, lines);
+  - the document, the page or the agent secrets cannot be read.
+- **Leave no gap around the capture.** A screenshot holds the instance's input lock from the probe
+  to its last capture, and the agent's typing and clicks take it too. After the capture, the page
+  is read again, and the image is dropped unless the same document passes again.
 - **Compare in Yulius.** The probe takes no argument: the page returns its text and Yulius
   searches it. The value never enters a page, which may show another origin by then.
 
@@ -50,8 +68,10 @@ main document's reach.
   apply (a re-rendered element, a canvas).
 - **Refuse only an exact match of the value** (the first version): typing one character into the
   middle of the filled value defeats it.
-- **Remember fills per tab**: the agent opens and closes tabs, and another tab may show the
-  stored value.
+- **The strict rule for the filled document only** (the second version): an edited copy in the
+  next page of the site (a form shown again) is matched by exact text only.
+- **Remember fills per tab, or only in the instance**: the agent opens and closes tabs, and a
+  browser restart forgets values while the pages that show a stored key stay.
 - **Record at fill time whether the field was a password field**: it misses a revealed password
   and a value restored by history navigation.
 - **Send the value (or its hash) into the page to search it**: hands the value to whatever origin
@@ -61,13 +81,12 @@ main document's reach.
 
 ## Consequences
 
-- An agent that typed a key into a text field reads that page with `browser_snapshot`. Other
-  pages are refused only while they show the value, even scrolled out of view. A password
-  sign-in keeps screenshots.
-- Once a value was typed, each screenshot in that browser costs a `Page.getFrameTree`, an
-  isolated world and a probe; a browser where nothing was filled captures as before. Input waits
-  for a screenshot's capture.
-- Not detected: a value drawn in a canvas or image, and an edited copy on a page other than the
-  one it was typed into (for example an edited field that history navigation restored into a new
-  document). A browser restart forgets the values along with the old pages. The person's own
-  live view is not affected.
+- An agent that typed a key into a text field reads that site with `browser_snapshot` until the
+  browser stops (after 30 minutes without use). A page of another site is refused only while it
+  shows an agent secret, even scrolled out of view. A password sign-in keeps screenshots.
+- A screenshot in a sandbox with agent secrets costs a `Page.getFrameTree`, an isolated world and
+  a probe, twice; one without any captures as before. Agent input waits for a screenshot's capture.
+- Not detected: a value drawn in a canvas, an image or through CSS (`content: attr(…)`), an edited
+  copy on a page of another origin, and a page that changes and changes back between the two
+  looks. Input a person gives on the virtual display does not take the lock; the person's own live
+  view is not affected.

@@ -314,10 +314,11 @@ impl BrowserSession for Session {
         &self,
         params: &ScreenshotParams,
         max_base64_bytes: usize,
+        vault: Option<&(dyn for<'s> Fn(&'s str) -> bool + Send + Sync)>,
     ) -> Result<Screenshot, BrowserFailure> {
         let shot = self
             .0
-            .tool_screenshot_within(params, max_base64_bytes)
+            .tool_screenshot_guarded(params, max_base64_bytes, vault)
             .await
             .map_err(failure)?;
         Ok(Screenshot {

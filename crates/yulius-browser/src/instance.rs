@@ -90,9 +90,9 @@ const TYPED_DOCUMENTS_MAX: usize = 256;
 /// Name of the isolated world the secret probe runs in, out of reach of the page's scripts.
 const SECRET_PROBE_WORLD: &str = "yulius-secret-probe";
 
-/// Reads what a page can show (SPEC-450 SSC-001): the text of its body, open shadow roots and
-/// same-origin frames and the values of fields drawn as text (`shown`), and of password fields
-/// (`masked`); `over` past 4 000 000 characters. It takes nothing in: Yulius compares the typed
+/// Reads what a page can show (SPEC-450 SSC-002): the text of its body, open shadow roots and
+/// same-origin frames and the values and placeholders of fields drawn as text (`shown`), the
+/// values of password fields (`masked`) and its `origin`; `over` past 4 000 000 characters. It takes nothing in: Yulius compares the typed
 /// values, which never reach the page. The marker comment names it for the fake.
 const SECRET_PROBE_EXPRESSION: &str = "(() => {
   // yulius:secret-probe
@@ -109,18 +109,19 @@ const SECRET_PROBE_EXPRESSION: &str = "(() => {
       if (name === 'input') {
         const type = String(el.type).toLowerCase();
         if (type === 'password') add(masked, el.value); else if (type !== 'hidden') add(shown, el.value);
-      } else if (name === 'textarea') add(shown, el.value);
+        add(shown, el.placeholder);
+      } else if (name === 'textarea') { add(shown, el.value); add(shown, el.placeholder); }
       if (el.shadowRoot) { add(shown, el.shadowRoot.textContent); walk(el.shadowRoot); }
       if (name === 'iframe' || name === 'frame') {
         let doc = null;
         try { doc = el.contentDocument; } catch (_) {}
-        if (doc) { add(shown, doc.body ? doc.body.textContent : ''); walk(doc); }
+        if (doc) { add(shown, (doc.body || doc.documentElement || {}).textContent); walk(doc); }
       }
     }
   };
-  add(shown, document.body ? document.body.textContent : '');
+  add(shown, (document.body || document.documentElement || {}).textContent);
   walk(document);
-  return { shown, masked, over };
+  return { origin: String(location.origin), shown, masked, over };
 })()";
 
 const TEXT_FALLBACK_EXPRESSION: &str =
@@ -444,70 +445,125 @@ impl Pointer {
     }
 }
 
+/// Tells whether a text holds a secret Yulius hides (the redactor's matcher), for
+/// [`BrowserInstance::tool_screenshot_guarded`].
+pub type SecretCheck<'a> = &'a (dyn Fn(&str) -> bool + Send + Sync + 'a);
+
 /// The secrets typed with [`BrowserInstance::tool_type_secret`] in this browser (SPEC-450), kept
 /// until it stops: a page of any tab may show one (a settings page echoing a stored key).
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct TypedSecrets {
-    /// Distinct values, at most [`TYPED_SECRETS_MAX`].
+    /// Distinct values (and the lines of a multi-line one), at most [`TYPED_SECRETS_MAX`].
     values: Vec<Zeroizing<String>>,
     /// Each document (main-frame loader id) a value was typed into, with that value; at most
     /// [`TYPED_DOCUMENTS_MAX`].
     documents: Vec<(String, Zeroizing<String>)>,
-    /// A value went into a document that could not be told: every screenshot is refused.
-    unknown_document: bool,
+    /// Origins where a value went outside a password field or was found shown or edited: every
+    /// page of them is refused (a form re-rendered with an edited copy); at most
+    /// [`TYPED_DOCUMENTS_MAX`].
+    exposed: Vec<String>,
+    /// A value went where Yulius could not tell the page or its origin: every screenshot is
+    /// refused.
+    everywhere: bool,
+}
+
+/// The texts remembered for `value`: itself and, when it spans lines, each line of at least 8
+/// characters (typed one by one, each may be echoed alone).
+fn texts(value: &str) -> Vec<&str> {
+    let mut texts = vec![value];
+    if value.contains('\n') {
+        texts.extend(
+            value
+                .split('\n')
+                .map(|line| line.strip_suffix('\r').unwrap_or(line))
+                .filter(|line| line.chars().count() >= 8),
+        );
+    }
+    texts
 }
 
 impl TypedSecrets {
+    fn any(&self) -> bool {
+        !self.values.is_empty() || self.everywhere
+    }
+
     /// Room for `value` typed into `document`, before it is typed.
     fn room_for(&self, document: &str, value: &str) -> bool {
-        let known = |v: &Zeroizing<String>| v.as_str() == value;
-        (self.values.iter().any(known) || self.values.len() < TYPED_SECRETS_MAX)
+        let new = texts(value)
+            .into_iter()
+            .filter(|text| !self.values.iter().any(|v| v.as_str() == *text))
+            .count();
+        self.values.len() + new <= TYPED_SECRETS_MAX
             && (self
                 .documents
                 .iter()
-                .any(|(d, v)| d == document && known(v))
+                .any(|(d, v)| d == document && v.as_str() == value)
                 || self.documents.len() < TYPED_DOCUMENTS_MAX)
     }
 
     /// Records `value` as typed into `document` (`None`: a document that could not be told).
     fn record(&mut self, document: Option<&str>, value: &str) {
-        if !self.values.iter().any(|v| v.as_str() == value) {
-            self.values.push(Zeroizing::new(value.to_owned()));
-        }
-        match document {
-            None => self.unknown_document = true,
-            Some(document) => {
-                if !self
-                    .documents
-                    .iter()
-                    .any(|(d, v)| d == document && v.as_str() == value)
-                {
-                    self.documents
-                        .push((document.to_owned(), Zeroizing::new(value.to_owned())));
-                }
+        for text in texts(value) {
+            if !self.values.iter().any(|v| v.as_str() == text) {
+                self.values.push(Zeroizing::new(text.to_owned()));
             }
+        }
+        let Some(document) = document else {
+            self.everywhere = true;
+            return;
+        };
+        if self
+            .documents
+            .iter()
+            .any(|(d, v)| d == document && v.as_str() == value)
+        {
+            return;
+        }
+        if self.documents.len() < TYPED_DOCUMENTS_MAX {
+            self.documents
+                .push((document.to_owned(), Zeroizing::new(value.to_owned())));
+        } else {
+            self.everywhere = true;
         }
     }
 
-    /// Whether a screenshot of a page reading `page`, showing `document`, may show a value:
-    /// one its text or text fields hold; any in a document a value was typed into, unless that
-    /// value is only in password fields there (an edited value, a cross-origin frame or a field
-    /// that cut it are not found as typed); any when the document or the page is unknown.
-    fn may_show(&self, document: Option<&str>, page: Option<&PageText>) -> bool {
+    /// Refuses every page of `origin` from now on (`None`: every page).
+    fn expose(&mut self, origin: Option<&str>) {
+        match origin {
+            Some(origin) if self.exposed.iter().any(|o| o == origin) => {}
+            Some(origin) if self.exposed.len() < TYPED_DOCUMENTS_MAX => {
+                self.exposed.push(origin.to_owned());
+            }
+            _ => self.everywhere = true,
+        }
+    }
+
+    /// Whether a screenshot of a page reading `page`, showing `document`, may show a secret,
+    /// and whether its origin is to be refused from now on: a page of an exposed origin; one
+    /// whose text or text fields hold a typed value (exposing it) or, by `vault`, any secret
+    /// Yulius hides; a document a value was typed into, unless that value is whole in a password
+    /// field there and shown nowhere (an edited value, a cross-origin frame, a field that cut it:
+    /// exposing it); any when the document or the page is unknown.
+    fn judge(&self, document: Option<&str>, page: Option<&PageText>, vault: bool) -> (bool, bool) {
         let (Some(document), Some(page)) = (document, page) else {
-            return true;
+            return (true, false);
         };
-        self.unknown_document
-            || self.values.iter().any(|value| page.shows(value))
+        if self.everywhere || self.exposed.contains(&page.origin) {
+            return (true, false);
+        }
+        let typed = self.values.iter().any(|value| page.shows(value))
             || self
                 .documents
                 .iter()
-                .any(|(d, value)| d == document && !page.masks(value))
+                .any(|(d, value)| d == document && !page.masks(value));
+        (typed || vault, typed)
     }
 }
 
 /// What a page can show, as [`SECRET_PROBE_EXPRESSION`] read it.
 struct PageText {
+    /// The page's origin (`location.origin`).
+    origin: String,
     /// Text and the values of fields drawn as text.
     shown: Vec<Zeroizing<String>>,
     /// The values of password fields (drawn as dots).
@@ -528,6 +584,7 @@ impl PageText {
             return None;
         }
         Some(Self {
+            origin: value.get("origin")?.as_str()?.to_owned(),
             shown: strings("shown")?,
             masked: strings("masked")?,
         })
@@ -2274,12 +2331,22 @@ impl BrowserInstance {
             state.secrets.record(Some(&before), &params.text);
         }
         let typed = self.type_lines(&session, params).await;
+        let after = self.document(&session).await;
+        let page = match &after {
+            Some((frame, _)) => self.read_page(&session, frame).await,
+            None => None,
+        };
+        let mut state = lock(&self.state);
+        let after = after.as_ref().map(|(_, loader)| loader.as_str());
         // A navigation meanwhile may have put it into the next document.
-        let after = self.document(&session).await.map(|(_, loader)| loader);
-        if after.as_deref() != Some(before.as_str()) {
-            lock(&self.state)
-                .secrets
-                .record(after.as_deref(), &params.text);
+        if after != Some(before.as_str()) {
+            state.secrets.record(after, &params.text);
+        }
+        // Only a password field keeps it out of the pixels; anywhere else exposes the origin.
+        match &page {
+            Some(page) if page.masks(&params.text) && !page.shows(&params.text) => {}
+            Some(page) => state.secrets.expose(Some(&page.origin)),
+            None => state.secrets.expose(None),
         }
         typed
     }
@@ -2340,23 +2407,52 @@ impl BrowserInstance {
         }
     }
 
-    /// Refuses a screenshot while the tab's page may show a typed secret (SPEC-450,
-    /// [`TypedSecrets::may_show`]); the caller holds `input_lock` until it has captured.
-    async fn ensure_no_secret_shown(&self, session: &str) -> Result<(), BrowserError> {
-        let typed = {
-            let state = lock(&self.state);
-            !state.secrets.values.is_empty() || state.secrets.unknown_document
-        };
-        if !typed {
-            return Ok(());
+    /// Refuses a screenshot while the tab's page may show a secret (SPEC-450,
+    /// [`TypedSecrets::judge`]); the caller holds `input_lock` until it has captured. `Ok(None)`:
+    /// nothing to check; else the loader id of the document checked.
+    async fn check_page(
+        &self,
+        session: &str,
+        vault: Option<SecretCheck<'_>>,
+    ) -> Result<Option<String>, BrowserError> {
+        if vault.is_none() && !lock(&self.state).secrets.any() {
+            return Ok(None);
         }
         let document = self.document(session).await;
         let page = match &document {
             Some((frame, _)) => self.read_page(session, frame).await,
             None => None,
         };
-        let loader = document.as_ref().map(|(_, loader)| loader.as_str());
-        if lock(&self.state).secrets.may_show(loader, page.as_ref()) {
+        let loader = document.map(|(_, loader)| loader);
+        // Searched outside the state lock: a page holds up to 4 000 000 characters.
+        let shows_vault = page
+            .as_ref()
+            .zip(vault)
+            .is_some_and(|(page, vault)| page.shown.iter().any(|text| vault(text)));
+        let snapshot = lock(&self.state).secrets.clone();
+        let (refuse, expose) = snapshot.judge(loader.as_deref(), page.as_ref(), shows_vault);
+        if expose {
+            lock(&self.state)
+                .secrets
+                .expose(page.as_ref().map(|page| page.origin.as_str()));
+        }
+        if refuse {
+            return Err(BrowserError::SecretOnPage);
+        }
+        Ok(loader)
+    }
+
+    /// After a capture of a page [`Self::check_page`] passed: the same document must still pass
+    /// (a navigation or a page script may have changed it meanwhile), else the image is dropped.
+    async fn check_again(
+        &self,
+        session: &str,
+        vault: Option<SecretCheck<'_>>,
+        checked: Option<String>,
+    ) -> Result<(), BrowserError> {
+        if let Some(loader) = checked
+            && self.check_page(session, vault).await? != Some(loader)
+        {
             return Err(BrowserError::SecretOnPage);
         }
         Ok(())
@@ -2458,7 +2554,7 @@ impl BrowserInstance {
         self.touch();
         let session = self.session(&params.tab_id).await?;
         let _input = self.input_lock.lock().await;
-        self.ensure_no_secret_shown(&session).await?;
+        let checked = self.check_page(&session, None).await?;
         let shot = self
             .cdp
             .call_session(&session, "Page.captureScreenshot", json!({"format": "png"}))
@@ -2472,9 +2568,11 @@ impl BrowserInstance {
                 limit: SCREENSHOT_MAX_BASE64_BYTES,
             });
         }
+        let data = data.to_owned();
+        self.check_again(&session, None, checked).await?;
         Ok(ScreenshotResult {
             mime_type: "image/png".to_owned(),
-            data_base64: data.to_owned(),
+            data_base64: data,
         })
     }
 
@@ -2492,11 +2590,26 @@ impl BrowserInstance {
         params: &ScreenshotParams,
         max_base64_bytes: usize,
     ) -> Result<BoundedScreenshot, BrowserError> {
+        self.tool_screenshot_guarded(params, max_base64_bytes, None)
+            .await
+    }
+
+    /// [`Self::tool_screenshot_within`], refused also while the page shows a text `vault` says
+    /// holds a secret Yulius hides (every agent secret of the sandbox, typed or not, SPEC-450).
+    ///
+    /// # Errors
+    /// As [`Self::tool_screenshot_within`].
+    pub async fn tool_screenshot_guarded(
+        &self,
+        params: &ScreenshotParams,
+        max_base64_bytes: usize,
+        vault: Option<SecretCheck<'_>>,
+    ) -> Result<BoundedScreenshot, BrowserError> {
         self.touch();
         let session = self.session(&params.tab_id).await?;
-        // Held to the last capture: no input reveals a secret after the look at the page.
+        // Held to the last capture: no agent input reveals a secret after the look at the page.
         let _input = self.input_lock.lock().await;
-        self.ensure_no_secret_shown(&session).await?;
+        let checked = self.check_page(&session, vault).await?;
         let viewport = lock(&self.state).viewport;
         let limit = max_base64_bytes.min(SCREENSHOT_MAX_BASE64_BYTES);
         for step in BOUNDED_SCREENSHOT_STEPS {
@@ -2522,10 +2635,12 @@ impl BrowserInstance {
                 } else {
                     "image/png"
                 };
+                let data = data.to_owned();
+                self.check_again(&session, vault, checked).await?;
                 return Ok(BoundedScreenshot {
                     result: ScreenshotResult {
                         mime_type: mime_type.to_owned(),
-                        data_base64: data.to_owned(),
+                        data_base64: data,
                     },
                     quality: step.quality,
                     scale: step.scale,

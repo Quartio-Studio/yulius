@@ -18,7 +18,7 @@
 //! configuration, then frames with a keyframe every few frames) through the real video hub.
 //! Synthetic data only; nothing here talks to a real browser or X server.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -42,7 +42,7 @@ use crate::video::{
     VideoFrame,
 };
 
-/// The comment that marks the secret probe's function (`Runtime.callFunctionOn`).
+/// The comment that marks the secret probe's expression (`Runtime.evaluate`).
 const SECRET_PROBE_MARKER: &str = "// yulius:secret-probe";
 /// Maximum recorded requests; older entries are discarded.
 const MAX_RECORDED: usize = 10_000;
@@ -100,7 +100,9 @@ struct FakeState {
     pages: HashMap<String, FakePage>,
     password_fields: HashSet<String>,
     secret_probe: Option<Value>,
+    secret_probe_queue: VecDeque<Value>,
     secret_probe_delay: Duration,
+    failing_after: HashMap<String, (usize, i64, String)>,
     loaders: u64,
     connections: Vec<Arc<Connection>>,
 }
@@ -128,11 +130,26 @@ impl FakeState {
     }
 
     /// The answer to the secret probe: field values split into readable and password ones,
-    /// plus the page text.
+    /// plus the page text, and the page's origin (added to a set answer that has none).
     fn probe(&mut self, session: Option<&str>) -> Value {
-        if let Some(answer) = &self.secret_probe {
-            return answer.clone();
+        let origin = session
+            .and_then(|s| self.sessions.get(s))
+            .and_then(|target| self.targets.iter().find(|t| &t.id == target))
+            .map_or_else(|| "null".to_owned(), |t| origin_of(&t.url));
+        let mut answer = match self.secret_probe_queue.pop_front() {
+            Some(answer) => answer,
+            None => match &self.secret_probe {
+                Some(answer) => answer.clone(),
+                None => self.fields_probe(session),
+            },
+        };
+        if let Some(object) = answer.as_object_mut() {
+            object.entry("origin").or_insert(json!(origin));
         }
+        answer
+    }
+
+    fn fields_probe(&mut self, session: Option<&str>) -> Value {
         let password = self.password_fields.clone();
         let mut shown = vec![json!("Fake page text")];
         let mut masked = Vec::new();
@@ -239,7 +256,9 @@ impl FakeCdpServer {
                 pages: HashMap::new(),
                 password_fields: HashSet::new(),
                 secret_probe: None,
+                secret_probe_queue: VecDeque::new(),
                 secret_probe_delay: Duration::ZERO,
+                failing_after: HashMap::new(),
                 loaders: 0,
                 connections: Vec::new(),
             }),
@@ -400,9 +419,23 @@ impl FakeCdpServer {
         }
     }
 
-    /// The raw value the secret probe answers with (`None`: what the pages' fields hold).
+    /// The raw value the secret probe answers with (`None`: what the pages' fields hold); an
+    /// object without `origin` gets the page's.
     pub fn set_secret_probe(&self, answer: Option<Value>) {
         lock(&self.shared.state).secret_probe = answer;
+    }
+
+    /// Answers the next secret probes with `answers`, in order, before the set one.
+    pub fn queue_secret_probes(&self, answers: Vec<Value>) {
+        lock(&self.shared.state).secret_probe_queue.extend(answers);
+    }
+
+    /// Answer the `nth` request of `method` (counting from 1, all received so far included) with
+    /// a JSON-RPC error, and only that one.
+    pub fn fail_nth(&self, method: &str, nth: usize, code: i64, message: &str) {
+        lock(&self.shared.state)
+            .failing_after
+            .insert(method.to_owned(), (nth, code, message.to_owned()));
     }
 
     /// How long the secret probe takes to answer (default none): widens the window between a
@@ -498,6 +531,17 @@ fn target_info(target: &FakeTarget) -> Value {
 
 fn target_event(method: &str, target: &FakeTarget) -> Value {
     json!({"method": method, "params": {"targetInfo": target_info(target)}})
+}
+
+/// `scheme://host[:port]` of `url`, as `location.origin` says it (`"null"` for other URLs).
+fn origin_of(url: &str) -> String {
+    match url.split_once("://") {
+        Some((scheme, rest)) if scheme == "http" || scheme == "https" => {
+            let host = rest.split(['/', '?', '#']).next().unwrap_or_default();
+            format!("{scheme}://{host}")
+        }
+        _ => "null".to_owned(),
+    }
 }
 
 /// A tiny valid 1×1 PNG.
@@ -626,9 +670,15 @@ async fn handle_request(shared: &Arc<Shared>, connection: &Arc<Connection>, text
                 .get("expression")
                 .and_then(Value::as_str)
                 .is_some_and(|e| e.contains(SECRET_PROBE_MARKER));
+        let seen = state.calls.iter().filter(|c| c.method == method).count();
+        let late = state
+            .failing_after
+            .get(&method)
+            .filter(|(nth, _, _)| seen == *nth)
+            .map(|(_, code, message)| (*code, message.clone()));
         (
             state.muted.contains(&method),
-            state.failing.get(&method).cloned(),
+            state.failing.get(&method).cloned().or(late),
             if probe {
                 state.secret_probe_delay
             } else {

@@ -656,31 +656,38 @@ async fn agents_type_secrets_only_into_pages_of_their_hosts() -> TestResult {
     .await
 }
 
-/// SPEC-450 SSC-001..006 (#1113): pixels cannot be redacted, so a screenshot of a page that may
-/// show a secret typed with `browser_fill_secret` (a plain-text field, edited in place, echoed
-/// in another tab) is refused, pointing to `browser_snapshot`; a password field keeps
-/// screenshots until the page reveals it, a navigated tab no longer holds the secret, and a user
-/// name is not a secret.
+/// SPEC-450 (#1113): pixels cannot be redacted, so a screenshot of a page that may show a secret
+/// typed with `browser_fill_secret` is refused, pointing to `browser_snapshot`: a plain-text
+/// field (and from then on every page of its origin), an edited value, a page in another tab
+/// echoing the key, a page showing any agent secret, a page that cannot be read. A password field
+/// keeps screenshots until the page reveals it, another origin is captured, and a user name is
+/// not a secret.
 #[tokio::test]
 async fn a_screenshot_never_shows_a_secret_typed_into_a_page() -> TestResult {
     const VALUE: &str = "docs-api-key-5521-qrs";
+    const STORED: &str = "panel-token-3391-zz";
     with_fixture(|f| async move {
-        let created = support::call(
-            &f.h.router,
-            axum::http::Method::POST,
-            "/api/sandboxes/s1/agent-secrets",
-            Some(json!({"name": "DOCS_KEY", "description": "Docs API key",
-                "hosts": ["docs.example"], "injection": "basic", "username": "alice-docs",
-                "value": VALUE})),
-            &f.writer,
-        )
-        .await?;
-        assert_eq!(
-            created.status,
-            axum::http::StatusCode::CREATED,
-            "{}",
-            created.body
-        );
+        for secret in [
+            json!({"name": "DOCS_KEY", "description": "Docs API key",
+                "hosts": ["docs.example", "login.example"], "injection": "basic",
+                "username": "alice-docs", "value": VALUE}),
+            json!({"name": "PANEL_TOKEN", "value": STORED}),
+        ] {
+            let created = support::call(
+                &f.h.router,
+                axum::http::Method::POST,
+                "/api/sandboxes/s1/agent-secrets",
+                Some(secret),
+                &f.writer,
+            )
+            .await?;
+            assert_eq!(
+                created.status,
+                axum::http::StatusCode::CREATED,
+                "{}",
+                created.body
+            );
+        }
         let opened = mcp_tool(
             &f.h,
             TOKEN,
@@ -693,6 +700,14 @@ async fn a_screenshot_never_shows_a_secret_typed_into_a_page() -> TestResult {
             .ok_or("tab id")?
             .to_owned();
         let screenshot = || mcp_tool(&f.h, TOKEN, "browser_screenshot", json!({"tab_id": tab}));
+        let navigate = |url: &'static str| {
+            mcp_tool(
+                &f.h,
+                TOKEN,
+                "browser_navigate",
+                json!({"tab_id": tab, "url": url}),
+            )
+        };
         let refused = |shot: &Value| {
             shot["isError"] == true
                 && shot["content"][0]["type"] == "text"
@@ -700,6 +715,8 @@ async fn a_screenshot_never_shows_a_secret_typed_into_a_page() -> TestResult {
                     .as_str()
                     .is_some_and(|t| t.contains("browser_snapshot"))
         };
+        let captured =
+            |shot: &Value| shot["isError"] == false && shot["content"][0]["type"] == "image";
         let fill_field = |selector: &'static str, field: &'static str| {
             mcp_tool(
                 &f.h,
@@ -717,7 +734,7 @@ async fn a_screenshot_never_shows_a_secret_typed_into_a_page() -> TestResult {
         let shot = screenshot().await?;
         assert!(refused(&shot), "{shot}");
         assert!(!shot.to_string().contains(VALUE), "{shot}");
-        // What the agent types itself is its own: browser_type guards nothing.
+        // What the agent types itself is its own: browser_type guards nothing, the key stays.
         let typed = mcp_tool(
             &f.h,
             TOKEN,
@@ -729,36 +746,28 @@ async fn a_screenshot_never_shows_a_secret_typed_into_a_page() -> TestResult {
         assert!(refused(&screenshot().await?), "the key is still shown");
         // A character typed into the middle of it: no longer the value as typed, still refused.
         f.fake.set_secret_probe(Some(
-            json!({"shown": ["docs-api-key- 5521-qrs"], "masked": [],
-                "over": false}),
+            json!({"shown": ["docs-api-key- 5521-qrs"], "masked": [], "over": false}),
         ));
         assert!(refused(&screenshot().await?), "an edited key");
         f.fake.set_secret_probe(None);
+        // Every page of that origin from now on (a form re-rendered with an edited copy).
+        navigate("https://docs.example/login").await?;
+        assert!(refused(&screenshot().await?), "the origin of the fill");
 
-        // Another document no longer holds it: screenshots work again.
-        mcp_tool(
-            &f.h,
-            TOKEN,
-            "browser_navigate",
-            json!({"tab_id": tab, "url": "https://docs.example/login"}),
-        )
-        .await?;
-        let shot = screenshot().await?;
-        assert_eq!(shot["isError"], false, "{shot}");
-        assert_eq!(shot["content"][0]["type"], "image");
-        // A user name is not a secret: typed into a text field, screenshots go on.
+        // Another origin is captured; a user name is not a secret.
+        navigate("https://login.example/").await?;
+        assert!(captured(&screenshot().await?));
         let user = fill_field("#user", "username").await?;
         assert_eq!(user["isError"], false, "{user}");
-        let shot = screenshot().await?;
-        assert_eq!(shot["isError"], false, "{shot}");
+        assert!(captured(&screenshot().await?), "a user name");
 
-        // Another tab showing the stored key (a settings page) is refused too.
+        // Another tab showing the key (a settings page), or any agent secret, is refused.
         let other = tool_text(
             &mcp_tool(
                 &f.h,
                 TOKEN,
                 "browser_open",
-                json!({"url": "https://docs.example/keys"}),
+                json!({"url": "https://status.example/keys"}),
             )
             .await?,
         )["tab"]["id"]
@@ -766,7 +775,14 @@ async fn a_screenshot_never_shows_a_secret_typed_into_a_page() -> TestResult {
             .ok_or("tab id")?
             .to_owned();
         let other_shot = || mcp_tool(&f.h, TOKEN, "browser_screenshot", json!({"tab_id": other}));
-        assert_eq!(other_shot().await?["isError"], false);
+        assert!(captured(&other_shot().await?));
+        f.fake.set_secret_probe(Some(
+            json!({"shown": [format!("Token: {STORED}")], "masked": [], "over": false}),
+        ));
+        assert!(
+            refused(&other_shot().await?),
+            "a page showing a stored secret"
+        );
         f.fake.set_secret_probe(Some(
             json!({"shown": [format!("Your key: {VALUE}")], "masked": [], "over": false}),
         ));
@@ -777,9 +793,7 @@ async fn a_screenshot_never_shows_a_secret_typed_into_a_page() -> TestResult {
         f.fake.set_password_field("#password", true);
         let filled = fill("#password").await?;
         assert_eq!(filled["isError"], false, "{filled}");
-        let shot = screenshot().await?;
-        assert_eq!(shot["isError"], false, "{shot}");
-        assert_eq!(shot["content"][0]["type"], "image");
+        assert!(captured(&screenshot().await?), "a password field");
         f.fake.set_password_field("#password", false);
         assert!(
             refused(&screenshot().await?),
@@ -788,11 +802,12 @@ async fn a_screenshot_never_shows_a_secret_typed_into_a_page() -> TestResult {
         f.fake.set_password_field("#password", true);
 
         // A page that cannot be read is not captured (fail closed).
+        navigate("https://other.example/").await?;
+        assert!(captured(&screenshot().await?));
         f.fake.set_secret_probe(Some(json!("not an answer")));
         assert!(refused(&screenshot().await?), "an unreadable page");
         f.fake.set_secret_probe(None);
-        let shot = screenshot().await?;
-        assert_eq!(shot["isError"], false, "{shot}");
+        assert!(captured(&screenshot().await?));
         Ok(())
     })
     .await
