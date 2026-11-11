@@ -11,6 +11,7 @@ use std::time::Duration;
 use yulius_contracts::update::{HostLine, HostOutcome};
 
 use super::fake::{FakeHost, NEW_ADDRESS, OLD_HOST, STAGED_BUILD, new_host, old_host};
+use super::github::facts;
 use crate::host_setup::{Host as _, Out};
 use crate::instance::Manifest;
 use crate::instance::archive::{Item, Reader};
@@ -18,6 +19,7 @@ use crate::instance::extract::IdMap;
 use crate::instance::freeze;
 use crate::instance::import::{self, Failure, Ground, INCOMPLETE, Mark};
 use crate::instance::inventory::of_copy;
+use crate::instance::migrate::github::{Asked, line as line_of};
 use crate::instance::migrate::remote::Remote;
 use crate::instance::migrate::target::{self, Env, Part, Reply, Request};
 use crate::instance::migrate::{Cutover, Move, Options, State, Status, World, profile, warm};
@@ -161,6 +163,8 @@ struct FakeRemote {
     cut: Option<usize>,
     /// What each stream held: whether it was read live, and its entries' paths.
     streams: Vec<(bool, Vec<String>)>,
+    /// What the new instance says of its GitHub App.
+    github: Asked,
 }
 
 fn step_name(request: &Request) -> String {
@@ -225,6 +229,18 @@ impl Remote for FakeRemote {
         let lost = self.lose.iter().position(|s| *s == step);
         if let Some(at) = lost {
             self.lose.remove(at);
+        }
+        // What the new instance says of its App: its loopback listener is not this machine's.
+        if let Request::Callback { public_url, .. } = request {
+            let (outcome, detail) = line_of(self.github.clone(), public_url);
+            return Ok(Reply {
+                lines: vec![HostLine {
+                    name: "GitHub App".into(),
+                    outcome,
+                    detail,
+                }],
+                ..Reply::default()
+            });
         }
         let Self {
             host,
@@ -444,6 +460,9 @@ struct FakeWorld {
     /// The clock is an hour behind once this event has happened so many times (`sync`: the
     /// data directory's filesystem was synced).
     set_back_at: Option<(&'static str, usize)>,
+    /// What the old instance says of its GitHub App for a new URL, and the URLs it was asked.
+    github: Asked,
+    asked: Vec<String>,
 }
 
 impl World for FakeWorld {
@@ -539,6 +558,15 @@ impl World for FakeWorld {
 
     fn build(&self) -> Option<String> {
         (!self.no_commit).then(build)
+    }
+
+    fn github(&mut self, _: &Path, address: &str, public_url: &str) -> Asked {
+        assert_eq!(
+            address, "127.0.0.1:8081",
+            "the old instance's loopback listener"
+        );
+        self.asked.push(public_url.to_owned());
+        self.github.clone()
     }
 
     fn show(&mut self, text: &str) {
@@ -681,6 +709,7 @@ fn setup() -> Result<Setup, Box<dyn std::error::Error>> {
             churn: Vec::new(),
             cut: None,
             streams: Vec::new(),
+            github: Ok(Some(facts("missing", NEW_URL))),
         },
         world: FakeWorld {
             systemd,
@@ -702,6 +731,8 @@ fn setup() -> Result<Setup, Box<dyn std::error::Error>> {
                 ahead: Some(0),
             },
             set_back_at: None,
+            github: Ok(Some(facts("missing", NEW_URL))),
+            asked: Vec::new(),
         },
         _tmp: tmp,
     })
@@ -913,6 +944,22 @@ fn a_move_runs_from_the_plan_to_the_finish() -> TestResult {
         app.detail
             .contains(&format!("{NEW_URL}/api/auth/github/callback"))
     );
+    // Laptops' CLI follows the old URL's redirect by itself; Claude Code's connection does not.
+    let clients = line(&status, "remote clients").ok_or("no line for clients")?;
+    assert!(
+        clients.detail.contains("`yulius remote` follows")
+            && clients.detail.contains("claude mcp add"),
+        "{}",
+        clients.detail
+    );
+    // With the App's own settings page, which only the running instance knows (SPEC-466).
+    assert!(
+        app.detail
+            .contains("open https://github.com/organizations/acme/settings/apps/yulius-acme"),
+        "{}",
+        app.detail
+    );
+    assert_eq!(s.world.asked, [NEW_URL]);
     assert_eq!(outcome(&status, "tasks"), Some(HostOutcome::Ok));
     assert_eq!(outcome(&status, "HTTPS"), Some(HostOutcome::Ok));
     // No secret value is shown or kept.
@@ -2217,6 +2264,15 @@ fn a_proxy_file_with_nothing_to_rewrite_is_left_alone() -> TestResult {
     let status = s.status()?;
     let old_url = line(&status, "old URL").ok_or("no line")?;
     assert_eq!(old_url.outcome, HostOutcome::Manual);
+    // Without the redirect nothing leads a laptop's CLI to the new URL.
+    let clients = line(&status, "remote clients").ok_or("no line for clients")?;
+    assert!(
+        clients
+            .detail
+            .contains(&format!("`yulius remote login {NEW_URL}`")),
+        "{}",
+        clients.detail
+    );
     assert!(
         old_url
             .detail
@@ -3030,5 +3086,116 @@ fn a_clock_set_back_during_the_frozen_pass_does_not_announce_another_copy() -> T
     );
     assert_eq!(passes(&s), [(true, 13), (true, 0), (false, 0)]);
     assert_eq!(s.old_unit(), (true, true));
+    Ok(())
+}
+
+fn github_lines(status: &Status) -> Vec<(HostOutcome, &str)> {
+    status
+        .lines
+        .iter()
+        .filter(|l| l.name == "GitHub App")
+        .map(|l| (l.outcome, l.detail.as_str()))
+        .collect()
+}
+
+/// SPEC-466 MVC-021, MVC-022: the plan asks the old instance about the new URL's callback and the
+/// finish asks the new instance: registered is `ok`, in both.
+#[test]
+fn a_callback_github_accepts_is_ok_in_the_plan_and_at_the_finish() -> TestResult {
+    let mut s = setup()?;
+    s.world.github = Ok(Some(facts("registered", NEW_URL)));
+    s.remote.github = Ok(Some(facts("registered", NEW_URL)));
+    assert_eq!(s.run()?, 0, "{}", s.shown());
+    let status = s.status()?;
+    let said = github_lines(&status);
+    let accepted = format!("GitHub accepts {NEW_URL}/api/auth/github/callback for sign-in");
+    assert_eq!(
+        said,
+        [
+            (HostOutcome::Ok, accepted.as_str()),
+            (HostOutcome::Ok, accepted.as_str())
+        ]
+    );
+    assert_eq!(s.world.asked, [NEW_URL]);
+    // The new instance is asked while the one-time key still signs in.
+    let events = s.events();
+    let at = |what: &str| events.iter().position(|e| e == what);
+    assert!(at("new: callback").is_some(), "{events:?}");
+    assert!(at("new: callback") < at("new: finish"), "{events:?}");
+    assert!(at("new: start") < at("new: callback"), "{events:?}");
+    Ok(())
+}
+
+/// The person adds the callback while the move runs: the plan said what to do, the finish says ok.
+#[test]
+fn a_callback_registered_during_the_move_ends_ok() -> TestResult {
+    let mut s = setup()?;
+    s.remote.github = Ok(Some(facts("registered", NEW_URL)));
+    assert_eq!(s.run()?, 0, "{}", s.shown());
+    let status = s.status()?;
+    let said = github_lines(&status);
+    assert_eq!(said.len(), 2, "{said:?}");
+    assert_eq!(said[0].0, HostOutcome::Manual);
+    assert!(
+        said[0]
+            .1
+            .contains("open https://github.com/organizations/acme/settings/apps/yulius-acme"),
+        "{}",
+        said[0].1
+    );
+    assert_eq!(said[1].0, HostOutcome::Ok);
+    Ok(())
+}
+
+/// An instance that cannot be asked (an older server, a lost key, the new host not reached for
+/// that step) leaves the general note; the move goes on.
+#[test]
+fn an_instance_that_cannot_be_asked_leaves_the_general_note() -> TestResult {
+    let mut s = setup()?;
+    s.world.github = Err("127.0.0.1:8081: connection refused".into());
+    s.remote.refuse = vec!["callback"];
+    assert_eq!(s.run()?, 0, "{}", s.shown());
+    let status = s.status()?;
+    assert_eq!(status.phase, "done");
+    let said = github_lines(&status);
+    assert_eq!(said.len(), 2, "{said:?}");
+    for (outcome, detail) in &said {
+        assert_eq!(*outcome, HostOutcome::Manual);
+        assert!(detail.contains("settings/apps/<app>"), "{detail}");
+        assert!(
+            detail.contains(&format!("{NEW_URL}/api/auth/github/callback")),
+            "{detail}"
+        );
+    }
+    assert!(said[0].1.contains("connection refused"), "{}", said[0].1);
+    Ok(())
+}
+
+/// Without a GitHub App nothing is to register, and a move that keeps its URL asks nobody.
+#[test]
+fn no_app_or_no_new_url_leaves_nothing_to_register() -> TestResult {
+    let mut s = setup()?;
+    s.world.github = Ok(None);
+    s.remote.github = Ok(None);
+    assert_eq!(s.run()?, 0, "{}", s.shown());
+    let status = s.status()?;
+    let said = github_lines(&status);
+    assert_eq!(said.len(), 2, "{said:?}");
+    assert!(
+        said.iter().all(
+            |(outcome, detail)| *outcome == HostOutcome::Ok && detail.contains("no GitHub App")
+        ),
+        "{said:?}"
+    );
+
+    let mut s = setup()?;
+    s.opts.public_url = Some(super::fake::OLD_URL.to_owned());
+    s.world
+        .dns
+        .insert(OLD_HOST.to_owned(), vec![NEW_ADDRESS.to_owned()]);
+    assert_eq!(s.run()?, 0, "{}", s.shown());
+    assert!(github_lines(&s.status()?).is_empty());
+    assert!(s.world.asked.is_empty());
+    assert!(!s.events().contains(&"new: callback".to_owned()));
     Ok(())
 }

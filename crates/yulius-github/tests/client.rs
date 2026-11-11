@@ -93,6 +93,159 @@ async fn oauth_exchange_refresh_and_current_user() -> TestResult {
     Ok(())
 }
 
+/// SPEC-466 MVC-001: the token endpoint says whether a callback URL is registered, to the App's
+/// own credentials and a made-up code.
+#[tokio::test]
+async fn a_callback_url_is_registered_missing_or_not_known() -> TestResult {
+    let (fake, client) = setup().await?;
+    let old = "https://old.example/api/auth/github/callback";
+    let new = "https://new.example/api/auth/github/callback";
+    fake.set_callback_urls(&[old]);
+
+    assert_eq!(client.callback_registered(old).await, Ok(Some(true)));
+    assert_eq!(client.callback_registered(new).await, Ok(Some(false)));
+    // An App takes several callbacks: the new one beside the old.
+    fake.set_callback_urls(&[old, new]);
+    assert_eq!(client.callback_registered(new).await, Ok(Some(true)));
+    assert_eq!(client.callback_registered(old).await, Ok(Some(true)));
+
+    // With the App's client and no token of anyone. A URL GitHub refuses is asked about once; one
+    // it accepts is followed by the control question: a URL that cannot be registered, which
+    // GitHub must refuse for "accepted" to mean anything.
+    let asked: Vec<_> = fake
+        .requests()
+        .into_iter()
+        .filter(|r| r.web && r.path == "/login/oauth/access_token")
+        .collect();
+    assert!(asked.iter().all(|r| r.header("authorization").is_none()));
+    assert!(
+        asked
+            .iter()
+            .all(|r| r.body.contains("client_id=Iv1.fakeyuliusapp"))
+    );
+    let uri =
+        |host: &str| format!("redirect_uri=https%3A%2F%2F{host}%2Fapi%2Fauth%2Fgithub%2Fcallback");
+    let order: Vec<&str> = asked
+        .iter()
+        .map(|r| {
+            ["old.example", "new.example", "callback-check.invalid"]
+                .into_iter()
+                .find(|host| r.body.contains(&uri(host)))
+                .unwrap_or("?")
+        })
+        .collect();
+    assert_eq!(asked.len(), 7, "{order:?}");
+    assert_eq!(
+        order,
+        [
+            "old.example",
+            "callback-check.invalid",
+            "new.example",
+            "new.example",
+            "callback-check.invalid",
+            "old.example",
+            "callback-check.invalid"
+        ]
+    );
+
+    // A real sign-in meets the same rule, before its code is looked at.
+    fake.add_user("ada", None);
+    fake.add_oauth_code("code-1", "ada");
+    assert_eq!(
+        client
+            .exchange_code("code-1", "https://other.example/cb")
+            .await,
+        Err(GitHubError::OAuth("redirect_uri_mismatch".into()))
+    );
+    assert!(client.exchange_code("code-1", new).await.is_ok());
+
+    // GitHub failing is not an answer, and is asked once (a POST is never retried).
+    fake.clear_requests();
+    fake.inject_fault(FakeFault::new("POST", "/login/oauth/access_token", 503, 1));
+    assert_eq!(
+        client.callback_registered(new).await,
+        Err(GitHubError::Upstream(503))
+    );
+    assert_eq!(fake.count("POST", "/login/oauth/access_token"), 1);
+
+    // The control question failing is no answer either: "registered" is never said on half a
+    // proof.
+    fake.clear_requests();
+    fake.inject_fault(FakeFault::new("POST", "/login/oauth/access_token", 503, 1).after(1));
+    assert_eq!(
+        client.callback_registered(new).await,
+        Err(GitHubError::Upstream(503))
+    );
+    assert_eq!(fake.count("POST", "/login/oauth/access_token"), 2);
+
+    // A refused secret is said with GitHub's code, never with the secret.
+    let mut wrong = fake.config();
+    if let Some(app) = wrong.app.as_mut() {
+        app.client_secret = Secret::new("not-the-secret-0123456789");
+    }
+    let refused = GitHubClient::new(wrong)?
+        .callback_registered(new)
+        .await
+        .err()
+        .ok_or("a wrong secret was accepted")?;
+    assert_eq!(
+        refused,
+        GitHubError::OAuth("incorrect_client_credentials".into())
+    );
+    assert!(!format!("{refused} {refused:?}").contains("not-the-secret"));
+
+    let mut unconfigured = fake.config();
+    unconfigured.app = None;
+    assert_eq!(
+        GitHubClient::new(unconfigured)?
+            .callback_registered(new)
+            .await,
+        Err(GitHubError::NotConfigured)
+    );
+    fake.shutdown().await;
+
+    // A GitHub that takes any redirect URI (it does not compare them for this App) does not say
+    // whether one is registered: no answer, never "registered".
+    let open = FakeGitHub::start().await?;
+    let client = GitHubClient::new(open.config())?;
+    assert_eq!(client.callback_registered(new).await, Ok(None));
+    assert_eq!(open.count("POST", "/login/oauth/access_token"), 2);
+    open.shutdown().await;
+    Ok(())
+}
+
+/// SPEC-466 MVC-001: the question is bounded by the client's request timeout.
+#[tokio::test]
+async fn a_callback_question_ends_when_github_does_not_answer() -> TestResult {
+    let fake = FakeGitHub::start().await?;
+    // Accepts connections and never answers.
+    let silent = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
+    let address = silent.local_addr()?;
+    let held = tokio::spawn(async move {
+        let mut open = Vec::new();
+        while let Ok((stream, _)) = silent.accept().await {
+            open.push(stream);
+        }
+    });
+    let mut config = fake.config();
+    config.web_base = Url::parse(&format!("http://{address}/web/"))?;
+    config.request_timeout = Duration::from_millis(300);
+    let client = GitHubClient::new(config)?;
+
+    let started = Instant::now();
+    let answer = client
+        .callback_registered("https://new.example/api/auth/github/callback")
+        .await;
+    assert!(
+        matches!(&answer, Err(GitHubError::Transport(why)) if why.contains("timed out")),
+        "{answer:?}"
+    );
+    assert!(started.elapsed() < Duration::from_secs(5));
+    held.abort();
+    fake.shutdown().await;
+    Ok(())
+}
+
 #[tokio::test]
 async fn authorize_url_carries_client_state_and_redirect() -> TestResult {
     let (fake, client) = setup().await?;

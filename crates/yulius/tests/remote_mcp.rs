@@ -3433,3 +3433,388 @@ async fn a_secrets_import_sends_plain_values_to_project_variables() -> TestResul
     assert!(err.contains("--no-vars applies"), "{err}");
     Ok(())
 }
+
+/// Where an [`Address`] redirects: the new URL, the header's value, and the path every `Location`
+/// gets instead of the request's own.
+type Redirect = (String, Option<String>, Option<String>);
+
+/// What an instance's old URL answers after a move (SPEC-460 MIG-041), or the instance itself
+/// before it: every request gets a 307 to the same path at `to` with `X-Yulius-Moved-To`.
+#[derive(Clone)]
+struct Address {
+    app: axum::Router,
+    to: std::sync::Arc<std::sync::Mutex<Option<Redirect>>>,
+    hits: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl Address {
+    async fn serve(app: axum::Router) -> Result<(Self, support::Served), Error> {
+        let address = Self {
+            app,
+            to: std::sync::Arc::default(),
+            hits: std::sync::Arc::default(),
+        };
+        let state = address.clone();
+        let router = axum::Router::new().fallback(move |request: axum::extract::Request| {
+            let state = state.clone();
+            async move {
+                use axum::response::IntoResponse as _;
+                use tower::ServiceExt as _;
+                state.hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let moved = state.to.lock().ok().and_then(|to| to.clone());
+                let Some((to, header, path)) = moved else {
+                    return state.app.clone().oneshot(request).await.into_response();
+                };
+                let path = path.unwrap_or_else(|| request.uri().path().to_owned());
+                let mut redirect = axum::response::Response::builder()
+                    .status(StatusCode::TEMPORARY_REDIRECT)
+                    .header("location", format!("{to}{path}"));
+                if let Some(header) = header {
+                    redirect = redirect.header("x-yulius-moved-to", header);
+                }
+                redirect
+                    .body(axum::body::Body::empty())
+                    .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+            }
+        });
+        Ok((address, support::serve(router).await?))
+    }
+
+    /// The instance moved to `to`, as the move's redirect says it.
+    fn moved(&self, to: &str) {
+        self.redirects(to, Some(to), None);
+    }
+
+    fn redirects(&self, to: &str, header: Option<&str>, path: Option<&str>) {
+        if let Ok(mut moved) = self.to.lock() {
+            *moved = Some((
+                to.to_owned(),
+                header.map(str::to_owned),
+                path.map(str::to_owned),
+            ));
+        }
+    }
+
+    /// The instance answers here itself again (a move that was undone).
+    fn back(&self) {
+        if let Ok(mut moved) = self.to.lock() {
+            *moved = None;
+        }
+    }
+
+    fn hits(&self) -> usize {
+        self.hits.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+/// SPEC-466 MVC-030 to MVC-032: after a move the CLI on a laptop follows the old URL's redirect:
+/// the saved sign-in moves to the new URL, one line says so, the call is repeated once, and the
+/// old name keeps working. No other redirect is followed.
+#[tokio::test]
+async fn the_cli_follows_an_instance_that_moved() -> TestResult {
+    let w = World::new("org").await?;
+    support::seed_sandbox(&w.h, "s1", "shop", "u-alice").await?;
+    let (alice, _) = w.user("alice", false).await?;
+    w.grant("alice", "acme/shop", "admin");
+    let browser = w.browser(&alice).await?;
+    let token = text(&make_token(&w, &browser, "laptop", "operate").await?["token"]).to_owned();
+    let (old, old_served) = Address::serve(w.h.router.clone()).await?;
+    let (new, new_served) = Address::serve(w.h.router.clone()).await?;
+    let (old_url, new_url) = (
+        format!("http://{}", old_served.addr),
+        format!("http://{}", new_served.addr),
+    );
+    let home = tempfile::tempdir()?;
+    let home = home.path();
+    let stored = home.join(".config/yulius/remote-credentials.json");
+    let saved =
+        || -> Result<Value, Error> { Ok(serde_json::from_slice(&std::fs::read(&stored)?)?) };
+
+    let (code, out, err) = yulius_cli(
+        home,
+        &["remote", "login", &old_url, "--token-stdin"],
+        &format!("{token}\n"),
+    )
+    .await?;
+    assert_eq!(code, Some(0), "{out}{err}");
+
+    // A redirect that is not a move is not followed: no header, or another path than asked.
+    for (header, path) in [(None, None), (Some(new_url.as_str()), Some("/elsewhere"))] {
+        old.redirects(&new_url, header, path);
+        let (code, _, err) = yulius_cli(home, &["task", "list", "-p", "acme/shop"], "").await?;
+        assert_eq!(code, Some(2), "{err}");
+        assert!(err.contains("HTTP 307"), "{err}");
+        assert!(!err.contains("moved"), "{err}");
+    }
+    assert_eq!(new.hits(), 0, "the token went nowhere");
+    assert_eq!(saved()?["servers"][&old_url]["token"], token.as_str());
+    assert_eq!(saved()?["moved"], Value::Null);
+
+    // The move: one line, the call answered by the new instance, the sign-in under its URL.
+    old.moved(&new_url);
+    let (code, out, err) = yulius_cli(home, &["task", "list", "-p", "acme/shop"], "").await?;
+    assert_eq!(code, Some(0), "{out}{err}");
+    assert_eq!(
+        err.trim(),
+        format!("yulius: {old_url} moved to {new_url}; the saved sign-in follows it.")
+    );
+    assert_eq!(new.hits(), 1, "repeated once");
+    let file = saved()?;
+    assert_eq!(file["servers"][&new_url]["token"], token.as_str());
+    assert_eq!(file["servers"][&old_url], Value::Null);
+    assert_eq!(file["moved"][&old_url], new_url.as_str());
+    let mode = std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&stored)?.permissions());
+    assert_eq!(mode & 0o077, 0, "only its owner reads it");
+
+    // From now on the new URL is asked, also by a command that still names the old one.
+    let before = old.hits();
+    let (code, out, err) = yulius_cli(home, &["remote", "status"], "").await?;
+    assert_eq!(code, Some(0), "{err}");
+    assert!(out.starts_with(&format!("{new_url}/: Yulius ")), "{out}");
+    assert!(err.is_empty(), "{err}");
+    let (code, out, err) =
+        yulius_cli(home, &["remote", "status", "--server", &old_url], "").await?;
+    assert_eq!(code, Some(0), "{err}");
+    assert!(out.contains("signed in as alice (operate token)"), "{out}");
+    assert_eq!(old.hits(), before, "the old URL is not asked again");
+
+    // A sign-in at a URL that moved says where to sign in; nothing is stored for it.
+    let (code, _, err) = yulius_cli(
+        home,
+        &["remote", "login", &old_url, "--token-stdin"],
+        &format!("{token}\n"),
+    )
+    .await?;
+    assert_eq!(code, Some(2), "{err}");
+    assert!(
+        err.contains(&format!(
+            "moved to {new_url}: run `yulius remote login {new_url}`"
+        )),
+        "{err}"
+    );
+
+    // Moved again while the first redirect is followed: the call is repeated once, not twice.
+    let (third, third_served) = Address::serve(w.h.router.clone()).await?;
+    let third_url = format!("http://{}", third_served.addr);
+    let (fourth, fourth_served) = Address::serve(w.h.router.clone()).await?;
+    let fourth_url = format!("http://{}", fourth_served.addr);
+    new.moved(&third_url);
+    third.moved(&fourth_url);
+    let (code, _, err) = yulius_cli(home, &["task", "list", "-p", "acme/shop"], "").await?;
+    assert_eq!(code, Some(2), "{err}");
+    assert!(
+        err.contains(&format!(
+            "{new_url} moved to {third_url}; the saved sign-in follows it."
+        )),
+        "{err}"
+    );
+    assert!(
+        err.contains(&format!(
+            "moved to {fourth_url}: run `yulius remote login {fourth_url}`"
+        )),
+        "{err}"
+    );
+    assert_eq!(fourth.hits(), 0, "one redirect is followed, not a chain");
+    assert_eq!(saved()?["servers"][&third_url]["token"], token.as_str());
+    Ok(())
+}
+
+/// SPEC-466 MVC-031: an instance cannot make itself a name of another one. A move onto a URL
+/// where another sign-in is saved is not followed and changes nothing; onto one where the same
+/// sign-in is saved it is.
+#[tokio::test]
+async fn the_cli_does_not_follow_a_move_onto_another_sign_in() -> TestResult {
+    let w = World::new("org").await?;
+    support::seed_sandbox(&w.h, "s1", "shop", "u-alice").await?;
+    let (alice, _) = w.user("alice", false).await?;
+    w.grant("alice", "acme/shop", "admin");
+    let browser = w.browser(&alice).await?;
+    let token = text(&make_token(&w, &browser, "laptop", "operate").await?["token"]).to_owned();
+    let other = text(&make_token(&w, &browser, "other", "operate").await?["token"]).to_owned();
+    let (a, a_served) = Address::serve(w.h.router.clone()).await?;
+    let (b, b_served) = Address::serve(w.h.router.clone()).await?;
+    let (c, c_served) = Address::serve(w.h.router.clone()).await?;
+    let url = |served: &support::Served| format!("http://{}", served.addr);
+    let (a_url, b_url, c_url) = (url(&a_served), url(&b_served), url(&c_served));
+    let home = tempfile::tempdir()?;
+    let home = home.path();
+    let stored = home.join(".config/yulius/remote-credentials.json");
+    for (at, with) in [(&a_url, &token), (&b_url, &other), (&c_url, &token)] {
+        let (code, out, err) = yulius_cli(
+            home,
+            &["remote", "login", at, "--token-stdin"],
+            &format!("{with}\n"),
+        )
+        .await?;
+        assert_eq!(code, Some(0), "{out}{err}");
+    }
+    let before = std::fs::read(&stored)?;
+    let (b_hits, c_hits) = (b.hits(), c.hits());
+
+    // A says that it moved to B, where another sign-in is saved.
+    a.moved(&b_url);
+    let (code, _, err) = yulius_cli(
+        home,
+        &["task", "list", "-p", "acme/shop", "--server", &a_url],
+        "",
+    )
+    .await?;
+    assert_eq!(code, Some(2), "{err}");
+    assert!(
+        err.contains(&format!(
+            "{a_url} answers that it moved to {b_url}, where another sign-in is saved"
+        )),
+        "{err}"
+    );
+    assert!(err.contains("nothing was changed"), "{err}");
+    assert_eq!(std::fs::read(&stored)?, before);
+    assert_eq!(b.hits(), b_hits, "nothing was sent to the other instance");
+
+    // To C, where the same sign-in is saved: followed, and one sign-in stays.
+    a.moved(&c_url);
+    let (code, out, err) = yulius_cli(
+        home,
+        &["task", "list", "-p", "acme/shop", "--server", &a_url],
+        "",
+    )
+    .await?;
+    assert_eq!(code, Some(0), "{out}{err}");
+    assert_eq!(c.hits(), c_hits + 1);
+    let file: Value = serde_json::from_slice(&std::fs::read(&stored)?)?;
+    assert_eq!(file["servers"][&a_url], Value::Null);
+    assert_eq!(file["servers"][&c_url]["token"], token.as_str());
+    assert_eq!(file["servers"][&b_url]["token"], other.as_str());
+    assert_eq!(file["moved"][&a_url], c_url.as_str());
+    Ok(())
+}
+
+/// SPEC-466 MVC-032: a move that is undone after a laptop followed it. The CLI says where the
+/// sign-in came from when the new URL does not answer, and the saved token goes nowhere unless
+/// a person types it: a sign-in at the old URL without a token is refused as ever and contacts
+/// nobody; with the token the sign-in is back; with another token both sign-ins stay, and the
+/// CLI says how to forget the one of the instance that is gone.
+#[tokio::test]
+async fn the_cli_finds_its_way_back_after_a_move_that_was_undone() -> TestResult {
+    let w = World::new("org").await?;
+    support::seed_sandbox(&w.h, "s1", "shop", "u-alice").await?;
+    let (alice, _) = w.user("alice", false).await?;
+    w.grant("alice", "acme/shop", "admin");
+    let browser = w.browser(&alice).await?;
+    let token = text(&make_token(&w, &browser, "laptop", "operate").await?["token"]).to_owned();
+    let (old, old_served) = Address::serve(w.h.router.clone()).await?;
+    let (_new, new_served) = Address::serve(w.h.router.clone()).await?;
+    let (old_url, new_url) = (
+        format!("http://{}", old_served.addr),
+        format!("http://{}", new_served.addr),
+    );
+    // Two laptops sign in, and both follow the move.
+    let (laptop, desk) = (tempfile::tempdir()?, tempfile::tempdir()?);
+    let (home, desk) = (laptop.path(), desk.path());
+    let credentials = ".config/yulius/remote-credentials.json";
+    let stored = home.join(credentials);
+    for home in [home, desk] {
+        let (code, out, err) = yulius_cli(
+            home,
+            &["remote", "login", &old_url, "--token-stdin"],
+            &format!("{token}\n"),
+        )
+        .await?;
+        assert_eq!(code, Some(0), "{out}{err}");
+    }
+    old.moved(&new_url);
+    for home in [home, desk] {
+        let (code, out, err) = yulius_cli(home, &["task", "list", "-p", "acme/shop"], "").await?;
+        assert_eq!(code, Some(0), "{out}{err}");
+    }
+
+    // The move is undone: the new instance is stopped, the old one answers itself again.
+    drop(new_served);
+    old.back();
+    let hits = old.hits();
+    let before = std::fs::read(&stored)?;
+    let (code, _, err) = yulius_cli(home, &["task", "list", "-p", "acme/shop"], "").await?;
+    assert_eq!(code, Some(2), "{err}");
+    assert!(
+        err.contains(&format!(
+            "The saved sign-in followed a move here from {old_url}"
+        )),
+        "{err}"
+    );
+    assert!(
+        err.contains(&format!("`yulius remote login {old_url}`")),
+        "{err}"
+    );
+
+    // A sign-in there without a token (an agent that follows the hint, a closed stdin) is
+    // refused as ever: the saved token is not used, nobody is contacted, nothing changes.
+    for args in [
+        &["remote", "login", old_url.as_str()][..],
+        &["remote", "login", old_url.as_str(), "--token-stdin"][..],
+    ] {
+        let (code, out, err) = yulius_cli(home, args, "").await?;
+        assert_eq!(code, Some(2), "{out}{err}");
+        assert!(err.contains("not a Yulius API token"), "{err}");
+    }
+    assert_eq!(
+        old.hits(),
+        hits,
+        "the token goes nowhere unless it is typed"
+    );
+    assert_eq!(std::fs::read(&stored)?, before);
+
+    // With the token typed again the sign-in is back: one entry, and the new name leads to it.
+    let (code, out, err) = yulius_cli(
+        home,
+        &["remote", "login", &old_url, "--token-stdin"],
+        &format!("{token}\n"),
+    )
+    .await?;
+    assert_eq!(code, Some(0), "{out}{err}");
+    assert!(out.contains("as alice (operate token)"), "{out}");
+    assert!(!out.contains("is kept"), "nothing stayed behind: {out}");
+    assert!(old.hits() > hits, "a sign-in there is seen by the count");
+    let file: Value = serde_json::from_slice(&std::fs::read(&stored)?)?;
+    assert_eq!(file["servers"][&old_url]["token"], token.as_str());
+    assert_eq!(file["servers"][&new_url], Value::Null);
+    assert_eq!(file["moved"][&old_url], Value::Null);
+    assert_eq!(file["moved"][&new_url], old_url.as_str());
+    let (code, out, err) = yulius_cli(home, &["remote", "status"], "").await?;
+    assert_eq!(code, Some(0), "{err}");
+    assert!(out.starts_with(&format!("{old_url}/: Yulius ")), "{out}");
+
+    // The other laptop signs in there with a token made since: the sign-in that followed stays
+    // (it may be one of another instance), the old URL is a server again, and the CLI says how
+    // to forget the one that is gone.
+    let since = text(&make_token(&w, &browser, "desk", "operate").await?["token"]).to_owned();
+    let (code, out, err) = yulius_cli(
+        desk,
+        &["remote", "login", &old_url, "--token-stdin"],
+        &format!("{since}\n"),
+    )
+    .await?;
+    assert_eq!(code, Some(0), "{out}{err}");
+    assert!(
+        out.contains(&format!(
+            "The sign-in that followed its move to {new_url} is kept"
+        )),
+        "{out}"
+    );
+    assert!(
+        out.contains(&format!("`yulius remote logout --server {new_url}`")),
+        "{out}"
+    );
+    let file: Value = serde_json::from_slice(&std::fs::read(desk.join(credentials))?)?;
+    assert_eq!(file["servers"][&old_url]["token"], since.as_str());
+    assert_eq!(file["servers"][&new_url]["token"], token.as_str());
+    assert_eq!(file["moved"], Value::Null);
+    let (code, out, err) =
+        yulius_cli(desk, &["remote", "logout", "--server", &new_url], "").await?;
+    assert_eq!(code, Some(0), "{out}{err}");
+    let file: Value = serde_json::from_slice(&std::fs::read(desk.join(credentials))?)?;
+    assert_eq!(file["servers"][&new_url], Value::Null);
+    assert_eq!(file["servers"][&old_url]["token"], since.as_str());
+    let (code, out, err) = yulius_cli(desk, &["remote", "status"], "").await?;
+    assert_eq!(code, Some(0), "{err}");
+    assert!(out.starts_with(&format!("{old_url}/: Yulius ")), "{out}");
+    Ok(())
+}

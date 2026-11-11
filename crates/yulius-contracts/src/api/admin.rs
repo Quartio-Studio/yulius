@@ -281,6 +281,60 @@ pub struct GitHubStatus {
     pub installed: bool,
 }
 
+/// `GET /api/admin/instance/address` and `POST /api/admin/instance/address/check` (SPEC-466
+/// MVC-010): the card "Address" of Settings → Instance.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstanceAddress {
+    /// The instance's public URL.
+    pub public_url: String,
+    /// GitHub's answer about the sign-in callback; `null` without a GitHub App.
+    pub github: Option<GitHubCallback>,
+    /// The last move to this host; `null` when the instance never moved.
+    pub moved: Option<InstanceMoved>,
+}
+
+/// Whether GitHub accepts a public URL's sign-in callback, and what a person registers in the
+/// GitHub App for it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitHubCallback {
+    /// `registered`, `missing` or `unknown`.
+    pub state: String,
+    /// Why GitHub's answer is not known.
+    pub reason: Option<String>,
+    /// The callback URL to register.
+    pub callback_url: String,
+    /// The homepage URL to set.
+    pub homepage_url: String,
+    /// The App's settings page on GitHub.
+    pub settings_url: String,
+    /// When GitHub answered (RFC 3339); `null` before its first answer.
+    pub checked_at: Option<String>,
+}
+
+/// What the first start after a move recorded (`moved.json`, SPEC-460 MIG-050).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstanceMoved {
+    /// The old public URL.
+    pub from: Option<String>,
+    /// The new one.
+    pub to: Option<String>,
+    /// When the new instance first started (RFC 3339).
+    pub at: String,
+    /// Tasks put back in the queue.
+    pub queued: u32,
+    /// Tasks left stopped: a person had paused them or was stopping them.
+    pub left: u32,
+    /// Tasks that could not be queued; their owners find them under Needs you.
+    pub failed: u32,
+}
+
+/// `GET /internal/github-callback` (loopback, root's commands; SPEC-466 MVC-020).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitHubCallbackAnswer {
+    /// GitHub's answer; `null` without a GitHub App.
+    pub github: Option<GitHubCallback>,
+}
+
 /// `POST /api/admin/github/manifest`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ManifestRequest {
