@@ -1286,9 +1286,11 @@ open, `yulius remote login <new URL>` and `claude mcp add` for laptops, and that
 still holds a frozen copy with `master.key` and every secret.
 
 **Abort.** `sudo yulius instance migrate --abort` on the old host stops and disables the new
-instance (through the key while the move is not finished; afterwards it refuses while the new URL
-still answers, so stop it there first with `systemctl disable --now yulius.service`), puts the
-old proxy configuration back, thaws and enables the old unit and removes the key and the state.
+instance (through the key while the move is not finished; afterwards the key is gone: stop it
+there first with `systemctl disable --now yulius.service`; the abort refuses while the new URL
+still answers and otherwise asks you to confirm that it is stopped, `--yes` answers for you), puts
+the old proxy configuration back, thaws and enables the old unit and removes the key and the
+state.
 It never leaves both running. Work done on the new host after the move is not copied back.
 
 Not part of a move: packages installed inside sandboxes keep their files; on another release the

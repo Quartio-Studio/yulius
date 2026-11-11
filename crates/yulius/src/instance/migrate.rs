@@ -1462,7 +1462,30 @@ impl<'a> Move<'a> {
                 );
                 return self.end_abort(false);
             }
-            self.ok("new instance", format!("{url} no longer answers"));
+            // Silence is not proof (a DNS record, a certificate, a network): the key is gone,
+            // so a person says that the new instance is stopped.
+            let stopped = self.opts.yes
+                || self.world.confirm(&format!(
+                    "{url} does not answer. If the new instance still runs on {}, both would \
+                     run the same agents on the same repositories. Is it stopped and disabled \
+                     there?",
+                    self.state.target
+                )) == Some(true);
+            if !stopped {
+                self.fail(
+                    "new instance",
+                    format!(
+                        "{url} does not answer, which does not prove that it is stopped: stop \
+                         it on the new host (`systemctl disable --now {unit}`), then run \
+                         `--abort --yes`. Nothing was changed here"
+                    ),
+                );
+                return self.end_abort(false);
+            }
+            self.ok(
+                "new instance",
+                format!("{url} does not answer and is confirmed stopped"),
+            );
         }
         let backup = self.opts.state_dir.join(PROXY_BACKUP);
         if let Ok(before) = std::fs::read_to_string(&backup) {

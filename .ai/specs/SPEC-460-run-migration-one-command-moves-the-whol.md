@@ -218,8 +218,9 @@ After the move
   and that the old host still holds a frozen copy with every secret, with the abort command and
   when to retire the disk.
 - MIG-053 **Abort.** `yulius instance migrate --abort` on the old host is the one way back: it
-  stops and disables the new instance (through the one-time key, or after Finish it checks that
-  the new URL no longer answers and refuses otherwise), restores the old proxy configuration,
+  stops and disables the new instance (through the one-time key; after Finish, without the key,
+  it refuses while the new URL answers and else needs a person's word that it is stopped, on the
+  terminal or with `--yes`: silence is not proof), restores the old proxy configuration,
   thaws and enables the old unit and removes the key and the state. It never leaves both running.
 
 Settings → Instance (slice D)
@@ -290,8 +291,9 @@ Settings → Instance (slice D)
 - `--data-disk` with a disk that carries a filesystem is refused in the plan; with two blank
   disks the target gets the mirror, the mount, `mdadm.conf`, the initramfs update and the drop-in,
   in that order, and the mount point belongs to the service user.
-- `--abort` after a finished move refuses while the new URL answers; once it does not, it thaws
-  and enables the old unit and restores the proxy configuration.
+- `--abort` after a finished move refuses while the new URL answers and, when it does not, until
+  a person confirms that the new instance is stopped; then it thaws and enables the old unit and
+  restores the proxy configuration.
 - A server started on a copy with the move's mark queues the tasks whose runs were lost (and
   starts them within the session limit), leaves a task with an open pause stopped, records the
   result and removes the mark; without the mark nothing is queued (as today).

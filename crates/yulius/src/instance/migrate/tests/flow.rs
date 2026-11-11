@@ -1026,8 +1026,18 @@ fn abort_never_leaves_both_running() -> TestResult {
     );
     assert!(State::load(&s.opts.state_dir).is_some());
 
-    // Stopped there: the old instance comes back with its proxy configuration.
+    // Silence alone is not proof that it is stopped: a person has to say so.
     s.world.https = false;
+    s.opts.yes = false;
+    assert_eq!(s.abort()?, 1);
+    assert_eq!(s.old_unit(), (true, true));
+    assert!(s.shown().contains("does not prove that it is stopped"));
+    s.world.answer = Some(false);
+    assert_eq!(s.abort()?, 1);
+    assert_eq!(s.old_unit(), (true, true));
+
+    // Stopped there, and said so: the old instance comes back with its proxy configuration.
+    s.world.answer = Some(true);
     assert_eq!(s.abort()?, 0, "{}", s.shown());
     assert_eq!(s.old_unit(), (false, false));
     let caddy = s.local.text(profile::CADDYFILE).unwrap_or_default();
