@@ -256,6 +256,8 @@ struct FakeState {
     refresh_tokens: HashMap<String, String>,
     oauth_codes: HashMap<String, String>,
     manifest_codes: HashSet<String>,
+    /// The App's registered callback URLs; `None` takes every redirect URI.
+    callback_urls: Option<HashSet<String>>,
     installations: BTreeMap<u64, (String, OwnerKind)>,
     installation_tokens: HashMap<String, u64>,
     /// Installation tokens issued with a `permissions` subset: what each may do (ADR-0114).
@@ -330,6 +332,7 @@ impl FakeGitHub {
             refresh_tokens: HashMap::new(),
             oauth_codes: HashMap::new(),
             manifest_codes: HashSet::new(),
+            callback_urls: None,
             installations: BTreeMap::new(),
             installation_tokens: HashMap::new(),
             narrowed_tokens: HashMap::new(),
@@ -453,6 +456,12 @@ impl FakeGitHub {
         lock(&self.state)
             .oauth_codes
             .insert(code.to_owned(), login.to_ascii_lowercase());
+    }
+
+    /// Registers exactly these callback URLs in the fake App: the token endpoint then answers
+    /// `redirect_uri_mismatch` for any other redirect URI, before it looks at the code.
+    pub fn set_callback_urls(&self, urls: &[&str]) {
+        lock(&self.state).callback_urls = Some(urls.iter().map(|&u| u.to_owned()).collect());
     }
 
     /// Makes `code` convertible once into the fake App's credentials.
@@ -1158,6 +1167,13 @@ fn oauth_token(state: &mut FakeState, body: &[u8]) -> Response {
         && form.get("client_secret").map(String::as_str) == Some(FAKE_CLIENT_SECRET);
     if !client_ok {
         return reply(200, json!({"error": "incorrect_client_credentials"}));
+    }
+    // As GitHub: a redirect URI that is given must be registered, whatever the code is.
+    let uri = form.get("redirect_uri").filter(|uri| !uri.is_empty());
+    if let (Some(uri), Some(registered)) = (uri, &state.callback_urls)
+        && !registered.contains(uri)
+    {
+        return reply(200, json!({"error": "redirect_uri_mismatch"}));
     }
     let login = if form.get("grant_type").map(String::as_str) == Some("refresh_token") {
         match form
