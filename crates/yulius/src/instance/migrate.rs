@@ -301,15 +301,10 @@ fn said(host: &mut dyn Host, argv: &[&str]) -> String {
 }
 
 /// A new public URL as the person gave it: `https://host`, nothing after it (the proxy
-/// serves it on 443; a port would not survive the host's rewrite in the carried files).
+/// serves it on 443; a port would not survive the host's rewrite in the carried files). The
+/// rule the running instance applies to the URL it is asked about (SPEC-466 MVC-020).
 fn url_ok(url: &str) -> bool {
-    url.strip_prefix("https://").is_some_and(|rest| {
-        !rest.is_empty()
-            && !rest.starts_with(['-', '.'])
-            && rest
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || ".-".contains(c))
-    })
+    yulius_app::github_callback::public_url_ok(url)
 }
 
 /// One move, from the old host.

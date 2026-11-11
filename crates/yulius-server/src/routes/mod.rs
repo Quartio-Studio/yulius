@@ -248,9 +248,11 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
         )
         .route("/api/admin/jev/adopt", post(updates::adopt_jev))
         .route("/api/admin/jev/test", post(updates::test_jev))
-        // The instance's resource limits (SPEC-459).
+        // The instance's address: whether GitHub accepts its sign-in callback, the last move
+        // (SPEC-466).
         .route("/api/admin/instance/address", get(address::view))
         .route("/api/admin/instance/address/check", post(address::check))
+        // The instance's resource limits (SPEC-459).
         .route("/api/admin/limits", get(limits::view))
         .route("/api/admin/limits/adapt", post(limits::adapt))
         .route("/api/admin/limits/keep", post(limits::keep))
