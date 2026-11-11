@@ -17,8 +17,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   fix while the default model is unknown, and the tasks still on an older version. `yulius
   doctor` fails on it too. A running task moves to the new Claude Code when its turn ends, in
   the same session, and a task's info shows the model it asks for, the models that answered and
-  the Claude Code each session ran. Also fixed: an idle task a person moved to another
-  subscription read "working" until its next turn.
+  the Claude Code each session ran. A version a session cannot continue on (the restart fails,
+  or the restarted session ends or stays silent before it starts) gets no other running session,
+  and the card names the task. Also fixed: an idle task a person moved to another subscription
+  read "working" until its next turn.
 - One command moves the instance to another host (SPEC-460, task #442, ADR-0297): `sudo yulius
   instance migrate root@new-host` on the old host. It plans first and asks people only there (the
   SSH sign-in, a DNS record, the GitHub App's callback, blank disks to use), then sets up the new
