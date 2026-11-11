@@ -177,3 +177,48 @@ test('a late status answer for an earlier sign-in page leaves the current one ri
   await expect(screen.getByText(NO_GITHUB)).toBeVisible();
   await expect(browser.locator('a.btn-github')).toBeHidden();
 });
+
+// SPEC-466 MVC-012: after a move to another URL GitHub refuses every sign-in from the new address
+// until the GitHub App holds its callback URL. The page says so (`callback=missing`: the server
+// knows GitHub's answer), opens the superadmin password and keeps GitHub sign-in: GitHub decides.
+const MOVED_ADDRESS = /GitHub says it doesn’t know this address/;
+
+test('when GitHub does not know this address the page says so and opens the password', async ({ app, browser, screen }) => {
+  await app.open(mock('/', '&signedout=1&callback=missing'));
+  await expect(browser).toHaveURL(/#\/signin/);
+  await expect(screen.getByText(MOVED_ADDRESS)).toBeVisible();
+  await expect(screen.getByText(/until the superadmin adds it to the GitHub App \(Settings → Instance says how\)\. The superadmin’s password below works meanwhile\./)).toBeVisible();
+  await githubOffered(browser);
+  await expect(browser.locator('details[open]')).toHaveCount(1);
+  expect(await axeViolations(browser)).toEqual([]);
+  const password = screen.getByLabel('Superadmin password');
+  await password.fill(MOCK_PASSWORD);
+  await screen.getByRole('button', 'Sign in').click();
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Sandboxes');
+});
+
+test('the page reads the status once more by itself, and the sentence goes when GitHub accepts the address', async ({ app, browser, screen }) => {
+  // `callback=fixed`: the first status says that GitHub refuses the address, and, as on the
+  // server, reading it made the instance ask GitHub again, which accepts the address by now.
+  await app.open(mock('/', '&signedout=1&callback=fixed'));
+  await expect(browser).toHaveURL(/#\/signin/);
+  const reads = () => browser.evaluate(() => (window as unknown as { __yuliusMock: { asked?: Record<string, number> } }).__yuliusMock.asked?.['/api/setup/status'] ?? 0);
+  await expect.poll(reads, { timeout: 15000 }).toBe(2);
+  await expect(screen.getByText(MOVED_ADDRESS)).toBeHidden();
+  await githubOffered(browser);
+});
+
+test('the page learns in place that GitHub accepts the address now', async ({ app, browser, screen }) => {
+  await app.open(mock('/', '&signedout=1&callback=missing'));
+  await expect(screen.getByText(MOVED_ADDRESS)).toBeVisible();
+  // Signing in and out again reads the status anew, as every sign-in page does.
+  await browser.evaluate(() => { (window as unknown as { __yuliusMock: { address: { state: string } } }).__yuliusMock.address.state = 'registered'; });
+  const password = screen.getByLabel('Superadmin password');
+  await password.fill(MOCK_PASSWORD);
+  await screen.getByRole('button', 'Sign in').click();
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Sandboxes');
+  await signOut(browser, screen);
+  await expect(browser).toHaveURL(/#\/signin/);
+  await githubOffered(browser);
+  await expect(screen.getByText(MOVED_ADDRESS)).toBeHidden();
+});

@@ -67,7 +67,11 @@ pub async fn github_manifest_callback(
     Query(q): Query<ManifestCallback>,
 ) -> Redirect {
     match app.github_manifest_callback(&ctx, &q.code, &q.state).await {
-        Ok(install) => Redirect::to(&install),
+        Ok(install) => {
+            // The App is stored: GitHub is asked about the sign-in callback (SPEC-466 MVC-003).
+            app.start_github_callback_check();
+            Redirect::to(&install)
+        }
         Err(err) => {
             let message: String = err
                 .public_message()

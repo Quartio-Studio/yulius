@@ -487,6 +487,16 @@ pub trait TaskStore: Send + Sync {
         version: &str,
         at: Timestamp,
     ) -> AppResult<()>;
+    /// Records the agent CLI version a run is taken to run until its transcript names one (a
+    /// session restarted on a newer Claude Code that has written nothing yet, SPEC-461 CCM-013):
+    /// a version the transcript named already stays, and one it names later replaces this.
+    async fn assume_run_cli_version(
+        &self,
+        attempt: &AttemptId,
+        task: &TaskId,
+        version: &str,
+        at: Timestamp,
+    ) -> AppResult<()>;
     /// What each run of a task ran on: its attempt, the model that answered and its agent CLI
     /// version (each `None` while unknown).
     async fn task_run_facts(&self, task: &TaskId) -> AppResult<Vec<RunFacts>>;

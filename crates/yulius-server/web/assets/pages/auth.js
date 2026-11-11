@@ -267,6 +267,9 @@ function recoveryForm(ctx, { onBack, onRecovered }) {
 
 const GITHUB_UNCONFIGURED = 'GitHub sign-in isn’t set up on this instance yet. The superadmin signs in with the password below and connects GitHub under Administration.';
 
+/** GitHub refuses this instance's sign-in callback: after a move, until the App holds it (SPEC-466). */
+const GITHUB_CALLBACK_MISSING = 'GitHub says it doesn’t know this address, so GitHub sign-in won’t complete here until the superadmin adds it to the GitHub App (Settings → Instance says how). The superadmin’s password below works meanwhile.';
+
 const GITHUB_LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
 
 /**
@@ -300,9 +303,11 @@ export function signInProblem(reason, login) {
 
 /**
  * Sign-in: GitHub (all users) and a compact superadmin password form. Without a GitHub App
- * (`githubConfigured` false, SPEC-422) only the password, open, with why GitHub is missing.
+ * (`githubConfigured` false, SPEC-422) only the password, open, with why GitHub is missing. While
+ * GitHub refuses this address (`callbackMissing`, SPEC-466) the page says so and opens the
+ * password; GitHub sign-in stays: GitHub decides.
  */
-export function mountSignIn(ctx, { next, onDone, problem, githubConfigured = true }) {
+export function mountSignIn(ctx, { next, onDone, problem, githubConfigured = true, callbackMissing = false }) {
   // Same rule as the server (#60): browsers read \\ as / and drop tabs and newlines.
   const nextPath = next && next.startsWith('/') && !next.startsWith('//') && !/[\\\u0000-\u001f\u007f]/.test(next) ? next : '/';
   const githubHref = `/api/auth/github/start?next=${encodeURIComponent(nextPath)}`;
@@ -355,11 +360,13 @@ export function mountSignIn(ctx, { next, onDone, problem, githubConfigured = tru
   const forgot = h('button', { type: 'button', class: 'btn-link small', onClick: () => showRecovery() }, 'Forgot password?');
   const details = h('details', null, h('summary', { class: 'muted small' }, 'Superadmin password'), h('div', { class: 'stack-sm space-top' }, form, forgot));
   const intro = h('p', { class: 'text-2' });
+  const moved = h('div', { class: 'banner banner-warn auth-moved', role: 'status', hidden: true }, icon('warn', { size: 16 }), h('span', { class: 'banner-text' }, GITHUB_CALLBACK_MISSING));
   const divider = h('div', { class: 'divider' }, 'or');
   const card = h('div', { class: 'auth-card' },
     brandLockup(),
     h('h1', { class: 'auth-title' }, 'Sign in'),
     intro,
+    moved,
     githubButton,
     errorBox,
     otherAccount,
@@ -367,12 +374,13 @@ export function mountSignIn(ctx, { next, onDone, problem, githubConfigured = tru
     details);
   // Shows or hides GitHub sign-in on this page, in place: what is typed, open or focused stays
   // when the page learns GitHub was connected meanwhile (review round 2).
-  function setGithub(configured) {
+  function setGithub(configured, refused = false) {
     for (const part of [githubButton, otherAccount, divider]) if (part) part.hidden = !configured;
     intro.textContent = configured ? 'Members sign in with GitHub. Sandbox access mirrors your GitHub repository permissions.' : GITHUB_UNCONFIGURED;
-    if (!configured) details.open = true;
+    moved.hidden = !(configured && refused);
+    if (!configured || refused) details.open = true;
   }
-  setGithub(githubConfigured);
+  setGithub(githubConfigured, callbackMissing);
   const root = h('main', { class: 'auth' }, card);
   function showRecovery() {
     setChildren(root, recoveryForm(ctx, {

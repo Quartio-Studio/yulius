@@ -101,7 +101,14 @@ watching, steering and unblocking.
   anything changes (the SSH sign-in, a DNS record, the GitHub App's callback). Any failure before
   the new instance runs thaws the old one; `--abort` goes back. Tasks that were live come back by
   themselves on the new host. Still to come: a warm copy so the freeze sends only the changes,
-  the GitHub App check and the button in Settings → Instance.
+  and the button in Settings → Instance.
+- **The instance knows whether GitHub accepts its address** (SPEC-466): after a move to another
+  URL GitHub sign-in needs the new callback URL in the GitHub App, which only a person can add.
+  Yulius asks GitHub whether it is there, and Settings → Instance (card Address) gives the one link
+  and the two values to paste until it is; the move's plan checks the new URL before the cutover,
+  and the sign-in page says why GitHub sign-in cannot complete meanwhile (the password works). The
+  card also says where the instance came from and what its first start did with the tasks.
+  `yulius remote` on a laptop follows the old URL's redirect to the new one by itself.
 - **Playgrounds**: a team tries Yulius on its own code before it connects GitHub. On a fresh
   instance Home offers it first: drop a project folder (a repository keeps its branches and
   history) or start from a template, and tasks start a minute later. Its Git stays on the server

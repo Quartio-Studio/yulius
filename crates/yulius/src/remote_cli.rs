@@ -13,7 +13,7 @@ use std::process::ExitCode;
 use serde_json::{Map, Value, json};
 use yulius_domain::vault::plain::{carries_credential, credential_name};
 use yulius_import::{
-    RemoteClient, RemoteError, Secret, TokenStore, Url, discover_repo, parse_dotenv,
+    Relocated, RemoteClient, RemoteError, Secret, TokenStore, Url, discover_repo, parse_dotenv,
 };
 
 /// Options every remote command takes.
@@ -265,12 +265,89 @@ fn client(opts: &RemoteOpts) -> Result<(Url, RemoteClient), String> {
             }
         },
     };
+    // An instance that moved is named by its old URL too (SPEC-466 MVC-032).
+    let server = match store.moved_to(&server).map_err(|e| e.to_string())? {
+        Some(now) => parse_url(&now)?,
+        None => server,
+    };
     let token = store
         .load(&server)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("no token for {server}: run `yulius remote login {server}`"))?;
     let client = RemoteClient::new(&server, token).map_err(|e| e.to_string())?;
     Ok((server, client))
+}
+
+/// What a failed request says, with where the sign-in came from when the instance that does not
+/// answer is one it followed a move to: the move may have been undone (SPEC-466 MVC-032). The
+/// token is sent nowhere to find out.
+fn failed(server: &Url, err: &RemoteError) -> String {
+    let said = err.to_string();
+    if !matches!(err, RemoteError::Transport(_)) {
+        return said;
+    }
+    let from = store()
+        .ok()
+        .and_then(|store| store.moved_from(server).ok())
+        .unwrap_or_default();
+    came_from(said, &from)
+}
+
+/// `said`, with the way back to the URLs the sign-in came `from`. A sign-in there asks for a
+/// token: the saved one goes nowhere unless a person types it.
+fn came_from(said: String, from: &[String]) -> String {
+    const ASKS: &str = "it asks for a token; the saved one is sent nowhere by itself";
+    match from {
+        [] => said,
+        [old] => format!(
+            "{said}\nThe saved sign-in followed a move here from {old}. If the instance is back \
+             there (the move was undone), sign in there again: `yulius remote login {old}` \
+             ({ASKS})"
+        ),
+        several => format!(
+            "{said}\nThe saved sign-in followed moves here from {}. If the instance is back at \
+             one of them (a move was undone), sign in there again: `yulius remote login <that \
+             URL>` ({ASKS})",
+            several.join(", ")
+        ),
+    }
+}
+
+/// Asks the instance with `ask`. When its old URL answers that it moved (a redirect with
+/// `X-Yulius-Moved-To`, SPEC-466 MVC-030), the saved sign-in moves to the new URL, one line says
+/// so and `ask` runs once more there; a second move is the error it reads as. A move onto a URL
+/// where another sign-in is saved is not followed (MVC-031).
+fn following<T>(
+    opts: &RemoteOpts,
+    ask: impl Fn(&Url, &RemoteClient) -> Result<T, RemoteError>,
+) -> Result<T, String> {
+    let (server, client) = client(opts)?;
+    let to = match ask(&server, &client) {
+        Err(RemoteError::Moved(to)) => to,
+        other => return other.map_err(|e| failed(&server, &e)),
+    };
+    let store = store()?;
+    let (old, new) = (TokenStore::server_key(&server), TokenStore::server_key(&to));
+    match store.relocate(&server, &to).map_err(|e| e.to_string())? {
+        Relocated::Moved => {
+            eprintln!("yulius: {old} moved to {new}; the saved sign-in follows it.")
+        }
+        // Another command of this person followed the move meanwhile.
+        Relocated::NothingSaved => {}
+        Relocated::OtherSignIn => {
+            return Err(format!(
+                "{old} answers that it moved to {new}, where another sign-in is saved: not \
+                 followed, and nothing was changed. If both are one instance now, forget this \
+                 one: `yulius remote logout --server {old}`"
+            ));
+        }
+    }
+    let token = store
+        .load(&to)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("no token for {to}: run `yulius remote login {to}`"))?;
+    let client = RemoteClient::new(&to, token).map_err(|e| e.to_string())?;
+    ask(&to, &client).map_err(|e| failed(&to, &e))
 }
 
 /// `--project`, else the GitHub `origin` of the checkout around the current directory.
@@ -324,11 +401,9 @@ fn run(command: &str, opts: &RemoteOpts, tool: &str, args: Value, with_project: 
             Err(err) => return fail(command, err),
         }
     }
-    let (_, client) = match client(opts) {
-        Ok(found) => found,
-        Err(err) => return fail(command, err),
-    };
-    match client.call(tool, Value::Object(args)) {
+    match following(opts, |_, client| {
+        client.call(tool, Value::Object(args.clone()))
+    }) {
         Ok(outcome) => {
             if opts.json && !outcome.is_error {
                 let record = outcome.record.unwrap_or(Value::Null);
@@ -372,11 +447,8 @@ pub fn remote(action: RemoteAction, opts: &RemoteOpts) -> ExitCode {
                 Err(err) => fail("remote logout", err),
             }
         }
-        RemoteAction::Status => match client(opts).and_then(|(server, client)| {
-            client
-                .initialize()
-                .map(|info| (server, info))
-                .map_err(|e| e.to_string())
+        RemoteAction::Status => match following(opts, |server, client| {
+            client.initialize().map(|info| (server.clone(), info))
         }) {
             Ok((server, info)) => {
                 let meta = &info["_meta"];
@@ -390,26 +462,24 @@ pub fn remote(action: RemoteAction, opts: &RemoteOpts) -> ExitCode {
             }
             Err(err) => fail("remote status", err),
         },
-        RemoteAction::Tools => {
-            match client(opts).and_then(|(_, c)| c.tools().map_err(|e| e.to_string())) {
-                Ok(tools) => {
-                    if opts.json {
-                        println!(
-                            "{}",
-                            serde_json::to_string_pretty(&tools).unwrap_or_default()
-                        );
-                    } else {
-                        for tool in tools {
-                            let description = tool["description"].as_str().unwrap_or("");
-                            let first = description.split(". ").next().unwrap_or(description);
-                            println!("{:<28} {first}", tool["name"].as_str().unwrap_or("?"));
-                        }
+        RemoteAction::Tools => match following(opts, |_, client| client.tools()) {
+            Ok(tools) => {
+                if opts.json {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&tools).unwrap_or_default()
+                    );
+                } else {
+                    for tool in tools {
+                        let description = tool["description"].as_str().unwrap_or("");
+                        let first = description.split(". ").next().unwrap_or(description);
+                        println!("{:<28} {first}", tool["name"].as_str().unwrap_or("?"));
                     }
-                    ExitCode::SUCCESS
                 }
-                Err(err) => fail("remote tools", err),
+                ExitCode::SUCCESS
             }
-        }
+            Err(err) => fail("remote tools", err),
+        },
         RemoteAction::Call { tool, args } => {
             let args = match args.as_deref().map(text_arg).transpose() {
                 Ok(text) => text,
@@ -423,9 +493,8 @@ pub fn remote(action: RemoteAction, opts: &RemoteOpts) -> ExitCode {
             };
             // A project tool's `project` comes from --project or the checkout when absent.
             let wants_project = opts.project.is_some()
-                || client(opts)
+                || following(opts, |_, client| client.tools())
                     .ok()
-                    .and_then(|(_, c)| c.tools().ok())
                     .and_then(|tools| {
                         tools
                             .into_iter()
@@ -446,6 +515,9 @@ pub fn remote(action: RemoteAction, opts: &RemoteOpts) -> ExitCode {
 fn login(url: &str, token_stdin: bool) -> ExitCode {
     let result = (|| -> Result<String, String> {
         let server = parse_url(url)?;
+        // The token is typed, always: one saved for an instance this URL moved to is sent
+        // nowhere without a person's act (SPEC-466 MVC-032).
+        let store = store()?;
         let token = if token_stdin || !io::stdin().is_terminal() {
             let mut text = String::new();
             io::stdin()
@@ -471,10 +543,26 @@ fn login(url: &str, token_stdin: bool) -> ExitCode {
             }
             other => other.to_string(),
         })?;
-        store()?.save(&server, &token).map_err(|e| e.to_string())?;
+        // A sign-in that had followed this URL's move comes back when its own token was typed;
+        // with another token it stays, and may be one for an instance that is gone.
+        let followed = store.moved_to(&server).map_err(|e| e.to_string())?;
+        store.save(&server, &token).map_err(|e| e.to_string())?;
+        let kept = followed.filter(|to| {
+            parse_url(to)
+                .ok()
+                .and_then(|to| store.load(&to).ok().flatten())
+                .is_some()
+        });
         let meta = &info["_meta"];
+        let with = match kept {
+            Some(to) => format!(
+                ". The sign-in that followed its move to {to} is kept; if that instance is \
+                 gone, forget it: `yulius remote logout --server {to}`"
+            ),
+            None => String::new(),
+        };
         Ok(format!(
-            "Signed in to {server} as {} ({} token). Try `yulius project list`.",
+            "Signed in to {server} as {} ({} token){with}. Try `yulius project list`.",
             meta["yulius/person"].as_str().unwrap_or("?"),
             meta["yulius/scope"].as_str().unwrap_or("?"),
         ))
@@ -540,18 +628,14 @@ pub fn project_cmd(action: ProjectAction, opts: &RemoteOpts) -> ExitCode {
                 );
             }
             // The file itself, as `cat` prints it.
-            let (_, client) = match client(opts) {
-                Ok(found) => found,
-                Err(err) => return fail(command, err),
-            };
             let project = match project(opts) {
                 Ok(project) => project,
                 Err(err) => return fail(command, err),
             };
-            match client.call(
-                "project_file_read",
-                json!({"project": project, "path": path, "ref": reference}),
-            ) {
+            let read = json!({"project": project, "path": path, "ref": reference});
+            match following(opts, |_, client| {
+                client.call("project_file_read", read.clone())
+            }) {
                 Ok(outcome) if !outcome.is_error => {
                     let content = outcome
                         .record
@@ -776,5 +860,54 @@ pub fn vars_cmd(action: VarsAction, opts: &RemoteOpts) -> ExitCode {
             true,
         ),
         Err(err) => fail(command, err),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::came_from;
+
+    /// SPEC-466 MVC-032: the way back names the URL the sign-in came from, and no one of several
+    /// as if it were the only one; the saved token is never promised to travel.
+    #[test]
+    fn the_way_back_is_said_for_the_urls_a_sign_in_came_from() {
+        let said = || "connection refused".to_owned();
+        assert_eq!(came_from(said(), &[]), "connection refused");
+
+        let one = came_from(said(), &["https://old.example".to_owned()]);
+        assert!(one.starts_with("connection refused\n"), "{one}");
+        assert!(
+            one.contains("followed a move here from https://old.example."),
+            "{one}"
+        );
+        assert!(
+            one.contains("`yulius remote login https://old.example`"),
+            "{one}"
+        );
+
+        let several = came_from(
+            said(),
+            &[
+                "https://a-older.example".to_owned(),
+                "https://old.example".to_owned(),
+            ],
+        );
+        assert!(
+            several.contains("from https://a-older.example, https://old.example."),
+            "{several}"
+        );
+        assert!(
+            several.contains("`yulius remote login <that URL>`"),
+            "{several}"
+        );
+        assert!(
+            !several.contains("login https://"),
+            "no name is singled out: {several}"
+        );
+
+        for hint in [one, several] {
+            assert!(hint.contains("it asks for a token"), "{hint}");
+            assert!(!hint.contains("Enter"), "{hint}");
+        }
     }
 }

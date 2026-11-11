@@ -133,6 +133,10 @@ pub enum Point {
     /// Code, whatever it found; who typed and what pauses it are not read again yet. The path is
     /// the task id.
     ClaudeMoveProbed,
+    /// A restart on a newer Claude Code (SPEC-461) launched the session's new run; the version
+    /// that run is taken to run until its transcript names one is not written yet. The path is
+    /// the task id.
+    ClaudeMoveRestarted,
     /// A settled turn (SPEC-461) decided whether its idle session restarts on a newer Claude
     /// Code, and made that restart if so. The path is the task id.
     ClaudeMoveSettled,

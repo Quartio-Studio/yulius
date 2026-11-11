@@ -200,17 +200,33 @@ const RESUMABLE_NOTE_MARKS: [&str; 2] = [
 /// Normalizes one Claude Code transcript line.
 #[must_use]
 pub fn observe_line(line: &str) -> Vec<Observed> {
+    observe_versioned(line).0
+}
+
+/// [`observe_line`], and the Claude Code version the record names when it is one of the
+/// session's own thread. Claude Code writes its version on every such record, so a session
+/// resumed with nothing typed (it redoes an interrupted turn by itself) names the version it
+/// runs with its first line, long before its next prompt record (SPEC-461 CCM-011). A
+/// sub-agent's record names nothing for the session.
+#[must_use]
+pub fn observe_versioned(line: &str) -> (Vec<Observed>, Option<String>) {
     let Some(record) = parse_object(line) else {
-        return vec![Observed::Malformed];
+        return (vec![Observed::Malformed], None);
     };
-    match str_of(&record, "type") {
+    let observed = match str_of(&record, "type") {
         Some("user") => observe_user(&record),
         Some("assistant") => observe_assistant(&record),
         Some("attachment") => observe_attachment(&record),
         Some("system") => observe_system(&record),
         Some(_) => Vec::new(),
-        None => vec![Observed::Malformed],
-    }
+        None => return (vec![Observed::Malformed], None),
+    };
+    let version = if bool_of(&record, "isSidechain") {
+        None
+    } else {
+        owned_str(&record, "version")
+    };
+    (observed, version)
 }
 
 /// When a transcript line was recorded (its top-level `timestamp`), if it says. Records Claude

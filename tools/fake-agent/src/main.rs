@@ -19,7 +19,7 @@
 //!            [--goal-continue-verdict] [--goal-continue-dies]] [--goal-delay-ms MS] [--drop-lines N]
 //!            [--interrupts] [--rate-limits-file PATH] [--session-start] [--opening-turn-ms MS]
 //!            [--cli-version-file PATH] [--exit-at-start-file PATH] [--stuck-at-start-file PATH]
-//!            [--turn-hold-file PATH]
+//!            [--turn-hold-file PATH] [--resume-record]
 //!            [--echo-turn-ms MS] [--context-full-after N] [--compact-fails] [--compact-hangs]
 //!            [--prompt TEXT] [--limit-continues-ms MS [--limit-continues-answer-only]]
 //!            [--idle-compact-ms MS] [--trust-prompt] [--goal-api-errors N [--goal-retry-ms MS]
@@ -135,6 +135,10 @@
 //! on a dialog nobody answers (SPEC-461). `--turn-hold-file PATH`: a goal turn or an echoed turn
 //! ends only once PATH exists (bounded by 60 s), so a test says when a turn ends instead of a
 //! timer.
+//!
+//! `--resume-record`: at its start the agent writes a record a real Claude Code writes before
+//! any prompt when it resumes a session whose turn was interrupted: a meta user record with
+//! its version (the transcript then names the version before any prompt, SPEC-461).
 //!
 //! `--rate-limits-file PATH` runs Claude Code's status line command as Yulius configures it
 //! (`YULIUS_EXE hook claude StatusLine`, with `--hooks`) at the start and after every turn, with
@@ -273,6 +277,7 @@ struct Options {
     exit_at_start_file: Option<PathBuf>,
     stuck_at_start_file: Option<PathBuf>,
     turn_hold_file: Option<PathBuf>,
+    resume_record: bool,
     context_full_after: Option<u64>,
     compact_fails: bool,
     compact_hangs: bool,
@@ -334,6 +339,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
         exit_at_start_file: None,
         stuck_at_start_file: None,
         turn_hold_file: None,
+        resume_record: false,
         context_full_after: None,
         compact_fails: false,
         compact_hangs: false,
@@ -478,6 +484,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
                 options.turn_hold_file =
                     Some(args.next().ok_or("--turn-hold-file needs a path")?.into());
             }
+            "--resume-record" => options.resume_record = true,
             "--context-full-after" => {
                 options.context_full_after = Some(parse_number(&flag, args.next())?);
             }
@@ -740,6 +747,20 @@ impl Transcript {
         });
         self.last_uuid = Some(assistant_uuid);
         self.append(&[user, assistant])
+    }
+
+    /// A record a resumed session that redoes an interrupted turn writes before any prompt: a
+    /// meta user record (`--resume-record`).
+    fn resumed(&mut self) -> io::Result<()> {
+        let uuid = format!("fake-{}-resumed-{}", self.session_id, now_ms());
+        let mut user = self.claude_envelope("user", &uuid, &rfc3339(now_ms()));
+        user["isMeta"] = json!(true);
+        user["message"] = json!({
+            "role": "user",
+            "content": [{"type": "text", "text": "Continue from where you left off."}],
+        });
+        self.last_uuid = Some(uuid);
+        self.append(&[user])
     }
 
     /// The user line of a turn that takes a while (`/work`).
@@ -1922,6 +1943,12 @@ fn echo_loop(options: &Options, session_id: &str) -> io::Result<i32> {
         )?))),
         None => None,
     };
+    if options.resume_record
+        && let Some(transcript) = &transcript
+        && let Ok(mut transcript) = transcript.lock()
+    {
+        transcript.resumed()?;
+    }
     let mut hooks = options.hooks.as_ref().map(|exe| Hooks {
         exe: exe.clone(),
         session_id: session_id.to_owned(),
@@ -2501,6 +2528,7 @@ mod tests {
         assert!(parse(&["--exit-at-start-file"]).is_err());
         assert!(parse(&["--stuck-at-start-file"]).is_err());
         assert!(parse(&["--turn-hold-file"]).is_err());
+        assert!(parse(&["--resume-record"]).is_ok_and(|o| o.resume_record));
         assert!(
             parse(&["--goal-background", "3", "--goal-delay-ms", "999999"])
                 .is_ok_and(|o| o.goal_background == Some(3) && o.goal_delay_ms == MAX_GOAL_DELAY_MS)
