@@ -107,6 +107,11 @@ pub struct CapacityState {
     /// none): when it changes, the paused tasks are shown again, so their `waits_for_account`
     /// follows (SPEC-246 CLA-004).
     accounts_seen: Mutex<Option<crate::account_gate::AgentAccounts>>,
+    /// Held while a subscription's stored usage is read, changed and written back (a limit Claude
+    /// reported, a session's reading, a provider's reading, a new sign-in), so none of them
+    /// writes over what another stored meanwhile: a limit recorded during a reading stays
+    /// (SPEC-464 UCL-004). Never held across a request to the provider.
+    pub(crate) usage_writes: tokio::sync::Mutex<()>,
 }
 
 /// A window of Claude Code's status line input as a usage window of `minutes`; `None` without a
@@ -365,14 +370,17 @@ impl App {
         let Some(sample) = self.session_reading_due(account, five_hour, seven_day, now) else {
             return;
         };
-        let Ok(Some(record)) = self.deps.store.account(account).await else {
-            return;
-        };
-        let mut usage = account_usage(&record);
-        usage.primary = five_hour.or(usage.primary);
-        usage.secondary = seven_day.or(usage.secondary);
-        usage.observed_at = Some(now);
-        self.record_account_usage(account, &usage).await;
+        {
+            let _writing = self.capacity.usage_writes.lock().await;
+            let Ok(Some(record)) = self.deps.store.account(account).await else {
+                return;
+            };
+            let mut usage = account_usage(&record);
+            usage.primary = five_hour.or(usage.primary);
+            usage.secondary = seven_day.or(usage.secondary);
+            usage.observed_at = Some(now);
+            self.record_account_usage(account, &usage).await;
+        }
         if sample {
             let windows = AccountUsage {
                 primary: five_hour,

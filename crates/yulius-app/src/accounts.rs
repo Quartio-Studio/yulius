@@ -660,16 +660,20 @@ impl App {
                 // A reading shows the 5-hour and weekly windows only: a model's own window (a
                 // limit Claude reported for it) stays until its reset (SPEC-464). What is
                 // stored is read now: a limit may have been recorded during the request (#72).
-                let stored = match self.deps.store.account(&account.id).await {
-                    Ok(Some(current)) => account_usage(&current),
-                    _ => account_usage(account),
+                let usage = {
+                    let _writing = self.capacity.usage_writes.lock().await;
+                    let stored = match self.deps.store.account(&account.id).await {
+                        Ok(Some(current)) => account_usage(&current),
+                        _ => account_usage(account),
+                    };
+                    crate::race::reached(
+                        crate::race::Point::UsageRead,
+                        std::path::Path::new(account.id.as_str()),
+                    );
+                    let usage = usage.keeping_unread(&stored, now);
+                    self.record_account_usage(&account.id, &usage).await;
+                    usage
                 };
-                crate::race::reached(
-                    crate::race::Point::UsageRead,
-                    std::path::Path::new(account.id.as_str()),
-                );
-                let usage = usage.keeping_unread(&stored, now);
-                self.record_account_usage(&account.id, &usage).await;
                 self.record_usage_samples(&account.id, &usage, crate::model::USAGE_FROM_PROBE)
                     .await;
                 Ok(())
@@ -1557,6 +1561,7 @@ impl App {
     async fn store_credential(&self, account: &AccountId, secret: &Secret) -> AppResult<()> {
         let sealed = self.deps.crypto.seal(secret.expose().as_bytes())?;
         let store = &self.deps.store;
+        let _writing = self.capacity.usage_writes.lock().await;
         let Some(record) = store.account(account).await? else {
             return Err(AppError::NotFound);
         };
