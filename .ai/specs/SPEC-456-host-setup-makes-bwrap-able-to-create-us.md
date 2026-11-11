@@ -111,7 +111,7 @@ the fix. Nobody writes an AppArmor rule by hand again.
 - [x] Host setup writes and loads Yulius's AppArmor profile when bwrap cannot start a namespace
 - [x] Host setup disables the shipped profile, adopts a hand-written rule and names what is unsupported
 - [x] Host check and dry run report the item without changing the host
-- [ ] The contained doctor proves a mapped user namespace
+- [x] The contained doctor proves a mapped user namespace
 - [ ] Instance import names the step when the host lacks it
 - [ ] Operations guide, architecture and changes describe the rule
 - [ ] Proof on real Ubuntu 24.04, Ubuntu 26.04 and Debian hosts
