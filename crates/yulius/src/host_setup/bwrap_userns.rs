@@ -709,7 +709,7 @@ mod tests {
             "/usr/bin/bwrap {}\n",
             "@{prog} = /usr/bin/bwrap\nprofile b @{prog} {\n  userns,\n}\n",
             "@{prog}=/usr/bin/bwrap\nprofile b @{prog} {\n  userns,\n}\n",
-            "@{prog} += \"/usr/bin/bwrap\" # theirs\nprofile b @{prog} {\n}\n",
+            "@{prog} = /usr/bin/x\n@{prog} += \"/usr/bin/bwrap\" # theirs\nprofile b @{prog} {\n}\n",
             "profile bwrap /usr/bin/bwrap\nflags = (unconfined) {\n  userns,\n}\n",
             "profile bwrap /usr/bin/bwrap flags = (attach_disconnected, unconfined) {\n}\n",
             "@{bin}/bwrap flags=(unconfined) {\n  userns,\n}\n",
@@ -718,6 +718,9 @@ mod tests {
             "@{a} = /usr/bin/bwrap\n@{b} = @{a}\nprofile b @{b} {\n}\n",
             "@{dirs} = /opt /usr\nprofile b @{dirs}/bin/bwrap {\n}\n",
             "@{dir} = /usr/bin/\nprofile b @{dir}/bwrap {\n}\n",
+            // The apparmor.d project's layout, its `@{bin}` set in a file it includes.
+            "@{exec_path} = @{bin}/bwrap\nprofile bwrap @{exec_path} flags=(complain) {\n  \
+             @{exec_path} mr,\n}\n",
             "profile flags /usr/bin/bwrap {\n}\n",
         ] {
             assert!(attaches_bwrap(whole), "{whole}");
@@ -733,6 +736,11 @@ mod tests {
             "@{prog}=/usr/bin/x\nprofile x @{prog} {\n  userns,\n}\n",
             "abi <abi/4.0>,\n@prog = /usr/bin/bwrap\nprofile x /usr/bin/x {\n  @{prog} mr,\n}\n",
             "@{dir} = /usr/bin\nprofile x @{dir}/x {\n}\n",
+            // The apparmor.d project's profile for Flatpak's bwrap: entered by a transition,
+            // attached to nothing.
+            "@{exec_path} = @{bin}/bwrap\nprofile fbwrap flags=(attach_disconnected) {\n  \
+             @{exec_path} mr,\n}\n",
+            "@{bin} = /opt/bin\nprofile x @{bin}/bwrap {\n}\n",
             "@{a} = @{a}/bwrap\nprofile x @{a} {\n}\n",
             "profile x /usr/bin/x xattrs = (user.t = /usr/bin/bwrap ) {\n}\n",
         ] {
