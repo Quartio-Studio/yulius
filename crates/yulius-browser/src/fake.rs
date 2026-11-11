@@ -117,6 +117,7 @@ struct FakeState {
     child_frames: Vec<String>,
     sandboxed_frames: bool,
     sandboxed_document: bool,
+    opaque_origins: bool,
     frame_targets: Vec<Value>,
     enter_submits: bool,
     failing_after: HashMap<String, (usize, i64, String)>,
@@ -149,7 +150,8 @@ impl FakeState {
     }
 
     /// The answer to the secret probe: field values split into readable and password ones,
-    /// plus the page text, and the page's origin (added to a set answer that has none).
+    /// plus the page text, and the page's origin and the frames of that origin it read (added to
+    /// a set answer that has none).
     fn probe(&mut self, session: Option<&str>) -> Value {
         let origin = session
             .and_then(|s| self.sessions.get(s))
@@ -163,9 +165,19 @@ impl FakeState {
             },
         };
         let focus = self.focus(session);
+        // A sandboxed frame, and every frame of a sandboxed page, is out of the probe's reach.
+        let frames = if self.sandboxed_frames || self.sandboxed_document {
+            0
+        } else {
+            self.child_frames
+                .iter()
+                .filter(|url| origin_of(url) == origin)
+                .count()
+        };
         if let Some(object) = answer.as_object_mut() {
             object.entry("origin").or_insert(json!(origin));
             object.entry("focus").or_insert(focus);
+            object.entry("frames").or_insert(json!(frames));
         }
         answer
     }
@@ -300,6 +312,7 @@ impl FakeCdpServer {
                 child_frames: Vec::new(),
                 sandboxed_frames: false,
                 sandboxed_document: false,
+                opaque_origins: false,
                 frame_targets: Vec::new(),
                 enter_submits: false,
                 failing_after: HashMap::new(),
@@ -471,23 +484,31 @@ impl FakeCdpServer {
         lock(&self.shared.state).secret_probe = answer;
     }
 
-    /// The URLs of the frames every page holds (`Page.getFrameTree` child frames).
+    /// The URLs of the frames every page holds in its own process (`Page.getFrameTree` child
+    /// frames); the probe reads those of the page's origin.
     pub fn set_child_frames(&self, urls: &[&str]) {
         let mut state = lock(&self.shared.state);
         state.child_frames = urls.iter().map(|url| (*url).to_owned()).collect();
         state.sandboxed_frames = false;
     }
 
-    /// As [`Self::set_child_frames`], sandboxed: their origin is opaque (`"null"`).
+    /// As [`Self::set_child_frames`], sandboxed: the probe reads none of them. Chrome's default
+    /// runs a sandboxed frame in a process of its own instead ([`Self::set_frame_targets`]).
     pub fn set_sandboxed_child_frames(&self, urls: &[&str]) {
         self.set_child_frames(urls);
         lock(&self.shared.state).sandboxed_frames = true;
     }
 
-    /// Whether every page's own document is sandboxed (`Content-Security-Policy: sandbox`): the
-    /// main frame's origin is opaque (`"null"`).
+    /// Whether every page's own document is sandboxed (`Content-Security-Policy: sandbox`): its
+    /// probe reads none of its frames.
     pub fn set_sandboxed_document(&self, sandboxed: bool) {
         lock(&self.shared.state).sandboxed_document = sandboxed;
+    }
+
+    /// Whether the frame tree says the real, opaque origin (`"null"`) of a sandboxed frame or
+    /// document. Chrome (157) says the origin of its address, the default here.
+    pub fn set_opaque_origins(&self, opaque: bool) {
+        lock(&self.shared.state).opaque_origins = opaque;
     }
 
     /// Whether pressing Enter submits the page's form: a new document, as a sign-in form does.
@@ -998,7 +1019,7 @@ fn respond(
                 .iter()
                 .enumerate()
                 .map(|(n, child)| {
-                    let origin = if state.sandboxed_frames {
+                    let origin = if state.sandboxed_frames && state.opaque_origins {
                         "null".to_owned()
                     } else {
                         origin_of(child)
@@ -1008,7 +1029,7 @@ fn respond(
                 })
                 .collect();
             let loader = state.page(session_id).map_or(0, |page| page.loader);
-            let origin = if state.sandboxed_document {
+            let origin = if state.sandboxed_document && state.opaque_origins {
                 "null".to_owned()
             } else {
                 origin_of(&url)

@@ -1173,7 +1173,7 @@ async fn a_fill_into_an_unreadable_frame_exposes_the_framed_site() -> TestResult
 
 /// SPEC-450 (final review): fails closed where a fill cannot be placed. A fill that names no
 /// host (an opaque page) and a fill into a frame whose targets cannot be listed refuse every
-/// screenshot; a frame with an opaque origin (sandboxed) is one the probe cannot read.
+/// screenshot.
 #[tokio::test]
 async fn fills_that_cannot_be_placed_refuse_every_screenshot() -> TestResult {
     // On the opening about:blank tab: no host to expose.
@@ -1212,30 +1212,15 @@ async fn fills_that_cannot_be_placed_refuse_every_screenshot() -> TestResult {
     assert!(refused(
         instance.tool_screenshot_within(&shot(&tab), 100_000).await
     ));
-
-    // A sandboxed frame of the filled host (opaque origin) is not readable.
-    let (fake, instance, tab) = setup().await?;
-    instance
-        .tool_navigate(&to(&tab, "https://m.example/login"))
-        .await?;
-    fake.set_password_field("#pw", true);
-    instance
-        .tool_type_secret(&fill(&tab, "#pw", "pw-secret-4471"))
-        .await?;
-    instance
-        .tool_navigate(&to(&tab, "https://m.example/home"))
-        .await?;
-    fake.set_sandboxed_child_frames(&["https://m.example/settings"]);
-    assert!(refused(
-        instance.tool_screenshot_within(&shot(&tab), 100_000).await
-    ));
     Ok(())
 }
 
-/// SPEC-450 (final review): a sandboxed frame is not readable from a page whose own origin is
-/// opaque too (`Content-Security-Policy: sandbox`): two opaque origins are never the same one.
+/// SPEC-450 (final review, as Chrome 157 answers): a frame of the page's own site is readable
+/// only when the probe read it. The frame tree says the origin of a frame's address, sandboxed or
+/// not, so the probe says how many frames of the page's origin it read; a frame in a process of
+/// its own (Chrome's sandboxed frames) is a target, also on the page's own host.
 #[tokio::test]
-async fn a_sandboxed_frame_of_a_sandboxed_page_is_not_readable() -> TestResult {
+async fn a_frame_of_the_pages_own_site_is_readable_only_when_the_probe_read_it() -> TestResult {
     let (fake, instance, tab) = setup().await?;
     instance
         .tool_navigate(&to(&tab, "https://m.example/login"))
@@ -1247,15 +1232,93 @@ async fn a_sandboxed_frame_of_a_sandboxed_page_is_not_readable() -> TestResult {
     instance
         .tool_navigate(&to(&tab, "https://m.example/home"))
         .await?;
-    // The sandboxed page by itself keeps its screenshots: it frames nothing.
-    fake.set_sandboxed_document(true);
-    assert!(!refused(
+    // Read by the probe: the page keeps its screenshots.
+    fake.set_child_frames(&["https://m.example/settings", "https://m.example/help"]);
+    instance
+        .tool_screenshot_within(&shot(&tab), 100_000)
+        .await?;
+    // One of the two read, and a probe that does not say: fewer than the frame tree lists.
+    let read = |frames: Value| {
+        Some(json!({"shown": ["Fake page text"], "masked": [], "over": false, "frames": frames}))
+    };
+    fake.set_secret_probe(read(json!(1)));
+    assert!(refused(
         instance.tool_screenshot_within(&shot(&tab), 100_000).await
+    ));
+    fake.set_secret_probe(read(Value::Null));
+    assert!(refused(
+        instance.tool_screenshot_within(&shot(&tab), 100_000).await
+    ));
+    fake.set_secret_probe(None);
+    // Sandboxed in the page's process: the same frame tree, none read.
+    fake.set_sandboxed_child_frames(&["https://m.example/settings"]);
+    assert!(refused(
+        instance.tool_screenshot_within(&shot(&tab), 100_000).await
+    ));
+    // The page itself sandboxed (`Content-Security-Policy: sandbox`) reads none of its frames;
+    // framing nothing, it keeps its screenshots.
+    fake.set_child_frames(&["https://m.example/settings"]);
+    fake.set_sandboxed_document(true);
+    assert!(refused(
+        instance.tool_screenshot_within(&shot(&tab), 100_000).await
+    ));
+    fake.set_child_frames(&[]);
+    instance
+        .tool_screenshot_within(&shot(&tab), 100_000)
+        .await?;
+    fake.set_sandboxed_document(false);
+    // In a process of its own: a target on the page's own host.
+    fake.set_frame_targets(&[(Some(tab.as_str()), "https://m.example/settings")]);
+    assert!(refused(
+        instance.tool_screenshot_within(&shot(&tab), 100_000).await
+    ));
+    fake.set_frame_targets(&[]);
+    // A site nothing was typed into keeps its screenshots with such frames.
+    instance
+        .tool_navigate(&to(&tab, "https://elsewhere.example/"))
+        .await?;
+    fake.set_sandboxed_child_frames(&["https://elsewhere.example/widget"]);
+    fake.set_frame_targets(&[(Some(tab.as_str()), "https://elsewhere.example/widget")]);
+    instance
+        .tool_screenshot_within(&shot(&tab), 100_000)
+        .await?;
+    Ok(())
+}
+
+/// SPEC-450 (final review): a frame tree that says a sandboxed frame's real, opaque origin
+/// (`"null"`; no Chrome seen here does) is believed whatever the probe says it read, also under
+/// a page whose own origin is opaque: two opaque origins are never the same one.
+#[tokio::test]
+async fn a_frame_the_tree_calls_opaque_is_not_readable() -> TestResult {
+    let (fake, instance, tab) = setup().await?;
+    instance
+        .tool_navigate(&to(&tab, "https://m.example/login"))
+        .await?;
+    fake.set_password_field("#pw", true);
+    instance
+        .tool_type_secret(&fill(&tab, "#pw", "pw-secret-4471"))
+        .await?;
+    instance
+        .tool_navigate(&to(&tab, "https://m.example/home"))
+        .await?;
+    fake.set_opaque_origins(true);
+    // The probe claims every frame: only the frame tree tells.
+    fake.set_secret_probe(Some(
+        json!({"shown": ["Fake page text"], "masked": [], "over": false, "frames": 9}),
     ));
     fake.set_sandboxed_child_frames(&["https://m.example/settings"]);
     assert!(refused(
         instance.tool_screenshot_within(&shot(&tab), 100_000).await
     ));
+    fake.set_sandboxed_document(true);
+    assert!(refused(
+        instance.tool_screenshot_within(&shot(&tab), 100_000).await
+    ));
+    // The sandboxed page by itself keeps its screenshots: it frames nothing.
+    fake.set_child_frames(&[]);
+    instance
+        .tool_screenshot_within(&shot(&tab), 100_000)
+        .await?;
     Ok(())
 }
 

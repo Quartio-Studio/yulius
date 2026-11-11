@@ -4,7 +4,8 @@
 //! It serves a local page on loopback, then drives the browser through the adapter: open and
 //! load, title from target events, accessibility snapshot, type, click by selector, PNG
 //! screenshot, the secret probe (SPEC-450: a password field keeps screenshots, a revealed one or
-//! a text field refuses them), screencast frames, URL policy, and kill-and-reap on shutdown. DevTools runs over
+//! a text field refuses them, and so does a frame the probe cannot read: of another site, or
+//! sandboxed), screencast frames, URL policy, and kill-and-reap on shutdown. DevTools runs over
 //! the pipe: the browser writes no `DevToolsActivePort` and (Linux) listens on no TCP port.
 
 use std::time::Duration;
@@ -28,22 +29,33 @@ const PAGE: &str = "<!doctype html><html><head><title>Yulius test page</title></
 <button id=\"show\" onclick=\"document.getElementById('pw').type='text'\">Show</button>\
 <form name=\"documentElement\"></form><img name=\"querySelectorAll\" alt=\"\"></body></html>";
 
-/// Serves [`PAGE`], or at `/frame` a page framing `framed`.
+/// Serves [`PAGE`]; at `/frame` a page framing `framed`; at `/own-frame`, `/sandboxed-frame` and
+/// `/sandboxed-page` a page framing this server's own `/`: plainly, in a sandboxed frame, and
+/// from a page that is sandboxed itself (`Content-Security-Policy: sandbox`).
 async fn serve(listener: TcpListener, framed: String) {
     while let Ok((mut stream, _)) = listener.accept().await {
         let framed = framed.clone();
         tokio::spawn(async move {
             let mut request = [0_u8; 4096];
             let _ = stream.read(&mut request).await;
+            let framing = |frame: &str| {
+                format!("<!doctype html><html><body><p>Framing</p>{frame}</body></html>")
+            };
+            let mut policy = "";
             let page = if request.starts_with(b"GET /frame") {
-                format!(
-                    "<!doctype html><html><body><p>Framing</p><iframe src=\"{framed}\"></iframe></body></html>"
-                )
+                framing(&format!("<iframe src=\"{framed}\"></iframe>"))
+            } else if request.starts_with(b"GET /own-frame") {
+                framing("<iframe src=\"/\"></iframe>")
+            } else if request.starts_with(b"GET /sandboxed-frame") {
+                framing("<iframe sandbox src=\"/\"></iframe>")
+            } else if request.starts_with(b"GET /sandboxed-page") {
+                policy = "Content-Security-Policy: sandbox\r\n";
+                framing("<iframe src=\"/\"></iframe>")
             } else {
                 PAGE.to_owned()
             };
             let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{page}",
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n{policy}Content-Length: {}\r\nConnection: close\r\n\r\n{page}",
                 page.len()
             );
             let _ = stream.write_all(response.as_bytes()).await;
@@ -280,6 +292,36 @@ async fn drives_a_real_chromium_when_configured() -> TestResult {
         browser.tool_screenshot_within(&shot_params, 1 << 20).await,
         Err(BrowserError::SecretOnPage)
     ));
+    // A password sign-in on the framing site keeps its screenshots, also on a page framing its
+    // own origin, which the probe reads. A sandboxed frame of that origin is out of the probe's
+    // reach (Chrome runs it in a process of its own: a target on the page's own host), and so is
+    // every frame of a page that is sandboxed itself, though the frame tree says the origin of
+    // the frame's address for both.
+    browser.tool_navigate(&load(framing_url.clone())).await?;
+    browser
+        .tool_type_secret(&secret("#pw", "real-secret-9951-pw"))
+        .await?;
+    browser
+        .tool_screenshot_within(&shot_params, 1 << 20)
+        .await?;
+    browser
+        .tool_navigate(&load(format!("{framing_url}own-frame")))
+        .await?;
+    browser
+        .tool_screenshot_within(&shot_params, 1 << 20)
+        .await?;
+    for unreadable in ["sandboxed-frame", "sandboxed-page"] {
+        browser
+            .tool_navigate(&load(format!("{framing_url}{unreadable}")))
+            .await?;
+        assert!(
+            matches!(
+                browser.tool_screenshot_within(&shot_params, 1 << 20).await,
+                Err(BrowserError::SecretOnPage)
+            ),
+            "{unreadable}"
+        );
+    }
 
     let mut frames = browser.subscribe_frames(&tab).await?;
     browser.navigate(&tab, &format!("{page_url}?again")).await?;
