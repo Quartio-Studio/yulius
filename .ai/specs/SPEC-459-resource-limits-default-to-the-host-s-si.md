@@ -1,11 +1,11 @@
 ---
 yulius-task: daf7a54d-e960-47e4-81cd-8c61824a49b3
-status: draft
+status: in-progress
 ---
 
 # SPEC-459: Resource limits default to the host's size and adapt after a move
 
-Status: draft
+Status: in-progress
 Date: 2026-11-11
 Owner: Yulius task #441
 Scope authorization: task #441, asked by the project's owner ("Resource limits size themselves to
@@ -94,8 +94,8 @@ host-sized one, by the migration flow itself.
 
 ## Plan
 
-- [ ] Spec, ADR-0294 and the failing formula tests
-- [ ] Host-sized formulas, precedence and the pinned-on-another-host rule in the domain
+- [x] Spec, ADR-0294 and the failing formula tests
+- [x] Host-sized formulas, precedence and the pinned-on-another-host rule in the domain
 - [ ] The limits record in the store (migration 0051) and the start-up load that records unit pins with their host
 - [ ] Sessions, CI lanes and the CD run disk read the live limits, and CI job slots resize while jobs run
 - [ ] The sandbox disk quota changes live, and memory and disk settings reach the isolation at start
