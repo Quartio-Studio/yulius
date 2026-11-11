@@ -22,6 +22,7 @@ mod browser;
 mod cd;
 mod cd_rollback;
 mod ci_setup;
+mod claude_code_admin;
 mod claude_gate;
 mod claude_updates;
 mod cli;

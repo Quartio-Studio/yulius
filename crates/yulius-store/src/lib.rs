@@ -125,6 +125,8 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0048_ci_job_limit_and_wait.sql"),
     // Schema version 49 (SPEC-440).
     include_str!("migrations/0049_vault_copy_requests.sql"),
+    // Schema version 50 (SPEC-461).
+    include_str!("migrations/0050_claude_code.sql"),
 ];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;

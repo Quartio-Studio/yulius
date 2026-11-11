@@ -258,6 +258,8 @@ pub struct App {
     pub(crate) ci: crate::ci::CiState,
     /// Sandbox isolation (SPEC-002 ADR-22); unset: contained runs keep the previous containment.
     pub(crate) isolation: OnceLock<Arc<dyn crate::ports::isolation::SandboxIsolation>>,
+    /// The Claude Code sandboxes get (SPEC-461); unset: runs use the host's as it is.
+    pub(crate) agent_cli: OnceLock<crate::claude_code::AgentCliServices>,
     /// Pull requests the Git overview last observed, for the "needs you" counts (#147).
     pub(crate) observed_pulls: crate::sandboxes::ObservedPulls,
     /// Tasks created by tools in the last hour, per project (SPEC-037 MGT-003).
@@ -324,6 +326,7 @@ impl App {
             vault: crate::vault::VaultState::default(),
             ci: crate::ci::CiState::default(),
             isolation: OnceLock::new(),
+            agent_cli: OnceLock::new(),
             observed_pulls: crate::sandboxes::ObservedPulls::default(),
             tool_tasks: crate::manage::ToolTaskWindow::default(),
             cross_requests: crate::cross_sandbox::CrossRequests::default(),

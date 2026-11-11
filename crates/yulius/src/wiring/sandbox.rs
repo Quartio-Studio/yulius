@@ -719,8 +719,11 @@ pub async fn install(
     // server.
     match ClaudeUpdater::new(claude_root, agent_cli_dir()) {
         Ok(updater) => {
-            let claude = ClaudeCode::new(updater, args.claude_updates, false);
+            // A channel chosen in Settings wins over the configuration's (SPEC-461 CCM-009).
+            let (channel, chosen) = app.claude_channel_at_start(args.claude_updates).await;
+            let claude = ClaudeCode::new(updater, channel, chosen);
             isolation = isolation.with_claude_updates(Arc::clone(&claude));
+            app.set_agent_cli(Arc::clone(&claude) as Arc<_>, args.claude_updates);
             drop(claude.start());
         }
         Err(error) => tracing::warn!(%error, "Claude Code updates are unavailable"),
