@@ -6,10 +6,12 @@
 //! reason it is not automatic) or `failed`. [`Mode::Setup`] fixes everything it safely can,
 //! installs packages and builds the base; [`Mode::Check`] (the update helper's re-check, HST-012)
 //! applies only the safe, idempotent fixes (the needrestart rule, the host's Docker units, the
-//! modules file and loading, the binary's owner) and reports the rest; [`Mode::DryRun`] changes
+//! modules file and loading, the binary's owner) and reports the rest (the AppArmor rule of
+//! "bwrap namespaces" among it, SPEC-456: the helper cannot write it); [`Mode::DryRun`] changes
 //! nothing and says what setup would change. The last line is the "sandbox Docker" verdict
 //! (`yulius_sandbox::docker_status`), the doctor's words.
 
+mod bwrap_userns;
 pub mod system;
 #[cfg(test)]
 mod tests;
@@ -468,6 +470,7 @@ impl<'a> Run<'a> {
         self.kernel_modules();
         self.service_user();
         self.subordinate_ids();
+        self.bwrap_namespaces();
         self.service_unit();
         self.helper_unit();
         self.binary();
