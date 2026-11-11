@@ -290,11 +290,12 @@ Remote clients
 
 ## Evidence
 
-Head of the gates: `52c2aed7` (2026-11-11), the merge of `dev` up to `63819769` (#1168); the
+Head of the gates: `f323ecd3` (2026-11-11), which holds `dev` up to `63819769` (#1168); the
 commits after it change this document only.
 
 - `scripts/dev ci`: exit 0; nextest 3682 tests run, 3682 passed, 16 skipped; clippy,
-  doctests, docs and the repository check (the same at `afdc1a2b`, before that merge).
+  doctests, docs and the repository check (the same at `afdc1a2b`, before the merge of `dev`,
+  and at `52c2aed7`, the merge).
 - e2e: the whole suite (`cd e2e && npx e2e run`) at `8e687075`: 79 files passed, 1 skipped; 940
   tests passed, 1 skipped. At `c84185d3`, where only a comment of the sign-in page had changed
   since (and no file of the web UI changed after it): `sign-in`, `instance-address`,
@@ -320,17 +321,17 @@ commits after it change this document only.
     `the_cli_finds_its_way_back_after_a_move_that_was_undone` (two laptops: a sign-in without a
     token, with the token that followed, with another one).
 - Each behaviour's test was seen to fail without it: before its code was written, or by a
-  mutation of it (86 mutations of the kept answer and its schedule, the routes, the pages, the
+  mutation of it (90 mutations of the kept answer and its schedule, the routes, the pages, the
   move's question and line, the client's control question and the remote client with its
   store). Two survived at first and got their tests (a URL that is not a host reaching the
   request line; the count of equal answers not reset by a changed one), a third was an
   equivalent change. The first review found a fourth that no mutation had been tried on: the
   schedule's test asked only "is GitHub asked by then", never "not before". It now reads at
   29 999 ms and at each longer wait minus one, and ten mutations of the schedule, run against
-  the integration tests alone, are all caught. The 13 mutations of the second review's fixes
+  the integration tests alone, are all caught. The 17 mutations of the second review's fixes
   (an empty token taking the saved one, the store taking a sign-in back for any token or for
-  none, a control question that fails read as "registered", the hint, the hidden characters)
-  are all caught.
+  none, a control question that fails read as "registered", the hint, each range of hidden
+  characters) are all caught.
 - `yulius security-scan`: "Security scan disabled" (Vidoc is off for this project): disabled, not
   passed.
 - Real runs (2026-11-11):
@@ -367,10 +368,11 @@ commits after it change this document only.
     that fails) and four nits. Answered: a sign-in always needs its token typed, and without one
     contacts nobody and leaves the file byte for byte; the store takes a sign-in back only for
     the token that followed; the fake GitHub can fail the second request of a call; the hint
-    singles out no one of several old names; the line drops the soft hyphen and tag characters
-    and turns line and paragraph separators into spaces. Kept as it is:
-    `github_callback_check_running` stays public, as `finish.rs` has such a window for tests
-    that live in another crate.
+    singles out no one of several old names; the line drops the soft hyphen, tag characters and
+    the other characters that ride along unseen (deprecated format controls, variation
+    selectors, annotation marks) and turns line and paragraph separators into spaces. Kept as
+    it is: `github_callback_check_running` stays public, as `finish.rs` has such a window for
+    tests that live in another crate.
   - Round 3: asked for the head that holds this section. The merge (`delivery_merge`) is
     refused without its approval of the exact head and records its verdict.
 
