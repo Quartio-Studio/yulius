@@ -14,6 +14,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   order (ADR-0234), and the Stop settles the task as it reads after that. This was the third
   report of `task_done::a_goal_the_tui_dropped_is_submitted_again` timing out in the full suite
   (#1066): it failed 2 of 48 runs under probe delays and passes 96 of 96 with the fix.
+- The default effort is high again (SPEC-462, task #444, ADR-0295); the default model stays Fable
+  5.2. A task, Cockpit or Superagent that names no effort runs at `high` from its next start, and
+  one that chose an effort, also Max, keeps it. The composer's and Settings' "Default" says High,
+  and the `task_create` tool now names the real defaults (it said "default Opus"); both are held to
+  the launch constants by tests. Production gets this with the next promotion and update.
 - `yulius tool` and `yulius remove` work in task sessions (SPEC-451, task #433, #1109). The
   `/yulius/bin/yulius` wrapper first on a session's `PATH` passed only `wait` and `security-scan`,
   so both commands the briefing names printed its usage line and exited 2. It now passes them too,

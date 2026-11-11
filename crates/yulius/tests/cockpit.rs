@@ -333,7 +333,7 @@ async fn a_write_user_gets_one_plain_cockpit_on_a_pool_subscription() -> TestRes
     // The default model and effort (SPEC-023 DEF-004).
     assert_eq!(
         printed(&screen, "cockpit-args")?,
-        "[--model claude-fable-5-2 --effort max]"
+        "[--model claude-fable-5-2 --effort high]"
     );
     assert_eq!(printed(&screen, "token")?, TOKEN);
     let repo = std::fs::canonicalize(f.data.join("sandboxes/s1/repo"))?;
@@ -520,7 +520,7 @@ async fn a_cockpit_started_again_resumes_the_newest_conversation() -> TestResult
     read_until(&mut socket, &mut screen, "ready").await?;
     assert_eq!(
         printed(&screen, "cockpit-args")?,
-        "[--resume after-clear --model claude-fable-5-2 --effort max]"
+        "[--resume after-clear --model claude-fable-5-2 --effort high]"
     );
 
     // Unwatched for a day it ends like a terminal, and comes back with its conversation.
@@ -543,7 +543,7 @@ async fn a_cockpit_started_again_resumes_the_newest_conversation() -> TestResult
     read_until(&mut socket, &mut screen, "ready").await?;
     assert_eq!(
         printed(&screen, "cockpit-args")?,
-        "[--resume after-clear --model claude-fable-5-2 --effort max]"
+        "[--resume after-clear --model claude-fable-5-2 --effort high]"
     );
     f.h.app.end_all_shells().await;
     Ok(())
@@ -749,7 +749,7 @@ async fn a_resume_that_fails_at_once_starts_fresh_the_next_time() -> TestResult 
     read_until(&mut socket, &mut screen, "ready").await?;
     assert_eq!(
         printed(&screen, "cockpit-args")?,
-        "[--model claude-fable-5-2 --effort max]",
+        "[--model claude-fable-5-2 --effort high]",
         "a fresh conversation"
     );
     f.h.app.end_all_shells().await;
@@ -786,7 +786,7 @@ async fn a_cockpit_takes_the_repository_mcp_servers_into_yulius_without_asking()
     read_until(&mut socket, &mut screen, "ready").await?;
     assert_eq!(
         printed(&screen, "cockpit-args")?,
-        "[--model claude-fable-5-2 --effort max]"
+        "[--model claude-fable-5-2 --effort high]"
     );
     let config = PathBuf::from(printed(&screen, "config")?);
     let settings: Value = serde_json::from_slice(&std::fs::read(config.join("launch-settings"))?)?;
@@ -1127,7 +1127,7 @@ async fn a_resumed_cockpit_killed_by_a_signal_resumes_the_same_conversation() ->
     read_until(&mut socket, &mut screen, "ready").await?;
     assert_eq!(
         printed(&screen, "cockpit-args")?,
-        "[--resume kept --model claude-fable-5-2 --effort max]",
+        "[--resume kept --model claude-fable-5-2 --effort high]",
         "the same conversation"
     );
     f.h.app.end_all_shells().await;
@@ -2654,7 +2654,7 @@ async fn a_usage_limit_moves_the_cockpit_to_a_subscription_with_capacity() -> Te
     read_until(&mut socket, &mut screen, "ready").await?;
     assert_eq!(
         printed(&screen, "cockpit-args")?,
-        "[--resume conv-1 --model claude-fable-5-2 --effort max]",
+        "[--resume conv-1 --model claude-fable-5-2 --effort high]",
         "the same conversation, nothing typed"
     );
     assert_eq!(printed(&screen, "interrupted")?, "1");
@@ -2921,7 +2921,7 @@ async fn a_failed_move_still_continues_the_cut_turn_at_the_next_start() -> TestR
     read_until(&mut socket, &mut screen, "ready").await?;
     assert_eq!(
         printed(&screen, "cockpit-args")?,
-        "[--resume conv-1 --model claude-fable-5-2 --effort max]"
+        "[--resume conv-1 --model claude-fable-5-2 --effort high]"
     );
     assert_eq!(
         printed(&screen, "interrupted")?,
@@ -2975,7 +2975,7 @@ async fn a_quick_second_move_keeps_resuming_the_conversation() -> TestResult {
     assert_eq!(printed(&screen, "token")?, TOKEN);
     assert_eq!(
         printed(&screen, "cockpit-args")?,
-        "[--resume conv-1 --model claude-fable-5-2 --effort max]"
+        "[--resume conv-1 --model claude-fable-5-2 --effort high]"
     );
     // Opened again later, it still resumes the conversation.
     socket
@@ -4005,7 +4005,7 @@ async fn a_superagent_started_before_an_update_restarts_resuming_its_conversatio
     read_until(&mut socket, &mut screen, "ready").await?;
     assert_eq!(
         printed(&screen, "cockpit-args")?,
-        "[--resume conv-1 --model claude-fable-5-2 --effort max]",
+        "[--resume conv-1 --model claude-fable-5-2 --effort high]",
         "the same conversation, nothing typed"
     );
     assert_eq!(
@@ -4390,7 +4390,7 @@ async fn a_superagent_that_lost_yulius_says_so_and_restarts_in_place() -> TestRe
     read_until(&mut socket, &mut screen, "ready").await?;
     assert_eq!(
         printed(&screen, "cockpit-args")?,
-        "[--resume conv-1 --model claude-fable-5-2 --effort max]",
+        "[--resume conv-1 --model claude-fable-5-2 --effort high]",
         "the same conversation"
     );
     let fresh = link_state(&f, &f.alice).await?;
