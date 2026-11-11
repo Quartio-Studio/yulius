@@ -16,6 +16,18 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   ("sandbox namespaces") report a host where bwrap cannot start a sandbox, with the fix, by
   starting one, and `yulius instance import` names the step. Run `sudo yulius host setup` again
   after a release upgrade from 24.04 to 26.04.
+- Nothing is typed into the Editor before its file is in it (SPEC-452, task #434, #1087). The
+  editor is made with no model, so it shows no text to type into while the first file's read and
+  live join are on their way. Before, Monaco's own empty model took that typing, the file's model
+  replaced it (the text was lost) and Monaco threw "Model is disposed!" twice. The quarantined
+  e2e "a folder chosen while the worktrees are read…" runs again: it types once the tab is open,
+  and moves the disk once the server has the typing (a look that got there first took the disk's
+  text as the saved one, and no conflict was asked).
+- Your own Anthropic key can be named `ANTHROPIC_API_KEY_<NAME>` or `ANTHROPIC_AUTH_TOKEN_<NAME>`
+  (not ending in `_FILE`), such as `ANTHROPIC_API_KEY_QUARTIO` (SPEC-455, task #437, ADR-0292, #1153); every other
+  `ANTHROPIC_` name stays reserved for the agent CLI. A refused name now says which prefix is
+  reserved and suggests one that works (`APP_<NAME>`), instead of the same bare refusal for every
+  name tried.
 - The default effort is high again (SPEC-462, task #444, ADR-0295); the default model stays Fable
   5.2. A task, Cockpit or Superagent that names no effort runs at `high` from its next start, and
   one that chose an effort, also Max, keeps it. The composer's and Settings' "Default" says High,
