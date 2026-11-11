@@ -211,5 +211,124 @@ messages and documents say what the code does.
   operator's way out of a hanging run. The run that froze the unit keeps ignoring signals once
   the start is ordered: its signal thread exists to thaw before that point and must do nothing
   after it.
+- **A stopped unit that left processes behind is an issue, not this change (#1178).** The
+  request keeps the `manual` line for a unit that does not run, and a resumed start that finds
+  the unit `inactive` gave that line before this change too. That a unit stopped by hand leaves
+  its agents running (`KillMode=process`) is a state of its own, with its own decision (a failed
+  line, or ending them), found by this change's review.
 - **No new ADR.** ADR-0297's decisions stand (the start is the point of no automatic return; the
   inventory is the proof); these are corrections inside them.
+
+## Evidence
+
+Head of the gate: `e3ea9cc4` (2026-11-11), which holds `dev` up to `eb2e8a4e` (#1167). #1169 had
+been squash-merged meanwhile: its final head `e38828ea` was merged first (its tree equals the
+squash `4f90a309`), then `dev` itself. The commits after `e3ea9cc4` change this document only.
+
+- `scripts/dev ci`: exit 0; nextest 3540 tests run, 3540 passed, 16 skipped;
+  doctests, `cargo deny`, `cargo shear` and the docs built. Earlier runs: `6793e524` failed at
+  clippy (`type_complexity` on a field of the tests' fake systemd; a named type fixed it);
+  `605b51d1` and `3ab24053` were green (3498 passed, 16 skipped each).
+- `cargo test -p yulius --lib instance::`: 173 passed (89 in `instance::migrate`, 39 of them flow
+  tests; 19 freeze, 19 import, 10 inventory, 5 walk).
+- Each fix has a test that fails without it (seen failing before the change, or with the change
+  taken back):
+  - LFT-001: `flow::a_look_that_fails_right_after_the_freeze_thaws_and_says_what_is_known`
+    (before: the unit stayed frozen behind "is not running any more").
+  - LFT-002: `flow::a_recorded_start_never_ends_with_both_instances_running` (before: no freeze
+    and exit 0; with the export's freeze: a `systemctl thaw` after a refused or slow freeze; with
+    every state but `active` taken for stopped: the `manual` line and exit 0 for a unit that is
+    `activating`) and `freeze::a_freeze_to_stay_never_thaws_and_asks_no_helper`.
+  - LFT-003: `flow::a_recorded_start_goes_on_only_with_the_old_unit_frozen` (before: the silent
+    host got the `--abort` line; the key was tried twice; with `failed` not taken for stopped the
+    test fails too) and `flow::a_recorded_start_waits_for_a_new_host_that_cannot_be_reached`
+    (before: "add this line" and exit 0).
+  - LFT-004: `flow::a_finish_that_was_done_but_not_recorded_is_found_done` (before: "Run the
+    command again", exit 1) and
+    `remote::a_connection_without_its_key_says_so_and_a_forgotten_key_is_such_a_one`.
+  - LFT-005: with the mark taken out of `walk::left_out` four tests fail:
+    `inventory::a_limits_mark_left_on_the_old_host_is_not_the_copy`,
+    `walk::the_imports_limits_mark_is_left_out_at_the_top_only`,
+    `import::a_link_the_copy_brings_at_the_limits_mark_is_replaced_not_followed` and
+    `flow::a_limits_mark_left_on_the_old_host_does_not_fail_the_proof`.
+  - LFT-006 is documentation: `python3 scripts/check_repository.py` passes, and the index holds
+    294 records, each once, in numeric order from 0284 on.
+- A flaky test met on the way and fixed: `flow::one_run_at_a_time_holds_the_state_directory` took
+  the lock again right after dropping it, while a test beside it that starts a process holds a
+  copy of the descriptor between its fork and its exec: 9 failures in 300 runs of the instance
+  tests. It now waits for the release, with a bound: 0 in 400.
+- `yulius security-scan`: "Security scan disabled" (Vidoc is off for this project): disabled, not
+  passed.
+- Real hosts: two Ubuntu 26.04.1 guests (QEMU, systemd 259, kernel 7.0) as in SPEC-460's
+  Evidence, the old one with a running instance, two drop-ins, a key file, Caddy, ufw,
+  sandbox-like data and a `.yulius-limits-adapt` dated 2023; the new one fresh. `yulius instance
+  migrate root@10.0.2.2 --ssh-port 20107 --public-url https://b-10-0-2-15.sslip.io --yes`:
+  - At `a160608d`:
+    - LFT-001, with a `systemctl` in the run's PATH whose `show
+      --property=ActiveState,FreezerState` fails once the unit was frozen: "FAIL old instance
+      systemd does not say whether yulius.service is frozen (`systemctl show` failed right after
+      the freeze): nothing is copied", then "changed old instance thawed: it runs as before",
+      exit 1; afterwards the unit `active`, `running`, `enabled` and the cutover `No`.
+    - LFT-005: the next run copied and proved, "copy proven 78 entries and 5.2 MiB in 14 folders,
+      the same on both hosts", with the 2023 mark on the old host; the new instance's first start
+      consumed the import's own mark.
+    - LFT-003, with the staged build moved away on the new host: "FAIL new instance the new host
+      does not answer (the step on the new host ended with exit status: 127) … run the command
+      again when the new host answers", exit 1, nothing touched, still `Starting`.
+    - LFT-002: that move had been killed (SIGKILL) four seconds after its "move mark" line
+      (`Starting`, the old unit frozen and disabled, the new instance up) and the old unit thawed
+      by hand. The same command: "changed old instance yulius.service ran here beside the new
+      instance … it is frozen again", "stays frozen and is disabled", the finish, exit 0.
+    - LFT-004, with `finished` set back in `state.json`: "manual one-time key is gone from this
+      host: an earlier run deleted it once the finish on the new host was done", exit 0,
+      `finished` recorded.
+  - At `605b51d1` (the guests booted again from their disks; a start recorded in `state.json`,
+    the old unit started by hand, the build on both hosts and staged again):
+    - a key that is missing on the old host is made and asked for as in a plan (the line to add,
+      exit 0);
+    - the new guest powered off: "FAIL new host cannot be reached (ssh ended with exit status:
+      255: ssh: connect to host 10.0.2.2 port 20107: Connection refused) … run the command again
+      when the new host answers", exit 1, no sign-in, the old unit untouched, still `Starting`;
+    - the new guest up again: "changed old instance yulius.service ran here beside the new
+      instance … it is frozen again" (`freeze::freeze_to_stay` on systemd 259), "stays frozen
+      and is disabled", the finish, exit 0.
+  - What systemd 259 answers in the states the resumed start tells apart (the old guest alone,
+    at `e3ea9cc4`'s time; the fake systemd of the flow tests answers the same):
+    - a unit that is `activating` (an `ExecStartPre` that sleeps) or `deactivating` (an
+      `ExecStop` that sleeps): `systemctl freeze` fails with "Unit has a pending job", exit 1,
+      and the state stays; `systemctl stop` and `systemctl kill --kill-whom=all`, which the
+      failed line names, end it (no cgroup left);
+    - a unit stopped by hand with a process left in its cgroup (`KillMode=process`):
+      `ActiveState=inactive`, `ControlGroup` still set, `cgroup.events` "populated 1";
+      `systemctl freeze` fails with "Unit is not active"; `systemctl kill --kill-whom=all`, which
+      the `manual` line names, ends it. The resumed start does not look at that cgroup: issue
+      #1178 (present before this change, see the review below).
+- Independent review, in fresh read-only sessions given the diff range, this spec and
+  `om-code-review`. The account's usage limit ended three of them before they reported; the
+  fourth kept notes: every requirement read against the code, eight mutations in a copy of the
+  tree that each make a test of LFT-001 to LFT-005 fail, the documents checked against the
+  code, and its candidates, all answered:
+  - a unit between states taken for stopped, the wording after a freeze that did not hold, a
+    freeze of a unit whose state was not known said as "ran", a signal's word after the move
+    took its end, and the tests' fake connection looking at the host before its key: fixed
+    with tests in `3ab24053`;
+  - the key tried twice in a resumed start, the advice after a failed freeze that systemd
+    would refuse again, and `failed` without a test: fixed with tests in `e3ea9cc4`;
+  - outside this change, because it was there before it: an old unit stopped by hand that left
+    processes behind (`KillMode=process`) still gets the `manual` line and exit 0 in a resumed
+    start. Issue #1178, with what systemd 259 answers in that state.
+
+Not tested here:
+
+- A `systemctl show` that fails by itself (a shim made it fail), and a freeze that never
+  completes on a real host: the fake systemd and `freeze::tests` cover them.
+- The resumed start at the last head on real hosts: the runs above are at `a160608d` and
+  `605b51d1`. What changed since is which states count as stopped (`inactive`, `failed`), one
+  try of the key instead of two, and wordings; the flow tests cover them, and systemd's answers
+  they rely on were checked on the real guest.
+- Ctrl-C in a resumed run on real hosts: the change is to the guide; such a run arms no signal
+  handler (`World::arm` is called by the cutover's freeze alone).
+- The HTTPS check from the old host: both guests have the same private address, as in SPEC-460,
+  so the checklist said `manual` there.
+- A move from Ubuntu 24.04 (a build made in this sandbox needs 26.04's glibc) and data of
+  production's size.
