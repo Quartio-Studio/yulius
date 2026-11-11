@@ -6,6 +6,16 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-11
 
+- A subscription's email is typed in place, under its name (SPEC-463, task #448, ADR-0300).
+  Production's subscriptions read "email unknown", because Claude gives no email to a
+  `claude setup-token` sign-in, so the address went into the name. On the Subscriptions page the
+  email line now has a pencil like the name: Enter or leaving the field saves, Escape cancels,
+  Enter in the empty field removes it. A card can read "Agent TEAM" over its address. A typed
+  email stays when the subscription signs in again, and nothing says Claude confirmed it: the
+  toast after a sign-in names only an email Claude gave. `PATCH /api/admin/accounts/{id}` takes
+  `email` beside an optional `label`, and `Account` carries `email_typed`. Also fixed on that
+  page: saving one line and going straight on to the other could lose the second field and save
+  what was half typed, because a list refresh already on its way redrew it.
 - A turn whose Stop meets its own prompt still ends (SPEC-453, task #435, ADR-0299). On a loaded
   host a goal task could stay Working for good after Claude Code recorded its goal as met: the
   transcript watcher, applying the turn's prompt, cleared the verdict wait the turn's Stop had

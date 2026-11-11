@@ -1464,7 +1464,7 @@ resolves to nothing, the run gets the server without that variable or token.
 | PATCH | `/api/admin/users/{id}` | superadmin | `{"disabled?","is_instance_admin?"}` → `AdminUser` |
 | GET | `/api/admin/accounts` | instance admin | `[Account]` |
 | POST | `/api/admin/accounts` | instance admin | `{"provider":"anthropic","label"}` → 201 `{"account":Account,"login_id"}` (status `pending_login`) then use the login terminal; nothing is created when the login cannot start |
-| PATCH | `/api/admin/accounts/{id}` | instance admin | `{"label"}` (trimmed, 1–80 printable chars) → `Account`: renames the subscription (the Subscriptions page edits the name in place, SPEC-244; audited `account.updated`); the pool has no priority, order or on/off switch (F 2026-10-10): any other field is `invalid` (422) |
+| PATCH | `/api/admin/accounts/{id}` | instance admin | `{"label"?, "email"?}` → `Account`, at least one of the two: `label` (trimmed, 1–80 printable chars) renames the subscription (SPEC-244); `email` (a string, trimmed: one `@` with text on both sides, no whitespace or control characters, at most 254 characters) is the email an administrator types for it, and `""` removes that email (SPEC-463, ADR-0300). Both are checked before either is written, and a request with neither (`null` counts as not given) is `invalid` (422). The Subscriptions page edits both in place. Audited `account.updated` with the new name and `email=set` or `email=removed`, never the address. The pool has no priority, order or on/off switch (F 2026-10-10): any other field is `invalid` (422) |
 | DELETE | `/api/admin/accounts/{id}` | instance admin | → 204, also while tasks use it (SPEC-447 MOV-003): it is deleted first, so nothing chooses it again; Done tasks' idle sessions on it are closed (`closed`, as archiving does, SPEC-057) and every other task with a run on it moves to another subscription in the same session or waits for one (its terminal says so; with nothing usable left it is under Needs you), so every run on it ends (a launch that chose it just before chooses again). It answers once the Done sessions are closed; the moves go on after the answer, each waiting for a start or switch under way. A task its person paused, or whose move is refused, is stopped instead, saying why. Cancels its running login |
 | POST | `/api/admin/accounts/{id}/relogin` | instance admin | → `{"account":Account,"login_id"}`; replaces a running login of the account |
 | WS | `/api/admin/accounts/login/{login_id}/terminal` | instance admin | login terminal (below) |
@@ -1511,7 +1511,7 @@ Account = {"id","provider","label",
            "secondary":{…}|null,"weekly_opus":{…}|null,"weekly_sonnet":{…}|null,
            "observed_at":"…|null"},
   "last_error":"…|null","in_use_by":0,
-  "email":"…|null","plan":"Pro|Max 5x|Max 20x|…|null"}
+  "email":"…|null","email_typed":false,"plan":"Pro|Max 5x|Max 20x|…|null"}
 ```
 
 `primary` is the 5-hour window, `secondary` the weekly one, `weekly_opus` / `weekly_sonnet` the
@@ -1521,7 +1521,11 @@ ADR-0185). After a sign-in stores a credential, Yulius reads it from Claude's pr
 (`GET /api/oauth/profile`, `account.email`) with that credential. The background usage round
 reads it once for subscriptions signed in before. It is `null` until Claude gives one: Claude may
 refuse the profile to a `setup-token` sign-in, and the page then reads "email unknown" until the
-next sign-in. A new sign-in drops the previous email. Emails are for administrators (UI-022).
+next sign-in. A new sign-in drops the previous email. An administrator can type the email
+instead (`PATCH` above; SPEC-463, ADR-0300): `email_typed` is then `true`, a new sign-in keeps
+it and Claude's answer never replaces it. Removing it makes the background round ask Claude
+again. A typed email is not verified, so nothing presents it as Claude's word: the toast after a
+sign-in names only an email Claude gave. Emails are for administrators (UI-022).
 `StatusAccount.email`, `CapacityAccount.email`, `TaskDetail.account_email`,
 `attempts[].account_email` and `tokens_by_account[].account_email` are present only for an
 instance administrator or the superadmin, and only when known. A task summary (lists, events)

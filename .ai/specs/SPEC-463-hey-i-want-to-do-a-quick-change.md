@@ -67,8 +67,8 @@ Confirmed against `dev` at dbec951d.
 - [x] Read the product context and related work, then write and validate the spec
 - [x] The store keeps a typed email across sign-ins and Claude's answers
 - [x] PATCH /api/admin/accounts/{id} sets or removes the email for administrators
-- [ ] The Subscriptions page edits the email line in place
-- [ ] ADR-0300, architecture, API reference and product spec say the email can be typed
+- [x] The Subscriptions page edits the email line in place
+- [x] ADR-0300, architecture, API reference and product spec say the email can be typed
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 

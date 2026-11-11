@@ -4,7 +4,9 @@
 
 Accepted. Specified in [SPEC-244](../../.ai/specs/SPEC-244-rename-claude-sessions-and-show-account.md);
 task #230 (feedback from an early external user: "add option to rename claude sessions + ideally
-see the session email"). Amends SPEC-001 ROT-007 and ROT-009.
+see the session email"). Amends SPEC-001 ROT-007 and ROT-009. Its rejection of a typed email is
+amended by [ADR-0300](0300-an-administrator-can-type-a-subscriptions-email.md): an administrator
+can type the email, and a typed one stays across sign-ins; the rest stands.
 
 ## Context
 
