@@ -132,6 +132,8 @@ struct FakeRemote {
     /// The one-time key's comment (the move's id), as the real connection is given it.
     comment: String,
     signs_in: bool,
+    /// The key's file was deleted on the old host ([`Remote::forget`]).
+    deleted: bool,
     healthy: bool,
     /// Changes the installed copy before it is counted.
     tamper: Option<fn(&Path)>,
@@ -159,7 +161,10 @@ fn step_name(request: &Request) -> String {
 
 impl Remote for FakeRemote {
     fn reachable(&mut self) -> Result<(), String> {
-        if self.key {
+        if self.deleted {
+            // As the real connection: it does not even try without its key.
+            Err("there is no one-time key yet".into())
+        } else if self.key {
             Ok(())
         } else {
             Err("Permission denied (publickey)".into())
@@ -167,6 +172,7 @@ impl Remote for FakeRemote {
     }
 
     fn key(&mut self) -> Result<String, String> {
+        self.deleted = false;
         Ok(format!("ssh-ed25519 AAAAC3FAKE {}", self.comment))
     }
 
@@ -322,6 +328,7 @@ impl Remote for FakeRemote {
     fn forget(&mut self) {
         note(&self.events, "old: key deleted");
         self.key = false;
+        self.deleted = true;
     }
 }
 
@@ -544,6 +551,7 @@ fn setup() -> Result<Setup, Box<dyn std::error::Error>> {
             key: false,
             comment: String::new(),
             signs_in: true,
+            deleted: false,
             healthy: true,
             tamper: None,
             no_base: false,
@@ -1701,6 +1709,38 @@ fn a_finish_whose_answer_was_lost_is_recorded_when_the_key_no_longer_signs_in() 
     );
     let state = State::load(&s.opts.state_dir).ok_or("no state")?;
     assert!(state.finished);
+    Ok(())
+}
+
+#[test]
+fn a_finish_that_was_done_but_not_recorded_is_found_done() -> TestResult {
+    // Whether the new URL answers from here or not (a DNS record still to change).
+    for https in [true, false] {
+        let mut s = setup()?;
+        assert_eq!(s.run()?, 0, "{}", s.shown());
+        // The finish ran on both hosts; its record did not survive (a full disk, a kill).
+        let mut state = State::load(&s.opts.state_dir).ok_or("no state")?;
+        assert!(state.finished && !s.remote.key);
+        state.finished = false;
+        state.save(&s.opts.state_dir)?;
+        s.world.shown.clear();
+        s.world.https = https;
+        // The key is deleted here, which only a finish does: found done, not waited for.
+        assert_eq!(s.run()?, 0, "{}", s.shown());
+        let shown = s.shown();
+        assert!(
+            shown.contains("the finish on the new host was done"),
+            "{shown}"
+        );
+        assert!(!shown.contains("Run the command again"), "{shown}");
+        let state = State::load(&s.opts.state_dir).ok_or("no state")?;
+        assert!(state.finished);
+        assert_eq!(s.old_unit(), (true, true));
+        // And the next run has nothing to do.
+        s.world.shown.clear();
+        assert_eq!(s.run()?, 0);
+        assert!(s.shown().contains("finished: the instance runs on"));
+    }
     Ok(())
 }
 

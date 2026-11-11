@@ -1705,12 +1705,12 @@ impl<'a> Move<'a> {
                 ),
             ),
         }
-        // Skipped only when the key was removed there (an earlier run's finish): any other
-        // failure to reach the new host is said by the step itself.
+        // Skipped only when the key is gone (an earlier run's finish removed it there and
+        // deleted it here): any other failure to reach the new host is said by the step itself.
         let refused = self
             .remote
             .reachable()
-            .is_err_and(|why| why.contains("Permission denied") || why.contains("no one-time key"));
+            .is_err_and(|why| why.contains(remote::KEY_REFUSED) || why.contains(remote::NO_KEY));
         if !refused {
             self.call(
                 "tasks",
@@ -1802,33 +1802,47 @@ impl<'a> Move<'a> {
                     self.push(shown(line));
                 }
             }
-            // The key no longer signs in and the new instance answers: an earlier run's finish
-            // was done there and only its answer was lost.
-            Err(_)
-                if self
-                    .remote
-                    .reachable()
-                    .is_err_and(|why| why.contains("Permission denied"))
+            Err(why) => {
+                let key = self.remote.reachable().err().unwrap_or_default();
+                if key.contains(remote::NO_KEY) {
+                    // Deleted here, which only a finish does, once the new host's finish
+                    // answered: that run's record did not survive. Nothing is waited for.
+                    self.manual(
+                        "one-time key",
+                        format!(
+                            "is gone from this host: an earlier run deleted it once the finish \
+                             on the new host was done, and only its record was not kept. Look \
+                             at the new host's firewall once (`ufw status`); if the key was \
+                             removed here by hand instead, also remove its line ({}) from \
+                             root's authorized_keys there, and {}",
+                            self.state.key_comment(),
+                            target::STATE_DIR
+                        ),
+                    );
+                } else if key.contains(remote::KEY_REFUSED)
                     && self.state.new_url.clone().is_some_and(|url| {
                         self.world.healthz(&format!("{url}/healthz"), None).is_ok()
-                    }) =>
-            {
-                self.manual(
-                    "one-time key",
-                    "no longer signs in to the new host and the new instance answers: the \
-                     finish there was done. Look at its firewall once (`ufw status`)",
-                );
-            }
-            Err(why) => {
-                // Not done there: the key stays on both hosts, and the same command tries again.
-                self.fail(
-                    "one-time key",
-                    format!(
-                        "the new host did not answer ({why}): its key, the flow's files and the \
-                         firewall there are still to do. Run the command again"
-                    ),
-                );
-                return;
+                    })
+                {
+                    // The key no longer signs in and the new instance answers: an earlier
+                    // run's finish was done there and only its answer was lost.
+                    self.manual(
+                        "one-time key",
+                        "no longer signs in to the new host and the new instance answers: the \
+                         finish there was done. Look at its firewall once (`ufw status`)",
+                    );
+                } else {
+                    // Not done there: the key stays on both hosts, and the same command tries
+                    // again.
+                    self.fail(
+                        "one-time key",
+                        format!(
+                            "the new host did not answer ({why}): its key, the flow's files and \
+                             the firewall there are still to do. Run the command again"
+                        ),
+                    );
+                    return;
+                }
             }
         }
         self.remote.forget();

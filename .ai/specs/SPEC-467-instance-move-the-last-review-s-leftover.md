@@ -74,11 +74,14 @@ messages and documents say what the code does.
   again when it answers (the abort only once the new instance is known to be stopped). A new
   instance that answers and does not report the build keeps the line that points to `--abort`.
   Neither starts, stops, freezes or thaws anything, and the recorded start stays.
-- LFT-004 **A finish that was done is found done.** `finish` accepts a key that no longer exists
-  on the old host as it accepts one the new host refuses: with the new instance answering at its
-  URL the finish is recorded (`finished`), the checklist says that the finish there was done
-  (`manual`: look at the firewall once), and the run ends with exit 0. A new host that cannot be
-  reached with a key that still exists keeps "Run the command again".
+- LFT-004 **A finish that was done is found done.** `finish` takes a key that no longer exists
+  on the old host for a finish that was done: only a finish deletes it, once the new host's
+  finish answered. The finish is recorded (`finished`), the checklist says so (`manual`: look at
+  the new host's firewall once, and what to remove there if the key was deleted by hand instead)
+  and the run ends with exit 0, whether or not the new URL answers from the old host (a DNS
+  record may still be open). A key the new host refuses stays as it was (done when the new
+  instance answers); a new host that cannot be reached with a key that still exists keeps "Run
+  the command again".
 - LFT-005 **The import's limits mark is never the copy.** `yulius instance export` leaves a
   top-level `.yulius-limits-adapt` out, whatever it is (file, link, directory), and neither host
   counts it: every import writes its own (SPEC-459 HSL-005). A move from an old host that holds
@@ -118,7 +121,7 @@ messages and documents say what the code does.
   host, the state still `Starting`. With a new instance that answers and does not run: the line
   with `--abort`, as before.
 - A move whose finish ran, with `finished` not saved: the next run ends with exit 0, says that the
-  finish there was done and records `finished`.
+  finish on the new host was done and records `finished`, with the new URL answering or not.
 - An old data directory with a `.yulius-limits-adapt` of another time: the export's plan does
   not list it, both inventories are equal, and the installed copy has the import's own mark. The
   import of a crafted archive that brings a link at that name still replaces it without
@@ -161,6 +164,11 @@ messages and documents say what the code does.
   import after the whole copy either. The import keeps replacing what an archive brings there, for
   archives of older builds. The name is not added to `LEFT_OUT`: that list is also what may sit
   in a target before an import whatever its kind, and the mark may be there only as a file.
+- **A key deleted here needs no answer from the new URL (LFT-004).** The key the new host
+  refuses is evidence from outside, so the new instance's answer is asked for with it. The key's
+  absence on the old host is this host's own record: `forget` runs only after the new host's
+  finish answered (or in an abort, which leaves no `Moved` state). Asking the URL too would keep
+  the run failing for as long as the DNS record is open, about a finish that is done.
 - **The guide is made true, not the code (finding 6).** A resumed run that ends at Ctrl-C thaws
   nothing and is taken up by the same command; making it ignore the signal would only take the
   operator's way out of a hanging run. The run that froze the unit keeps ignoring signals once
