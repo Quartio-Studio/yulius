@@ -134,6 +134,9 @@ pub struct TaskRuntime {
     /// (SPEC-072 LRS-002). A person's switch then resumes past the limit even without a `limit`
     /// pause (an automatic switch after the limit was refused).
     pub(crate) at_limit: AtomicBool,
+    /// The goal pause Claude Code wrote at that limit, held for the limit path, or that path's
+    /// word that the session stays there (SPEC-464 UCL-007).
+    pub(crate) limit_goal_pause: Mutex<crate::goal_retry::LimitGoalPause>,
     /// When the current turn started (ms, 0 = no turn in progress). Active agent time comes
     /// from the transcript (SPEC-087 MET-001), not from this.
     turn_started_ms: AtomicI64,
@@ -383,6 +386,7 @@ impl TaskRuntime {
             hooks_seen: AtomicBool::new(false),
             limit_resets_at: AtomicI64::new(0),
             at_limit: AtomicBool::new(false),
+            limit_goal_pause: Mutex::new(crate::goal_retry::LimitGoalPause::None),
             turn_started_ms: AtomicI64::new(0),
             auto_pr_head: Mutex::new(None),
             merged_covers: Mutex::new(None),
@@ -484,6 +488,15 @@ impl TaskRuntime {
     /// Ends the turn in progress, if any.
     pub(crate) fn end_turn(&self, _now: Timestamp) {
         self.turn_started_ms.store(0, Ordering::SeqCst);
+    }
+
+    /// A usage limit or a refused subscription cut the run's turn: the run is at its limit, and
+    /// nothing is known yet of a goal pause written there (SPEC-464 UCL-007).
+    pub(crate) fn limit_cut_the_turn(&self) {
+        if let Ok(mut pause) = self.limit_goal_pause.lock() {
+            *pause = crate::goal_retry::LimitGoalPause::None;
+        }
+        self.at_limit.store(true, Ordering::SeqCst);
     }
 }
 
@@ -3243,6 +3256,11 @@ impl App {
         }
         // A paused task that moves to another subscription is no longer paused.
         self.end_pause(task_id, "switched").await;
+        // The turn a limit cut is continued by the new session itself (SPEC-034): nobody has to
+        // send the message a goal pause at that limit asked for (SPEC-464 UCL-007).
+        if matches!(start, RunStart::AfterLimit) {
+            self.end_goal_retry_request(task_id).await;
+        }
         let from_desc = match &attempt {
             Some(a) => self.account_desc(a.harness, a.account_id.as_ref()).await,
             None => task.harness.as_str().to_owned(),
@@ -3557,6 +3575,8 @@ impl App {
             .switch_refused_ms
             .store(self.now().0, Ordering::SeqCst);
         tracing::warn!(task = %task.id, error = %err, "switch refused; the running session stays");
+        // At a usage limit the session stays at Claude Code's refusal (SPEC-464 UCL-007).
+        self.limit_move_refused(task).await;
         if repeat {
             return;
         }
@@ -4069,6 +4089,10 @@ impl App {
                         && facts.limit_pending
                     {
                         self.on_observation(&task_id, &attempt, limit).await;
+                        // The goal pause Claude Code wrote at that limit is the limit's too.
+                        if let Some(notice) = &facts.limit_goal_pause {
+                            self.goal_retry_observed(&task_id, false, notice).await;
+                        }
                     } else if !facts.limit_pending {
                         // Claude Code continued past its limit while Yulius was down.
                         self.cut_turn_continued(&task_id, facts.last_turn_at).await;
@@ -4115,7 +4139,7 @@ impl App {
             } => {
                 tracing::info!(task = %task_id, %message, ?scope, "usage limit reached");
                 runtime.end_turn(self.now());
-                runtime.at_limit.store(true, Ordering::SeqCst);
+                runtime.limit_cut_the_turn();
                 if let Some(account) = &attempt.account_id {
                     let limit = ReportedLimit {
                         scope,
@@ -4140,7 +4164,7 @@ impl App {
                 // subscription, or the task waits for one.
                 tracing::warn!(task = %task_id, %message, "subscription access refused");
                 runtime.end_turn(self.now());
-                runtime.at_limit.store(true, Ordering::SeqCst);
+                runtime.limit_cut_the_turn();
                 runtime.limit_resets_at.store(0, Ordering::SeqCst);
                 let mut refused = None;
                 if let Some(account) = &attempt.account_id {

@@ -97,6 +97,10 @@ pub struct TranscriptFacts {
     /// The last word after a turn an error ended is Claude Code's goal notice (SPEC-333), until a
     /// prompt, agent work or an interrupt; an armed retry also ends with the goal.
     pub goal_retry: Option<GoalRetryFact>,
+    /// Claude Code's notice of a goal pause it made at the pending usage limit or refused
+    /// subscription (SPEC-464 UCL-007): the limit's, not a pause nobody handles, unless Yulius
+    /// cannot take the task on from there. Until the next turn or limit.
+    pub limit_goal_pause: Option<String>,
     /// When the last record that closes a session's turn (its answer or its `turn_duration`)
     /// was written: a turn closed while Yulius was down is woken after it (SPEC-358 MSB-007).
     pub turn_closed_at: Option<yulius_domain::time::Timestamp>,
@@ -131,6 +135,7 @@ impl TranscriptFacts {
             Observation::UserTurn { wake, .. } => {
                 self.turn_open = Some(true);
                 self.goal_retry = None;
+                self.limit_goal_pause = None;
                 // Claude Code's own wake-up keeps an achieved goal.
                 if !wake {
                     self.goal_achieved = Some(false);
@@ -149,14 +154,20 @@ impl TranscriptFacts {
                 self.context_full = false;
                 // A sub-agent's turn end (no time) says nothing about the session's limit.
                 self.limit_pending &= at.is_none();
+                if !self.limit_pending {
+                    self.limit_goal_pause = None;
+                }
             }
             Observation::TurnInterrupted { .. } => {
                 self.turn_open = Some(false);
                 self.goal_retry = None;
             }
             // A pause at a usage limit or a refused subscription is the limit's (SPEC-464
-            // UCL-007): nobody is asked to send a message for it.
-            Observation::GoalRetry { armed: false, .. } if self.limit_pending => {}
+            // UCL-007): nobody is asked to send a message for it while Yulius takes the task on.
+            Observation::GoalRetry {
+                armed: false,
+                notice,
+            } if self.limit_pending => self.limit_goal_pause = Some(notice.clone()),
             Observation::GoalRetry { armed, notice } => {
                 self.goal_retry = Some(if *armed {
                     GoalRetryFact::Armed
@@ -183,6 +194,7 @@ impl TranscriptFacts {
             // A refused subscription cuts the turn like a limit: the task goes on elsewhere.
             Observation::LimitReached { .. } | Observation::AccessLost { .. } => {
                 self.limit_pending = true;
+                self.limit_goal_pause = None;
             }
             Observation::Session { .. }
             | Observation::CompactFailed
@@ -194,6 +206,7 @@ impl TranscriptFacts {
             Observation::AgentWork { .. } => {
                 self.turn_open = Some(true);
                 self.goal_retry = None;
+                self.limit_goal_pause = None;
                 self.context_full = false;
                 self.limit_pending = false;
             }
@@ -1489,19 +1502,33 @@ mod tests {
             message: "Your organization has disabled Claude subscription access".into(),
             at: Some(Timestamp(2)),
         };
+        let notice = Some("Goal paused · the request was rate limited".to_owned());
         for cut in [limit.clone(), refused] {
             let facts = reduce(&[PROMPT, cut.clone(), paused.clone(), ENDED]);
             assert_eq!(facts.goal_retry, None, "{cut:?}");
             assert!(facts.limit_pending, "{cut:?}");
+            // Kept beside the limit: it needs a person if Yulius cannot take the task on.
+            assert_eq!(facts.limit_goal_pause, notice, "{cut:?}");
         }
+        let alone = reduce(&[PROMPT, paused.clone(), ENDED]);
         assert_eq!(
-            reduce(&[PROMPT, paused.clone(), ENDED]).goal_retry,
+            alone.goal_retry,
             Some(GoalRetryFact::Stopped(
                 "Goal paused · the request was rate limited".into()
             ))
         );
-        let later = reduce(&[PROMPT, limit, ENDED, PROMPT, paused, ENDED]);
+        assert_eq!(alone.limit_goal_pause, None);
+        let later = reduce(&[PROMPT, limit.clone(), ENDED, PROMPT, paused.clone(), ENDED]);
         assert!(later.goal_retry.is_some() && !later.limit_pending);
+        assert_eq!(later.limit_goal_pause, None);
+        // The next turn, or a new limit, ends a pause held at the limit before it.
+        let work = Observation::AgentWork {
+            at: Some(Timestamp(3)),
+        };
+        for next in [PROMPT, work, limit.clone()] {
+            let facts = reduce(&[PROMPT, limit.clone(), paused.clone(), ENDED, next.clone()]);
+            assert_eq!(facts.limit_goal_pause, None, "{next:?}");
+        }
     }
 
     /// SPEC-333: a replay keeps the retry Claude Code armed over the record that closes the error
@@ -1654,6 +1681,7 @@ mod tests {
                 goal_unfinished: false,
                 goal_recorded: true,
                 goal_retry: None,
+                limit_goal_pause: None,
                 turn_closed_at: None,
                 turn_moved_at: Some(Timestamp(1)),
             }
