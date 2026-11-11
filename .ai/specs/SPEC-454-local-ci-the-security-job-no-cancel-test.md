@@ -109,7 +109,8 @@ it holds end only when the test releases them, and nothing else competes with th
 - **An hour.** Any limit the test's waits cannot reach would do; an hour is far from the longest
   hold a passing run can have (two waits of 60 s), and the limit no longer decides anything. A
   held job does not outlive a failed test for long: the fixture's directory goes with the test
-  and the process host ends a run whose directory is gone (seen: gone 9 s after a failed run).
+  and the process host ends a run whose directory is gone (seen after a failed run: the jobs'
+  processes gone within 9 s, their process hosts within 35 s).
 - **The regression test is an assertion in the test itself.** The defect is the test's scenario,
   so the guard states what the scenario needs (the other runs passed while the jobs are held) and
   fails without the fix in every order, with no probe. The limit has no such guard: only a wait
@@ -148,11 +149,12 @@ it holds end only when the test releases them, and nothing else competes with th
   - Each half of the fix is needed (mutations, not committed). With the limit back at 8 s the
     test under R1 + R1b failed after 81.0 s: `quality` and `e2e` "timed out: ran 8 s, its time
     limit", with no wait. Without the runs going ahead it failed 4 of 4 times: 3 after 60.7 s
-    with the pull request's jobs behind the branch's, 1 on the assertion after 0.8 s.
+    (`jobs never reached …`, as in R3), 1 on the assertion after 0.8 s.
   - Under CPU load, pinned with busy loops to four CPUs (the fixture's capacity is the CPUs the
     test sees): 10 of 10 passed with 32 loops (a pinned probe got 0.11 to 0.16 of a CPU; 7.9 to
     9.2 s a run, five times the time at rest) and 5 of 5 with 120 loops (0.03 of a CPU; 29 to
     33 s a run). No job ended in `error`. For scale: SPEC-441 records the unchanged test at 16
     to 18 s alone after its gate hit the flake; here it took 9 s at rest.
+  - `842dd4a0` rewords one comment of the test; it passed 3 of 3 after it (1.7 s).
 - **The neighbours.** `cargo nextest run -p yulius -E 'binary_id(yulius::main) &
   test(/^local_ci::/)'`: 63 of 63 passed in 18.4 s.
