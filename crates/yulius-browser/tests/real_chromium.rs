@@ -3,7 +3,8 @@
 //!
 //! It serves a local page on loopback, then drives the browser through the adapter: open and
 //! load, title from target events, accessibility snapshot, type, click by selector, PNG
-//! screenshot, screencast frames, URL policy, and kill-and-reap on shutdown. DevTools runs over
+//! screenshot, the secret probe (SPEC-450: a password field keeps screenshots, a revealed one or
+//! a text field refuses them), screencast frames, URL policy, and kill-and-reap on shutdown. DevTools runs over
 //! the pipe: the browser writes no `DevToolsActivePort` and (Linux) listens on no TCP port.
 
 use std::time::Duration;
@@ -22,7 +23,9 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 const PAGE: &str = "<!doctype html><html><head><title>Yulius test page</title></head><body>\
 <h1>Hello</h1><input id=\"name\" aria-label=\"Name\">\
 <button id=\"press\" onclick=\"document.getElementById('out').textContent='clicked '+document.getElementById('name').value\">Press</button>\
-<p id=\"out\">waiting</p></body></html>";
+<p id=\"out\">waiting</p>\
+<input id=\"pw\" type=\"password\" aria-label=\"Password\">\
+<button id=\"show\" onclick=\"document.getElementById('pw').type='text'\">Show</button></body></html>";
 
 async fn serve(listener: TcpListener) {
     while let Ok((mut stream, _)) = listener.accept().await {
@@ -200,6 +203,47 @@ async fn drives_a_real_chromium_when_configured() -> TestResult {
         .await?;
     let png = base64::engine::general_purpose::STANDARD.decode(shot.data_base64)?;
     assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+
+    // SPEC-450 on a real page: the probe reads a password field as masked, so a secret typed
+    // there keeps screenshots; revealed, or typed into a text field, it refuses them.
+    let shot_params = ScreenshotParams {
+        tab_id: tab.clone(),
+    };
+    let secret = |selector: &str, text: &str| TypeParams {
+        tab_id: tab.clone(),
+        text: text.to_owned(),
+        selector: Some(selector.to_owned()),
+    };
+    browser
+        .tool_type_secret(&secret("#pw", "real-secret-7731-pw"))
+        .await?;
+    browser
+        .tool_screenshot_within(&shot_params, 1 << 20)
+        .await?;
+    browser
+        .tool_click(&ClickParams {
+            tab_id: tab.clone(),
+            selector: Some("#show".into()),
+            x: None,
+            y: None,
+        })
+        .await?;
+    assert!(matches!(
+        browser.tool_screenshot_within(&shot_params, 1 << 20).await,
+        Err(BrowserError::SecretOnPage)
+    ));
+    let other_origin = page_url.replace("127.0.0.1", "localhost");
+    browser.navigate(&tab, &other_origin).await?;
+    browser
+        .tool_screenshot_within(&shot_params, 1 << 20)
+        .await?;
+    browser
+        .tool_type_secret(&secret("#name", "real-secret-8812-api"))
+        .await?;
+    assert!(matches!(
+        browser.tool_screenshot_within(&shot_params, 1 << 20).await,
+        Err(BrowserError::SecretOnPage)
+    ));
 
     let mut frames = browser.subscribe_frames(&tab).await?;
     browser.navigate(&tab, &format!("{page_url}?again")).await?;
