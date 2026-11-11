@@ -36,7 +36,7 @@ fn landed(nonce: &str, entries: u64, complete: bool, live: bool) -> Landed {
         complete,
         live,
         deferred: Vec::new(),
-        cleared: false,
+        unknown: false,
     }
 }
 
@@ -222,11 +222,6 @@ fn any_other_marker_drops_the_receipts() -> TestResult {
         ("another stream", Some(mark("s1", 2, whole("nX"))), BOOT),
         ("two streams ahead", Some(mark("s1", 3, whole("n2"))), BOOT),
         ("behind", Some(mark("s1", 0, None)), BOOT),
-        (
-            "a journal from before a restart",
-            Some(mark("s1", 2, whole("n2"))),
-            "boot-2",
-        ),
     ];
     for (name, found, boot) in cases {
         let tmp = tempfile::tempdir()?;
@@ -359,7 +354,7 @@ fn a_frozen_pass_that_removed_and_was_cut_leaves_nothing_known() -> TestResult {
     stage.sending(d(2), check(0))?;
     stage.seal()?;
     let mut last = landed("n2", 1, false, false);
-    last.cleared = true;
+    last.unknown = true;
     let found = stage.reconcile(Some(&mark("s1", 2, Some(last))), BOOT)?;
     assert_eq!((found.fresh, found.adopted, found.revoked), (false, 0, 3));
     assert_eq!(
@@ -368,5 +363,103 @@ fn a_frozen_pass_that_removed_and_was_cut_leaves_nothing_known() -> TestResult {
     );
     let again = Stage::open(&tmp.path().join("copy"));
     assert_eq!((again.acked(), again.receipts()), (2, 0));
+    Ok(())
+}
+
+/// The marker a receive writes before it takes anything in: one stream ahead, nothing known.
+fn opened(nonce: &str, live: bool) -> Landed {
+    Landed {
+        nonce: nonce.into(),
+        live,
+        unknown: true,
+        ..Landed::default()
+    }
+}
+
+#[test]
+fn a_receive_that_never_closed_its_stream_leaves_nothing_known() -> TestResult {
+    let tmp = tempfile::tempdir()?;
+    let mut stage = new_stage(tmp.path())?;
+    send(&mut stage, "n1", true, &[1, 2, 3])?;
+    stage.reconcile(
+        Some(&mark("s1", 1, Some(landed("n1", 3, true, true)))),
+        BOOT,
+    )?;
+    // The next stream's receive was killed: files half written, directories' times moved, and
+    // only the marker it wrote first says so.
+    send(&mut stage, "n2", true, &[2])?;
+    let found = stage.reconcile(Some(&mark("s1", 2, Some(opened("n2", true)))), BOOT)?;
+    assert_eq!((found.fresh, found.adopted, found.revoked), (false, 0, 3));
+    // The stage goes on, with no receipts: the next pass sends everything into it.
+    assert_eq!(
+        (stage.id(), stage.acked(), stage.receipts(), stage.whole()),
+        (Some("s1"), 2, 0, false)
+    );
+    assert!(!stage.held(&d(1), &d(101)));
+    Ok(())
+}
+
+#[test]
+fn a_journal_from_before_a_restart_is_not_believed() -> TestResult {
+    let tmp = tempfile::tempdir()?;
+    let mut stage = new_stage(tmp.path())?;
+    send(&mut stage, "n1", true, &[1, 2])?;
+    stage.reconcile(
+        Some(&mark("s1", 1, Some(landed("n1", 2, true, true)))),
+        BOOT,
+    )?;
+    send(&mut stage, "n2", true, &[2, 3])?;
+    // The new host took the stream in; this host was restarted since, so what the journal
+    // says was sent may not be all that was.
+    let found = stage.reconcile(
+        Some(&mark("s1", 2, Some(landed("n2", 2, true, true)))),
+        "boot-2",
+    )?;
+    assert_eq!((found.fresh, found.adopted), (false, 0));
+    assert_eq!(
+        (stage.id(), stage.acked(), stage.receipts()),
+        (Some("s1"), 2, 0)
+    );
+
+    // A stream that never reached the new host installed nothing there: the receipts stand,
+    // whatever became of its journal.
+    let mut stage = new_stage(&tmp.path().join("b"))?;
+    send(&mut stage, "n1", true, &[1, 2])?;
+    stage.reconcile(
+        Some(&mark("s1", 1, Some(landed("n1", 2, true, true)))),
+        BOOT,
+    )?;
+    send(&mut stage, "n2", true, &[9])?;
+    let found = stage.reconcile(
+        Some(&mark("s1", 1, Some(landed("n1", 2, true, true)))),
+        "boot-2",
+    )?;
+    assert!(!found.fresh);
+    assert!(stage.held(&d(1), &d(101)) && stage.held(&d(2), &d(102)));
+    Ok(())
+}
+
+#[test]
+fn a_completed_frozen_pass_that_is_not_the_journal_s_leaves_nothing_known() -> TestResult {
+    let tmp = tempfile::tempdir()?;
+    let mut stage = new_stage(tmp.path())?;
+    send(&mut stage, "n1", true, &[1, 2, 3])?;
+    stage.reconcile(
+        Some(&mark("s1", 1, Some(landed("n1", 3, true, true)))),
+        BOOT,
+    )?;
+    stage.begin("n2", false, 2_000, BOOT)?;
+    stage.kept(d(1), d(101))?;
+    stage.sending(d(2), check(0))?;
+    stage.seal()?;
+    // It says it took in two entries and removed the rest; the journal knows of one.
+    let found = stage.reconcile(
+        Some(&mark("s1", 2, Some(landed("n2", 2, true, false)))),
+        BOOT,
+    )?;
+    assert_eq!(
+        (found.fresh, stage.receipts(), stage.acked()),
+        (false, 0, 2)
+    );
     Ok(())
 }

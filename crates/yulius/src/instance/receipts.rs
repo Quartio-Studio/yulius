@@ -359,11 +359,14 @@ impl Stage {
     }
 
     /// Makes the receipts agree with the new host's marker `mark` (SPEC-465 WCP-006, WCP-011).
-    /// Equal stage and count: nothing of a pending stream was acknowledged, and the paths it
-    /// sent are revoked (the new host may have taken some in). One count ahead with the pending
-    /// stream's name: the receipts of exactly the entries the marker counts are adopted, when
-    /// the stream's digest there is the recorded one; the rest of what was sent is revoked.
-    /// Anything else: no staged copy is agreed on, and the receipts are dropped.
+    /// Equal stage and count: the new host took nothing of a pending stream in (it marks a
+    /// stream before its first entry), and the paths that stream sent are revoked all the same.
+    /// One count ahead with the pending stream's name: the receipts of exactly the entries the
+    /// marker counts are adopted, when the stream's digest there is the recorded one; the rest
+    /// of what was sent is revoked. A stream the new host never closed, one that removed paths
+    /// and broke, and a journal written before this host was restarted leave nothing known:
+    /// the stage goes on without receipts. Anything else: no staged copy is agreed on, and the
+    /// receipts are dropped with the stage.
     ///
     /// # Errors
     /// The state directory cannot be written; nothing may be skipped on these receipts then.
@@ -388,8 +391,13 @@ impl Stage {
             && mark.acked == self.meta.acked + 1
             && p.seq == self.meta.acked
             && p.nonce == last.nonce
-            && p.boot == boot
         {
+            if last.unknown || p.boot != boot {
+                // The receive ended without closing its stream (a kill, a power cut), or it
+                // removed paths this host never sent and broke, or what this host's journal
+                // says was sent may not be all that was (it was restarted since).
+                return self.unknown(p);
+            }
             let take = if last.complete {
                 // Its checksum matched there, so every record here is of what arrived.
                 if last.entries == count { count } else { 0 }
@@ -400,15 +408,14 @@ impl Stage {
             } else {
                 0
             };
-            if last.complete && take == count && !p.live {
+            if last.complete && !p.live {
                 // After a frozen pass's deletions the new host holds what was left alone,
-                // nothing else.
-                return self.replace(p);
-            }
-            if last.cleared {
-                // It removed paths this host never sent and did not finish: nothing known of
-                // the staged copy holds any more. The stage goes on, with no receipts.
-                return self.unknown(p);
+                // nothing else; a pass that is not the journal's leaves nothing known.
+                return if take == count {
+                    self.replace(p)
+                } else {
+                    self.unknown(p)
+                };
             }
             self.meta.whole |= last.complete && take == count;
             (take, last.deferred.clone())

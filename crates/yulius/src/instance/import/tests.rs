@@ -839,16 +839,28 @@ fn a_pass_that_cannot_be_synced_is_not_acknowledged() -> TestResult {
     let why = failed(h.warm()?)?;
     assert!(
         why.contains("could not be synced and marked")
-            && why.contains("nothing of this pass counts"),
+            && why.contains("what it holds is no longer known"),
         "{why}"
     );
-    assert_eq!(h.mark()?.acked, 1);
-    // The old host learns that nothing counted and sends it again.
+    // The stream stays as it was marked before its first entry: never closed.
+    let last = h.last()?;
+    assert!(last.unknown && !last.complete);
+    assert_eq!((h.mark()?.acked, last.entries), (2, 0));
+    // The old host learns that nothing is known and sends everything again.
     h.no_sync = false;
     let found = h.reconcile()?;
-    assert_eq!((found.fresh, found.adopted, h.stage.acked()), (false, 0, 1));
+    assert_eq!(
+        (
+            found.fresh,
+            found.adopted,
+            h.stage.acked(),
+            h.stage.receipts()
+        ),
+        (false, 0, 2, 0)
+    );
     arrived(h.warm()?)?;
-    assert_eq!(h.sent()?, ["data/master.key"]);
+    assert_eq!(h.sent()?.len(), 13);
+    assert_eq!(fs::read(h.new.join("master.key"))?, b"KEY");
     Ok(())
 }
 
@@ -942,7 +954,7 @@ fn a_frozen_pass_that_is_cut_removes_nothing_and_leaves_no_limits_mark() -> Test
     assert!(h.new.join("master.key").exists());
     assert!(!h.new.join(yulius_app::limits::ADAPT_MARK).exists());
     let last = h.last()?;
-    assert!(!last.complete && !last.cleared);
+    assert!(!last.complete && !last.unknown);
     // The receipts stand; the same command sends the rest and then removes.
     let found = h.reconcile()?;
     assert!(!found.fresh);
@@ -959,10 +971,69 @@ fn the_staged_copy_s_marker_is_never_an_entry() -> TestResult {
     let mut h = hosts()?;
     fs::write(h.old.join(INCOMPLETE), b"left by hand")?;
     let why = failed(h.warm()?)?;
-    assert!(
-        why.contains("the name of the staged copy's marker"),
-        "{why}"
-    );
+    assert!(why.contains("a name of the staged copy's marker"), "{why}");
     assert!(Mark::read(&h.new).is_some());
+    // Nor is the name the marker has while it is rewritten.
+    let mut h = hosts()?;
+    fs::write(h.old.join(INCOMPLETE_NEW), b"left by hand")?;
+    let why = failed(h.warm()?)?;
+    assert!(why.contains("..yulius-import-incomplete.tmp"), "{why}");
+    Ok(())
+}
+
+#[test]
+fn a_stream_is_marked_before_its_first_entry_so_a_receive_that_dies_says_so() -> TestResult {
+    let mut h = hosts()?;
+    arrived(h.warm()?)?;
+    fs::write(h.old.join("master.key"), b"KEY")?;
+    fs::write(h.old.join("sandboxes/sb/home/notes"), b"HELLO\n")?;
+    h.reconcile()?;
+    let m = h.manifest(true);
+    let nonce = m.pass.as_ref().map(|p| p.nonce.clone()).unwrap_or_default();
+    h.stage.begin(&nonce, true, 1_000, BOOT)?;
+    let mut out = Vec::new();
+    send_live(
+        &h.old,
+        &m,
+        &mut out,
+        &mut h.stage,
+        (i64::MAX / 2, 0),
+        &mut |_| {},
+    )?;
+    // What the marker says while the stream is taken in.
+    let mut during = Vec::new();
+    let new = h.new.clone();
+    let landed = land(
+        out.as_slice(),
+        &new,
+        None,
+        &mut |_, _| Ok(ids()),
+        &mut Ground {
+            chown: false,
+            sync: &mut |_| Ok(()),
+            tick: &mut |_, _| during.extend(fs::read_to_string(new.join(INCOMPLETE))),
+        },
+    );
+    arrived(landed)?;
+    assert!(!during.is_empty());
+    let open = Mark::parse(&during[0]).ok_or("no marker during the stream")?;
+    let last = open.last.clone().ok_or("nothing in it")?;
+    assert_eq!((open.acked, last.nonce.as_str()), (2, nonce.as_str()));
+    assert!(last.unknown && !last.complete && last.entries == 0);
+    // Closed: known again.
+    assert!(h.last()?.complete && !h.last()?.unknown);
+
+    // The receive was killed instead: that marker is all there is. Nothing the old host knew
+    // holds any more; the stage goes on and the next pass sends everything into it.
+    fs::write(h.new.join(INCOMPLETE), &during[0])?;
+    let found = h.reconcile()?;
+    assert_eq!(
+        (found.fresh, h.stage.receipts(), h.stage.acked()),
+        (false, 0, 2)
+    );
+    arrived(h.warm()?)?;
+    assert_eq!(h.sent()?.len(), 13);
+    assert_eq!(fs::read(h.new.join("master.key"))?, b"KEY");
+    assert_eq!(h.mark()?.acked, 3);
     Ok(())
 }

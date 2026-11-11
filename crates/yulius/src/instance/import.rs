@@ -52,10 +52,11 @@ pub struct Landed {
     /// The entries (by number) that were not installed: a warm pass removes no directory.
     #[serde(default)]
     pub deferred: Vec<u64>,
-    /// Paths other than the stream's own entries were removed and the stream did not complete:
-    /// what the old host knew of the staged copy no longer holds.
+    /// What the old host knew of the staged copy no longer holds. Written before a stream's
+    /// first entry, so a receive that dies says so; kept by a stream that removed paths other
+    /// than its own entries' and did not complete.
     #[serde(default)]
-    pub cleared: bool,
+    pub unknown: bool,
 }
 
 impl Mark {
@@ -419,11 +420,12 @@ fn own_name(name: &[u8]) -> bool {
 
 /// Takes the entries of a pass into the staged copy at `target`, after its manifest `m` was
 /// read from `r` and found fit for this host. The stream must be the next of the stage here,
-/// or the first into an empty directory. Whatever it ends with, the entries that arrived stay:
-/// the directories' times are set, the filesystem is synced and the marker then says how many
-/// entries were taken in and what the stream's digest was there, so the old host adopts
-/// exactly them. A frozen pass that arrived whole also removes what its kept paths do not name
-/// and leaves the limits mark.
+/// or the first into an empty directory. The marker names the stream before its first entry
+/// and says that nothing is known of the copy, which is what a receive that dies leaves.
+/// Whatever the stream ends with, the entries that arrived stay: the directories' times are
+/// set, the filesystem is synced and the marker then says how many entries were taken in and
+/// what the stream's digest was there, so the old host adopts exactly them. A frozen pass that
+/// arrived whole also removes what its kept paths do not name and leaves the limits mark.
 ///
 /// # Errors
 /// [`Failure::Refused`] when the stream is not of the stage here (nothing was written), else
@@ -441,27 +443,32 @@ pub fn take_in<R: Read>(
         .clone()
         .ok_or_else(|| Failure::Refused("the stream is not a pass".into()))?;
     let stage = stage_of(m, target).map_err(Failure::Refused)?;
+    let marked = |e: io::Error| Failure::Refused(format!("cannot mark the staged copy: {e}"));
     if stage.is_none() {
         existing_target(target, user).map_err(Failure::Refused)?;
         std::fs::create_dir_all(target).map_err(|e| Failure::Refused(e.to_string()))?;
         // Created new: a link planted at the marker's name is never followed.
-        let made = std::fs::OpenOptions::new()
+        std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(target.join(INCOMPLETE))
-            .and_then(|_| {
-                write_mark(
-                    target,
-                    &Mark {
-                        version: 1,
-                        stage: pass.stage.clone(),
-                        acked: 0,
-                        last: None,
-                    },
-                )
-            });
-        made.map_err(|e| Failure::Refused(format!("cannot mark the staged copy: {e}")))?;
+            .map_err(marked)?;
     }
+    // Until this stream is closed below, nothing the old host knew of the staged copy holds:
+    // a receive that dies (a kill, a power cut) leaves files half written and directories'
+    // times moved, and this marker is all that says so.
+    let open = Mark {
+        version: 1,
+        stage: pass.stage.clone(),
+        acked: pass.seq + 1,
+        last: Some(Landed {
+            nonce: pass.nonce.clone(),
+            live: pass.live,
+            unknown: true,
+            ..Landed::default()
+        }),
+    };
+    write_mark(target, &open).map_err(marked)?;
     let onto = if pass.live { Onto::Warm } else { Onto::Frozen };
     let mut ex = Extractor::onto(target, map, ground.chown, onto)
         .map_err(|e| Failure::Failed(e.to_string()))?;
@@ -507,7 +514,7 @@ pub fn take_in<R: Read>(
             complete: failure.is_none(),
             live: pass.live,
             deferred,
-            cleared,
+            unknown: cleared && failure.is_some(),
         }),
     };
     // Acknowledged only once it is on disk: first what arrived, then the marker that says so.
@@ -524,8 +531,8 @@ pub fn take_in<R: Read>(
             target.display()
         ))),
         (why, Err(e)) => Err(Failure::Failed(format!(
-            "{}the staged copy in {} could not be synced and marked ({e}): nothing of this pass \
-             counts",
+            "{}the staged copy in {} could not be synced and marked ({e}): what it holds is no \
+             longer known, and the next pass sends everything again",
             why.map(|why| format!("{why}; ")).unwrap_or_default(),
             target.display()
         ))),
@@ -553,9 +560,11 @@ fn entries<R: Read>(
     ground: &mut Ground<'_>,
 ) -> Arrived {
     let mut taken = 0u64;
+    // Where the writer stood before its first entry; a stream that ends here fails below.
+    let _ = r.end_entry();
     let mut sums = [r.sum(); 2];
     let mut kept: Option<Vec<[u8; 16]>> = None;
-    let marker = [b"data/", INCOMPLETE.as_bytes()].concat();
+    let markers = [INCOMPLETE, INCOMPLETE_NEW].map(|name| [b"data/", name.as_bytes()].concat());
     let ended: io::Result<()> = loop {
         let e = match r.next_item() {
             Ok(Item::End) => break Ok(()),
@@ -578,9 +587,10 @@ fn entries<R: Read>(
             kept = Some(bytes.as_chunks::<16>().0.to_vec());
             continue;
         }
-        if e.path == marker {
+        if markers.contains(&e.path) {
             break Err(io::Error::other(format!(
-                "the old data directory holds {INCOMPLETE}, the name of the staged copy's marker"
+                "the old data directory holds {}, a name of the staged copy's marker",
+                String::from_utf8_lossy(&e.path[5..])
             )));
         }
         if let Err(e) = ex
