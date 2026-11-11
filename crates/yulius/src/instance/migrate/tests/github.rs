@@ -250,3 +250,27 @@ fn a_url_that_is_not_a_host_is_never_sent() -> TestResult {
     assert!(listener.accept().is_err());
     Ok(())
 }
+
+/// The limit is for the whole answer: a server that keeps sending a byte now and then does not
+/// keep the move waiting.
+#[test]
+fn an_answer_that_trickles_ends_at_the_limit() -> TestResult {
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let address = listener.local_addr()?.to_string();
+    let trickles = std::thread::spawn(move || {
+        if let Ok((mut stream, _)) = listener.accept() {
+            // Until the asker hangs up.
+            while stream.write_all(b"H").is_ok() {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+    });
+    let started = Instant::now();
+    let asked = ask(&address, "abc123", None, Duration::from_millis(400));
+    let took = started.elapsed();
+    let why = asked.err().ok_or("an answer")?;
+    assert!(why.contains("did not answer within"), "{why}");
+    assert!(took < Duration::from_secs(10), "{took:?}");
+    trickles.join().map_err(|_| "the listener died")?;
+    Ok(())
+}

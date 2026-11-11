@@ -5,9 +5,9 @@
 //! checklist line of the answer. The plan asks the old instance about the new URL; the finish
 //! asks the new instance, through the staged build on the new host.
 
-use std::io::{Read as _, Write as _};
+use std::io::{ErrorKind, Read as _, Write as _};
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use yulius_app::github_callback::public_url_ok;
 use yulius_app::leftovers::CLI_KEY_FILE;
@@ -17,9 +17,11 @@ use yulius_contracts::update::HostOutcome;
 /// The instance's answer: the facts, `None` without a GitHub App, or why it could not be asked.
 pub type Asked = Result<Option<GitHubCallback>, String>;
 
-/// How long the instance may take for each step of its answer: it asks GitHub within 10 s, after
-/// a check that may be on its way (10 s more).
+/// How long the instance may take to connect, to take the request and to answer: it asks GitHub
+/// within 10 s, after a check that may be on its way (10 s more).
 const LIMIT: Duration = Duration::from_secs(30);
+/// An answer is a few hundred bytes.
+const MAX_ANSWER: usize = 64 * 1024;
 
 /// Asks the instance whose data directory is `data_dir`, at its loopback listener `address`,
 /// whether GitHub accepts the callback of `public_url` (its own without one).
@@ -37,7 +39,8 @@ pub fn asked_instance(data_dir: &Path, address: &str, public_url: Option<&str>) 
     ask(address, key, public_url, LIMIT)
 }
 
-/// One request to the loopback listener; connecting, sending and each read end after `limit`.
+/// One request to the loopback listener; connecting, sending and the whole answer each end after
+/// `limit`.
 pub(crate) fn ask(address: &str, key: &str, public_url: Option<&str>, limit: Duration) -> Asked {
     let said = |why: &dyn std::fmt::Display| format!("the instance at {address}: {why}");
     // Only what a move may name goes into the request line.
@@ -59,11 +62,36 @@ pub(crate) fn ask(address: &str, key: &str, public_url: Option<&str>, limit: Dur
          Bearer {key}\r\n\r\n"
     )
     .map_err(|e| said(&e))?;
-    let mut answer = String::new();
-    stream
-        .take(64 * 1024)
-        .read_to_string(&mut answer)
-        .map_err(|e| said(&e))?;
+    // The limit is for the whole answer, however slowly it comes.
+    let late = || {
+        said(&format_args!(
+            "it did not answer within {} s",
+            limit.as_secs()
+        ))
+    };
+    let deadline = Instant::now() + limit;
+    let mut answer = Vec::new();
+    let mut chunk = [0u8; 4096];
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(late());
+        }
+        stream.set_read_timeout(Some(left)).map_err(|e| said(&e))?;
+        match stream.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(read) if answer.len() + read > MAX_ANSWER => {
+                return Err(said(&"what it sent is not an answer"));
+            }
+            Ok(read) => answer.extend_from_slice(&chunk[..read]),
+            Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
+                return Err(late());
+            }
+            Err(e) if e.kind() == ErrorKind::Interrupted => {}
+            Err(e) => return Err(said(&e)),
+        }
+    }
+    let answer = String::from_utf8_lossy(&answer);
     let (head, body) = answer.split_once("\r\n\r\n").unwrap_or((&answer, ""));
     let status = head.split_whitespace().nth(1).unwrap_or_default();
     match status {
