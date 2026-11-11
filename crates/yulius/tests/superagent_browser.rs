@@ -379,6 +379,8 @@ async fn the_global_superagent_drives_a_named_projects_browser() -> TestResult {
                 .await
                 .map_err(|e| e.to_string())?;
         assert!(browser.tabs().iter().any(|t| t.id.as_str() == tab));
+        // The focused field is a password field: the screenshot below shows dots (SPEC-450).
+        b.fake.set_password_field("", true);
         let filled = mcp_tool(
             &f.h,
             &token,
@@ -399,6 +401,31 @@ async fn the_global_superagent_drives_a_named_projects_browser() -> TestResult {
         )
         .await?;
         assert_eq!(shot["content"][0]["type"], "image", "{shot}");
+        // In a plain-text field the value would be in the pixels: no screenshot (SPEC-450 SSC-006).
+        let filled = mcp_tool(
+            &f.h,
+            &token,
+            "browser_fill_secret",
+            json!({"project": "acme/fixture", "tab_id": tab, "secret": "DOCS_LOGIN",
+                "selector": "#api-key"}),
+        )
+        .await?;
+        assert_eq!(filled["isError"], false, "{filled}");
+        let refused = mcp_tool(
+            &f.h,
+            &token,
+            "browser_screenshot",
+            json!({"project": "acme/fixture", "tab_id": tab}),
+        )
+        .await?;
+        assert_eq!(refused["isError"], true, "{refused}");
+        assert!(
+            tool_text(&refused)
+                .as_str()
+                .is_some_and(|t| t.contains("browser_snapshot")),
+            "{refused}"
+        );
+        assert!(!refused.to_string().contains(VALUE), "{refused}");
         let tabs = mcp_tool(
             &f.h,
             &token,

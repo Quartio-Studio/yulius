@@ -324,8 +324,24 @@ impl App {
     async fn browser_screenshot(&self, user: SecretUser<'_>, args: &Value) -> AppResult<Value> {
         let params: ScreenshotParams = parse_args(args)?;
         let browser = self.agent_browser(user).await?;
+        // Pixels cannot be redacted: a page showing any agent secret is not captured (SPEC-450).
+        let matcher = self
+            .agent_secret_matcher(user.sandbox())
+            .await
+            .map_err(|err| {
+                tracing::error!(error = %err, "agent secrets could not be loaded for a screenshot");
+                AppError::Upstream(
+                    "Yulius could not check the page for agent secrets, so no screenshot was taken; use browser_snapshot".into(),
+                )
+            })?;
+        let shows_secret = |text: &str| {
+            !yulius_domain::vault::redact::Matcher::find(matcher.as_ref(), text.as_bytes())
+                .is_empty()
+        };
+        let vault: Option<&(dyn Fn(&str) -> bool + Send + Sync)> =
+            matcher.needles().next().is_some().then_some(&shows_secret);
         let shot = match browser
-            .tool_screenshot(&params, SCREENSHOT_RESULT_BUDGET)
+            .tool_screenshot(&params, SCREENSHOT_RESULT_BUDGET, vault)
             .await
         {
             Ok(shot) => shot,
