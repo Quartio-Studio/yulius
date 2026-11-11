@@ -94,7 +94,7 @@ async fn a_person_gets_one_global_superagent_in_its_own_folder_without_built_in_
     let args = printed(&screen, "cockpit-args")?;
     assert!(
         args.starts_with(
-            "[--setting-sources  --strict-mcp-config --tools  --model claude-fable-5-2"
+            "[--setting-sources  --strict-mcp-config --tools  --model claude-fable-5-2 --effort high"
         ),
         "{args}"
     );

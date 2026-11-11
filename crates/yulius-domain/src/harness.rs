@@ -7,9 +7,10 @@ use std::fmt;
 /// task #21). A subscription's own default would be Sonnet.
 pub const DEFAULT_CLAUDE_MODEL: &str = "claude-fable-5-2";
 
-/// The effort of a task that names none (2026-11-10: max; before it high, task #21), sent so
-/// Claude Code never picks its own.
-pub const DEFAULT_CLAUDE_EFFORT: &str = "max";
+/// The effort of a task that names none, sent so Claude Code never picks its own: high (the
+/// person's decision of 2026-11-11, SPEC-462: "Not max, not xhigh"; max for one day before it,
+/// high from task #21 until then).
+pub const DEFAULT_CLAUDE_EFFORT: &str = "high";
 
 /// The effort a task runs at: its own, else [`DEFAULT_CLAUDE_EFFORT`], except for a Haiku model,
 /// which takes no effort level.
