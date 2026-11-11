@@ -197,7 +197,9 @@ for one unit; with sessions in their own unit that is wrong in four places.
   plan's refusal, whether there is anything to thaw, and the abort. "All of it is frozen" (the
   server's unit, and its sessions unit where one runs) is what the new instance's start, a
   recorded start and the move's last line wait for: one unit thawed alone starts nothing. A
-  server found stopped after the freeze gives back what the freeze took.
+  server found stopped after the freeze gives back what the freeze took. Not knowing is not
+  frozen: when systemd does not say what the sessions unit does, the old instance's state is
+  unknown, as when it does not say what the server's unit does; a thaw still tries the unit.
 - **MOV-003** The stop on the new host ends the sessions unit with the server's (kill, then
   stop) and fails, naming the unit, while something of either still runs: "nothing of it runs"
   comes before the old instance thaws.
@@ -322,9 +324,10 @@ Ubuntu 24.04.5 (systemd 255.4, kernel 6.8) and Ubuntu 26.04.1 (systemd 259.5, ke
 Prepared as production was: the pre-fix binary (`911e3127`, the first merge base) installed as
 `/usr/local/bin/yulius` and set up by its own `yulius host setup --public-url http://vm.test
 --no-smoke`, which wrote and started `yulius.service`; the update helper installed from
-`deploy/systemd` as the guide says. The build with the fix is this branch at `82c3b2a5`, the
-last commit that changes code (the runs were repeated as the change grew, and the figures
-below are those of the last, complete run of that build).
+`deploy/systemd` as the guide says. The build with the fix is this branch at `82c3b2a5` (the
+runs were repeated as the change grew, and the figures below are those of the last, complete
+run of that build; the one commit that changes code after it, `36f4aeb1`, is in `yulius
+instance migrate` only, which these runs do not use).
 
 What stands in for what, because it cannot be had in a guest:
 
@@ -381,7 +384,7 @@ on 259.
   fake tree and injected systemd answers); the restart guard's table and readers; the helper
   refusing before it stops anything; the server's 409 (`self_update`); the doctor's line; the
   export's freeze with a sessions unit and the thaw of a whole instance (3); the migration
-  freezing, thawing, judging, stopping and carrying both units (flow 7, target 1, profile 1);
+  freezing, thawing, judging, stopping and carrying both units (flow 8, target 1, profile 1);
   the Docker front decision (3); and the
   supervisor (`task_done`: the reconciliation during a launch, the sweep's two conditions, a
   refused start, a start during a launch, a start and a stop that settle a run no server
