@@ -87,12 +87,25 @@ fn a_session_records_its_claude_code_and_the_task_shows_it() -> TestResult {
         assert!(before.model_default, "the task names no model");
         assert_eq!(before.effort.as_deref(), Some(DEFAULT_CLAUDE_EFFORT));
         assert_eq!(before.cli_moves_to, None);
+        // A run taken to be on a version (a session restarted on it that wrote nothing yet)
+        // shows that one until its transcript names its own.
+        let run = app.deps.store.live_attempt(&id).await?.ok_or("a run")?.id;
+        let store = &app.deps.store;
+        store
+            .assume_run_cli_version(&run, &id, "2.1.300", app.now())
+            .await?;
+        assert_eq!(run_versions(&app, &id).await, [Some("2.1.300".to_owned())]);
 
         app.send_input(&id, b"first turn\r").await?;
         wait_for("the version", Duration::from_secs(30), || async {
             run_versions(&app, &id).await == [Some("2.1.311".to_owned())]
         })
         .await?;
+        // What the transcript named is never replaced by an assumption.
+        store
+            .assume_run_cli_version(&run, &id, "2.1.999", app.now())
+            .await?;
+        assert_eq!(run_versions(&app, &id).await, [Some("2.1.311".to_owned())]);
         wait_for("the answering model", Duration::from_secs(60), || async {
             app.task_detail(&ctx, id.as_str())
                 .await
