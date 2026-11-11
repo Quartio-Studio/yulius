@@ -116,7 +116,12 @@ to use, run instead of printing the wrapper's usage line.
   (`test(cli)` commit): the guard test and `cargo clippy -p yulius --all-targets -- -D warnings`
   pass. Yulius CI run `f859b87c` at `d80c40ac` failed `quality` on `cargo fmt --check` (that
   commit's `assert!` was not formatted; the local run had skipped fmt); `cargo fmt --all` fixed it
-  and `scripts/dev lint` (fmt check and clippy) → exit 0.
+  and `scripts/dev lint` (fmt check and clippy) → exit 0. Run `3f6de5ac` at `366946c0` failed
+  `cargo deny` on a new advisory, RUSTSEC-2026-0486 (rustix 1.1.5), which fails every pull request
+  and which no open one fixed: `cargo update -p rustix@1.1.5 --precise 1.1.6`, in its own commit
+  (the resolver also moves the Windows-only `windows-sys` users onto 0.52, which `ring` already
+  locks); then `cargo deny --locked check` → all ok, `cargo check --locked --workspace
+  --all-targets` and `scripts/dev macos` → exit 0.
 - `scripts/dev security` → exit 0, "Security scan disabled: Vidoc is turned off in Yulius":
   disabled, not passed; nothing was scanned.
 - Not tested: acceptance criterion 3 with the real `/yulius/bin/yulius` of a task session needs the
