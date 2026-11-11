@@ -79,8 +79,8 @@ task reads Your turn, instead of staying Working for good with the agent idle.
 - [x] Reproduce the stuck Working under probe delays and find the wait that runs out
 - [x] Spec with the root cause, the fix and its regression tests, and a progress comment on #1066
 - [x] Regression tests that fail without the fix: a wiped verdict wait and a stale Stop copy
-- [ ] Fix: the transcript's prompt and the clean Stop take the turn order
-- [ ] Proof on the original test: the forced race and the phase loop pass with the fix
+- [x] Fix: the transcript's prompt and the clean Stop take the turn order
+- [x] Proof on the original test: the forced race and the phase loop pass with the fix
 - [ ] ADR, architecture, changes entry and the full gate
 - [ ] Independent review and its findings answered
 
@@ -109,8 +109,9 @@ the watcher has no entry of its own.
   turn, the Stop opens its wait after it, and "met" settles Done. The test also checks that both
   points were reached, so it never passes without the race. Either order of arrival at the two
   points gives the same result.
-- TPO-002: a prompt task that reads Your turn gets a line typed whose prompt hook never reaches
-  Yulius (the test layer answers it, as a hook client failing open would). Its Stop is parked at
+- TPO-002: a prompt task that reads Your turn after an ordinary first turn gets a line typed
+  whose prompt hook never reaches Yulius (the test layer answers it 503, and the hook client
+  fails open). Its Stop is parked at
   `StopClean`, after it read the task, until the watcher's prompt set Working; then it is
   released and must leave Your turn. Without the fix it settles from its copy and the task stays
   Working. (When the watcher happens to apply the prompt before the Stop reads the task, a few ms
@@ -143,3 +144,28 @@ the watcher has no entry of its own.
   against the next turn's prompt; a transcript prompt without a timestamp always starts a turn;
   the opening Stop of a resumed goal session stamps no time; a late Stop (its client gave up)
   against the next turn's prompt (ADR-0115: heals with the agent's next work).
+
+## Evidence
+
+- **Reproduced before the fix** (Context): the forced race fails at 61.1 s with
+  `Error: "timed out waiting for Done"`; the phase loop fails 2 of 48 runs the same way.
+- **Test first.** `83033a98` added the two tests and their pause points. On it
+  `task_done::a_goal_whose_stop_races_its_transcript_prompt_is_done` fails with
+  `Error: "timed out waiting for Done"` (46.4 s) and
+  `task_done::a_stop_that_raced_its_transcript_prompt_settles_the_turn` fails with
+  `Error: "timed out waiting for Your turn after the Stop"` (21.3 s).
+- **Fix** `9385edac`: both pass, 8 of 8 runs each, 4 at a time (5.4-5.6 s and 1.5-1.6 s).
+- **Mutation checks**, each undone afterwards: without the watcher's lock the goal test fails
+  (`timed out waiting for Done`); without the lock around the Stop's stamp the goal test fails the
+  same way; without the Stop's second read of the task the prompt test fails
+  (`timed out waiting for Your turn after the Stop`). The other test passes in each case.
+- **TPO-003**, the reproduction's probes re-applied on top of the fix (never committed), on
+  `task_done::a_goal_the_tui_dropped_is_submitted_again`:
+  - forced race (E1): 4 of 4 pass (about 20.6 s). The watcher's prompt waits its full 3 s for a
+    verdict wait that cannot open under its lock (`pending=0`), then the Stop stamps 10 ms after
+    the prompt was applied and opens its wait, and "met" settles Done.
+  - phase loop (E4): 96 of 96 pass, 8 at a time. In 14 runs the goal turn's Stop stamped 2-13 ms
+    after its prompt was applied, having waited for it; in none did a Stop stamp between a
+    prompt's check and its writes.
+- **Affected suites**: `task_done::`, `intake::`, `session_sync::`, `task_pause::` and
+  `subscription_pool::` of `crates/yulius/tests/main.rs`, 16 threads: 106 passed, 0 failed.
