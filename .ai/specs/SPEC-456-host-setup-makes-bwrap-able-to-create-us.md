@@ -118,8 +118,7 @@ the fix. Nobody writes an AppArmor rule by hand again.
 - [x] Proof on real Ubuntu 24.04, Ubuntu 26.04 and Debian hosts
 - [x] Gates and independent review
 - [x] After the merge: the review's last nits (issue #1165) and Settings → Instance in a browser
-- [x] The follow-up's review answered: a header's variables are read as AppArmor reads them, and a kernel limit is its own clause
-- [x] The second review answered: a header's alternations, slashes and names are read as apparmor_parser reads them
+- [x] The follow-up's reviews answered for the kernel limit: its own clause in a check and a dry run, also where nothing could be started yet
 - [x] After three review rounds the follow-up is split: this pull request carries the kernel limit, the reader's rewrite follows on its own
 
 ## Acceptance criteria
@@ -277,9 +276,9 @@ container: at `b74138b1` for the first runs, at `39c85810` for the runs after re
 - **Not tested**: a release upgrade from 24.04 to 26.04 itself (its end state, both profiles
   enabled, was made by hand on 26.04); a host whose AppArmor cannot parse a `userns` rule (fake
   host; on 26.04 a missing `abi/4.0` stood in for it); the production hosts themselves (not
-  reachable from the task's sandbox; the operator's own probe on the 26.04 production host gave
-  the same result as the 26.04 guest: denied with the shipped profile, working with it disabled
-  and an unconfined profile with `userns`).
+  reachable from the task's sandbox; the request reports from the 26.04 production host what
+  the 26.04 guest shows: the shipped profile confines what a sandbox does inside its
+  namespace).
 - **After the merge** (#1164 merged at `00caba17`; the branch continues from `dev`):
   - Round 3's nits of #1164, issue #1165. In this pull request (#1168), test-first on the fake
     host: a check and a dry run name a kernel limit (`user.max_user_namespaces`,
@@ -300,10 +299,12 @@ container: at `b74138b1` for the first runs, at `39c85810` for the runs after re
     third review's findings answered. Issue #1177 lists what the reader leaves unread, on
     `dev` and in the rewrite.
   - What holds the limit's part: `a_namespace_limit_is_named` (a failed proof with one and with
-    two limits in a check, the dry run, a host where nothing can be started yet, a person's
-    profile beside a limit, the link beside a person's profile). Four mutations each fail it:
-    a check without the limits, a dry run without them, no limit where nothing could be
-    started, the link named beside a person's profile. On a real host (QEMU guest: Ubuntu
+    two limits in a check, the dry run, a host where nothing can be started yet, a host where
+    bwrap works beside a switch set to 0 and nothing is named, a person's profile beside a
+    limit, the link beside a person's profile). Five mutations each fail it
+    (`target/evidence/split/mutate-limits.log`, not in the repository): a check without the
+    limits, a dry run without them, no limit where nothing could be started, a limit named
+    where bwrap works, the link named beside a person's profile. On a real host (QEMU guest: Ubuntu
     26.04.1, kernel 7.0.0-38; the binary of `6fd02c02`, which also carries the reader's
     rewrite, the limit's code being the same as here) with `user.max_user_namespaces = 0` the
     check says "bwrap cannot start a user namespace as yulius (bwrap: Creating new namespace
