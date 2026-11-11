@@ -337,6 +337,10 @@ an older one.
     resume writes before any prompt, not always the first), both fixed. It also named what was
     still open beside the fix: a recount read a run's version and dropped it, so a run only a
     recount read (its live watch did not see its lines) had none. A recount records it now.
+  - *Its third look* (at 3b4f5afb): approved, with one optional nit, done: the recount writes the
+    version as the transcript's word, which replaces an assumed one, and a test now says so
+    (the recount test assumes another version for its first run beforehand). The reviewer also
+    built this change with task #452's branch on top: its tests and this change's pass.
   - *The version is cut at 64 bytes where it is kept* (`UsageAccumulator::note_cli_version`).
     Task #452 answers the third review's finding that the stored version is whatever a
     transcript line holds (a line may be megabytes) by cutting it in the parser's prompt
@@ -494,7 +498,9 @@ an older one.
   exit 0, nextest 3640 passed / 16 skipped, and every other step as above. The commit after it
   changes this file only. Mutations, each caught by a test and reverted: the version kept
   whole; a recount dropping the version; and, for the restart test's last check, a restart
-  whenever the versions differ (3 runs instead of 2).
+  whenever the versions differ (3 runs instead of 2). The reviewer ran the gate again at
+  3b4f5afb (3640 passed / 16 skipped). After it: `dev` up to 143d6084 merged cleanly, and one
+  line of the recount test, whose mutant (the recount writing as an assumption) fails it.
 - `yulius security-scan`: "Security scan disabled: Vidoc is turned off in Yulius" (exit 0):
   disabled, not passed.
 - Not tested: anything that needs a signed-in Claude subscription, which the guest has none
