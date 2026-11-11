@@ -6,12 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-11
 
-- A session resumed with nothing typed shows the Claude Code it runs at once (SPEC-461, task
-  #443). Yulius read a session's Claude Code version from its prompt records only, and a
-  session that redoes an interrupted turn by itself writes none for hours: task info showed the
-  previous session's version meanwhile. Every record of the session's own thread names the
-  version now. Found by reading real restarted sessions' transcripts after the merge; the
-  updater was also run against npm's real registry (2.1.311 refused, 2.1.322 installed).
+- A session that works on after a restart shows the Claude Code it runs with the first record
+  it writes (SPEC-461, task #443). Yulius read a session's Claude Code version from its prompt
+  records only, and a session that redoes an interrupted turn by itself writes none for hours:
+  task info showed the previous session's version meanwhile. Every record of the session's own
+  thread names the version now (an idle session resumed with nothing typed still names it at
+  its next prompt). Found by reading real restarted sessions' transcripts after the merge; the
+  updater was also run against npm's real registry and on a real host with npm's 2.1.311
+  (the doctor fails, the server installs 2.1.322 by itself two minutes after its start).
 - A restart of the server keeps its sessions on systemd 258 and later (SPEC-458, task #440,
   ADR-0298). On Ubuntu 26.04 (systemd 259) `yulius.service` could be stopped but not started
   again while one session ran, so a restart or an update took the instance down until every

@@ -289,9 +289,9 @@ an older one.
   each task detail and turn end, as every sandbox join does; a cache would have to notice the
   host's own `npm install`, which only those reads show.
 - **After the merge, checked against real artifacts (2026-11-11), which found one defect.**
-  PR #1167 merged at e9e11c0a. Two things its Evidence named as untested were then checked
-  with what this sandbox holds: npm's real registry, and the transcripts of real sessions that
-  were restarted on newer Claude Code releases that day.
+  PR #1167 merged at e9e11c0a. What its Evidence named as untested was then checked with what
+  this sandbox holds: npm's real registry, a real host booted in it, and the transcripts of
+  real sessions that were restarted on newer Claude Code releases that day.
   - *The registry and a real host.* The production updater against registry.npmjs.org
     replayed the incident with the real releases, and a real isolated server on an Ubuntu
     26.04 guest with npm's 2.1.311 went through it from the doctor's `FAIL` to the release it
@@ -307,13 +307,28 @@ an older one.
     its Sessions row none. Now every record of the session's own thread names the version
     (`claude::observe_versioned`, one parse per line as before), for the watcher and the
     recount; over those seven transcripts each of the nine restarts is seen at the first
-    record the resumed process wrote.
+    record of the resumed process that names a version (in three of them it first wrote two
+    `queue-operation` records, which name none).
   - *The restart's own word.* A session Yulius restarts is taken to run the version it was
     restarted on until its transcript names one (review round 1, finding 11). With the version
     named at the first record, that write could come second and replace the transcript's word
     (a release installed during the restart), and the watcher would not write again. It is one
     conditional statement in the store now (`assume_run_cli_version`): a version the transcript
     named stays, and one it names later replaces the assumption.
+  - *An idle session resumed with nothing typed* (a person's move of an idle task to another
+    subscription) writes no record until its next prompt. Its run names its version then; until
+    then task info shows the last session that named one, and its Sessions row none. Only a
+    restart Yulius makes for a newer Claude Code knows which version the new run gets.
+  - *Its review* (independent, fresh session, at 736cc059): approved, with two minors and five
+    nits in the fix's own code, all fixed here. The restart's write had no test of its order,
+    and the statement none of a run whose figures were saved first: a store test of the three
+    cases, and `a_restarted_session_keeps_the_version_its_transcript_named_first`, which holds
+    the restart's write at the pause point `ClaudeMoveRestarted` until the transcript's version
+    is recorded (the fake agent's `--resume-record` writes the meta record a real resume
+    writes first). Comments that described the old rule; a recount's window pinned for the
+    version (the first run's, and a window without a line); the changes entry's first sentence,
+    which promised more than the fix; three wordings of this section; a clone made before it
+    was known to be needed; a blank line.
 - **Migration `0050_claude_code.sql` is schema version 51.** Its number was reserved first, but
   SPEC-459's `0051_instance_limits.sql` merged first as version 50; a version is a migration's
   place in the list, so this one goes after it.
@@ -451,10 +466,12 @@ an older one.
      then "Up to date: runs get 2.1.322." "Check now" then shows "Checking npm for a newer
      release…" and the view ends `up_to_date`, checked at 21:18:04.
 - `scripts/dev ci` at 768f2c38 (that fix, on `dev` at eb2e8a4e): exit 0, nextest 3533 passed /
-  16 skipped, and every other step as above. The commit after it changes this file only.
-  Mutations, each caught by a test and reverted: the watcher ignoring a line's version; the
-  recount ignoring it; a sub-agent's record naming the session's version; the assumed version
-  replacing the transcript's.
+  16 skipped, and every other step as above; the reviewer ran it again at 736cc059 with the
+  same result. Mutations, each caught by a test and reverted: the watcher ignoring a line's
+  version; the recount ignoring it; a sub-agent's record naming the session's version; the
+  assumed version replacing the transcript's; and, after the review, the restart writing its
+  version without the condition, the statement doing nothing where a row exists, and a recount
+  naming versions from lines outside its window.
 - `yulius security-scan`: "Security scan disabled: Vidoc is turned off in Yulius" (exit 0):
   disabled, not passed.
 - Not tested: anything that needs a signed-in Claude subscription, which the guest has none
