@@ -269,6 +269,21 @@ pub fn adopt(
     Ok(done)
 }
 
+/// Waits up to `wait` for systemd to remove the emptied group `old`: a stopped unit keeps the
+/// place of its group while one process is left there, whatever its `Slice=` says, and lets go
+/// of it when it removes the group. Whether it is gone.
+#[must_use]
+pub fn wait_gone(old: &Path, wait: Duration) -> bool {
+    let deadline = Instant::now() + wait;
+    while old.exists() {
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(ENGINE_POLL);
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -447,6 +462,14 @@ mod tests {
             "{:?}",
             done.left
         );
+        Ok(())
+    }
+
+    #[test]
+    fn the_wait_for_an_emptied_unit_is_bounded() -> TestResult {
+        let root = tempfile::tempdir()?;
+        assert!(wait_gone(&root.path().join("gone"), Duration::ZERO));
+        assert!(!wait_gone(root.path(), Duration::from_millis(1)));
         Ok(())
     }
 

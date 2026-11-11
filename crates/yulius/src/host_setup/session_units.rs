@@ -23,6 +23,8 @@ use super::{Cmd, Mode, Run, service_name_ok, unit_safe};
 pub const DROP_IN_NAME: &str = "20-yulius-sessions.conf";
 /// How long an ended Docker engine may take to leave (SPEC-458 LAY-005).
 const ENGINE_WAIT: Duration = Duration::from_secs(10);
+/// How long systemd may take to remove the server unit's emptied old group.
+const RELEASE_WAIT: Duration = Duration::from_secs(5);
 
 /// The sessions unit of the server unit `service`, run as `user` in `slice`. It keeps the default
 /// `KillMode`: a unit that kept processes after its stop could not start again on systemd 258.
@@ -232,6 +234,15 @@ pub fn adopt_main(service: &str) -> ExitCode {
                     eprintln!("yulius host adopt-sessions: {line}");
                 }
                 failed |= !done.left.is_empty();
+                // The server starts where systemd still holds its group: wait for it to let go.
+                if unit != wanted && !adopt::wait_gone(&unit, RELEASE_WAIT) {
+                    eprintln!(
+                        "yulius host adopt-sessions: {} is still there: {service} starts in it \
+                         once more and moves at its next restart",
+                        unit.display()
+                    );
+                    failed = true;
+                }
             }
             Err(error) => {
                 eprintln!(
