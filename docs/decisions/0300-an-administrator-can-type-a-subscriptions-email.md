@@ -79,3 +79,12 @@ typing the email, and SPEC-001 ROT-009 and UI-022. The rest of ADR-0185 stands.
   was not drawn after a save by leaving the field.
 - The email field is a text field with an email keyboard, not an `email` field: Chromium returns
   an `email` field's domain in punycode, so the address would not be stored as it was typed.
+- The keyboard stays on a subscription's control when the list is drawn again. A renamed
+  subscription changes its place in the list and the names of its controls, so the pencils, the
+  fields, Sign in again and Remove say whose they are (`data-focus-key`, the account and the
+  control), and `keepFocus` looks for that before the control's name or its place. The redraw of
+  a card's head after its usage was read keeps the keyboard the same way; before, it dropped it,
+  and an idle subscription's usage is read after every list read.
+- Known limit, as before this change ([#1174](https://github.com/Quartio-Studio/yulius/issues/1174)):
+  a refusal shown as a field is left adds a line under it, so a press that was on its way to a
+  control below it in the same card misses once. The email's pencil is now such a control.

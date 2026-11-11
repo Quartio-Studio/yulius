@@ -55,7 +55,7 @@ Confirmed against `dev` at dbec951d.
 
 | ID | Requirement |
 | --- | --- |
-| EML-001 | On the Subscriptions page the email line of each subscription is edited in place, as its name is: a pencil button "Change the email of *name*" (or a click on the email, or on "email unknown") turns the line into a field holding the current email, empty when it is unknown. Enter or leaving the field saves it, and Escape cancels, even after an email was typed. The value is trimmed; an unchanged one closes the field without a request. A value that is not an address is refused before anything is sent ("Type an address like name@example.com."), and one the server refuses gets the server's message; either way the field stays open. Focus returns to the field only after Enter, never when the person left it. Once a key ends the edit, the keyboard is back on the pencil. A saved email shows at once on the card and, through `account.updated`, in every open view. An update that arrives while a field is open, or a list read that was on its way when it opened, neither closes it nor saves it; it is drawn once the field's save has settled or the field has closed. The address is stored as it was typed. |
+| EML-001 | On the Subscriptions page the email line of each subscription is edited in place, as its name is: a pencil button "Change the email of *name*" (or a click on the email, or on "email unknown") turns the line into a field holding the current email, empty when it is unknown. Enter or leaving the field saves it, and Escape cancels, even after an email was typed. The value is trimmed; an unchanged one closes the field without a request. A value that is not an address is refused before anything is sent ("Type an address like name@example.com."), and one the server refuses gets the server's message; either way the field stays open. Focus returns to the field only after Enter, never when the person left it. Once a key ends the edit, the keyboard is back on the pencil; when the list is drawn again (a renamed subscription changes its place, a card's usage is read again), the keyboard stays on the same control of the same subscription. A saved email shows at once on the card and, through `account.updated`, in every open view. An update that arrives while a field is open, or a list read that was on its way when it opened, neither closes it nor saves it; it is drawn once the field's save has settled or the field has closed. The address is stored as it was typed. |
 | EML-002 | Enter in an empty field removes the typed email: the subscription then shows what Claude shares for its sign-in, or "email unknown". Leaving an emptied field removes nothing: the field closes and the email stays. |
 | EML-003 | `PATCH /api/admin/accounts/{id}` takes `label`, `email`, or both; a request with neither, or with any other field, is `invalid` (422). `email` is a string, trimmed: an address (one `@` with text on both sides, no whitespace or control characters, at most 254 characters), or empty to remove it. Nothing is written when either field is refused. Only instance administrators and the superadmin may call it (403 otherwise, unchanged ACC-009). It is audited as `account.updated` with `email=set` or `email=removed`, never the address. |
 | EML-004 | A typed email is the person's, like the name: it stays when the subscription signs in again, and an answer from Claude never replaces it. Removing it lets the background round ask Claude again, once. An email read from Claude is still dropped by a new sign-in (SUB-003 unchanged). |
@@ -87,6 +87,14 @@ Confirmed against `dev` at dbec951d.
 - An unchanged, a refused and a cancelled value are never sent; an address Claude gave is not
   marked as typed by opening and closing its field (e2e, counted by the mock).
 - An address with a domain outside ASCII is stored and shown as typed (e2e).
+- The keyboard stays with the subscription when the list is drawn again: after a name saved with
+  Tab it is on that subscription's email pencil although the card moved, after Shift+Tab on the
+  neighbouring card's Remove, after an email saved with Tab on that card's next control, and
+  after a card's usage is read again still on its pencil, so Tab goes on to the email (e2e).
+- With the mouse, typing the name and pressing the email's pencil saves the name and opens the
+  email; both are stored (e2e).
+- At 360 px a long address is cut short of its pencil, which stays on its line, and nothing
+  spills (e2e).
 - A change the server refuses keeps the field open with the server's message, for both lines
   (e2e).
 - A member is refused the change with 403, and sees no email anywhere (API test).
@@ -121,8 +129,10 @@ Confirmed against `dev` at dbec951d.
   format, focus back on the pencil) with no WCAG violation. It counts the changes the mock was
   sent, so "not sent" can fail. It holds the list's read to open a field while the read is on its
   way, waits until the list says a refresh waits, and saves by leaving. It checks a server
-  refusal on both lines and an address outside ASCII. The `subscriptions` spec signs a
-  subscription with a typed email in again and reads the toast.
+  refusal on both lines and an address outside ASCII. It saves with Tab and Shift+Tab a name
+  that moves its card and asks where the keyboard is, holds a card's usage answer until its
+  pencil has the keyboard, and measures a long address at 360 px. The `subscriptions` spec signs
+  a subscription with a typed email in again and reads the toast.
 - Gates: `scripts/dev ci`, the e2e suite, `scripts/dev security`.
 
 ## Review
@@ -163,7 +173,30 @@ Confirmed against `dev` at dbec951d.
      SUB-003 and SUB-006 now point here.
   6. (low, own) A test waited two animation frames for "the read has landed": it waits until the
      list says a refresh waits (`data-refresh="waiting"`).
-- **Round 2** is the review of the head that carries this record; its verdict goes with the
+- **Round 2** (REQUEST CHANGES on 16a1e1ec; the six answers of round 1 held):
+  1. (high, own) A name saved with Tab moved the keyboard to another subscription. The list, read
+     again once the save settles (round 1's fix), is sorted by name; the email pencil's name had
+     changed with the subscription's, so `keepFocus` fell back to the control's place, where
+     another card's control now was. The card's controls say whose they are (`data-focus-key`)
+     and are found by that. Test first: the keyboard was on Claude #3's "Sign in again".
+  2. (low, own) The spec said done while its review was open: this record, and Evidence for the
+     new head.
+  3. (low, own) The held-read test used the subscription whose usage the page reads as it loads;
+     on another host that answer could mark the list waiting early. It uses a subscription whose
+     usage is fresh.
+- **The author's own probe after round 2** (keyboard and mouse on both lines, phone width):
+  - (own, fixed test first) The redraw of a card's head after its usage answer dropped the
+    keyboard from its pencil. An idle subscription's usage stays old, so on a real instance that
+    answer follows every list read, and Tab after a saved name went back to the name's pencil.
+    The redraw keeps the focus. `dev` has the same for the name's pencil.
+  - (own, fixed test first) At 360 px a long address pushed its pencil onto a second line: the
+    address is cut short of the pencil.
+  - (pre-existing, #1174) A refusal shown as a field is left adds a line under it, so a press on
+    its way to a control below it in the same card misses once. Measured on `dev`'s assets: with
+    a name emptied, Remove moved 20 px and no dialog opened. The email's pencil is now such a
+    control, and the email field refuses the same way. Not changed here: it is how every leave
+    of these fields is handled, and nothing is lost by the miss.
+- **Round 3** is the review of the head that carries this record; its verdict goes with the
   delivery.
 
 ## Evidence
@@ -246,6 +279,15 @@ Confirmed against `dev` at dbec951d.
   (`data-refresh="waiting"`), which is what the test waits on.
 - **The email field is a text field with an email keyboard.** An `email` field returns its domain
   in punycode in Chromium, so the address would not be stored as typed.
+- **A card's controls say whose they are.** A rename changes the names of a subscription's
+  controls and its place in the list, the two things `keepFocus` went by. The pencils, the
+  fields, Sign in again and Remove carry `data-focus-key` (the account and the control), and
+  `keepFocus` looks for it first; controls without one are found as before. Rejected: restoring
+  focus in the Subscriptions page itself, which would repeat what `keepFocus` is for.
+- **A long address is cut short of its pencil** (`max-width` on the text), so the pencil keeps
+  its place at phone width; the field shows the whole address.
+- **The miss after a refusal on leave stays as it is on `dev`** (#1174): fixing it means doing
+  every leave's work after the press has ended, a change to the name edit that was not asked for.
 - **Initials are unchanged**: an avatar takes them from the email's name part when there is an
   email, else from the name.
 - **Rollback is as for every schema change** (ADR-0264): the update restores the database it

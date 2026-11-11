@@ -499,7 +499,10 @@ function accountInitials(account) {
  * keeps the field open with the message; focus returns to the field only after Enter, never when
  * it was left, and to the pencil once editing ends.
  *
- * `line` says what differs: `holder` and `pencil` (classes), `action()` (the pencil's name),
+ * `line` says what differs: `holder` and `pencil` (classes), `key` (which line of which
+ * subscription: the pencil and the field carry it as `data-focus-key`, so a list drawn again
+ * finds the control whatever the subscription is called then and wherever its card went),
+ * `action()` (the pencil's name),
  * `text()` (the element shown), `field()` (the field's attributes), `stored()` (the value now),
  * `check(value)` (what to say to a value refused before it is sent, else null), `removes` (an
  * empty value removes what is stored, which takes Enter: an emptied field that is left closes
@@ -508,7 +511,7 @@ function accountInitials(account) {
 function editableLine(line, save) {
   const holder = h('span', { class: line.holder });
   const show = (focus = false) => {
-    const pencil = iconButton('pencil', line.action(), edit, { class: line.pencil });
+    const pencil = iconButton('pencil', line.action(), edit, { class: line.pencil, dataset: { focusKey: line.key } });
     // The text is a second, pointer-only way in (read as text): the pencil is the keyboard's one
     // tab stop.
     const text = line.text();
@@ -518,7 +521,7 @@ function editableLine(line, save) {
     if (focus) pencil.focus();
   };
   function edit() {
-    const input = h('input', line.field());
+    const input = h('input', { ...line.field(), dataset: { focusKey: line.key } });
     const error = h('span', { class: 'field-error xs', role: 'alert' });
     // `closed` once the field is gone: removing a focused field fires its blur, which must not
     // save what Escape cancelled.
@@ -567,6 +570,7 @@ function renamableName(account, rename) {
   return editableLine({
     holder: 'account-name-edit',
     pencil: 'account-rename',
+    key: `account:${account.id}:name`,
     action: () => `Rename ${name()}`,
     text: () => h('strong', { class: 'ellipsis account-name-text', title: `Rename ${name()}` }, name()),
     field: () => ({ class: 'input account-rename-input', type: 'text', value: account.label || '', maxlength: 80, 'aria-label': `New name for ${name()}` }),
@@ -588,6 +592,7 @@ function editableEmail(account, setEmail) {
   return editableLine({
     holder: 'account-email-edit',
     pencil: 'account-rename',
+    key: `account:${account.id}:email`,
     action: () => `Change the email of ${name()}`,
     text: () => h('span', { class: ['account-sub', 'account-email-text', account.email ? null : 'account-email-unknown'], title: `Change the email of ${name()}` }, accountEmail(account.email)),
     field: () => ({ class: 'input account-rename-input account-email-input', type: 'text', inputmode: 'email', value: account.email || '', maxlength: 254, placeholder: 'name@example.com', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false', 'aria-label': `Email of ${name()}` }),

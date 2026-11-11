@@ -1,6 +1,6 @@
 import { type Browser, test } from '@e2e-dev/web';
 import { type App, expect } from 'e2e';
-import { axeViolations, failOnPageErrors, firstShown, mock } from './support.ts';
+import { axeViolations, eventsConnected, failOnPageErrors, firstShown, mock } from './support.ts';
 
 failOnPageErrors();
 
@@ -16,6 +16,7 @@ const cards = (browser: Browser) => browser.evaluate(() =>
 type Mock = {
   __yuliusMock: {
     accounts: { id: string; label: string; email: string | null; email_typed?: boolean }[];
+    eventSockets: Set<{ push: (data: string) => void }>;
     sent?: Record<string, number>;
     holdPath: string | null;
     held: Promise<void> | null;
@@ -33,6 +34,18 @@ async function openSubscriptions(app: App, browser: Browser) {
 /** The changes sent for subscription `id`, counted by the mock as the page asks (not as it answers). */
 const sentFor = (browser: Browser, id: string) => browser.evaluate((account) =>
   (window as unknown as Mock).__yuliusMock.sent?.[`PATCH /api/admin/accounts/${account}`] ?? 0, id);
+
+/** Every request the page sent that is not a GET, as "METHOD path" (counted as the page asks). */
+const sentPaths = (browser: Browser) => browser.evaluate(() => Object.keys((window as unknown as Mock).__yuliusMock.sent ?? {}).sort());
+
+/** Another administrator renames the subscription named `from`: the server announces it. */
+const renamedElsewhere = (browser: Browser, from: string, to: string) => browser.evaluate(([was, now]) => {
+  const db = (window as unknown as Mock).__yuliusMock;
+  const account = db.accounts.find((a) => a.label === was);
+  if (!account) throw new Error(`no subscription named ${was}`);
+  account.label = now;
+  for (const socket of db.eventSockets) socket.push(JSON.stringify({ type: 'account.updated', account }));
+}, [from, to]);
 
 /** What the mock's server holds for the subscription named `label`. */
 const stored = (browser: Browser, label: string) => browser.evaluate((name) => {
@@ -235,15 +248,16 @@ test('a field opened while the list is read again is neither closed nor saved by
     db.held = new Promise<void>((resolve) => { db.release = () => { db.released = true; resolve(); }; });
   });
 
-  // The email is saved; its update makes the page read the list again.
-  await screen.getByRole('button', 'Change the email of Claude spare').click();
-  await screen.getByRole('textbox', 'Email of Claude spare').fill('agent@example.com');
-  await screen.getByRole('textbox', 'Email of Claude spare').press('Enter');
-  await expect(screen.getByText('Email of Claude spare is now agent@example.com.')).toBeVisible();
+  // The email is saved; its update makes the page read the list again. (Claude #4's usage was
+  // read minutes ago, so the page asks for none that could answer while its field is open.)
+  await screen.getByRole('button', 'Change the email of Claude #4').click();
+  await screen.getByRole('textbox', 'Email of Claude #4').fill('agent@example.com');
+  await screen.getByRole('textbox', 'Email of Claude #4').press('Enter');
+  await expect(screen.getByText('Email of Claude #4 is now agent@example.com.')).toBeVisible();
   // The person goes on to the name while that read is on its way. Meanwhile another
   // administrator renames another subscription: the read carries it.
-  await screen.getByRole('button', 'Rename Claude spare').click();
-  const name = screen.getByRole('textbox', 'New name for Claude spare');
+  await screen.getByRole('button', 'Rename Claude #4').click();
+  const name = screen.getByRole('textbox', 'New name for Claude #4');
   await name.fill('Agent TE');
   await expect(refreshWaits(browser)).toHaveCount(0);
   await browser.evaluate(() => {
@@ -256,7 +270,7 @@ test('a field opened while the list is read again is neither closed nor saved by
   await expect(refreshWaits(browser)).toHaveCount(1);
   await expect(name).toBeFocused();
   await expect(name).toHaveValue('Agent TE');
-  expect(await sentFor(browser, 'acc_x3')).toBe(1);
+  expect(await sentFor(browser, 'acc_x1')).toBe(1);
   expect((await cards(browser)).map((c) => c.name)).not.toContain('renamed elsewhere');
 
   // The name is saved by leaving the field. No focus leaves the list after that, and still the
@@ -267,6 +281,186 @@ test('a field opened while the list is read again is neither closed nor saved by
   await expect(refreshWaits(browser)).toHaveCount(0);
   await expect.poll(async () => (await cards(browser)).map((c) => c.name)).toContain('renamed elsewhere');
   expect((await cards(browser)).filter((c) => c.name === 'Agent TEAM')).toEqual([{ name: 'Agent TEAM', email: 'agent@example.com' }]);
+});
+
+test('a name saved with Tab leaves the keyboard on that subscription, wherever its card moves', async ({ app, browser, screen }) => {
+  await openSubscriptions(app, browser);
+  // Claude #4 is the fourth card; as "Agent TEAM" it sorts first.
+  await screen.getByRole('button', 'Rename Claude #4').click();
+  const name = screen.getByRole('textbox', 'New name for Claude #4');
+  await expect(name).toBeFocused();
+  await name.fill('Agent TEAM');
+  await name.press('Tab');
+  await expect(screen.getByText('Subscription renamed to Agent TEAM.')).toBeVisible();
+  // The list is read again once the save has settled, and sorted by name.
+  await expect.poll(async () => (await cards(browser))[0]?.name ?? null).toBe('Agent TEAM');
+  // The keyboard is where Tab put it, on this subscription's email, not on the control that
+  // now sits at that place in the list (Claude #3's "Sign in again").
+  await expect(screen.getByRole('button', 'Change the email of Agent TEAM')).toBeFocused();
+  await browser.keyboard.press('Enter');
+  const email = screen.getByRole('textbox', 'Email of Agent TEAM');
+  await expect(email).toBeFocused();
+  await expect(email).toHaveValue('pawel@example.com');
+  await email.fill('agent@example.com');
+  await email.press('Enter');
+  await expect(screen.getByText('Email of Agent TEAM is now agent@example.com.')).toBeVisible();
+  expect(await stored(browser, 'Agent TEAM')).toEqual({ email: 'agent@example.com', typed: true });
+  // Both changes went to that subscription. Beside the page's own usage reads nothing else was
+  // sent: no other subscription was changed and no sign-in was started.
+  expect(await sentFor(browser, 'acc_x1')).toBe(2);
+  expect((await sentPaths(browser)).filter((path) => !path.endsWith('/usage'))).toEqual(['PATCH /api/admin/accounts/acc_x1']);
+
+  // Shift+Tab the other way: from the last card's name back to the Remove of the card before
+  // it. That card moves down when this one becomes the first; the keyboard stays on its Remove.
+  const focused = () => browser.evaluate(() => {
+    const control = document.activeElement;
+    return {
+      control: control?.getAttribute('aria-label') ?? control?.textContent ?? null,
+      of: control?.closest('.card')?.querySelector('.account-name strong')?.textContent ?? null,
+    };
+  });
+  await screen.getByRole('button', 'Rename Claude spare').click();
+  const last = screen.getByRole('textbox', 'New name for Claude spare');
+  await expect(last).toBeFocused();
+  await last.fill('A spare');
+  await last.press('Shift+Tab');
+  await expect(screen.getByText('Subscription renamed to A spare.')).toBeVisible();
+  await expect.poll(async () => (await cards(browser))[0]?.name ?? null).toBe('A spare');
+  await expect.poll(focused).toEqual({ control: 'Remove', of: 'Claude #5' });
+});
+
+test('with the mouse: the name, then the pencil of the email under it; both are saved', async ({ app, browser, screen }) => {
+  await openSubscriptions(app, browser);
+  await screen.getByRole('button', 'Rename Claude #4').click();
+  await screen.getByRole('textbox', 'New name for Claude #4').fill('Agent TEAM');
+  // The press on the email's pencil leaves the name, which is saved meanwhile.
+  await screen.getByRole('button', 'Change the email of Claude #4').click();
+  const email = screen.getByRole('textbox', /^Email of /);
+  await expect(email).toBeFocused();
+  await expect(screen.getByText('Subscription renamed to Agent TEAM.')).toBeVisible();
+  await expect(email).toBeFocused();
+  await email.fill('agent@example.com');
+  await email.press('Enter');
+  await expect(screen.getByText('Email of Agent TEAM is now agent@example.com.')).toBeVisible();
+  await expect(screen.getByRole('button', 'Change the email of Agent TEAM')).toBeFocused();
+  expect(await stored(browser, 'Agent TEAM')).toEqual({ email: 'agent@example.com', typed: true });
+  expect(await sentFor(browser, 'acc_x1')).toBe(2);
+  expect((await cards(browser)).filter((c) => c.name === 'Agent TEAM')).toEqual([{ name: 'Agent TEAM', email: 'agent@example.com' }]);
+});
+
+test("an email saved with Tab leaves the keyboard on that card's next control", async ({ app, browser, screen }) => {
+  await openSubscriptions(app, browser);
+  // Claude #3 needs a new sign-in: the control after its email is "Sign in again".
+  await screen.getByRole('button', 'Change the email of Claude #3').click();
+  const email = screen.getByRole('textbox', 'Email of Claude #3');
+  await expect(email).toBeFocused();
+  await email.fill('ops-team@example.com');
+  await email.press('Tab');
+  await expect(screen.getByText('Email of Claude #3 is now ops-team@example.com.')).toBeVisible();
+  await expect(refreshWaits(browser)).toHaveCount(0);
+  await expect.poll(() => browser.evaluate(() => {
+    const control = document.activeElement;
+    return { control: control?.textContent ?? null, of: control?.closest('.card')?.querySelector('.account-name strong')?.textContent ?? null };
+  })).toEqual({ control: 'Sign in again', of: 'Claude #3' });
+  expect(await sentFor(browser, 'acc_c3')).toBe(1);
+});
+
+test('at phone width a long address is cut short of its pencil, which stays on its line', async ({ app, browser, screen }) => {
+  await browser.setViewport({ width: 360, height: 780 });
+  await openSubscriptions(app, browser);
+  const long = 'firstname.lastname+agents-team@subdomain.example.com';
+  await screen.getByRole('button', 'Change the email of Claude #4').click();
+  const email = screen.getByRole('textbox', 'Email of Claude #4');
+  await expect(email).toBeFocused();
+  await email.fill(long);
+  await email.press('Enter');
+  await expect(screen.getByText(`Email of Claude #4 is now ${long}.`)).toBeVisible();
+  const line = await browser.evaluate(() => {
+    const card = [...document.querySelectorAll('main .account-card')].find((c) => c.textContent?.includes('Claude #4'));
+    const text = card?.querySelector('.account-email-text');
+    const pencil = card?.querySelector('.account-email-edit .account-rename');
+    if (!card || !text || !pencil) return null;
+    const [c, t, p] = [card, text, pencil].map((el) => el.getBoundingClientRect());
+    return {
+      sameLine: p.top < t.bottom && p.bottom > t.top,
+      pencilAfterText: p.left >= t.right,
+      pencilInCard: p.right <= c.right + 0.5,
+      cut: text.scrollWidth > text.clientWidth,
+      pageScrolls: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+    };
+  });
+  expect(line).toEqual({ sameLine: true, pencilAfterText: true, pencilInCard: true, cut: true, pageScrolls: false });
+  // The whole address is in the field, and a refusal fits the card too.
+  await screen.getByRole('button', 'Change the email of Claude #4').click();
+  const again = screen.getByRole('textbox', 'Email of Claude #4');
+  await expect(again).toHaveValue(long);
+  await again.fill('not an address');
+  await again.press('Enter');
+  await expect(screen.getByText('Type an address like name@example.com.')).toBeVisible();
+  expect(await browser.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)).toBe(false);
+  expect(await axeViolations(browser)).toEqual([]);
+});
+
+test("a subscription's usage answer that lands after a save leaves the keyboard on its pencil", async ({ app, browser, screen }) => {
+  // Claude spare's usage is days old, so the page asks for it whenever it draws the list (an
+  // idle subscription's usage stays old, so on a real instance that is every time). The
+  // answers wait here until the test lets them go.
+  await app.open(mock('/admin/accounts', '&ambient=0&holdpost=/api/admin/accounts/acc_x3/usage'));
+  await firstShown(browser.locator('main .account-card').first());
+  await screen.getByRole('button', 'Rename Claude spare').click();
+  const name = screen.getByRole('textbox', 'New name for Claude spare');
+  await expect(name).toBeFocused();
+  await name.fill('A spare');
+  await name.press('Enter');
+  await expect(screen.getByText('Subscription renamed to A spare.')).toBeVisible();
+  // The list is drawn again (the card is first now) and asks for the usage once more.
+  await expect.poll(async () => (await cards(browser))[0]?.name ?? null).toBe('A spare');
+  await expect(screen.getByRole('button', 'Rename A spare')).toBeFocused();
+  const foot = browser.locator('main .account-card:has-text("A spare") .account-foot');
+  await expect(foot).toContainText('Updated 3 d ago');
+  await expect.poll(() => browser.evaluate(() => (window as unknown as Mock).__yuliusMock.sent?.['POST /api/admin/accounts/acc_x3/usage'] ?? 0)).toBe(2);
+  // The answers land and the card's head is drawn again: the keyboard is still on the pencil,
+  // so Tab goes on to the email under the name.
+  await browser.evaluate(() => (window as unknown as Mock).__yuliusMock.release());
+  await expect(foot).toContainText('Updated just now');
+  await expect(screen.getByRole('button', 'Rename A spare')).toBeFocused();
+  await browser.keyboard.press('Tab');
+  await expect(screen.getByRole('button', 'Change the email of A spare')).toBeFocused();
+  await browser.keyboard.press('Enter');
+  await expect(screen.getByRole('textbox', 'Email of A spare')).toBeFocused();
+});
+
+test('a refresh that waited for an open field is read when the field closes without a save', async ({ app, browser, screen }) => {
+  await openSubscriptions(app, browser);
+  await eventsConnected(browser);
+  await screen.getByRole('button', 'Change the email of Claude #4').click();
+  const email = screen.getByRole('textbox', 'Email of Claude #4');
+  await expect(email).toBeFocused();
+  await email.fill('half-typed@');
+  await renamedElsewhere(browser, 'Claude #2', 'renamed elsewhere');
+  await expect(refreshWaits(browser)).toHaveCount(1);
+  await expect(email).toBeFocused();
+  await expect(email).toHaveValue('half-typed@');
+  expect((await cards(browser)).map((c) => c.name)).not.toContain('renamed elsewhere');
+  // Cancelled with Escape: nothing is sent, the list is read again, and the keyboard is on
+  // this subscription's pencil although its card moved up.
+  await email.press('Escape');
+  await expect.poll(async () => (await cards(browser)).map((c) => c.name)).toContain('renamed elsewhere');
+  await expect(refreshWaits(browser)).toHaveCount(0);
+  await expect(screen.getByRole('button', 'Change the email of Claude #4')).toBeFocused();
+  expect(await sentFor(browser, 'acc_x1')).toBe(0);
+
+  // The same when the field closes because nothing was changed (Enter on the value as it was).
+  await screen.getByRole('button', 'Rename Claude #4').click();
+  const name = screen.getByRole('textbox', 'New name for Claude #4');
+  await expect(name).toBeFocused();
+  await renamedElsewhere(browser, 'Claude #1', 'also renamed');
+  await expect(refreshWaits(browser)).toHaveCount(1);
+  await name.press('Enter');
+  await expect.poll(async () => (await cards(browser)).map((c) => c.name)).toContain('also renamed');
+  await expect(refreshWaits(browser)).toHaveCount(0);
+  await expect(screen.getByRole('button', 'Rename Claude #4')).toBeFocused();
+  expect(await sentFor(browser, 'acc_x1')).toBe(0);
 });
 
 test('an email saved by leaving its field is drawn from the server: the initials follow it', async ({ app, browser, screen }) => {

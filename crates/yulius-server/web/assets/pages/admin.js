@@ -2,7 +2,7 @@
 // subscription pool with the login terminal, and the GitHub App connection (manifest flow).
 
 import { enc } from '../api.js';
-import { h, icon, badge, openModal, field, invalid, toast, confirmDialog, errorToast, toggle, setChildren, emptyState, skeleton, bar, pollPaused } from '../dom.js';
+import { h, icon, badge, openModal, field, invalid, toast, confirmDialog, errorToast, toggle, setChildren, emptyState, skeleton, bar, pollPaused, keepFocus } from '../dom.js';
 import { href } from '../router.js';
 import { openSandboxDialog } from '../actions.js';
 import { claudeConnected, CONNECT_PATH } from '../claude.js';
@@ -432,8 +432,10 @@ export function mountAccountsPage(ctx, route) {
       if (account.status !== 'pending_login' && stale) {
         ctx.api.post(`/api/admin/accounts/${enc(account.id)}/usage`).then((fresh) => {
           Object.assign(account, fresh);
+          // The answer draws the card's head again: a pencil that has the keyboard keeps it (an
+          // idle subscription's usage stays old, so this follows every list read; SPEC-463).
           if (usageHost.querySelector('.account-rename-input')) defer();
-          else setChildren(usageHost, accountUsage(account, { rename, setEmail, showEmail: true }), tokenTotals(account));
+          else keepFocus(usageHost, () => setChildren(usageHost, accountUsage(account, { rename, setEmail, showEmail: true }), tokenTotals(account)));
         }).catch(() => {});
       }
       const broken = ['relogin', 'error', 'pending_login'].includes(account.status);
@@ -442,7 +444,9 @@ export function mountAccountsPage(ctx, route) {
         h('div', { class: 'row-wrap' },
           h('span', { class: 'spacer' }),
           // A broken credential is repaired with Claude's sign-in; there is nothing else to set.
-          broken ? h('button', { type: 'button', class: 'btn btn-sm btn-primary', onClick: async () => {
+          // Like the pencils, the card's buttons say whose they are (`data-focus-key`): a list
+          // drawn again after a rename keeps the keyboard on this subscription (SPEC-463).
+          broken ? h('button', { type: 'button', class: 'btn btn-sm btn-primary', dataset: { focusKey: `account:${account.id}:signin` }, onClick: async () => {
             try {
               const result = await ctx.api.post(`/api/admin/accounts/${enc(account.id)}/relogin`);
               openLoginTerminal(ctx, { loginId: result.login_id, account, onFinish: reload });
@@ -451,7 +455,7 @@ export function mountAccountsPage(ctx, route) {
             }
           } }, 'Sign in again') : null,
           // Removal always works: the tasks on it move to another subscription (SPEC-447 MOV-003).
-          h('button', { type: 'button', class: 'btn btn-sm btn-quiet-danger', title: account.in_use_by > 0 ? `${account.in_use_by} live task${account.in_use_by === 1 ? '' : 's'} on this subscription move to another one` : null, onClick: async () => {
+          h('button', { type: 'button', class: 'btn btn-sm btn-quiet-danger', dataset: { focusKey: `account:${account.id}:remove` }, title: account.in_use_by > 0 ? `${account.in_use_by} live task${account.in_use_by === 1 ? '' : 's'} on this subscription move to another one` : null, onClick: async () => {
             const moving = account.in_use_by > 0 ? ` ${account.in_use_by === 1 ? 'The task' : `The ${account.in_use_by} tasks`} on it ${account.in_use_by === 1 ? 'moves' : 'move'} to another subscription in the same session, or ${account.in_use_by === 1 ? 'waits' : 'wait'} for one.` : '';
             if (!(await confirmDialog({ title: `Remove ${account.label}?`, message: `Its stored credential is deleted and a running sign-in is cancelled.${moving} Done tasks on it are closed (Continue starts them on another subscription), and nothing runs on it again.`, confirmLabel: 'Remove', danger: true }))) return;
             try {
