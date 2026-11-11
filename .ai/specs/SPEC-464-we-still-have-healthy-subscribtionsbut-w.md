@@ -236,24 +236,28 @@ Regression tests first (commit `3326040a`, before any fix):
   2.1.322 record the Needs you "Send the task a message (for example "continue") …" was open.
 - Later behaviours, each red before its change: the refused move ("timed out waiting for the
   request"), the new sign-in (the stored `weekly_fable` and `weekly_opus` were still there), the
-  repeat at a refused move ("timed out waiting for the second refusal").
+  repeat at a refused move ("timed out waiting for the second refusal"), a limit during a usage
+  reading ("the reading wrote over the limit (written while it was held: true)", commit
+  `988a8b29`), a second restart ("asked once": 2 audits, commit `2f036a5d`).
 
 After the fix:
 
-- `usage_credits::` 6 of 6 pass; `account_usage::`, `account_email::`, `accounts::` 24 pass;
+- `usage_credits::` 7 of 7 pass; `account_usage::`, `account_email::`, `accounts::` 24 pass;
   `cockpit::a_superagent_out_of_usage_credits_moves_to_another_subscription` passes.
 - Mutation checks (the fix reverted in one place at a time, each failed by the tests named in
   Requirements): the credits kind and phrases; the allowance named as Fable; the task's model
   family; the model's window kept across a reading; the status rule; the goal pause held at a
   limit, live and in the replay; the replay's call; the refusal's call; the request ended by a
   move; the hold after a refusal; the pause kept in the fold; the sign-in's drop; asked once at a
-  restart. 16 mutations, 16 caught.
-- `scripts/dev ci` on `fddcdb8c` (with `dev` merged): green. 3508 tests run, 3508 passed, 16
-  skipped; repository contracts, check, fmt, clippy (Linux and macOS), doctests, deny, shear and
-  docs passed. An earlier run failed only at the docs stage (a doc link to a private item),
-  fixed in `8110f414`.
-- `cd e2e && E2E_TELEMETRY_DISABLED=1 npx e2e run`: 77 files passed, 1 skipped; 923 tests
-  passed, 1 skipped. `tests/subscriptions.e2e.ts`: 20 of 20, with the new test.
+  restart; the limit's write without the lock; the reading without the lock; asked again
+  whenever the task does not read Needs you; a later limit taken for the one already asked
+  about. 20 mutations, 20 caught.
+- `scripts/dev ci` on `b051380f` (with `dev` at `eb2e8a4e` merged): green. 3551 tests run, 3551
+  passed, 16 skipped; repository contracts, check, fmt, clippy (Linux and macOS), doctests,
+  deny, shear and docs passed. An earlier run failed only at the docs stage (a doc link to a
+  private item), fixed in `8110f414`.
+- `cd e2e && E2E_TELEMETRY_DISABLED=1 npx e2e run` on the same head: 78 files passed, 1 skipped;
+  930 tests passed, 1 skipped. `tests/subscriptions.e2e.ts`: 20 of 20, with the new test.
 - The mock's Subscriptions page looked at in the sandbox browser: "Claude #5" reads "Limit
   reached" with "Fable this week 100% used, Resets Friday …" under its own 5-hour and weekly rows.
 - `yulius security-scan`: "Security scan disabled: Vidoc is turned off in Yulius, for this
@@ -268,3 +272,5 @@ Not tested here:
 - The order "move refused first, pause notice second" with real processes: the fake agent writes
   both lines at once, so the notice is read first. That order is covered by the unit test of
   `LimitGoalPause`.
+- The replay's settle of a closed turn landing after the request (two tasks of one process):
+  the restart test sets the task to Your turn between two restarts instead of racing them.
