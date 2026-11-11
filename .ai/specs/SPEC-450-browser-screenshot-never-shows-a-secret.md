@@ -40,63 +40,86 @@ with `browser_fill_secret`. A password field, drawn as dots, keeps screenshots w
   navigation, or out of the main document's reach (a cross-origin iframe, a closed shadow root).
   A fill-time record of "it was a password field" misses the reveal and the restore; only a look
   at the page at screenshot time sees them.
+- **Review round 1 (what the first fix left open).** The first version remembered values per
+  tab and refused only an exact match of the value. An agent could insert a character into the
+  middle of the filled value (`browser_click` into the field, `browser_type " "`) and get the
+  rest in the pixels. It could also read the key echoed by a settings page in another tab, or a
+  tab reopened after the first one closed. A second fill of the same value into a password field
+  marked an unseen first fill as seen. And a click between the screenshot's look at the page and
+  its capture could reveal a password. The requirements below close each of these.
 
 ## Requirements
 
-- **SSC-001 A shown filled value refuses the screenshot.** The browser remembers, per tab, each
-  secret value `browser_fill_secret` typed into it (field `value`/`password`; a user name is not
-  a secret and a TOTP code is short-lived, as the redactor treats them), until the tab closes.
-  Before capturing a tab that has one, it reads the page's readable text (visible text, input and
-  textarea values other than password and hidden inputs, open shadow roots and same-origin frames,
-  recursively) and refuses the screenshot when any of them contains a remembered value. The
-  refusal is a tool error pointing to `browser_snapshot`, and names no value.
-- **SSC-002 A password field keeps screenshots.** A value found only in password fields
-  (`input[type=password]`, drawn as dots) does not refuse; once the page shows it (the field
-  became `type=text`), SSC-001 refuses.
-- **SSC-003 Fail closed.** When the page cannot be read (the probe fails, throws, or its result is
-  malformed or over its bound), the screenshot is refused. A fill whose value the page shows
-  nowhere readable right after typing (typed into a cross-origin frame or a closed shadow root,
-  reformatted or cut by the field) refuses screenshots of that tab while its main frame keeps the
-  same document (`Page.getFrameTree` loader id); when the document cannot be told, it refuses.
-- **SSC-004 Navigation frees the tab.** Once the page no longer shows the value (navigated to
-  another document, the field cleared), screenshots work again; a value that comes back (history
-  navigation restores the field) refuses them again.
-- **SSC-005 The value never leaves for the page.** Comparison happens in Yulius: the page returns
-  its text, the value is never sent into the page (which may have navigated to another origin).
-- **SSC-006 Every agent.** The check is in the browser instance's screenshot, so a task's agent,
-  the sandbox Superagent and the Global Superagent get it alike.
+- **SSC-001 The browser remembers what was filled.** `browser_fill_secret` of field
+  `value`/`password` types through `tool_type_secret`. The browser instance remembers each value
+  (distinct, at most 32) and each document it went into (the main frame's loader id from
+  `Page.getFrameTree`, read before and after typing; at most 256), until the browser stops,
+  whatever its tabs do. A user name is not a secret (it is in the description) and a TOTP code
+  expires, so those are typed as `browser_type` types, unguarded, as the redactor treats them. A
+  fill whose document cannot be told is refused before anything is typed.
+- **SSC-002 A filled document needs the value whole and only in password fields.** Before
+  capturing any tab, once a value was typed, a probe reads the page's text and fields
+  (`shown`: body, open shadow roots and same-origin frames as `textContent`, the values of fields
+  drawn as text; `masked`: password field values). In a document a value was typed into, the
+  screenshot is refused unless that value is found whole in a password field and nowhere in
+  `shown`. A value typed into a cross-origin frame, edited in place, cut or reformatted by the
+  field, or revealed is therefore refused.
+- **SSC-003 Any other page is refused while it shows a value.** In every tab, a page whose `shown`
+  holds a remembered value is refused (a settings page echoing the stored key, a field history
+  navigation restored).
+- **SSC-004 Fail closed.** No screenshot when the document cannot be told, the probe fails or
+  throws, or its answer is malformed or over 4 000 000 characters. The refusal is a tool error
+  (`SecretOnPage`) pointing to `browser_snapshot` and names no value.
+- **SSC-005 Nothing slips between look and capture.** A screenshot holds the instance's input lock
+  from its look at the page to its last capture, and typing and clicks take the same lock, so no
+  agent or viewer input lands in between. The probe runs in an isolated world
+  (`Page.createIsolatedWorld`), where page scripts cannot change what it reads.
+- **SSC-006 The value never leaves for the page; every agent.** The probe takes no argument:
+  Yulius compares. The check is in the browser instance, so a task's agent and both Superagents
+  get it.
 
 ## Plan
 
-- [ ] Regression test: a screenshot after a plain-text fill shows the secret
-- [ ] The browser remembers filled values per tab and refuses a screenshot of a page that shows one
-- [ ] An unreadable page or a fill seen nowhere refuses screenshots until the document changes
-- [ ] ADR-0291, architecture, API and changes describe the guard
+- [x] Regression test: a screenshot after a plain-text fill shows the secret
+- [x] The browser remembers filled values per tab and refuses a screenshot of a page that shows one
+- [x] An unreadable page or a fill seen nowhere refuses screenshots until the document changes
+- [x] ADR-0291, architecture, API and changes describe the guard
+- [x] Review round 1: filled values guarded per browser and per document, probe and capture under one lock
 - [ ] Independent review and its answers
 - [ ] Gates green with evidence
 
 ## Acceptance criteria
 
 - After `browser_fill_secret` into a plain-text field, `browser_screenshot` of that tab is an
-  error pointing to `browser_snapshot`; the result holds no value and no image. (#1113 AC 1)
+  error pointing to `browser_snapshot`; the result holds no value and no image (#1113 AC 1). The
+  same holds after a character is typed into the middle of the value.
 - After a fill into a password field, `browser_screenshot` returns the image as today; after the
-  field turns into a text field it is refused. (#1113 AC 2)
-- After navigating the tab to another document, screenshots work again.
-- A fill the page shows nowhere refuses screenshots until the document changes; a page the probe
-  cannot read refuses them.
+  field turns into a text field it is refused (#1113 AC 2).
+- After navigating the tab to another document, screenshots work again. A page in any tab that
+  shows the value, also after the filled tab closed, is refused.
+- A user-name fill does not refuse screenshots.
+- A fill the page shows nowhere, a page the probe cannot read and a document that cannot be told
+  refuse screenshots; input waits for a screenshot's capture.
 - Integration tests over the fake DevTools server cover these cases (#1113 AC 3).
 
 ## Test plan
 
-- The fake DevTools server models fields: a field per selector (text by default, password when a
-  test says so), focused by `browser_type`'s focus function, filled by `Input.insertText`, cleared
-  by `Page.navigate` (which also gives a new loader id), and answers the secret probe and
-  `Page.getFrameTree`.
-- `crates/yulius/tests/browser.rs`: plain-text fill → screenshot refused (written first, fails on
-  dev); password fill → screenshot works; field revealed → refused; navigate → works; probe fails
-  → refused.
-- `crates/yulius-browser/tests/instance.rs`: unseen fill → refused until navigation; a probe answer
-  over its bound is refused; a value typed with plain `tool_type` guards nothing.
+- The fake DevTools server models fields: one per selector (text by default, password when a
+  test says so), focused by `browser_type`'s focus function, filled by `Input.insertText`, and
+  cleared by `Page.navigate`, which also gives a new loader id that is unique in the browser. It
+  answers `Page.getFrameTree`, `Page.createIsolatedWorld` and the probe, which a test can
+  override or delay (the delayed reply runs while other requests go on).
+- `crates/yulius/tests/browser.rs` `a_screenshot_never_shows_a_secret_typed_into_a_page`, written
+  first and failing on dev, covers the plain-text fill, the edited value, `browser_type`
+  guarding nothing, navigation, the unguarded user name, another tab echoing the key, the password
+  field and its reveal, and an unreadable page. `superagent_browser.rs` covers the Global
+  Superagent's refusal.
+- `crates/yulius-browser/tests/instance.rs`:
+  - `typed_secrets_refuse_screenshots_while_a_page_may_show_them`: an unseen fill until
+    navigation, a restored or echoed value, probe answers over the bound or malformed, an edited
+    password, another tab after the filled one closed, the 32-value cap, a failing probe.
+  - `a_secret_needs_a_known_document`.
+  - `input_waits_for_a_screenshot_to_capture`.
 
 ## Decisions
 
@@ -105,18 +128,21 @@ with `browser_fill_secret`. A password field, drawn as dots, keeps screenshots w
   watches, misses values the page echoes outside fields, cannot reach cross-origin frames, and
   fails open when the style does not apply. A refusal keeps every case closed, and
   `browser_snapshot` reads the page with the value redacted.
-- **Look at the page at screenshot time, not only at fill time.** A fill-time "password field"
-  flag misses a revealed password and a value restored by history navigation; reading the page
-  sees both. The fill-time look only decides whether the value can be found at all (SSC-003).
-- **Compare in Yulius.** Sending the value into the page to search it would hand it to whatever
-  origin the tab shows by then.
-- **Remember values until the tab closes**, held in `Zeroizing` strings: a value can come back
-  (SSC-004), and re-reading the vault would miss a rotated secret still on the page.
+- **The filled document is judged by where the value is, not by where it is not.** An exact
+  substring search is defeated by editing the value; requiring it whole in a password field is
+  not, and costs only screenshots of a document that should not be photographed anyway.
+- **Per browser, not per tab.** Tabs are the agent's to open and close; values and documents stay
+  until the browser stops (bounded, a fill beyond is refused).
+- **Compare in Yulius, read in an isolated world.** Sending the value into the page would hand it
+  to whatever origin the tab shows by then; the isolated world keeps page scripts from spoofing
+  the probe.
 
 ## Out of scope
 
 - Pixels a person sees (the viewer's live view): the person may see what they allowed.
-- A value drawn in a canvas, or typed by the agent itself with `browser_type` (the agent then knows
-  it).
-- A browser restart: the remembered values go with the crashed instance; a new browser starts
+- A value drawn in a canvas or an image, or echoed edited (spaced out) on a page other than the
+  one it was typed into, for example after a history navigation restored an edited field into a
+  new document. Hidden text styled by CSS (`text-transform`) is still read as `textContent`, so it
+  is found.
+- A browser restart: the remembered values go with the stopped instance; a new browser starts
   without the old pages.

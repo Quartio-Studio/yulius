@@ -282,10 +282,11 @@ names (`GLOBAL_ONLY_TOOLS`, `Action::Work` per call), both as a `SecretUser`, wh
 sandbox, whose agent secrets `browser_fill_secret` resolves, the audit actor and the cursor label
 ([SPEC-437](../.ai/specs/SPEC-437-add-browser-use-for-superagents.md),
 [decision 0281](decisions/0281-the-superagents-use-the-project-browser.md)). Pixels cannot be
-redacted, so the browser instance remembers each value `browser_fill_secret` typed into a tab and,
-before capturing it, reads the page's visible text and text fields with a probe and searches them
-in Yulius: `browser_screenshot` is refused while the page shows a value, cannot be read, or holds
-one the probe never saw in the same document; password fields keep screenshots
+redacted, so the browser instance remembers each value `browser_fill_secret` typed and the
+documents it went into, and before any capture reads the page's text and fields with a probe in an
+isolated world and searches them in Yulius, holding the input lock until it has captured:
+`browser_screenshot` is refused while the page shows a value, is a document one was typed into
+without it whole in a password field, or cannot be read; password sign-ins keep screenshots
 ([SPEC-450](../.ai/specs/SPEC-450-browser-screenshot-never-shows-a-secret.md),
 [decision 0291](decisions/0291-a-screenshot-of-a-page-showing-a-filled-secret-is-refused.md)).
 
@@ -296,7 +297,7 @@ flowchart LR
   G["Global Superagent (gs_)"] -->|"browser_* with project"| Y
   V["Viewer"] -->|"viewer WebSocket"| Y
   Y -->|"fd 3: requests"| C["Sandbox Chromium"]
-  Y -->|"filled tab: probe page text before a screenshot"| C
+  Y -->|"after a fill: probe page text before a screenshot"| C
   C -->|"fd 4: responses, events"| Y
   O["Other local process"] -. "no DevTools port to connect to" .-x C
 ```

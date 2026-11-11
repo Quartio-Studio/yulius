@@ -22,22 +22,25 @@ main document's reach.
 
 ## Decision
 
-- **Refuse, do not mask.** The browser instance remembers per tab each value
-  `browser_fill_secret` typed (`tool_type_secret`; field `value`/`password`, in `Zeroizing`
-  strings, at most 32 per tab, until the tab closes). Before `Page.captureScreenshot` of such a
-  tab, a probe function reads the page's visible text and the values of fields drawn as text,
-  through open shadow roots and same-origin frames, and the values of password fields apart from
-  them. When the readable text holds a remembered value, the screenshot is a tool error
-  (`BrowserError::SecretOnPage`) pointing to `browser_snapshot`.
+- **Refuse, do not mask.** `browser_fill_secret` of a value (not a user name or TOTP code, which
+  the redactor does not hide either) types through `tool_type_secret`. The browser instance
+  remembers each value (at most 32) and each document it went into (the main frame's loader id
+  from `Page.getFrameTree`, before and after typing; at most 256) in `Zeroizing` strings, until the
+  browser stops, whatever its tabs do. A fill into a document that cannot be told, or beyond the
+  bounds, is refused before anything is typed.
+- **Look at the page before every capture.** Once a value was typed, a probe reads the page about
+  to be captured, in any tab: `shown` is the `textContent` of its body, open shadow roots and
+  same-origin frames plus the values of fields drawn as text, and `masked` is password field
+  values. The screenshot is a tool error (`BrowserError::SecretOnPage`) pointing to
+  `browser_snapshot` when `shown` holds a remembered value, or when the page is a document a
+  value was typed into and that value is not found whole in a password field. That covers a value
+  edited in place, cut or reformatted, typed into a cross-origin frame, or revealed.
+- **Fail closed and leave no gap.** An unknown document, a probe that fails, throws, answers
+  malformed or reads over 4 000 000 characters is refused. The probe runs in an isolated world
+  (`Page.createIsolatedWorld`), out of reach of page scripts. A screenshot holds the instance's
+  input lock from the probe to its last capture, and typing and clicks take it too.
 - **Compare in Yulius.** The probe takes no argument: the page returns its text and Yulius
-  searches it. The value is never sent into a page, which may show another origin by then.
-- **Fail closed.** A probe that fails, throws, answers malformed or reads over 4 000 000
-  characters refuses the screenshot. A value the probe finds nowhere right after typing it
-  (a cross-origin frame, a closed shadow root, a field that cut or reformatted it) refuses
-  screenshots while the tab's main frame keeps that document (`Page.getFrameTree` loader id), and
-  always when the loader id cannot be read.
-- **Password fields keep screenshots.** A value only in `input[type=password]` is drawn as dots,
-  so it does not refuse, until the page turns the field into a text field.
+  searches it. The value never enters a page, which may show another origin by then.
 
 ## Alternatives
 
@@ -45,21 +48,26 @@ main document's reach.
   text fields, removed afterwards): it changes the page the person watches, misses values the page
   echoes outside fields, cannot style cross-origin frames, and fails open when the style does not
   apply (a re-rendered element, a canvas).
-- **Record at fill time whether the field was a password field**, refusing screenshots of a
-  non-password fill until navigation: it misses a revealed password and a value restored by
-  history navigation, and a navigation would free a page that still shows it.
+- **Refuse only an exact match of the value** (the first version): typing one character into the
+  middle of the filled value defeats it.
+- **Remember fills per tab**: the agent opens and closes tabs, and another tab may show the
+  stored value.
+- **Record at fill time whether the field was a password field**: it misses a revealed password
+  and a value restored by history navigation.
 - **Send the value (or its hash) into the page to search it**: hands the value to whatever origin
   the tab shows by then; a hash cannot find a value inside longer text.
-- **Refuse every screenshot of a tab once a secret was filled**: safe, but breaks screenshots
-  after every sign-in with a password, which the issue keeps working.
+- **Refuse every screenshot once a secret was filled**: safe, but breaks screenshots after every
+  sign-in with a password, which the issue keeps working.
 
 ## Consequences
 
-- An agent that typed a key into a text field reads the page with `browser_snapshot` until the
-  page no longer shows it. A screenshot of a page that shows the value somewhere the probe reads
-  is refused even if the value is scrolled out of view.
-- Each screenshot of a tab that had a fill costs one probe (and a `Page.getFrameTree` when a fill
-  went unseen); tabs without fills are captured as before.
-- Values drawn in a canvas, an image or a closed shadow root after a fill that the probe saw
-  elsewhere are not detected. A browser restart forgets the values along with the old pages. The
-  person's own live view is not affected.
+- An agent that typed a key into a text field reads that page with `browser_snapshot`. Other
+  pages are refused only while they show the value, even scrolled out of view. A password
+  sign-in keeps screenshots.
+- Once a value was typed, each screenshot in that browser costs a `Page.getFrameTree`, an
+  isolated world and a probe; a browser where nothing was filled captures as before. Input waits
+  for a screenshot's capture.
+- Not detected: a value drawn in a canvas or image, and an edited copy on a page other than the
+  one it was typed into (for example an edited field that history navigation restored into a new
+  document). A browser restart forgets the values along with the old pages. The person's own
+  live view is not affected.
