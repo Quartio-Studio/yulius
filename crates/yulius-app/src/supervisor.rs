@@ -163,7 +163,9 @@ pub struct TaskRuntime {
     pub(crate) turn_end_ms: AtomicI64,
     /// Orders a prompt's turn start with a later turn end: a prompt holds it from its
     /// [`Self::turn_end_ms`] check until it set Working, and a Stop or verdict takes it to move
-    /// `turn_end_ms`, so their settling never lands before a prompt that passed the check.
+    /// `turn_end_ms`, so their settling never lands before a prompt that passed the check. The
+    /// same for a prompt read from the transcript and its [`Self::last_stop_ms`] check, which a
+    /// clean Stop moves under it (SPEC-453 TPO-001).
     pub(crate) turn_order: tokio::sync::Mutex<()>,
     /// Claude Code's SessionStart hook arrived for the current attempt: its prompt box reads
     /// input (typing before it is lost or left unsubmitted, F 2026-10-12).
@@ -1199,7 +1201,7 @@ impl App {
             let live = self.sessions_in_use().await?;
             // While an update pauses the tasks, starts queue like at the session limit and run
             // once it is over (SPEC-002 ADR-18).
-            let full = held || live >= self.config.max_live_sessions || self.update_holds_starts();
+            let full = held || live >= self.max_live_sessions() || self.update_holds_starts();
             if full && task.status != TaskStatus::Switching {
                 let queued = self
                     .deps
@@ -2880,7 +2882,7 @@ impl App {
         }
         for task in crate::supertask::start_order(free) {
             let live = self.sessions_in_use().await.unwrap_or(u32::MAX);
-            if live >= self.config.max_live_sessions {
+            if live >= self.max_live_sessions() {
                 return;
             }
             let has_lineage = self
@@ -4295,10 +4297,17 @@ impl App {
                 if !wake {
                     runtime.goal_achieved.store(false, Ordering::SeqCst);
                 }
-                // A prompt of a turn whose clean Stop already came is not a new turn.
+                // A prompt of a turn whose clean Stop already came is not a new turn. Held until
+                // Working is set, so a clean Stop arriving meanwhile opens its verdict wait, or
+                // settles, after this prompt started its turn (SPEC-453 TPO-001).
+                let _order = runtime.turn_order.lock().await;
                 if at.is_some_and(|at| at.0 <= runtime.last_stop_ms.load(Ordering::SeqCst)) {
                     return;
                 }
+                crate::race::reached(
+                    crate::race::Point::UserTurnChecked,
+                    Path::new(task_id.as_str()),
+                );
                 // A prompt reached the agent while its turn or prompt was held for capacity:
                 // the CLI gave the hold up (an interrupt, its own hook timeout), so the task
                 // runs again (F 2026-10-10: the task follows its session).

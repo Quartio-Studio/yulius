@@ -165,9 +165,8 @@ impl Limits {
     /// weight whenever they need it.
     #[must_use]
     pub fn defaults(total_memory: u64, host_tasks: Option<u64>) -> Self {
-        let reserve = (total_memory / 8).max(4 << 30);
         Self {
-            memory_max: Some(total_memory.saturating_sub(reserve).max(2 << 30)),
+            memory_max: Some(yulius_domain::limits::sandbox_memory(total_memory)),
             cpus: None,
             pids_max: Some(host_tasks.map_or(MIN_PIDS, |n| (n / HOST_TASKS_SHARE).max(MIN_PIDS))),
         }

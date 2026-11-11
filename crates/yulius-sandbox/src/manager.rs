@@ -28,7 +28,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -397,6 +397,9 @@ pub struct Manager {
     sandboxes: Mutex<HashMap<String, Arc<tokio::sync::Mutex<SandboxState>>>>,
     build: Mutex<BuildState>,
     building: AtomicBool,
+    /// The disk quota in force (bytes; 0: none): the configuration's until
+    /// [`Manager::set_disk_quota`] changes it.
+    disk_max: AtomicU64,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -462,6 +465,7 @@ impl Manager {
     pub fn new(config: IsolationConfig) -> Arc<Self> {
         Arc::new(Self {
             bases: Bases::new(&config.data_dir),
+            disk_max: AtomicU64::new(config.disk_max.unwrap_or(0)),
             config,
             sandboxes: Mutex::new(HashMap::new()),
             build: Mutex::new(BuildState::default()),
@@ -473,6 +477,17 @@ impl Manager {
     #[must_use]
     pub fn config(&self) -> &IsolationConfig {
         &self.config
+    }
+
+    /// The soft disk quota per sandbox in force (bytes); `None`: none.
+    fn disk_max(&self) -> Option<u64> {
+        Some(self.disk_max.load(Ordering::Relaxed)).filter(|bytes| *bytes > 0)
+    }
+
+    /// Changes the soft disk quota per sandbox (bytes; `None` or 0: none) while the manager
+    /// runs (SPEC-459 HSL-006): the next check of a sandbox compares against it.
+    pub fn set_disk_quota(&self, quota: Option<u64>) {
+        self.disk_max.store(quota.unwrap_or(0), Ordering::Relaxed);
     }
 
     fn state_dir(&self, sandbox: &str) -> PathBuf {
@@ -1003,7 +1018,7 @@ impl Manager {
                 state.request = Some(sandbox.clone());
             }
             if let Some(refusal) = self.quota_refusal(sandbox, &mut state).await {
-                let limit = self.config.disk_max.unwrap_or(u64::MAX);
+                let limit = self.disk_max().unwrap_or(u64::MAX);
                 let without_production = state.usage.as_ref().map_or(u64::MAX, |(usage, _)| {
                     let production = usage
                         .largest
@@ -1673,7 +1688,7 @@ impl Manager {
         request: &SandboxRequest,
         state: &mut SandboxState,
     ) -> Option<PrepareError> {
-        let limit = self.config.disk_max?;
+        let limit = self.disk_max()?;
         let (usage, at) = state.usage.as_ref()?;
         if usage.bytes <= limit {
             return None;
@@ -1696,10 +1711,7 @@ impl Manager {
 
     fn refresh_usage(self: &Arc<Self>, sandbox: &str, state: &mut SandboxState) {
         // A production holder's files are measured with its sandbox's (SPEC-279 PDE-006).
-        if self.config.disk_max.is_none()
-            || state.measuring
-            || production_sandbox(sandbox).is_some()
-        {
+        if self.disk_max().is_none() || state.measuring || production_sandbox(sandbox).is_some() {
             return;
         }
         let Some(request) = state.request.clone() else {
@@ -1865,7 +1877,7 @@ impl Manager {
     /// The last measured usage and the quota (bytes); `None` before the first measurement or
     /// without a quota.
     pub async fn disk(&self, sandbox: &str) -> Option<(u64, u64)> {
-        let limit = self.config.disk_max?;
+        let limit = self.disk_max()?;
         let entry = self.entry(sandbox);
         let state = entry.lock().await;
         state.usage.as_ref().map(|(usage, _)| (usage.bytes, limit))
@@ -1884,7 +1896,7 @@ impl Manager {
 
     /// Measures a sandbox now and keeps the reading (after space was freed).
     pub async fn measure_disk(&self, request: &SandboxRequest) -> Option<(u64, u64)> {
-        let limit = self.config.disk_max?;
+        let limit = self.disk_max()?;
         let (dir, sysroot) = (request.dir.clone(), self.sysroot(&request.id));
         let production = self.sysroot(&production_holder(&request.id));
         let usage =
@@ -3015,6 +3027,42 @@ while True:
             manager.quota_refusal(&request, &mut state).await,
             Some(PrepareError::OverQuota { .. })
         ));
+        Ok(())
+    }
+
+    /// SPEC-459 HSL-006: the quota is changed while the manager runs. A sandbox over the old
+    /// quota is let in under a bigger one, refused again under a smaller one, and reports the
+    /// quota in force; without a quota nothing is refused or reported.
+    #[tokio::test]
+    async fn a_changed_quota_applies_to_the_next_check() -> Result<(), Box<dyn std::error::Error>> {
+        let data = tempfile::tempdir()?;
+        let manager = manager(data.path(), 100);
+        let request = request(data.path());
+        manager.set_usage("s1", 500).await;
+        let refused = |manager: Arc<Manager>, request: SandboxRequest| async move {
+            let entry = manager.entry("s1");
+            let mut state = entry.lock().await;
+            manager.quota_refusal(&request, &mut state).await
+        };
+        assert!(refused(manager.clone(), request.clone()).await.is_some());
+        assert_eq!(manager.disk("s1").await, Some((500, 100)));
+
+        manager.set_disk_quota(Some(1_000));
+        assert!(refused(manager.clone(), request.clone()).await.is_none());
+        assert_eq!(manager.disk("s1").await, Some((500, 1_000)));
+
+        manager.set_disk_quota(Some(400));
+        assert_eq!(
+            refused(manager.clone(), request.clone()).await,
+            Some(PrepareError::OverQuota {
+                used: human(500),
+                limit: human(400),
+            })
+        );
+
+        manager.set_disk_quota(None);
+        assert!(refused(manager.clone(), request.clone()).await.is_none());
+        assert_eq!(manager.disk("s1").await, None);
         Ok(())
     }
 

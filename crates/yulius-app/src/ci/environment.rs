@@ -179,7 +179,7 @@ impl App {
                     &mut cancel,
                     Some(DiskBound {
                         dirs: vec![("run files", files.to_path_buf())],
-                        max: self.config.ci.run_disk_max,
+                        max: self.run_disk_max(),
                     }),
                     self.config.ci.job_timeout,
                 ),

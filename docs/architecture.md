@@ -263,6 +263,44 @@ flowchart LR
   SMJ -->|"one check per line"| UI
 ```
 
+## Resource limits
+
+Six limits decide how much work the host takes: live sessions, CI jobs, CI runs per sandbox, a
+sandbox's memory, its disk quota and the disk bound of a CD or environment run
+([SPEC-459](../.ai/specs/SPEC-459-resource-limits-default-to-the-host-s-si.md),
+[decision 0294](decisions/0294-resource-limits-are-sized-from-the-host-and-pins-remember-their-host.md)). The rules are pure
+functions in `yulius_domain::limits`: `Limit::host_sized` (the formula over the host's CPUs,
+memory and the data directory's filesystem), `Limit::resolve` (a Settings number, else
+"host-sized" saved in Settings, else the unit's `YULIUS_*` value, else the formula) and
+`Pin::stale` (a number configured on a host that differs by a quarter or more). The application
+part is `crates/yulius-app/src/limits.rs`: `App::load_limits` runs once at start, before the
+isolation is built; it reads the host through the system probe port, records each unit number
+with the host it was first seen on (one JSON document, `instance.limits`, migration 0051), adapts
+by itself when `yulius instance import` left `<data>/.yulius-limits-adapt`, and answers the
+start values. From then on the values in force live in the `App`: the session queue, the CI lanes
+and the CD run disk read them at each use, the CI job slots (`ci/slots.rs`) resize while jobs
+run, and the disk quota reaches the sandbox manager through the isolation port's
+`set_disk_quota`. Only the sandbox memory waits for a restart: each sandbox's `memory.max` and
+the CI budget pools are sized at start. Settings → Instance works through
+`/api/admin/limits*` (superadmin; every change audited).
+
+```mermaid
+flowchart LR
+  UNIT["service unit: YULIUS_* numbers (optional)"] --> LOAD
+  PROBE["system probe: CPUs, memory, data disk"] --> LOAD["App::load_limits (at start)"]
+  MARK["instance import: .yulius-limits-adapt"] -->|"first start: host-sized for pins of another host"| LOAD
+  LOAD <--> ROW[("instance.limits: settings, pins with their host")]
+  LOAD -->|"memory, disk quota"| ISO["isolation (sandbox manager)"]
+  LOAD --> LIVE["limits in force (in the App)"]
+  UI["Settings → Instance: Resource limits"] -->|"/api/admin/limits*"| SET["set, host-sized, remove, adapt, keep"]
+  SET --> ROW
+  SET --> LIVE
+  LIVE --> Q["session queue"]
+  LIVE --> CI["CI job slots and lanes"]
+  LIVE --> CD["CD run disk bound"]
+  SET -->|"set_disk_quota"| ISO
+```
+
 ## Claude Code updates
 
 Sessions run with Claude Code's own updater off (#45). The server keeps the CLI current instead,
@@ -903,7 +941,9 @@ A restart or an update is invisible to a task's session
   closed while it was silent, "Yulius's tools are reconnected; continue". A bridge heard but never
   pinged may be an older build that is alive, since a sandbox keeps the `yulius` of the base it
   started on: it is left alone ([decision 0280](decisions/0280-only-a-yulius-mcp-known-to-be-gone-is-reconnected.md)). Mid-turn, `yulius tool <name> '<json>'` calls
-  any Yulius tool from the shell.
+  any Yulius tool from the shell. In a session `yulius` is the `/yulius/bin` wrapper, which passes
+  only the session's commands (`wait`, `tool`, `security-scan`, `remove`) to the binary; a test
+  fails when a subcommand documented "In a task's session" is missing from it (SPEC-451).
 
 ```mermaid
 sequenceDiagram
@@ -3022,6 +3062,10 @@ flowchart LR
   sent each hook (`x-yulius-hook-sent-ms`): a prompt hook sent before a Stop that reached Yulius
   or a goal verdict it applied belongs to a turn that is over and changes nothing
   ([ADR-0234](decisions/0234-a-prompt-hook-sent-before-its-turn-ended-changes-nothing.md)).
+  A prompt the transcript watcher reads takes the same per-task turn order as a clean Stop: the
+  Stop remembers its time and settles after a prompt that is being applied, and a prompt read
+  after it is not a new turn
+  ([ADR-0299](decisions/0299-a-transcript-prompt-and-its-turns-clean-stop-share-the-turn-order.md)).
 - A stop or close asks the attached run to shut down; one that comes while the run is launching
   (spawned, not attached yet) is asked by the launch once it attaches, so it never waits for the
   escalation ([SPEC-140](../.ai/specs/SPEC-140-fix-404-464-353-443-task-done-supervisio.md)).

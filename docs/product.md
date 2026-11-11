@@ -77,6 +77,15 @@ watching, steering and unblocking.
   are in every task's environment and in CD runs' (dev: all; production: those its `[cd.<name>]`
   names, SPEC-278). The laptop agent sets them with `yulius vars`, and the secrets
   import sends a `.env`'s plain values there instead of making them secrets.
+- **Resource limits fit the host** (SPEC-459): how many sessions, CI jobs and CI runs per
+  sandbox run at once, a sandbox's memory and disk quota, and the disk a deploy may fill are
+  sized from the host's CPUs, memory and data disk, with no number in the service unit. Settings
+  → Instance → Resource limits shows the host, each value, where it comes from (host-sized, the
+  unit, a setting) and the formula; the superadmin saves a number there (it wins over the unit),
+  in force at once except the sandbox memory, which waits for a restart. A number pinned on a
+  host of another size is noticed: the page and the start log name it, the host it was
+  configured on and the host-sized value, and one click takes the host-sized values or keeps the
+  numbers. After `yulius instance import` the first start does that by itself.
 - **Move or copy the whole instance** (SPEC-329): `sudo yulius instance export | ssh root@new-vm
   yulius instance import` pauses every Yulius process, announces the exact size, and streams the
   whole instance (database, keys, sandboxes with uncommitted work and Claude sessions, installed
@@ -169,7 +178,9 @@ watching, steering and unblocking.
 - **Tasks**: each task runs a real Claude Code CLI in a PTY on its own git worktree. Sessions
   outlive server restarts. Yulius keeps that CLI current by itself: a new Claude Code release
   (npm's `stable` by default) reaches every new or resumed session within about an hour, with no
-  one signing in again (SPEC-421). Task intake splits mixed requests, holds scope changes and chains
+  one signing in again (SPEC-421). A task, Cockpit or Superagent that names no model or effort runs
+  Fable 5.2 at high effort (SPEC-023, SPEC-462); the composer and Settings choose another.
+  Task intake splits mixed requests, holds scope changes and chains
   dependent tasks, also by a logical rule such as "#12 done and #13 done", which the composer
   builds from picked conditions (a task, its state, all or any).
   A task that waits and has not started yet takes queued messages: each is added to its request,
