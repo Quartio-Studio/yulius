@@ -1477,7 +1477,32 @@ fn an_old_unit_not_known_to_be_frozen_starts_nothing() -> TestResult {
         );
         let state = State::load(&s.opts.state_dir).ok_or("no state")?;
         assert_eq!(state.cutover, Cutover::No);
+        // Nothing was started, so the old unit is not left frozen without a word.
+        assert!(!s.old_unit().0, "{}", s.shown());
     }
+    Ok(())
+}
+
+#[test]
+fn a_unit_that_stopped_since_the_plan_is_found_before_the_copy() -> TestResult {
+    let mut s = setup()?;
+    // The last step before the cutover: the unit is stopped meanwhile.
+    s.remote.meanwhile = Some((
+        "before_start",
+        |unit| unit.stopped = true,
+        Arc::clone(&s.world.systemd),
+    ));
+    assert_eq!(s.run()?, 1);
+    assert!(
+        s.shown().contains("is not running any more: start it"),
+        "{}",
+        s.shown()
+    );
+    assert!(
+        !s.events()
+            .iter()
+            .any(|e| e == "new: copy" || e == "new: expect")
+    );
     Ok(())
 }
 
@@ -1572,17 +1597,47 @@ fn a_finish_whose_answer_was_lost_is_recorded_when_the_key_no_longer_signs_in() 
 
 #[test]
 fn a_recorded_start_goes_on_only_with_the_old_unit_frozen() -> TestResult {
+    // Not frozen any more, and the new instance reports the build: it is only asked, the move
+    // is recorded, and a person is told what to make sure of.
     let mut s = killed_while_starting()?;
     if let Ok(mut unit) = s.world.systemd.lock() {
         unit.frozen = false;
     }
-    assert_eq!(s.run()?, 1);
+    assert_eq!(s.run()?, 0, "{}", s.shown());
+    let events = s.events();
+    assert_eq!(events.first().map(String::as_str), Some("new: health"));
+    assert!(
+        !events
+            .iter()
+            .any(|e| e == "new: start" || e == "new: stop" || e.starts_with("old: systemctl"))
+    );
     assert!(
         s.shown()
-            .contains("is not frozen although the new instance's start was ordered")
+            .contains("Make sure nothing of the old one runs here"),
+        "{}",
+        s.shown()
     );
-    // Nothing was started, stopped or thawed on a guess.
-    assert!(s.events().is_empty(), "{:?}", s.events());
+    let state = State::load(&s.opts.state_dir).ok_or("no state")?;
+    assert_eq!(state.cutover, Cutover::Moved);
+
+    // The old host was restarted meanwhile (its disabled unit does not run) and the new
+    // instance does not run either: nothing is started; the abort is the way back.
+    let mut s = killed_while_starting()?;
+    if let Ok(mut unit) = s.world.systemd.lock() {
+        unit.frozen = false;
+        unit.stopped = true;
+    }
+    s.remote.healthy = false;
+    assert_eq!(s.run()?, 1);
+    assert_eq!(s.events(), ["new: health"]);
+    assert!(
+        s.shown()
+            .contains("`yulius instance migrate --abort` goes back"),
+        "{}",
+        s.shown()
+    );
+    let state = State::load(&s.opts.state_dir).ok_or("no state")?;
+    assert_eq!(state.cutover, Cutover::Starting);
     Ok(())
 }
 

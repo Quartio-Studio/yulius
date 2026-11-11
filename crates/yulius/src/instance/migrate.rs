@@ -1341,6 +1341,17 @@ impl<'a> Move<'a> {
         self.phase("Cutover");
         let unit = self.opts.service.clone();
         let mut held = self.freeze()?;
+        if !self.old_frozen() {
+            // Stopped since the plan: found before the copy, not after it.
+            self.claim(held);
+            return Err(self.fail(
+                "old instance",
+                format!(
+                    "{unit} is not running any more: start it (`systemctl start {unit}`), so \
+                     the move can freeze everything it runs"
+                ),
+            ));
+        }
         self.changed(
             "old instance",
             format!("{unit} is frozen: every Yulius process is paused until the new one runs"),
@@ -1359,6 +1370,8 @@ impl<'a> Move<'a> {
                      during the copy, or systemd does not answer): nothing is started"
                 ),
             );
+            // Nothing was started, so it may run: not left frozen without a word.
+            self.thaw();
             return Err(Stop::Failed);
         }
         // Recorded first: a run that dies from here on is taken up from its state, with the
@@ -1522,19 +1535,41 @@ impl<'a> Move<'a> {
         self.phase("Cutover");
         // The start was ordered by an earlier run: nothing here may thaw, and a unit that is
         // not frozen any more is a person's to look at before anything goes on.
-        if !self.old_frozen() {
-            let unit = self.opts.service.clone();
-            self.fail(
-                "old instance",
-                format!(
-                    "{unit} is not frozen although the new instance's start was ordered. If \
-                     the new instance runs, `systemctl freeze {unit}` and run the command \
-                     again; to go back, `yulius instance migrate --abort`"
-                ),
-            );
-            return Err(Stop::Failed);
+        if self.old_frozen() {
+            return self.start(p);
         }
-        self.start(p)
+        // Not frozen any more (this host was restarted, so its disabled unit does not run; or
+        // someone thawed it): nothing is started on that. The new instance is only asked.
+        let unit = self.opts.service.clone();
+        let asked = self.remote.call(&Request::Health {
+            build: self.world.build(),
+            health: self.health_address(p),
+        });
+        match asked {
+            Ok(reply) if reply.started => {
+                self.manual(
+                    "old instance",
+                    format!(
+                        "{unit} is not frozen any more, and the new instance runs. Make sure \
+                         nothing of the old one runs here: `systemctl stop {unit}; systemctl \
+                         kill --kill-whom=all {unit}; systemctl disable {unit}`"
+                    ),
+                );
+                self.state.cutover = Cutover::Moved;
+                self.save_state()
+            }
+            _ => {
+                self.fail(
+                    "old instance",
+                    format!(
+                        "{unit} is not frozen although the new instance's start was ordered, \
+                         and the new instance does not say that it runs. Nothing was started \
+                         or stopped: `yulius instance migrate --abort` goes back"
+                    ),
+                );
+                Err(Stop::Failed)
+            }
+        }
     }
 
     /// What follows a start: the public URL, the tasks, the old URL.
@@ -1599,7 +1634,7 @@ impl<'a> Move<'a> {
         let refused = self
             .remote
             .reachable()
-            .is_err_and(|why| why.contains("Permission denied"));
+            .is_err_and(|why| why.contains("Permission denied") || why.contains("no one-time key"));
         if !refused {
             self.call(
                 "tasks",
