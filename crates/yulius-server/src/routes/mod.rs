@@ -1,6 +1,7 @@
 //! Route tables.
 
 mod accounts;
+mod address;
 mod admin;
 mod analytics;
 mod automations;
@@ -247,6 +248,10 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
         )
         .route("/api/admin/jev/adopt", post(updates::adopt_jev))
         .route("/api/admin/jev/test", post(updates::test_jev))
+        // The instance's address: whether GitHub accepts its sign-in callback, the last move
+        // (SPEC-466).
+        .route("/api/admin/instance/address", get(address::view))
+        .route("/api/admin/instance/address/check", post(address::check))
         // The instance's resource limits (SPEC-459).
         .route("/api/admin/limits", get(limits::view))
         .route("/api/admin/limits/adapt", post(limits::adapt))
@@ -487,6 +492,7 @@ pub fn internal(_app: Arc<App>) -> Router<AppState> {
         .route("/internal/leftovers", get(leftovers::cli_view))
         .route("/internal/leftovers/scan", post(leftovers::cli_scan))
         .route("/internal/leftovers/delete", post(leftovers::cli_delete))
+        .route("/internal/github-callback", get(address::cli_callback))
         .route("/internal/preview-tls", get(previews::tls_ask))
         .route("/browser/welcome", get(internal::browser_welcome))
         .route(

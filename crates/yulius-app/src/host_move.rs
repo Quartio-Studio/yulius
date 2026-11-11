@@ -41,6 +41,14 @@ pub struct MoveReport {
     pub at: i64,
 }
 
+impl MoveReport {
+    /// When the first start recorded it.
+    #[must_use]
+    pub fn when(&self) -> yulius_domain::time::Timestamp {
+        yulius_domain::time::Timestamp(self.at)
+    }
+}
+
 /// The mark's facts; a mark that cannot be read is still a mark.
 fn read_mark(path: &Path) -> Option<MoveReport> {
     let text = std::fs::read_to_string(path).ok()?;
