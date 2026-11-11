@@ -302,7 +302,7 @@ impl App {
 
     /// A GitHub sign-in starts. The check never stops it: what GitHub answers to a made-up code
     /// is advice, and GitHub's own page stays the authority (SPEC-466 MVC-013). While the kept
-    /// answer is "missing" and older than [`REUSE_MS`], the instance asks GitHub again beside the
+    /// answer is "missing" and older than 5 s, the instance asks GitHub again beside the
     /// sign-in, as a demand, so the sign-in page stops saying so once the callback is there.
     /// Whether GitHub is asked.
     pub fn github_sign_in_started(self: &Arc<Self>) -> bool {
