@@ -55,7 +55,7 @@ Confirmed against `dev` at dbec951d.
 
 | ID | Requirement |
 | --- | --- |
-| EML-001 | On the Subscriptions page the email line of each subscription is edited in place, as its name is: a pencil button "Change the email of *name*" (or a click on the email, or on "email unknown") turns the line into a field holding the current email, empty when it is unknown. Enter or leaving the field saves it, and Escape cancels, even after an email was typed. The value is trimmed; an unchanged one closes the field without a request. A value that is not an address is refused before anything is sent ("Type an address like name@example.com."), and one the server refuses gets the server's message; either way the field stays open. Focus returns to the field only after Enter, never when the person left it. Once a key ends the edit, the keyboard is back on the pencil; when the list is drawn again (a renamed subscription changes its place, a card's usage is read again), the keyboard stays on the same control of the same subscription. A saved email shows at once on the card and, through `account.updated`, in every open view. No list read draws over an open field, whoever asked for it (an update, a read that was on its way when the field opened, the page's own read after a removal): the field is neither closed nor saved by it, and the read is drawn once the field has closed, however it closed. A press on another control is delivered before the field it leaves saves, refuses or closes, so that control is clicked. The address is stored as it was typed. |
+| EML-001 | On the Subscriptions page the email line of each subscription is edited in place, as its name is: a pencil button "Change the email of *name*" (or a click on the email, or on "email unknown") turns the line into a field holding the current email, empty when it is unknown. Enter or leaving the field saves it, and Escape cancels, even after an email was typed. The value is trimmed; an unchanged one closes the field without a request. A value that is not an address is refused before anything is sent ("Type an address like name@example.com."), and one the server refuses gets the server's message; either way the field stays open. After Enter the keyboard stays in a refused field; it is never pulled back to a field the person left, and the window losing the focus is not leaving the field. Once a key ends the edit, the keyboard is back on the pencil, unless the person went on while the save was on its way; when the list is drawn again (a renamed subscription changes its place, a card's usage is read again), the keyboard stays on the same control of the same subscription. A saved email shows at once on the card and, through `account.updated`, in every open view. No list read draws over a field in use (typed in, being left or saving), whoever asked for it (an update, a read that was on its way when the field opened, the page's own read after a removal): the field is neither closed nor saved by it, and the read is drawn once no field is open, however the field closed. A field refused as it was left stays open, set aside: an update from elsewhere still waits for it, but what the person does next (a removal, an Add, a sign-in) is drawn, and the field goes with that. A press or a tap on another control is delivered before the field it leaves saves, refuses or closes, so that control is clicked. A refusal is the field's description for a screen reader. The address is stored as it was typed. |
 | EML-002 | Enter in an empty field removes the typed email: the subscription then shows what Claude shares for its sign-in, or "email unknown". Leaving an emptied field removes nothing: the field closes and the email stays. |
 | EML-003 | `PATCH /api/admin/accounts/{id}` takes `label`, `email`, or both; a request with neither, or with any other field, is `invalid` (422). `email` is a string, trimmed: an address (one `@` with text on both sides, no whitespace or control characters, at most 254 characters), or empty to remove it. Nothing is written when either field is refused. Only instance administrators and the superadmin may call it (403 otherwise, unchanged ACC-009). It is audited as `account.updated` with `email=set` or `email=removed`, never the address. |
 | EML-004 | A typed email is the person's, like the name: it stays when the subscription signs in again, and an answer from Claude never replaces it. Removing it lets the background round ask Claude again, once. An email read from Claude is still dropped by a new sign-in (SUB-003 unchanged). |
@@ -93,6 +93,18 @@ Confirmed against `dev` at dbec951d.
   opens its dialog and the refusal shows; the same when leaving the field removes a refusal
   (#1174) (e2e).
 - A field's own claim on the keyboard does not take it back from where Tab went (e2e).
+- On a touch screen (a 360 px phone): with a name emptied, a tap on Remove opens its dialog and
+  a tap on the email's pencil opens the email; with an email that is not an address, a tap on
+  Remove opens its dialog; each beside the refusal, with nothing sent. The name, a tap on the
+  email, the address and Enter leave a card reading "Agent TEAM" over its address (e2e with a
+  touch screen).
+- A field refused as it was left waits out an update from elsewhere; a removal the person then
+  confirms is drawn, with that update, and the refused field is gone with nothing sent (e2e).
+- The browser's `blur` for a window that lost the focus saves and closes nothing; leaving the
+  field afterwards saves once (e2e).
+- A name saved with Enter whose answer comes late leaves the keyboard in the email field the
+  person went on to, with what they typed (e2e).
+- A refused field is `aria-invalid` and described by its refusal (e2e).
 - An unchanged, a refused and a cancelled value are never sent; an address Claude gave is not
   marked as typed by opening and closing its field (e2e, counted by the mock).
 - An address with a domain outside ASCII is stored and shown as typed (e2e).
@@ -143,8 +155,12 @@ Confirmed against `dev` at dbec951d.
   pencil has the keyboard, and measures a long address at 360 px. It closes a field in every way
   while a refresh waits, removes a subscription with the list's read held and types in another
   card, holds the mouse button down on the email's pencil and counts what was sent, clicks
-  Remove from a refused field, and holds back a field's 0 ms timer until after Tab. The
-  `subscriptions` spec signs a subscription with a typed email in again and reads the toast.
+  Remove from a refused field, and holds back a field's 0 ms timer until after Tab. It leaves a
+  refused field, sends an update from elsewhere and removes another subscription; tells a field
+  `blur` while it stays the page's focused element; and holds a name's save while typing in the
+  email. The `subscription-touch` spec opens its own Chromium with a touch screen (the runner's
+  browser takes no touch option) and taps. The `subscriptions` spec signs a subscription with a
+  typed email in again and reads the toast.
 - Gates: `scripts/dev ci`, the e2e suite, `scripts/dev security`.
 
 ## Review
@@ -233,7 +249,33 @@ Confirmed against `dev` at dbec951d.
   One of the new tests failed 1 run in 5 beside the other spec: it pressed where the email's
   pencil would have been below the window's edge, since the click before had scrolled only the
   name's pencil into view. It scrolls the pencil into view and checks what is under the pointer.
-- **Round 4** is the review of the head that carries this record; its verdict goes with the
+- **Round 4** (REQUEST CHANGES on 2380b603, a fresh reviewer; its whole e2e run passed, and its
+  mutation checks found a failing test for each of round 3's fixes):
+  1. (major, own) The lost-click fix did not cover touch. A tap's field loses the keyboard with
+     the compatibility mousedown, when the pointer is already up, so the pointer's events said
+     no press was under way: with a name emptied, a tap on Remove or on the email's pencil
+     missed. The press is followed by the mouse's own events. Tests first, with a real touch
+     screen: the tap on Remove opened no dialog.
+  2. (minor, own) A field refused as it was left kept every list read waiting, the person's own
+     too: after a removal the card stayed listed. Such a field is set aside: an update from
+     elsewhere still waits for it, the read the person asked for redraws. Test first.
+  3. (minor, own for the email; inferred) Switching to another window tells the field `blur`,
+     and a half-typed address was saved, marked as typed. A `blur` while the field is still the
+     page's focused element is not leaving it. Test first (one change had been sent).
+  4. (pre-existing) `task_done::a_stop_settles_a_run_no_server_holds`, a test from `dev`'s
+     #1173, failed once in the reviewer's first gate run and passed 5 runs of 5 alone and in
+     its rerun. Not this change's: filed as #1190.
+  5. (nit, own) `docs/changes.md` stated as fact that Claude gives no email to a `setup-token`
+     sign-in, which is known only from production: reworded.
+  6. (nit, own) The web's address check refused U+FEFF and the server took it: the web reads
+     whitespace as the server does. Both take invisible formatting characters (a right-to-left
+     override), as the name does; only administrators type and see the email. Not changed.
+  7. (nit, on `dev` in the name edit) After Enter, the answer to a save took the keyboard back to
+     the pencil even when the person had gone on. With two lines that is the email under the
+     name, whose field then lost the keyboard and closed, so it is fixed here, test first.
+  8. (nit, on `dev` in the name edit) The refusal was not tied to its field: it is the field's
+     description now (`aria-invalid`, `aria-describedby`). Test first.
+- **Round 5** is the review of the head that carries this record; its verdict goes with the
   delivery.
 
 ## Evidence
@@ -256,6 +298,10 @@ Confirmed against `dev` at dbec951d.
     keyboard was not on the email's pencil after the held 0 ms timer ran; one change had been
     sent while the mouse button was still down; the Remove dialog did not open from a refused
     field.
+  - e2e, round 4: with a touch screen the tap on Remove opened no dialog; the removed
+    subscription stayed listed behind a refused field; one change had been sent after the
+    window's `blur`; the email field had lost the keyboard after the name's late answer; the
+    refused field had no `aria-invalid`.
 - **`scripts/dev ci` at 7aacc0e8** exited 0: repository contracts, 152 script tests, check, fmt,
   clippy (Linux and macOS), nextest 3639 passed and 16 skipped, doctests, deny, shear, doc. That
   head has `dev` 4b59bce3 merged in (no conflict). The two commits after it are a merge of `dev`
@@ -282,7 +328,10 @@ Confirmed against `dev` at dbec951d.
   - No real Claude sign-in runs in this sandbox, so Claude's profile answer is a fake, as in
     SPEC-244. Whether Claude gives the email to a `setup-token` sign-in is known only from the
     production instance, which shows "email unknown".
-  - The e2e suite is Chromium only; Firefox and Safari were not tried.
+  - The e2e suite is Chromium only; Firefox and Safari were not tried, and touch is Chromium's
+    emulation of a phone, not a device.
+  - A window that really loses the focus: a headless browser's window does not. The test tells
+    the field `blur` while it stays the page's focused element, as the browser does then.
   - Production's data was not touched: its subscriptions get their emails when an administrator
     types them after the update.
 
@@ -348,14 +397,31 @@ Confirmed against `dev` at dbec951d.
   at once (a refusal's line, closing, a save whose update redraws the list) can move or replace
   the control being pressed before the button comes up, and then the click is lost. `afterPress`
   runs the leave's work after the release and its click; leaving by the keyboard is handled at
-  once, as before. The press is followed on the document: it ends with a release anywhere, a
-  cancelled pointer, a drag's end, a context menu, the window losing focus, or the next pointer
+  once, as before. The press is followed on the document by the mouse's own events, which a tap
+  raises too (round 4: the pointer's events end before a tap's field hears of it). It ends with
+  a release anywhere, a drag's end, a context menu, the window losing focus, or the next mouse
   move with the button up, so nothing waits on a press that is over. Rejected: keeping the
   refusal out of the layout (an overlay would cover the line below, and a field that closes
   would still move the controls); fixing the email line only (the name's field is right above
   the email's pencil).
 - **A field no longer claims the keyboard once it was left.** It takes the keyboard a moment
   after it opens (a 0 ms timer, as before); after Tab that claim took the keyboard back.
+- **A field refused as it was left is set aside.** It stays open so the person can come back to
+  what they typed, and an update from elsewhere waits for it, as before this change. What the
+  person does next is theirs to see: the read after a removal, an Add or a sign-in redraws the
+  list, and the field set aside goes with it. A read that landed while a field was in use keeps
+  waiting until no field is open, also when that field is then refused and set aside: that
+  sequence is rare, and the refusal the person has just been shown should not vanish at once.
+  Rejected: redrawing every card but the one with the open field (moving a card that holds the
+  focused field tells the field `blur`, which is how half-typed text got saved).
+- **The window losing the focus is not leaving the field.** The browser tells the field `blur`
+  while it stays the page's focused element, which is how the two are told apart. Checking
+  `document.hasFocus()` instead would stop every save by leaving wherever that reads false.
+- **A late answer leaves the keyboard where the person is.** After Enter the keyboard goes to
+  the pencil, or stays in a refused field, only while the field still has it.
+- **The touch tests open their own Chromium.** The runner's browser options take no touch
+  screen, and a tap is where the first fix failed, so it is tested with real taps.
+  `playwright-core`, which the runner brings, is declared in `e2e/package.json` for them.
 - **Initials are unchanged**: an avatar takes them from the email's name part when there is an
   email, else from the name.
 - **Rollback is as for every schema change** (ADR-0264): the update restores the database it

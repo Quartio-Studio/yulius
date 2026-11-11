@@ -71,20 +71,33 @@ typing the email, and SPEC-001 ROT-009 and UI-022. The rest of ADR-0185 stands.
   within minutes: the line shows what the administrator typed, else what Claude shares.
 - Schema version 52 adds `accounts.email_typed`; every email stored before stays Claude's. An
   older build refuses the newer database, as for every schema change (ADR-0264).
-- No list read draws over an open name or email field, whoever asked for it: an update, a read
-  that was already on its way as the field opened, or the page's own read after Add, Remove or a
-  sign-in. The refresh waits and is read once no field is open. A field says itself that it has
-  closed (the event `yulius:edit-closed`), because one that is left as it was, or saved by
-  leaving it, closes without any focus leaving the list. Before, saving one line and going
-  straight on to the other lost the second field and its blur saved what was half typed; the
-  read after a removal did the same to an email being typed; and an update that came while a
-  field was open stayed undrawn.
+- No list read draws over a name or email field in use (typed in, being left or saving), whoever
+  asked for it: an update, a read that was already on its way as the field opened, or the page's
+  own read after Add, Remove or a sign-in. The refresh waits and is read once no field is open.
+  A field says itself that it has closed (the event `yulius:edit-closed`), because one that is
+  left as it was, or saved by leaving it, closes without any focus leaving the list. Before,
+  saving one line and going straight on to the other lost the second field and its blur saved
+  what was half typed; the read after a removal did the same to an email being typed; and an
+  update that came while a field was open stayed undrawn.
+- A field refused as it was left stays open, set aside (`data-set-aside`), until the keyboard
+  comes back to it. An update from elsewhere still waits for it, so the person can return to
+  what they typed. The read they asked for themselves (after a removal, an Add, a sign-in) does
+  not: the list shows what they did, and the field set aside goes with the redraw.
 - A field that is left by a press on a control saves, refuses or closes only once that press has
   ended and its click is delivered (`afterPress` in `layout.js`). Done at once, as before, a
   refusal's line moved the card's buttons from under the pointer and the click was lost
   ([#1174](https://github.com/Quartio-Studio/yulius/issues/1174), on `dev` for the name; the
-  email line and its pencil, the control right under the name, had it too). Leaving by the
+  email line and its pencil, the control right under the name, had it too). The press is
+  followed by the mouse's own events, which a tap raises as well: a tap's field loses the
+  keyboard with the compatibility mousedown, when the pointer is already up. Leaving by the
   keyboard is handled at once, as before.
+- The window losing the focus is not leaving the field: the browser tells the field `blur` then,
+  and a half-typed address would have been saved while the person fetched the rest.
+- After Enter, the answer to a save moves the keyboard to the pencil only while the field still
+  has it. Before, a late answer took the keyboard from where the person had gone on to; with two
+  lines that is the email under the name, whose field then closed.
+- A refusal is the field's description (`aria-invalid`, `aria-describedby`), as for a form's
+  control.
 - The email field is a text field with an email keyboard, not an `email` field: Chromium returns
   an `email` field's domain in punycode, so the address would not be stored as it was typed.
 - The keyboard stays on a subscription's control when the list is drawn again. A renamed
