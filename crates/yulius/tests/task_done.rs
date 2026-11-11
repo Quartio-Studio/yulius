@@ -4440,6 +4440,7 @@ fn a_session_yulius_restarts_after_its_goal_pause_no_longer_needs_you() -> TestR
         let hold = data.join("hold-turn");
         let agent = FakeAgentOptions {
             api_recovers_on_resume: true,
+            resumed_line: true,
             turn_hold_file: Some(hold.clone()),
             ..pausing_agent()
         };
@@ -4466,6 +4467,7 @@ fn a_session_yulius_restarts_after_its_goal_pause_no_longer_needs_you() -> TestR
             || async { runtime.transcript_rounds() >= rounds + 2 },
         )
         .await?;
+        // Claude Code's own "No response requested." of the resumed session is no answer either.
         assert!(
             pause_asks(&app, &id).await,
             "a session that has not answered yet shows nothing"
@@ -4482,6 +4484,56 @@ fn a_session_yulius_restarts_after_its_goal_pause_no_longer_needs_you() -> TestR
         })
         .await?;
         assert!(!pause_asks(&app, &id).await, "the request stays ended");
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-469 GPW-001 and SPEC-333 AER-002 together: the session Yulius restarted works (a tool
+/// call), which ends the request, and then the API fails again until Claude Code pauses the goal
+/// once more. The task is in Needs you again, with a request asked anew: the one it had ended
+/// with the work, so its wait does not count from the first pause.
+#[test]
+fn a_session_paused_again_after_it_worked_asks_again() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            resumed_line: true,
+            ..pausing_agent()
+        };
+        let (app, _) = start(&data, &fake, agent, 0).await?;
+        let id = paused_goal_task(&app, &data).await?;
+        let first = goal_pause_request(&app, &id).await?.ok_or("no request")?;
+        app.switch_task_now(&id, None, "manual", None).await?;
+        wait_for(
+            "the resumed session's pause",
+            Duration::from_secs(120),
+            || async {
+                let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
+                attempts.len() == 2
+                    && attempts[1].state == AttemptState::Live
+                    && screen_contains(&app, &id, "GOAL PAUSED").await
+            },
+        )
+        .await?;
+        wait_for("Needs you again", Duration::from_secs(20), || async {
+            activity(&app, &id).await == Some(Activity::NeedsAttention)
+        })
+        .await?;
+        let again = goal_pause_request(&app, &id).await?.ok_or("no request")?;
+        assert!(
+            again.at > first.at,
+            "asked anew after the work: {again:?} after {first:?}"
+        );
+        let ended = app
+            .deps
+            .store
+            .audit_details(id.as_str(), "task.needs_you.resolved", 5)
+            .await?;
+        assert_eq!(ended.len(), 1, "the first request ended once: {ended:?}");
         stop(&app, &id).await
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));

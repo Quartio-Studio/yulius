@@ -24,6 +24,7 @@
 //!            [--idle-compact-ms MS] [--trust-prompt] [--goal-api-errors N [--goal-retry-ms MS]
 //!            [--goal-check-errors] [--goal-cleared-on-retry]
 //!            [--paused-wake-file PATH [--paused-wake-dies | --paused-wake-hidden]]]
+//!            [--resumed-line]
 //! ```
 //!
 //! Modes:
@@ -109,6 +110,10 @@
 //! after its pause. With `--paused-wake-hidden` the session goes on with no prompt anyone sees,
 //! as Claude Code continues a cut turn by itself (`--limit-continues-ms`): a hidden `isMeta`
 //! prompt with no `UserPromptSubmit` hook, then the same working turn.
+//!
+//! `--resumed-line` starts like a session Claude Code 2.1.322 resumed with nothing to answer:
+//! before anything else it writes its own line "No response requested." (the model `<synthetic>`,
+//! `stop_reason: stop_sequence`), which is no work of the agent.
 //!
 //! `--hooks YULIUS_EXE` runs Claude Code's hooks as configured by Yulius:
 //! `YULIUS_EXE hook claude UserPromptSubmit` before and `… Stop` after each turn, with the hook
@@ -266,6 +271,7 @@ struct Options {
     paused_wake_file: Option<PathBuf>,
     paused_wake_dies: bool,
     paused_wake_hidden: bool,
+    resumed_line: bool,
     goal_delay_ms: u64,
     goal_met_on_wake_ms: Option<u64>,
     wake_stop_lost: bool,
@@ -328,6 +334,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
         paused_wake_file: None,
         paused_wake_dies: false,
         paused_wake_hidden: false,
+        resumed_line: false,
         goal_delay_ms: 0,
         goal_met_on_wake_ms: None,
         wake_stop_lost: false,
@@ -435,6 +442,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
             }
             "--paused-wake-dies" => options.paused_wake_dies = true,
             "--paused-wake-hidden" => options.paused_wake_hidden = true,
+            "--resumed-line" => options.resumed_line = true,
             "--goal-retry-ms" => {
                 let ms: u64 = parse_number(&flag, args.next())?;
                 options.goal_retry_ms = ms.min(MAX_GOAL_DELAY_MS);
@@ -833,6 +841,28 @@ impl Transcript {
         });
         self.last_uuid = Some(uuid);
         self.append(&[assistant])
+    }
+
+    /// The line Claude Code 2.1.322 writes itself when a session is resumed with nothing to
+    /// answer (`--resumed-line`): no model wrote it.
+    fn resumed(&mut self) -> io::Result<()> {
+        let at = now_ms();
+        let uuid = format!("fake-{}-resumed-{at}", self.session_id);
+        let mut record = self.claude_envelope("assistant", &uuid, &rfc3339(at));
+        record["isApiErrorMessage"] = json!(false);
+        record["message"] = json!({
+            "id": format!("msg_fake_resumed_{at}"),
+            "type": "message",
+            "role": "assistant",
+            "model": "<synthetic>",
+            "content": [{"type": "text", "text": "No response requested."}],
+            "stop_reason": "stop_sequence",
+            "stop_sequence": "",
+            "usage": {"input_tokens": 0, "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0, "output_tokens": 0}
+        });
+        self.last_uuid = Some(uuid);
+        self.append(&[record])
     }
 
     /// The person interrupted the turn: Claude Code's user line, shaped like 2.1.292's.
@@ -2000,6 +2030,11 @@ fn echo_loop(options: &Options, session_id: &str) -> io::Result<i32> {
     if options.trust_prompt {
         trust_prompt()?;
     }
+    if let (true, Some(transcript)) = (options.resumed_line, &transcript)
+        && let Ok(mut t) = transcript.lock()
+    {
+        t.resumed()?;
+    }
     let keys = Keys::start(options, hooks.clone())?;
     let keys = keys.as_ref();
     status_line(options, hooks.as_ref())?;
@@ -2557,6 +2592,7 @@ mod tests {
         assert!(parse(&["--turn-hold-file"]).is_err());
         assert!(parse(&["--paused-wake-file"]).is_err());
         assert!(parse(&["--paused-wake-hidden"]).is_ok_and(|o| o.paused_wake_hidden));
+        assert!(parse(&["--resumed-line"]).is_ok_and(|o| o.resumed_line));
         assert!(parse(&["--paused-wake-dies", "--paused-wake-hidden"]).is_err());
         assert!(
             parse(&["--paused-wake-file", "/tmp/wake", "--paused-wake-dies"]).is_ok_and(|o| {

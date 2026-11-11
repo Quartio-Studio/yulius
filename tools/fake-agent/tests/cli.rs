@@ -345,6 +345,36 @@ fn a_session_that_goes_on_by_itself_after_its_goal_pause_has_a_hidden_prompt() -
     Ok(())
 }
 
+/// SPEC-469: a resumed session starts with the line Claude Code writes itself (`--resumed-line`),
+/// before its first turn: the `<synthetic>` model's "No response requested.".
+#[test]
+fn a_resumed_session_starts_with_claude_codes_own_line() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("projects/x/s-6.jsonl");
+    let path_text = path.to_string_lossy().into_owned();
+    let output = run(
+        &[
+            "--session-id",
+            "s-6",
+            "--transcript",
+            &path_text,
+            "--resumed-line",
+        ],
+        "one\n/exit\n",
+    )?;
+    assert!(stdout(&output).contains("ECHO: one"), "{}", stdout(&output));
+    let records = read_jsonl(&path)?;
+    assert_eq!(records[0]["type"], "assistant");
+    assert_eq!(records[0]["message"]["model"], "<synthetic>");
+    assert_eq!(records[0]["message"]["stop_reason"], "stop_sequence");
+    assert_eq!(
+        records[0]["message"]["content"][0]["text"],
+        "No response requested."
+    );
+    assert_eq!(records[1]["type"], "user");
+    Ok(())
+}
+
 #[test]
 fn only_claude_transcripts_are_written() -> TestResult {
     let output = Command::new(EXE)

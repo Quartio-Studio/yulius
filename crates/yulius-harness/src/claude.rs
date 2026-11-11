@@ -946,6 +946,13 @@ mod tests {
                 .iter()
                 .any(|o| matches!(o, Observed::AgentWork { .. }))
         );
+        // Nor an answer of the session: a resumed session that only says so has not worked
+        // (SPEC-469).
+        assert!(
+            !synthetic
+                .iter()
+                .any(|o| matches!(o, Observed::TurnComplete { .. }))
+        );
         assert!(
             assistant(r#""end_turn""#, false)
                 .iter()

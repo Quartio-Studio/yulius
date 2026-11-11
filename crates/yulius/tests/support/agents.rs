@@ -85,6 +85,9 @@ pub struct FakeAgentOptions {
     /// With `goal_api_errors`: only a new session meets them. A session Yulius resumes works, as
     /// when the API answers again by then.
     pub api_recovers_on_resume: bool,
+    /// A session Yulius resumes starts with the line Claude Code writes itself when it resumes
+    /// with nothing to answer, "No response requested." (`--resumed-line`).
+    pub resumed_line: bool,
     /// The session whose goal was paused is woken once this file exists, as Claude Code wakes an
     /// idle session when background work ends, and its turn works (`--paused-wake-file`).
     pub paused_wake_file: Option<PathBuf>,
@@ -297,6 +300,9 @@ impl HarnessPort for FakeAgentHarness {
             .filter(|_| !(self.options.api_recovers_on_resume && resumed_session));
         if let Some(n) = api_errors {
             argv.extend(["--goal-api-errors".into(), n.to_string()]);
+        }
+        if self.options.resumed_line && resumed_session {
+            argv.push("--resumed-line".into());
         }
         if let Some(file) = &self.options.paused_wake_file {
             argv.extend([
