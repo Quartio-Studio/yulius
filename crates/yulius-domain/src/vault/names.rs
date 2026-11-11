@@ -41,13 +41,27 @@ const RESERVED: &[&str] = &[
     "REQUESTS_CA_BUNDLE",
     "CURL_CA_BUNDLE",
     "DISABLE_AUTOUPDATER",
+    // What the agent CLI and the Anthropic SDKs read; other `ANTHROPIC_` names are a person's own,
+    // such as a second key for the app a project builds (ADR-0292).
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_MODEL",
+    "ANTHROPIC_BETAS",
+    "ANTHROPIC_LOG",
+    "ANTHROPIC_UNIX_SOCKET",
 ];
 
-/// Prefixes owned by Yulius, Claude Code, Git, TLS libraries, the dynamic linker and shells.
+/// Prefixes owned by Yulius, Claude Code (and its Anthropic families), Git, TLS libraries, the dynamic linker and shells.
 const RESERVED_PREFIXES: &[&str] = &[
     "YULIUS_",
     "CLAUDE_",
-    "ANTHROPIC_",
+    "ANTHROPIC_CUSTOM_",
+    "ANTHROPIC_DEFAULT_",
+    "ANTHROPIC_SMALL_FAST_MODEL",
+    "ANTHROPIC_BEDROCK_",
+    "ANTHROPIC_VERTEX_",
+    "ANTHROPIC_FOUNDRY_",
     "GIT_",
     "SSL_",
     "NODE_",

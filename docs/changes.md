@@ -4,6 +4,13 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-11
+
+- A secret or variable name of one's own that starts with `ANTHROPIC_`, such as
+  `ANTHROPIC_API_KEY_QUARTIO`, is accepted (SPEC-455, task #437, ADR-0292, #1153). Only the names
+  the agent CLI and the Anthropic SDKs read (`ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL`,
+  `ANTHROPIC_DEFAULT_*`, …) stay reserved, instead of every `ANTHROPIC_` name.
+
 ## 2026-11-10
 
 - Text stays inside its box (SPEC-449, task #431, ADR-0290). A long URL, path or identifier
