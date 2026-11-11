@@ -849,7 +849,10 @@ mod tests {
             .unwrap_or_default();
         let cli = Cli::command();
         for name in &passed {
-            assert!(cli.find_subcommand(name).is_some(), "{name} is no subcommand");
+            assert!(
+                cli.find_subcommand(name).is_some(),
+                "{name} is no subcommand"
+            );
         }
         let session: Vec<String> = cli
             .get_subcommands()
