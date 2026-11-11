@@ -93,6 +93,8 @@ const agentMarked = (browser: Browser) => browser.evaluate(() => [...document.qu
 
 test('each sandbox comes back with its own tool panel and the same Superagent session', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12'));
+  // In studio first: a Superagent opened before the page has its sandbox is the Global one.
+  await firstShown(heading(screen), '#12 Checkout API');
   await openSuperagent(browser, screen);
   await expect(browser.locator('.agent-term .xterm-rows').first()).toHaveText(/Welcome to Claude Code/);
   await markAgent(browser);
@@ -155,6 +157,8 @@ test('the editor keeps open files and unsaved text across a sandbox switch, with
   await editorShown(browser);
   const content = screen.getByRole('textbox', 'Editor content');
   await expect(content).toBeAttached();
+  // README.md's text is in the editor: typed earlier it goes into Monaco's placeholder model (#1087).
+  await expect.poll(async () => (await modelTexts(browser)).some((text) => text.includes('storefront'))).toBe(true);
   // The text saves itself (SPEC-411): its saves are held so it stays unsaved across the switch.
   await browser.evaluate(() => { (window as unknown as { __yuliusMock: { live: { holdSaves: boolean } } }).__yuliusMock.live.holdSaves = true; });
   await content.focus();
@@ -279,6 +283,8 @@ test('leaving a CI run by Back does not rewrite the new address', async ({ app, 
 
 test('a removed sandbox’s tool views go with it', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12'));
+  // In studio first: a Superagent opened before the page has its sandbox is the Global one.
+  await firstShown(heading(screen), '#12 Checkout API');
   await openSuperagent(browser, screen);
   await expect(browser.locator('.agent-term .xterm-rows').first()).toHaveText(/Welcome to Claude Code/);
   await tab(screen, 'product').click();
