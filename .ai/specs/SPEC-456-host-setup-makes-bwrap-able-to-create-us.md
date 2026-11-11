@@ -1,6 +1,6 @@
 ---
 yulius-task: bec4e78a-38ca-448b-965f-c05492cbe528
-status: in-progress
+status: done
 ---
 
 # SPEC-456: Host setup makes bwrap able to create user namespaces (AppArmor)
@@ -116,7 +116,7 @@ the fix. Nobody writes an AppArmor rule by hand again.
 - [x] Instance import names the step when the host lacks it
 - [x] Operations guide, architecture and changes describe the rule
 - [x] Proof on real Ubuntu 24.04, Ubuntu 26.04 and Debian hosts
-- [ ] Gates and independent review
+- [x] Gates and independent review
 
 ## Acceptance criteria
 
@@ -170,8 +170,9 @@ the fix. Nobody writes an AppArmor rule by hand again.
 
 2026-11-11. Real hosts are throwaway QEMU guests (TCG) booted from the distributions' cloud images
 in the task's sandbox, fresh for these runs: Ubuntu 24.04.5 (kernel 6.8.0-147), Ubuntu 26.04.1
-(kernel 7.0.0-38), Debian 13 and Debian 12. The binary is this branch at `b74138b1` built in a
-`debian:12` container (the later commits change documents and one error text).
+(kernel 7.0.0-38), Debian 13 and Debian 12. The binary is this branch built in a `debian:12`
+container: at `b74138b1` for the first runs, at `39c85810` for the runs after review round 1
+(marked "re-proof") and at `263c57bf` for the refused file.
 
 - **Fresh host, `sudo yulius host setup --public-url …`** (base build, contained doctor, Docker
   smoke):
@@ -204,6 +205,37 @@ in the task's sandbox, fresh for these runs: Ubuntu 24.04.5 (kernel 6.8.0-147), 
   as it is)`, file unchanged, nothing written. With its `userns,` line removed: FAIL naming the
   file and the two commands that disable it, file unchanged; after those commands setup writes and
   loads Yulius's profile.
+- **Re-proof after review round 1** (the same two Ubuntu hosts; second setup, helper-style check
+  and doctor ok first):
+  - 24.04, a hand-written rule on one line that was never loaded: check FAIL "setup would load
+    /etc/apparmor.d/bwrap again", setup `changed … loaded /etc/apparmor.d/bwrap again: bwrap
+    starts a user namespace as yulius`, nothing of Yulius's written, then ok "allowed by
+    /etc/apparmor.d/bwrap (not written by Yulius, left as it is)".
+  - 24.04, the same rule confining bwrap: FAIL "loaded /etc/apparmor.d/bwrap again, but bwrap
+    cannot start a user namespace as yulius with /etc/apparmor.d/bwrap (…); Yulius does not
+    change a profile it did not write: disable it (…)", file unchanged.
+  - 24.04, a file the parser refuses while an earlier version of it is loaded: the first run
+    printed the disable commands, and `apparmor_parser -R` failed on that file (it reads it), so
+    the old profile stayed loaded and Yulius's profile beside it did not help. Fixed test-first:
+    the line now reads "`/usr/sbin/apparmor_parser -r /etc/apparmor.d/bwrap` failed: AppArmor
+    parser error … ; Yulius does not change a profile it did not write: correct
+    /etc/apparmor.d/bwrap, then run `sudo yulius host setup` again", file unchanged; with the
+    file corrected setup loads it again (changed) and the check, the helper-style check and the
+    doctor are ok.
+  - 26.04, the shipped profile disabled by its link but still loaded: check, helper-style check
+    and doctor fail ("setup would make sure Ubuntu's disabled AppArmor profile
+    bwrap-userns-restrict is not loaded, load /etc/apparmor.d/yulius-bwrap"); setup unloads it
+    (changed), then all ok.
+  - 26.04, a step that fails: with `/etc/apparmor.d/disable` made immutable, FAIL "`ln -s …`
+    failed: … Permission denied; /etc/apparmor.d/yulius-bwrap was removed again"; with `abi/4.0`
+    moved away, FAIL "unsupported: this host's AppArmor cannot load Yulius's profile (… Could not
+    open 'abi/4.0' …); /etc/apparmor.d/yulius-bwrap was removed again; Ubuntu's AppArmor profile
+    bwrap-userns-restrict is enabled again"; files and loaded profiles as before each run, and
+    setup on the restored host repairs it.
+  - 26.04, Yulius's profile disabled by a link beside the enabled shipped profile: FAIL
+    "/etc/apparmor.d/disable/yulius-bwrap keeps Yulius's profile from loading (remove that link,
+    then run `sudo yulius host setup` again)", nothing changed; with the link removed setup
+    disables the shipped profile and loads Yulius's.
 - **Import** (an export of the 24.04 host imported on another fresh 24.04 host, bubblewrap not yet
   installed): step 1 of "Next:" reads "(lets bwrap start the user namespaces sandboxes run in,
   which this host does not allow yet; writes yulius.service, …)"; the `host setup` that follows
@@ -212,9 +244,20 @@ in the task's sandbox, fresh for these runs: Ubuntu 24.04.5 (kernel 6.8.0-147), 
   `doctor`, `import`, `userns`: pass; each new test was seen failing first, and every mutation of
   the plan rule and its execution tried by hand was caught. `cargo clippy --all-targets -- -D
   warnings` clean for both crates.
+- **Gates**: `scripts/dev ci` exit 0 at `3d74a9d0` (3311 tests) and again at `263c57bf` (3317
+  tests run, 3317 passed, 16 skipped). After that `origin/dev` (#1161, a test fix in the turn
+  code) was merged: `cargo check -p yulius --all-targets` and the filters above pass, and
+  `python3 scripts/check_repository.py` passes. Security scan: disabled (Vidoc is turned off for
+  this project; `yulius security-scan` scanned nothing).
+- **Review**: round 1 (fresh read-only session, `om-code-review`) asked for changes in own code:
+  a failed step left the host half changed, a one-line profile header was not seen, a shipped
+  profile disabled by its link but still loaded was not unloaded, Yulius's profile was written
+  beside a link that disables it, a `runuser` that cannot start read as a failed proof, and the
+  proof's arguments were not pinned. All fixed test-first (BNS-005, 006, 007, 009) and proven
+  again on the hosts above. Round 2 reviews the head that carries this section.
 - **Not tested**: a release upgrade from 24.04 to 26.04 itself (its end state, both profiles
   enabled, was made by hand on 26.04); a host whose AppArmor cannot parse a `userns` rule (fake
-  host only); Settings → Instance in a browser against such a host (it shows the host check's
+  host; on 26.04 a missing `abi/4.0` stood in for it); the production hosts themselves; Settings → Instance in a browser against such a host (it shows the host check's
   lines unchanged, and the check's lines are proven above).
 - **Met on the way, outside this change**: on every fresh host with cgroup delegation the first
   `host setup` ends with `FAIL Docker smoke test` in the step "a sandbox without Docker answers
