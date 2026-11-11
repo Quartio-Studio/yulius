@@ -112,6 +112,10 @@ impl UpdateHelper for FileUpdateHelper {
         let bytes = read_bounded(&path, MAX_STATUS_BYTES).ok()?;
         serde_json::from_slice(&bytes).ok()
     }
+
+    fn restart_blocker(&self) -> Option<String> {
+        crate::restart_safety::of_this_server()
+    }
 }
 
 #[cfg(test)]
