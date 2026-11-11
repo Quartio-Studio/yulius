@@ -133,6 +133,10 @@ pub struct FakeAgentOptions {
     pub stuck_at_start_file: Option<PathBuf>,
     /// A goal turn or an echoed turn ends only once this file exists (`--turn-hold-file`).
     pub turn_hold_file: Option<PathBuf>,
+    /// The agent writes a meta record, no prompt, with its version at each start, as a real
+    /// Claude Code may before any prompt when it resumes an interrupted turn
+    /// (`--resume-record`).
+    pub resume_record: bool,
 }
 
 /// See the module docs.
@@ -233,6 +237,9 @@ impl HarnessPort for FakeAgentHarness {
             if let Some(path) = path {
                 argv.extend([flag.into(), path.to_string_lossy().into_owned()]);
             }
+        }
+        if self.options.resume_record {
+            argv.push("--resume-record".into());
         }
         if self.options.hooks {
             argv.extend([

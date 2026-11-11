@@ -48,6 +48,17 @@ pub struct FakeGitHub {
     pub fail_permissions: std::sync::atomic::AtomicBool,
     /// While set, permission lookups never answer (a GitHub that hangs; SPEC-118).
     pub hang_permissions: std::sync::atomic::AtomicBool,
+    /// The callback URLs registered in the App (SPEC-466); unset, GitHub gives no answer.
+    pub callback_urls: Mutex<Option<Vec<String>>>,
+    /// While set, asking about a callback fails with this (GitHub down).
+    pub callback_error: Mutex<Option<String>>,
+    /// Every callback URL GitHub was asked about, in order: one request each.
+    pub callback_asked: Mutex<Vec<String>>,
+    /// When set, the next callback question dies (a panic), once.
+    pub callback_dies: std::sync::atomic::AtomicBool,
+    /// When set, a callback question waits for it; `callback_entered` says one began.
+    pub callback_hold: Mutex<Option<Arc<tokio::sync::Notify>>>,
+    pub callback_entered: tokio::sync::Notify,
     /// Pull requests (delivery tests).
     pub pulls: Mutex<Vec<GhPull>>,
     /// The branch of every `branch_pulls` call, in order: one GitHub request each (the hygiene
@@ -157,6 +168,29 @@ impl GitHubPort for FakeGitHub {
             expires_at: None,
             refresh_expires_at: None,
         })
+    }
+    async fn callback_registered(&self, _: &GitHubAppConfig, uri: &str) -> AppResult<bool> {
+        self.callback_asked
+            .lock()
+            .map_err(AppError::internal)?
+            .push(uri.to_owned());
+        assert!(
+            !self.callback_dies.swap(false, Ordering::SeqCst),
+            "the callback question dies (a test asked for it)"
+        );
+        let hold = self.callback_hold.lock().ok().and_then(|h| h.clone());
+        if let Some(hold) = hold {
+            self.callback_entered.notify_one();
+            hold.notified().await;
+        }
+        if let Some(why) = self.callback_error.lock().ok().and_then(|e| e.clone()) {
+            return Err(AppError::Upstream(why));
+        }
+        let urls = self.callback_urls.lock().map_err(AppError::internal)?;
+        match urls.as_ref() {
+            Some(urls) => Ok(urls.iter().any(|u| u == uri)),
+            None => Err(AppError::Upstream("GitHub: no answer".into())),
+        }
     }
     async fn refresh_token(&self, _: &GitHubAppConfig, _: &Secret) -> AppResult<GhUserToken> {
         Err(AppError::Upstream("no refresh".into()))

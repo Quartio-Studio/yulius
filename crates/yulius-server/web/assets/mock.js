@@ -192,6 +192,12 @@ function seed(params) {
     // Resource limits (SPEC-459): `limits=moved` is a 64-CPU host whose unit still pins two
     // numbers sized for the 12-CPU one it came from. A test sets `failAfterSave` for a save
     // that is applied and answers 500 (its audit entry failed).
+    // The instance's address (SPEC-466): `callback=missing|unknown` is GitHub's answer about the
+    // sign-in callback (a test changes `address.state`), `callback=fixed` a callback added on
+    // GitHub meanwhile (missing in the first setup status, whose read makes the server ask again:
+    // registered from then on), `moved=1` a move's report; `answered` counts the answers given,
+    // past a hold.
+    address: { state: params.get('callback') === 'fixed' ? 'missing' : params.get('callback') || 'registered', fixedOnRead: params.get('callback') === 'fixed', moved: params.get('moved') === '1', answered: 0 },
     limits: { unit: params.get('limits') === 'moved' ? { max_sessions: 8, sandbox_disk_gb: 300 } : {}, kept: false, settings: {}, runningMemory: 660, failAfterSave: false },
     // The instance Vidoc key (SPEC-195): `vidoc=config` (YULIUS_VIDOC_API_KEY_FILE is set).
     protectPatchFail: params.get('protect_patch_fail') === '1',
@@ -824,7 +830,11 @@ function checkNewPassword(body) {
   if (body.password !== body.password_confirm) fail(422, 'invalid', 'passwords do not match');
   if ([...(body.password || '')].length < 8) fail(422, 'invalid', 'the password needs at least 8 characters');
 }
-route('GET', '/api/setup/status', ({ db }) => ({ setup_required: db.setupRequired, github_configured: db.me.instance.github_configured }));
+route('GET', '/api/setup/status', ({ db }) => {
+  const missing = db.me.instance.github_configured && db.address.state === 'missing';
+  if (missing && db.address.fixedOnRead) db.address.state = 'registered';
+  return { setup_required: db.setupRequired, github_configured: db.me.instance.github_configured, github_callback_missing: missing };
+});
 route('POST', '/api/setup', ({ db, body }) => {
   if (!db.setupRequired) fail(403, 'forbidden', 'This instance is already set up.');
   if (body.token !== 'YUL-SETUP-1234') fail(403, 'forbidden', 'Wrong setup token. (Mock token: YUL-SETUP-1234)');
@@ -4692,6 +4702,22 @@ function limitOf(key) {
   if (!l) fail(404, 'not_found', 'no such limit');
   return l;
 }
+// The instance's address (SPEC-466 MVC-010): GitHub's answer about the sign-in callback, what to
+// register in the App, and the last move.
+const addressView = (db) => ({
+  public_url: ORIGIN,
+  github: db.me.instance.github_configured ? {
+    state: db.address.state,
+    reason: db.address.state === 'unknown' ? 'GitHub: timed out' : null,
+    callback_url: `${ORIGIN}/api/auth/github/callback`,
+    homepage_url: ORIGIN,
+    settings_url: 'https://github.com/organizations/Quartio-Studio/settings/apps/yulius-quartio-studio',
+    checked_at: new Date().toISOString(),
+  } : null,
+  moved: db.address.moved ? { from: 'https://old.yulius.example', to: ORIGIN, at: '2026-11-11T10:04:00Z', queued: 7, left: 2, failed: 1 } : null,
+});
+route('GET', '/api/admin/instance/address', ({ db }) => { superadminOnly(db); db.address.answered += 1; return addressView(db); });
+route('POST', '/api/admin/instance/address/check', ({ db }) => { superadminOnly(db); db.address.answered += 1; return addressView(db); });
 route('GET', '/api/admin/limits', ({ db }) => { superadminOnly(db); return limitsView(db); });
 route('PUT', `/api/admin/limits/${ID}`, ({ db, body, p }) => {
   superadminOnly(db);

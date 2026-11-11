@@ -20,6 +20,28 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   field showed its refusal (#1174); and the keyboard left a subscription's pencil when its usage
   was read again or, after a rename that moved its card, could land on another subscription's
   control.
+- A session that works on after a restart shows the Claude Code it runs with the first record
+  it writes (SPEC-461, task #443). Yulius read a session's Claude Code version from its prompt
+  records only, and a session that redoes an interrupted turn by itself writes none for hours:
+  task info showed the previous session's version meanwhile. Every record of the session's own
+  thread names the version now (an idle session resumed with nothing typed still names it at
+  its next prompt). Found by reading real restarted sessions' transcripts after the merge; the
+  updater was also run against npm's real registry and on a real host with npm's 2.1.311
+  (the doctor fails, the server installs 2.1.322 by itself two minutes after its start).
+- Yulius knows whether GitHub accepts its sign-in address, and laptops follow a move (SPEC-466,
+  task #446, ADR-0302; slice C of the move). After a move to another URL GitHub sign-in fails until
+  a person adds the new callback URL to the GitHub App, which GitHub offers no API for. The
+  instance now asks GitHub, with its own App credentials and a made-up code, whether its callback
+  is registered: at start, on demand, and while someone looks at an answer that is not
+  "registered". Settings → Instance has the card **Address**: when the callback is missing, one
+  link to the App's settings and the two values to paste, read again until GitHub accepts it; after
+  a move, where the instance came from, when, and what its first start did with the tasks. The
+  sign-in page says why GitHub sign-in cannot complete and opens the password. `yulius instance
+  migrate` asks the running instance over its loopback listener, so its plan checks the new URL's
+  callback before the cutover (`ok` when registered, else the exact link and values) and its last
+  checklist asks the new instance again. `yulius remote` on a laptop follows the old URL's
+  redirect: it moves the saved sign-in to the new URL, says so in one line and repeats the call;
+  no other redirect is followed. Claude Code's own MCP connection still has to be added again.
 - A restart of the server keeps its sessions on systemd 258 and later (SPEC-458, task #440,
   ADR-0298). On Ubuntu 26.04 (systemd 259) `yulius.service` could be stopped but not started
   again while one session ran, so a restart or an update took the instance down until every

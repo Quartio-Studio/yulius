@@ -1122,6 +1122,33 @@ impl TaskStore for SqliteStore {
         .await
     }
 
+    async fn assume_run_cli_version(
+        &self,
+        attempt: &AttemptId,
+        task: &TaskId,
+        version: &str,
+        at: Timestamp,
+    ) -> AppResult<()> {
+        let (a, t, v) = (
+            attempt.as_str().to_owned(),
+            task.as_str().to_owned(),
+            version.to_owned(),
+        );
+        self.call(move |c| {
+            // One statement: the transcript's word, written at any moment, is never replaced.
+            c.execute(
+                "INSERT INTO metrics (attempt_id, task_id, cli_version, updated_at) \
+                 VALUES (?1, ?2, ?3, ?4) \
+                 ON CONFLICT(attempt_id) DO UPDATE SET cli_version = excluded.cli_version \
+                 WHERE metrics.cli_version IS NULL",
+                params![a, t, v, at.0],
+            )
+            .map_err(db)?;
+            Ok(())
+        })
+        .await
+    }
+
     async fn task_run_facts(&self, task: &TaskId) -> AppResult<Vec<RunFacts>> {
         let t = task.as_str().to_owned();
         self.call(move |c| {

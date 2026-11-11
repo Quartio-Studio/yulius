@@ -2,6 +2,7 @@
 
 mod fake;
 mod flow;
+mod github;
 mod profile;
 mod remote;
 mod target;
