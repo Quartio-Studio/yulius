@@ -242,11 +242,11 @@ an older one.
 
 ## Evidence
 
-- `scripts/dev ci` at e22a0d8a (after merging `dev` twice and the review fixes): exit 0.
-  Repository contracts, check, fmt, clippy `-D warnings` on Linux and for macOS, nextest 3325
+- `scripts/dev ci` at 457d02f7 (the review fixes and `dev` up to bbd65665 merged): exit 0.
+  Repository contracts, check, fmt, clippy `-D warnings` on Linux and for macOS, nextest 3402
   passed / 16 skipped, doctests, `cargo deny` (advisories, bans, licenses, sources ok), `cargo
-  shear`, doc. An earlier run at a0f7ae35 passed too (3318 tests). The commit after e22a0d8a
-  changes this file only.
+  shear`, doc. Earlier runs passed at a0f7ae35 (3318 tests) and e22a0d8a (3325). The commit after
+  457d02f7 changes this file only.
 - The incident as a test, seen failing first:
   `claude_updates::a_release_that_lacks_the_default_model_is_refused` answered
   `Ok(Installed(2.1.311))` on the base (a release without `claude-fable-5-2` became current); it
@@ -268,7 +268,8 @@ an older one.
     the idle state after a person's move.
   - `analytics`: a restart is no subscription switch.
   - e2e `claude-code.e2e.ts` (6): AC7 and the task info rows, no WCAG violations; with
-    `update.e2e.ts` and `sandbox-docker.e2e.ts` (the same page): 37 passed.
+    `update`, `sandbox-docker`, `responsive` and `text-fits` (the same page, after merging
+    SPEC-459's limits card beside it): 88 passed.
 - Mutations, each caught by a test and reverted: `stable` never falls forward; the version in use
   always counts as knowing the default; `stable` falls forward whenever its release was refused;
   a `yulius wait` not counted as background work; typing not read again after the probes; the
