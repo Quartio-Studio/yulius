@@ -17,15 +17,18 @@ into the task, sent it a message or continued it, or when the agent called `need
 true}`, which an agent that did not open the request never does.
 
 Sessions do go on by themselves after such a pause. On this host on 2026-11-11, 9 of 13 pauses
-"the request was rate limited" were followed by the session's own work with nobody typing: Yulius
-restarted the session on another subscription or at the reset (tasks #446, #450, #452), or Claude
-Code woke it with a `<task-notification>` when background work ended. The request stayed open, and
-an open request alone puts a task under Needs you, so a working task showed "Send the task a
-message…" for as long as it ran (task #154 of another project: 33 minutes into its turn).
+"the request was rate limited" were followed by the session's own work with nobody typing: each
+time Yulius had restarted the session on another subscription or at the reset and typed its goal
+again (tasks #446, #450, #452), which is no person's prompt. Claude Code wakes a session whose
+goal is paused too, with a `<task-notification>` when background work ends. The request stayed
+open, and an open request alone puts a task under Needs you, so a working task showed "Send the
+task a message…" for as long as it ran (task #154 of another project: 33 minutes into its turn).
+While a request is open Yulius also types nothing into the task, so that session heard nothing of
+its pull request.
 
-A prompt is not proof that the session recovered. In task #438's session a goal check-in woke the
-paused session, the API refused again within a second, and Claude Code closed the turn without a
-new notice.
+A prompt is not proof that the session recovered. The other 4 of the 13 were refused again: a
+goal check-in that Claude Code closed without a new notice (task #438's session), a session
+Yulius had restarted, and twice a person's "continue".
 
 ## Decision
 
