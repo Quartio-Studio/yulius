@@ -468,7 +468,8 @@ an older one.
 - #1192: e2e "while a channel change is being saved neither the select nor “Use the server’s”
   takes another" failed first with `select off, button on`; with the fix `claude-code.e2e.ts`
   passes (8), and with every file that holds a request or shows the Instance page 179 pass
-  (13 files).
+  (13 files). `scripts/dev ci` at f08aa9a6 (`dev` up to b72c7f76 merged): exit 0, nextest 3687
+  passed / 16 skipped; the commit after it changes this file only.
 - After the merge, a real host (2026-11-11 21:07 to 21:18 UTC): an Ubuntu 26.04.1 guest (QEMU,
   kernel 7.0.0-38) with Node 22 and `npm install -g @anthropic-ai/claude-code@2.1.311`, the
   incident's host (`claude --version`: 2.1.311; its binary holds `claude-fable-5-2` 0 times
