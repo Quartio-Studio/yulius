@@ -128,7 +128,8 @@ export function createPanelHost(ctx) {
   const toolOf = new Map(); // sandbox id → the tool it had open, or null (SPEC-113 KST-005)
   const arriving = new Set(); // sandbox ids whose page is loading, not the context yet (SPEC-170)
   // The tool the person chose while a sandbox's page loads and none is the context yet, how, and
-  // for which sandbox (`{ kind, opts, sandbox }`): it opens there when it arrives (SPEC-450).
+  // for which sandbox (`{ kind, opts, sandbox }`): it opens there when it arrives, and is not
+  // wanted any more once another sandbox's page starts loading (SPEC-450).
   let chosen = null;
   // The page's one Global Superagent view, held by whichever Superagent panel shows its tab (SPEC-428).
   let globalAgent = null;
@@ -355,6 +356,9 @@ export function createPanelHost(ctx) {
     get kind() { return panel.hidden ? null : kind; },
     /** A sandbox's page started loading: setContext comes once it has, unless the person left first. */
     arrive(next) {
+      // Left for another sandbox: the tool that waited for this one's page is not wanted there
+      // (what it was opened with, a tab or a file, is this sandbox's).
+      if (chosen && chosen.sandbox !== next.id) { chosen = null; press(); }
       arriving.delete(next.id); // the one arriving last is last
       arriving.add(next.id);
       if (!sandbox) updateBadges();
@@ -397,9 +401,9 @@ export function createPanelHost(ctx) {
       // The Global Superagent in front: it stays open from page to page, in and out of sandboxes,
       // and a sandbox entered starts no session of its own (SPEC-428 SAT-005).
       const globalOpen = !panel.hidden && kind === 'agent' && (!left || agentTab === 'global');
-      if (wish && sandbox && wish.sandbox === sandbox.id) {
-        // Chosen while this sandbox's page loaded: opened now, as the person asked then. In
-        // another sandbox it is not what they asked for (its `opts` name this one's tab or file).
+      if (wish && sandbox) {
+        // Chosen while this sandbox's page loaded (`arrive` ended the wait for any other):
+        // opened now, as the person asked then.
         show(wish.kind, wish.opts);
       } else if (!sandbox) {
         if (globalOpen && sandboxChanged) show('agent', { context: true });
@@ -415,8 +419,7 @@ export function createPanelHost(ctx) {
         else if (!panel.hidden) close();
       // Shown again for the new context, not opened by the person: the keyboard stays with the page.
       } else if (!panel.hidden && kind && (sandboxChanged || taskChanged)) show(kind, { context: true });
-      // A tool chosen for a sandbox that did not arrive (left for another, or for a page outside
-      // one) is not pressed any more.
+      // A tool chosen for a sandbox left for a page outside one is not pressed any more.
       if (wish) press();
       updateBadges();
     },
