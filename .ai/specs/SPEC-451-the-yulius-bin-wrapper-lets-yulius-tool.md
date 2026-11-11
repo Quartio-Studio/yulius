@@ -35,7 +35,8 @@ to use, run instead of printing the wrapper's usage line.
   directly, never through the wrapper.
 - **Existing sessions.** The server rewrites the wrapper when its text changes (`write_gh_shim`,
   atomically by rename) whenever it prepares an agent run or a user's space, into the host
-  directory that every run binds as a directory at `/yulius/bin`. So after the update the first
+  directory that every run binds as a directory at `/yulius/bin` (task #433's session:
+  `/var/lib/yulius/runtime/gh` on `/yulius/bin`, read-only, in `/proc/self/mountinfo`). So after the update the first
   run or shell any task starts rewrites it, and sessions already running see the new file too
   (a directory bind shows a renamed-in entry); nothing needs a restart.
 
@@ -49,9 +50,9 @@ to use, run instead of printing the wrapper's usage line.
 ## Plan
 
 - [x] Spec of the wrapper fix
-- [ ] Regression test: the wrapper passes tool and remove
-- [ ] The wrapper passes tool and remove and its usage names them
-- [ ] Docs and changes entry
+- [x] Regression test: the wrapper passes tool and remove
+- [x] The wrapper passes tool and remove and its usage names them
+- [x] Docs and changes entry
 - [ ] Independent review answered and gates green
 
 ## Acceptance criteria
