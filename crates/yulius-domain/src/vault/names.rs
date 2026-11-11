@@ -41,27 +41,13 @@ const RESERVED: &[&str] = &[
     "REQUESTS_CA_BUNDLE",
     "CURL_CA_BUNDLE",
     "DISABLE_AUTOUPDATER",
-    // What the agent CLI and the Anthropic SDKs read; other `ANTHROPIC_` names are a person's own,
-    // such as a second key for the app a project builds (ADR-0292).
-    "ANTHROPIC_API_KEY",
-    "ANTHROPIC_AUTH_TOKEN",
-    "ANTHROPIC_BASE_URL",
-    "ANTHROPIC_MODEL",
-    "ANTHROPIC_BETAS",
-    "ANTHROPIC_LOG",
-    "ANTHROPIC_UNIX_SOCKET",
 ];
 
-/// Prefixes owned by Yulius, Claude Code (and its Anthropic families), Git, TLS libraries, the dynamic linker and shells.
+/// Prefixes owned by Yulius, Claude Code, Git, TLS libraries, the dynamic linker and shells.
 const RESERVED_PREFIXES: &[&str] = &[
     "YULIUS_",
     "CLAUDE_",
-    "ANTHROPIC_CUSTOM_",
-    "ANTHROPIC_DEFAULT_",
-    "ANTHROPIC_SMALL_FAST_MODEL",
-    "ANTHROPIC_BEDROCK_",
-    "ANTHROPIC_VERTEX_",
-    "ANTHROPIC_FOUNDRY_",
+    "ANTHROPIC_",
     "GIT_",
     "SSL_",
     "NODE_",
@@ -73,6 +59,26 @@ const RESERVED_PREFIXES: &[&str] = &[
     "BASH_",
     "ZSH_",
 ];
+
+/// A person's own Anthropic keys, such as `ANTHROPIC_API_KEY_QUARTIO` for the app a project builds:
+/// `ANTHROPIC_` stays reserved, but the agent CLI reads no name that extends these, and a `_FILE`
+/// name would by convention point it at a credential file (ADR-0292).
+const OWN_ANTHROPIC_KEYS: [&str; 2] = ["ANTHROPIC_API_KEY_", "ANTHROPIC_AUTH_TOKEN_"];
+
+/// The reserved prefix `text` starts with, if it is not one of [`OWN_ANTHROPIC_KEYS`].
+fn reserved_prefix(text: &str) -> Option<&'static str> {
+    let own = OWN_ANTHROPIC_KEYS
+        .iter()
+        .any(|key| text.len() > key.len() && text.starts_with(key))
+        && !text.ends_with("_FILE");
+    if own {
+        return None;
+    }
+    RESERVED_PREFIXES
+        .iter()
+        .copied()
+        .find(|p| text.starts_with(p))
+}
 
 /// A validated agent-secret name (`[A-Z][A-Z0-9_]*`, at most 64 characters, not reserved).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -94,9 +100,26 @@ impl SecretName {
                 "invalid name {text:?}: capital letters, digits and _, starting with a letter (like STRIPE_API_KEY), at most {MAX_NAME_LEN} characters"
             )));
         }
-        if RESERVED.contains(&text) || RESERVED_PREFIXES.iter().any(|p| text.starts_with(p)) {
+        // Name what is reserved and a name that works, so nobody guesses another of the same start.
+        let instead = format!("APP_{text}");
+        let instead = if instead.len() <= MAX_NAME_LEN {
+            format!(", such as {instead}")
+        } else {
+            String::new()
+        };
+        if RESERVED.contains(&text) {
             return Err(VaultError::Name(format!(
-                "{text} is reserved for the agent's environment; choose another name"
+                "{text} is reserved for the agent's environment; choose another name{instead}"
+            )));
+        }
+        if let Some(prefix) = reserved_prefix(text) {
+            let own = if prefix == "ANTHROPIC_" {
+                ", except your own ANTHROPIC_API_KEY_<NAME> or ANTHROPIC_AUTH_TOKEN_<NAME>"
+            } else {
+                ""
+            };
+            return Err(VaultError::Name(format!(
+                "{text} is reserved for the agent's environment, as is every name starting with {prefix}{own}; choose another name{instead}"
             )));
         }
         Ok(Self(text.to_owned()))

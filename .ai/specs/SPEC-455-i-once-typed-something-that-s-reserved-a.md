@@ -3,7 +3,7 @@ yulius-task: eb6e7bbc-ecf2-47d3-a18b-f6095b090583
 status: in-progress
 ---
 
-# SPEC-455: A secret name of one's own that starts with ANTHROPIC_ is accepted
+# SPEC-455: Own Anthropic keys are accepted, and a reserved name says why
 
 Status: in-progress
 Date: 2026-11-11
@@ -16,8 +16,8 @@ reserved even if i changed the name … anything in format RESERVED_SOMETHING". 
 ## Goal
 
 A person can name an agent secret (or a project variable) for their own Anthropic key, such as
-`ANTHROPIC_API_KEY_QUARTIO`, while the names the agent CLI and the Anthropic SDKs read stay
-reserved.
+`ANTHROPIC_API_KEY_QUARTIO`, while every name the agent CLI reads stays reserved; and a refused
+name says what is reserved and a name that works, so nobody guesses one rename after another.
 
 ## Context
 
@@ -36,43 +36,69 @@ reserved.
   `secret_create_from_file`), project variables (SPEC-275, real values in every task run) and
   CD secret names. The repository's `[resources.env]` has its own, stricter list
   (`resources.rs`), which an agent can edit; it is unchanged.
+- **What the agent CLI reads.** Claude Code 2.1.292 (the installed agent CLI) holds 76 distinct
+  `ANTHROPIC_` strings (`grep -aoE 'ANTHROPIC_[A-Z0-9_]+'` on its binary): credentials, request
+  routing (`ANTHROPIC_AWS_*`, `ANTHROPIC_GOOGLE_CLOUD_*`), config location
+  (`ANTHROPIC_CONFIG_DIR`), workload identity federation, models. None extends
+  `ANTHROPIC_API_KEY_` or `ANTHROPIC_AUTH_TOKEN_`.
 - **Related.** #638 asks for more reserved names (`GH_TOKEN`, `NODE_OPTIONS`, …); this change
   neither adds nor removes any outside `ANTHROPIC_`.
 
 ## Requirements
 
-- **RSV-001** Names starting with `ANTHROPIC_` are reserved only when the agent CLI or the
-  Anthropic SDKs read them: `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`,
-  `ANTHROPIC_MODEL`, `ANTHROPIC_BETAS`, `ANTHROPIC_LOG`, `ANTHROPIC_UNIX_SOCKET`, and the
-  families `ANTHROPIC_CUSTOM_*`, `ANTHROPIC_DEFAULT_*`, `ANTHROPIC_SMALL_FAST_MODEL*`,
-  `ANTHROPIC_BEDROCK_*`, `ANTHROPIC_VERTEX_*`, `ANTHROPIC_FOUNDRY_*`.
-- **RSV-002** Any other `ANTHROPIC_…` name of the right shape is accepted, such as
-  `ANTHROPIC_API_KEY_QUARTIO` or `ANTHROPIC_KEY_PROD`.
-- **RSV-003** Every other reserved name and prefix is unchanged.
+- **RSV-001** `ANTHROPIC_` stays a reserved prefix, except a person's own key
+  `ANTHROPIC_API_KEY_<NAME>` or `ANTHROPIC_AUTH_TOKEN_<NAME>` (at least one character after the
+  `_`) that does not end in `_FILE`.
+- **RSV-002** A refusal for a reserved prefix names the prefix; for `ANTHROPIC_` it names the
+  own-key forms. Every refusal suggests `APP_<NAME>` when that fits in 64 characters.
+- **RSV-003** Every other reserved name and prefix is unchanged; the web mock's variable check
+  follows RSV-001.
 
 ## Plan
 
 - [x] Reproduce the defect and find its root cause
-- [ ] Regression test: own ANTHROPIC_ names accepted, the agent CLI's still refused
-- [ ] Anthropic names reserved by what the agent CLI and SDKs read (fix, ADR-0292, docs)
+- [x] Regression test: own ANTHROPIC_ names accepted, the agent CLI's still refused
+- [x] Anthropic names reserved by what the agent CLI and SDKs read (fix, ADR-0292, docs)
+- [x] Review round 1: own-key forms under the reserved prefix, refusals that say why
 - [ ] Independent review answered and gates green
 
 ## Acceptance criteria
 
-- AC-1 `SecretName::parse("ANTHROPIC_API_KEY_QUARTIO")` and `("ANTHROPIC_KEY_PROD")` are `Ok`.
-- AC-2 Each RSV-001 name (and a member of each family) is refused with the reserved message.
-- AC-3 The existing refusals (`PATH`, `YULIUS_*`, `CLAUDE_*`, `GIT_*`, `LD_*`, `NODE_*`, …) hold.
+- AC-1 `ANTHROPIC_API_KEY_QUARTIO`, `ANTHROPIC_AUTH_TOKEN_PROD` and `ANTHROPIC_API_KEY_2` parse.
+- AC-2 All 76 `ANTHROPIC_` names of the agent CLI, `ANTHROPIC_API_KEY_`, `ANTHROPIC_API_KEY_FILE`,
+  `ANTHROPIC_AUTH_TOKEN_FILE` and `ANTHROPIC_KEY_PROD` are refused as reserved.
+- AC-3 The refusal of `ANTHROPIC_KEY_PROD` names `ANTHROPIC_`, the own-key form and
+  `APP_ANTHROPIC_KEY_PROD`; that of `GIT_TOKEN` names `GIT_` and no Anthropic form; a suggestion
+  parses; none is offered past 64 characters.
+- AC-4 The existing refusals (`PATH`, `YULIUS_*`, `CLAUDE_*`, `GIT_*`, `LD_*`, `NODE_*`, …) hold.
 
 ## Test plan
 
 - Unit, `yulius-domain` `vault::names::tests`:
-  `own_anthropic_names_are_accepted_and_the_cli_s_are_reserved` (AC-1, AC-2), failing before the
-  fix on AC-1; `names_are_environment_style_and_not_reserved` keeps AC-3.
+  `own_anthropic_keys_are_accepted_and_every_other_anthropic_name_is_reserved` (AC-1, AC-2, the
+  CLI's names pinned in `CLI_READS`), `a_refusal_names_the_reserved_prefix_and_a_name_that_works`
+  (AC-3), `names_are_environment_style_and_not_reserved` (AC-4). Each failed before its fix
+  (commits 0472eb89, 9aa4cb50).
+- The server integration tests that refuse reserved names (`variables`, `secrets_create`,
+  `secrets_copy`) match on "reserved", which the new messages keep.
+
+## Review
+
+- Round 1 (REQUEST CHANGES on e152ab17): (1, high, own) the hand-made list of the CLI's
+  `ANTHROPIC_` names missed `ANTHROPIC_CONFIG_DIR`, `ANTHROPIC_PROFILE`, the federation family and
+  more; (2, 3, medium, own) `ANTHROPIC_AWS_*`, `ANTHROPIC_GOOGLE_CLOUD_*`,
+  `ANTHROPIC_WEBHOOK_SIGNING_KEY`, the environment-worker names. Answered by changing the
+  decision: the prefix stays reserved with only the own-key forms carved out, and the test pins
+  all 76 names. (4, low, own) the web mock reserved the whole prefix: aligned. (5, low, own) the
+  ADR understated variables' real values: rewritten. (6, low, own) Plan boxes: ticked. (7, low,
+  pre-existing) the refusal never named the prefix: fixed here, as it is the reported "kept
+  telling me" symptom.
 
 ## Decisions
 
-- [ADR-0292](../../docs/decisions/0292-anthropic-names-are-reserved-by-what-the-agent-cli-reads.md):
-  `ANTHROPIC_` is reserved by the names and families the agent CLI and SDKs read, not as a
-  whole prefix. Rejected: allowing only `ANTHROPIC_API_KEY_*` (still refuses
-  `ANTHROPIC_KEY_PROD`), dropping the prefix with no list (`ANTHROPIC_BASE_URL` as a variable
-  would redirect the agent CLI and its credential), keeping it and only rewording the message.
+- [ADR-0292](../../docs/decisions/0292-own-anthropic-keys-are-allowed-under-the-reserved-anthropic-prefix.md):
+  `ANTHROPIC_` stays reserved; own keys `ANTHROPIC_API_KEY_<NAME>` / `ANTHROPIC_AUTH_TOKEN_<NAME>`
+  (not `_FILE`) are accepted; refusals name the prefix and `APP_<NAME>`. Rejected: reserving only
+  the names the agent CLI reads (incomplete once already, grows each release), dropping the
+  prefix (`ANTHROPIC_BASE_URL` as a variable redirects the agent CLI and its credential),
+  rewording only.
