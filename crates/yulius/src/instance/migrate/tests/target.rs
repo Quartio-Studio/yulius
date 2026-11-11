@@ -407,6 +407,8 @@ fn names() -> Vec<String> {
         "oldtool",
         "zstd",
         "--purge",
+        // Selected by the coreutils step: asked for here it conflicts with the other flavour.
+        "coreutils-from-gnu",
     ]
     .map(String::from)
     .to_vec()
@@ -430,6 +432,7 @@ fn the_plan_says_which_packages_fit_the_new_release() {
          this machine (kernel, boot, network); not on this release, install what replaces them: \
          oldtool"
     );
+    assert!(!host.log.iter().any(|l| l.contains("coreutils-from-gnu")));
     // Nothing installed, and an option look-alike never reaches apt.
     assert!(
         host.ran("apt-get update")

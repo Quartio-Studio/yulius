@@ -800,7 +800,7 @@ fn packages(host: &mut dyn Host, names: &[String], install: bool, l: &mut Lines)
     const ITEM: &str = "packages";
     let (machine, wanted): (Vec<&String>, Vec<&String>) = names
         .iter()
-        .filter(|n| package_name(n))
+        .filter(|n| package_name(n) && !profile::FLAVOUR_PACKAGES.contains(&n.as_str()))
         .partition(|n| profile::host_package(n));
     // A fresh host knows only part of its release until its package lists are read.
     let lists = run(host, &long(&["apt-get", "update"], 15 * 60));

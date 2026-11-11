@@ -56,6 +56,15 @@ const HOST_PACKAGES: [&str; 14] = [
     "ubuntu-",
 ];
 
+/// The packages that select the coreutils flavour (Ubuntu 25.10 and later). They conflict with
+/// each other, so they are never part of the package transaction: the coreutils step selects.
+pub const FLAVOUR_PACKAGES: [&str; 4] = [
+    "coreutils-from-gnu",
+    "coreutils-from-uutils",
+    "gnu-coreutils",
+    "rust-coreutils",
+];
+
 /// A distribution release, from `/etc/os-release`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Release {
