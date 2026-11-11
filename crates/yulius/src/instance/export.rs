@@ -53,11 +53,21 @@ pub struct Plan {
 /// # Errors
 /// A directory or file that cannot be read, or an entry the reader would refuse.
 pub fn plan(root: &Path) -> io::Result<Plan> {
+    plan_observed(root, &mut |_| {})
+}
+
+/// [`plan`], showing every planned entry to `observe` (a move counts its inventory from them,
+/// SPEC-460 MIG-031, without another walk).
+///
+/// # Errors
+/// As [`plan`].
+pub fn plan_observed(root: &Path, observe: &mut dyn FnMut(&Entry)) -> io::Result<Plan> {
     let mut entries = 0u64;
     let mut bytes = 0u64;
     let mut fingerprint = Sha256::new();
     let skipped = walk::walk(root, &mut |e, _| {
         check_entry(e)?;
+        observe(e);
         let h = headers(e);
         fingerprint.update(&h);
         entries += 1;
@@ -136,7 +146,7 @@ fn drifted() -> io::Error {
 }
 
 /// The facts of the instance at `data_dir` for its manifest.
-fn manifest_of(data_dir: &Path, unit: &str) -> Result<Manifest, String> {
+pub(crate) fn manifest_of(data_dir: &Path, unit: &str) -> Result<Manifest, String> {
     let meta = std::fs::metadata(data_dir)
         .map_err(|e| format!("cannot read {}: {e}", data_dir.display()))?;
     let passwd = super::read_text(Path::new("/etc/passwd")).unwrap_or_default();
