@@ -1,11 +1,11 @@
 ---
 yulius-task: 57d7619e-9b14-4e4a-81e8-6a431b4d5b7c
-status: in-progress
+status: done
 ---
 
 # SPEC-468: Claude Code moves: the last review's leftovers of SPEC-461
 
-Status: in progress
+Status: implemented
 Date: 2026-11-11
 Owner: Yulius task #452
 Scope authorization: the request of task #452 (by MrFishPL, 2026-11-11): fix the two minors and
@@ -93,7 +93,7 @@ The question of direction: the restart waits only while a person typed in the la
 - [x] The card and task info promise only the next start while moves are stopped, and the card says when the binary could not be read (findings 3 and 7)
 - [x] An idle restart never reads Working and notifies nobody again (finding 8)
 - [x] SPEC-461, ADR-0293, the operations guide, the API reference and the changes log say so (finding 9)
-- [ ] Gate green and the independent review answered
+- [x] Gate and the whole e2e suite green, evidence recorded
 
 ## Acceptance criteria
 
@@ -227,3 +227,74 @@ The question of direction: the restart waits only while a person typed in the la
   side; waiting for the judge is what tied the test to the clock.
 - **ADR-0293 is amended in place** (its Decision lists the move's rules); no new record: the
   rules of this spec refine that decision and change none of its alternatives.
+
+## Evidence
+
+- `scripts/dev ci` at aa0916d9 (every code and test change of this task, with `dev` up to
+  4b59bce3 merged): exit 0. `cargo check`, `fmt --check`, clippy `-D warnings` on Linux and
+  for `aarch64-apple-darwin`, nextest 3649 passed / 16 skipped, doctests, `cargo deny`
+  (advisories, bans, licenses, sources ok), `cargo shear`, `cargo doc`. An earlier run at
+  42aa6838 passed too (3648 tests); the first run stopped at clippy (`type_complexity` in a
+  new test helper, fixed). After aa0916d9 come a clean merge of `dev` (#1168: host setup files
+  only; after it `scripts/dev check` exit 0, and its `bwrap_userns` tests with the Claude Code
+  tests, 49, passed) and this section.
+- e2e, the whole suite with the web files of aa0916d9
+  (`cd e2e && E2E_TELEMETRY_DISABLED=1 npx e2e run`): exit 0, 932 passed, 1 skipped (the agent
+  test, which needs a model key), in 79 files and that one.
+- Seen failing first, each for the reason its finding names:
+  - `a_persons_own_goal_keeps_an_idle_prompt_session_where_it_is` and
+    `…keeps_the_session_at_a_stop_the_gate_blocks`: `(2, 0, false)` instead of `(1, 1, true)`
+    (runs, "GOAL SET" on the screen, goal open): the review's reproduction.
+  - `two_turn_ends_that_decide_at_once_make_one_watched_restart`: "the restart was not
+    watched" (no stop of moves after a session that never started).
+  - `a_draft_typed_since_the_last_prompt_keeps_the_session`: the session was looked at and a
+    restart tried with a draft five minutes old. `a_draft_typed_while_a_prompt_is_held_stays_a_draft`
+    (found in the author's own review of the diff): the draft was forgotten at the held
+    prompt's second request.
+  - `the_version_and_the_model_a_record_names_are_capped`: 4 MiB kept.
+  - `a_running_task_moves_to_the_new_claude_code_when_its_turn_ends`: the published states
+    read `switching, running/working, running/waiting`.
+    `a_goal_that_failed_is_still_unfinished_after_an_idle_restart`: unfinished was forgotten.
+  - e2e: the card's "Each moves to … when its turn ends" beside stopped moves, task info's
+    "moves to … when its turn ends", no "models not read" badge; and in
+    `notifications.e2e.ts` the read "Your turn" entry back as unread after the restart.
+  - `a_session_the_gate_blocks_moves_at_that_stop_with_the_gates_reasons` passed at once: the
+    behavior worked, as the review said; its two mutations below show that it can fail.
+- Mutations, each caught by the test named and reverted (`git checkout`):
+  - finding 1: the goal not asked in `idle` (idle test); not asked at the Stop (gate-block
+    goal test).
+  - finding 2: `gate_continues` dropped from `works_on`; the reasons not passed on (both: the
+    gate-block move test).
+  - finding 3: the card's old words; task info's old words (e2e); the detail's flag never set
+    (`a_version_a_session_could_not_continue_on_gets_no_other_session`).
+  - finding 4: the session's start not noticed (`a_restarted_session_that_starts_in_time…`,
+    which now fails at once instead of after its time).
+  - finding 5: the version uncapped; the model uncapped (the cap test).
+  - finding 6: the slot not taken, 3 runs of 3 (`two_turn_ends_…`); a session already sent
+    restarted again (`a_turn_end_that_decided_before_a_restart…`); starts without an identity
+    (`a_start_is_only_taken_off_the_watch_as_itself`).
+  - finding 7: the sentence never made; made for an adapter that keeps nothing current (view
+    tests); the badge and the sentence not shown (e2e).
+  - finding 8: the launch always Working (the main move test); the goal's state not carried
+    (the failed-goal test); the rest kept over a new turn (unit test); the notification
+    center not remembering through a switch (e2e).
+  - the draft: not asked in `moves_now`; a submit not emptying the box; a launch not emptying
+    it (`an_idle_session_is_idle_again_after_a_person_moves_it`); a wake-up emptying it (unit
+    test); a held prompt emptying it at every request; the hold not remembered.
+- Stress: `claude_code_moves` (21 tests, real processes) 6 times over, all passed.
+- A probe with real processes, not kept: a person's move of a prompt-mode session with an own
+  goal open: `before=(1, 1, true) after=(2, 0, false)`. Older code: issue #1182.
+- The UI in the sandbox browser (mock, port 20117): `claude=gap` shows the stopped-moves
+  warning and "Each gets 2.1.400 at its next start."; `claude=unread` shows the "models not
+  read" badge and its sentence.
+- `yulius security-scan`: "Security scan disabled: Vidoc is turned off in Yulius" (exit 0):
+  disabled, not passed.
+- Review: the author read the whole diff against `dev` before the independent round and
+  found the held-prompt hole and one test wait that could race, both fixed above. The
+  independent review (fresh session, the skill `om-code-review`) is made on the head that
+  holds this section; its verdict goes with the merge.
+- Not tested: a real Claude Code session's goal and prompt box across `--resume` (the fake
+  agent stands in: its goal lives in its process; Yulius sees keystrokes and submitted
+  prompts, not the box); what Claude Code does with the text of a prompt whose hook is held
+  and then given up; desktop notifications of a real browser (the bell's entry is the same
+  call); a deployed instance.
