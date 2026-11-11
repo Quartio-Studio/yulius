@@ -97,6 +97,11 @@ pub struct TranscriptFacts {
     /// The last word after a turn an error ended is Claude Code's goal notice (SPEC-333), until a
     /// prompt, agent work or an interrupt; an armed retry also ends with the goal.
     pub goal_retry: Option<GoalRetryFact>,
+    /// When the session's agent first worked (a line of the model's own, or its answer) after
+    /// Claude Code last stopped retrying the goal, or first worked at all when what was read holds
+    /// no such pause: a request made for that pause is answered (SPEC-469 GPW-004). A prompt
+    /// alone, a sub-agent's answer and work without a time are no such work.
+    pub worked_since_goal_pause: Option<yulius_domain::time::Timestamp>,
     /// When the last record that closes a session's turn (its answer or its `turn_duration`)
     /// was written: a turn closed while Yulius was down is woken after it (SPEC-358 MSB-007).
     pub turn_closed_at: Option<yulius_domain::time::Timestamp>,
@@ -149,6 +154,13 @@ impl TranscriptFacts {
                 self.context_full = false;
                 // A sub-agent's turn end (no time) says nothing about the session's limit.
                 self.limit_pending &= at.is_none();
+                // The session's own answer: the model works, so a pause before it is over.
+                if let Some(at) = at {
+                    self.worked_since_goal_pause.get_or_insert(*at);
+                    if matches!(self.goal_retry, Some(GoalRetryFact::Stopped(_))) {
+                        self.goal_retry = None;
+                    }
+                }
             }
             Observation::TurnInterrupted { .. } => {
                 self.turn_open = Some(false);
@@ -160,6 +172,10 @@ impl TranscriptFacts {
                 } else {
                     GoalRetryFact::Stopped(notice.clone())
                 });
+                // Work before the pause does not answer it.
+                if !armed {
+                    self.worked_since_goal_pause = None;
+                }
             }
             // The API rejected the prompt: the turn is over, without a Stop hook (#213).
             Observation::ContextFull => {
@@ -188,11 +204,14 @@ impl TranscriptFacts {
             | Observation::BackgroundResumable { .. } => {}
             // An assistant line that is not a turn's end after a recorded end: a Stop hook
             // continued the turn (STA-005).
-            Observation::AgentWork { .. } => {
+            Observation::AgentWork { at } => {
                 self.turn_open = Some(true);
                 self.goal_retry = None;
                 self.context_full = false;
                 self.limit_pending = false;
+                if let Some(at) = at {
+                    self.worked_since_goal_pause.get_or_insert(*at);
+                }
             }
         }
     }
@@ -561,6 +580,17 @@ pub(crate) fn waited_turn_settles(activity: Option<Activity>, achieved: bool) ->
     }
 }
 
+/// Whether the task's current state (`times`, as read from the store) began before the session's
+/// agent `worked`: the flag it reads predates that work, so the work is past it (SPEC-469
+/// GPW-004). Unknown times say nothing.
+#[must_use]
+pub(crate) fn flagged_before(
+    times: AppResult<Option<crate::model::TaskTimes>>,
+    worked: yulius_domain::time::Timestamp,
+) -> bool {
+    matches!(times, Ok(Some(times)) if times.state_at < worked)
+}
+
 /// Whether a turn closed with no Stop Yulius answered settles now: not while a full context is
 /// being recovered (`context_clear` false), at a usage limit, or with an open pause, whose own
 /// paths say how the task goes on (SPEC-290 GDW-001).
@@ -887,11 +917,31 @@ impl App {
         runtime
             .background_agents
             .store(facts.background_agents, Ordering::SeqCst);
-        let Ok(Some(task)) = self.deps.store.task(task_id).await else {
+        // The agent worked after Claude Code's last goal pause while nobody watched: the request
+        // made for that pause is answered (SPEC-469 GPW-004).
+        let overtaken = match facts.worked_since_goal_pause {
+            Some(worked) if self.goal_pause_overtaken(task_id).await => Some(worked),
+            _ => None,
+        };
+        let Ok(Some(mut task)) = self.deps.store.task(task_id).await else {
             return;
         };
         if task.status != TaskStatus::Running {
             return;
+        }
+        // A task that reads Needs you since before that work follows its session, as it does
+        // when a prompt is seen to start the turn: Working while the turn is open, settled
+        // below once it closed. A flag raised after the work began is another matter's.
+        if let Some(worked) = overtaken
+            && task.activity == Some(Activity::NeedsAttention)
+            && flagged_before(self.deps.store.task_times(task_id).await, worked)
+        {
+            match self.set_task_activity(&task, Activity::Working).await {
+                Ok(()) => task.activity = Some(Activity::Working),
+                Err(err) => {
+                    tracing::warn!(task = %task_id, error = %err, "could not follow a session past its goal pause");
+                }
+            }
         }
         runtime.goal_retry_armed.store(
             facts.goal_retry == Some(GoalRetryFact::Armed),
@@ -1551,6 +1601,112 @@ mod tests {
         at: Some(Timestamp(2)),
     };
 
+    /// SPEC-469 GPW-004: a replay says when the session's agent first worked after Claude Code's
+    /// last goal pause (or first worked at all, in a run with no pause: the pause was an earlier
+    /// run's). Its own line or its answer is such work, and ends the pause's last word. A prompt
+    /// alone, a sub-agent's answer (no time), work without a time and work before the pause are
+    /// not; an armed retry is no pause.
+    #[test]
+    fn a_replay_says_when_the_agent_first_worked_after_the_last_goal_pause() {
+        let wake = Observation::UserTurn {
+            at: Some(Timestamp(2)),
+            wake: true,
+        };
+        let work_at = |ms| Observation::AgentWork {
+            at: Some(Timestamp(ms)),
+        };
+        let answer_at = |ms| Observation::TurnComplete {
+            at: Some(Timestamp(ms)),
+        };
+        let sub_agent = Observation::TurnComplete { at: None };
+        let worked = |observations: &[Observation]| reduce(observations).worked_since_goal_pause;
+        for work in [work_at(3), answer_at(3)] {
+            let woken = reduce(&[PROMPT, retry(false), ENDED, wake.clone(), work.clone()]);
+            assert_eq!(
+                woken.worked_since_goal_pause,
+                Some(Timestamp(3)),
+                "{work:?}"
+            );
+            // With no prompt seen either (a hidden continuation): the pause is not the last word.
+            let hidden = reduce(&[PROMPT, retry(false), ENDED, work.clone()]);
+            assert_eq!(
+                (hidden.worked_since_goal_pause, hidden.goal_retry),
+                (Some(Timestamp(3)), None),
+                "{work:?}"
+            );
+            assert_eq!(
+                worked(&[PROMPT, work.clone()]),
+                Some(Timestamp(3)),
+                "a run after the pause"
+            );
+            assert_eq!(
+                worked(&[PROMPT, work.clone(), retry(false), ENDED]),
+                None,
+                "work before the pause"
+            );
+            assert_eq!(
+                worked(&[PROMPT, work.clone(), retry(true), ENDED]),
+                Some(Timestamp(3)),
+                "an armed retry is no pause"
+            );
+        }
+        // The first work after the pause, not the last: a flag raised later is not its own.
+        assert_eq!(
+            worked(&[
+                PROMPT,
+                work_at(2),
+                retry(false),
+                ENDED,
+                work_at(5),
+                answer_at(9)
+            ]),
+            Some(Timestamp(5))
+        );
+        assert_eq!(worked(&[PROMPT, retry(false), ENDED]), None);
+        assert_eq!(
+            worked(&[PROMPT, retry(false), ENDED, wake.clone(), ENDED]),
+            None,
+            "a woken turn the API refused again"
+        );
+        assert_eq!(worked(&[PROMPT, retry(false), ENDED, PROMPT]), None);
+        assert_eq!(
+            worked(&[PROMPT, retry(false), ENDED, wake.clone(), sub_agent]),
+            None
+        );
+        let untimed = Observation::AgentWork { at: None };
+        assert_eq!(worked(&[PROMPT, retry(false), ENDED, wake, untimed]), None);
+        assert_eq!(worked(&[]), None);
+        // An answer before the pause leaves the pause the last word (a failed goal check).
+        let checked = reduce(&[PROMPT, answer_at(3), retry(false), ENDED]);
+        assert!(matches!(
+            checked.goal_retry,
+            Some(GoalRetryFact::Stopped(_))
+        ));
+        // An armed retry is Claude Code's to end: the answer of another turn does not.
+        let armed = reduce(&[PROMPT, retry(true), ENDED, answer_at(3)]);
+        assert_eq!(armed.goal_retry, Some(GoalRetryFact::Armed));
+    }
+
+    /// SPEC-469 GPW-004: a replay lifts Needs you only when the task reads it since before the
+    /// session's work: a flag raised after that work began, or times that cannot be read, stay.
+    #[test]
+    fn only_a_flag_older_than_the_agents_work_is_past() {
+        let since = |ms| {
+            Ok(Some(crate::model::TaskTimes {
+                state_at: Timestamp(ms),
+                working_since: None,
+            }))
+        };
+        assert!(flagged_before(since(100), Timestamp(101)));
+        assert!(!flagged_before(since(100), Timestamp(100)), "same instant");
+        assert!(!flagged_before(since(200), Timestamp(101)), "flagged later");
+        assert!(!flagged_before(Ok(None), Timestamp(101)));
+        assert!(!flagged_before(
+            Err(crate::error::AppError::NotFound),
+            Timestamp(101)
+        ));
+    }
+
     /// STA-001: a replayed turn end that says background agents are pending keeps them, until the
     /// next prompt.
     #[test]
@@ -1649,6 +1805,7 @@ mod tests {
                 goal_unfinished: false,
                 goal_recorded: true,
                 goal_retry: None,
+                worked_since_goal_pause: None,
                 turn_closed_at: None,
                 turn_moved_at: Some(Timestamp(1)),
             }

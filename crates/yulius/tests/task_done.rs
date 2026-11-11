@@ -4381,6 +4381,52 @@ fn a_session_claude_code_wakes_after_its_goal_pause_no_longer_needs_you() -> Tes
     Ok(())
 }
 
+/// SPEC-469 GPW-001: the paused session goes on with no prompt anyone sees (a hidden
+/// continuation: no prompt hook, no prompt record that starts a turn). The agent's work alone
+/// says so: the request ends, and the task that read Needs you from the pause reads Working, as
+/// it does after a visible wake-up.
+#[test]
+fn a_session_that_goes_on_unprompted_after_its_goal_pause_no_longer_needs_you() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let (wake, hold) = (data.join("wake"), data.join("hold-turn"));
+        let agent = FakeAgentOptions {
+            paused_wake_file: Some(wake.clone()),
+            paused_wake_hidden: true,
+            turn_hold_file: Some(hold.clone()),
+            ..pausing_agent()
+        };
+        let (app, _) = start(&data, &fake, agent, 0).await?;
+        let id = paused_goal_task(&app, &data).await?;
+        std::fs::write(&wake, "")?;
+        wait_for("the session's work", Duration::from_secs(60), || {
+            screen_contains(&app, &id, "WOKEN")
+        })
+        .await?;
+        wait_for(
+            "the request to end with the agent's work",
+            Duration::from_secs(20),
+            || async { !pause_asks(&app, &id).await },
+        )
+        .await?;
+        wait_for("Working", Duration::from_secs(10), || async {
+            activity(&app, &id).await == Some(Activity::Working)
+        })
+        .await?;
+        std::fs::write(&hold, "")?;
+        wait_for("the turn's end", Duration::from_secs(60), || async {
+            activity(&app, &id).await == Some(Activity::Waiting)
+        })
+        .await?;
+        assert!(!pause_asks(&app, &id).await, "the request stays ended");
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// SPEC-469 GPW-001 (tasks #446, #450 and #452 on 2026-11-11: paused "the request was rate
 /// limited", then resumed by Yulius 12 to 28 minutes later and working with the request still
 /// open): Yulius restarts the paused session and the API answers again in the resumed one. The
@@ -4465,12 +4511,12 @@ fn a_woken_turn_the_api_refuses_again_still_needs_you() -> TestResult {
             screen_contains(&app, &id, "WAKE DIED")
         })
         .await?;
-        // Its records were written before the marker: two more rounds read them.
-        let runtime = app.runtime(&id);
-        let rounds = runtime.transcript_rounds();
-        wait_for("the refused turn read", Duration::from_secs(20), || async {
-            runtime.transcript_rounds() >= rounds + 2
-        })
+        // The record that closes the refused turn settles it (no Stop hook ran): Your turn.
+        wait_for(
+            "the refused turn's end",
+            Duration::from_secs(30),
+            || async { activity(&app, &id).await == Some(Activity::Waiting) },
+        )
         .await?;
         let request = goal_pause_request(&app, &id)
             .await?
@@ -4481,11 +4527,6 @@ fn a_woken_turn_the_api_refuses_again_still_needs_you() -> TestResult {
                 .as_deref()
                 .is_some_and(|h| h.contains("Goal paused after 3 automatic retries")),
             "{request:?}"
-        );
-        assert_ne!(
-            activity(&app, &id).await,
-            Some(Activity::Working),
-            "the refused turn is over"
         );
         stop(&app, &id).await
     })?;

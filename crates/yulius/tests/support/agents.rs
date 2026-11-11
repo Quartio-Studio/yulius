@@ -90,6 +90,9 @@ pub struct FakeAgentOptions {
     pub paused_wake_file: Option<PathBuf>,
     /// With `paused_wake_file`: the API refuses the woken turn again (`--paused-wake-dies`).
     pub paused_wake_dies: bool,
+    /// With `paused_wake_file`: the session goes on with no prompt anyone sees, a hidden
+    /// continuation with no prompt hook (`--paused-wake-hidden`).
+    pub paused_wake_hidden: bool,
     /// Delay the goal turn by this many milliseconds (`--goal-delay-ms`).
     pub goal_delay_ms: Option<u64>,
     /// The idle session compacts itself this many milliseconds after the goal turn, like Claude
@@ -303,6 +306,9 @@ impl HarnessPort for FakeAgentHarness {
         }
         if self.options.paused_wake_dies {
             argv.push("--paused-wake-dies".into());
+        }
+        if self.options.paused_wake_hidden {
+            argv.push("--paused-wake-hidden".into());
         }
         if let Some(ms) = self.options.goal_retry_ms {
             argv.extend(["--goal-retry-ms".into(), ms.to_string()]);

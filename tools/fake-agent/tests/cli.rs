@@ -327,6 +327,24 @@ fn a_woken_turn_the_api_refuses_again_brings_no_work() -> TestResult {
     Ok(())
 }
 
+/// SPEC-469 GPW-005: the session goes on with no prompt anyone sees (`--paused-wake-hidden`): a
+/// hidden `isMeta` record, then the same work.
+#[test]
+fn a_session_that_goes_on_by_itself_after_its_goal_pause_has_a_hidden_prompt() -> TestResult {
+    let after = records_after_the_goal_pause(&["--paused-wake-hidden"], "WOKEN DONE")?;
+    assert_eq!(after[0]["subtype"], "turn_duration");
+    assert_eq!(after[1]["type"], "user");
+    assert_eq!(after[1]["isMeta"], true);
+    assert_eq!(after[2]["message"]["stop_reason"], "tool_use");
+    assert_eq!(after[2]["message"]["model"], "fake-model");
+    assert_eq!(after[3]["message"]["stop_reason"], "end_turn");
+    assert_eq!(
+        after.last().ok_or("no records")?["subtype"],
+        "turn_duration"
+    );
+    Ok(())
+}
+
 #[test]
 fn only_claude_transcripts_are_written() -> TestResult {
     let output = Command::new(EXE)

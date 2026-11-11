@@ -23,7 +23,7 @@
 //!            [--prompt TEXT] [--limit-continues-ms MS [--limit-continues-answer-only]]
 //!            [--idle-compact-ms MS] [--trust-prompt] [--goal-api-errors N [--goal-retry-ms MS]
 //!            [--goal-check-errors] [--goal-cleared-on-retry]
-//!            [--paused-wake-file PATH [--paused-wake-dies]]]
+//!            [--paused-wake-file PATH [--paused-wake-dies | --paused-wake-hidden]]]
 //! ```
 //!
 //! Modes:
@@ -106,7 +106,9 @@
 //! DONE`), the Stop hook and the closed turn, with no goal verdict. With `--paused-wake-dies` the
 //! API refuses that turn again: its error record and the closed turn, with no work, no new notice
 //! and no Stop hook (`WAKE DIED`), as Claude Code 2.1.311 did in task #438's session 16 minutes
-//! after its pause.
+//! after its pause. With `--paused-wake-hidden` the session goes on with no prompt anyone sees,
+//! as Claude Code continues a cut turn by itself (`--limit-continues-ms`): a hidden `isMeta`
+//! prompt with no `UserPromptSubmit` hook, then the same working turn.
 //!
 //! `--hooks YULIUS_EXE` runs Claude Code's hooks as configured by Yulius:
 //! `YULIUS_EXE hook claude UserPromptSubmit` before and `… Stop` after each turn, with the hook
@@ -263,6 +265,7 @@ struct Options {
     goal_cleared_on_retry: bool,
     paused_wake_file: Option<PathBuf>,
     paused_wake_dies: bool,
+    paused_wake_hidden: bool,
     goal_delay_ms: u64,
     goal_met_on_wake_ms: Option<u64>,
     wake_stop_lost: bool,
@@ -324,6 +327,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
         goal_cleared_on_retry: false,
         paused_wake_file: None,
         paused_wake_dies: false,
+        paused_wake_hidden: false,
         goal_delay_ms: 0,
         goal_met_on_wake_ms: None,
         wake_stop_lost: false,
@@ -430,6 +434,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
                     Some(args.next().ok_or("--paused-wake-file needs a path")?.into());
             }
             "--paused-wake-dies" => options.paused_wake_dies = true,
+            "--paused-wake-hidden" => options.paused_wake_hidden = true,
             "--goal-retry-ms" => {
                 let ms: u64 = parse_number(&flag, args.next())?;
                 options.goal_retry_ms = ms.min(MAX_GOAL_DELAY_MS);
@@ -503,6 +508,9 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
     }
     if options.bytes > MAX_FLOOD_BYTES {
         return Err("--bytes exceeds 1 GiB".into());
+    }
+    if options.paused_wake_dies && options.paused_wake_hidden {
+        return Err("--paused-wake-dies and --paused-wake-hidden exclude each other".into());
     }
     options.seconds = options.seconds.min(MAX_SLEEP_SECONDS);
     if options.mode == Mode::IgnoreTerm {
@@ -1791,9 +1799,16 @@ fn goal_api_errors(
             })?;
             say("GOAL PAUSED")?;
             if let Some(file) = &options.paused_wake_file {
+                let wake = if options.paused_wake_dies {
+                    PausedWake::Dies
+                } else if options.paused_wake_hidden {
+                    PausedWake::Hidden
+                } else {
+                    PausedWake::Works
+                };
                 wake_after_pause(
                     file.clone(),
-                    options.paused_wake_dies,
+                    wake,
                     options.turn_hold_file.clone(),
                     transcript.cloned(),
                     hooks.cloned(),
@@ -1848,15 +1863,29 @@ fn goal_api_errors(
 /// command of the session ended, shaped like Claude Code 2.1.292's notification.
 const PAUSED_WAKE_PROMPT: &str = "<task-notification>\n<task-id>bfakepaused</task-id>\n<tool-use-id>toolu_fake_paused</tool-use-id>\n<output-file>/tmp/claude-0/fake/tasks/bfakepaused.output</output-file>\n<status>completed</status>\n<summary>Background command \"Run the tests\" completed (exit code 0)</summary>\n</task-notification>";
 
+/// How a session whose goal was paused goes on (`--paused-wake-file`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PausedWake {
+    /// Claude Code's wake-up prompt, and the agent works.
+    Works,
+    /// The prompt, and the API refuses the turn again (`--paused-wake-dies`).
+    Dies,
+    /// No prompt anyone sees: a hidden continuation, and the agent works
+    /// (`--paused-wake-hidden`).
+    Hidden,
+}
+
 /// Wakes the session whose goal was paused once `file` exists, like Claude Code wakes an idle
 /// session when background work ends (`--paused-wake-file`): the prompt and its hook, then the
 /// agent works (a tool call, `WOKEN`), answers once `hold` exists if given (`WOKEN DONE`), runs
-/// its Stop hook and closes the turn with no goal verdict. With `dies` the API refuses the turn
-/// again (`--paused-wake-dies`): its error record and the closed turn, no work, no new notice and
-/// no Stop hook (`WAKE DIED`). Nothing happens when `file` does not come in time.
+/// its Stop hook and closes the turn with no goal verdict. [`PausedWake::Dies`]: the API refuses
+/// the turn again, so its error record and the closed turn follow the prompt, with no work, no
+/// new notice and no Stop hook (`WAKE DIED`). [`PausedWake::Hidden`]: the prompt is a hidden
+/// continuation with no hook, like [`Transcript::continued`]. Nothing happens when `file` does
+/// not come in time.
 fn wake_after_pause(
     file: PathBuf,
-    dies: bool,
+    wake: PausedWake,
     hold: Option<PathBuf>,
     transcript: Option<Arc<Mutex<Transcript>>>,
     hooks: Option<Hooks>,
@@ -1872,24 +1901,35 @@ fn wake_after_pause(
                 let _ = f(&mut t);
             }
         };
-        if let Some(hooks) = &hooks {
-            let _ = hooks.prompt(PAUSED_WAKE_PROMPT);
+        if wake == PausedWake::Hidden {
+            write(&|t| t.continued(false));
+        } else {
+            if let Some(hooks) = &hooks {
+                let _ = hooks.prompt(PAUSED_WAKE_PROMPT);
+            }
+            write(&|t| t.begin(PAUSED_WAKE_PROMPT));
+            // The API takes a moment to answer or to refuse, as a real request does: the
+            // records that follow are later than the prompt's.
+            std::thread::sleep(Duration::from_millis(300));
+            if wake == PausedWake::Dies {
+                write(&|t| {
+                    t.connection_lost()?;
+                    t.turn_duration(900)
+                });
+                let _ = say("WAKE DIED");
+                return;
+            }
+            write(&|t| t.tool_use());
         }
-        write(&|t| t.begin(PAUSED_WAKE_PROMPT));
-        if dies {
-            write(&|t| {
-                t.connection_lost()?;
-                t.turn_duration(900)
-            });
-            let _ = say("WAKE DIED");
-            return;
-        }
-        write(&|t| t.tool_use());
         let _ = say("WOKEN");
         if let Some(hold) = &hold {
             wait_for_file(hold, MAX_WORK_MS);
         }
-        write(&|t| t.answer(PAUSED_WAKE_PROMPT, "The background work finished."));
+        if wake == PausedWake::Hidden {
+            write(&|t| t.continued_answer());
+        } else {
+            write(&|t| t.answer(PAUSED_WAKE_PROMPT, "The background work finished."));
+        }
         let _ = say("WOKEN DONE");
         if let Some(hooks) = &hooks {
             let _ = hooks.stop();
@@ -2516,6 +2556,8 @@ mod tests {
         assert!(parse(&["--stuck-at-start-file"]).is_err());
         assert!(parse(&["--turn-hold-file"]).is_err());
         assert!(parse(&["--paused-wake-file"]).is_err());
+        assert!(parse(&["--paused-wake-hidden"]).is_ok_and(|o| o.paused_wake_hidden));
+        assert!(parse(&["--paused-wake-dies", "--paused-wake-hidden"]).is_err());
         assert!(
             parse(&["--paused-wake-file", "/tmp/wake", "--paused-wake-dies"]).is_ok_and(|o| {
                 o.paused_wake_file.as_deref() == Some(Path::new("/tmp/wake")) && o.paused_wake_dies
