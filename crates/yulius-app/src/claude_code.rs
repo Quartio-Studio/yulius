@@ -6,18 +6,24 @@
 //! next run binds as it says and a check runs now. Without an adapter (sandboxes are not
 //! isolated here) runs use the host's Claude Code as it is and nothing is kept current.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex};
 
-use yulius_contracts::api::updates::{ClaudeCodeRefused, ClaudeCodeView};
+use yulius_contracts::api::updates::{ClaudeCodeBehind, ClaudeCodeRefused, ClaudeCodeView};
 use yulius_domain::agent_cli::{
-    Channel, Version, default_model_fix, default_model_problem, gap_text, lacks_default,
+    Channel, MoveFacts, Version, default_model_fix, default_model_problem, gap_text, lacks_default,
+    moves_now,
 };
 use yulius_domain::harness::DEFAULT_CLAUDE_MODEL;
+use yulius_domain::ids::{AccountId, AttemptId, TaskId};
+use yulius_domain::task::{Activity, StopReason, TaskStatus};
 use yulius_domain::time::Timestamp;
 
 use crate::auth::{AuthContext, rfc3339};
 use crate::context::App;
 use crate::error::{AppError, AppResult};
+use crate::model::TaskMode;
 use crate::ports::agent_cli::{AgentCli, AgentCliStatus, CheckResult, CliSource};
 
 /// The audit target of channel changes (`claude_code.channel`).
@@ -28,6 +34,10 @@ pub const NOT_ISOLATED: &str = "sandboxes are not isolated on this server, so th
     host's Claude Code as it is and Yulius keeps nothing current: run Yulius contained \
     (YULIUS_CONTAINED=true in yulius.service) with the isolation prerequisites, which `sudo \
     yulius host setup` installs";
+
+/// The switch reason of a session restarted on a newer Claude Code (SPEC-461 CCM-013): the
+/// subscription stays, so it is no subscription switch in a task's info.
+pub const MOVE_REASON: &str = "claude_code";
 
 /// The channel a superadmin chose in Settings, as the store keeps it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,6 +57,12 @@ pub struct AgentCliServices {
     config_channel: Channel,
     /// Serializes channel changes, so the stored channel and the adapter's agree.
     changing: tokio::sync::Mutex<()>,
+    /// The version each task's session was last sent to: once per version per task, so a
+    /// session that still names the old one afterwards is not restarted at every turn's end.
+    moved: Mutex<HashMap<TaskId, Version>>,
+    /// A version a session could not continue on, and what happened: no other session is sent
+    /// to it (a newer version, or a restart of the server, lifts it).
+    stopped: Mutex<Option<(Version, String)>>,
 }
 
 /// The sentence about what the last check did.
@@ -104,6 +120,8 @@ impl App {
                 adapter,
                 config_channel,
                 changing: tokio::sync::Mutex::new(()),
+                moved: Mutex::default(),
+                stopped: Mutex::default(),
             })
             .is_ok()
     }
@@ -145,7 +163,170 @@ impl App {
         };
         let status = services.adapter.status().await;
         let chosen = self.deps.store.claude_channel().await?;
-        Ok(view_of(&status, services.config_channel, chosen.as_ref()))
+        let mut view = view_of(&status, services.config_channel, chosen.as_ref());
+        view.behind = self.tasks_behind(status.version).await?;
+        view.moves_stopped = services.stopped.lock().ok().and_then(|stopped| {
+            stopped.as_ref().map(|(version, why)| {
+                format!("Running tasks are no longer moved to {version}: {why}.")
+            })
+        });
+        Ok(view)
+    }
+
+    /// The tasks whose running session names an older Claude Code than `newest`, the one runs
+    /// get now (SPEC-461 CCM-013): they move when their turn ends, or at their next start.
+    async fn tasks_behind(&self, newest: Option<Version>) -> AppResult<Vec<ClaudeCodeBehind>> {
+        let Some(newest) = newest else {
+            return Ok(Vec::new());
+        };
+        let store = &self.deps.store;
+        let mut behind = Vec::new();
+        for (task_id, version) in store.live_cli_versions().await? {
+            if Version::parse(&version).is_none_or(|runs| runs >= newest) {
+                continue;
+            }
+            let Some(task) = store.task(&task_id).await? else {
+                continue;
+            };
+            let Some(sandbox) = store.sandbox(&task.sandbox_id).await? else {
+                continue;
+            };
+            behind.push(ClaudeCodeBehind {
+                sandbox: sandbox.slug,
+                number: task.number,
+                title: task.title,
+                version,
+            });
+        }
+        Ok(behind)
+    }
+
+    /// The Claude Code version `attempt`'s transcript names, when it names a plain one.
+    async fn run_cli_version(&self, task_id: &TaskId, attempt: &AttemptId) -> Option<Version> {
+        let facts = self.deps.store.task_run_facts(task_id).await.ok()?;
+        let named = facts.into_iter().find(|facts| facts.attempt == *attempt)?;
+        Version::parse(named.cli_version.as_deref()?)
+    }
+
+    /// The newer Claude Code the session of `attempt` moves to now, at its turn's end (SPEC-461
+    /// CCM-013); `None` when it stays: it runs the version runs get (or names none), it was
+    /// sent to that version before, a session could not continue on that version, a person
+    /// typed into it in the last minute, a switch was refused moments ago, or it has background
+    /// shells, agents or monitors, which a restart would end.
+    pub(crate) async fn claude_code_move_due(
+        self: &Arc<Self>,
+        task_id: &TaskId,
+        attempt: &AttemptId,
+    ) -> Option<Version> {
+        let services = self.agent_cli.get()?;
+        let target = services.adapter.version_for_new_runs()?;
+        let runs = match self.run_cli_version(task_id, attempt).await {
+            Some(runs) => runs,
+            // The lines of this turn name it: they are read first.
+            None => {
+                self.await_transcript_read(task_id).await;
+                self.run_cli_version(task_id, attempt).await?
+            }
+        };
+        let typed = self.runtime(task_id).typed_at_ms.load(Ordering::SeqCst);
+        let mut facts = MoveFacts {
+            runs,
+            target,
+            sent_to: services.moved.lock().ok()?.get(task_id).copied(),
+            stopped_for: services
+                .stopped
+                .lock()
+                .ok()?
+                .as_ref()
+                .map(|(version, _)| *version),
+            typed_ms_ago: (typed > 0).then(|| self.now().0.saturating_sub(typed)),
+            switch_refused: self.switch_cooling(task_id),
+            // Asked last: it reads the turn's lines and probes the session's processes.
+            background: Some(false),
+        };
+        if !moves_now(&facts) {
+            return None;
+        }
+        // Background work started in this turn is known from its lines (SPEC-079 BGW-004).
+        self.await_transcript_read(task_id).await;
+        facts.background = self.background_work_now(task_id).await;
+        moves_now(&facts).then_some(target)
+    }
+
+    /// Restarts the session of `task_id` on Claude Code `version` in the same Claude session, on
+    /// its subscription `account` (SPEC-461 CCM-013): the switch a subscription move makes, with
+    /// `prompt` typed into the resumed session. A version a session could not continue on gets
+    /// no further sessions.
+    pub(crate) async fn move_to_claude_code(
+        self: &Arc<Self>,
+        task_id: &TaskId,
+        account: Option<AccountId>,
+        version: Version,
+        prompt: Option<String>,
+    ) {
+        let Some(services) = self.agent_cli.get() else {
+            return;
+        };
+        if let Ok(mut moved) = services.moved.lock() {
+            moved.insert(task_id.clone(), version);
+        }
+        self.runtime(task_id).hub.notice(format!(
+            "↻ Claude Code {version} is installed: this session restarts on it and continues…"
+        ));
+        let Err(err) = self
+            .switch_task_now(task_id, account, MOVE_REASON, prompt)
+            .await
+        else {
+            return;
+        };
+        tracing::warn!(error = %err, task = %task_id, %version, "the session did not move to the new Claude Code");
+        // The old run ended and the new one did not start: the version is not given another
+        // session. A refusal before the old run ended, or a stop that overtook the move, says
+        // nothing about the version.
+        if let Ok(Some(task)) = self.deps.store.task(task_id).await
+            && task.status == TaskStatus::Stopped(StopReason::SwitchFailed)
+            && let Ok(mut stopped) = services.stopped.lock()
+        {
+            *stopped = Some((
+                version,
+                format!(
+                    "task #{} could not continue on it ({})",
+                    task.number,
+                    err.public_message()
+                ),
+            ));
+        }
+    }
+
+    /// An idle prompt-mode session whose turn just settled restarts on the Claude Code runs get
+    /// now, with nothing typed (SPEC-461 CCM-013). A goal session is not restarted idle: its
+    /// goal is typed again into a resumed session, which would start work nobody asked for; it
+    /// moves at a boundary where it works on anyway.
+    pub(crate) async fn move_idle_to_newer_claude_code(self: &Arc<Self>, task_id: &TaskId) {
+        if self.agent_cli.get().is_none() {
+            return;
+        }
+        let store = &self.deps.store;
+        let idle = |task: &crate::model::TaskRecord| {
+            task.mode == TaskMode::Prompt
+                && task.status == TaskStatus::Running
+                && task.activity == Some(Activity::Waiting)
+        };
+        if !matches!(store.task(task_id).await, Ok(Some(task)) if idle(&task)) {
+            return;
+        }
+        let Ok(Some(attempt)) = store.live_attempt(task_id).await else {
+            return;
+        };
+        let Some(version) = self.claude_code_move_due(task_id, &attempt.id).await else {
+            return;
+        };
+        // Still idle: no prompt arrived while this looked.
+        if !matches!(store.task(task_id).await, Ok(Some(task)) if idle(&task)) {
+            return;
+        }
+        self.move_to_claude_code(task_id, attempt.account_id, version, None)
+            .await;
     }
 
     /// `PUT /api/admin/claude-code/channel` (superadmin, SPEC-461 CCM-009): follows `channel`
@@ -290,5 +471,7 @@ fn view_of(
         problem,
         fix,
         refused,
+        behind: Vec::new(),
+        moves_stopped: None,
     }
 }

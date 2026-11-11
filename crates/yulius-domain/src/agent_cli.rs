@@ -110,6 +110,48 @@ impl Channel {
     }
 }
 
+/// What a turn's end knows about a session that may be restarted on a newer Claude Code
+/// (SPEC-461 CCM-013).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MoveFacts {
+    /// The Claude Code version the session's transcript names.
+    pub runs: Version,
+    /// The version a run starting now gets.
+    pub target: Version,
+    /// The version this task's session was sent to before.
+    pub sent_to: Option<Version>,
+    /// A version a session could not continue on.
+    pub stopped_for: Option<Version>,
+    /// How long ago a person typed into the session, when one did.
+    pub typed_ms_ago: Option<i64>,
+    /// A switch of this task was refused moments ago.
+    pub switch_refused: bool,
+    /// Whether background shells, agents or monitors of the session run now; `None` when that
+    /// could not be told.
+    pub background: Option<bool>,
+}
+
+/// A person who typed into a session this recently owns its prompt box: it is not restarted
+/// under them (their draft would be lost).
+pub const TYPED_RECENTLY_MS: i64 = 60_000;
+
+/// Whether the session is restarted on `target` now: it runs an older version, was not sent to
+/// `target` before (a session that still names the old one afterwards is not restarted at every
+/// turn's end), no session failed to continue on `target`, nobody typed into it in the last
+/// minute, no switch was just refused, and nothing of it runs in the background, which a
+/// restart would end (unknown counts as running).
+#[must_use]
+pub fn moves_now(facts: &MoveFacts) -> bool {
+    facts.runs < facts.target
+        && facts.sent_to != Some(facts.target)
+        && facts.stopped_for != Some(facts.target)
+        && facts
+            .typed_ms_ago
+            .is_none_or(|ago| ago >= TYPED_RECENTLY_MS)
+        && !facts.switch_refused
+        && facts.background == Some(false)
+}
+
 /// The text after a model id that ends it: anything but a letter, a digit or a hyphen, or the end
 /// of the file (SPEC-461 CCM-002). So `claude-fable-5-2` is not read in `claude-fable-5-20`, nor
 /// `claude-fable-5` in `claude-fable-5-2`.
@@ -376,6 +418,85 @@ mod tests {
             "{ahead}"
         );
         assert!(!ahead.contains(HOST_INSTALL), "{ahead}");
+    }
+
+    /// SPEC-461 CCM-013: when a turn's end restarts a session on the newer Claude Code.
+    #[test]
+    fn a_session_moves_only_when_nothing_would_be_lost() {
+        let due = MoveFacts {
+            runs: v("2.1.311"),
+            target: v("2.1.322"),
+            sent_to: None,
+            stopped_for: None,
+            typed_ms_ago: None,
+            switch_refused: false,
+            background: Some(false),
+        };
+        assert!(moves_now(&due));
+        let stays = |facts: MoveFacts, why: &str| assert!(!moves_now(&facts), "{why}");
+        stays(
+            MoveFacts {
+                runs: v("2.1.322"),
+                ..due
+            },
+            "it runs the version runs get",
+        );
+        stays(
+            MoveFacts {
+                runs: v("2.1.400"),
+                ..due
+            },
+            "it runs a newer one",
+        );
+        stays(
+            MoveFacts {
+                sent_to: Some(v("2.1.322")),
+                ..due
+            },
+            "it was sent to that version before",
+        );
+        stays(
+            MoveFacts {
+                stopped_for: Some(v("2.1.322")),
+                ..due
+            },
+            "a session could not continue on that version",
+        );
+        stays(
+            MoveFacts {
+                typed_ms_ago: Some(59_999),
+                ..due
+            },
+            "a person just typed",
+        );
+        stays(
+            MoveFacts {
+                switch_refused: true,
+                ..due
+            },
+            "a switch was just refused",
+        );
+        stays(
+            MoveFacts {
+                background: Some(true),
+                ..due
+            },
+            "background work runs",
+        );
+        stays(
+            MoveFacts {
+                background: None,
+                ..due
+            },
+            "background work could not be told",
+        );
+        // Sent to an older version before, or stopped for another: this one is new.
+        assert!(moves_now(&MoveFacts {
+            sent_to: Some(v("2.1.318")),
+            stopped_for: Some(v("2.1.318")),
+            typed_ms_ago: Some(TYPED_RECENTLY_MS),
+            ..due
+        }));
     }
 
     #[test]

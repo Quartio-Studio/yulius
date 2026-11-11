@@ -119,6 +119,9 @@ pub struct FakeAgentOptions {
     pub answers_first_message: bool,
     /// Open on Claude Code's folder-trust dialog, answered by the first line (`--trust-prompt`).
     pub trust_prompt: bool,
+    /// The transcript's records name the Claude Code version read from this file at each start
+    /// (`--cli-version-file`): rewriting it stands for a newer Claude Code at the next start.
+    pub cli_version_file: Option<PathBuf>,
 }
 
 /// See the module docs.
@@ -199,6 +202,12 @@ impl HarnessPort for FakeAgentHarness {
         }
         if self.options.tui {
             argv.push("--tui".into());
+        }
+        if let Some(path) = &self.options.cli_version_file {
+            argv.extend([
+                "--cli-version-file".into(),
+                path.to_string_lossy().into_owned(),
+            ]);
         }
         if self.options.hooks {
             argv.extend([

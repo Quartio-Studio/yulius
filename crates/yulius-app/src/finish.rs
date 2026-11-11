@@ -609,6 +609,9 @@ impl App {
             if next == Activity::Done {
                 app.drain_queue().await;
             }
+            // The turn is settled: an idle session on an older Claude Code restarts on the one
+            // runs get now (SPEC-461 CCM-013).
+            app.move_idle_to_newer_claude_code(&task_id).await;
         });
         Ok(())
     }

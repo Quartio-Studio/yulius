@@ -17,6 +17,7 @@
 //!            [--goal-continue-ms MS
 //!            [--goal-continue-verdict] [--goal-continue-dies]] [--goal-delay-ms MS] [--drop-lines N]
 //!            [--interrupts] [--rate-limits-file PATH] [--session-start] [--opening-turn-ms MS]
+//!            [--cli-version-file PATH]
 //!            [--echo-turn-ms MS] [--context-full-after N] [--compact-fails] [--compact-hangs]
 //!            [--prompt TEXT] [--limit-continues-ms MS [--limit-continues-answer-only]]
 //!            [--idle-compact-ms MS] [--trust-prompt] [--goal-api-errors N [--goal-retry-ms MS]
@@ -110,6 +111,10 @@
 //! Ctrl-C again to exit`, and a second Ctrl+C within 2 s runs `SessionEnd`
 //! (`prompt_input_exit`), prints `BYE` and exits 0; SIGTERM runs `SessionEnd` (`other`) and
 //! exits 143.
+//!
+//! `--cli-version-file PATH`: the transcript's records name the version read from PATH when the
+//! agent starts (as Claude Code writes its own `version` on every record), `0.0.0-fake` without
+//! it; a test rewrites the file to stand for a newer Claude Code at the next start (SPEC-461).
 //!
 //! `--rate-limits-file PATH` runs Claude Code's status line command as Yulius configures it
 //! (`YULIUS_EXE hook claude StatusLine`, with `--hooks`) at the start and after every turn, with
@@ -244,6 +249,7 @@ struct Options {
     drop_lines: u32,
     interrupts: bool,
     rate_limits_file: Option<PathBuf>,
+    cli_version_file: Option<PathBuf>,
     context_full_after: Option<u64>,
     compact_fails: bool,
     compact_hangs: bool,
@@ -299,6 +305,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
         drop_lines: 0,
         interrupts: false,
         rate_limits_file: None,
+        cli_version_file: None,
         context_full_after: None,
         compact_fails: false,
         compact_hangs: false,
@@ -418,6 +425,10 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
             "--rate-limits-file" => {
                 options.rate_limits_file =
                     Some(args.next().ok_or("--rate-limits-file needs a path")?.into());
+            }
+            "--cli-version-file" => {
+                options.cli_version_file =
+                    Some(args.next().ok_or("--cli-version-file needs a path")?.into());
             }
             "--context-full-after" => {
                 options.context_full_after = Some(parse_number(&flag, args.next())?);
@@ -573,6 +584,14 @@ fn rfc3339(ms: i64) -> String {
     )
 }
 
+/// The version this agent's transcript records name: read once from `--cli-version-file` when
+/// the agent starts, as a real CLI is one version for its whole run.
+static CLI_VERSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+fn cli_version() -> &'static str {
+    CLI_VERSION.get().map_or("0.0.0-fake", String::as_str)
+}
+
 struct Transcript {
     path: PathBuf,
     session_id: String,
@@ -623,7 +642,7 @@ impl Transcript {
             "entrypoint": "cli",
             "cwd": self.cwd,
             "sessionId": self.session_id,
-            "version": "0.0.0-fake",
+            "version": cli_version(),
         })
     }
 
@@ -1780,6 +1799,15 @@ fn trust_prompt() -> io::Result<()> {
 }
 
 fn echo_loop(options: &Options, session_id: &str) -> io::Result<i32> {
+    if let Some(version) = options
+        .cli_version_file
+        .as_ref()
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .map(|text| text.trim().to_owned())
+        .filter(|version| !version.is_empty())
+    {
+        let _ = CLI_VERSION.set(version);
+    }
     let transcript = match &options.transcript {
         Some(path) => Some(Arc::new(Mutex::new(Transcript::open(
             path.clone(),
@@ -2314,6 +2342,7 @@ mod tests {
         assert!(parse(&["--hooks"]).is_err());
         assert!(parse(&["--interrupts"]).is_ok_and(|o| o.interrupts));
         assert!(parse(&["--rate-limits-file"]).is_err());
+        assert!(parse(&["--cli-version-file"]).is_err());
         assert!(
             parse(&["--goal-background", "3", "--goal-delay-ms", "999999"])
                 .is_ok_and(|o| o.goal_background == Some(3) && o.goal_delay_ms == MAX_GOAL_DELAY_MS)

@@ -796,6 +796,23 @@ impl App {
             } else {
                 false
             };
+        // A session that works on after this boundary (a gate's block, its goal) and runs an
+        // older Claude Code than runs get now restarts on the newer one here, as a move to
+        // another subscription does (SPEC-461 CCM-013): the resumed session gets the gate's
+        // reasons, and its goal again. An idle session moves once its turn has settled.
+        if matches!(decision.0, Decision::Stay)
+            && continues
+            && let Some(version) = self.claude_code_move_due(&task.id, &ctx.attempt.id).await
+        {
+            let continuation = gate_continues.then(|| reasons.join("\n\n"));
+            let app = Arc::clone(self);
+            let (task_id, account) = (task.id.clone(), current.clone());
+            tokio::spawn(async move {
+                app.move_to_claude_code(&task_id, account, version, continuation)
+                    .await;
+            });
+            return Ok(self.hold_for(&task.id));
+        }
         let stays = match decision {
             (Decision::Stay, _) => true,
             (Decision::Switch { .. }, _) if busy => true,

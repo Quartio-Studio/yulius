@@ -340,6 +340,25 @@ pub struct ClaudeCodeView {
     pub fix: Option<String>,
     /// The releases the last check refused, in the order tried.
     pub refused: Vec<ClaudeCodeRefused>,
+    /// Tasks whose running session still runs an older Claude Code (SPEC-461 CCM-013): each
+    /// moves when its turn ends, or at its next start.
+    pub behind: Vec<ClaudeCodeBehind>,
+    /// Why running tasks are no longer moved to the version in use, when a session could not
+    /// continue on it.
+    pub moves_stopped: Option<String>,
+}
+
+/// A task whose running session runs an older Claude Code than runs get now.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClaudeCodeBehind {
+    /// Its sandbox's slug.
+    pub sandbox: String,
+    /// Its number in the sandbox.
+    pub number: u32,
+    /// Its title.
+    pub title: String,
+    /// The Claude Code version its session runs.
+    pub version: String,
 }
 
 /// A Claude Code release that was not taken.
