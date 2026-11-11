@@ -229,3 +229,24 @@ fn the_new_host_s_step_asks_its_own_instance() -> TestResult {
     );
     Ok(())
 }
+
+/// Only a public URL as a move names it goes into the request line: nothing is sent otherwise.
+#[test]
+fn a_url_that_is_not_a_host_is_never_sent() -> TestResult {
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    listener.set_nonblocking(true)?;
+    let address = listener.local_addr()?.to_string();
+    for bad in [
+        "https://new.example HTTP/1.0\r\nX-Injected: 1",
+        "https://new.example/path?x=1",
+        "http://new.example",
+    ] {
+        let refused = ask(&address, "abc123", Some(bad), Duration::from_millis(300))
+            .err()
+            .ok_or("an answer")?;
+        assert!(refused.contains("not `https://host`"), "{refused}");
+    }
+    // Nobody connected.
+    assert!(listener.accept().is_err());
+    Ok(())
+}
