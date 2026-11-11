@@ -3059,7 +3059,9 @@ GitHub App (GitHub has no API for it). The instance finds out by itself whether 
 made-up code and its callback URL to GitHub's token endpoint, which answers `redirect_uri_mismatch`
 or `bad_verification_code`, and keeps the answer (registered, missing, or unknown with the reason)
 in memory. GitHub is asked at start, on demand, and when an answer that is not "registered" is
-read after 30 s; never in a loop, and one check at a time. Settings → Instance reads it with the
+read once it is due (30 s old; after eleven answers in a row that say the same the wait doubles
+with each one, up to 32 minutes, until a demand or a changed answer); never in a loop, and one
+check at a time. Settings → Instance reads it with the
 App's settings link and the move's report (`GET /api/admin/instance/address`), the sign-in page
 through `GET /api/setup/status`, and a sign-in that starts while the answer is "missing" asks
 again before it returns to the sign-in page. The root command cannot open the sealed App
@@ -3076,13 +3078,15 @@ sequenceDiagram
   participant O as Operator (root, SSH)
   participant M as yulius instance migrate (old host)
   participant D as systemd (old host)
+  participant Y as Old yulius.service
   participant T as yulius instance migrate-target (new host)
   participant S as New yulius.service
   participant G as GitHub
   O->>M: sudo yulius instance migrate root@new-host
   M->>T: one-time key, this build, facts (release, space, disks, ports)
-  M->>D: old yulius.service: is the new URL's callback registered? (loopback, CLI key)
-  D->>G: token endpoint: App credentials, made-up code, the new callback URL
+  M->>Y: is the new URL's callback registered? (loopback listener, CLI key)
+  Y->>G: token endpoint, App credentials, a made-up code, the new callback URL
+  G->>Y: registered or missing
   M->>O: Plan: what a person must do (the App's link and values), then "Proceed?"
   M->>T: Prepare: data disk, apt sources, packages, software, host items, unit, proxy
   M->>D: systemctl freeze yulius.service
@@ -3100,7 +3104,9 @@ sequenceDiagram
       M->>D: systemctl disable (stays frozen)
       S->>S: first start: queue the tasks that were live
       M->>M: old proxy redirects to the new URL (X-Yulius-Moved-To: laptops' CLI follows)
-      M->>T: ask the new instance about its callback (it asks GitHub)
+      M->>T: is the callback registered by now?
+      T->>S: the same question (loopback listener, CLI key)
+      S->>G: token endpoint, as above
       M->>T: remove the key, enable the firewall
     end
   end

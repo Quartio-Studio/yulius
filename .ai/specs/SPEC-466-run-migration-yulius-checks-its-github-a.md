@@ -60,10 +60,13 @@ The check
   memory: registered, missing, or unknown with the reason, and when it was given. Without a GitHub
   App there is no answer and GitHub is not asked.
 - MVC-003 **When it asks.** At start (in the background) and when the manifest flow has stored the
-  App; on demand (MVC-011's "Check again", MVC-013, MVC-020); and, while the answer is not
-  "registered", when it is read (the Instance page, the sign-in page) and is older than 30 s. So
-  a missing callback is re-checked until it is registered, and nothing asks GitHub while nobody
-  looks. One check runs at a time: a second request waits for it and takes its answer.
+  App; on demand (MVC-011's "Check again" and the return to the page, MVC-013, MVC-020); and,
+  while the answer is not "registered", when it is read (the Instance page, the sign-in page) and
+  is due: 30 s old at first, so a missing callback is re-checked until it is registered, and
+  nothing asks GitHub while nobody looks. A page left open does not ask for ever at that pace:
+  after eleven answers in a row that say the same and were asked for by reads, the wait doubles
+  with each one, up to 32 minutes; a demand or a changed answer makes it 30 s again. One check
+  runs at a time: a second request waits for it and takes its answer.
 
 Settings → Instance and the sign-in page
 
@@ -77,8 +80,10 @@ Settings → Instance and the sign-in page
 - MVC-011 **The card "Address".** On the Instance page: the public URL; registered: one line;
   missing: a warning with the one link "Open the App's settings on GitHub", the callback URL and
   the homepage URL, each with a copy button, the note that the old callback may stay until the old
-  host is retired, and a re-read every 5 s until it is registered (said in place, no reload);
-  unknown: the reason and "Check again". After a move: where the instance came from, when, and
+  host is retired, and a re-read every 5 s until it is registered (said in place, no reload; the
+  latest read wins, and one that fails keeps what the card shows); coming back to the page
+  (another tab, GitHub's settings) asks GitHub at once; unknown: the reason and "Check again".
+  After a move: where the instance came from, when, and
   what the first start did with the tasks (back in the queue, left stopped, could not be queued).
 - MVC-012 **Sign-in page.** `GET /api/setup/status` says `github_callback_missing` (true only for
   the answer "missing"). The page then says, in a fixed sentence, that GitHub does not know this
@@ -116,7 +121,7 @@ Remote clients
   it.` on standard error and repeats the call once there. A redirect answered again is an error.
 - MVC-031 **Nothing else is followed.** The new origin must be `https` (plain `http` only when the
   old URL was itself a loopback development server), with no credentials, path, query or
-  fragment. Without the header, with another `Location`, or with a header that is not such an
+  fragment, and another URL than the one asked. Without the header, with another `Location`, or with a header that is not such an
   origin, the redirect is the error it is today and the token is sent nowhere else.
 - MVC-032 **The old name keeps working.** The store remembers the move (`moved` in
   `remote-credentials.json`), so a command that names the old URL (`--server`, `YULIUS_SERVER`)
@@ -131,10 +136,11 @@ Remote clients
 - **Application** (`yulius-app::github_callback`): the kept answer (`CallbackCheck`), the check
   behind one async lock, the read that starts a background check, `settings_url`, and the views.
   States: no answer yet (owner: the start's or a read's background check; exit: its answer),
-  `unknown`/`missing` (owner: whoever reads next after 30 s, or a demand; exit: `registered`),
+  `unknown`/`missing` (owner: whoever reads next once it is due, or a demand; exit: `registered`),
   `registered` (kept until the next start or demand).
 - **Move** (`instance/migrate/github.rs`). `asked_instance` reads the key file and sends one
-  HTTP/1.0 request to the loopback listener (connecting, sending and each read bounded at 20 s; a
+  HTTP/1.0 request to the loopback listener (connecting, sending and each read bounded at 30 s,
+  above the 20 s the server needs at worst for a check behind another; a
   `public_url` that is not `https://host` is never sent); `line` makes the checklist's "GitHub
   App" line of the answer. The plan asks through `World::github` (the old instance, the new URL);
   before the finish the flow sends `Request::Callback` to the new host, whose step asks the
@@ -164,8 +170,10 @@ Remote clients
   that does not answer an error within the request timeout.
 - A server whose App's callback is not registered answers `state: "missing"` on the address API
   with the organization's (and a person's) settings link and both values; after the callback is
-  registered at GitHub a read older than 30 s makes it `registered` without a restart, and "Check
-  again" does at once. Without an App: `github: null` and GitHub was never asked. A member is
+  registered at GitHub a read 30 s after the last answer makes it `registered` without a restart,
+  and "Check again" does at once. A callback that stays missing is asked for at 30 s for eleven
+  reads, then at 60 s, 120 s and so on up to 32 minutes; after "Check again", or an answer that
+  changed, at 30 s again. Without an App: `github: null` and GitHub was never asked. A member is
   refused (403).
 - After a start with the move's mark the address API names the old URL, the time and the three
   task counts; without `moved.json`, `moved: null`.
@@ -185,8 +193,10 @@ Remote clients
   header, to another path, to `http` from an `https` server, or with a header carrying a path is
   not followed and the store is unchanged; a second move in a row is an error.
 - e2e on the mock: the Address card shows the warning, the link, both values and the move; after
-  GitHub accepts the callback the card says so without a reload; the sign-in page shows the
-  sentence and the open password form.
+  GitHub accepts the callback the card says so without a reload; "Check again" works while the
+  card reads by itself and a read that answers late changes nothing; coming back to the page asks
+  GitHub at once; a re-read that fails keeps the card; the sign-in page shows the sentence and the
+  open password form.
 
 ## Test plan
 

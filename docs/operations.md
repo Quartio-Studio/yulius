@@ -1027,9 +1027,11 @@ Yulius notices and says exactly what to do:
   `https://github.com/settings/apps/<slug>` for a person's App), and the two values with copy
   buttons: the **callback URL** to add (an App takes several, so the old one may stay until the old
   host is retired) and the **homepage URL** to replace. Save on GitHub; the card says "GitHub
-  accepts this address for sign-in" within half a minute, or at once with Check again. When GitHub
-  gave no answer (it is down, the server has no route to it) the card says why; sign-in is not
-  affected by that.
+  accepts this address for sign-in" at once when you come back to the page or press Check again,
+  and by itself within half a minute while you watch it (a page left open for long asks GitHub
+  less and less often, every half hour at the least). When GitHub gave no answer (it is down, the
+  server has no route to it, it refuses the App's client id and secret) the card says why; sign-in
+  is not affected by that.
 - **The sign-in page** says that GitHub does not know this address yet and opens the superadmin
   password, which keeps working. "Sign in with GitHub" stays: pressing it asks GitHub again, so it
   works as soon as the callback is saved.
@@ -1430,7 +1432,8 @@ more (`ok` when GitHub accepts the callback by now, else the link and the values
 `claude mcp remove yulius` and `claude mcp add` with the new URL); and that the old host
 still holds a frozen copy with `master.key` and every secret. On the new instance, Settings →
 Instance → Address then shows where it came from, when, what its first start did with the tasks,
-and whether GitHub accepts the new address.
+and whether GitHub accepts the new address (the note about the move is read from
+`<data>/moved.json`; remove the file to drop it).
 
 **Abort.** `sudo yulius instance migrate --abort` on the old host stops and disables the new
 instance (through the key while the move is not finished; afterwards the key is gone: stop it

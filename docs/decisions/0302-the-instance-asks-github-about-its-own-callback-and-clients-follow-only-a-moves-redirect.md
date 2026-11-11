@@ -27,9 +27,11 @@ C of [0297](0297-one-root-command-moves-an-instance-and-drives-the-new-host-over
   `redirect_uri_mismatch` missing, anything else unknown with the reason. One bounded request, no
   person's token, nothing changed at GitHub.
 - **Asked on demand and while someone looks.** At start, when the App is stored, on a superadmin's
-  "Check again", for the move's plan, and when a sign-in starts or a page reads an answer that is
-  not "registered" and older than 30 s. No loop asks GitHub while nobody looks, and one check runs
-  at a time.
+  "Check again" or return to the page, for the move's plan, and when a sign-in starts or a page
+  reads an answer that is not "registered" and due: 30 s old at first, and, once eleven such
+  answers in a row said the same, twice as old with each further one, up to 32 minutes (a demand
+  or a changed answer makes it 30 s again). No loop asks GitHub while nobody looks, a page left
+  open asks ever less, and one check runs at a time.
 - **Only "missing" changes sign-in.** The sign-in page then says why and a sign-in start asks
   again before it returns there; "unknown" never blocks, because GitHub's own page stays the
   authority.
