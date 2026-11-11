@@ -149,6 +149,12 @@ esac"#,
     /// A host of the old layout on systemd 259: sessions run in the unit's own group, and the
     /// unit pulls in `wants`.
     fn old_layout_with_sessions(&self, wants: &str) -> TestResult {
+        self.old_layout(wants, "active")
+    }
+
+    /// The same, with the sessions unit in the state `sessions` (the fake `systemctl show`
+    /// answers every unit from one file).
+    fn old_layout(&self, wants: &str, sessions: &str) -> TestResult {
         let unit = "system.slice/yqa-test.service";
         let sandboxes = self.args.cgroup_root.join(unit).join("sandboxes");
         std::fs::create_dir_all(&sandboxes)?;
@@ -156,7 +162,9 @@ esac"#,
         std::fs::write(self.bin("--version"), "systemd 259 (259.5-0ubuntu1)\n")?;
         std::fs::write(
             self.bin("show"),
-            format!("LoadState=loaded\nControlGroup=/{unit}\nWants={wants}\n"),
+            format!(
+                "LoadState=loaded\nControlGroup=/{unit}\nWants={wants}\nActiveState={sessions}\n"
+            ),
         )?;
         Ok(())
     }
@@ -871,6 +879,32 @@ fn a_restart_goes_ahead_where_the_adopt_unit_moves_the_sessions() -> TestResult 
     env.request("run-0024-restart", HelperAction::Restart, OLD)?;
     let status = env.run()?;
     assert_eq!(status.state, HelperState::Done, "{status:?}");
+    Ok(())
+}
+
+/// Review of SPEC-458 (low): the adopt unit requires the sessions unit. Pulled in but with a
+/// sessions unit that does not run, nothing would move the sessions: refused, nothing stopped.
+#[test]
+fn a_restart_is_refused_where_the_sessions_unit_does_not_run() -> TestResult {
+    let mut env = Env::new()?;
+    env.health(None)?;
+    env.old_layout(
+        "yqa-test-sandboxes.service yqa-test-adopt.service",
+        "failed",
+    )?;
+    std::fs::create_dir_all(&env.args.state_dir)?;
+    std::fs::write(env.args.state_dir.join("installed-commit"), OLD)?;
+    env.request("run-0025-restart", HelperAction::Restart, OLD)?;
+    let status = env.run()?;
+    assert_eq!(status.state, HelperState::Failed, "{status:?}");
+    let error = status.error.unwrap_or_default();
+    assert!(
+        error.contains("yqa-test-sandboxes.service is not running")
+            && error.contains("nothing was stopped"),
+        "{error}"
+    );
+    let calls = std::fs::read_to_string(env.bin("systemctl.log")).unwrap_or_default();
+    assert!(!calls.contains("stop"), "{calls}");
     Ok(())
 }
 

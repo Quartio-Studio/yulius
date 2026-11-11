@@ -4,7 +4,8 @@
 //! while that group passes controllers to children that hold processes. Sessions of the old
 //! layout live exactly there (`<unit>/sandboxes`) and `KillMode=process` keeps them over the
 //! stop, so the stop would be the last thing that works. The root adopt unit moves them before
-//! every start; a unit that does not pull it in must not be stopped while sessions run.
+//! every start; a unit that does not pull it in, or whose sessions unit (which the adopt unit
+//! requires) does not run, must not be stopped while sessions run.
 
 use std::path::{Component, Path, PathBuf};
 
@@ -12,8 +13,10 @@ use yulius_sandbox::units;
 
 /// The first systemd that starts a unit inside the unit's own group.
 pub const FIRST_AFFECTED: u32 = 258;
-/// The group of the old layout that holds the sessions, below the server's unit.
-const SANDBOXES: &str = "sandboxes";
+/// The server's own subgroup of its unit: what it holds ends or moves with the server.
+const SERVER: &str = "server";
+/// Subgroups of a unit looked at, at most.
+const MAX_CHILDREN: usize = 4096;
 
 /// What a host says about a restart of its server unit.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -22,22 +25,54 @@ pub struct Facts {
     pub systemd: Option<u32>,
     /// Whether the unit is loaded at all.
     pub loaded: bool,
-    /// Whether processes live in the server unit's own `sandboxes` group.
+    /// Whether processes live in the server's unit outside the server's own subgroup: its
+    /// `sandboxes`, or what an earlier server left (`legacy`).
     pub sessions_in_unit: bool,
     /// Whether the unit pulls in its adopt unit (`Wants=`).
     pub adopt_wired: bool,
+    /// Whether the sessions unit runs: the adopt unit requires it.
+    pub sessions_active: bool,
 }
 
 /// Why a restart of `service` would leave it down, or `None` when it would come back.
 #[must_use]
 pub fn blocker(service: &str, facts: &Facts) -> Option<String> {
     let version = facts.systemd.filter(|version| *version >= FIRST_AFFECTED)?;
-    (facts.sessions_in_unit && !facts.adopt_wired).then(|| {
-        format!(
+    if !facts.sessions_in_unit {
+        return None;
+    }
+    if !facts.adopt_wired {
+        return Some(format!(
             "{service} would not start again: its sessions live in its own group, where \
              systemd {version} starts no unit while one runs. Run `sudo yulius host setup` on \
              the host once, then try again"
-        )
+        ));
+    }
+    if facts.sessions_active {
+        return None;
+    }
+    let sessions = units::sessions_unit(service).unwrap_or_default();
+    Some(format!(
+        "{service} would not start again: its sessions live in its own group, where systemd \
+         {version} starts no unit while one runs, and {sessions} is not running, so nothing \
+         would move them out before the start. Start it (`sudo systemctl start {sessions}`) \
+         or see why it does not (`systemctl status {sessions}`), then try again"
+    ))
+}
+
+/// Whether a process lives in the unit group `group` outside the server's own subgroup and
+/// systemd's (`.control`).
+fn holds_sessions(group: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(group) else {
+        return false;
+    };
+    entries.flatten().take(MAX_CHILDREN).any(|entry| {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        name != SERVER
+            && !name.starts_with('.')
+            && std::fs::read_to_string(entry.path().join("cgroup.events"))
+                .is_ok_and(|events| populated(&events))
     })
 }
 
@@ -112,15 +147,17 @@ pub fn read(root: &Path, service: &str, systemctl: &dyn Fn(&[&str]) -> Option<St
     });
     let sessions_in_unit = unit_groups(root, service, property(&show, "ControlGroup"))
         .iter()
-        .any(|group| {
-            std::fs::read_to_string(group.join(SANDBOXES).join("cgroup.events"))
-                .is_ok_and(|events| populated(&events))
-        });
+        .any(|group| holds_sessions(group));
+    let sessions_active = units::sessions_unit(service).is_some_and(|sessions| {
+        systemctl(&["show", "--property=ActiveState", "--", &sessions])
+            .is_some_and(|show| property(&show, "ActiveState") == Some("active"))
+    });
     Facts {
         systemd,
         loaded: property(&show, "LoadState") == Some("loaded"),
         sessions_in_unit,
         adopt_wired,
+        sessions_active,
     }
 }
 
@@ -178,6 +215,39 @@ mod tests {
             loaded: true,
             sessions_in_unit,
             adopt_wired,
+            sessions_active: adopt_wired,
+        }
+    }
+
+    /// Review of SPEC-458 (low): the adopt unit needs the sessions unit (`Requires=`). Wired
+    /// but with a sessions unit that does not run, nothing would move the sessions out.
+    #[test]
+    fn a_wired_unit_whose_sessions_unit_does_not_run_is_blocked_too() {
+        let stopped = Facts {
+            sessions_active: false,
+            ..facts(Some(259), true, true)
+        };
+        let why = blocker("yulius.service", &stopped).unwrap_or_default();
+        assert!(
+            why.contains("yulius-sandboxes.service is not running"),
+            "{why}"
+        );
+        assert!(
+            why.contains("systemctl status yulius-sandboxes.service"),
+            "{why}"
+        );
+        // Nothing to move, or a systemd that restarts the unit anyway: not blocked.
+        for free in [
+            Facts {
+                sessions_active: false,
+                ..facts(Some(259), false, true)
+            },
+            Facts {
+                sessions_active: false,
+                ..facts(Some(255), true, true)
+            },
+        ] {
+            assert_eq!(blocker("yulius.service", &free), None, "{free:?}");
         }
     }
 
@@ -269,18 +339,75 @@ mod tests {
         }
     }
 
-    fn host(root: &Path, group: &str, events: &str) -> std::io::Result<()> {
-        let dir = root.join(group).join(SANDBOXES);
+    fn child(root: &Path, group: &str, name: &str, events: &str) -> std::io::Result<()> {
+        let dir = root.join(group).join(name);
         std::fs::create_dir_all(&dir)?;
         std::fs::write(dir.join("cgroup.events"), events)
     }
 
+    fn host(root: &Path, group: &str, events: &str) -> std::io::Result<()> {
+        child(root, group, "sandboxes", events)
+    }
+
+    /// systemd's answers: its version, `show` of the server's unit, and a running sessions unit.
     fn answers(version: &'static str, show: &'static str) -> impl Fn(&[&str]) -> Option<String> {
-        move |args: &[&str]| match args.first().copied() {
-            Some("--version") => Some(version.to_owned()),
-            Some("show") => Some(show.to_owned()),
+        answers_with(version, show, "active")
+    }
+
+    fn answers_with(
+        version: &'static str,
+        show: &'static str,
+        sessions: &'static str,
+    ) -> impl Fn(&[&str]) -> Option<String> {
+        move |args: &[&str]| match (args.first().copied(), args.last().copied()) {
+            (Some("--version"), _) => Some(version.to_owned()),
+            (Some("show"), Some("yulius-sandboxes.service")) => {
+                Some(format!("ActiveState={sessions}\n"))
+            }
+            (Some("show"), _) => Some(show.to_owned()),
             _ => None,
         }
+    }
+
+    /// Review of SPEC-458 (low): what keeps the unit's group is any process below it outside
+    /// the server's own subgroup, not only one in `sandboxes`.
+    #[test]
+    fn processes_an_earlier_server_left_outside_sandboxes_count_as_well()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let show = "LoadState=loaded\nControlGroup=/system.slice/yulius.service\nWants=\n";
+        let unit = "system.slice/yulius.service";
+        for (name, counts) in [("legacy", true), ("server", false), (".control", false)] {
+            let tmp = tempfile::tempdir()?;
+            child(tmp.path(), unit, name, "populated 1\n")?;
+            let found = read(
+                tmp.path(),
+                "yulius.service",
+                &answers("systemd 259 (259.5)\n", show),
+            );
+            assert_eq!(found.sessions_in_unit, counts, "{name}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn the_sessions_units_state_is_read() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        host(tmp.path(), "system.slice/yulius.service", "populated 1\n")?;
+        let show = "LoadState=loaded\nControlGroup=/system.slice/yulius.service\nWants=yulius-sandboxes.service yulius-adopt.service\n";
+        for (state, active) in [("active", true), ("failed", false), ("inactive", false)] {
+            let found = read(
+                tmp.path(),
+                "yulius.service",
+                &answers_with("systemd 259 (259.5)\n", show, state),
+            );
+            assert_eq!(found.sessions_active, active, "{state}");
+            assert_eq!(
+                blocker("yulius.service", &found).is_some(),
+                !active,
+                "{state}"
+            );
+        }
+        Ok(())
     }
 
     #[test]
@@ -298,7 +425,13 @@ mod tests {
             "yulius.service",
             &answers("systemd 259 (259.5)\n", show),
         );
-        assert_eq!(found, facts(Some(259), true, false));
+        assert_eq!(
+            found,
+            Facts {
+                sessions_active: true,
+                ..facts(Some(259), true, false)
+            }
+        );
         assert!(blocker("yulius.service", &found).is_some());
         Ok(())
     }

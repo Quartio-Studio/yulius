@@ -431,6 +431,24 @@ fn restart_check(service: &str, facts: &crate::restart_safety::Facts) -> Option<
     }
     if facts.adopt_wired {
         let sessions = yulius_sandbox::units::sessions_unit(service).unwrap_or_default();
+        if !facts.sessions_active {
+            // The units are written, but the one the sessions should live in does not run.
+            let refused = if crate::restart_safety::blocker(service, facts).is_some() {
+                "; sessions run in its own group now, so Restart and Update now are refused"
+            } else {
+                ""
+            };
+            return Some(check(
+                NAME,
+                Level::Warn,
+                format!(
+                    "{sessions} is not running, so {service} keeps its sessions in its own \
+                     group and nothing would move them out before a start{refused}: start it \
+                     (`sudo systemctl start {sessions}`) or see why it does not (`systemctl \
+                     status {sessions}`), then restart {service}"
+                ),
+            ));
+        }
         let detail = if facts.sessions_in_unit {
             format!("the next restart of {service} moves its sessions to {sessions} and keeps them")
         } else {
@@ -642,11 +660,21 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     fn restart_line(systemd: Option<u32>, sessions_in_unit: bool, adopt_wired: bool) -> String {
+        restart_line_with(systemd, sessions_in_unit, adopt_wired, adopt_wired)
+    }
+
+    fn restart_line_with(
+        systemd: Option<u32>,
+        sessions_in_unit: bool,
+        adopt_wired: bool,
+        sessions_active: bool,
+    ) -> String {
         let facts = Facts {
             systemd,
             loaded: true,
             sessions_in_unit,
             adopt_wired,
+            sessions_active,
         };
         restart_check("yulius.service", &facts)
             .map(|check| format!("{:?} {}: {}", check.level, check.name, check.detail))
@@ -669,6 +697,30 @@ mod tests {
         assert!(old.starts_with("Warn "), "{old}");
         assert!(old.contains("this systemd still restarts it"), "{old}");
         assert!(restart_line(None, true, false).contains("systemd unknown"));
+    }
+
+    /// Review of SPEC-458 (low): the units being written is not the sessions unit running.
+    #[test]
+    fn the_restart_line_warns_when_the_sessions_unit_does_not_run() {
+        for sessions_in_unit in [true, false] {
+            let down = restart_line_with(Some(259), sessions_in_unit, true, false);
+            assert!(down.starts_with("Warn restart with sessions: "), "{down}");
+            assert!(
+                down.contains("yulius-sandboxes.service is not running"),
+                "{down}"
+            );
+            assert!(
+                down.contains("systemctl status yulius-sandboxes.service"),
+                "{down}"
+            );
+        }
+        let refused = restart_line_with(Some(259), true, true, false);
+        assert!(
+            refused.contains("Restart and Update now are refused"),
+            "{refused}"
+        );
+        let old = restart_line_with(Some(255), true, true, false);
+        assert!(!old.contains("are refused"), "{old}");
     }
 
     #[test]
