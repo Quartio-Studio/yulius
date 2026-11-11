@@ -13,7 +13,7 @@
 //! | [`docker_bind`] | `yulius sandbox-host bind-docker`: the Docker directory into live runs (ADR-0158) |
 //! | [`engine_supervisor`] | the Docker front: the engine on demand (ADR-0151) |
 //! | [`relay`], [`procnet`] | both sides of the network boundary |
-//! | [`cgroup`], [`freeze`], [`usage`], [`subid`], [`userns`], [`seccomp`] | building blocks |
+//! | [`cgroup`], [`freeze`], [`usage`], [`subid`], [`units`], [`userns`], [`seccomp`] | building blocks |
 //!
 //! Namespaces, mounts and `setns` are Linux-only; elsewhere the functions that need them
 //! return errors and the server keeps the previous containment.
@@ -33,5 +33,6 @@ pub mod procnet;
 pub mod relay;
 pub mod seccomp;
 pub mod subid;
+pub mod units;
 pub mod usage;
 pub mod userns;
