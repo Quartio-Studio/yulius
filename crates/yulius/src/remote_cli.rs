@@ -13,7 +13,7 @@ use std::process::ExitCode;
 use serde_json::{Map, Value, json};
 use yulius_domain::vault::plain::{carries_credential, credential_name};
 use yulius_import::{
-    RemoteClient, RemoteError, Secret, TokenStore, Url, discover_repo, parse_dotenv,
+    Relocated, RemoteClient, RemoteError, Secret, TokenStore, Url, discover_repo, parse_dotenv,
 };
 
 /// Options every remote command takes.
@@ -278,9 +278,33 @@ fn client(opts: &RemoteOpts) -> Result<(Url, RemoteClient), String> {
     Ok((server, client))
 }
 
+/// What a failed request says, with where the sign-in came from when the instance that does not
+/// answer is one it followed a move to: the move may have been undone (SPEC-466 MVC-032). The
+/// token is sent nowhere to find out.
+fn failed(server: &Url, err: &RemoteError) -> String {
+    let said = err.to_string();
+    if !matches!(err, RemoteError::Transport(_)) {
+        return said;
+    }
+    let from = store()
+        .ok()
+        .and_then(|store| store.moved_from(server).ok())
+        .unwrap_or_default();
+    match from.first() {
+        Some(old) => format!(
+            "{said}\nThe saved sign-in followed a move here from {}. If the instance is back \
+             there (the move was undone), sign in there again: `yulius remote login {old}` \
+             (Enter at the token prompt takes this sign-in back)",
+            from.join(", ")
+        ),
+        None => said,
+    }
+}
+
 /// Asks the instance with `ask`. When its old URL answers that it moved (a redirect with
 /// `X-Yulius-Moved-To`, SPEC-466 MVC-030), the saved sign-in moves to the new URL, one line says
-/// so and `ask` runs once more there; a second move is the error it reads as.
+/// so and `ask` runs once more there; a second move is the error it reads as. A move onto a URL
+/// where another sign-in is saved is not followed (MVC-031).
 fn following<T>(
     opts: &RemoteOpts,
     ask: impl Fn(&Url, &RemoteClient) -> Result<T, RemoteError>,
@@ -288,21 +312,30 @@ fn following<T>(
     let (server, client) = client(opts)?;
     let to = match ask(&server, &client) {
         Err(RemoteError::Moved(to)) => to,
-        other => return other.map_err(|e| e.to_string()),
+        other => return other.map_err(|e| failed(&server, &e)),
     };
     let store = store()?;
-    store.relocate(&server, &to).map_err(|e| e.to_string())?;
-    eprintln!(
-        "yulius: {} moved to {}; the saved sign-in follows it.",
-        TokenStore::server_key(&server),
-        TokenStore::server_key(&to)
-    );
+    let (old, new) = (TokenStore::server_key(&server), TokenStore::server_key(&to));
+    match store.relocate(&server, &to).map_err(|e| e.to_string())? {
+        Relocated::Moved => {
+            eprintln!("yulius: {old} moved to {new}; the saved sign-in follows it.")
+        }
+        // Another command of this person followed the move meanwhile.
+        Relocated::NothingSaved => {}
+        Relocated::OtherSignIn => {
+            return Err(format!(
+                "{old} answers that it moved to {new}, where another sign-in is saved: not \
+                 followed, and nothing was changed. If both are one instance now, forget this \
+                 one: `yulius remote logout --server {old}`"
+            ));
+        }
+    }
     let token = store
         .load(&to)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("no token for {to}: run `yulius remote login {to}`"))?;
     let client = RemoteClient::new(&to, token).map_err(|e| e.to_string())?;
-    ask(&to, &client).map_err(|e| e.to_string())
+    ask(&to, &client).map_err(|e| failed(&to, &e))
 }
 
 /// `--project`, else the GitHub `origin` of the checkout around the current directory.
@@ -470,6 +503,19 @@ pub fn remote(action: RemoteAction, opts: &RemoteOpts) -> ExitCode {
 fn login(url: &str, token_stdin: bool) -> ExitCode {
     let result = (|| -> Result<String, String> {
         let server = parse_url(url)?;
+        // A sign-in that followed this URL's move elsewhere can come back without its token
+        // being typed (SPEC-466 MVC-032): the move was undone.
+        let store = store()?;
+        let followed = match store.moved_to(&server).map_err(|e| e.to_string())? {
+            Some(to) => {
+                let to = parse_url(&to)?;
+                store
+                    .load(&to)
+                    .map_err(|e| e.to_string())?
+                    .map(|token| (to, token))
+            }
+            None => None,
+        };
         let token = if token_stdin || !io::stdin().is_terminal() {
             let mut text = String::new();
             io::stdin()
@@ -478,13 +524,23 @@ fn login(url: &str, token_stdin: bool) -> ExitCode {
                 .map_err(|e| format!("cannot read the token: {e}"))?;
             text
         } else {
-            print!("Token for {server} (Settings → Connect your local agent): ");
+            let back = match &followed {
+                Some((to, _)) => format!(
+                    "; Enter alone takes back the sign-in that followed its move to {}",
+                    TokenStore::server_key(to)
+                ),
+                None => String::new(),
+            };
+            print!("Token for {server} (Settings → Connect your local agent{back}): ");
             io::stdout().flush().map_err(|e| e.to_string())?;
             console::Term::stdout()
                 .read_secure_line()
                 .map_err(|e| format!("cannot read the token: {e}"))?
         };
-        let token = Secret::new(token.trim().to_owned());
+        let (token, back) = match (token.trim(), followed) {
+            ("", Some((to, token))) => (token, Some(to)),
+            (typed, _) => (Secret::new(typed.to_owned()), None),
+        };
         if !token.expose().starts_with("yul_") {
             return Err("that is not a Yulius API token (they start with yul_)".into());
         }
@@ -495,10 +551,17 @@ fn login(url: &str, token_stdin: bool) -> ExitCode {
             }
             other => other.to_string(),
         })?;
-        store()?.save(&server, &token).map_err(|e| e.to_string())?;
+        store.save(&server, &token).map_err(|e| e.to_string())?;
         let meta = &info["_meta"];
+        let with = match back {
+            Some(to) => format!(
+                ", with the sign-in that had followed its move to {}",
+                TokenStore::server_key(&to)
+            ),
+            None => String::new(),
+        };
         Ok(format!(
-            "Signed in to {server} as {} ({} token). Try `yulius project list`.",
+            "Signed in to {server} as {} ({} token){with}. Try `yulius project list`.",
             meta["yulius/person"].as_str().unwrap_or("?"),
             meta["yulius/scope"].as_str().unwrap_or("?"),
         ))
