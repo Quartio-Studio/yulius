@@ -285,6 +285,8 @@ messages and documents say what the code does.
   The key is asked first; a finish found done names the way to the App's settings and the two
   values to register (the App's own link is known only to the instance), which is what #1184
   does whenever the new instance cannot be asked.
+- **No new ADR.** ADR-0297's decisions stand (the start is the point of no automatic return; the
+  inventory is the proof); these are corrections inside them.
 
 ## Evidence
 
@@ -430,7 +432,7 @@ callback: one conflict git merged without a word, see Decisions).
   a blocker or a major: `048ffc3e`, `37e344ee` (after its nits were fixed), `b2d73341` (the
   merge onto #1173's two units) and `59fe14fa` (the merge of #1184 and its findings fixed). It
   read every requirement against the code, made mutations in a copy of the tree (twelve, eleven,
-  eleven and twelve in the four rounds; all caught but one on a gap that was there before, see
+  thirteen and twelve in the four rounds; all caught but one on a gap that was there before, see
   #1179, and two on the guard of the cutover's "runs as before" line: the missing assertion
   below, and its "nothing was covered" half, which needs three rare things at once), ran the
   instance tests each time, and checked the documents and this section against the code, the
@@ -448,7 +450,7 @@ callback: one conflict git merged without a word, see Decisions).
     resolution): a failed thaw reported for a sessions unit the host does not have, a thaw sent
     to a server's unit on its way up, a frozen unit not named when the other's freeze failed,
     the freezes sent one after the other, three wordings and the fake's thaw of a starting unit:
-    fixed with tests in `59fe14fa`;
+    fixed in `59fe14fa`, with tests where code changed;
   - with the last approval: one missing assertion (a server's unit that does not run is not
     said to "run as before") and a block that tested one case twice: in the commit of this
     section, as the reviewer allowed beside it. Four cosmetic nits in this change's lines (two
