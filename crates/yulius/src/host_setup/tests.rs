@@ -238,17 +238,24 @@ impl Fake {
         self.load_directory();
     }
 
-    /// `apparmor_parser -r /etc/apparmor.d`: what a boot loads.
-    fn load_directory(&mut self) {
+    /// `apparmor_parser -r /etc/apparmor.d`: what a boot loads. `false` when it refuses a file
+    /// (one whose text says `# broken`); the others are loaded all the same.
+    fn load_directory(&mut self) -> bool {
         let enabled: Vec<PathBuf> = self
             .files
             .keys()
             .filter(|p| p.parent() == Some(Path::new(APPARMOR_D)))
             .cloned()
             .collect();
+        let mut read = true;
         for file in enabled {
-            self.load_profiles(&file);
+            if self.files[&file].0.contains("# broken") {
+                read = false;
+            } else {
+                self.load_profiles(&file);
+            }
         }
+        read
     }
 
     /// `apparmor_parser -r <file>`: `false` when a `disable/` link makes it skip the file.
@@ -730,9 +737,13 @@ impl Host for Fake {
             ["/usr/sbin/apparmor_parser", "-r", APPARMOR_D] => {
                 if self.parser_fails {
                     fail(1, "AppArmor parser error: Could not open 'abi/4.0'")
-                } else {
-                    self.load_directory();
+                } else if self.load_directory() {
                     ok("")
+                } else {
+                    fail(
+                        1,
+                        "AppArmor parser error: syntax error, unexpected end of file",
+                    )
                 }
             }
             ["/usr/sbin/apparmor_parser", "-r", file] => {

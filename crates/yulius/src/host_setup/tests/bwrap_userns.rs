@@ -686,6 +686,28 @@ fn an_unread_rule_that_fails_gets_no_second_profile() {
     );
 }
 
+/// BNS-012: a profile of someone else's that AppArmor refuses fails its boot too, and is none of
+/// this item's business: the directory's load says so by its exit status, the proof decides.
+#[test]
+fn a_broken_profile_of_someone_elses_does_not_stop_the_item() {
+    let mut fake = noble();
+    fake.file(
+        "/etc/apparmor.d/usr.bin.other",
+        "# broken\nprofile other /usr/bin/other {\n",
+    );
+    let lines = run(&mut fake, Mode::Setup);
+    assert_eq!(
+        item(&lines),
+        (
+            HostOutcome::Changed,
+            "wrote and loaded /etc/apparmor.d/yulius-bwrap, loaded the other profiles of \
+             /etc/apparmor.d as a boot does: bwrap starts a user namespace as yulius"
+        )
+    );
+    assert!(fake.ran("/usr/sbin/apparmor_parser -r /etc/apparmor.d"));
+    assert_eq!(fake.profiles.keys().collect::<Vec<_>>(), ["yulius-bwrap"]);
+}
+
 /// BNS-012: a person's profile for many programs gives way to one that names bwrap: Yulius's
 /// is written beside it, proven with both loaded, and stays.
 #[test]
