@@ -1,5 +1,6 @@
 //! Ports implemented by adapters and injected at composition.
 
+pub mod agent_cli;
 pub mod browser;
 pub mod egress;
 pub mod git;

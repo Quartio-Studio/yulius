@@ -135,6 +135,45 @@ pub fn lacks_default(missing: &[String]) -> bool {
     missing.iter().any(|model| model == DEFAULT_CLAUDE_MODEL)
 }
 
+/// How the host's Claude Code is updated by hand: runs get the newer of it and Yulius's copy.
+pub const HOST_INSTALL: &str = "sudo npm install -g @anthropic-ai/claude-code@latest";
+
+/// What is wrong with a Claude Code that does not know the default model, in one sentence
+/// (SPEC-461 CCM-007, CCM-008; the incident of 2026-11-11).
+#[must_use]
+pub fn default_model_problem(version: &str) -> String {
+    format!(
+        "Claude Code {version} does not know {DEFAULT_CLAUDE_MODEL}, Yulius's default model: \
+         tasks still ask for it by id, but what a session picks by itself (its model picker, a \
+         model alias, its subagents) is an older model"
+    )
+}
+
+/// How a Claude Code that does not know the default model is fixed, in one sentence: what
+/// Yulius does by itself on `channel`, and the host's way. `refused` is the newest release when
+/// the last check refused it for the same model: then no release knows it yet.
+#[must_use]
+pub fn default_model_fix(channel: Channel, refused: Option<&str>) -> String {
+    if let Some(newest) = refused {
+        return format!(
+            "No Claude Code release knows it yet ({newest}, the newest, was refused): the \
+             default model is ahead of Claude Code, so choose a model it knows for tasks until \
+             a release does"
+        );
+    }
+    match channel {
+        Channel::Off => format!(
+            "Claude Code updates are off: choose Latest in Settings, Instance, Claude Code, or \
+             install a newer one on the host: `{HOST_INSTALL}`"
+        ),
+        Channel::Stable | Channel::Latest => format!(
+            "Yulius installs a release that knows it at its next check (every hour, or \"Check \
+             now\" in Settings, Instance, Claude Code); to fix it at once, install one on the \
+             host: `{HOST_INSTALL}`"
+        ),
+    }
+}
+
 /// "2.1.311 does not know claude-fable-5-2 (Yulius's default model) and claude-opus-5-5".
 #[must_use]
 pub fn gap_text(version: &str, missing: &[String]) -> String {
@@ -308,6 +347,35 @@ mod tests {
             gap_text("2.1.322", &[]),
             "2.1.322 knows every model Yulius offers"
         );
+    }
+
+    /// SPEC-461 CCM-007: the fix names what Yulius does and the host's command, per channel.
+    #[test]
+    fn the_fix_names_what_happens_next_and_the_host_command() {
+        let problem = default_model_problem("2.1.311");
+        assert!(
+            problem.starts_with("Claude Code 2.1.311 does not know claude-fable-5-2"),
+            "{problem}"
+        );
+        for channel in [Channel::Latest, Channel::Stable] {
+            let fix = default_model_fix(channel, None);
+            assert!(fix.contains("at its next check"), "{fix}");
+            assert!(fix.contains("Check now"), "{fix}");
+            assert!(fix.contains(HOST_INSTALL), "{fix}");
+        }
+        let off = default_model_fix(Channel::Off, None);
+        assert!(
+            off.contains("updates are off") && off.contains("choose Latest"),
+            "{off}"
+        );
+        assert!(off.contains(HOST_INSTALL), "{off}");
+        // The newest release itself was refused: installing it on the host would not help.
+        let ahead = default_model_fix(Channel::Latest, Some("2.1.322"));
+        assert!(
+            ahead.contains("2.1.322, the newest, was refused"),
+            "{ahead}"
+        );
+        assert!(!ahead.contains(HOST_INSTALL), "{ahead}");
     }
 
     #[test]

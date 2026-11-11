@@ -21,7 +21,8 @@ use yulius_sandbox::manager::{
     IdleConfig, IsolationConfig, Joined, Manager, PrepareError, SandboxRequest, TICK,
 };
 
-use crate::wiring::claude_cli::{ClaudeUpdater, agent_cli_binds, start_updates};
+use crate::wiring::claude_cli::{ClaudeUpdater, agent_cli_binds};
+use crate::wiring::claude_service::ClaudeCode;
 
 /// Which containment contained runs use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -303,8 +304,9 @@ pub struct NamespaceIsolation {
     strict: bool,
     /// The host's Claude Code package, bound at its own path in every run.
     agent_cli: Option<PathBuf>,
-    /// Yulius's up-to-date copies of it, when updates are on (SPEC-421).
-    claude_root: Option<PathBuf>,
+    /// Yulius's up-to-date copies of it and the channel in effect (SPEC-421, SPEC-461): each
+    /// run binds as the channel says when it starts. Without it, the host's own.
+    claude: Option<Arc<ClaudeCode>>,
     /// Yulius's internal listener as a sandbox reaches it (the link test, SPEC-355 SLR-005).
     link_port: Option<u16>,
 }
@@ -317,16 +319,16 @@ impl NamespaceIsolation {
             manager,
             strict,
             agent_cli: agent_cli_dir(),
-            claude_root: None,
+            claude: None,
             link_port: None,
         }
     }
 
-    /// Runs get the newer of the host's Claude Code and Yulius's `current` under `root`
-    /// (SPEC-421 CCU-003).
+    /// Runs get the newer of the host's Claude Code and Yulius's `current`, as `claude`'s
+    /// channel says when each starts (SPEC-421 CCU-003, SPEC-461 CCM-009).
     #[must_use]
-    pub fn with_claude_updates(mut self, root: PathBuf) -> Self {
-        self.claude_root = Some(root);
+    pub fn with_claude_updates(mut self, claude: Arc<ClaudeCode>) -> Self {
+        self.claude = Some(claude);
         self
     }
 
@@ -359,10 +361,10 @@ impl NamespaceIsolation {
                     system_root: PathBuf::from(join.system_root),
                     hostname: join.hostname,
                     exec_shim: join.exec_shim.map(PathBuf::from),
-                    extra_binds: agent_cli_binds(
-                        self.agent_cli.as_deref(),
-                        self.claude_root.as_deref(),
-                    ),
+                    extra_binds: match &self.claude {
+                        Some(claude) => claude.binds(self.agent_cli.as_deref()),
+                        None => agent_cli_binds(self.agent_cli.as_deref(), None),
+                    },
                     private_dirs: join.private_dirs.iter().map(PathBuf::from).collect(),
                     system_passwd: joined.system_passwd,
                     system_group: joined.system_group,
@@ -713,15 +715,17 @@ pub async fn install(
     let claude_root = app.config.data_dir.join("claude-code");
     let mut isolation =
         NamespaceIsolation::new(Arc::clone(&manager), strict).with_link_port(internal_port);
-    if args.claude_updates != Channel::Off {
-        isolation = isolation.with_claude_updates(claude_root.clone());
-    }
-    app.set_isolation(Arc::new(isolation));
-    // Claude Code kept current for the runs (SPEC-421); the loop lives as long as the server.
+    // Claude Code kept current for the runs (SPEC-421, SPEC-461); the loop lives as long as the
+    // server.
     match ClaudeUpdater::new(claude_root, agent_cli_dir()) {
-        Ok(updater) => drop(start_updates(updater, args.claude_updates)),
+        Ok(updater) => {
+            let claude = ClaudeCode::new(updater, args.claude_updates, false);
+            isolation = isolation.with_claude_updates(Arc::clone(&claude));
+            drop(claude.start());
+        }
         Err(error) => tracing::warn!(%error, "Claude Code updates are unavailable"),
     }
+    app.set_isolation(Arc::new(isolation));
     let ticker = Arc::clone(&manager);
     tokio::spawn(async move {
         loop {

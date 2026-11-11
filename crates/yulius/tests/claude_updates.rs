@@ -15,12 +15,12 @@ use base64::Engine as _;
 use flate2::Compression;
 use flate2::write::GzEncoder;
 use sha2::{Digest, Sha512};
-use yulius::wiring::claude_cli::{
-    ClaudeUpdater, Outcome, agent_cli_binds, agent_cli_source, describe, start_updates_every,
-};
+use yulius::wiring::claude_cli::{ClaudeUpdater, Outcome, agent_cli_binds, agent_cli_source};
+use yulius::wiring::claude_service::{ClaudeCode, Health, StatusFile, doctor_line};
 use yulius::wiring::sandbox::parse_channel;
+use yulius_app::ports::agent_cli::{AgentCli as _, CheckResult, CliSource};
 use yulius_app::ports::session::Bind;
-use yulius_domain::agent_cli::{Channel, Version};
+use yulius_domain::agent_cli::{Channel, HOST_INSTALL, Version};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -205,6 +205,16 @@ fn host_install(root: &Path, version: &str) -> Result<PathBuf, Box<dyn std::erro
     // A host install that knows every offered model, as one installed from npm today does.
     std::fs::write(dir.join("bin/claude.exe"), binary(X86_64, version))?;
     Ok(dir)
+}
+
+/// The host package's manifest rewritten for `version` (a manual update of the host).
+fn host_install_manifest(host: &Path, version: &str) -> std::io::Result<()> {
+    std::fs::write(
+        host.join("package.json"),
+        format!(
+            r#"{{"name":"@anthropic-ai/claude-code","version":"{version}","bin":{{"claude":"bin/claude.exe"}}}}"#
+        ),
+    )
 }
 
 /// The host's Claude Code replaced by one that knows only `models` (same version).
@@ -527,53 +537,47 @@ async fn a_newer_host_install_wins_over_yulius_s() -> TestResult {
     Ok(())
 }
 
-/// CCU-001: the loop checks on its own, again after each period; `off` starts no loop.
+/// Another updater over the same directories and registry stub.
+fn updater_of(s: &Setup) -> Result<ClaudeUpdater, Box<dyn std::error::Error>> {
+    Ok(ClaudeUpdater::with_registry(
+        s.root.clone(),
+        Some(s.host.clone()),
+        s.updater.registry().to_owned(),
+        Some(PLATFORM.to_owned()),
+        false,
+    )?)
+}
+
+async fn until(what: &str, mut holds: impl FnMut() -> bool) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    while !holds() {
+        assert!(tokio::time::Instant::now() < deadline, "never: {what}");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+/// CCU-001: the loop checks on its own, again after each period; with `off` it asks nothing.
 #[tokio::test]
 async fn the_loop_installs_without_anyone_asking() -> TestResult {
     let s = setup("2.1.292").await?;
     s.stub.tag("stable", "2.1.311");
     s.stub.release("2.1.311", good("2.1.311")?);
-    let root = s.root.clone();
-    let updater = ClaudeUpdater::with_registry(
-        root.clone(),
-        Some(s.host.clone()),
-        s.updater.registry().to_owned(),
-        Some(PLATFORM.to_owned()),
-        false,
-    )?;
-    let looping = start_updates_every(
-        updater,
-        Channel::Stable,
-        Duration::ZERO,
-        Duration::from_millis(50),
-    )
-    .ok_or("a loop")?;
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-    while s.updater.current() != Some(v("2.1.311")) {
-        assert!(tokio::time::Instant::now() < deadline, "never installed");
-        tokio::task::yield_now().await;
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    let service = ClaudeCode::new(updater_of(&s)?, Channel::Stable, false);
+    let looping = service.start_every(Duration::ZERO, Duration::from_millis(50));
+    until("installed", || s.updater.current() == Some(v("2.1.311"))).await;
     // A later release is picked up by a later round.
     s.stub.tag("stable", "2.1.318");
     s.stub.release("2.1.318", good("2.1.318")?);
-    while s.updater.current() != Some(v("2.1.318")) {
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "never installed the next"
-        );
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    until("installed the next", || {
+        s.updater.current() == Some(v("2.1.318"))
+    })
+    .await;
     looping.abort();
 
-    let off = ClaudeUpdater::with_registry(
-        root,
-        Some(s.host.clone()),
-        s.updater.registry().to_owned(),
-        Some(PLATFORM.to_owned()),
-        false,
-    )?;
-    assert!(start_updates_every(off, Channel::Off, Duration::ZERO, Duration::ZERO).is_none());
+    let off = ClaudeCode::new(updater_of(&s)?, Channel::Off, false);
+    let asked = s.stub.requests.load(Ordering::SeqCst);
+    assert_eq!(off.check().await, None);
+    assert_eq!(s.stub.requests.load(Ordering::SeqCst), asked);
     assert_eq!(parse_channel("off"), Ok(Channel::Off));
     assert_eq!(parse_channel("latest"), Ok(Channel::Latest));
     assert!(parse_channel("nightly").is_err());
@@ -611,23 +615,278 @@ async fn runs_bind_the_chosen_version_at_the_host_package_path() -> TestResult {
 #[tokio::test]
 async fn the_doctor_names_the_version_runs_get() -> TestResult {
     let s = setup("2.1.292").await?;
-    let text = describe(&s.root, Some(&s.host), Channel::Stable);
+    let (health, text) = doctor_line(&s.root, Some(&s.host), Channel::Stable);
+    assert_eq!(health, Health::Ok, "{text}");
     assert!(text.starts_with("2.1.292 from the host"), "{text}");
+    assert!(text.contains("npm's `stable`"), "{text}");
     s.stub.tag("stable", "2.1.311");
     s.stub.release("2.1.311", good("2.1.311")?);
     s.updater.check(Channel::Stable).await?;
-    let text = describe(&s.root, Some(&s.host), Channel::Stable);
+    let (health, text) = doctor_line(&s.root, Some(&s.host), Channel::Stable);
+    assert_eq!(health, Health::Ok, "{text}");
     assert!(
         text.starts_with("2.1.311, kept current by Yulius in "),
         "{text}"
     );
     assert!(text.contains("the host has 2.1.292"), "{text}");
     // Off: runs bind the host's, whatever was installed before (review finding 7).
-    let text = describe(&s.root, Some(&s.host), Channel::Off);
+    let (health, text) = doctor_line(&s.root, Some(&s.host), Channel::Off);
+    assert_eq!(health, Health::Ok, "{text}");
     assert!(text.starts_with("2.1.292 from the host"), "{text}");
     assert!(text.contains("YULIUS_CLAUDE_UPDATES=off"), "{text}");
-    let text = describe(&s.root, None, Channel::Stable);
+    let (health, text) = doctor_line(&s.root, None, Channel::Stable);
+    assert_eq!(health, Health::Ok, "{text}");
     assert!(text.contains("no npm install of Claude Code"), "{text}");
+    Ok(())
+}
+
+/// SPEC-461 AC5: the doctor fails loudly on a Claude Code that does not know the default model,
+/// with the fix; warns about another gap and a refused release; and names the channel the
+/// server follows (chosen in Settings) over its own argument.
+#[tokio::test]
+async fn the_doctor_fails_on_a_claude_code_without_the_default_model() -> TestResult {
+    // The incident: runs get the host's 2.1.311, which knows Fable 5.1 only.
+    let s = setup("2.1.311").await?;
+    host_knows(&s.host, "2.1.311", &OFFERED[1..])?;
+    let (health, text) = doctor_line(&s.root, Some(&s.host), Channel::Latest);
+    assert_eq!(health, Health::Fail, "{text}");
+    assert!(text.starts_with("2.1.311 from the host"), "{text}");
+    assert!(
+        text.contains("Claude Code 2.1.311 does not know claude-fable-5-2, Yulius's default model"),
+        "{text}"
+    );
+    assert!(
+        text.contains("Fix: Yulius installs a release that knows it"),
+        "{text}"
+    );
+    assert!(text.contains(HOST_INSTALL), "{text}");
+    // Off: nothing is installed by itself, and the fix says so.
+    let (health, text) = doctor_line(&s.root, Some(&s.host), Channel::Off);
+    assert_eq!(health, Health::Fail, "{text}");
+    assert!(
+        text.contains("Claude Code updates are off: choose Latest"),
+        "{text}"
+    );
+
+    // The server's last check refused the newest release too: no release knows the model yet.
+    s.stub.tag("latest", "2.1.322");
+    s.stub
+        .release("2.1.322", knowing("2.1.322", &OFFERED[1..])?);
+    let service = ClaudeCode::new(updater_of(&s)?, Channel::Latest, true);
+    assert!(matches!(
+        service.check().await,
+        Some(CheckResult::Refused(_))
+    ));
+    let (health, text) = doctor_line(&s.root, Some(&s.host), Channel::Off);
+    assert_eq!(health, Health::Fail, "{text}");
+    // The channel is the server's (chosen in Settings), not this command's `off`.
+    assert!(
+        text.contains("npm's `latest` (chosen in Settings, Instance)"),
+        "{text}"
+    );
+    assert!(text.contains("2.1.322, the newest, was refused"), "{text}");
+    assert!(!text.contains(HOST_INSTALL), "{text}");
+
+    // A release that knows it arrives: the next check installs it and the doctor is content.
+    s.stub.release("2.1.322", good("2.1.322")?);
+    assert_eq!(
+        service.check().await,
+        Some(CheckResult::Installed(v("2.1.322")))
+    );
+    let (health, text) = doctor_line(&s.root, Some(&s.host), Channel::Latest);
+    assert_eq!(health, Health::Ok, "{text}");
+    assert!(
+        text.starts_with("2.1.322, kept current by Yulius"),
+        "{text}"
+    );
+
+    // Another offered model missing is a warning, not a failure.
+    host_knows(&s.host, "2.1.400", &OFFERED[..4])?;
+    host_install_manifest(&s.host, "2.1.400")?;
+    let (health, text) = doctor_line(&s.root, Some(&s.host), Channel::Latest);
+    assert_eq!(health, Health::Warn, "{text}");
+    assert!(
+        text.contains("2.1.400 does not know claude-haiku-4-5, which the composer offers"),
+        "{text}"
+    );
+    Ok(())
+}
+
+/// SPEC-461 CCM-006: every check is recorded, in memory for the Instance page and in the status
+/// file for the doctor: the channel, npm's tags, what it did and what the version in use knows.
+#[tokio::test]
+async fn every_check_is_recorded_for_the_page_and_the_doctor() -> TestResult {
+    let s = setup("2.1.311").await?;
+    host_knows(&s.host, "2.1.311", &OFFERED[1..])?;
+    s.stub.tag("stable", "2.1.311");
+    s.stub.tag("latest", "2.1.322");
+    s.stub
+        .release("2.1.322", knowing("2.1.322", &OFFERED[1..])?);
+    let service = ClaudeCode::new(updater_of(&s)?, Channel::Latest, false);
+    assert!(
+        StatusFile::read(&s.root).is_none(),
+        "nothing before a check"
+    );
+    let before = service.status().await;
+    assert_eq!(before.checked_at, None);
+    assert_eq!(before.result, None);
+    assert_eq!(before.version, Some(v("2.1.311")));
+    assert_eq!(before.source, Some(CliSource::Host));
+    assert_eq!(before.missing, Some(vec![OFFERED[0].to_owned()]));
+    assert_eq!(before.unmanaged, None);
+    assert_eq!(service.version_for_new_runs(), Some(v("2.1.311")));
+
+    // Refused: the release and the model are named.
+    let refused = CheckResult::Refused(vec![(v("2.1.322"), vec![OFFERED[0].to_owned()])]);
+    assert_eq!(service.check().await, Some(refused.clone()));
+    let status = service.status().await;
+    assert_eq!(status.result, Some(refused));
+    assert_eq!(
+        (status.latest, status.stable),
+        (Some(v("2.1.322")), Some(v("2.1.311")))
+    );
+    assert!(status.checked_at.is_some() && !status.checking);
+    let file = StatusFile::read(&s.root).ok_or("a status file")?;
+    assert_eq!(file.channel.as_deref(), Some("latest"));
+    assert!(!file.chosen);
+    assert_eq!(file.result.as_deref(), Some("refused"));
+    assert_eq!(file.refused.len(), 1);
+    assert_eq!(file.refused[0].version, "2.1.322");
+    assert_eq!(file.refused[0].missing, [OFFERED[0]]);
+    assert_eq!(file.in_use.as_deref(), Some("2.1.311"));
+    assert_eq!(file.in_use_missing, [OFFERED[0]]);
+    assert_eq!(file.latest.as_deref(), Some("2.1.322"));
+    assert!(leftovers(&s.root).iter().all(|name| name == "status.json"));
+
+    // Installed: runs get Yulius's copy, which knows every model.
+    s.stub.release("2.1.322", good("2.1.322")?);
+    assert_eq!(
+        service.check().await,
+        Some(CheckResult::Installed(v("2.1.322")))
+    );
+    let status = service.status().await;
+    assert_eq!(status.version, Some(v("2.1.322")));
+    assert_eq!(status.source, Some(CliSource::Yulius));
+    assert_eq!(status.host_version, Some(v("2.1.311")));
+    assert_eq!(status.missing, Some(Vec::new()));
+    let file = StatusFile::read(&s.root).ok_or("a status file")?;
+    assert_eq!(file.result.as_deref(), Some("installed"));
+    assert_eq!(file.version.as_deref(), Some("2.1.322"));
+    assert!(file.in_use_missing.is_empty() && file.refused.is_empty());
+    assert_eq!(service.version_for_new_runs(), Some(v("2.1.322")));
+
+    // Up to date, then a registry that fails: said, with npm's tags of the last good read.
+    assert_eq!(
+        service.check().await,
+        Some(CheckResult::UpToDate(v("2.1.322")))
+    );
+    s.stub.tag("latest", "not a version");
+    let failed = service.check().await;
+    assert!(
+        matches!(&failed, Some(CheckResult::Failed(why)) if why.contains("no plain version")),
+        "{failed:?}"
+    );
+    let file = StatusFile::read(&s.root).ok_or("a status file")?;
+    assert_eq!(file.result.as_deref(), Some("failed"));
+    assert!(file.error.is_some_and(|e| e.contains("no plain version")));
+    assert_eq!(file.stable.as_deref(), Some("2.1.311"));
+
+    // A server started later shows that last check before its own first one.
+    let restarted = ClaudeCode::new(updater_of(&s)?, Channel::Latest, false);
+    let shown = restarted.status().await;
+    assert_eq!(shown.result, failed);
+    assert_eq!(shown.checked_at, service.status().await.checked_at);
+    assert_eq!(shown.stable, Some(v("2.1.311")));
+    Ok(())
+}
+
+/// SPEC-461 CCM-009, CCM-010: a channel change applies to the next run's bind and is checked at
+/// once; "Check now" wakes the loop; a host without an npm install says why nothing is kept.
+#[tokio::test]
+async fn a_channel_change_and_check_now_take_effect_without_a_restart() -> TestResult {
+    let s = setup("2.1.292").await?;
+    s.stub.tag("stable", "2.1.311");
+    s.stub.tag("latest", "2.1.322");
+    s.stub.release("2.1.311", good("2.1.311")?);
+    s.stub.release("2.1.322", good("2.1.322")?);
+    let service = ClaudeCode::new(updater_of(&s)?, Channel::Off, false);
+    // An hour between checks: only a request makes one.
+    let looping = service.start_every(Duration::from_secs(3600), Duration::from_secs(3600));
+    let bind = |source: PathBuf| Bind {
+        source,
+        dest: s.host.clone(),
+        writable: false,
+    };
+    assert_eq!(service.binds(Some(&s.host)), [bind(s.host.clone())]);
+    assert!(service.binds(None).is_empty());
+
+    // Stable chosen in Settings: checked at once, and the next run binds Yulius's copy.
+    service.set_channel(Channel::Stable, true);
+    assert_eq!(service.channel(), (Channel::Stable, true));
+    until("stable installed", || {
+        s.updater.current() == Some(v("2.1.311"))
+    })
+    .await;
+    assert_eq!(
+        service.binds(Some(&s.host)),
+        [bind(s.root.join("versions/2.1.311").canonicalize()?)]
+    );
+    until("the status file names the channel", || {
+        StatusFile::read(&s.root).is_some_and(|file| {
+            file.channel.as_deref() == Some("stable")
+                && file.chosen
+                && file.result.as_deref() == Some("installed")
+        })
+    })
+    .await;
+
+    // Off again: the next run binds the host's own, whatever is installed.
+    service.set_channel(Channel::Off, true);
+    assert_eq!(service.binds(Some(&s.host)), [bind(s.host.clone())]);
+    assert_eq!(service.version_for_new_runs(), Some(v("2.1.292")));
+    until("off recorded", || {
+        StatusFile::read(&s.root).is_some_and(|file| file.channel.as_deref() == Some("off"))
+    })
+    .await;
+
+    // Latest from the configuration, then "Check now" for a release published since.
+    service.set_channel(Channel::Latest, false);
+    until("latest installed", || {
+        s.updater.current() == Some(v("2.1.322"))
+    })
+    .await;
+    until("the check ended", || !service.is_checking()).await;
+    s.stub.tag("latest", "2.1.323");
+    s.stub.release("2.1.323", good("2.1.323")?);
+    service.check_now();
+    until("the release published since", || {
+        s.updater.current() == Some(v("2.1.323"))
+    })
+    .await;
+    looping.abort();
+
+    // Without an npm install on the host nothing is kept current, and the status says why.
+    let bare = ClaudeUpdater::with_registry(
+        s.root.clone(),
+        None,
+        s.updater.registry().to_owned(),
+        Some(PLATFORM.to_owned()),
+        false,
+    )?;
+    let bare = ClaudeCode::new(bare, Channel::Latest, false);
+    let status = bare.status().await;
+    assert!(
+        status
+            .unmanaged
+            .as_deref()
+            .is_some_and(|why| why.contains("no npm install of Claude Code")),
+        "{status:?}"
+    );
+    assert_eq!(
+        (status.version, status.source, status.missing),
+        (None, None, None)
+    );
+    assert_eq!(bare.version_for_new_runs(), None);
     Ok(())
 }
 

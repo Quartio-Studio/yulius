@@ -15,6 +15,9 @@
 //! package script. On `stable`, `latest`'s release is taken when neither the version in use nor
 //! stable's release knows the default model (CCM-004).
 //!
+//! **When.** [`crate::wiring::claude_service`] runs the checks, holds the channel in effect and
+//! records what each check did (SPEC-461).
+//!
 //! **Use.** [`agent_cli_source`] says which directory a run binds at the host package's path:
 //! chosen when the run starts, so a running process keeps its binary and the next start gets
 //! the new one. Subscriptions are untouched (their tokens reach runs as
@@ -51,7 +54,7 @@ const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 /// Largest registry document read.
 const MAX_DOCUMENT: usize = 1024 * 1024;
 /// Names of temporary entries in the updater's directory, removed by the next check.
-const TEMPORARY: [&str; 2] = [".staging-", ".current-"];
+const TEMPORARY: [&str; 3] = [".staging-", ".current-", ".status-"];
 
 /// What a check did.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,6 +71,17 @@ pub enum Outcome {
     UpToDate(Version),
     /// This version was installed and is now current.
     Installed(Version),
+}
+
+/// What one check did and saw.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Checked {
+    /// What it did, or why it installed nothing.
+    pub result: Result<Outcome, UpdateError>,
+    /// npm's `latest`, when the registry was read.
+    pub latest: Option<Version>,
+    /// npm's `stable`, when the registry was read.
+    pub stable: Option<Version>,
 }
 
 /// A release that was not taken because it does not know the default model (SPEC-461 CCM-003).
@@ -213,10 +227,64 @@ impl ClaudeUpdater {
         &self.registry
     }
 
+    /// The directory of Yulius's copies, `<data>/claude-code`.
+    #[must_use]
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
     /// Yulius's current version, when one is installed.
     #[must_use]
     pub fn current(&self) -> Option<Version> {
         current_version(&self.root)
+    }
+
+    /// Why Yulius keeps nothing current on this host, when it does not (SPEC-421 CCU-005).
+    #[must_use]
+    pub fn unmanaged(&self) -> Option<&'static str> {
+        match self.host_dir.as_deref() {
+            None => Some(
+                "there is no npm install of Claude Code on the host to bind over, so isolated \
+                 sandboxes have none: install it once with `npm install -g \
+                 @anthropic-ai/claude-code`",
+            ),
+            Some(_) if self.platform.is_none() => {
+                Some("no Claude Code package is published for this platform")
+            }
+            Some(host_dir) if !host_layout_ok(host_dir) => Some(
+                "the host's Claude Code is not laid out as bin/claude.exe, so it is left to the \
+                 host",
+            ),
+            Some(_) => None,
+        }
+    }
+
+    /// The host's own version.
+    #[must_use]
+    pub fn host(&self) -> Option<Version> {
+        self.host_dir.as_deref().and_then(host_version)
+    }
+
+    /// The Claude Code a run starting now gets on `channel`: its version, when its package
+    /// names one, and whether it is the host's own (`off`, or a host as new as Yulius's copy).
+    /// `None` without a host package: sandboxes have no Claude Code then.
+    #[must_use]
+    pub fn in_use(&self, channel: Channel) -> Option<(Option<Version>, bool)> {
+        let host_dir = self.host_dir.as_deref()?;
+        let source = source_for(channel, &self.root, host_dir);
+        if source == host_dir {
+            Some((host_version(host_dir), true))
+        } else {
+            Some((self.current(), false))
+        }
+    }
+
+    /// The offered models the Claude Code a run starting now gets on `channel` does not know;
+    /// `None` without one, or when its binary cannot be read (SPEC-461 CCM-005).
+    pub async fn missing(&self, channel: Channel) -> Option<Vec<String>> {
+        let host_dir = self.host_dir.as_deref()?;
+        self.missing_in(source_for(channel, &self.root, host_dir).join(BINARY))
+            .await
     }
 
     /// One check of `channel`: installs a newer release and makes it current.
@@ -225,6 +293,25 @@ impl ClaudeUpdater {
     /// The registry could not be read or the release was refused; the current version is left
     /// as it was.
     pub async fn check(&self, channel: Channel) -> Result<Outcome, UpdateError> {
+        self.check_tagged(channel).await.result
+    }
+
+    /// [`Self::check`], with npm's `latest` and `stable` as this check read them.
+    pub async fn check_tagged(&self, channel: Channel) -> Checked {
+        let mut checked = Checked {
+            result: Ok(Outcome::Off),
+            latest: None,
+            stable: None,
+        };
+        checked.result = self.check_into(channel, &mut checked).await;
+        checked
+    }
+
+    async fn check_into(
+        &self,
+        channel: Channel,
+        seen: &mut Checked,
+    ) -> Result<Outcome, UpdateError> {
         let Some(tag) = channel.dist_tag() else {
             return Ok(Outcome::Off);
         };
@@ -250,6 +337,8 @@ impl ClaudeUpdater {
                 .and_then(Value::as_str)
                 .and_then(Version::parse)
         };
+        seen.latest = tagged("latest");
+        seen.stable = tagged("stable");
         let Some(offered) = tagged(tag) else {
             return fail(format!("the registry names no plain version as `{tag}`"));
         };
@@ -293,7 +382,11 @@ impl ClaudeUpdater {
     /// The offered models the Claude Code runs get does not know (the newer of the host's and
     /// Yulius's `current`); `None` when its binary cannot be read.
     pub async fn in_use_missing(&self, host_dir: &Path) -> Option<Vec<String>> {
-        let binary = agent_cli_source(&self.root, host_dir).join(BINARY);
+        self.missing_in(agent_cli_source(&self.root, host_dir).join(BINARY))
+            .await
+    }
+
+    async fn missing_in(&self, binary: PathBuf) -> Option<Vec<String>> {
         let known = Arc::clone(&self.known);
         // About 340 MB the first time for a file.
         tokio::task::spawn_blocking(move || known.missing(&binary))
@@ -554,44 +647,6 @@ pub const FIRST_CHECK_AFTER: Duration = Duration::from_secs(120);
 /// Checks after it.
 pub const CHECK_EVERY: Duration = Duration::from_secs(3600);
 
-/// Checks `channel` [`FIRST_CHECK_AFTER`] a start and every [`CHECK_EVERY`] after; `None`
-/// (no loop) when the channel is `off`.
-#[must_use]
-pub fn start_updates(
-    updater: ClaudeUpdater,
-    channel: Channel,
-) -> Option<tokio::task::JoinHandle<()>> {
-    start_updates_every(updater, channel, FIRST_CHECK_AFTER, CHECK_EVERY)
-}
-
-/// [`start_updates`] with other periods (tests).
-#[must_use]
-pub fn start_updates_every(
-    updater: ClaudeUpdater,
-    channel: Channel,
-    first: Duration,
-    every: Duration,
-) -> Option<tokio::task::JoinHandle<()>> {
-    if channel == Channel::Off {
-        tracing::info!("Claude Code updates are off: runs use the host's Claude Code");
-        return None;
-    }
-    Some(tokio::spawn(async move {
-        tokio::time::sleep(first).await;
-        loop {
-            // Each request and the download have their own deadline.
-            match updater.check(channel).await {
-                Ok(Outcome::Installed(version)) => {
-                    tracing::info!(%version, "Claude Code updated: new runs use it");
-                }
-                Ok(outcome) => tracing::debug!(?outcome, "Claude Code update check"),
-                Err(error) => tracing::warn!(%error, "Claude Code was not updated"),
-            }
-            tokio::time::sleep(every).await;
-        }
-    }))
-}
-
 /// The read-only bind of the agent CLI in a run: at the host package's path `host_dir`, from
 /// [`agent_cli_source`] under `root` when updates are on, else from the host's package; none
 /// without a host package (CCU-005).
@@ -611,9 +666,11 @@ pub fn agent_cli_binds(host_dir: Option<&Path>, root: Option<&Path>) -> Vec<Bind
     }]
 }
 
-/// Which Claude Code isolated runs get and where it comes from, for `yulius doctor` (CCU-006).
+/// Which Claude Code isolated runs get on `channel` and where it comes from, in the doctor's
+/// words (CCU-006); `chosen` says the channel was chosen in Settings, not the server's
+/// configuration.
 #[must_use]
-pub fn describe(root: &Path, host_dir: Option<&Path>, channel: Channel) -> String {
+pub fn describe(root: &Path, host_dir: Option<&Path>, channel: Channel, chosen: bool) -> String {
     let Some(host_dir) = host_dir else {
         return "no npm install of Claude Code on the host to bind over: isolated sandboxes \
                 have none, and nothing is updated (docs/operations.md §1)"
@@ -621,9 +678,14 @@ pub fn describe(root: &Path, host_dir: Option<&Path>, channel: Channel) -> Strin
     };
     let host =
         host_version(host_dir).map_or_else(|| "an unknown version".into(), |v| v.to_string());
+    let set_by = if chosen {
+        "chosen in Settings, Instance".to_owned()
+    } else {
+        format!("YULIUS_CLAUDE_UPDATES={}", channel.as_str())
+    };
     if channel == Channel::Off {
         return format!(
-            "{host} from the host ({}); updates are off (YULIUS_CLAUDE_UPDATES=off)",
+            "{host} from the host ({}); updates are off ({set_by})",
             host_dir.display()
         );
     }
@@ -635,14 +697,27 @@ pub fn describe(root: &Path, host_dir: Option<&Path>, channel: Channel) -> Strin
     }
     match current_version(root) {
         Some(ours) if agent_cli_source(root, host_dir) != host_dir => format!(
-            "{ours}, kept current by Yulius in {} (the host has {host})",
-            root.display()
+            "{ours}, kept current by Yulius in {} (the host has {host}), following npm's `{}` \
+             ({set_by})",
+            root.display(),
+            channel.as_str()
         ),
         _ => format!(
-            "{host} from the host ({}); Yulius installs a newer release unless \
-             YULIUS_CLAUDE_UPDATES=off",
-            host_dir.display()
+            "{host} from the host ({}); Yulius installs a newer release of npm's `{}` ({set_by})",
+            host_dir.display(),
+            channel.as_str()
         ),
+    }
+}
+
+/// The directory a run starting now binds on `channel`: the host's own with `off`, else
+/// [`agent_cli_source`].
+#[must_use]
+pub fn source_for(channel: Channel, root: &Path, host_dir: &Path) -> PathBuf {
+    if channel == Channel::Off {
+        host_dir.to_path_buf()
+    } else {
+        agent_cli_source(root, host_dir)
     }
 }
 
@@ -749,7 +824,7 @@ fn encoded(package: &str) -> String {
     package.replace('/', "%2F")
 }
 
-fn unique_suffix() -> String {
+pub(crate) fn unique_suffix() -> String {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos());

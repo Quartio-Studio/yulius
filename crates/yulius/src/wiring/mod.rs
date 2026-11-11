@@ -3,6 +3,7 @@
 pub mod browser;
 pub mod claude_cli;
 pub mod claude_models;
+pub mod claude_service;
 pub mod clock;
 pub mod egress;
 pub mod git;
