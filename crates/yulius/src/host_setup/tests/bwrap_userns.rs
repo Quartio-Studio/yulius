@@ -552,9 +552,7 @@ fn an_unread_rule_is_found_by_what_it_does() {
         item(&lines),
         (
             HostOutcome::Changed,
-            "loaded the profiles of /etc/apparmor.d as a boot does: bwrap starts a user \
-             namespace as yulius with a profile there that Yulius did not write; Yulius's own, \
-             which AppArmor does not apply beside it, was taken back"
+            "loaded the profiles of /etc/apparmor.d as a boot does: bwrap starts a user namespace as yulius with a profile that Yulius did not write; Yulius's own, which AppArmor does not apply beside it, was taken back"
         )
     );
     assert!(passed(&lines), "{lines:#?}");
@@ -583,11 +581,7 @@ fn an_unread_rule_is_found_by_what_it_does() {
         item(&lines),
         (
             HostOutcome::Changed,
-            "disabled Ubuntu's AppArmor profile bwrap-userns-restrict (a link in \
-             /etc/apparmor.d/disable; its file is untouched), loaded the profiles of \
-             /etc/apparmor.d as a boot does: bwrap starts a user namespace as yulius with a \
-             profile there that Yulius did not write; Yulius's own, which AppArmor does not \
-             apply beside it, was taken back"
+            "disabled Ubuntu's AppArmor profile bwrap-userns-restrict (a link in /etc/apparmor.d/disable; its file is untouched), loaded the profiles of /etc/apparmor.d as a boot does: bwrap starts a user namespace as yulius with a profile that Yulius did not write; Yulius's own, which AppArmor does not apply beside it, was taken back"
         )
     );
     assert!(!fake.has(PROFILE_FILE) && fake.links.contains_key(Path::new(SHIPPED_LINK)));
@@ -602,11 +596,7 @@ fn an_unread_rule_is_found_by_what_it_does() {
 #[test]
 fn an_unread_rule_that_fails_gets_no_second_profile() {
     let confined = UNREAD_TEXT.replace(" flags=(unconfined)", "");
-    let rival = "where another profile of /etc/apparmor.d is for /usr/bin/bwrap, AppArmor \
-                 applies neither it nor Yulius's (the kernel's log says \"conflicting profile \
-                 attachments\"): disable that profile (`sudo ln -s <its file> \
-                 /etc/apparmor.d/disable/ && sudo /usr/sbin/apparmor_parser -R <its file>`), \
-                 then run `sudo yulius host setup` again";
+    let rival = "where another profile of /etc/apparmor.d is for /usr/bin/bwrap, AppArmor applies neither it nor Yulius's: disable that profile (`sudo ln -s <its file> /etc/apparmor.d/disable/ && sudo /usr/sbin/apparmor_parser -R <its file>`), then run `sudo yulius host setup` again";
     let mut fake = noble();
     fake.file(HAND_WRITTEN, &confined);
     fake.reboot();
@@ -679,14 +669,7 @@ fn an_unread_rule_that_fails_gets_no_second_profile() {
         item(&lines),
         (
             HostOutcome::Failed,
-            "loaded /etc/apparmor.d/yulius-bwrap, loaded the other profiles of /etc/apparmor.d \
-             as a boot does, but bwrap still cannot start a user namespace as yulius: bwrap: \
-             setting up uid map: Permission denied; where another profile of /etc/apparmor.d is \
-             for /usr/bin/bwrap, AppArmor applies neither it nor Yulius's (the kernel's log says \
-             \"conflicting profile attachments\"): disable that profile (`sudo ln -s <its file> \
-             /etc/apparmor.d/disable/ && sudo /usr/sbin/apparmor_parser -R <its file>`) or take \
-             Yulius's away (`sudo /usr/sbin/apparmor_parser -R /etc/apparmor.d/yulius-bwrap && \
-             sudo rm /etc/apparmor.d/yulius-bwrap`), then run `sudo yulius host setup` again"
+            "loaded /etc/apparmor.d/yulius-bwrap, loaded the other profiles of /etc/apparmor.d as a boot does, but bwrap still cannot start a user namespace as yulius: bwrap: setting up uid map: Permission denied; where another profile of /etc/apparmor.d is for /usr/bin/bwrap, AppArmor applies neither it nor Yulius's: disable that profile (`sudo ln -s <its file> /etc/apparmor.d/disable/ && sudo /usr/sbin/apparmor_parser -R <its file>`) or take Yulius's away (`sudo /usr/sbin/apparmor_parser -R /etc/apparmor.d/yulius-bwrap && sudo rm /etc/apparmor.d/yulius-bwrap`), then run `sudo yulius host setup` again"
         )
     );
     assert_eq!(fake.text(PROFILE_FILE), Some(PROFILE));

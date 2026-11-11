@@ -215,9 +215,8 @@ fn rival(ours: bool) -> String {
     };
     format!(
         "where another profile of {DIR} is for /usr/bin/bwrap, AppArmor applies neither it nor \
-         Yulius's (the kernel's log says \"conflicting profile attachments\"): disable that \
-         profile (`sudo ln -s <its file> {DIR}/disable/ && sudo {PARSER} -R <its file>`)\
-         {or_ours}, then run `sudo yulius host setup` again"
+         Yulius's: disable that profile (`sudo ln -s <its file> {DIR}/disable/ && sudo {PARSER} \
+         -R <its file>`){or_ours}, then run `sudo yulius host setup` again"
     )
 }
 
@@ -456,8 +455,8 @@ impl Run<'_> {
                 ITEM,
                 &format!(
                     "{kept}loaded the profiles of {DIR} as a boot does: bwrap starts a user \
-                     namespace as {user} with a profile there that Yulius did not write; \
-                     Yulius's own, which AppArmor does not apply beside it, was taken back"
+                     namespace as {user} with a profile that Yulius did not write; Yulius's \
+                     own, which AppArmor does not apply beside it, was taken back"
                 ),
                 "",
             );

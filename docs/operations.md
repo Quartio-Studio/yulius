@@ -649,8 +649,8 @@ and run the setup again. Yulius knows such a profile by its text only in the pla
 (`profile bwrap /usr/bin/bwrap …`). One in any other spelling (an alternation, a pattern, an
 `alias`, a variable) it finds by what it does: with its own profile, setup loads every other
 profile of `/etc/apparmor.d` as a boot does (`apparmor_parser -r /etc/apparmor.d`) and proves
-bwrap then. AppArmor applies neither of two profiles that name one program (the kernel logs
-"conflicting profile attachments"), so where bwrap does not start, setup takes its own profile
+bwrap then. AppArmor applies neither of two profiles that name one program (the kernel's log may
+say "conflicting profile attachments"), so where bwrap does not start, setup takes its own profile
 back: the person's is adopted if bwrap starts with it alone; if not, the host is left as it was
 and the line says how to disable the second profile. A profile for many programs (`/usr/bin/*`)
 is no such second profile: AppArmor prefers the one that names the path.
