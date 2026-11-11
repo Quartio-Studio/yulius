@@ -287,6 +287,7 @@ pub fn usage_view(usage: &AccountUsage) -> AccountUsageView {
         secondary: usage.secondary.as_ref().map(window_view),
         weekly_opus: usage.weekly_opus.as_ref().map(window_view),
         weekly_sonnet: usage.weekly_sonnet.as_ref().map(window_view),
+        weekly_fable: usage.weekly_fable.as_ref().map(window_view),
         observed_at: usage.observed_at.map(rfc3339),
     }
 }
@@ -654,7 +655,16 @@ impl App {
             .ok_or_else(|| UsageFailure::new("the stored credential cannot be read"))?;
         match self.deps.usage.fetch(account.provider, &credential).await {
             Ok(mut usage) => {
-                usage.observed_at = Some(self.now());
+                let now = self.now();
+                usage.observed_at = Some(now);
+                // A reading shows the 5-hour and weekly windows only: a model's own window (a
+                // limit Claude reported for it) stays until its reset (SPEC-464). What is
+                // stored is read now: a limit may have been recorded during the request (#72).
+                let stored = match self.deps.store.account(&account.id).await {
+                    Ok(Some(current)) => account_usage(&current),
+                    _ => account_usage(account),
+                };
+                let usage = usage.keeping_unread(&stored, now);
                 self.record_account_usage(&account.id, &usage).await;
                 self.record_usage_samples(&account.id, &usage, crate::model::USAGE_FROM_PROBE)
                     .await;

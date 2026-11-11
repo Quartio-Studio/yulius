@@ -69,6 +69,10 @@ pub struct AccountUsageView {
     /// Weekly cap of Sonnet models (`seven_day_sonnet`), when the provider reports it.
     #[serde(default)]
     pub weekly_sonnet: Option<UsageWindowView>,
+    /// Weekly allowance of usage credits the Fable models run on, once Claude reported it used
+    /// up: at 100 % until `resets_at` (SPEC-464).
+    #[serde(default)]
+    pub weekly_fable: Option<UsageWindowView>,
     /// When the snapshot was observed.
     pub observed_at: Option<String>,
 }

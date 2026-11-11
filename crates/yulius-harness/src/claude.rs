@@ -1413,6 +1413,15 @@ mod tests {
                 at: None,
             }]
         );
+        // The typed kind alone, whatever the words (Claude Code's own advice: key on the kind,
+        // the text may change).
+        assert_eq!(
+            scope_and_reset(&record(
+                serde_json::json!({"apiError": "model_requires_usage_credits"}),
+                "This model needs credits you do not have.",
+            )),
+            Some((LimitScope::Model(None), None))
+        );
         // Only the text says so (a CLI without the typed kind), in each of Claude Code's wordings.
         for worded in [
             text,

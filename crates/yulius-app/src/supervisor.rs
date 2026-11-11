@@ -24,7 +24,7 @@ use yulius_domain::task::{
     Activity, AttemptState, STOP_INTERRUPT_GRACE_MS, StopReason, TaskEvent, TaskStatus,
 };
 use yulius_domain::time::Timestamp;
-use yulius_domain::usage::{AccountUsage, UsageWindow};
+use yulius_domain::usage::{AccountUsage, ModelFamily, ReportedLimit};
 
 use crate::auth::hex_token;
 use crate::context::App;
@@ -44,8 +44,8 @@ use crate::usage_json;
 /// Boxed `Send` future (breaks recursive async cycles between start, pump and finalize).
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
-/// The provider's short (session) window in minutes; longer limits are the secondary window.
-const SESSION_WINDOW_MINUTES: u32 = 5 * 60;
+/// A usage window that is used up, in percent.
+const FULL_PERCENT: f64 = 100.0;
 
 /// Default PTY size before the first viewer reports its size.
 pub const DEFAULT_SIZE: (u16, u16) = (120, 40);
@@ -3116,14 +3116,16 @@ impl App {
             .await
     }
 
-    /// Records a usage limit the CLI reported on `account`: what the CLI was told is the
-    /// account's state (ROT-009), the limited window full until its reset, even when the
-    /// provider's usage request does not answer. Shared by tasks and the Cockpit (SPEC-074).
+    /// Records a usage limit the CLI reported on `account` to a session that runs a model of
+    /// `family`: what the CLI was told is the account's state (ROT-009), the limited window full
+    /// until its reset, even when the provider's usage request does not answer. A limit of one
+    /// model family fills that family's own window, never the subscription's week (SPEC-464,
+    /// [`AccountUsage::record_limit`]). Shared by tasks and the Cockpit (SPEC-074).
     pub(crate) async fn record_limit(
         &self,
         account: &AccountId,
-        resets_at: Option<Timestamp>,
-        window_minutes: Option<u32>,
+        limit: ReportedLimit,
+        family: ModelFamily,
     ) {
         let mut usage = match self.deps.store.account(account).await {
             Ok(Some(a)) => a
@@ -3133,21 +3135,7 @@ impl App {
                 .unwrap_or_default(),
             _ => AccountUsage::default(),
         };
-        usage.limit_reached = true;
-        usage.limit_resets_at = resets_at;
-        usage.observed_at = Some(self.now());
-        let full = |minutes: u32| UsageWindow {
-            used_percent: Some(100.0),
-            window_minutes: Some(minutes),
-            resets_at,
-        };
-        match window_minutes {
-            Some(minutes) if minutes <= SESSION_WINDOW_MINUTES => {
-                usage.primary = Some(full(minutes));
-            }
-            Some(minutes) => usage.secondary = Some(full(minutes)),
-            None => {}
-        }
+        usage.record_limit(limit, family, self.now());
         self.record_account_usage(account, &usage).await;
     }
 
@@ -3800,8 +3788,14 @@ impl App {
         Ok(())
     }
 
-    /// Account usage update from transcripts or providers.
+    /// Account usage update from transcripts or providers. The subscription reads `limited`
+    /// while the default model cannot run on it: a limit Claude reported is in effect, or a
+    /// window that binds that model is used up (SPEC-464).
     pub(crate) async fn record_account_usage(&self, account: &AccountId, usage: &AccountUsage) {
+        let now = self.now();
+        // A per-model window whose reset passed says nothing about the one that began.
+        let usage = &usage.without_reset_model_windows(now);
+        let family = crate::capacity::default_family();
         // A reading never makes a subscription that needs a new sign-in usable again: a
         // cancelled one can still report usage (or a late transcript line can), and only a
         // sign-in proves it works.
@@ -3820,7 +3814,7 @@ impl App {
         let kept_error = needs_sign_in.as_ref().and_then(|(_, error)| error.clone());
         let status = if let Some((status, _)) = needs_sign_in {
             status
-        } else if usage.limit_in_effect(self.now()) {
+        } else if usage.exhausted_for(now, FULL_PERCENT, family) {
             AccountStatus::Limited
         } else {
             AccountStatus::Ok
@@ -3829,19 +3823,13 @@ impl App {
         let _ = self
             .deps
             .store
-            .set_account_state(
-                account,
-                status,
-                Some(&json),
-                kept_error.as_deref(),
-                self.now(),
-            )
+            .set_account_state(account, status, Some(&json), kept_error.as_deref(), now)
             .await;
         // New usage may let paused tasks resume, or pause the pool (ROT-010).
         self.capacity_changed();
         // At or above the threshold: tasks on this account rotate at their next turn boundary
         // (ROT-003); with hooks the Stop hook decides this itself.
-        if usage.exhausted(self.now(), rotation::THRESHOLD)
+        if usage.exhausted_for(now, rotation::THRESHOLD, family)
             && let Ok(live) = self.deps.store.live_attempts().await
         {
             for attempt in live
@@ -4122,13 +4110,20 @@ impl App {
                 resets_at,
                 message,
                 window_minutes,
+                scope,
                 ..
             } => {
-                tracing::info!(task = %task_id, %message, "usage limit reached");
+                tracing::info!(task = %task_id, %message, ?scope, "usage limit reached");
                 runtime.end_turn(self.now());
                 runtime.at_limit.store(true, Ordering::SeqCst);
                 if let Some(account) = &attempt.account_id {
-                    self.record_limit(account, resets_at, window_minutes).await;
+                    let limit = ReportedLimit {
+                        scope,
+                        window_minutes,
+                        resets_at,
+                    };
+                    let family = self.task_family(task_id).await;
+                    self.record_limit(account, limit, family).await;
                 }
                 runtime
                     .limit_resets_at

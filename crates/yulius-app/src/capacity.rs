@@ -175,6 +175,21 @@ fn healthy(status: AccountStatus) -> bool {
     matches!(status, AccountStatus::Ok | AccountStatus::Limited)
 }
 
+/// The family of the model a task runs when it names none: the default model's (Fable 5.2,
+/// whose weekly allowance of usage credits binds it, SPEC-464).
+#[must_use]
+pub(crate) fn default_family() -> ModelFamily {
+    ModelFamily::of(Some(yulius_domain::harness::DEFAULT_CLAUDE_MODEL))
+}
+
+/// The family of the model `task` runs.
+#[must_use]
+pub(crate) fn family_of(task: &TaskRecord) -> ModelFamily {
+    task.model
+        .as_deref()
+        .map_or_else(default_family, |model| ModelFamily::of(Some(model)))
+}
+
 impl App {
     /// Wakes the resume loop: usage changed, an account was added or removed, a task paused.
     pub fn capacity_changed(&self) {
@@ -194,16 +209,21 @@ impl App {
         Ok(RotationInput {
             current,
             task_provider: task.harness.provider(),
-            // A task without a model runs the default, Fable 5.2: no per-model weekly cap binds.
-            family: ModelFamily::of(Some(
-                task.model
-                    .as_deref()
-                    .unwrap_or(yulius_domain::harness::DEFAULT_CLAUDE_MODEL),
-            )),
+            // A task without a model runs the default, Fable 5.2.
+            family: family_of(task),
             accounts: self.account_views().await?,
             now: self.now(),
             threshold: rotation::THRESHOLD,
         })
+    }
+
+    /// The family of the model the task `task_id` runs; the default model's when the task cannot
+    /// be read.
+    pub(crate) async fn task_family(&self, task_id: &TaskId) -> ModelFamily {
+        match self.deps.store.task(task_id).await {
+            Ok(Some(task)) => family_of(&task),
+            _ => default_family(),
+        }
     }
 
     /// The subscription a run outside any task (a split proposal, a Cockpit) runs on: the best
@@ -766,8 +786,9 @@ impl App {
         let mut available = 0_u32;
         for record in &records {
             let usage = account_usage(record);
+            // For a task of the default model: its own weekly window binds too (SPEC-464).
             let is_available = views.iter().any(|v| {
-                v.id == record.id && rotation::assess(v, now, threshold, ModelFamily::Any).is_some()
+                v.id == record.id && rotation::assess(v, now, threshold, default_family()).is_some()
             });
             if is_available {
                 available += 1;
@@ -837,7 +858,7 @@ impl App {
                 rotation::available_again(&RotationInput {
                     current: None,
                     task_provider: yulius_domain::harness::Provider::Anthropic,
-                    family: ModelFamily::Any,
+                    family: default_family(),
                     accounts: views.clone(),
                     now,
                     threshold,

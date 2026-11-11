@@ -52,6 +52,16 @@ impl UsageProbe for FakeProbe {
         if credential.expose() == "setup-token" {
             return Err(UsageFailure::not_shared());
         }
+        if credential.expose() == "full" {
+            return Ok(AccountUsage {
+                primary: Some(UsageWindow {
+                    used_percent: Some(100.0),
+                    window_minutes: Some(300),
+                    resets_at: Some(Timestamp(4_000_000_000_000)),
+                }),
+                ..AccountUsage::default()
+            });
+        }
         match provider {
             Provider::Anthropic => Ok(AccountUsage {
                 primary: Some(UsageWindow {
@@ -173,6 +183,77 @@ async fn admins_refresh_provider_usage_and_see_observed_tokens() -> TestResult {
         "usage: Claude did not accept this subscription's sign-in. If its tasks fail too, sign in again."
     );
     assert!(expired["tokens_7d"].is_object(), "token totals in the list");
+    Ok(())
+}
+
+/// SPEC-464 UCL-004, UCL-005, UCL-009: a model's limit stored for a subscription survives a
+/// usage reading, which cannot see it; the API shows it as the model's weekly window beside the
+/// subscription's own usage, and the subscription reads `limited` while the default model cannot
+/// run on it. An allowance whose reset passed is dropped, and a window read at 100 % makes the
+/// subscription `limited` like a limit Claude reported.
+#[tokio::test]
+async fn a_reading_keeps_a_models_limit_and_the_status_follows_the_windows() -> TestResult {
+    let h = harness_with(HarnessOptions {
+        usage: Some(Arc::new(FakeProbe)),
+        ..HarnessOptions::default()
+    })?;
+    let admin = setup_superadmin_creds(&h).await?;
+    let fable_full = |resets_at: i64| {
+        format!(
+            r#"{{"secondary":{{"used_percent":100.0,"window_minutes":10080,"resets_at":null}},"weekly_fable":{{"used_percent":100.0,"window_minutes":10080,"resets_at":{resets_at}}}}}"#
+        )
+    };
+    for (id, credential, stored) in [
+        ("a-out", "credential", Some(fable_full(4_100_000_000_000))),
+        ("a-reset", "credential", Some(fable_full(1_000))),
+        ("a-full", "full", None),
+    ] {
+        account(&h, id, credential.as_bytes()).await?;
+        if let Some(stored) = stored {
+            h.store
+                .set_account_state(
+                    &AccountId::parse(id)?,
+                    AccountStatus::Ok,
+                    Some(&stored),
+                    None,
+                    Timestamp(2),
+                )
+                .await?;
+        }
+    }
+    let refresh = |id: &'static str| {
+        let (router, admin) = (h.router.clone(), admin.clone());
+        async move {
+            call(
+                &router,
+                Method::POST,
+                &format!("/api/admin/accounts/{id}/usage"),
+                None,
+                &admin,
+            )
+            .await
+        }
+    };
+    let out = refresh("a-out").await?;
+    assert_eq!(out.status, StatusCode::OK, "{:?}", out.body);
+    let usage = &out.body["usage"];
+    assert_eq!(usage["weekly_fable"]["used_percent"], 100.0, "{usage}");
+    assert!(usage["weekly_fable"]["resets_at"].is_string(), "{usage}");
+    assert_eq!(usage["secondary"]["used_percent"], 7.5, "the week is read");
+    assert_eq!(usage["primary"]["used_percent"], 42.0);
+    assert_eq!(out.body["status"], "limited");
+
+    let reset = refresh("a-reset").await?;
+    assert!(
+        reset.body["usage"]["weekly_fable"].is_null(),
+        "{:?}",
+        reset.body
+    );
+    assert_eq!(reset.body["status"], "ok");
+
+    let full = refresh("a-full").await?;
+    assert_eq!(full.body["usage"]["primary"]["used_percent"], 100.0);
+    assert_eq!(full.body["status"], "limited", "{:?}", full.body);
     Ok(())
 }
 
