@@ -20,6 +20,7 @@
 // guest=1 (signed in as Carol, a guest of the playground `lab`: the server's guest fence applies).
 
 import { counter, taskInfo } from './status.js';
+import { plausibleEmail } from './format.js';
 import { parsePrompt } from './promptparts.js';
 import { apply as applyOp, transform as transformOp, isNoop as noopOp, replacement } from './livetext.js';
 
@@ -3812,13 +3813,23 @@ route('PATCH', `/api/admin/accounts/${ID}`, ({ db, p, body }) => {
   adminOnly(db);
   const account = db.accounts.find((a) => a.id === p[0]);
   if (!account) fail(404, 'not_found', 'not found');
-  // Only the name: the pool has no priorities or switches (F 2026-10-10).
-  if (Object.keys(body).some((key) => key !== 'label')) fail(422, 'invalid', 'unknown field; only `label` can change');
-  if (typeof body.label !== 'string' || !(body.label.trim().length >= 1 && body.label.length <= 80)) fail(422, 'invalid', 'label must be 1–80 characters');
-  // Tasks name their subscription by label here (the server joins by id): a rename follows.
-  const previous = account.label;
-  account.label = body.label.trim();
-  for (const task of db.tasks) if (task.account_label === previous) task.account_label = account.label;
+  // The name, the email an administrator types, or both (SPEC-463 EML-003): the pool has no
+  // priorities or switches (F 2026-10-10). Both are checked before either is written.
+  if (Object.keys(body).some((key) => key !== 'label' && key !== 'email')) fail(422, 'invalid', 'unknown field; only `label` and `email` can change');
+  const given = (key) => body[key] !== undefined && body[key] !== null;
+  if (!given('label') && !given('email')) fail(422, 'invalid', 'nothing to change: give `label`, `email` or both');
+  if (given('label') && (typeof body.label !== 'string' || !(body.label.trim().length >= 1 && body.label.length <= 80))) fail(422, 'invalid', 'label must be 1–80 characters');
+  // An address by the server's rule; an empty email removes it.
+  const email = given('email') && typeof body.email === 'string' ? body.email.trim() : null;
+  if (given('email') && (email === null || (email !== '' && !plausibleEmail(email)))) fail(422, 'invalid', 'email must be an address like name@example.com, at most 254 characters (empty removes it)');
+  if (given('label')) {
+    // Tasks name their subscription by label here (the server joins by id): a rename follows.
+    const previous = account.label;
+    account.label = body.label.trim();
+    for (const task of db.tasks) if (task.account_label === previous) task.account_label = account.label;
+  }
+  // A typed email is marked, so nothing says Claude confirmed it (EML-006).
+  if (given('email')) Object.assign(account, { email: email || null, email_typed: Boolean(email) });
   emit(db, { type: 'account.updated', account });
   return account;
 });

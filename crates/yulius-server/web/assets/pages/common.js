@@ -127,9 +127,11 @@ export function dataTable(columns, rows, { onRowClick, empty = 'Nothing here yet
  * render(data) or the error, which names what failed to load (`what`, such as "the users":
  * "Couldn’t load the users: …").
  * Returns a reload function. Concurrent reloads keep only the latest result. `reload({ quiet })`
- * refreshes in place for live pages: no dimming, and a failure keeps what is shown.
+ * refreshes in place for live pages: no dimming, and a failure keeps what is shown. `hold()`
+ * says, when a quiet refresh's data arrives, that the page must not be redrawn now (a field a
+ * person types in): what is shown stays, and the page reloads once it lets go.
  */
-export function loader(container, what, fetcher, render, { shape = 'lines' } = {}) {
+export function loader(container, what, fetcher, render, { shape = 'lines', hold = null } = {}) {
   let generation = 0;
   let hasContent = false;
   async function reload({ quiet = false } = {}) {
@@ -140,6 +142,7 @@ export function loader(container, what, fetcher, render, { shape = 'lines' } = {
     try {
       const data = await fetcher();
       if (mine !== generation) return;
+      if (quiet && hasContent && hold && hold()) return;
       // A reload after an action (a switch, Run now) keeps keyboard focus on the same control.
       keepFocus(container, () => setChildren(container, render(data)));
       hasContent = true;

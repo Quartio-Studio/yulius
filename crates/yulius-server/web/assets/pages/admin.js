@@ -221,13 +221,17 @@ export function openLoginTerminal(ctx, { loginId, account, onFinish }) {
     return { promise, stop: () => { clearTimeout(timer); off(); } };
   }
 
-  /** The success toast, naming the subscription and its email (LGN-003), waiting at most 5 s for it. */
+  /**
+   * The success toast, naming the subscription and its email (LGN-003), waiting at most 5 s for
+   * it. Only an email Claude gave is named: one an administrator typed is not Claude's word for
+   * this sign-in (SPEC-463 EML-006).
+   */
   async function connectedToast() {
     const update = emailUpdate(5000);
     let now = await fresh();
     if (!now || !now.email) now = (await update.promise) || now;
     update.stop();
-    const email = now && now.email ? ` as ${now.email}` : '';
+    const email = now && now.email && !now.email_typed ? ` as ${now.email}` : '';
     toast(`${account.label} is connected${email}. Tasks can use it now.`, { kind: 'ok', timeout: 8000 });
   }
 
@@ -365,6 +369,17 @@ export function mountAccountsPage(ctx, route) {
     return false;
   });
 
+  // A name or an email being edited is not redrawn away by an update: the reload waits until
+  // the field closes (the reload keeps focus on the same control). That holds for an update
+  // that comes while the field is open, and for a list read that was on its way when it opened
+  // (SPEC-463 EML-001): a person who saves the email goes straight on to the name.
+  let pendingReload = false;
+  const editing = () => Boolean(host.querySelector('.account-rename-input'));
+  const heldByField = () => {
+    if (editing()) pendingReload = true;
+    return editing();
+  };
+
   // Capacity is read beside the subscriptions, so the panel above them is in place before they
   // land (SPEC-120). Each later render (after an add or a removal) reads it again, and so does
   // the first one when that read failed.
@@ -383,14 +398,20 @@ export function mountAccountsPage(ctx, route) {
         Object.assign(account, fresh);
         toast(`Subscription renamed to ${account.label}.`, { kind: 'ok' });
       };
+      // So is the email under it (SPEC-463 EML-001); an empty one removes it.
+      const setEmail = async (email) => {
+        const fresh = await ctx.api.patch(`/api/admin/accounts/${enc(account.id)}`, { email });
+        Object.assign(account, fresh);
+        toast(account.email ? `Email of ${account.label} is now ${account.email}.` : `Email of ${account.label} removed.`, { kind: 'ok' });
+      };
       // Provider windows (refreshed in the background) and what Yulius observed (ROT-009).
-      const usageHost = h('div', null, accountUsage(account, { rename, showEmail: true }), tokenTotals(account));
+      const usageHost = h('div', null, accountUsage(account, { rename, setEmail, showEmail: true }), tokenTotals(account));
       const stale = !account.usage || !account.usage.observed_at || Date.now() - Date.parse(account.usage.observed_at) > 10 * 60 * 1000;
       if (account.status !== 'pending_login' && stale) {
         ctx.api.post(`/api/admin/accounts/${enc(account.id)}/usage`).then((fresh) => {
           Object.assign(account, fresh);
           if (usageHost.querySelector('.account-rename-input')) pendingReload = true;
-          else setChildren(usageHost, accountUsage(account, { rename, showEmail: true }), tokenTotals(account));
+          else setChildren(usageHost, accountUsage(account, { rename, setEmail, showEmail: true }), tokenTotals(account));
         }).catch(() => {});
       }
       const broken = ['relogin', 'error', 'pending_login'].includes(account.status);
@@ -420,7 +441,7 @@ export function mountAccountsPage(ctx, route) {
             }
           } }, 'Remove')));
     }));
-  }, { shape: 'cards' });
+  }, { shape: 'cards', hold: heldByField });
 
   function add() {
     const label = h('input', { class: 'input', placeholder: 'Claude #3', maxlength: 80, autofocus: true });
@@ -440,15 +461,12 @@ export function mountAccountsPage(ctx, route) {
     });
   }
 
-  // A name being edited is not redrawn away by an update: the reload waits until the field
-  // closes (the reload keeps focus on the same control).
-  let pendingReload = false;
   const off = ctx.store.on('account', () => {
-    if (host.querySelector('.account-rename-input')) pendingReload = true;
+    if (editing()) pendingReload = true;
     else reload({ quiet: true });
   });
   host.addEventListener('focusout', () => setTimeout(() => {
-    if (pendingReload && !host.querySelector('.account-rename-input')) {
+    if (pendingReload && !editing()) {
       pendingReload = false;
       reload({ quiet: true });
     }

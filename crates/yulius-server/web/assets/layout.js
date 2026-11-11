@@ -2,7 +2,7 @@
 // left sidebar with navigation, the active task list and the user menu at its foot.
 
 import { DRAG_TAB_HINT, h, icon, iconButton, openMenu, setChildren, statusMark, popoverFocus, keepFocus, loadError, coalesce, pollPaused, prChip, skeleton, bar, skeletonOf } from './dom.js';
-import { relLong, bytes, duration, dateTime, resetLabel, compact, accountEmail } from './format.js';
+import { relLong, bytes, duration, dateTime, resetLabel, compact, accountEmail, plausibleEmail } from './format.js';
 import { sparkline, usd } from './charts.js';
 import { taskTime } from './tasktime.js';
 import { taskInfo, taskActions, activityLine, allows, otherOwner } from './status.js';
@@ -493,51 +493,60 @@ function accountInitials(account) {
 }
 
 /**
- * A subscription's name that its manager edits in place (SPEC-244 SUB-001): the pencil (or a
- * click on the name) turns it into a field; Enter or leaving the field saves through `rename`,
- * Escape cancels. A refused name keeps the field open with the message; focus returns to the
- * field only after Enter, never when it was left, and to the pencil once editing ends.
+ * One line of a subscription's head that its manager edits in place: the name (SPEC-244 SUB-001)
+ * or the email under it (SPEC-463 EML-001). The pencil (or a click on the text) turns the line
+ * into a field; Enter or leaving the field saves through `save`, Escape cancels. A refused value
+ * keeps the field open with the message; focus returns to the field only after Enter, never when
+ * it was left, and to the pencil once editing ends.
+ *
+ * `line` says what differs: `holder` and `pencil` (classes), `action()` (the pencil's name),
+ * `text()` (the element shown), `field()` (the field's attributes), `stored()` (the value now),
+ * `check(value)` (what to say to a value refused before it is sent, else null), `removes` (an
+ * empty value removes what is stored, which takes Enter: an emptied field that is left closes
+ * as it was) and `failed` (what to say when a failed save gives no message).
  */
-function renamableName(account, rename) {
-  const holder = h('span', { class: 'account-name-edit' });
+function editableLine(line, save) {
+  const holder = h('span', { class: line.holder });
   const show = (focus = false) => {
-    const name = account.label || account.id;
-    const pencil = iconButton('pencil', `Rename ${name}`, edit, { class: 'account-rename' });
-    // The name is a second, pointer-only way in (read as text): the pencil is the keyboard's one
+    const pencil = iconButton('pencil', line.action(), edit, { class: line.pencil });
+    // The text is a second, pointer-only way in (read as text): the pencil is the keyboard's one
     // tab stop.
-    const text = h('strong', { class: 'ellipsis account-name-text', title: `Rename ${name}` }, name);
+    const text = line.text();
     text.addEventListener('click', edit);
     setChildren(holder, text,
       pencil);
     if (focus) pencil.focus();
   };
   function edit() {
-    const input = h('input', { class: 'input account-rename-input', type: 'text', value: account.label || '', maxlength: 80, 'aria-label': `New name for ${account.label || account.id}` });
+    const input = h('input', line.field());
     const error = h('span', { class: 'field-error xs', role: 'alert' });
     // `closed` once the field is gone: removing a focused field fires its blur, which must not
     // save what Escape cancelled.
     let busy = false;
     let closed = false;
     // Focus goes back to the pencil only when a key ended the edit: a person who clicked
-    // elsewhere (another subscription's Rename among them) keeps their focus there.
+    // elsewhere (another subscription's pencil among them) keeps their focus there.
     const close = (focus) => { closed = true; show(focus); };
-    const finish = async (save, fromKey) => {
+    const finish = async (keep, fromKey) => {
       if (busy || closed) return;
-      const name = input.value.trim();
-      if (!save || name === account.label) { close(fromKey); return; }
+      const value = input.value.trim();
+      if (!keep || value === line.stored()) { close(fromKey); return; }
+      // Removing takes Enter: an emptied field that was left closes as it was (SPEC-463 EML-002).
+      if (!value && line.removes && !fromKey) { close(false); return; }
       const refuse = (message) => {
         error.textContent = message;
         if (fromKey) input.focus();
       };
-      if (!name) { refuse('Give the subscription a name.'); return; }
+      const refused = line.check(value);
+      if (refused) { refuse(refused); return; }
       busy = true;
       try {
-        await rename(name);
+        await save(value);
         busy = false;
         close(fromKey);
       } catch (err) {
         busy = false;
-        refuse((err && err.message) || 'Couldn’t rename the subscription.');
+        refuse((err && err.message) || line.failed);
       }
     };
     input.addEventListener('keydown', (event) => {
@@ -552,14 +561,51 @@ function renamableName(account, rename) {
   return holder;
 }
 
+/** A subscription's name, edited in place (SPEC-244 SUB-001); an empty one is refused. */
+function renamableName(account, rename) {
+  const name = () => account.label || account.id;
+  return editableLine({
+    holder: 'account-name-edit',
+    pencil: 'account-rename',
+    action: () => `Rename ${name()}`,
+    text: () => h('strong', { class: 'ellipsis account-name-text', title: `Rename ${name()}` }, name()),
+    field: () => ({ class: 'input account-rename-input', type: 'text', value: account.label || '', maxlength: 80, 'aria-label': `New name for ${name()}` }),
+    stored: () => account.label,
+    check: (value) => (value ? null : 'Give the subscription a name.'),
+    failed: 'Couldn’t rename the subscription.',
+  }, rename);
+}
+
+/**
+ * A subscription's email, typed in place under its name (SPEC-463 EML-001): Claude gives none to
+ * a `setup-token` sign-in, so the line reads "email unknown" until an administrator types it.
+ * What is not an address is refused here, before it is sent; Enter in the empty field removes
+ * the email (EML-002).
+ */
+function editableEmail(account, setEmail) {
+  const name = () => account.label || account.id;
+  return editableLine({
+    holder: 'account-email-edit',
+    pencil: 'account-rename',
+    action: () => `Change the email of ${name()}`,
+    text: () => h('span', { class: ['account-sub', 'account-email-text', account.email ? null : 'account-email-unknown'], title: `Change the email of ${name()}` }, accountEmail(account.email)),
+    field: () => ({ class: 'input account-rename-input account-email-input', type: 'email', value: account.email || '', maxlength: 254, placeholder: 'name@example.com', autocomplete: 'off', spellcheck: 'false', 'aria-label': `Email of ${name()}` }),
+    stored: () => account.email || '',
+    check: (value) => (!value || plausibleEmail(value) ? null : 'Type an address like name@example.com.'),
+    removes: true,
+    failed: 'Couldn’t change the email.',
+  }, setEmail);
+}
+
 /**
  * One account, shared by the Status panel (foldable: a row that expands) and the Accounts page:
  * an avatar with initials, label, email for administrators (`showEmail`; "email unknown" until
- * Claude gave one) and plan (when the provider reports it), its state when it is not ready, and
- * each usage window as a horizontal row like Claude's own usage page. With `rename` (the Accounts
- * page) the name is edited in place.
+ * Claude gave one or an administrator typed it) and plan (when the provider reports it), its
+ * state when it is not ready, and each usage window as a horizontal row like Claude's own usage
+ * page. With `rename` and `setEmail` (the Accounts page) the name and the email are edited in
+ * place.
  */
-export function accountUsage(account, { foldable = false, open = false, rename = null, showEmail = false } = {}) {
+export function accountUsage(account, { foldable = false, open = false, rename = null, setEmail = null, showEmail = false } = {}) {
   const usage = account.usage || {};
   const provider = account.provider === 'anthropic' ? 'Claude' : account.provider;
   const state = ACCOUNT_STATES[account.status] || { icon: 'warn', tone: 'muted', label: account.status || 'Unknown' };
@@ -586,10 +632,10 @@ export function accountUsage(account, { foldable = false, open = false, rename =
       h('span', { class: 'account-name' },
         rename && !foldable ? renamableName(account, rename) : h('strong', { class: 'ellipsis', title: account.label || account.id }, account.label || account.id),
         account.plan ? h('span', { class: 'plan-badge', title: `${provider} plan` }, account.plan) : null),
-      // The sign-in email is for administrators (UI-022); others see the provider as before.
-      showEmail
-        ? h('span', { class: ['account-sub', account.email ? null : 'account-email-unknown'], title: account.email ? `${provider} account` : 'Shown after the subscription’s next sign-in, when Claude shares it' }, accountEmail(account.email))
-        : h('span', { class: 'account-sub' }, provider)),
+      // The email is for administrators (UI-022); others see the provider as before.
+      !showEmail ? h('span', { class: 'account-sub' }, provider)
+        : setEmail && !foldable ? editableEmail(account, setEmail)
+          : h('span', { class: ['account-sub', account.email ? null : 'account-email-unknown'], title: account.email ? `${provider} account` : 'Shown after the subscription’s next sign-in, when Claude shares it' }, accountEmail(account.email))),
     state.tone !== 'ok' ? h('span', { class: ['account-state', `state-${state.tone}`], title: state.label }, icon(state.icon, { size: 12 }), h('span', { class: 'account-state-label' }, state.label)) : null,
     foldable ? glance() : null,
     foldable ? icon('down', { size: 14 }) : null,
