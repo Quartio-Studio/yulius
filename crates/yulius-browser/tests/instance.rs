@@ -941,6 +941,34 @@ async fn typed_secrets_refuse_screenshots_while_a_page_may_show_them() -> TestRe
     Ok(())
 }
 
+/// SPEC-450 SSC-002: a fill into a text field exposes its origin at once: the next page of the
+/// site (a form shown again with an edited copy) is refused without a screenshot in between.
+#[tokio::test]
+async fn a_fill_outside_a_password_field_exposes_its_site() -> TestResult {
+    let (fake, instance, tab) = setup().await?;
+    instance
+        .tool_navigate(&to(&tab, "https://j.example/form"))
+        .await?;
+    instance
+        .tool_type_secret(&fill(&tab, "#api-key", "api-key-5521-qrs"))
+        .await?;
+    instance
+        .tool_navigate(&to(&tab, "https://j.example/again"))
+        .await?;
+    fake.set_secret_probe(probe(&["Invalid key: api-key- 5521-qrs"], &[]));
+    assert!(refused(
+        instance.tool_screenshot_within(&shot(&tab), 100_000).await
+    ));
+    instance
+        .tool_navigate(&to(&tab, "https://k.example/"))
+        .await?;
+    fake.set_secret_probe(None);
+    instance
+        .tool_screenshot_within(&shot(&tab), 100_000)
+        .await?;
+    Ok(())
+}
+
 /// SPEC-450: each line of a multi-line secret (typed line by line) is matched on its own.
 #[tokio::test]
 async fn a_multi_line_secret_is_matched_line_by_line() -> TestResult {

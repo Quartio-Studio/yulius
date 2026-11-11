@@ -136,11 +136,16 @@ with `browser_fill_secret`. A password field, drawn as dots, keeps screenshots w
   - the password field and its reveal;
   - an unreadable page.
   `superagent_browser.rs` covers the Global Superagent's refusal.
+- `crates/yulius-browser/tests/real_chromium.rs` (opt-in, `YULIUS_TEST_CHROMIUM`): on a real page
+  a password fill keeps screenshots, its reveal and a text-field fill on another origin refuse
+  them, so the probe expression, the isolated world and the frame tree work in Chromium.
 - `crates/yulius-browser/tests/instance.rs`:
   - `typed_secrets_refuse_screenshots_while_a_page_may_show_them`: an unseen fill and its origin,
     the isolated world's frame and context, another origin echoing the value, probe answers over
     the bound or malformed, an edited password, another tab after the filled one closed, the
     32-value cap, a failing probe.
+  - `a_fill_outside_a_password_field_exposes_its_site`: the next page of the site, with no
+    screenshot in between.
   - `a_multi_line_secret_is_matched_line_by_line`.
   - `a_secret_needs_a_known_document`: the 256-document cap, a document lost after typing, an
     unknown document.
