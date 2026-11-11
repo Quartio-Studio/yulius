@@ -3,7 +3,8 @@
 // now" and the update's progress (building → pausing tasks → restarting → resuming, with a
 // failure or rollback said plainly, and the new version's re-check of sandboxes' Docker), a
 // restart with the running version (pausing tasks → restarting → resuming, SPEC-432), the address
-// and whether GitHub accepts it for sign-in (SPEC-466), the Claude Code sandboxes run (SPEC-461),
+// and whether GitHub accepts it for sign-in (SPEC-466), the move to another host (SPEC-470), the
+// Claude Code sandboxes run (SPEC-461),
 // whether sandboxes get Docker (SPEC-203), the leftovers on the disk (SPEC-215), and the Jev and
 // Vidoc keys.
 
@@ -17,6 +18,7 @@ import { claudeCodeCard } from '../claudecode.js';
 import { leftoversCard } from '../leftovers.js';
 import { limitsCard } from '../instancelimits.js';
 import { addressCard } from '../instanceaddress.js';
+import { moveCard } from '../instancemove.js';
 import { confirmAndStartUpdate, UPDATE_OUTCOMES as OUTCOMES } from '../updates.js';
 
 const REPO_URL = 'https://github.com/Quartio-Studio/yulius';
@@ -132,14 +134,14 @@ function dockerRecheck(report) {
     h('div', { class: 'banner-text' }, h('strong', null, 'Sandboxes may have lost Docker with this update.'), ' The Sandbox Docker card below has the latest host check.'));
 }
 
-/** Superadmin: version, updates, address, Claude Code, resource limits, sandboxes' Docker, the Jev and Vidoc keys. */
+/** Superadmin: version, updates, address, the move to another host, Claude Code, resource limits, sandboxes' Docker, the Jev and Vidoc keys. */
 export function mountInstancePage(ctx) {
   if (!ctx.isSuperadmin()) {
     const frame = pageFrame({ title: 'Instance' });
     frame.body.append(h('div', { class: 'card placeholder' }, 'Only the superadmin manages updates and the instance keys.'));
     return { el: frame.el };
   }
-  const frame = pageFrame({ title: 'Instance', sub: 'version, updates, address, Claude Code, resource limits, sandboxes’ Docker, leftovers, the Jev and Vidoc keys' });
+  const frame = pageFrame({ title: 'Instance', sub: 'version, updates, address, moving to another host, Claude Code, resource limits, sandboxes’ Docker, leftovers, the Jev and Vidoc keys' });
   const updatesBody = h('div', { class: 'settings-body instance-body' }, skeleton('Loading updates…', 3, { block: true }));
   const checkButton = h('button', { type: 'button', class: 'btn btn-sm', onClick: () => checkNow() }, icon('refresh', { size: 14 }), 'Check now');
   const updatesCard = h('section', { class: 'settings-section', 'aria-labelledby': 'updates-title' },
@@ -149,7 +151,8 @@ export function mountInstancePage(ctx) {
   const docker = sandboxDockerCard(ctx);
   const leftovers = leftoversCard(ctx);
   const address = addressCard(ctx);
-  frame.body.append(updatesCard, address.el, claude.el, limitsCard(ctx), docker.el, leftovers.el, keySettingsCard(ctx, 'jev'), keySettingsCard(ctx, 'vidoc'));
+  const move = moveCard(ctx);
+  frame.body.append(updatesCard, address.el, move.el, claude.el, limitsCard(ctx), docker.el, leftovers.el, keySettingsCard(ctx, 'jev'), keySettingsCard(ctx, 'vidoc'));
 
   /** Whether a cancel is on its way to the server (its button is busy, SPEC-439). */
   let cancelling = false;
@@ -308,6 +311,7 @@ export function mountInstancePage(ctx) {
       docker.destroy();
       leftovers.destroy();
       address.destroy();
+      move.destroy();
       if (ctx.updates) ctx.updates.setQuiet(false);
     },
   };

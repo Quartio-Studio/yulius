@@ -2833,6 +2833,34 @@ a.update-text:hover { text-decoration: underline; text-underline-offset: 2px; }
 .address-ok { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0; }
 .address-ok .icon { flex: none; color: var(--ok); }
 .address-moved { margin: 0; max-width: 88ch; }
+/* The instance page's "Move to another host" card (SPEC-470). */
+.move-intro, .move-arrived-head, .move-recorded { margin: 0; max-width: 88ch; }
+.move-form { display: flex; flex-direction: column; gap: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
+.move-fields { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 12px 16px; }
+.move-waiting { color: var(--text-2); }
+.move-waiting .spinner, .move-frozen .spinner { display: inline-block; width: 12px; height: 12px; flex: none; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent; animation: spin var(--duration-spin) linear infinite; }
+.move-key, .move-attention, .move-frozen { align-items: flex-start; }
+.move-key .banner-text, .move-attention .banner-text, .move-frozen .banner-text { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.move-key p, .move-frozen p, .move-outcome p { margin: 0; max-width: 88ch; }
+.move-key-line { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.move-key-line code { overflow-wrap: anywhere; user-select: all; }
+.move-attention-list { display: flex; flex-direction: column; gap: 4px; margin: 0; padding-left: 20px; overflow-wrap: anywhere; }
+.move-checklist > summary { cursor: pointer; color: var(--text-2); font-size: var(--fs-sm); line-height: var(--lh-sm); }
+.move-lines { display: flex; flex-direction: column; gap: 6px; margin: 8px 0 0; padding: 0; list-style: none; }
+.move-line { display: grid; grid-template-columns: 96px minmax(0, 1fr); column-gap: 8px; align-items: baseline; font-size: var(--fs-sm); line-height: var(--lh-sm); }
+.move-line-mark { display: inline-flex; align-items: center; gap: 6px; }
+.move-line-mark .icon { flex: none; color: var(--muted); }
+.move-line-ok .move-line-mark .icon, .move-line-changed .move-line-mark .icon { color: var(--ok); }
+.move-line-manual .move-line-mark .icon { color: var(--warn-fg); }
+.move-line-failed .move-line-mark .icon { color: var(--danger); }
+.move-line-text { min-width: 0; overflow-wrap: anywhere; }
+.move-line-detail { color: var(--text-2); }
+.move-arrived { display: flex; flex-direction: column; gap: 8px; }
+.move-error { overflow-wrap: anywhere; }
+@media (max-width: 767px) {
+  .move-fields { grid-template-columns: minmax(0, 1fr); }
+  .move-line { grid-template-columns: minmax(0, 1fr); }
+}
 .address-missing { align-items: flex-start; }
 .address-missing .banner-text { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 .address-missing p { margin: 0; max-width: 80ch; }
