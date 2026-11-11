@@ -26,6 +26,8 @@ pub fn step(host: &mut FakeHost, request: &Request) -> Reply {
     let mut env = Env {
         address: Some(NEW_ADDRESS.into()),
         ssh_port: Some(2222),
+        peer: Some("109.199.123.240".into()),
+        hold: &mut |_| Box::new(()),
         health: &mut |_| Some(BUILD.into()),
         sleep: &mut |_| {},
         count: &mut |_, old| Ok(old.clone()),
@@ -784,6 +786,8 @@ fn an_equal_inventory_proves_the_copy_and_a_different_one_fails() {
     let mut env = Env {
         address: None,
         ssh_port: None,
+        peer: None,
+        hold: &mut |_| Box::new(()),
         health: &mut |_| None,
         sleep: &mut |_| {},
         count: &mut |_, _| Ok(inventory_of(6_388_082)),
@@ -912,6 +916,8 @@ fn a_started_instance_must_report_the_old_hosts_build() {
     let mut env = Env {
         address: None,
         ssh_port: None,
+        peer: None,
+        hold: &mut |_| Box::new(()),
         health: &mut |address| {
             assert_eq!(address, "127.0.0.1:8081");
             asked += 1;
@@ -954,6 +960,8 @@ fn an_instance_that_never_reports_fails_and_a_host_not_ready_is_not_started() {
     let mut env = Env {
         address: None,
         ssh_port: None,
+        peer: None,
+        hold: &mut |_| Box::new(()),
         health: &mut |_| None,
         sleep: &mut |d| slept += d,
         count: &mut |_, old| Ok(old.clone()),
@@ -970,6 +978,8 @@ fn an_instance_that_never_reports_fails_and_a_host_not_ready_is_not_started() {
     let mut env = Env {
         address: None,
         ssh_port: None,
+        peer: None,
+        hold: &mut |_| Box::new(()),
         health: &mut |_| Some(BUILD.into()),
         sleep: &mut |_| {},
         count: &mut |_, old| Ok(old.clone()),
@@ -1039,6 +1049,8 @@ fn stopping_leaves_nothing_of_the_copy_running() {
     let mut env = Env {
         address: None,
         ssh_port: None,
+        peer: None,
+        hold: &mut |_| Box::new(()),
         health: &mut |_| None,
         sleep: &mut |_| slept += 1,
         count: &mut |_, old| Ok(old.clone()),
@@ -1067,7 +1079,7 @@ fn a_disk_step_that_was_cut_is_taken_up_where_it_stopped() {
     host.script = Some(disk_script);
     host.says(
         &["mdadm", "--detail", "/dev/md/yulius"],
-        "/dev/md/yulius: raid1\n",
+        "/dev/md/yulius:\n Raid Level : raid1\n 0 /dev/nvme0n1\n 1 /dev/nvme1n1\n",
     );
     host.says(&["lsblk"], r#"{"blockdevices":[]}"#);
     let reply = step(&mut host, &disk_request(&["/dev/nvme0n1", "/dev/nvme1n1"]));
@@ -1122,6 +1134,8 @@ fn the_first_starts_report_on_the_tasks_is_read() {
     let mut env = Env {
         address: None,
         ssh_port: None,
+        peer: None,
+        hold: &mut |_| Box::new(()),
         health: &mut |_| None,
         sleep: &mut |_| slept += 1,
         count: &mut |_, old| Ok(old.clone()),
@@ -1164,7 +1178,13 @@ fn finishing_removes_the_key_and_the_flows_files_and_enables_the_firewall() {
     );
     // The port the move came in at is allowed before the old host's rules take effect.
     let ufw = host.runs("ufw");
-    assert_eq!(ufw, ["ufw allow 2222/tcp", "ufw --force enable"]);
+    assert_eq!(
+        ufw,
+        [
+            "ufw allow from 109.199.123.240 to any port 2222 proto tcp",
+            "ufw --force enable"
+        ]
+    );
     assert!(host.ran("rm -rf -- /var/lib/yulius-migrate"));
 
     // Again, without a firewall: nothing to remove, nothing enabled.
@@ -1202,5 +1222,115 @@ fn a_request_travels_as_tagged_json() -> Result<(), serde_json::Error> {
     }
     let reply: Reply = serde_json::from_str("{}")?;
     assert_eq!(reply, Reply::default());
+    Ok(())
+}
+
+#[test]
+fn an_array_that_is_not_the_moves_own_is_never_formatted() {
+    // Of other disks, or already holding a filesystem.
+    for (detail, kind) in [
+        ("/dev/md/yulius:\n 0 /dev/sdx\n 1 /dev/sdy\n", ""),
+        (
+            "/dev/md/yulius:\n 0 /dev/nvme0n1\n 1 /dev/nvme1n1\n",
+            "xfs\n",
+        ),
+    ] {
+        let mut host = new_host();
+        host.says(&["mdadm", "--detail", "/dev/md/yulius"], detail);
+        host.says(&["blkid", "-o", "value", "-s", "TYPE"], kind);
+        let reply = step(&mut host, &disk_request(&["/dev/nvme0n1", "/dev/nvme1n1"]));
+        let (outcome, why) = only(&reply);
+        assert_eq!(outcome, HostOutcome::Failed, "{why}");
+        assert!(
+            why.contains("is not an empty mirror") && !host.ran("mkfs"),
+            "{why}"
+        );
+    }
+}
+
+/// A Start that outlived its connection must never start the unit after a Stop said it is
+/// stopped: the Stop leaves its word, and both take the same hold around the switch.
+#[test]
+fn a_start_still_in_flight_finds_the_stop_and_starts_nothing() {
+    let mut host = new_host();
+    let mut holds = Vec::new();
+    let stop = Request::Stop {
+        service: "yulius.service".into(),
+    };
+    {
+        let mut env = Env {
+            address: None,
+            ssh_port: None,
+            peer: None,
+            hold: &mut |hold| {
+                holds.push(hold);
+                Box::new(())
+            },
+            health: &mut |_| Some(BUILD.into()),
+            sleep: &mut |_| {},
+            count: &mut |_, old| Ok(old.clone()),
+            setup: &mut |_, _, _| Vec::new(),
+        };
+        assert_eq!(
+            only(&handle(&mut host, &mut env, &stop)).0,
+            HostOutcome::Changed
+        );
+        assert!(host.text(STOPPED).is_some());
+        // The first thing a Stop does, before it stops anything.
+        assert_eq!(
+            host.log.first().map(String::as_str),
+            Some("write /var/lib/yulius-migrate/stopped")
+        );
+        host.log.clear();
+
+        let reply = handle(&mut host, &mut env, &start_request());
+        assert!(!reply.started);
+        let last = reply.lines.last().map(|l| (l.outcome, l.detail.as_str()));
+        assert!(
+            last.is_some_and(
+                |(o, why)| o == HostOutcome::Failed && why.contains("stopped this copy")
+            ),
+            "{last:?}"
+        );
+        assert!(!host.ran("systemctl"));
+        // A look at its health waits for a Start in flight.
+        let health = Request::Health {
+            build: None,
+            health: "127.0.0.1:8081".into(),
+        };
+        assert!(handle(&mut host, &mut env, &health).started);
+    }
+    assert_eq!(
+        holds,
+        [Hold::Switch, Hold::Flight, Hold::Switch, Hold::Landed]
+    );
+
+    // A copy that is proven anew is not the one that was stopped; and until then a finish
+    // leaves the Stop's word where a Start in flight looks for it.
+    host.file_as(STAGED_BUILD, "build", 0, 0o700);
+    step(
+        &mut host,
+        &Request::Finish {
+            key: String::new(),
+            firewall: false,
+        },
+    );
+    assert!(host.text(STOPPED).is_some() && host.text(STAGED_BUILD).is_none());
+    let mark = Request::Mark {
+        setup: setup(),
+        from: None,
+        to: "https://new.example".into(),
+    };
+    assert_eq!(only(&step(&mut host, &mark)).0, HostOutcome::Changed);
+    assert!(host.text(STOPPED).is_none());
+}
+
+#[test]
+fn an_installed_copy_is_marked_unproven_once() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    mark_unproven(dir.path())?;
+    assert!(dir.path().join(".yulius-import-incomplete").is_file());
+    // Already there: something else is wrong, and it says so.
+    assert!(mark_unproven(dir.path()).is_err());
     Ok(())
 }

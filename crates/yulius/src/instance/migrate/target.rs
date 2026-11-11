@@ -21,6 +21,13 @@ pub const STATE_DIR: &str = "/var/lib/yulius-migrate";
 pub const STAGED: &str = "/var/lib/yulius-migrate/yulius";
 /// What the next copy is to be installed as ([`Expect`]).
 pub const EXPECT_FILE: &str = "/var/lib/yulius-migrate/expect.json";
+/// Written by [`Request::Stop`]: this copy was stopped by the move. A Start that is still
+/// running here (its connection or its caller died) finds it and never starts the unit.
+pub const STOPPED: &str = "/var/lib/yulius-migrate/stopped";
+/// The lock files of [`Hold`].
+const HOLD_FILES: [&str; 2] = ["flight.lock", "switch.lock"];
+/// How long a look at the instance's health waits for a Start that is still in flight.
+const FLIGHT_WAIT: Duration = Duration::from_secs(30 * 60);
 /// The reply's line on standard output; everything before it is a command's output.
 pub const REPLY: &str = "YULIUS-REPLY ";
 pub use yulius_app::host_move::{MOVE_PENDING, MOVED};
@@ -285,12 +292,28 @@ pub enum Part {
     AfterStart,
 }
 
+/// What steps of one move exclude each other with on this host: a Start can outlive the
+/// connection that asked for it, and must not start the unit after a Stop said it is stopped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Hold {
+    /// A Start, from its beginning to its end.
+    Flight,
+    /// The moment a Start starts the unit, and a whole Stop.
+    Switch,
+    /// Nothing held: waits (bounded) until no Start is in flight.
+    Landed,
+}
+
 /// What a step needs beside the host: this process and its clock.
 pub struct Env<'a> {
     /// The address the caller connected to (`SSH_CONNECTION`).
     pub address: Option<String>,
     /// The port it connected to.
     pub ssh_port: Option<u16>,
+    /// The address it connected from (the old host).
+    pub peer: Option<String>,
+    /// Takes a [`Hold`]; it is released when the returned value is dropped.
+    pub hold: &'a mut dyn FnMut(Hold) -> Box<dyn std::any::Any>,
     /// The commit the server at a loopback address reports (`/internal/version`); `None` while
     /// it does not answer.
     pub health: &'a mut dyn FnMut(&str) -> Option<String>,
@@ -554,7 +577,30 @@ fn disk(host: &mut dyn Host, setup: &Setup, disks: &[String], l: &mut Lines) {
     let labelled = sh(host, &["blkid", "-L", DISK_LABEL]);
     let labelled =
         Some(labelled.stdout.trim().to_owned()).filter(|d| labelled.ok() && plain(Path::new(d)));
-    let mirrored = disks.len() == 2 && sh(host, &["mdadm", "--detail", MIRROR]).ok();
+    let array = if disks.len() == 2 {
+        sh(host, &["mdadm", "--detail", MIRROR])
+    } else {
+        Out {
+            code: 1,
+            ..Out::default()
+        }
+    };
+    let mirrored = array.ok();
+    if mirrored && labelled.is_none() {
+        // Only the array a cut run made of exactly these disks, still without a filesystem.
+        let ours = disks.iter().all(|d| array.stdout.contains(d.as_str()));
+        let kind = sh(host, &["blkid", "-o", "value", "-s", "TYPE", MIRROR]);
+        if !ours || !kind.stdout.trim().is_empty() {
+            return l.failed(
+                ITEM,
+                format!(
+                    "{MIRROR} exists and is not an empty mirror of {} and {}; nothing was \
+                     changed",
+                    disks[0], disks[1]
+                ),
+            );
+        }
+    }
     let blank = list_blank(host);
     if labelled.is_none()
         && !mirrored
@@ -1310,9 +1356,10 @@ fn mark(host: &mut dyn Host, setup: &Setup, from: Option<&str>, to: &str, l: &mu
     if host.is_file(&path) && !host.is_file(&unproven) {
         return l.ok(ITEM, "the copy is marked as moved");
     }
-    // An earlier move's report came with the copy: this move writes its own.
+    // An earlier move's report came with the copy: this move writes its own. And a copy that
+    // is proven anew is not the one an earlier attempt stopped.
     let report = setup.data_dir.join(MOVED).display().to_string();
-    sh(host, &["rm", "-f", "--", &report]);
+    sh(host, &["rm", "-f", "--", &report, STOPPED]);
     let at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
@@ -1351,6 +1398,7 @@ fn start(
     l: &mut Lines,
 ) -> bool {
     const ITEM: &str = "new instance";
+    let _flight = (env.hold)(Hold::Flight);
     if host.is_file(&setup.data_dir.join(INCOMPLETE)) {
         l.failed(
             ITEM,
@@ -1366,16 +1414,28 @@ fn start(
         return false;
     }
     let service = setup.service.as_str();
-    // Units carried as files (the helper's, a drop-in) are known only after a reload.
-    for argv in [
-        &["systemctl", "daemon-reload"][..],
-        &["systemctl", "enable", service][..],
-        &["systemctl", "start", service][..],
-    ] {
-        let out = sh(host, argv);
-        if !out.ok() {
-            l.failed(ITEM, format!("`{}` failed: {}", argv.join(" "), out.why()));
+    {
+        // With a Stop excluded: either it came first and left its word, or it comes after and
+        // stops what is started here.
+        let _switch = (env.hold)(Hold::Switch);
+        if host.is_file(Path::new(STOPPED)) {
+            l.failed(
+                ITEM,
+                "not started: the move stopped this copy meanwhile (the old instance runs again)",
+            );
             return false;
+        }
+        // Units carried as files (the helper's, a drop-in) are known only after a reload.
+        for argv in [
+            &["systemctl", "daemon-reload"][..],
+            &["systemctl", "enable", service][..],
+            &["systemctl", "start", service][..],
+        ] {
+            let out = sh(host, argv);
+            if !out.ok() {
+                l.failed(ITEM, format!("`{}` failed: {}", argv.join(" "), out.why()));
+                return false;
+            }
         }
     }
     // Bounded by the clock and by the number of looks, whichever ends first.
@@ -1429,6 +1489,11 @@ fn start(
 
 fn stop(host: &mut dyn Host, env: &mut Env<'_>, service: &str, l: &mut Lines) {
     const ITEM: &str = "new instance stopped";
+    let _switch = (env.hold)(Hold::Switch);
+    // First: a Start still in flight here must find it before it starts the unit.
+    if let Err(why) = host.write(Path::new(STOPPED), "", 0o600) {
+        return l.failed(ITEM, format!("cannot write {STOPPED}: {why}"));
+    }
     let out = sh(host, &["systemctl", "disable", "--now", service]);
     // KillMode=process leaves agents and terminals: nothing of the copy may keep running.
     // (`--kill-whom` is systemd 252 and later, `--kill-who` its older name.)
@@ -1551,19 +1616,31 @@ fn finish(host: &mut dyn Host, env: &Env<'_>, key: &str, firewall: bool, l: &mut
         }
     }
     if firewall {
-        // The old host's rules may not know the port this host is reached at.
-        let port = env.ssh_port.map(|port| format!("{port}/tcp"));
-        if let Some(port) = &port {
-            sh(host, &["ufw", "allow", port]);
-        }
+        // The old host's rules may not know how the move reaches this host: the old host, and
+        // nobody else, keeps its way in.
+        let port = env.ssh_port.zip(
+            env.peer
+                .as_deref()
+                .filter(|peer| peer.parse::<std::net::IpAddr>().is_ok()),
+        );
+        let port = port.map(|(port, peer)| {
+            let port = port.to_string();
+            sh(
+                host,
+                &[
+                    "ufw", "allow", "from", peer, "to", "any", "port", &port, "proto", "tcp",
+                ],
+            );
+            format!("SSH from {peer} to port {port}")
+        });
         let out = sh(host, &["ufw", "--force", "enable"]);
         if out.ok() {
             l.changed(
                 "firewall",
                 match port {
-                    Some(port) => format!(
-                        "ufw is enabled with the old host's rules, and {port} (the SSH port \
-                         the move used) allowed"
+                    Some(way) => format!(
+                        "ufw is enabled with the old host's rules, and {way} (the move's way \
+                         in) allowed"
                     ),
                     None => "ufw is enabled with the old host's rules".to_owned(),
                 },
@@ -1575,7 +1652,17 @@ fn finish(host: &mut dyn Host, env: &Env<'_>, key: &str, firewall: bool, l: &mut
             );
         }
     }
-    sh(host, &["rm", "-rf", "--", STATE_DIR]);
+    if host.is_file(Path::new(STOPPED)) {
+        // A Start may still be in flight: what tells it not to start the unit stays.
+        for name in host.list(Path::new(STATE_DIR)) {
+            if name != "stopped" && !HOLD_FILES.contains(&name.as_str()) {
+                let path = Path::new(STATE_DIR).join(name).display().to_string();
+                sh(host, &["rm", "-rf", "--", &path]);
+            }
+        }
+    } else {
+        sh(host, &["rm", "-rf", "--", STATE_DIR]);
+    }
 }
 
 /// Runs `request` on this host.
@@ -1612,6 +1699,8 @@ pub fn handle(host: &mut dyn Host, env: &mut Env<'_>, request: &Request) -> Repl
         } => inventory(host, env, manifest, old, release, &mut reply, &mut l),
         Request::Mark { setup, from, to } => mark(host, setup, from.as_deref(), to, &mut l),
         Request::Health { build, health } => {
+            // A Start whose answer was lost may still be on its way to starting the unit.
+            drop((env.hold)(Hold::Landed));
             reply.started = (env.health)(health)
                 .is_some_and(|commit| build.as_ref().is_none_or(|b| *b == commit));
         }
@@ -1642,6 +1731,40 @@ pub fn handle(host: &mut dyn Host, env: &mut Env<'_>, request: &Request) -> Repl
     reply
 }
 
+/// The real [`Env::hold`]: `flock` on files in the state directory. A lock that cannot be
+/// taken (no state directory) holds nothing: the steps then run as before.
+fn real_hold(hold: Hold) -> Box<dyn std::any::Any> {
+    use rustix::fs::{FlockOperation, flock};
+    let open = |name: &str| {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(Path::new(STATE_DIR).join(name))
+            .ok()
+    };
+    match hold {
+        Hold::Flight | Hold::Switch => {
+            let file = open(HOLD_FILES[usize::from(hold == Hold::Switch)]);
+            if let Some(file) = &file {
+                let _ = flock(file, FlockOperation::LockExclusive);
+            }
+            Box::new(file)
+        }
+        Hold::Landed => {
+            if let Some(file) = open(HOLD_FILES[0]) {
+                let deadline = std::time::Instant::now() + FLIGHT_WAIT;
+                while flock(&file, FlockOperation::NonBlockingLockShared).is_err()
+                    && std::time::Instant::now() < deadline
+                {
+                    std::thread::sleep(Duration::from_secs(1));
+                }
+            }
+            Box::new(())
+        }
+    }
+}
+
 /// The commit the server listening at `address` reports on `/internal/version`.
 #[must_use]
 pub fn reported_commit(address: &str) -> Option<String> {
@@ -1660,6 +1783,18 @@ pub fn reported_commit(address: &str) -> Option<String> {
     head.lines().next()?.contains(" 200 ").then_some(())?;
     let info: yulius_contracts::update::VersionInfo = serde_json::from_str(body.trim()).ok()?;
     info.commit
+}
+
+/// Marks an installed copy unfinished again: installed is not proven.
+///
+/// # Errors
+/// The marker cannot be made (or is there, which an install that just ended rules out).
+pub fn mark_unproven(data_dir: &Path) -> std::io::Result<()> {
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(data_dir.join(INCOMPLETE))
+        .map(|_| ())
 }
 
 /// Installs the copy arriving on standard input as [`EXPECT_FILE`] says, with the import's own
@@ -1729,16 +1864,11 @@ pub fn receive() -> Reply {
     // compared its count ([`Request::Mark`] removes the mark), so a run that dies in between
     // leaves nothing that looks like an instance.
     let result = result.and_then(|done| {
-        std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(expect.data_dir.join(INCOMPLETE))
-            .map(|_| done)
-            .map_err(|e| {
-                crate::instance::import::Failure::Failed(format!(
-                    "cannot mark the copy as unproven: {e}"
-                ))
-            })
+        mark_unproven(&expect.data_dir).map(|()| done).map_err(|e| {
+            crate::instance::import::Failure::Failed(format!(
+                "cannot mark the copy as unproven: {e}"
+            ))
+        })
     });
     match result {
         Ok(_) if !unpacked => l.failed(ITEM, "zstd reported a damaged stream"),
@@ -1807,6 +1937,10 @@ pub fn main(receive_copy: bool) -> std::process::ExitCode {
             ssh_port: std::env::var("SSH_CONNECTION")
                 .ok()
                 .and_then(|c| c.split_whitespace().nth(3)?.parse().ok()),
+            peer: std::env::var("SSH_CONNECTION")
+                .ok()
+                .and_then(|c| c.split_whitespace().next().map(str::to_owned)),
+            hold: &mut real_hold,
             health: &mut |address| reported_commit(address),
             sleep: &mut |d| std::thread::sleep(d),
             count: &mut |manifest, old| {

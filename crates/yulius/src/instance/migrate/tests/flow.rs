@@ -46,6 +46,8 @@ struct Systemd {
     disabled: bool,
     /// Not running at all (the old host was restarted after the move).
     stopped: bool,
+    /// `systemctl disable` fails.
+    no_disable: bool,
 }
 
 struct FakeSystemd(Arc<Mutex<Systemd>>, Events);
@@ -68,6 +70,7 @@ impl freeze::Host for FakeSystemd {
                     // systemd refuses to thaw a unit that does not run.
                     "thaw" if unit.stopped => return Ok((1, String::new())),
                     "thaw" => unit.frozen = false,
+                    "disable" if unit.no_disable => return Ok((1, String::new())),
                     "disable" => unit.disabled = true,
                     "enable" => {
                         unit.disabled = false;
@@ -107,6 +110,8 @@ struct FakeRemote {
     no_base: bool,
     /// The new host says the copy is proven whatever it counted.
     lies: bool,
+    /// The old unit is thawed from outside while this step runs.
+    thaw_at: Option<(&'static str, Arc<Mutex<Systemd>>)>,
     /// Steps the new host is not reached for, once each: nothing is done there.
     refuse: Vec<&'static str>,
     /// Steps whose answer is lost, once each: done there, unheard here.
@@ -167,6 +172,12 @@ impl Remote for FakeRemote {
             return Err("ssh: connect to host 185.189.47.160 port 22: Connection timed out".into());
         }
         note(&self.events, format!("new: {step}"));
+        if let Some((at, systemd)) = &self.thaw_at
+            && *at == step
+            && let Ok(mut unit) = systemd.lock()
+        {
+            unit.frozen = false;
+        }
         let lost = self.lose.iter().position(|s| *s == step);
         if let Some(at) = lost {
             self.lose.remove(at);
@@ -181,6 +192,8 @@ impl Remote for FakeRemote {
         let mut env = Env {
             address: Some(NEW_ADDRESS.into()),
             ssh_port: Some(22),
+            peer: Some("109.199.123.240".into()),
+            hold: &mut |_| Box::new(()),
             health: &mut |_| healthy.then(build),
             sleep: &mut |_| {},
             count: &mut |manifest, old| {
@@ -498,6 +511,7 @@ fn setup() -> Result<Setup, Box<dyn std::error::Error>> {
             tamper: None,
             no_base: false,
             lies: false,
+            thaw_at: None,
             refuse: Vec::new(),
             lose: Vec::new(),
             sent: Vec::new(),
@@ -707,8 +721,8 @@ fn a_move_runs_from_the_plan_to_the_finish() -> TestResult {
     assert!(at("new: inventory")? < at("old: no signal thaws from here")?);
     assert!(at("old: no signal thaws from here")? < at("new: mark")?);
     assert!(at("new: mark")? < at("new: start")?);
-    assert!(at("new: start")? < at("old: systemctl disable")?);
-    assert!(at("old: systemctl disable")? < at("new: finish")?);
+    assert!(at("old: systemctl disable")? < at("new: mark")?);
+    assert!(at("new: start")? < at("new: finish")?);
     assert!(!events.contains(&"old: systemctl thaw".to_owned()));
 
     // What is left for people is said: the App, laptops, the old disk.
@@ -866,9 +880,11 @@ fn a_new_instance_that_does_not_come_up_is_stopped_before_the_old_one_thaws() ->
             .position(|e| e == what)
             .ok_or(format!("no {what}: {events:?}"))
     };
+    // Disabled while nobody knows whether the new one runs, enabled again once it is stopped.
+    assert!(at("old: systemctl disable")? < at("new: start")?);
     assert!(at("new: start")? < at("new: stop")?);
-    assert!(at("new: stop")? < at("old: systemctl thaw")?);
-    assert!(!events.contains(&"old: systemctl disable".to_owned()));
+    assert!(at("new: stop")? < at("old: systemctl enable")?);
+    assert!(at("old: systemctl enable")? < at("old: systemctl thaw")?);
     assert_eq!(s.old_unit(), (false, false));
     assert!(s.remote.host.ran("systemctl disable --now yulius.service"));
     let status = s.status()?;
@@ -1306,11 +1322,12 @@ fn a_lost_answer_to_the_start_is_decided_by_asking_the_new_host() -> TestResult 
     assert!(!s.events().contains(&"new: stop".to_owned()));
     assert_eq!(s.old_unit(), (true, true));
 
-    // Nobody answers: nothing is decided, the old instance stays frozen and is not disabled.
+    // Nobody answers: nothing is decided. The old instance stays frozen, and disabled, so a
+    // restart of its host cannot start it beside a new one that may run.
     let mut s = setup()?;
     s.remote.refuse = vec!["start", "health"];
     assert_eq!(s.run()?, 1);
-    assert_eq!(s.old_unit(), (true, false));
+    assert_eq!(s.old_unit(), (true, true));
     assert!(!s.events().contains(&"old: systemctl thaw".to_owned()));
     let state = State::load(&s.opts.state_dir).ok_or("no state")?;
     assert_eq!(state.cutover, Cutover::Starting);
@@ -1376,5 +1393,126 @@ fn abort_starts_an_old_unit_that_no_longer_runs() -> TestResult {
     assert_eq!(s.abort()?, 0, "{}", s.shown());
     let unit = s.world.systemd.lock().map_err(|e| e.to_string())?;
     assert!(!unit.stopped && !unit.disabled && !unit.frozen);
+    Ok(())
+}
+
+#[test]
+fn an_old_instance_that_is_stopped_can_be_moved() -> TestResult {
+    // Stopped by a careful operator, or crashed: nothing to freeze, and nothing of it runs.
+    let mut s = setup()?;
+    if let Ok(mut unit) = s.world.systemd.lock() {
+        unit.stopped = true;
+    }
+    assert_eq!(s.run()?, 0, "{}", s.shown());
+    assert!(
+        s.shown().contains("is stopped and nothing of it runs"),
+        "{}",
+        s.shown()
+    );
+    assert!(
+        s.shown().contains("stays stopped and is disabled"),
+        "{}",
+        s.shown()
+    );
+    let events = s.events();
+    assert!(events.contains(&"new: start".to_owned()));
+    assert!(
+        !events
+            .iter()
+            .any(|e| e == "old: systemctl freeze" || e == "old: systemctl thaw")
+    );
+    let unit = s.world.systemd.lock().map_err(|e| e.to_string())?;
+    assert!(unit.stopped && unit.disabled);
+    Ok(())
+}
+
+#[test]
+fn a_unit_thawed_from_outside_during_the_copy_starts_nothing() -> TestResult {
+    let mut s = setup()?;
+    s.remote.thaw_at = Some(("inventory", Arc::clone(&s.world.systemd)));
+    assert_eq!(s.run()?, 1);
+    assert!(
+        s.shown()
+            .contains("was thawed from outside during the copy"),
+        "{}",
+        s.shown()
+    );
+    let events = s.events();
+    assert!(
+        !events.iter().any(|e| e == "new: mark" || e == "new: start"),
+        "{events:?}"
+    );
+    let state = State::load(&s.opts.state_dir).ok_or("no state")?;
+    assert_eq!(state.cutover, Cutover::No);
+    // The copy there is still unfinished: the same command copies again and completes.
+    s.remote.thaw_at = None;
+    assert_eq!(s.run()?, 0, "{}", s.shown());
+    Ok(())
+}
+
+#[test]
+fn an_old_unit_that_cannot_be_disabled_is_thawed_and_nothing_starts() -> TestResult {
+    let mut s = setup()?;
+    if let Ok(mut unit) = s.world.systemd.lock() {
+        unit.no_disable = true;
+    }
+    assert_eq!(s.run()?, 1);
+    assert!(
+        s.shown()
+            .contains("`systemctl disable yulius.service` failed"),
+        "{}",
+        s.shown()
+    );
+    assert_eq!(s.old_unit(), (false, false));
+    assert!(!s.events().contains(&"new: start".to_owned()));
+
+    // It fails only once the new instance runs (a run that goes on from a recorded start):
+    // said as what a person must do now, and the move is recorded as done.
+    let mut s = killed_while_starting()?;
+    if let Ok(mut unit) = s.world.systemd.lock() {
+        unit.no_disable = true;
+    }
+    assert_eq!(s.run()?, 1);
+    assert!(
+        s.shown().contains("must be frozen and disabled now"),
+        "{}",
+        s.shown()
+    );
+    let state = State::load(&s.opts.state_dir).ok_or("no state")?;
+    assert_eq!(state.cutover, Cutover::Moved);
+    assert!(s.old_unit().0);
+    Ok(())
+}
+
+#[test]
+fn one_run_at_a_time_holds_the_state_directory() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let held = crate::instance::migrate::lock(dir.path())?;
+    let second = crate::instance::migrate::lock(dir.path());
+    assert!(second.is_err_and(|why| why.contains("another `yulius instance migrate` runs")));
+    drop(held);
+    crate::instance::migrate::lock(dir.path())?;
+    Ok(())
+}
+
+#[test]
+fn a_finish_whose_answer_was_lost_is_recorded_when_the_key_no_longer_signs_in() -> TestResult {
+    let mut s = setup()?;
+    s.remote.lose = vec!["finish"];
+    assert_eq!(s.run()?, 1);
+    // Done there (the key is gone from the new host), unheard here.
+    assert!(s.remote.host.ran("ufw --force enable"));
+    let state = State::load(&s.opts.state_dir).ok_or("no state")?;
+    assert!(!state.finished);
+    // The key does not sign in any more and the new instance answers: finished.
+    s.remote.key = false;
+    assert_eq!(s.run()?, 0, "{}", s.shown());
+    assert!(
+        s.shown().contains("the finish there was done"),
+        "{}",
+        s.shown()
+    );
+    let state = State::load(&s.opts.state_dir).ok_or("no state")?;
+    assert!(state.finished);
     Ok(())
 }

@@ -180,6 +180,8 @@ pub struct Profile {
     pub npm: Vec<String>,
     /// Pinned limits, `NAME=value`.
     pub pins: Vec<String>,
+    /// Carried files that name the old host: they travel as they are, so a person edits them.
+    pub stale: Vec<PathBuf>,
     /// The update helper is installed.
     pub helper: bool,
     /// The reverse proxy.
@@ -394,18 +396,6 @@ pub fn renamed(package: &str, available: &[String]) -> Option<String> {
         .filter_map(|name| Some((version(name)?, name)))
         .max()
         .map(|(_, name)| name.clone())
-}
-
-/// Caddy's site for a host that moved (SPEC-460 MIG-041): a temporary, method-preserving
-/// redirect to the same path at the new URL, with the header remote clients follow.
-#[must_use]
-pub fn moved_site(old_host: &str, new_url: &str) -> String {
-    let new_url = new_url.trim_end_matches('/');
-    format!(
-        "# Written by `yulius instance migrate`: this instance moved to {new_url}.\n\
-         # `yulius instance migrate --abort` puts the earlier file back.\n\
-         {old_host} {{\n\theader X-Yulius-Moved-To {new_url}\n\tredir {new_url}{{uri}} 307\n}}\n"
-    )
 }
 
 /// Writes `content` to `path` and gives the new file the owner the old one had (a proxy's
@@ -631,11 +621,20 @@ impl Profile {
                 push_path(&mut self.files, path);
             }
         }
+        let old_host = self.public_url.as_deref().and_then(host_of);
         for (_, value) in props.iter().filter(|(k, _)| *k == "EnvironmentFiles") {
             let path = value.split_whitespace().next().unwrap_or_default();
             let path = Path::new(path.trim_start_matches('-'));
             if path.is_absolute() && !path.starts_with(&self.data_dir) && host.is_file(path) {
                 push_path(&mut self.files, path);
+                // Read here only to say so: its text never leaves this host but as a stream.
+                if let Some(old_host) = &old_host
+                    && host
+                        .read(path)
+                        .is_some_and(|text| text.contains(old_host.as_str()))
+                {
+                    push_path(&mut self.stale, path);
+                }
             }
         }
         Ok(())

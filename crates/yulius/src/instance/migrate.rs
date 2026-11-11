@@ -100,6 +100,20 @@ pub struct State {
     pub redirected: bool,
     /// The move ended: the key is gone and nothing is left to do here.
     pub finished: bool,
+    /// The instance the move is of, for `--abort` without options.
+    #[serde(default)]
+    pub instance: Option<Moved>,
+}
+
+/// The instance a move is of.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Moved {
+    /// The data directory.
+    pub data_dir: PathBuf,
+    /// The server's unit.
+    pub service: String,
+    /// The update helper's unit.
+    pub update_service: String,
 }
 
 /// What readers such as Settings → Instance see (`<state>/status.json`, no secret values).
@@ -140,8 +154,8 @@ impl State {
     pub fn begin(dir: &Path, target: &str, port: u16) -> Result<Self, String> {
         if Self::load(dir).is_none() && dir.join("state.json").exists() {
             return Err(format!(
-                "{} cannot be read as a move's state: look at it, or remove it with `yulius \
-                 instance migrate --abort`",
+                "{} cannot be read as a move's state. Look at it; if the unit is frozen, \
+                 `systemctl thaw` it; then remove the file to start over",
                 dir.join("state.json").display()
             ));
         }
@@ -316,7 +330,9 @@ impl<'a> Move<'a> {
 
     fn push(&mut self, line: HostLine) {
         // `host setup` runs in parts that repeat its first items: said once.
-        if line.outcome == HostOutcome::Ok && self.lines.contains(&line) {
+        if matches!(line.outcome, HostOutcome::Ok | HostOutcome::Manual)
+            && self.lines.contains(&line)
+        {
             return;
         }
         self.world.show(&host_setup::format_line(&line));
@@ -503,6 +519,14 @@ impl<'a> Move<'a> {
                 ),
             ));
         }
+        if self.world.build().is_none() {
+            return Err(refuse(
+                self,
+                "this build names no commit (a development build), so the new instance could \
+                 not be told from another: move with a released build"
+                    .to_owned(),
+            ));
+        }
         self.ok(
             ITEM,
             format!(
@@ -546,17 +570,22 @@ impl<'a> Move<'a> {
             .and_then(|()| self.remote.reachable());
         match added {
             Ok(()) => {
+                let seen = self.host_key_note();
                 self.changed(
                     ITEM,
-                    format!("made and added to {} through your sign-in", self.target()),
+                    format!(
+                        "made and added to {} through your sign-in{seen}",
+                        self.target()
+                    ),
                 );
                 Ok(())
             }
             Err(why) => {
+                let seen = self.host_key_note();
                 self.manual(
                     ITEM,
                     format!(
-                        "could not be added ({why}): add this line to root's \
+                        "could not be added ({why}){seen}: add this line to root's \
                          ~/.ssh/authorized_keys on the new host, then run the command again: \
                          {public}"
                     ),
@@ -871,6 +900,17 @@ impl<'a> Move<'a> {
             ));
         }
         self.ok("settings", settings);
+        if !p.stale.is_empty() {
+            let files: Vec<String> = p.stale.iter().map(|f| f.display().to_string()).collect();
+            self.manual(
+                "settings",
+                format!(
+                    "carried as they are although they name the old host: {}. Edit them on \
+                     the new host before the cutover, or after it and restart",
+                    files.join(", ")
+                ),
+            );
+        }
         if p.helper {
             self.ok(
                 "update helper",
@@ -1064,6 +1104,13 @@ impl<'a> Move<'a> {
                 setup: self.setup(p),
             },
         )?;
+        // And nothing it made stands in the import's way.
+        self.call(
+            "data directory",
+            &Request::DataDir {
+                setup: self.setup(p),
+            },
+        )?;
         Ok(())
     }
 
@@ -1230,45 +1277,85 @@ impl<'a> Move<'a> {
         self.phase("Cutover");
         let unit = self.opts.service.clone();
         let mut held = self.freeze()?;
-        self.changed(
-            "old instance",
-            format!("{unit} is frozen: every Yulius process is paused until the new one runs"),
-        );
+        if self.old_unit().0 {
+            self.changed(
+                "old instance",
+                format!("{unit} is frozen: every Yulius process is paused until the new one runs"),
+            );
+        } else {
+            self.ok(
+                "old instance",
+                format!("{unit} is stopped and nothing of it runs: nothing to freeze"),
+            );
+        }
         let copied = self.copy(p, facts, &mut held);
         self.claim(held);
         if let Err(stop) = copied {
             self.thaw();
             return Err(stop);
         }
-        if !self.old_unit().1 {
+        if !self.old_held() {
             self.fail(
                 "old instance",
                 format!("{unit} was thawed from outside during the copy: nothing is started"),
             );
             return Err(Stop::Failed);
         }
+        // Disabled before the start is ordered: while nobody knows whether the new instance
+        // runs, a restart of this host must not start the old one beside it.
+        if !matches!(
+            self.world.freezer().systemctl(&["disable", &unit]),
+            Ok((0, _))
+        ) {
+            self.fail(
+                "old instance",
+                format!("`systemctl disable {unit}` failed: nothing is started"),
+            );
+            self.thaw();
+            return Err(Stop::Failed);
+        }
         // Recorded before the copy loses its unfinished mark: a run that dies in between
         // finds a new host that refuses to start an unproven copy, and rolls back.
         self.state.cutover = Cutover::Starting;
-        if let Err(stop) = self.save_state() {
-            self.thaw();
-            return Err(stop);
-        }
-        let marked = self.call(
-            "move mark",
-            &Request::Mark {
-                setup: self.setup(p),
-                from: p.public_url.clone(),
-                to: self.state.new_url.clone().unwrap_or_default(),
-            },
-        );
+        let marked = self.save_state().and_then(|()| {
+            self.call(
+                "move mark",
+                &Request::Mark {
+                    setup: self.setup(p),
+                    from: p.public_url.clone(),
+                    to: self.state.new_url.clone().unwrap_or_default(),
+                },
+            )
+            .map(|_| ())
+        });
         if let Err(stop) = marked {
             self.state.cutover = Cutover::No;
             let _ = self.save_state();
+            self.enable_old();
             self.thaw();
             return Err(stop);
         }
         self.start(p)
+    }
+
+    /// Whether the old instance cannot run: frozen, or stopped with nothing of it running.
+    fn old_held(&mut self) -> bool {
+        let (active, frozen) = self.old_unit();
+        frozen || !active
+    }
+
+    /// The old unit starts again with its host: the move did not happen.
+    fn enable_old(&mut self) {
+        let unit = self.opts.service.clone();
+        if !matches!(
+            self.world.freezer().systemctl(&["enable", &unit]),
+            Ok((0, _))
+        ) {
+            self.fail(
+                "old instance",
+                format!("`systemctl enable {unit}` failed: run it by hand"),
+            );
+        }
     }
 
     /// Orders the new instance's start and decides the move by whether it runs: once it
@@ -1316,15 +1403,17 @@ impl<'a> Move<'a> {
     /// The new instance runs: the old one stays frozen and is disabled.
     fn moved(&mut self) -> Result<(), Stop> {
         let unit = self.opts.service.clone();
+        // Again, for a run that goes on from a recorded start.
         let disabled = matches!(
             self.world.freezer().systemctl(&["disable", &unit]),
             Ok((0, _))
         );
-        let (_, frozen) = self.old_unit();
-        if disabled && frozen {
+        let (active, _) = self.old_unit();
+        if disabled && self.old_held() {
+            let how = if active { "frozen" } else { "stopped" };
             self.changed(
                 "old instance",
-                format!("{unit} stays frozen and is disabled: it never runs beside the new one"),
+                format!("{unit} stays {how} and is disabled: it never runs beside the new one"),
             );
         } else {
             self.fail(
@@ -1360,6 +1449,7 @@ impl<'a> Move<'a> {
             );
             return Err(Stop::Failed);
         }
+        self.enable_old();
         self.thaw();
         self.state.cutover = Cutover::RolledBack;
         self.save_state()?;
@@ -1439,13 +1529,15 @@ impl<'a> Move<'a> {
                 ),
             ),
         }
-        self.call(
-            "tasks",
-            &Request::Tasks {
-                data_dir: self.opts.data_dir.clone(),
-                wait_secs: TASKS_WAIT,
-            },
-        )?;
+        if self.remote.reachable().is_ok() {
+            self.call(
+                "tasks",
+                &Request::Tasks {
+                    data_dir: self.opts.data_dir.clone(),
+                    wait_secs: TASKS_WAIT,
+                },
+            )?;
+        }
         self.redirect(p, &new);
         Ok(())
     }
@@ -1467,10 +1559,18 @@ impl<'a> Move<'a> {
             return self.ok(ITEM, format!("{old} redirects to {new}"));
         }
         // The site keeps its name, its TLS settings and its neighbours; only what it proxied
-        // to Yulius becomes the redirect. A file that proxies otherwise is replaced.
+        // to Yulius becomes the redirect.
         let port = p.ports.first().copied().unwrap_or(8080);
-        let site = profile::redirected(&caddyfile.content, port, new)
-            .unwrap_or_else(|| profile::moved_site(&old_host, new));
+        let Some(site) = profile::redirected(&caddyfile.content, port, new) else {
+            return self.manual(
+                ITEM,
+                format!(
+                    "{old} is not redirected: {} has no `reverse_proxy` to port {port} to \
+                     replace. In the site of {old_host}: `redir {new}{{uri}} 307`",
+                    profile::CADDYFILE
+                ),
+            );
+        };
         let backup = self.opts.state_dir.join(PROXY_BACKUP);
         if !backup.exists()
             && let Err(e) = write_atomic(&backup, caddyfile.content.as_bytes(), 0o600)
@@ -1520,6 +1620,20 @@ impl<'a> Move<'a> {
                     self.push(shown(line));
                 }
             }
+            // The key no longer signs in and the new instance answers: an earlier run's finish
+            // was done there and only its answer was lost.
+            Err(_)
+                if self.remote.reachable().is_err()
+                    && self.state.new_url.clone().is_some_and(|url| {
+                        self.world.healthz(&format!("{url}/healthz"), None).is_ok()
+                    }) =>
+            {
+                self.manual(
+                    "one-time key",
+                    "no longer signs in to the new host and the new instance answers: the \
+                     finish there was done. Look at its firewall once (`ufw status`)",
+                );
+            }
             Err(why) => {
                 // Not done there: the key stays on both hosts, and the same command tries again.
                 self.fail(
@@ -1553,8 +1667,8 @@ impl<'a> Move<'a> {
             "old host",
             format!(
                 "it keeps a frozen copy with master.key and every secret. `sudo yulius instance \
-                 migrate --abort` here goes back (it refuses while {new} answers). Once the new \
-                 instance has proven itself, wipe {} or retire the disk",
+                 migrate --abort` here goes back, once the new instance is stopped on the new \
+                 host. When the new instance has proven itself, wipe {} or retire the disk",
                 self.opts.data_dir.display()
             ),
         );
@@ -1877,6 +1991,24 @@ fn status(dir: &Path) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// One run or abort at a time in a state directory: a second one would thaw or remove what
+/// the first relies on. The lock is held while the returned file lives.
+///
+/// # Errors
+/// Another run holds it, or the file cannot be made.
+pub fn lock(dir: &Path) -> Result<std::fs::File, String> {
+    let path = dir.join("lock");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    rustix::fs::flock(&file, rustix::fs::FlockOperation::NonBlockingLockExclusive)
+        .map_err(|_| "another `yulius instance migrate` runs here".to_owned())?;
+    Ok(file)
+}
+
 /// `yulius instance migrate`.
 #[must_use]
 pub fn main(opts: &Options, action: Action) -> ExitCode {
@@ -1888,16 +2020,33 @@ pub fn main(opts: &Options, action: Action) -> ExitCode {
     if action == Action::Status {
         return status(&opts.state_dir);
     }
+    // What cannot be a run is said before anything else, whoever asks.
+    for unit in [&opts.service, &opts.update_service] {
+        if !host_setup::service_name_ok(unit) {
+            return refused(&format!("{unit:?} is not a unit name"));
+        }
+    }
+    match (action, &opts.target) {
+        (Action::Run, None) => {
+            return refused("name the new host: `yulius instance migrate root@new-host`");
+        }
+        (Action::Run, Some(target)) if !remote::destination_ok(target) => {
+            return refused(&format!("{target:?} is not `[user@]host`"));
+        }
+        (Action::Run, Some(target))
+            if target
+                .split_once('@')
+                .is_some_and(|(user, _)| user != "root") =>
+        {
+            return refused("the new host is reached as root: `root@new-host`");
+        }
+        _ => {}
+    }
     if !super::is_root() {
         return refused(
             "run it as root (sudo): it freezes the service, reads every sandbox's files and \
              sets up the new host",
         );
-    }
-    for unit in [&opts.service, &opts.update_service] {
-        if !host_setup::service_name_ok(unit) {
-            return refused(&format!("{unit:?} is not a unit name"));
-        }
     }
     // Its files keep their own modes (the key and the state 0600); the status is for readers
     // such as the server, so the directory can be passed through.
@@ -1907,44 +2056,41 @@ pub fn main(opts: &Options, action: Action) -> ExitCode {
     if let Err(e) = made {
         return refused(&format!("{}: {e}", opts.state_dir.display()));
     }
-    // One run or abort at a time: a second one would thaw or remove what the first relies on.
-    let lock = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(opts.state_dir.join("lock"));
-    let _lock = match lock {
-        Ok(file) => {
-            let held =
-                rustix::fs::flock(&file, rustix::fs::FlockOperation::NonBlockingLockExclusive);
-            if held.is_err() {
-                return refused("another `yulius instance migrate` runs here");
-            }
-            file
-        }
-        Err(e) => return refused(&format!("{}: {e}", opts.state_dir.join("lock").display())),
+    let _lock = match lock(&opts.state_dir) {
+        Ok(file) => file,
+        Err(why) => return refused(&why),
     };
-    let state = match (action, &opts.target) {
+    let mut state = match (action, &opts.target) {
         (Action::Abort, _) => match State::load(&opts.state_dir) {
             Some(state) => state,
             None => return refused("no move is recorded here; nothing to abort"),
         },
-        (_, Some(target))
-            if target
-                .split_once('@')
-                .is_some_and(|(user, _)| user != "root") =>
-        {
-            return refused("the new host is reached as root: `root@new-host`");
+        (_, Some(target)) => match State::begin(&opts.state_dir, target, opts.port) {
+            Ok(state) => state,
+            Err(why) => return refused(&why),
+        },
+        (_, None) => return refused("name the new host"),
+    };
+    // An abort is of the instance the move was of, whatever options it is given.
+    let mut opts = opts.clone();
+    match (&state.instance, action) {
+        (Some(of), Action::Abort) => {
+            opts.data_dir.clone_from(&of.data_dir);
+            opts.service.clone_from(&of.service);
+            opts.update_service.clone_from(&of.update_service);
         }
-        (_, Some(target)) if remote::destination_ok(target) => {
-            match State::begin(&opts.state_dir, target, opts.port) {
-                Ok(state) => state,
-                Err(why) => return refused(&why),
+        _ => {
+            state.instance = Some(Moved {
+                data_dir: opts.data_dir.clone(),
+                service: opts.service.clone(),
+                update_service: opts.update_service.clone(),
+            });
+            if let Err(why) = state.save(&opts.state_dir) {
+                return refused(&why);
             }
         }
-        (_, Some(target)) => return refused(&format!("{target:?} is not `[user@]host`")),
-        (_, None) => return refused("name the new host: `yulius instance migrate root@new-host`"),
-    };
+    }
+    let opts = &opts;
     let mut ssh = remote::Ssh::new(
         &state.target,
         state.port,

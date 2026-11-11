@@ -1263,7 +1263,9 @@ boot and network packages are left to the machine); coreutils of the old host's 
 uutils); `/usr/local`, the entries of `/opt` no package owns and root's Rust toolchain, copied as
 they are; `host setup`'s host items; the build at the unit's path; the unit file, its drop-ins,
 its environment and key files outside the data directory, the update helper's units and its
-record of the installed commit, with the old public URL and host name replaced; Caddy's directory
+record of the installed commit. In the unit file, its drop-ins and the Caddyfile the old public
+URL and host name are replaced; environment and key files travel as they are, and the plan names
+one that mentions the old host, for you to edit; Caddy's directory
 and drop-ins for the new host name, validated and started, so its certificate is there before the
 cutover; ufw's rules (enabled at the very end); and `host setup` up to the sandbox base. Limits pinned in the unit travel unchanged and
 are named; the new instance re-sizes those that no longer fit (SPEC-459).
@@ -1300,6 +1302,11 @@ still answers and otherwise asks you to confirm that it is stopped, `--yes` answ
 the old proxy configuration back, thaws and enables the old unit and removes the key and the
 state.
 It never leaves both running. Work done on the new host after the move is not copied back.
+
+A run that hangs after the start was ordered ignores Ctrl-C on purpose (it must not thaw the old
+instance beside a new one). End it with `kill -9`, then run the same command again (it decides
+from the new instance's state) or `--abort`: a start still in flight on the new host finds the
+abort's stop and starts nothing.
 
 Not part of a move: packages installed inside sandboxes keep their files; on another release the
 checklist names those sandboxes. The sandbox base is built for the new host while preparing, so

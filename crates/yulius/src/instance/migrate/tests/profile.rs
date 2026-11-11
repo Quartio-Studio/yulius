@@ -101,6 +101,8 @@ fn the_old_hosts_profile_names_everything_a_move_carries() -> Result<(), String>
     // npm's packages are inside /usr/local: copied with it, not installed again.
     assert!(p.npm.is_empty());
     assert_eq!(p.packages.len(), 8);
+    // No carried file names the old host.
+    assert!(p.stale.is_empty());
     // Known on the new host only once their sources are there.
     assert_eq!(p.third_party, ["docker-ce", "gh"]);
     Ok(())
@@ -304,20 +306,6 @@ fn key_files_are_found_in_both_source_formats() {
 }
 
 #[test]
-fn the_moved_site_redirects_temporarily_and_names_the_new_url() {
-    let site = moved_site(OLD_HOST, "https://185-189-47-160.sslip.io/");
-    assert!(site.contains("109-199-123-240.sslip.io {\n"), "{site}");
-    assert!(
-        site.contains("redir https://185-189-47-160.sslip.io{uri} 307\n"),
-        "{site}"
-    );
-    assert!(
-        site.contains("header X-Yulius-Moved-To https://185-189-47-160.sslip.io\n"),
-        "{site}"
-    );
-}
-
-#[test]
 fn only_what_a_site_proxied_to_yulius_becomes_the_redirect() {
     let caddyfile = "{\n\temail ops@example.com\n}\n\nyulius.example.com {\n\ttls internal\n\
                      \tencode zstd gzip\n\treverse_proxy 127.0.0.1:8080 {\n\t\theader_up \
@@ -376,5 +364,19 @@ fn a_rewritten_file_keeps_its_owner() -> Result<(), String> {
         host.log
     );
     assert_eq!(host.text("/etc/yulius/unit.conf"), Some("new"));
+    Ok(())
+}
+
+#[test]
+fn a_carried_file_that_names_the_old_host_is_named_for_a_person() -> Result<(), String> {
+    let mut host = old_host();
+    host.file_as(
+        "/etc/yulius/env",
+        "YULIUS_ALLOWED_ORIGINS=https://109-199-123-240.sslip.io\n",
+        0,
+        0o600,
+    );
+    let p = read(&mut host)?;
+    assert_eq!(paths(&p.stale), ["/etc/yulius/env"]);
     Ok(())
 }
