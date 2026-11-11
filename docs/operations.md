@@ -1368,9 +1368,12 @@ and nothing is frozen). Everything a person has to do is asked for here:
 - Disk space where the data directory goes. When it is too small the blank disks of the new host
   are listed: name one with `--data-disk`, or two for a mirror. Only disks without a partition
   table, filesystem, holder or mount are taken.
-- The link's rate and how long the copy will take at it. The instance runs during the copy; it is
-  frozen only for the last changes, the proof and the start, and the estimate of that freeze is
-  shown after the copy, before anything freezes (**Copy**, below). With a staged copy of an
+- The link's rate, how long the copy will take at it, and a first estimate of the freeze. The
+  instance runs during the copy; it is frozen only for the last changes, the proof and the start.
+  For the estimate the plan reads a sample of the data directory twice (two seconds at most the
+  first time) and takes how many entries a second the second reading looks at: the freeze counts
+  every entry four times at about that rate. The passes measure it again, and the line
+  `downtime` after the copy is the one that counts (**Copy**, below). With a staged copy of an
   earlier run on the new host the plan says so: only what changed since is sent.
 - The new public URL: `--public-url`, else the old URL, else for an address-made URL
   (`1-2-3-4.sslip.io`) the same form for the new address. A name that does not lead to the new
@@ -1423,7 +1426,10 @@ usual.
   again while the changes alone would take more than a minute to send, at most five times, and
   then freezes. With `--max-downtime <minutes>` it freezes only when the estimate is at most
   that; after five passes above it the move ends with exit 1, nothing was frozen, and the staged
-  copy stays: run the command again at a quieter time or with a higher bound.
+  copy stays: run the command again at a quieter time or with a higher bound. To copy first and
+  decide on the freeze later, give a bound the move cannot meet (`--max-downtime 1` on an
+  instance of any size): it copies, says its estimate and stops; the next run sends only what
+  changed since.
 - A pass that was cut (a broken link, Ctrl-C, a killed command) costs only what the new host had
   not yet taken in: run the same command again. Ctrl-C during the copy ends the command at once;
   nothing is frozen yet. The new host's data directory holds the staged copy's marker

@@ -117,8 +117,12 @@ Resume and bound
 - WCP-012 **Estimate.** After each delta pass the checklist shows the estimated freeze (item
   `downtime`) before anything freezes: four counts of the tree at the measured rate (two on each
   host), the time to send what will have changed since the pass began (the last pass's sending
-  time, scaled by how long changes gathered for it), and the start. The plan shows what is known
-  then: the first pass's size and rate, and the bound.
+  time, scaled by how long changes gathered for it), the new host's sync and the start (30 s:
+  the mark, the unit's start and its first answer took under 20 s between two emulated hosts).
+  The plan shows what is known then: the copy's size and time at the link's rate, the bound, and
+  a first estimate of the freeze: the entries of the data directory's filesystem counted four
+  times at the rate of a sample (what a walk reaches in 2 s, walked again and timed, so that the
+  rate is the one of cached metadata, as the passes find it), and the start.
 - WCP-013 **`--max-downtime <minutes>`.** While the estimate is above the bound the move copies
   again instead of freezing; after 5 delta passes in a run it stops without freezing, says so in
   a failed line (exit 1) and leaves the staged copy for the next run. Without the option it

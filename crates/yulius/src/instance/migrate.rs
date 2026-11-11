@@ -31,6 +31,8 @@ const LINK_TEST: u64 = 64 << 20;
 const HTTPS_WAIT: Duration = Duration::from_secs(300);
 /// How long the new instance has to say what it did with the tasks.
 const TASKS_WAIT: u64 = 180;
+/// How long the plan may read the data directory to measure how fast a pass looks at entries.
+const SAMPLE: Duration = Duration::from_secs(2);
 /// The old proxy's configuration before the redirect, in the state directory.
 const PROXY_BACKUP: &str = "Caddyfile.before";
 
@@ -261,6 +263,9 @@ pub trait World {
     fn sync(&mut self, dir: &Path) -> Result<(), String>;
     /// This boot's id ([`super::receipts::boot_id`]).
     fn boot(&self) -> String;
+    /// How many entries of `dir` a second a pass looks at once they are cached
+    /// ([`warm::sampled`]); `None` when it cannot be measured.
+    fn walk_rate(&mut self, dir: &Path) -> Option<f64>;
     /// The commit the instance listening at the loopback `address` reports; `None` while it
     /// does not answer.
     fn running(&mut self, address: &str) -> Option<String>;
@@ -2144,6 +2149,10 @@ impl World for RealWorld {
 
     fn boot(&self) -> String {
         super::receipts::boot_id()
+    }
+
+    fn walk_rate(&mut self, dir: &Path) -> Option<f64> {
+        warm::sampled(dir, SAMPLE).map(|(_, per_sec)| per_sec)
     }
 
     fn running(&mut self, address: &str) -> Option<String> {

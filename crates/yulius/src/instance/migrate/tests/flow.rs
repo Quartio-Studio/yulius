@@ -406,6 +406,8 @@ struct FakeWorld {
     no_sync: bool,
     /// Syncs asked for.
     syncs: u32,
+    /// Entries a second that a sample walk of the data directory measured.
+    walk_rate: Option<f64>,
     /// The old instance is updated to this build after the plan looked at it.
     updated_to: Option<&'static str>,
     /// Looks at the old instance's build.
@@ -472,6 +474,10 @@ impl World for FakeWorld {
 
     fn boot(&self) -> String {
         "boot".into()
+    }
+
+    fn walk_rate(&mut self, _: &Path) -> Option<f64> {
+        self.walk_rate
     }
 
     fn running(&mut self, _: &str) -> Option<String> {
@@ -643,6 +649,7 @@ fn setup() -> Result<Setup, Box<dyn std::error::Error>> {
             ahead: 3600,
             no_sync: false,
             syncs: 0,
+            walk_rate: Some(100_000.0),
             updated_to: None,
             looks: 0,
         },
@@ -2387,6 +2394,52 @@ fn a_bound_of_a_minute_can_be_met() -> TestResult {
         !s.shown().contains("so the move copies again"),
         "{}",
         s.shown()
+    );
+    Ok(())
+}
+
+#[test]
+fn the_plan_gives_a_first_estimate_of_the_freeze_from_a_sample_of_the_tree() -> TestResult {
+    // 6.4 million inodes are used where the data is; a pass looks at 100,000 entries a second.
+    let mut s = setup()?;
+    s.opts.yes = false;
+    assert_eq!(s.run()?, 0);
+    let status = s.status()?;
+    let downtime = line(&status, "downtime").ok_or("no downtime line")?;
+    assert_eq!(downtime.outcome, HostOutcome::Ok);
+    // Four counts of 64 s and half a minute for the start.
+    assert!(
+        downtime.detail.contains(
+            "then it is frozen for about 5 min: up to 6400000 entries are counted four times \
+             (about 100000 a second here, twice on each host)"
+        ) && downtime
+            .detail
+            .contains("It is measured again before the freeze"),
+        "{}",
+        downtime.detail
+    );
+    assert!(
+        downtime
+            .detail
+            .starts_with("the instance runs during the copy (about "),
+        "{}",
+        downtime.detail
+    );
+
+    // A tree that cannot be sampled: no number, and the estimate still comes before the freeze.
+    let mut s = setup()?;
+    s.opts.yes = false;
+    s.world.walk_rate = None;
+    assert_eq!(s.run()?, 0);
+    let status = s.status()?;
+    let downtime = line(&status, "downtime").ok_or("no downtime line")?;
+    assert!(
+        !downtime.detail.contains("frozen for about")
+            && downtime
+                .detail
+                .contains("The estimate is shown before the freeze"),
+        "{}",
+        downtime.detail
     );
     Ok(())
 }

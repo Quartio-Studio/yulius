@@ -3,7 +3,8 @@
 //! and the frozen pass that sends only what the receipts do not cover.
 
 use std::io::{self, Write};
-use std::time::Instant;
+use std::path::Path;
+use std::time::{Duration, Instant};
 
 use super::profile::Profile;
 use super::target::{Expect, Facts, Request};
@@ -13,7 +14,7 @@ use crate::instance::export::{self, Sent};
 use crate::instance::freeze::Freeze;
 use crate::instance::inventory::{Counter, IdSpace, Inventory};
 use crate::instance::receipts::{self, Stage};
-use crate::instance::{Manifest, Pass, Progress};
+use crate::instance::{Manifest, Pass, Progress, walk};
 
 /// The delta passes one run makes before it freezes anyway, or stops when the freeze is bound.
 pub const MAX_DELTA_PASSES: u32 = 5;
@@ -57,6 +58,29 @@ pub fn estimate(m: &Measured) -> (u64, u64) {
     (total as u64 + START_SECS, changes.round() as u64)
 }
 
+/// How fast a pass looks at entries of `root` once their metadata is cached: what a walk
+/// reaches within `cold` is walked a second time, and that second walk is timed. The entries of
+/// the sample and the entries a second; `None` when nothing can be read.
+#[must_use]
+pub fn sampled(root: &Path, cold: Duration) -> Option<(u64, f64)> {
+    let walked = |limit: Option<Duration>, most: u64| {
+        let started = Instant::now();
+        let mut seen = 0u64;
+        // Ended by its own answer once it has seen enough; what it saw until then counts.
+        let _ = walk::walk_seen(root, true, &walk::copied, &mut |_| {
+            seen += 1;
+            if seen >= most || limit.is_some_and(|limit| started.elapsed() >= limit) {
+                return Err(io::Error::other("enough"));
+            }
+            Ok(true)
+        });
+        (seen, started.elapsed())
+    };
+    let (found, _) = walked(Some(cold), u64::MAX);
+    let (again, took) = walked(None, found);
+    (again > 0).then(|| (again, again as f64 / took.as_secs_f64().max(1e-6)))
+}
+
 fn span(secs: u64) -> String {
     if secs < 120 {
         format!("{secs} s")
@@ -87,13 +111,31 @@ impl Move<'_> {
                 bytes(p.used_bytes)
             )
         };
-        self.ok(
-            "downtime",
-            format!(
-                "{copy}; it is frozen only for the last changes, the proof and the start. The \
-                 estimate is shown before the freeze{bound}"
-            ),
-        );
+        // A first estimate, before anything is copied: the passes will measure it again.
+        let entries = p.used_inodes;
+        let freeze = self
+            .world
+            .walk_rate(&self.opts.data_dir)
+            .filter(|per_sec| *per_sec >= 1.0 && entries > 0)
+            .map_or_else(
+                || {
+                    "it is frozen only for the last changes, the proof and the start. The \
+                     estimate is shown before the freeze"
+                        .to_owned()
+                },
+                |per_sec| {
+                    let counts = (4.0 * entries as f64 / per_sec).round() as u64;
+                    format!(
+                        "then it is frozen for about {}: up to {entries} entries are counted \
+                         four times (about {} a second here, twice on each host), what changed \
+                         during the last pass is sent, and the new instance starts. It is \
+                         measured again before the freeze",
+                        span(counts + START_SECS),
+                        per_sec.round() as u64
+                    )
+                },
+            );
+        self.ok("downtime", format!("{copy}; {freeze}{bound}"));
     }
 
     /// Makes the receipts agree with the new host's marker; `Ok(true)` when the hosts agree on
@@ -450,5 +492,32 @@ mod tests {
             (span(119), span(120), span(121)),
             ("119 s".into(), "2 min".into(), "3 min".into())
         );
+    }
+
+    #[test]
+    fn a_sample_of_the_tree_says_how_fast_a_pass_looks_at_entries()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        for d in 0..5 {
+            std::fs::create_dir_all(dir.path().join(format!("sandboxes/d{d}")))?;
+            for f in 0..40 {
+                std::fs::write(dir.path().join(format!("sandboxes/d{d}/f{f}")), b"x")?;
+            }
+        }
+        // What a copy leaves out is not sampled.
+        std::fs::create_dir_all(dir.path().join("system/base"))?;
+        let (entries, rate) = sampled(dir.path(), Duration::from_secs(5)).ok_or("no rate")?;
+        // The data directory, `sandboxes`, five directories and their 200 files.
+        assert_eq!(entries, 207);
+        assert!(rate > 1.0, "{rate}");
+        // A sample is cut by the time it may take, and then read again as far as it got.
+        let (entries, rate) = sampled(dir.path(), Duration::ZERO).ok_or("no rate")?;
+        assert_eq!(entries, 1);
+        assert!(rate > 0.0);
+        assert_eq!(
+            sampled(&dir.path().join("missing"), Duration::from_secs(1)),
+            None
+        );
+        Ok(())
     }
 }
