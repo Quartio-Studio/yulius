@@ -37,9 +37,11 @@ knows as plain text (2.1.322 holds `claude-fable-5-2` 26 times, 2.1.311 not once
   transcript names. When a turn ends and the session runs an older one than runs get now, Yulius
   restarts it on the newer one in the same Claude session, on the same subscription, through the
   subscription switch (reason `claude_code`): never while background work runs (a `yulius wait`
-  included) or a person typed in the last minute, once per version, and a version a session
-  could not continue on gets no further moves. A goal session moves only while its goal is set
-  and unmet.
+  included) or a person typed in the last minute, once per version. A version a session could
+  not continue on gets no further moves: the restart could not start, or the restarted session
+  ended by itself or stayed silent for two minutes before it started. A restart refused before
+  it began has its own ten-minute wait and is no switch decision. A goal session moves only
+  while its goal is set and unmet.
 
 ## Alternatives
 
@@ -68,7 +70,9 @@ knows as plain text (2.1.322 holds `claude-fable-5-2` 26 times, 2.1.311 not once
   so would be refused release after release, loudly; the host's install, which runs get when it
   is newer, is the way through until the check is adapted.
 - A default model newer than every Claude Code release is refused loudly instead of being run
-  half-known; the default should not move before a release knows it.
+  half-known; the default should not move before a release knows it. "No release knows it yet"
+  is said only from the server's read of the registry in the last two hours, on a channel that
+  reads it: a remembered `latest` is not the newest release.
 - The model check reads the downloaded binary once (about 340 MB) and the version in use once per
   change; nothing is executed.
 - A task whose session was restarted for a new version shows one more session in its info, with

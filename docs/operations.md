@@ -664,15 +664,25 @@ SPEC-461), with no root step and no sign-in again:
   typed into it in the last minute, and tries once per version. A goal session moves at a turn
   it works on after, while its goal is set and not yet achieved; an idle one, and a goal task
   that is Done, keep their version until their next start. The card lists the
-  tasks still on an older version, and each task's info shows the version each session ran. If
-  a session cannot continue on a version, no other is sent to it and the card says so.
+  tasks still on an older version, and each task's info shows the version each session ran.
+  Yulius does not know a schedule a session set for itself (Claude Code's `/loop`): such a
+  session is restarted like any other, and the schedule ends with its process.
+- **A version a session cannot continue on gets no other running session.** That is: the
+  restart could not be started, the restarted session ended by itself before it started, or it
+  did not start within two minutes (a dialog a release opens on; that session is left as it is,
+  for its person). The card names the task and what happened. Sessions that start or continue
+  still get that version, so choose Off (the host's install) when it does not work at all. A
+  newer version, or a restart of the server, lifts it. A restart that cannot be made right now
+  (the subscription is at its limit, the sandbox cannot be joined) says nothing, is no entry in
+  the task's switches, and is tried again at a turn's end ten minutes later or more.
 - **When the version in use does not know the default model**, the card shows a red banner with
   the fix and `yulius doctor --contained` prints "Claude Code in sandboxes" as `FAIL`. The fix is
   the next check (or "Check now"), which installs a release that knows it; or, at once, a newer
   install on the host: `sudo npm install -g @anthropic-ai/claude-code@latest` (runs get the newer
   of the host's and Yulius's). If npm's newest release does not know it either (it was refused,
   or it is what runs get), no release knows the model yet: choose a model Claude Code knows for
-  tasks until one does.
+  tasks until one does. The card and the doctor say that only from the server's own read of the
+  registry in the last two hours: not with Off, and not after a check that failed.
 - The host's install is never changed; updating it by hand past Yulius's version makes runs use it.
   Without an npm install on the host, sandboxes have no Claude Code and nothing is updated.
 - The server writes what it last knew (channel, npm's `latest` and `stable`, what the last check

@@ -309,6 +309,8 @@ as its service user ([SPEC-421](../.ai/specs/SPEC-421-claude-should-autoupdate-w
   (`metrics.cli_version`); when a turn ends and that is older than what runs get now, the session
   is restarted on the newer one through the subscription switch (reason `claude_code`), at the
   Stop hook of a turn it works on after, or once an idle prompt-mode session's turn has settled.
+  A restart whose session does not reach its SessionStart hook (the launch fails, the process
+  ends by itself, or two minutes pass) stops further restarts on that version.
 
 `NamespaceIsolation` puts the newer of the host's npm package and `current` into each join's
 `extra_binds`, read-only at the host package's path, as the channel says when the run starts
