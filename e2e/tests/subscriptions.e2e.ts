@@ -1,6 +1,6 @@
 import { type Browser, type Screen, test } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, failOnPageErrors, mock } from './support.ts';
+import { axeViolations, failOnPageErrors, firstShown, mock } from './support.ts';
 
 failOnPageErrors();
 
@@ -354,6 +354,7 @@ test('a finished Claude sign-in closes its dialog by itself and says the subscri
 
 test('a sign-in of a subscription whose email was typed does not say Claude confirmed it (SPEC-463 EML-006)', async ({ app, browser, screen }) => {
   await app.open(mock('/admin/accounts', '&ambient=0'));
+  await firstShown(browser.locator('main .account-card').first());
   // Claude #3 needs a new sign-in, and an administrator types its email first.
   await screen.getByRole('button', 'Change the email of Claude #3').click();
   await screen.getByRole('textbox', 'Email of Claude #3').fill('agent@example.com');

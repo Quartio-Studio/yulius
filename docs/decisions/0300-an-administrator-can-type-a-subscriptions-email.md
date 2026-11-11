@@ -36,9 +36,10 @@ typing the email, and SPEC-001 ROT-009 and UI-022. The rest of ADR-0185 stands.
   it. A new sign-in keeps it, and Claude's answer never replaces it: beside a typed email only the
   time of the answer is stored. Removing it clears the email and that time, so the background
   round asks Claude once more and shows what it answers.
-- **Each of the store's three writes settles a typed email in one SQL statement**
-  (`set_account_email`, `set_account_credential`, `update_account`), so an answer from Claude
-  that arrives while a person types cannot replace what they typed.
+- **Each of the store's three writes settles the email in one SQL statement**
+  (`set_account_email`, `set_account_credential`, `update_account`, which writes a name changed
+  with it in the same transaction), so an answer from Claude that arrives while a person types
+  cannot replace what they typed.
 - **Yulius never says Claude confirmed a typed email.** `AccountView` carries `email_typed`, and
   the toast after a sign-in names the email only when Claude gave it.
 - **Removing takes Enter.** Leaving a field saves what was typed, as for the name, but an emptied
@@ -70,6 +71,11 @@ typing the email, and SPEC-001 ROT-009 and UI-022. The rest of ADR-0185 stands.
   within minutes: the line shows what the administrator typed, else what Claude shares.
 - Schema version 51 adds `accounts.email_typed`; every email stored before stays Claude's. An
   older build refuses the newer database, as for every schema change (ADR-0264).
-- The Subscriptions page no longer redraws its list while a name or an email field is open, also
-  when the list was already being read as the field opened. Before, saving one line and going
-  straight on to the other lost the second field, and its blur saved what was half typed.
+- An update no longer redraws the Subscriptions list while a name or an email field is open, also
+  when the list was already being read as the field opened: the refresh waits, and is read once
+  the field's save has settled. A reload the person starts (Add, Remove, a finished sign-in)
+  still redraws. Before, saving one line and going straight on to the other lost the second
+  field, and its blur saved what was half typed; and an update that came while a field was open
+  was not drawn after a save by leaving the field.
+- The email field is a text field with an email keyboard, not an `email` field: Chromium returns
+  an `email` field's domain in punycode, so the address would not be stored as it was typed.

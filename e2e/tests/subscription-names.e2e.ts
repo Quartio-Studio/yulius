@@ -1,6 +1,6 @@
 import { type Browser, test } from '@e2e-dev/web';
-import { expect } from 'e2e';
-import { axeViolations, failOnPageErrors, mock } from './support.ts';
+import { type App, expect } from 'e2e';
+import { axeViolations, failOnPageErrors, firstShown, mock } from './support.ts';
 
 failOnPageErrors();
 
@@ -12,6 +12,33 @@ const cards = (browser: Browser) => browser.evaluate(() =>
     name: card.querySelector('.account-name strong')?.textContent ?? null,
     email: card.querySelector('.account-sub')?.textContent ?? null,
   })));
+
+type Mock = {
+  __yuliusMock: {
+    accounts: { id: string; label: string; email: string | null; email_typed?: boolean }[];
+    sent?: Record<string, number>;
+    holdPath: string | null;
+    held: Promise<void> | null;
+    release: () => void;
+    released: boolean;
+  };
+};
+
+/** Opens the Subscriptions page and waits, within a first load's budget, for its cards. */
+async function openSubscriptions(app: App, browser: Browser) {
+  await app.open(mock('/admin/accounts', '&ambient=0'));
+  await firstShown(browser.locator('main .account-card').first());
+}
+
+/** The changes sent for subscription `id`, counted by the mock as the page asks (not as it answers). */
+const sentFor = (browser: Browser, id: string) => browser.evaluate((account) =>
+  (window as unknown as Mock).__yuliusMock.sent?.[`PATCH /api/admin/accounts/${account}`] ?? 0, id);
+
+/** What the mock's server holds for the subscription named `label`. */
+const stored = (browser: Browser, label: string) => browser.evaluate((name) => {
+  const account = (window as unknown as Mock).__yuliusMock.accounts.find((a) => a.label === name);
+  return account ? { email: account.email, typed: Boolean(account.email_typed) } : null;
+}, label);
 
 test('each subscription shows the email of its Claude account, or that it is unknown', async ({ app, browser }) => {
   await app.open(mock('/admin/accounts', '&ambient=0'));
@@ -92,7 +119,7 @@ test("leaving one subscription's name for another's Rename keeps the second one 
 // "email unknown", because Claude gives no email to a `setup-token` sign-in.
 
 test("a subscription's email is typed in place under its name: \"Agent TEAM\" over its address", async ({ app, browser, screen }) => {
-  await app.open(mock('/admin/accounts', '&ambient=0'));
+  await openSubscriptions(app, browser);
   const emailLine = (name: string) => browser.locator(`main .account-card:has-text("${name}") .account-sub`);
   await screen.getByRole('button', 'Change the email of Claude spare').click();
   const field = screen.getByRole('textbox', 'Email of Claude spare');
@@ -115,7 +142,8 @@ test("a subscription's email is typed in place under its name: \"Agent TEAM\" ov
   await field.press('Escape');
   await expect(emailLine('Claude spare')).toHaveText('email unknown');
   await expect(screen.getByRole('button', 'Change the email of Claude spare')).toBeFocused();
-  expect(await browser.evaluate(() => document.body.innerText.includes('typed@example.com'))).toBe(false);
+  // Neither the refused value nor the cancelled one was sent.
+  expect(await sentFor(browser, 'acc_x3')).toBe(0);
 
   // A click on "email unknown" edits it too; Enter saves the trimmed address.
   await emailLine('Claude spare').click();
@@ -124,6 +152,8 @@ test("a subscription's email is typed in place under its name: \"Agent TEAM\" ov
   await expect(screen.getByText('Email of Claude spare is now agent@example.com.')).toBeVisible();
   await expect(screen.getByRole('button', 'Change the email of Claude spare')).toBeFocused();
   await expect(emailLine('Claude spare')).toHaveText('agent@example.com');
+  expect(await stored(browser, 'Claude spare')).toEqual({ email: 'agent@example.com', typed: true });
+  expect(await sentFor(browser, 'acc_x3')).toBe(1);
 
   // The name above it is edited the same way: the card reads "Agent TEAM" over its address.
   await screen.getByRole('button', 'Rename Claude spare').click();
@@ -146,6 +176,7 @@ test("a subscription's email is typed in place under its name: \"Agent TEAM\" ov
   await browser.locator('main h1').click();
   await expect(screen.getByRole('textbox', 'Email of Agent TEAM')).toBeHidden();
   await expect(emailLine('Agent TEAM')).toHaveText('agent@example.com');
+  expect(await stored(browser, 'Agent TEAM')).toEqual({ email: 'agent@example.com', typed: true });
   // Enter in the empty field removes it: unknown again.
   await screen.getByRole('button', 'Change the email of Agent TEAM').click();
   const again = screen.getByRole('textbox', 'Email of Agent TEAM');
@@ -153,19 +184,23 @@ test("a subscription's email is typed in place under its name: \"Agent TEAM\" ov
   await again.press('Enter');
   await expect(screen.getByText('Email of Agent TEAM removed.')).toBeVisible();
   await expect(emailLine('Agent TEAM')).toHaveText('email unknown');
+  expect(await stored(browser, 'Agent TEAM')).toEqual({ email: null, typed: false });
 
   expect(await axeViolations(browser)).toEqual([]);
 });
 
 test("leaving a subscription's email for another field saves it and keeps that field open", async ({ app, browser, screen }) => {
-  await app.open(mock('/admin/accounts', '&ambient=0'));
+  await openSubscriptions(app, browser);
   // An email Claude gave is changed the same way; unchanged, it is not sent.
   await screen.getByRole('button', 'Change the email of Claude #1').click();
   await expect(screen.getByRole('textbox', 'Email of Claude #1')).toHaveValue('mkarp@example.com');
-  // From the email to the name of the same card: the email closes as it was.
+  // From the email to the name of the same card: the email closes as it was, and nothing is
+  // sent, so an email Claude gave is not marked as typed.
   await screen.getByRole('button', 'Rename Claude #1').click();
   await expect(screen.getByRole('textbox', 'New name for Claude #1')).toBeFocused();
   await expect(browser.locator('main .account-card:has-text("mkarp@example.com") .account-sub')).toHaveText('mkarp@example.com');
+  expect(await sentFor(browser, 'acc_c1')).toBe(0);
+  expect(await stored(browser, 'Claude #1')).toEqual({ email: 'mkarp@example.com', typed: false });
   // From a typed email to another card's email: saved by leaving, and the update it causes
   // does not redraw the second field away.
   await screen.getByRole('button', 'Change the email of Claude #4').click();
@@ -182,47 +217,109 @@ test("leaving a subscription's email for another field saves it and keeps that f
   await expect(next).toHaveValue('half-typed@');
   await next.press('Escape');
   await expect(screen.getByRole('button', 'Change the email of Claude #5')).toBeFocused();
-  // Nothing was sent for the emails left unchanged or cancelled.
+  // Nothing was sent for the emails left unchanged or cancelled; one change for the one typed.
+  expect([await sentFor(browser, 'acc_c1'), await sentFor(browser, 'acc_x1'), await sentFor(browser, 'acc_x2')]).toEqual([0, 1, 0]);
   expect((await cards(browser)).map((c) => c.email)).toEqual(['mkarp@example.com', 'team@example.com', 'ops@example.com', 'personal@example.com', 'studio@example.com', 'email unknown']);
 });
 
-type Holding = { __yuliusMock: { holdPath: string | null; held: Promise<void> | null; release: () => void; released: boolean; heldWaiting?: number } };
+/** Whether the list says a refresh waits for an open field (`data-refresh="waiting"`). */
+const refreshWaits = (browser: Browser) => browser.locator('main [data-refresh="waiting"]');
 
 test('a field opened while the list is read again is neither closed nor saved by that read', async ({ app, browser, screen }) => {
-  await app.open(mock('/admin/accounts', '&ambient=0'));
-  await expect(screen.getByRole('button', 'Change the email of Claude spare')).toBeVisible();
+  await openSubscriptions(app, browser);
   // From now on the list's reads wait, as on a slow connection.
   await browser.evaluate(() => {
-    const db = (window as unknown as Holding).__yuliusMock;
+    const db = (window as unknown as Mock).__yuliusMock;
     db.holdPath = '/api/admin/accounts';
     db.released = false;
     db.held = new Promise<void>((resolve) => { db.release = () => { db.released = true; resolve(); }; });
   });
-  const waiting = () => browser.evaluate(() => (window as unknown as Holding).__yuliusMock.heldWaiting ?? 0);
 
   // The email is saved; its update makes the page read the list again.
   await screen.getByRole('button', 'Change the email of Claude spare').click();
   await screen.getByRole('textbox', 'Email of Claude spare').fill('agent@example.com');
   await screen.getByRole('textbox', 'Email of Claude spare').press('Enter');
   await expect(screen.getByText('Email of Claude spare is now agent@example.com.')).toBeVisible();
-  await expect.poll(waiting).toBe(1);
-  // The person goes on to the name while that read is on its way.
+  // The person goes on to the name while that read is on its way. Meanwhile another
+  // administrator renames another subscription: the read carries it.
   await screen.getByRole('button', 'Rename Claude spare').click();
   const name = screen.getByRole('textbox', 'New name for Claude spare');
   await name.fill('Agent TE');
-  await browser.evaluate(() => (window as unknown as Holding).__yuliusMock.release());
-  await expect.poll(waiting).toBe(0);
-  // The read has landed (two frames later the page would have drawn it): the field is as it was.
-  await browser.evaluate(() => new Promise((resolve) => { requestAnimationFrame(() => requestAnimationFrame(() => resolve(null))); }));
+  await expect(refreshWaits(browser)).toHaveCount(0);
+  await browser.evaluate(() => {
+    const db = (window as unknown as Mock).__yuliusMock;
+    const other = db.accounts.find((a) => a.label === 'Claude #2');
+    if (other) other.label = 'renamed elsewhere';
+    db.release();
+  });
+  // The read has landed, and the list says it waits: the field is as it was, nothing was sent.
+  await expect(refreshWaits(browser)).toHaveCount(1);
   await expect(name).toBeFocused();
   await expect(name).toHaveValue('Agent TE');
-  expect((await cards(browser)).map((c) => c.name)).not.toContain('Agent TE');
+  expect(await sentFor(browser, 'acc_x3')).toBe(1);
+  expect((await cards(browser)).map((c) => c.name)).not.toContain('renamed elsewhere');
 
-  // Once the name is saved, the page shows both lines from the server.
+  // The name is saved by leaving the field. No focus leaves the list after that, and still the
+  // list is read again: both lines from the server, and what the held read carried.
   await name.fill('Agent TEAM');
-  await name.press('Enter');
+  await browser.locator('main h1').click();
   await expect(screen.getByText('Subscription renamed to Agent TEAM.')).toBeVisible();
-  await expect.poll(async () => (await cards(browser)).filter((c) => c.name === 'Agent TEAM')).toEqual([{ name: 'Agent TEAM', email: 'agent@example.com' }]);
+  await expect(refreshWaits(browser)).toHaveCount(0);
+  await expect.poll(async () => (await cards(browser)).map((c) => c.name)).toContain('renamed elsewhere');
+  expect((await cards(browser)).filter((c) => c.name === 'Agent TEAM')).toEqual([{ name: 'Agent TEAM', email: 'agent@example.com' }]);
+});
+
+test('an email saved by leaving its field is drawn from the server: the initials follow it', async ({ app, browser, screen }) => {
+  await openSubscriptions(app, browser);
+  const initials = browser.locator('main .account-card:has-text("Claude spare") .account-avatar');
+  await expect(initials).toHaveText('CS');
+  // Typed and left: the save's update arrives while the field is still shown, and the field
+  // that closes afterwards no longer has the focus.
+  await screen.getByRole('button', 'Change the email of Claude spare').click();
+  await screen.getByRole('textbox', 'Email of Claude spare').fill('agent@example.com');
+  await browser.locator('main h1').click();
+  await expect(screen.getByText('Email of Claude spare is now agent@example.com.')).toBeVisible();
+  await expect(initials).toHaveText('AG');
+  await expect(refreshWaits(browser)).toHaveCount(0);
+});
+
+test('a change the server refuses keeps the field open with the server\'s words, for the name and the email', async ({ app, browser, screen }) => {
+  await openSubscriptions(app, browser);
+  await screen.getByRole('button', 'Change the email of Claude #5').click();
+  const email = screen.getByRole('textbox', 'Email of Claude #5');
+  await expect(email).toBeFocused();
+  // Another administrator removes the subscription meanwhile: the server no longer has it.
+  await browser.evaluate(() => {
+    const db = (window as unknown as Mock).__yuliusMock;
+    db.accounts = db.accounts.filter((a) => a.label !== 'Claude #5');
+  });
+  const inCard = (selector: string) => browser.locator(`main .account-card:has-text("Claude #5") ${selector}`);
+  await email.fill('studio-team@example.com');
+  await email.press('Enter');
+  await expect(inCard('[role="alert"]')).toHaveText('not found');
+  await expect(email).toBeFocused();
+  await expect(email).toHaveValue('studio-team@example.com');
+  await email.press('Escape');
+  await expect(inCard('.account-sub')).toHaveText('studio@example.com');
+
+  await screen.getByRole('button', 'Rename Claude #5').click();
+  const name = screen.getByRole('textbox', 'New name for Claude #5');
+  await name.fill('studio');
+  await name.press('Enter');
+  // While its name is a field, the card is told by its email.
+  await expect(browser.locator('main .account-card:has-text("studio@example.com") [role="alert"]')).toHaveText('not found');
+  await expect(name).toBeFocused();
+  await name.press('Escape');
+  await expect(inCard('.account-name strong')).toHaveText('Claude #5');
+});
+
+test('an address is kept as it was typed, also with letters outside ASCII in its domain', async ({ app, browser, screen }) => {
+  await openSubscriptions(app, browser);
+  await screen.getByRole('button', 'Change the email of Claude spare').click();
+  await screen.getByRole('textbox', 'Email of Claude spare').fill('jan@b\u00fccher.example');
+  await screen.getByRole('textbox', 'Email of Claude spare').press('Enter');
+  await expect(browser.locator('main .account-card:has-text("Claude spare") .account-sub')).toHaveText('jan@b\u00fccher.example');
+  expect(await stored(browser, 'Claude spare')).toEqual({ email: 'jan@b\u00fccher.example', typed: true });
 });
 
 test('someone who does not manage subscriptions sees their names without emails (UI-022)', async ({ app, browser, screen }) => {

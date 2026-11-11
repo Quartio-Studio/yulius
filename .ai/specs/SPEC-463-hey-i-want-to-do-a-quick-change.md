@@ -55,7 +55,7 @@ Confirmed against `dev` at dbec951d.
 
 | ID | Requirement |
 | --- | --- |
-| EML-001 | On the Subscriptions page the email line of each subscription is edited in place, as its name is: a pencil button "Change the email of *name*" (or a click on the email, or on "email unknown") turns the line into a field holding the current email, empty when it is unknown. Enter or leaving the field saves it, and Escape cancels, even after an email was typed. The value is trimmed; an unchanged one closes the field without a request. A value that is not an address is refused before anything is sent ("Type an address like name@example.com."), and one the server refuses gets the server's message; either way the field stays open. Focus returns to the field only after Enter, never when the person left it. Once a key ends the edit, the keyboard is back on the pencil. A saved email shows at once on the card and, through `account.updated`, in every open view. An update that arrives while a field is open neither closes it nor saves it. |
+| EML-001 | On the Subscriptions page the email line of each subscription is edited in place, as its name is: a pencil button "Change the email of *name*" (or a click on the email, or on "email unknown") turns the line into a field holding the current email, empty when it is unknown. Enter or leaving the field saves it, and Escape cancels, even after an email was typed. The value is trimmed; an unchanged one closes the field without a request. A value that is not an address is refused before anything is sent ("Type an address like name@example.com."), and one the server refuses gets the server's message; either way the field stays open. Focus returns to the field only after Enter, never when the person left it. Once a key ends the edit, the keyboard is back on the pencil. A saved email shows at once on the card and, through `account.updated`, in every open view. An update that arrives while a field is open, or a list read that was on its way when it opened, neither closes it nor saves it; it is drawn once the field's save has settled or the field has closed. The address is stored as it was typed. |
 | EML-002 | Enter in an empty field removes the typed email: the subscription then shows what Claude shares for its sign-in, or "email unknown". Leaving an emptied field removes nothing: the field closes and the email stays. |
 | EML-003 | `PATCH /api/admin/accounts/{id}` takes `label`, `email`, or both; a request with neither, or with any other field, is `invalid` (422). `email` is a string, trimmed: an address (one `@` with text on both sides, no whitespace or control characters, at most 254 characters), or empty to remove it. Nothing is written when either field is refused. Only instance administrators and the superadmin may call it (403 otherwise, unchanged ACC-009). It is audited as `account.updated` with `email=set` or `email=removed`, never the address. |
 | EML-004 | A typed email is the person's, like the name: it stays when the subscription signs in again, and an answer from Claude never replaces it. Removing it lets the background round ask Claude again, once. An email read from Claude is still dropped by a new sign-in (SUB-003 unchanged). |
@@ -80,7 +80,14 @@ Confirmed against `dev` at dbec951d.
 - A value that is not an address is refused with the field kept open, and nothing is sent or
   stored; Escape keeps the earlier email; Enter in an empty field brings "email unknown" back;
   leaving an emptied field keeps the email (e2e, API test).
-- A field that is open keeps its text and its focus when another subscription's change arrives
+- A field that is open keeps its text and its focus when another subscription's change arrives,
+  and when a list read that was on its way lands; nothing is sent for it. After a save by leaving
+  the field, the list is read again: the initials follow the email, and a change another
+  administrator made meanwhile shows (e2e).
+- An unchanged, a refused and a cancelled value are never sent; an address Claude gave is not
+  marked as typed by opening and closing its field (e2e, counted by the mock).
+- An address with a domain outside ASCII is stored and shown as typed (e2e).
+- A change the server refuses keeps the field open with the server's message, for both lines
   (e2e).
 - A member is refused the change with 403, and sees no email anywhere (API test).
 - A request with a good name and a bad email, or the reverse, writes neither; `{"email": null}`
@@ -111,8 +118,11 @@ Confirmed against `dev` at dbec951d.
   audit detail has no address.
 - Web: the mock's `PATCH` follows the server's rule. The e2e `subscription-names` spec edits the
   email in place (refusal, Escape, save, removal by Enter, leaving an emptied field, the two-line
-  format, an update while a field is open, focus back on the pencil) with no WCAG violation; the
-  `subscriptions` spec signs a subscription with a typed email in again and reads the toast.
+  format, focus back on the pencil) with no WCAG violation. It counts the changes the mock was
+  sent, so "not sent" can fail. It holds the list's read to open a field while the read is on its
+  way, waits until the list says a refresh waits, and saves by leaving. It checks a server
+  refusal on both lines and an address outside ASCII. The `subscriptions` spec signs a
+  subscription with a typed email in again and reads the toast.
 - Gates: `scripts/dev ci`, the e2e suite, `scripts/dev security`.
 
 ## Decisions
@@ -155,6 +165,15 @@ Confirmed against `dev` at dbec951d.
   the Dashboard stay read-only, hint included.
 - **One implementation for both lines.** The focus rules of the name edit took SPEC-244 three
   review rounds; the email line uses the same code, so they cannot drift apart.
+- **The page holds its refresh while a field is open, and reads it when the save settles.** Two
+  editable lines make "save one, go on to the other" the usual flow, and it hit two races of the
+  name edit: a list read on its way redrew the field just opened (its blur saved what was half
+  typed), and an update that came during a save by leaving was never drawn, because the field
+  that closes then has no focus to lose. The loader takes a `hold` for quiet refreshes only; a
+  reload the person starts still redraws. The list says that a refresh waits
+  (`data-refresh="waiting"`), which is what the test waits on.
+- **The email field is a text field with an email keyboard.** An `email` field returns its domain
+  in punycode in Chromium, so the address would not be stored as typed.
 - **Initials are unchanged**: an avatar takes them from the email's name part when there is an
   email, else from the name.
 - **Rollback is as for every schema change** (ADR-0264): the update restores the database it

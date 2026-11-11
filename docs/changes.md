@@ -15,7 +15,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   toast after a sign-in names only an email Claude gave. `PATCH /api/admin/accounts/{id}` takes
   `email` beside an optional `label`, and `Account` carries `email_typed`. Also fixed on that
   page: saving one line and going straight on to the other could lose the second field and save
-  what was half typed, because a list refresh already on its way redrew it.
+  what was half typed, because a list refresh already on its way redrew it; and an update that
+  came while a field was open was not drawn after a save by leaving the field.
 - `browser_screenshot` never shows an agent secret typed with `browser_fill_secret` (SPEC-450,
   task #432, ADR-0291, #1113). Yulius reads each page before and after capturing it and refuses
   the screenshot, pointing to `browser_snapshot`, while the page shows any agent secret or cannot

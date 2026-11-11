@@ -129,7 +129,8 @@ export function dataTable(columns, rows, { onRowClick, empty = 'Nothing here yet
  * Returns a reload function. Concurrent reloads keep only the latest result. `reload({ quiet })`
  * refreshes in place for live pages: no dimming, and a failure keeps what is shown. `hold()`
  * says, when a quiet refresh's data arrives, that the page must not be redrawn now (a field a
- * person types in): what is shown stays, and the page reloads once it lets go.
+ * person types in): what is shown stays and the data is dropped, so the page that holds reloads
+ * once it lets go. A reload that is not quiet (the person's own action) always redraws.
  */
 export function loader(container, what, fetcher, render, { shape = 'lines', hold = null } = {}) {
   let generation = 0;

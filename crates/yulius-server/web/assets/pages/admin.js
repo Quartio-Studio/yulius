@@ -369,16 +369,30 @@ export function mountAccountsPage(ctx, route) {
     return false;
   });
 
-  // A name or an email being edited is not redrawn away by an update: the reload waits until
+  // A name or an email being edited is not redrawn away by an update: the refresh waits until
   // the field closes (the reload keeps focus on the same control). That holds for an update
   // that comes while the field is open, and for a list read that was on its way when it opened
-  // (SPEC-463 EML-001): a person who saves the email goes straight on to the name.
+  // (SPEC-463 EML-001): a person who saves the email goes straight on to the name. The list
+  // says that a refresh waits (`data-refresh="waiting"`).
   let pendingReload = false;
   const editing = () => Boolean(host.querySelector('.account-rename-input'));
+  const defer = () => {
+    pendingReload = true;
+    host.dataset.refresh = 'waiting';
+  };
+  const flush = () => {
+    if (!pendingReload || editing()) return;
+    pendingReload = false;
+    delete host.dataset.refresh;
+    reload({ quiet: true });
+  };
   const heldByField = () => {
-    if (editing()) pendingReload = true;
+    if (editing()) defer();
     return editing();
   };
+  // A save by leaving closes a field that no longer has the focus, so no focusout follows it:
+  // the waiting refresh is read once the save has settled and its field is gone.
+  const settled = () => setTimeout(flush, 0);
 
   // Capacity is read beside the subscriptions, so the panel above them is in place before they
   // land (SPEC-120). Each later render (after an add or a removal) reads it again, and so does
@@ -394,15 +408,23 @@ export function mountAccountsPage(ctx, route) {
     return h('div', { class: 'grid-2' }, accounts.map((account) => {
       // The name is edited in place (SPEC-244 SUB-001); the server trims and validates it.
       const rename = async (label) => {
-        const fresh = await ctx.api.patch(`/api/admin/accounts/${enc(account.id)}`, { label });
-        Object.assign(account, fresh);
-        toast(`Subscription renamed to ${account.label}.`, { kind: 'ok' });
+        try {
+          const fresh = await ctx.api.patch(`/api/admin/accounts/${enc(account.id)}`, { label });
+          Object.assign(account, fresh);
+          toast(`Subscription renamed to ${account.label}.`, { kind: 'ok' });
+        } finally {
+          settled();
+        }
       };
       // So is the email under it (SPEC-463 EML-001); an empty one removes it.
       const setEmail = async (email) => {
-        const fresh = await ctx.api.patch(`/api/admin/accounts/${enc(account.id)}`, { email });
-        Object.assign(account, fresh);
-        toast(account.email ? `Email of ${account.label} is now ${account.email}.` : `Email of ${account.label} removed.`, { kind: 'ok' });
+        try {
+          const fresh = await ctx.api.patch(`/api/admin/accounts/${enc(account.id)}`, { email });
+          Object.assign(account, fresh);
+          toast(account.email ? `Email of ${account.label} is now ${account.email}.` : `Email of ${account.label} removed.`, { kind: 'ok' });
+        } finally {
+          settled();
+        }
       };
       // Provider windows (refreshed in the background) and what Yulius observed (ROT-009).
       const usageHost = h('div', null, accountUsage(account, { rename, setEmail, showEmail: true }), tokenTotals(account));
@@ -410,7 +432,7 @@ export function mountAccountsPage(ctx, route) {
       if (account.status !== 'pending_login' && stale) {
         ctx.api.post(`/api/admin/accounts/${enc(account.id)}/usage`).then((fresh) => {
           Object.assign(account, fresh);
-          if (usageHost.querySelector('.account-rename-input')) pendingReload = true;
+          if (usageHost.querySelector('.account-rename-input')) defer();
           else setChildren(usageHost, accountUsage(account, { rename, setEmail, showEmail: true }), tokenTotals(account));
         }).catch(() => {});
       }
@@ -462,15 +484,10 @@ export function mountAccountsPage(ctx, route) {
   }
 
   const off = ctx.store.on('account', () => {
-    if (editing()) pendingReload = true;
+    if (editing()) defer();
     else reload({ quiet: true });
   });
-  host.addEventListener('focusout', () => setTimeout(() => {
-    if (pendingReload && !editing()) {
-      pendingReload = false;
-      reload({ quiet: true });
-    }
-  }, 0));
+  host.addEventListener('focusout', () => setTimeout(flush, 0));
   // Settings → "Add subscription" lands here with ?add=1: open the dialog right away.
   if (route && route.query && route.query.get('add') === '1') {
     setTimeout(add, 0);

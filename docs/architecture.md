@@ -484,8 +484,9 @@ clears both.
 
 A typed email is marked `email_typed` and is the person's, like the name. A new credential keeps
 it, and Claude's answer stores only `email_checked_at` beside it. Removing it (an empty `email`)
-clears the email, the mark and the check, so the round asks Claude again. Each of these writes is
-one SQL statement, so an answer that arrives while a person types cannot replace what they typed.
+clears the email, the mark and the check, so the round asks Claude again. Each of these writes
+settles the email in one SQL statement (a name changed with it goes in the same transaction), so
+an answer that arrives while a person types cannot replace what they typed.
 `AccountView.email_typed` tells the two apart: the toast after a sign-in names only an email
 Claude gave. Only administrators get the email in views (UI-022); task summaries never carry it.
 

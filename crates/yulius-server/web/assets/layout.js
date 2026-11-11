@@ -580,7 +580,8 @@ function renamableName(account, rename) {
  * A subscription's email, typed in place under its name (SPEC-463 EML-001): Claude gives none to
  * a `setup-token` sign-in, so the line reads "email unknown" until an administrator types it.
  * What is not an address is refused here, before it is sent; Enter in the empty field removes
- * the email (EML-002).
+ * the email (EML-002). The field is a text field with an email keyboard: an `email` field
+ * rewrites what was typed (a domain outside ASCII comes back as punycode).
  */
 function editableEmail(account, setEmail) {
   const name = () => account.label || account.id;
@@ -589,7 +590,7 @@ function editableEmail(account, setEmail) {
     pencil: 'account-rename',
     action: () => `Change the email of ${name()}`,
     text: () => h('span', { class: ['account-sub', 'account-email-text', account.email ? null : 'account-email-unknown'], title: `Change the email of ${name()}` }, accountEmail(account.email)),
-    field: () => ({ class: 'input account-rename-input account-email-input', type: 'email', value: account.email || '', maxlength: 254, placeholder: 'name@example.com', autocomplete: 'off', spellcheck: 'false', 'aria-label': `Email of ${name()}` }),
+    field: () => ({ class: 'input account-rename-input account-email-input', type: 'text', inputmode: 'email', value: account.email || '', maxlength: 254, placeholder: 'name@example.com', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false', 'aria-label': `Email of ${name()}` }),
     stored: () => account.email || '',
     check: (value) => (!value || plausibleEmail(value) ? null : 'Type an address like name@example.com.'),
     removes: true,
