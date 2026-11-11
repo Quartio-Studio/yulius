@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use yulius_app::auth::AuthContext;
 use yulius_app::context::App;
-use yulius_domain::harness::DEFAULT_CLAUDE_MODEL;
+use yulius_domain::harness::{DEFAULT_CLAUDE_EFFORT, DEFAULT_CLAUDE_MODEL};
 use yulius_domain::ids::{TaskId, UserId};
 use yulius_ptyhost::test_support::locate_fake_agent;
 
@@ -85,7 +85,7 @@ fn a_session_records_its_claude_code_and_the_task_shows_it() -> TestResult {
         assert_eq!(before.cli_version, None);
         assert_eq!(before.model, DEFAULT_CLAUDE_MODEL);
         assert!(before.model_default, "the task names no model");
-        assert_eq!(before.effort.as_deref(), Some("max"));
+        assert_eq!(before.effort.as_deref(), Some(DEFAULT_CLAUDE_EFFORT));
         assert_eq!(before.cli_moves_to, None);
 
         app.send_input(&id, b"first turn\r").await?;

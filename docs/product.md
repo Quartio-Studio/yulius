@@ -171,7 +171,9 @@ watching, steering and unblocking.
   (npm's `latest` by default) reaches every new or resumed session within about an hour and a
   running task when its turn ends, with no one signing in again; a release that does not know
   Yulius's default model is never used, and Settings, Instance shows the version, the channel
-  and "Check now" (SPEC-421, SPEC-461). Task intake splits mixed requests, holds scope changes and chains
+  and "Check now" (SPEC-421, SPEC-461). A task, Cockpit or Superagent that names no model or effort runs
+  Fable 5.2 at high effort (SPEC-023, SPEC-462); the composer and Settings choose another.
+  Task intake splits mixed requests, holds scope changes and chains
   dependent tasks, also by a logical rule such as "#12 done and #13 done", which the composer
   builds from picked conditions (a task, its state, all or any).
   A task that waits and has not started yet takes queued messages: each is added to its request,

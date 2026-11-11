@@ -831,3 +831,43 @@ where
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use clap::CommandFactory;
+
+    use super::Cli;
+
+    /// SPEC-451 WRP-002: every subcommand documented "In a task's session" gets through the
+    /// agent's `yulius` wrapper at `/yulius/bin`, which is first on a session's `PATH`, and
+    /// every command the wrapper passes is a subcommand.
+    #[test]
+    fn the_agent_wrapper_passes_every_session_command() {
+        let shim = yulius_app::identity::agent_yulius_shim(std::path::Path::new("/bin/yulius"));
+        let passed: Vec<&str> = shim
+            .lines()
+            .find_map(|line| line.trim().split_once(") exec "))
+            .map(|(names, _)| names.split('|').collect())
+            .unwrap_or_default();
+        let cli = Cli::command();
+        for name in &passed {
+            assert!(
+                cli.find_subcommand(name).is_some(),
+                "{name} is no subcommand"
+            );
+        }
+        let session: Vec<String> = cli
+            .get_subcommands()
+            .filter(|command| {
+                command
+                    .get_about()
+                    .is_some_and(|about| about.to_string().starts_with("In a task's session"))
+            })
+            .map(|command| command.get_name().to_owned())
+            .collect();
+        assert!(session.len() >= 3, "{session:?}");
+        for name in &session {
+            assert!(passed.contains(&name.as_str()), "{name} not in {passed:?}");
+        }
+    }
+}
