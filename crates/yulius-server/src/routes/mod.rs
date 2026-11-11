@@ -15,6 +15,7 @@ mod guests;
 mod imports;
 mod internal;
 mod leftovers;
+mod limits;
 mod mcp;
 mod mcp_servers;
 mod notes;
@@ -246,6 +247,14 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
         )
         .route("/api/admin/jev/adopt", post(updates::adopt_jev))
         .route("/api/admin/jev/test", post(updates::test_jev))
+        // The instance's resource limits (SPEC-459).
+        .route("/api/admin/limits", get(limits::view))
+        .route("/api/admin/limits/adapt", post(limits::adapt))
+        .route("/api/admin/limits/keep", post(limits::keep))
+        .route(
+            "/api/admin/limits/{key}",
+            put(limits::set).delete(limits::remove),
+        )
         // The instance Vidoc key (SPEC-195 VDK-002).
         .route(
             "/api/admin/vidoc",
