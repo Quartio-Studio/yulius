@@ -92,6 +92,10 @@ pub struct AccountView {
     /// the one read at sign-in; `null` while unknown (SPEC-244).
     #[serde(default)]
     pub email: Option<String>,
+    /// Whether an administrator typed `email`; `false` for one Claude gave, and while unknown
+    /// (SPEC-463 EML-006).
+    #[serde(default)]
+    pub email_typed: bool,
     /// Live tasks using it, except Done ones (SPEC-057).
     pub in_use_by: u32,
     /// Tokens Yulius observed on this account in the last 24 hours (ROT-009).

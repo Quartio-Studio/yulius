@@ -230,6 +230,7 @@ async fn signed_in_account(
             last_error: None,
             email: email.map(str::to_owned),
             email_checked_at: email.map(|_| Timestamp(1)),
+            email_typed: false,
             created_at: Timestamp(1),
             updated_at: Timestamp(1),
         })
@@ -690,6 +691,7 @@ async fn an_administrator_types_changes_and_removes_a_subscriptions_email() -> T
     );
     let instance_admin = admit_and_sign_in(&h, &admin, "operator", 4243, true).await?;
     signed_in_account(&h, "a-team", "token", None).await?;
+    signed_in_account(&h, "a-claude", "token-2", Some("pawel@example.com")).await?;
     let id = AccountId::parse("a-team")?;
     let task = task_on(&h, &id).await?;
     let path = "/api/admin/accounts/a-team";
@@ -759,8 +761,10 @@ async fn an_administrator_types_changes_and_removes_a_subscriptions_email() -> T
         (Some("a-team"), Some("agent@example.com")),
         "trimmed, and the name is left alone"
     );
+    assert_eq!(typed.body["email_typed"], true, "{}", typed.body);
     let event = account_event(&mut events, "a-team", |a| !a["email"].is_null()).await?;
     assert_eq!(event["email"], "agent@example.com");
+    assert_eq!(event["email_typed"], true);
 
     // The name and the email in one request.
     let both = call(
@@ -786,6 +790,23 @@ async fn an_administrator_types_changes_and_removes_a_subscriptions_email() -> T
     let with_email = Some((json!("Agent TEAM"), json!("team@example.com")));
     let accounts = call(&h.router, Method::GET, "/api/admin/accounts", None, &admin).await?;
     assert_eq!(named(&accounts.body), with_email);
+    // EML-006: the account view says which emails a person typed and which Claude gave.
+    let typed_by_person = |label: &str| -> Option<(Value, Value)> {
+        accounts
+            .body
+            .as_array()?
+            .iter()
+            .find(|a| a["label"] == label)
+            .map(|a| (a["email"].clone(), a["email_typed"].clone()))
+    };
+    assert_eq!(
+        typed_by_person("Agent TEAM"),
+        Some((json!("team@example.com"), json!(true)))
+    );
+    assert_eq!(
+        typed_by_person("a-claude"),
+        Some((json!("pawel@example.com"), json!(false)))
+    );
     for (who, expected) in [
         (&admin, with_email.clone()),
         (&member, Some((json!("Agent TEAM"), Value::Null))),
@@ -848,6 +869,7 @@ async fn an_administrator_types_changes_and_removes_a_subscriptions_email() -> T
     .await?;
     assert_eq!(removed.status, StatusCode::OK, "{}", removed.body);
     assert!(removed.body["email"].is_null(), "{}", removed.body);
+    assert_eq!(removed.body["email_typed"], false, "{}", removed.body);
     assert_eq!(removed.body["label"], "Agent TEAM");
     let record = h.store.account(&id).await?.ok_or("account")?;
     assert_eq!((record.email, record.email_checked_at), (None, None));

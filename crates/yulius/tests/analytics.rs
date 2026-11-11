@@ -138,6 +138,7 @@ async fn account(
             updated_at: Timestamp(0),
             email: (label == "Claude A").then(|| "a@example.com".to_owned()),
             email_checked_at: None,
+            email_typed: false,
         })
         .await?;
     Ok(())

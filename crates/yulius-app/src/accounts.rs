@@ -324,6 +324,7 @@ pub fn account_view(account: &AccountRecord, live: &[AttemptRecord]) -> AccountV
         usage: usage_view(&account_usage(account)),
         last_error: account.last_error.clone(),
         email: account.email.clone(),
+        email_typed: account.email_typed,
         in_use_by: in_use_count(&account.id, live),
         tokens_24h: None,
         tokens_7d: None,
@@ -799,6 +800,7 @@ impl App {
             updated_at: now,
             email: None,
             email_checked_at: None,
+            email_typed: false,
         };
         store.insert_account(&account).await?;
         let session = match self.start_login(&account).await {

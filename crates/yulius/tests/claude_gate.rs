@@ -59,6 +59,7 @@ async fn account(h: &Harness, id: &str, status: AccountStatus, signed_in: bool) 
             last_error: None,
             email: None,
             email_checked_at: None,
+            email_typed: false,
             created_at: Timestamp(1),
             updated_at: Timestamp(1),
         })

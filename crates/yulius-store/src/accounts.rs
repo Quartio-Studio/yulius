@@ -12,7 +12,7 @@ use yulius_domain::time::Timestamp;
 use crate::{SqliteStore, bad_column, db};
 
 const COLS: &str = "id, provider, label, credential, status, usage, last_error, email, \
-                    email_checked_at, created_at, updated_at";
+                    email_checked_at, email_typed, created_at, updated_at";
 
 fn from_row(row: &Row<'_>) -> rusqlite::Result<AccountRecord> {
     let id: String = row.get("id")?;
@@ -30,6 +30,7 @@ fn from_row(row: &Row<'_>) -> rusqlite::Result<AccountRecord> {
         email_checked_at: row
             .get::<_, Option<i64>>("email_checked_at")?
             .map(Timestamp),
+        email_typed: row.get("email_typed")?,
         created_at: Timestamp(row.get("created_at")?),
         updated_at: Timestamp(row.get("updated_at")?),
     })
@@ -42,7 +43,7 @@ impl AccountStore for SqliteStore {
         self.call(move |c| {
             c.execute(
                 &format!(
-                    "INSERT INTO accounts ({COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)"
+                    "INSERT INTO accounts ({COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)"
                 ),
                 params![
                     a.id.as_str(),
@@ -54,6 +55,7 @@ impl AccountStore for SqliteStore {
                     a.last_error,
                     a.email,
                     a.email_checked_at.map(|t| t.0),
+                    a.email_typed,
                     a.created_at.0,
                     a.updated_at.0
                 ],

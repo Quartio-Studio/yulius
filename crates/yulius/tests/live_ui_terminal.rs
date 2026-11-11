@@ -322,6 +322,7 @@ async fn fixture() -> Result<Fixture, Box<dyn std::error::Error>> {
             updated_at: Timestamp(1),
             email: None,
             email_checked_at: None,
+            email_typed: false,
         })
         .await?;
     let data = h.app.config.data_dir.clone();

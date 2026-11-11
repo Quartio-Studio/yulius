@@ -1769,6 +1769,7 @@ async fn an_account_email_lasts_until_the_next_sign_in() -> R {
             last_error: None,
             email: None,
             email_checked_at: None,
+            email_typed: false,
             created_at: Timestamp(1),
             updated_at: Timestamp(1),
         })
@@ -1840,6 +1841,7 @@ async fn a_typed_account_email_stays_until_its_person_removes_it() -> R {
             last_error: None,
             email: None,
             email_checked_at: None,
+            email_typed: false,
             created_at: Timestamp(1),
             updated_at: Timestamp(1),
         })
@@ -1861,9 +1863,10 @@ async fn a_typed_account_email_stays_until_its_person_removes_it() -> R {
         ("work Max".into(), Some("agent@example.com".into()), None),
         "the name is left alone"
     );
+    let record = store.account(&id).await?.ok_or("account")?;
     assert_eq!(
-        store.account(&id).await?.ok_or("account")?.updated_at,
-        Timestamp(2)
+        (record.email_typed, record.updated_at),
+        (true, Timestamp(2))
     );
 
     // Claude answers for this sign-in, with another address and then with none: neither
@@ -1935,6 +1938,7 @@ async fn a_typed_account_email_stays_until_its_person_removes_it() -> R {
     };
     store.update_account(&id, &removed, Timestamp(9)).await?;
     assert_eq!(seen().await?, ("team".into(), None, None));
+    assert!(!store.account(&id).await?.ok_or("account")?.email_typed);
     store
         .set_account_email(
             &id,
@@ -1952,6 +1956,7 @@ async fn a_typed_account_email_stays_until_its_person_removes_it() -> R {
             Some(Timestamp(10))
         )
     );
+    assert!(!store.account(&id).await?.ok_or("account")?.email_typed);
     // That one is Claude's again: the next sign-in drops it (SPEC-244 SUB-003).
     store
         .set_account_credential(&id, &Sealed(vec![3]), AccountStatus::Ok, Timestamp(11))

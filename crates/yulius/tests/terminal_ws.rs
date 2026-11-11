@@ -168,6 +168,7 @@ async fn fixture(options: FakeAgentOptions) -> Result<Fixture, Box<dyn std::erro
             updated_at: Timestamp(1),
             email: None,
             email_checked_at: None,
+            email_typed: false,
         })
         .await?;
 

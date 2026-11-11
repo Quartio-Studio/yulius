@@ -569,6 +569,9 @@ pub struct AccountRecord {
     /// When Claude last answered the email request definitely (an email or a refusal) for the
     /// current sign-in; `None` while it was never answered, so the background round asks.
     pub email_checked_at: Option<Timestamp>,
+    /// Whether a person typed `email` (SPEC-463 EML-004): it then stays across sign-ins and
+    /// Claude's answers, and nothing says Claude confirmed it (EML-006).
+    pub email_typed: bool,
     /// Created.
     pub created_at: Timestamp,
     /// Updated.

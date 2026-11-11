@@ -1083,6 +1083,7 @@ mod tests {
         let kept = store.account(&known).await?.ok_or("account")?;
         assert_eq!(kept.email.as_deref(), Some("pawel@example.com"));
         assert_eq!(kept.email_checked_at, Some(Timestamp(5)));
+        assert!(!kept.email_typed);
         store
             .set_account_credential(&known, &Sealed(vec![3]), AccountStatus::Ok, Timestamp(6))
             .await?;
