@@ -4,6 +4,20 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-11
+
+- Resource limits are sized from the host (SPEC-459, task #441, ADR-0294). Live sessions, CI
+  jobs, CI runs per sandbox, the sandbox disk quota and the CD run disk no longer have fixed
+  defaults (8, 4, 2, 100 GB, 20 GB): like the sandbox memory they follow the host's CPUs, memory
+  and data disk (the 12-CPU VM keeps its numbers; a 64-CPU, 755 GiB, 3.5 TB host gets 34, 12, 4,
+  875 GB, 175 GB). Settings → Instance → Resource limits shows each value, its source (host-sized,
+  unit, settings) and its formula, and the superadmin changes it there without a unit edit; all
+  but the sandbox memory apply without a restart. Every pinned number remembers the host it was
+  configured on: on a host that differs by a quarter or more the start log and the page say which
+  limits no longer fit and offer the host-sized values, and after `yulius instance import` the
+  first start takes them by itself (`limits.adapted` in the audit log). Migration 0051; the API is
+  `/api/admin/limits*`. Operators: see "Resource limits" in `docs/operations.md`.
+
 ## 2026-11-10
 
 - Text stays inside its box (SPEC-449, task #431, ADR-0290). A long URL, path or identifier

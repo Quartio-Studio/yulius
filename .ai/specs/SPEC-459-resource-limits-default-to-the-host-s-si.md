@@ -102,7 +102,7 @@ host-sized one, by the migration flow itself.
 - [x] Superadmin API: read, set, host-sized, remove, adapt and keep, audited
 - [x] `instance import` marks the copy and the first start adapts the limits by itself
 - [x] Settings → Instance card with values, sources, formulas and the moved-host notice
-- [ ] Docs: operations, API, architecture, product summary and changes
+- [x] Docs: operations, API, architecture, product summary and changes
 - [ ] Gates green and an independent review in a fresh session
 
 ## Acceptance criteria
