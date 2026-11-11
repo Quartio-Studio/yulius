@@ -47,6 +47,7 @@ const fn usd(input: f64, cache_write: f64, cache_read: f64, output: f64) -> Pric
 
 /// Model id → (input, 5-minute cache write, cache read, output), USD per million tokens.
 const PRICES: &[(&str, Price)] = &[
+    ("claude-fable-5-2", usd(8.0, 10.0, 0.2, 40.0)),
     ("claude-fable-5-1", usd(10.0, 12.5, 0.25, 50.0)),
     ("claude-mythos-5-1", usd(10.0, 12.5, 0.25, 50.0)),
     ("claude-fable-5", usd(10.0, 12.5, 1.0, 50.0)),
@@ -108,6 +109,9 @@ mod tests {
                 output: 20.0
             })
         );
+        let fable =
+            price_of("claude-fable-5-2").map(|p| (p.input, p.cache_write, p.cache_read, p.output));
+        assert_eq!(fable, Some((8.0, 10.0, 0.2, 40.0)));
         let fable = price_of("claude-fable-5-1").map(|p| (p.input, p.cache_read, p.output));
         assert_eq!(fable, Some((10.0, 0.25, 50.0)));
         let sonnet = price_of("claude-sonnet-5-5").map(|p| (p.input, p.cache_read, p.output));

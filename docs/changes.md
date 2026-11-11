@@ -13,6 +13,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   box past its box, sideways scrolling, or a short word broken mid-word, on every main page at
   three widths. It also found the task overview scrolling sideways on a phone, the New task hint
   and Done's Archive all spilling out of a narrow sidebar, all fixed.
+- Tasks and the Cockpit that name no model now run Fable 5.2 at max effort (SPEC-023, ADR-0289),
+  instead of Opus 5.5 at high. The composer lists Fable 5.2, its price is known, and a spent weekly
+  Opus cap no longer keeps a default task off a subscription. A subscription without Fable access
+  needs Opus 5.5 picked by hand.
 - A person is never stuck on a subscription (SPEC-447, task #429). Each task shows the subscription
   it runs on (its strip, the Tasks list), and "Run #N on…" moves a running or waiting task to the
   one they choose in the same session, or continues an ended task there; a choice above the pool's

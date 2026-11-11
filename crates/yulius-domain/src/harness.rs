@@ -2,13 +2,14 @@
 
 use std::fmt;
 
-/// The Claude model of a task that names none: Opus 5.5 by its full id, not Claude Code's `opus`
-/// alias, which moves with each release (F 2026-10-12: "it should be opus-5.5"; task #21: "the
-/// default model is always opus 5.5"). A subscription's own default would be Sonnet.
-pub const DEFAULT_CLAUDE_MODEL: &str = "claude-opus-5-5";
+/// The Claude model of a task that names none: Fable 5.2 by its full id, not an alias that moves
+/// with each release (2026-11-10: "make fable 5.2 effort max default model"; before it Opus 5.5,
+/// task #21). A subscription's own default would be Sonnet.
+pub const DEFAULT_CLAUDE_MODEL: &str = "claude-fable-5-2";
 
-/// The effort of a task that names none (task #21), sent so Claude Code never picks its own.
-pub const DEFAULT_CLAUDE_EFFORT: &str = "high";
+/// The effort of a task that names none (2026-11-10: max; before it high, task #21), sent so
+/// Claude Code never picks its own.
+pub const DEFAULT_CLAUDE_EFFORT: &str = "max";
 
 /// The effort a task runs at: its own, else [`DEFAULT_CLAUDE_EFFORT`], except for a Haiku model,
 /// which takes no effort level.

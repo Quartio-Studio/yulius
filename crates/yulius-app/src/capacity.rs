@@ -194,7 +194,7 @@ impl App {
         Ok(RotationInput {
             current,
             task_provider: task.harness.provider(),
-            // A task without a model runs the default, Opus: its weekly cap binds.
+            // A task without a model runs the default, Fable 5.2: no per-model weekly cap binds.
             family: ModelFamily::of(Some(
                 task.model
                     .as_deref()
