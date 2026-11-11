@@ -51,7 +51,8 @@ sudo yulius host setup --public-url https://yulius.example.com
 reason) or `FAIL`, then a summary; it exits 1 when an item failed. In order:
 
 1. **needrestart**: `/etc/needrestart/conf.d/yulius.conf` keeps package installs from restarting
-   `yulius.service`, written before any install. A restart outside an update pauses no task.
+   `yulius.service` and `yulius-sandboxes.service`, written before any install. A restart of the
+   first outside an update pauses no task; a restart of the second ends every session.
 2. **host packages**: `git`, `uidmap`, `slirp4netns`, `bubblewrap`.
 3. **Docker Engine**: `docker-ce`, `docker-ce-cli`, `containerd.io`, `docker-buildx-plugin` and
    `docker-compose-plugin` from Docker's repository. The source goes to
@@ -79,16 +80,27 @@ reason) or `FAIL`, then a summary; it exits 1 when an item failed. In order:
    Otherwise, a drop-in `yulius.service.d/10-yulius-sandboxes.conf` adds `Delegate=yes`,
    `DelegateSubgroup=server` and `KillMode=process` if they are missing. The restart that applies
    it is manual: run it when it suits. A unit file systemd has not loaded is never overwritten.
-10. **update helper**: when `yulius-update.service` is installed, a drop-in lets its re-check
-    write `/etc/modules-load.d` and `/etc/needrestart/conf.d` (§8).
-11. **yulius binary**: the running binary and the unit's, links resolved, are made root-owned,
+10. **yulius binary**: the running binary and the unit's, links resolved, are made root-owned,
     writable by root alone. A binary in a directory the service user or others may write fails
     instead: fixing the file would not stop it being replaced.
-12. **sandbox base**: built now, as the service user, when there is none, when it lacks the
+11. **sessions unit**: `yulius-sandboxes.service`, `yulius-adopt.service` and the drop-in
+    `yulius.service.d/20-yulius-sessions.conf` ([Where sessions live](#where-sessions-live),
+    [ADR-0298](decisions/0298-sessions-live-in-their-own-unit.md)) are written when they differ,
+    and the sessions unit is started. A running server is not restarted: its next restart moves
+    its sessions there and keeps them. The adopt unit runs the server's binary as root, so the
+    item writes nothing and fails unless the path the server's unit names is a regular file
+    that only root may write, in directories that are root's and not writable by everyone or
+    by a group the service user is in. A path through a link is refused: name the file itself
+    in `ExecStart=`. Units that systemd has not loaded (files copied in without `systemctl
+    daemon-reload`) are loaded, and a sessions unit that does not run is started. `yulius host
+    check` only reports this item, in each of these cases.
+12. **update helper**: when `yulius-update.service` is installed, a drop-in lets its re-check
+    write `/etc/modules-load.d` and `/etc/needrestart/conf.d` (§8).
+13. **sandbox base**: built now, as the service user, when there is none, when it lacks the
     host's `dockerd`, or when it no longer matches the host. Live sandboxes' bases are kept
     ([ADR-0161](decisions/0161-a-base-a-live-holder-mounts-is-never-collected.md)), so this is
     safe while sandboxes run.
-13. A unit it wrote is started; then "sandbox Docker", the verdict `yulius doctor` gives; the
+14. A unit it wrote is started; then "sandbox Docker", the verdict `yulius doctor` gives; the
     contained doctor as the service user; and the Docker smoke test (`--no-smoke` skips it; it
     needs Docker Hub).
 
@@ -120,7 +132,9 @@ Claude subscriptions are added inside Yulius (user menu → Administration → S
 `KillMode=process` is required: each agent session and each user terminal (sandbox shell) runs in
 its own detached `yulius ptyhost` process so that they survive a restart or upgrade of the server
 (NFR-001, UI-016; the next start adopts the terminals from `shells/<id>/shell.json`). With the
-default `KillMode=control-group`, stopping the service would kill every running agent and terminal.
+default `KillMode=control-group`, stopping the service would kill what the server itself started
+and still holds in its unit. The sessions themselves live in a unit of their own, which a restart
+of the server never touches: see [Where sessions live](#where-sessions-live).
 
 ```ini
 # /etc/systemd/system/yulius.service
@@ -176,7 +190,8 @@ Environment=YULIUS_CI_POLL_SECS=60
 ExecStart=/usr/local/bin/yulius serve
 KillMode=process
 # Per-sandbox CPU, memory and task limits: the server keeps itself in server/ and gives every
-# sandbox its own cgroup under the unit (systemd 254 or later).
+# sandbox its own cgroup, in yulius-sandboxes.service once `yulius host setup` wrote it ("Where
+# sessions live" below), else under this unit (systemd 254 or later).
 Delegate=yes
 DelegateSubgroup=server
 Restart=on-failure
@@ -191,6 +206,100 @@ WantedBy=multi-user.target
 sudo systemctl daemon-reload && sudo systemctl enable --now yulius
 journalctl -u yulius -f
 ```
+
+### Where sessions live
+
+Sessions and sandboxes do not live in `yulius.service`'s own cgroup. systemd 258 and later
+(Ubuntu 26.04 has 259) start a unit inside the unit's own group, and the kernel refuses that
+while a sandbox there holds a process: a server whose sessions lived in its unit could be stopped
+and never started again while one session ran (the outage of 2026-11-11,
+[ADR-0298](decisions/0298-sessions-live-in-their-own-unit.md)). `yulius host setup` therefore
+writes three more files and starts the first unit; `deploy/systemd/` holds the same files for
+`yulius.service`, the user `yulius` and `/usr/local/bin/yulius`.
+
+`/etc/systemd/system/yulius-sandboxes.service`:
+
+```ini
+# Written by `yulius host setup` (docs/operations.md §3, ADR-0298): the group every session and
+# sandbox of yulius.service lives in. Restarting yulius.service never touches it; stopping this unit
+# ends every session. Its one process is root's, so no signal of yulius reaches it.
+[Unit]
+Description=Yulius sessions and sandboxes (yulius.service)
+
+[Service]
+Slice=yulius.slice
+User=yulius
+ExecStartPre=+/usr/bin/chown yulius /sys/fs/cgroup/yulius.slice/cgroup.procs
+ExecStart=+/usr/bin/sleep infinity
+Delegate=yes
+DelegateSubgroup=keeper
+OOMScoreAdjust=-1000
+```
+
+`/etc/systemd/system/yulius-adopt.service`:
+
+```ini
+# Written by `yulius host setup` (docs/operations.md §3, ADR-0298): before yulius.service starts, sessions
+# an earlier layout left in its own group move to yulius-sandboxes.service.
+[Unit]
+Description=Move Yulius sessions out of yulius.service
+Requires=yulius-sandboxes.service
+After=yulius-sandboxes.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/yulius host adopt-sessions --service yulius.service
+TimeoutStartSec=120
+```
+
+`/etc/systemd/system/yulius.service.d/20-yulius-sessions.conf`:
+
+```ini
+# Written by `yulius host setup` (docs/operations.md §3, ADR-0298): sessions live in yulius-sandboxes.service,
+# so a restart of this unit keeps them on every systemd.
+[Unit]
+Wants=yulius-sandboxes.service yulius-adopt.service
+After=yulius-sandboxes.service yulius-adopt.service
+
+[Service]
+Slice=yulius.slice
+```
+
+- **`yulius-sandboxes.service`** holds every sandbox's groups, under
+  `/sys/fs/cgroup/yulius.slice/yulius-sandboxes.service/sandboxes/<sandbox>/`. Its one process is
+  a `sleep` that belongs to root, so no signal of the service user reaches it (a stray `pkill`
+  cannot end it). **Stopping or restarting this unit ends every agent session, terminal and
+  sandbox engine.** Nothing does so by itself: the needrestart rule of §2 names it. If it was
+  stopped or restarted all the same, restart `yulius.service` afterwards: the server prepares
+  the unit's groups only when it starts, and sandboxes started before that restart run without
+  their limits ("cannot apply the sandbox's limits" in the log).
+- **`yulius-adopt.service`** runs before every start of `yulius.service` (`yulius host
+  adopt-sessions`, as root, at most 2 minutes). Sessions that an earlier layout left in
+  `yulius.service`'s own group move to the sessions unit with their limits; a sandbox's Docker
+  engine found there is killed with its containers (no shutdown: what a container had not
+  written is lost) and starts again on demand. Nothing to move is the normal case, and while the
+  server runs the step moves nothing (`systemctl start` on a running unit starts it again). Its
+  output is in `journalctl -u yulius-adopt`. Because it runs the server's binary as root, that
+  binary must be a regular file only root may write, reached through directories that are
+  root's (§2, item 11), and not through a link; `yulius host setup` refuses to write the unit
+  otherwise.
+- `systemctl restart yulius`, a crash (`Restart=on-failure`), Restart… and an update then keep
+  every session, on systemd 255 and on 259.
+- `yulius doctor` says which holds in its line "restart with sessions", and `yulius host check`
+  (after every update, shown on the Sandbox Docker card) reports "sessions unit" when a file is
+  missing or differs.
+- A host without the files keeps sessions in `yulius.service`'s own group
+  (`/sys/fs/cgroup/system.slice/yulius.service/sandboxes/…`). That still restarts on systemd 257
+  and earlier. On 258 and later, Restart… and Update now are refused while a session runs
+  ("yulius.service would not start again: … nothing was stopped"), by the server and again by
+  the update helper before it stops anything; they are refused the same way where the files are
+  there but `yulius-sandboxes.service` does not run (the adopt step needs it). `sudo yulius host setup` writes the files and
+  restarts nothing; the next restart then moves the sessions and keeps them. A plain `systemctl
+  restart yulius` is not guarded: on such a host it leaves the server down until the steps under
+  "the way back" in §8 are done.
+- With another unit name (`--service yulius-dev.service`) the files are
+  `yulius-dev-sandboxes.service`, `yulius-dev-adopt.service` and
+  `yulius-dev.service.d/20-yulius-sessions.conf`, and the slice is `yulius_dev.slice`.
 
 ## 4. Reverse proxy (TLS, WebSockets)
 
@@ -1095,7 +1204,7 @@ involved.
 - While any of a sandbox's CI jobs runs, its group weighs 500 on the host (100 otherwise), so its
   CI gets more of a loaded host than the agents' local builds in every sandbox
   ([ADR-0247](decisions/0247-a-sandbox-running-ci-jobs-weighs-more-on-the-host.md)). Check it with
-  `cat /sys/fs/cgroup/system.slice/yulius.service/sandboxes/<sandbox>/cpu.weight`. Every start
+  `cat /sys/fs/cgroup/yulius.slice/yulius-sandboxes.service/sandboxes/<sandbox>/cpu.weight`. Every start
   and graceful stop of the server writes 100 to every sandbox.
 - Agent sessions, terminals and the Cockpit plan for `YULIUS_AGENT_CPUS` CPUs (default a third
   of the sandbox's, at least 2) and the memory in proportion: three of them testing at once fill
@@ -1439,9 +1548,11 @@ usual.
   before the freeze than in the plan is not frozen; run the command again with the build it runs
   (the staged copy is kept).
 
-**Cutover.** The old unit is frozen. One last pass sends what changed since the passes before,
-with the list of every path the old host holds; the new host installs it and removes what is no
-longer there. Then both hosts count the whole copy: entries and bytes for each top-level folder
+**Cutover.** The old unit is frozen, and with it its sessions unit `yulius-sandboxes.service`
+where the host has one ([Where sessions live](#where-sessions-live)); every thaw below is of
+both. One last pass sends what changed since the passes before, with the list of every path the
+old host holds; the new host installs it and removes what is no longer there. Then both hosts
+count the whole copy: entries and bytes for each top-level folder
 and a fingerprint over every entry's name, kind, size, owner, mode, time and restorable
 attributes. Only when they are equal is the copy marked and the new instance started
 (`host setup`'s remaining items, `systemctl enable` and `start`, then it must report the old
@@ -1470,7 +1581,8 @@ still holds a frozen copy with `master.key` and every secret.
 
 **Abort.** `sudo yulius instance migrate --abort` on the old host stops and disables the new
 instance (through the key while the move is not finished; afterwards the key is gone: stop it
-there first with `systemctl disable --now yulius.service`; the abort refuses while the new URL
+there first with `systemctl disable --now yulius.service; systemctl stop
+yulius-sandboxes.service`, since its sessions live in their own unit; the abort refuses while the new URL
 still answers and otherwise asks you to confirm that it is stopped, `--yes` answers for you), puts
 the old proxy configuration back, thaws and enables the old unit and removes the key and the
 state, the receipts of a staged copy included. The copy on the new host, staged or started, with
@@ -1505,17 +1617,19 @@ ssh root@new-vm yulius instance import < yulius-2026-10-26.tar
 sudo yulius host setup --public-url https://yulius.example.com
 ```
 
-**Export.** It freezes `yulius.service` (`systemctl freeze`): the server, every agent, terminal,
+**Export.** It freezes `yulius.service` and `yulius-sandboxes.service` (`systemctl freeze`; a
+stopped server's sessions unit alone): the server, every agent, terminal,
 browser, CI job, deploy and sandbox Docker engine pause, so nothing changes while it reads. The web
 UI does not answer during the export. It then prints the exact size ("Exporting 123.4 GiB
 (1,234,567 entries)"), streams an uncompressed tar of that exact length to standard output
 (refused when standard output is a terminal), shows progress on stderr and thaws the service
 (also when it fails, the reader goes away or it gets Ctrl-C, SIGTERM or SIGHUP, even while it
 waits on a stalled connection). If it is killed
-with SIGKILL, thaw by hand: `sudo systemctl thaw yulius.service`. `--move` keeps the old instance
+with SIGKILL, thaw by hand with the command it printed: `sudo systemctl thaw
+yulius-sandboxes.service yulius.service`. `--move` keeps the old instance
 frozen and disables its unit after a successful export, so it never runs beside the new one (both
 would run the same agents against the same repositories); undo with `sudo systemctl thaw
-yulius.service && sudo systemctl enable yulius.service`. Left out, because the new host makes its
+yulius.service yulius-sandboxes.service && sudo systemctl enable yulius.service`. Left out, because the new host makes its
 own: `system/` (the sandbox base), `runtime/`, `update/`, `claude-code/` (Claude Code for this host's platform, downloaded again), `yulius.db-shm`, sockets and FIFOs. It is
 refused (exit 2, nothing frozen) while the update helper runs (checked again once frozen and
 before the copy's checksum), from a Yulius terminal (it would freeze itself), and while the
@@ -1723,7 +1837,7 @@ To find and clear them by hand, without a restart (as root on the host):
 # a pause froze is in a run-* group below agents/, so read every group there.
 S=<sandbox-id>
 ps -o pid,ppid,etimes,pcpu,args --sort=-etimes -p "$(find \
-  /sys/fs/cgroup/system.slice/yulius.service/sandboxes/$S/agents -name cgroup.procs \
+  /sys/fs/cgroup/yulius.slice/yulius-sandboxes.service/sandboxes/$S/agents -name cgroup.procs \
   -exec cat {} + | paste -sd,)"
 # A session's init is the inner bwrap: a `bwrap … -- claude …` whose parent is another bwrap.
 # Its children other than `claude` are the leftovers; list one init's children with:
@@ -1777,7 +1891,9 @@ rotate every team and agent secret at its source.
 deploy runs: a restart has no build to wait through) pauses every task as step 2 below does, asks the helper to `restart` (stop and start `yulius.service`, then wait until
 `/internal/version` reports the same commit; nothing is backed up, installed or rolled back), and
 resumes the tasks one by one. It needs the update helper; prefer it to `systemctl restart`, which
-does not pause tasks. A task session whose Yulius MCP was dropped by Claude Code is reconnected by
+does not pause tasks. Restart… and Update now are refused, before a task pauses, on a host where
+the server could not start again while a session runs
+([Where sessions live](#where-sessions-live)); the answer names `sudo yulius host setup`. A task session whose Yulius MCP was dropped by Claude Code is reconnected by
 Yulius after 3 silent minutes (it types `/mcp reconnect yulius` into the idle session), but only
 when the drop is certain: its bridge had pinged and stopped, or a session this server spawned never
 connected. A
@@ -1807,7 +1923,8 @@ commits. Nothing updates by itself: a superadmin chooses **Update now** and conf
 2. **Pause tasks**: every task's agent is frozen at once with the cgroup v2 freezer (its process
    tree moves into `…/sandboxes/<sandbox>/agents/run-<attempt>` and that group is frozen; the
    ptyhost, shells and browsers keep running) and new starts queue. The agents are told nothing.
-   This needs the delegated cgroup of §3 (`Delegate=yes`, `DelegateSubgroup=server`); a run that
+   This needs the delegated cgroups of §3 (`Delegate=yes`, `DelegateSubgroup=server`, and the
+   sessions unit where the host has it); a run that
    cannot be frozen pauses at its next turn boundary instead (its Stop or `UserPromptSubmit` hook
    is held, as for a capacity pause), and while such a run is still in a turn nothing is frozen:
    the others freeze once it is held (or at once on **Continue without waiting**). A task still in a turn after 30 minutes cancels the update
@@ -1817,15 +1934,17 @@ commits. Nothing updates by itself: a superadmin chooses **Update now** and conf
    it is still fetching; nothing is staged (ADR-0283). A cancel that lands while rustup installs a
    new toolchain for the build can leave it half written: `rustup toolchain uninstall <version>`
    (as root) repairs it, and the next build installs it again. To check
-   a freeze on a host: `cat /sys/fs/cgroup/system.slice/yulius.service/sandboxes/*/agents/run-*/cgroup.events`
+   a freeze on a host: `cat /sys/fs/cgroup/yulius.slice/yulius-sandboxes.service/sandboxes/*/agents/run-*/cgroup.events`
    (`sandboxes/*/run-*` without the `cpu` controller) shows `frozen 1` while the update restarts.
    A server that starts thaws every run group left frozen, but those of tasks a person paused
    (SPEC-191: it freezes them again; `SELECT number, paused_by FROM tasks WHERE paused_by IS NOT
    NULL` lists them); to thaw them by hand (a binary without
-   this, SPEC-160): `for f in /sys/fs/cgroup/system.slice/yulius.service/sandboxes/*/{,agents/}run-*/cgroup.freeze; do echo 0 > "$f"; done`. A response streaming from the model provider at the
+   this, SPEC-160): `for f in /sys/fs/cgroup/yulius.slice/yulius-sandboxes.service/sandboxes/*/{,agents/}run-*/cgroup.freeze; do echo 0 > "$f"; done`. A response streaming from the model provider at the
    restart is cut (the egress proxy restarts with the server) and Claude Code retries it.
-3. **Restart**: the helper stops `yulius.service` (with `KillMode=process` agent sessions and
-   terminals keep running), copies the binary and `yulius.db` (with its WAL) to
+3. **Restart**: the helper first checks that the unit would start again
+   ([Where sessions live](#where-sessions-live)) and fails the request with nothing stopped
+   otherwise. It then stops `yulius.service` (agent sessions and
+   terminals keep running in `yulius-sandboxes.service`), copies the binary and `yulius.db` (with its WAL) to
    `/var/lib/yulius-update/backups/<run>/`, installs the new binary, starts the service and waits
    up to 2 minutes until `/internal/version` reports the new commit. If it does not, it stops the
    service, restores the previous binary **and database**, and starts them again ("rolled back").
@@ -1950,6 +2069,80 @@ should set the commit it is built from: `YULIUS_BUILD_COMMIT=$(git rev-parse HEA
 
 ### Notes for specific upgrades
 
+- Upgrading to sessions in their own unit (SPEC-458, ADR-0298, 2026-11-11). **On a host with
+  systemd 258 or later (Ubuntu 26.04: `systemctl --version`), do the first step before Update
+  now.** On systemd 257 and earlier (Ubuntu 24.04) the update needs nothing first; run `sudo
+  yulius host setup` after it, at any time.
+
+  Why: the update is installed by the helper of the version before it. It stops `yulius.service`
+  while the sessions are still in that unit's group, and systemd 258 and later cannot start such
+  a unit again (the outage of 2026-11-11). With the three units of
+  [Where sessions live](#where-sessions-live) in place, the start that follows the install first
+  runs `yulius-adopt.service` with the new binary, which moves the sessions out.
+
+  1. As root, before the update. This restarts nothing and ends nothing:
+
+     ```sh
+     # From a checkout of the new version; or write the three files from the texts of §3.
+     install -m 0644 deploy/systemd/yulius-sandboxes.service deploy/systemd/yulius-adopt.service /etc/systemd/system/
+     install -D -m 0644 deploy/systemd/yulius.service.d/20-yulius-sessions.conf /etc/systemd/system/yulius.service.d/20-yulius-sessions.conf
+     systemctl daemon-reload
+     systemctl start yulius-sandboxes.service
+     systemctl show yulius.service --property=Wants    # names yulius-adopt.service
+     ```
+
+     The files are for `yulius.service`, the user `yulius` and `/usr/local/bin/yulius`, which
+     must be a regular file only root may write, in directories that are root's (the adopt
+     unit runs it as root). With other values, let a binary of the new version write them:
+     `sudo <that binary> host setup`. Without the `daemon-reload` systemd does not know the
+     files, and Restart… stays refused; `sudo yulius host setup` of the new version does it.
+
+     **Between this step and the update the host is not safe yet**: the installed binary is
+     still the old one, which has no adopt step, so `yulius-adopt.service` fails with it and a
+     restart, a crash or Restart… still leaves the server down while sessions run, as before.
+     Do the update next; the way back below applies until then.
+  2. **Update now**, as always. `journalctl -u yulius-adopt` then says "moved N processes in M
+     groups from /sys/fs/cgroup/system.slice/yulius.service to
+     /sys/fs/cgroup/yulius.slice/yulius-sandboxes.service", and `yulius doctor` says "restart
+     with sessions: sessions live in yulius-sandboxes.service".
+  3. `sudo yulius host setup` once, afterwards: it brings the files to what the installed
+     version writes and names the sessions unit in the needrestart rule.
+
+  What changes with it:
+
+  - Every sandbox Docker engine is killed once, at that first start, with its containers. They
+    get no shutdown (as at a power loss: stop a container that must close its files first); the
+    engine starts again on demand. Sessions, terminals and browsers go on.
+  - cgroup paths in this guide are those of the sessions unit. On a host without the units they
+    start with `/sys/fs/cgroup/system.slice/yulius.service/` instead.
+  - Limits that bound all sandboxes together are the sessions unit's now. `TasksMax=`,
+    `MemoryMax=` or `CPUQuota=` set on `yulius.service` for the sessions' sake belong on
+    `yulius-sandboxes.service`: `sudo systemctl set-property yulius-sandboxes.service
+    TasksMax=…` applies at once (never restart that unit for it), and the server reads the task
+    limit at its next start. Both units get systemd's default `TasksMax`, so nothing changes
+    without such a setting. A move (`yulius instance migrate`) carries drop-ins you wrote under
+    `/etc/systemd/system/yulius-sandboxes.service.d/`, not what `set-property` wrote: set those
+    again on the new host.
+  - **Rolling back to an older binary** leaves the units in place. Sessions already moved stay
+    in `yulius-sandboxes.service`; the older binary starts new ones in `yulius.service`'s group
+    again, and `yulius-adopt.service` fails with it ("unrecognized subcommand"), which the server
+    survives. On systemd 258 and later do not restart that binary while sessions run: update
+    again.
+
+  **The way back** when the update, or a `systemctl restart yulius`, was done without the units
+  on systemd 258 or later: the server does not start (`Failed to spawn executor: Device or
+  resource busy`, in a loop), the helper reports "Could not start yulius.service … The rollback
+  failed too … Restore by hand from /var/lib/yulius-update/backups/…", and the sessions are
+  still running. Nothing needs restoring: the helper put the previous binary and database back
+  before that last start. As root, do step 1, then run the adopt step of a binary of the new
+  version by hand (the helper keeps the build it staged) and start the server:
+
+  ```sh
+  /var/lib/yulius-update/staged/yulius host adopt-sessions --service yulius.service
+  systemctl reset-failed yulius.service; systemctl start yulius.service
+  ```
+
+  The version that was installed before runs again with its sessions. Then Update now once more.
 - Upgrading to host setup's bwrap rule (SPEC-456, ADR-0296, 2026-11-11): nothing to do on an
   Ubuntu 24.04 or Debian host whose sandboxes work. A hand-written `/etc/apparmor.d/bwrap` keeps
   working and is reported as adopted; `sudo yulius host setup` changes nothing there. On Ubuntu
@@ -2045,31 +2238,33 @@ should set the commit it is built from: `YULIUS_BUILD_COMMIT=$(git rev-parse HEA
   configuration. The next time a sandbox is prepared, its cgroup gets `system/`, `agents/` and
   `ci/`. Processes still in the sandbox's group (a holder and runs from before the update) move
   to `agents/`, and the `cpu` controller then passes down to the leaves. Check it with
-  `cat /sys/fs/cgroup/system.slice/yulius.service/sandboxes/<sandbox>/ci/cpu.weight` (400).
+  `cat /sys/fs/cgroup/yulius.slice/yulius-sandboxes.service/sandboxes/<sandbox>/ci/cpu.weight` (400).
   A holder that was already running keeps its `slirp4netns` in `agents/` until the holder stops
   when idle. **Rolling back to an older binary:** a server that stops gracefully undoes the split
   (`-pids`, then `-cpu`), so the older binary can join the sandbox groups again. After a crash or a
   forced stop, undo it by hand before starting the older binary. Otherwise its holders and runs
   fail with "Device or resource busy":
-  `for f in /sys/fs/cgroup/system.slice/yulius.service/sandboxes/*/cgroup.subtree_control; do echo -pids > "$f"; echo -cpu > "$f"; done`.
+  `for f in /sys/fs/cgroup/yulius.slice/yulius-sandboxes.service/sandboxes/*/cgroup.subtree_control; do echo -pids > "$f"; echo -cpu > "$f"; done`.
 - Upgrading to host-sized task limits (SPEC-268, 2026-10-22): no migration. At its next start the
   server gives each sandbox a quarter of the host's task table, at most three quarters of
-  `yulius.service`'s own `pids.max` (systemd's `DefaultTasksMax` is 15 % of the table unless the
+  the `pids.max` of the unit the sandboxes live in (`yulius-sandboxes.service` since ADR-0298,
+  `yulius.service` before; systemd's `DefaultTasksMax` is 15 % of the table unless the
   unit sets `TasksMax=`; raise it there for bigger sandboxes), and `ci/` and `engine/` 3/8 of a
   sandbox's;
   the log line "per-sandbox limits on" shows the figure. An explicit `YULIUS_SANDBOX_PIDS` stays.
 - Upgrading to a common task limit for all sandboxes (SPEC-272, task #260, 2026-10-22): no
   migration. At every start the server writes `<unit>/sandboxes/pids.max`: three quarters of
-  `yulius.service`'s own `pids.max` (43 320 under the VM's default 57 763, so the server keeps
-  14 443), or `max` when the unit has `TasksMax=infinity`. Check it with
-  `cat /sys/fs/cgroup/system.slice/yulius.service/sandboxes/pids.max`. An explicit
+  that unit's own `pids.max` (43 320 under the VM's default 57 763, so the server kept
+  14 443 while it shared the unit; since ADR-0298 the unit is `yulius-sandboxes.service`), or
+  `max` when the unit has `TasksMax=infinity`. Check it with
+  `cat /sys/fs/cgroup/yulius.slice/yulius-sandboxes.service/sandboxes/pids.max`. An explicit
   `YULIUS_SANDBOX_PIDS` above it is not capped, but the common limit binds each sandbox too: the
   server logs a warning naming both. **Rolling back to an older binary:** it leaves
   `sandboxes/pids.max` as it is. That only keeps the server its share, but the older binary does
   not count a hit there on a 6.13+ kernel (a session that dies at it reads "The agent stopped
   unexpectedly") and does not follow a later change of `TasksMax=`. On such a kernel, or before
   changing `TasksMax=` under the older binary, clear it:
-  `echo max > /sys/fs/cgroup/system.slice/yulius.service/sandboxes/pids.max`.
+  `echo max > /sys/fs/cgroup/yulius.slice/yulius-sandboxes.service/sandboxes/pids.max`.
 - Upgrading to tasks acting as their creator on GitHub (GIT-003, #188, 2026-10-11): no migration
   and no configuration. The agents' Git switches to the creator's token at its next credential
   request; a run gets `gh` logged in as the creator when it is started or continued (`gh` itself

@@ -1553,38 +1553,81 @@ fn stop(host: &mut dyn Host, env: &mut Env<'_>, service: &str, l: &mut Lines) {
     let out = sh(host, &["systemctl", "disable", "--now", service]);
     // KillMode=process leaves agents and terminals: nothing of the copy may keep running.
     // (`--kill-whom` is systemd 252 and later, `--kill-who` its older name.)
-    for whom in ["--kill-whom=all", "--kill-who=all"] {
-        if sh(
-            host,
-            &["systemctl", "kill", whom, "--signal=SIGKILL", service],
-        )
-        .ok()
-        {
-            break;
+    let kill = |host: &mut dyn Host, unit: &str| {
+        for whom in ["--kill-whom=all", "--kill-who=all"] {
+            if sh(host, &["systemctl", "kill", whom, "--signal=SIGKILL", unit]).ok() {
+                break;
+            }
         }
+    };
+    kill(host, service);
+    // Where the host keeps sessions in a unit of their own (SPEC-458, which this build's host
+    // setup writes), a stop of the server's unit leaves every agent, terminal and engine
+    // running: that unit ends with it. A systemd that does not say whether the unit is there is
+    // not a host without one: it is ended as far as that goes, and the step fails.
+    let mut unanswered = false;
+    let sessions = yulius_sandbox::units::sessions_unit(service).filter(|sessions| {
+        let shown = sh(
+            host,
+            &[
+                "systemctl",
+                "show",
+                "--property=LoadState",
+                "--value",
+                sessions,
+            ],
+        );
+        unanswered = !shown.ok();
+        unanswered || shown.stdout.trim() == "loaded"
+    });
+    if let Some(sessions) = &sessions {
+        kill(host, sessions);
+        let _ = sh(host, &["systemctl", "stop", sessions]);
     }
-    let group = sh(
-        host,
-        &[
-            "systemctl",
-            "show",
-            "--property=ControlGroup",
-            "--value",
-            service,
-        ],
-    );
-    let procs = Path::new("/sys/fs/cgroup")
-        .join(group.stdout.trim().trim_start_matches('/'))
-        .join("cgroup.procs");
-    let running = |host: &mut dyn Host| {
-        sh(host, &["systemctl", "is-active", service]).stdout.trim() == "active"
-            || (!group.stdout.trim().is_empty()
-                && host
-                    .read(&procs)
-                    .is_some_and(|pids| !pids.trim().is_empty()))
+    let group_of = |host: &mut dyn Host, unit: &str| {
+        let shown = sh(
+            host,
+            &[
+                "systemctl",
+                "show",
+                "--property=ControlGroup",
+                "--value",
+                unit,
+            ],
+        );
+        let name = shown.stdout.trim().trim_start_matches('/').to_owned();
+        (!name.is_empty()).then(|| Path::new("/sys/fs/cgroup").join(name))
+    };
+    let group = group_of(host, service);
+    let sessions_group = sessions.as_deref().and_then(|unit| group_of(host, unit));
+    // Whether a process lives in the group or below it. A delegated unit keeps its processes
+    // in subgroups (`DelegateSubgroup=server`, the sandboxes'), so its own `cgroup.procs` is
+    // empty by construction: `populated` covers them all.
+    let populated = |host: &mut dyn Host, group: &Option<PathBuf>| {
+        group.as_ref().is_some_and(|group| {
+            host.read(&group.join("cgroup.events"))
+                .is_some_and(|events| events.lines().any(|l| l.trim() == "populated 1"))
+        })
+    };
+    // What still runs: the first unit of the two that is active or whose group holds a process.
+    let running = |host: &mut dyn Host| -> Option<String> {
+        let active = |host: &mut dyn Host, unit: &str| {
+            sh(host, &["systemctl", "is-active", unit]).stdout.trim() == "active"
+        };
+        if active(host, service)
+            || group.as_ref().is_some_and(|group| {
+                host.read(&group.join("cgroup.procs"))
+                    .is_some_and(|pids| !pids.trim().is_empty())
+            })
+            || populated(host, &group)
+        {
+            return Some(service.to_owned());
+        }
+        let sessions = sessions.as_deref()?;
+        (active(host, sessions) || populated(host, &sessions_group)).then(|| sessions.to_owned())
     };
     let mut waited = 0;
-    while running(host) && waited < 15 {
+    while running(host).is_some() && waited < 15 {
         (env.sleep)(Duration::from_secs(1));
         waited += 1;
     }
@@ -1593,10 +1636,18 @@ fn stop(host: &mut dyn Host, env: &mut Env<'_>, service: &str, l: &mut Lines) {
             ITEM,
             format!("`systemctl disable --now {service}` failed: {}", out.why()),
         );
-    } else if running(host) {
+    } else if let Some(unit) = running(host) {
         l.failed(
             ITEM,
-            format!("processes of {service} still run on the new host after it was killed"),
+            format!("processes of {unit} still run on the new host after it was killed"),
+        );
+    } else if let (true, Some(sessions)) = (unanswered, &sessions) {
+        l.failed(
+            ITEM,
+            format!(
+                "systemd does not say whether {sessions} is there, so nobody knows that nothing \
+                 of the new instance runs: stop it on the new host (`systemctl stop {sessions}`)"
+            ),
         );
     } else {
         l.changed(

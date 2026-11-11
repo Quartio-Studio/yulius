@@ -49,8 +49,14 @@ struct Systemd {
     stopped: bool,
     /// `systemctl disable` fails.
     no_disable: bool,
+    /// `systemctl enable` fails.
+    no_enable: bool,
     /// systemd does not answer `show`.
     silent: bool,
+    /// The host's sessions unit (SPEC-458) and whether it is frozen; `None`: it has none.
+    sessions: Option<bool>,
+    /// systemd does not answer `show` for the sessions unit.
+    sessions_silent: bool,
 }
 
 struct FakeSystemd(Arc<Mutex<Systemd>>, Events);
@@ -59,8 +65,28 @@ impl freeze::Host for FakeSystemd {
     fn systemctl(&mut self, args: &[&str]) -> Result<(i32, String), String> {
         let mut unit = self.0.lock().map_err(|e| e.to_string())?;
         let said = |text: String| Ok((0, text));
+        let of_sessions = args
+            .last()
+            .is_some_and(|name| name.ends_with("-sandboxes.service"));
         match args[0] {
             "show" if unit.silent => Err("Failed to connect to bus".into()),
+            "show" if of_sessions && unit.sessions_silent => Err("Failed to connect to bus".into()),
+            "show" if of_sessions => said(match unit.sessions {
+                None => "LoadState=not-found\nActiveState=inactive\nFreezerState=running\n".into(),
+                Some(frozen) => format!(
+                    "LoadState=loaded\nActiveState=active\nFreezerState={}\n\
+                     ControlGroup=/yulius.slice/yulius-sandboxes.service\n",
+                    if frozen { "frozen" } else { "running" }
+                ),
+            }),
+            verb @ ("freeze" | "thaw") if of_sessions => {
+                if unit.sessions.is_none() {
+                    return Ok((5, String::new()));
+                }
+                unit.sessions = Some(verb == "freeze");
+                note(&self.1, format!("old: systemctl {verb} sessions"));
+                said(String::new())
+            }
             "show" => said(format!(
                 "LoadState=loaded\nActiveState={}\nFreezerState={}\n\
                  ControlGroup=/system.slice/yulius.service\n",
@@ -76,6 +102,7 @@ impl freeze::Host for FakeSystemd {
                     "thaw" => unit.frozen = false,
                     "disable" if unit.no_disable => return Ok((1, String::new())),
                     "disable" => unit.disabled = true,
+                    "enable" if unit.no_enable => return Ok((1, String::new())),
                     "enable" => {
                         unit.disabled = false;
                         if args.contains(&"--now") {
@@ -428,7 +455,7 @@ impl World for FakeWorld {
 
     fn refused(&mut self) {}
 
-    fn frozen(&mut self, _: bool) {}
+    fn frozen(&mut self, _: Vec<String>) {}
 
     fn claim(&mut self) -> bool {
         note(&self.events, "old: no signal thaws from here");
@@ -1014,6 +1041,303 @@ fn a_copy_that_differs_thaws_the_old_instance_and_starts_nothing() -> TestResult
     Ok(())
 }
 
+/// SPEC-458 beside SPEC-460: on a host whose sessions live in their own unit the cutover freezes
+/// that unit with the server's, and a move that does not happen thaws both, the sessions unit
+/// first. A sessions unit left frozen would leave every agent frozen beside a server that runs.
+#[test]
+fn a_host_with_a_sessions_unit_is_frozen_and_thawed_whole() -> TestResult {
+    let mut s = setup()?;
+    s.world.systemd.lock().map_err(|e| e.to_string())?.sessions = Some(false);
+    s.remote.tamper = Some(|copy| {
+        let _ = fs::write(copy.join("sysroots/sb/upper/tool"), vec![1u8; 1499]);
+    });
+    assert_eq!(s.run()?, 1);
+    let events = s.events();
+    let at = |event: &str| events.iter().position(|e| e == event);
+    assert!(
+        at("old: systemctl freeze").is_some() && at("old: systemctl freeze sessions").is_some(),
+        "{events:#?}"
+    );
+    assert!(
+        at("old: systemctl thaw sessions").is_some()
+            && at("old: systemctl thaw sessions") < at("old: systemctl thaw"),
+        "{events:#?}"
+    );
+    let unit = s.world.systemd.lock().map_err(|e| e.to_string())?;
+    assert_eq!((unit.frozen, unit.sessions), (false, Some(false)));
+    Ok(())
+}
+
+/// A sessions unit that is frozen while the server's is not (an earlier run that was killed
+/// half-way) is a frozen instance: the move refuses as for a frozen server unit and names the
+/// command that thaws both.
+#[test]
+fn a_frozen_sessions_unit_alone_is_a_frozen_instance() -> TestResult {
+    let mut s = setup()?;
+    s.world.systemd.lock().map_err(|e| e.to_string())?.sessions = Some(true);
+    assert_eq!(s.run()?, 2, "{}", s.shown());
+    assert!(
+        s.shown()
+            .contains("systemctl thaw yulius-sandboxes.service yulius.service"),
+        "{}",
+        s.shown()
+    );
+    assert!(!s.events().iter().any(|e| e.contains("freeze")));
+    Ok(())
+}
+
+/// An abort brings the whole old instance back: the sessions unit is thawed with the server's.
+#[test]
+fn abort_thaws_the_sessions_unit_too() -> TestResult {
+    let mut s = setup()?;
+    {
+        let mut unit = s.world.systemd.lock().map_err(|e| e.to_string())?;
+        unit.sessions = Some(false);
+    }
+    s.remote.healthy = false;
+    let _ = s.run()?;
+    {
+        let mut unit = s.world.systemd.lock().map_err(|e| e.to_string())?;
+        unit.frozen = true;
+        unit.sessions = Some(true);
+    }
+    let _ = s.abort()?;
+    let unit = s.world.systemd.lock().map_err(|e| e.to_string())?;
+    assert_eq!(
+        (unit.frozen, unit.sessions),
+        (false, Some(false)),
+        "{:#?}",
+        s.events()
+    );
+    Ok(())
+}
+
+/// Review of the merge (medium): "is the old instance still frozen" before the new one starts
+/// means all of it. One unit thawed alone during the copy (by hand, or a restart of it) leaves
+/// the other frozen, and "something is frozen" would let the new instance start beside it.
+#[test]
+fn one_unit_thawed_alone_during_the_copy_starts_nothing() -> TestResult {
+    for change in [(|unit| unit.frozen = false) as fn(&mut Systemd), |unit| {
+        unit.sessions = Some(false)
+    }] {
+        let mut s = meanwhile(change)?;
+        s.world.systemd.lock().map_err(|e| e.to_string())?.sessions = Some(false);
+        assert_eq!(s.run()?, 1);
+        assert!(
+            s.shown().contains("is no longer known to be frozen"),
+            "{}",
+            s.shown()
+        );
+        let events = s.events();
+        assert!(
+            !events.iter().any(|e| e == "new: mark" || e == "new: start"),
+            "{events:?}"
+        );
+        // Nothing was started, so all of it runs again: none of it is left frozen.
+        let unit = s.world.systemd.lock().map_err(|e| e.to_string())?;
+        assert_eq!((unit.frozen, unit.sessions), (false, Some(false)));
+    }
+    Ok(())
+}
+
+/// Not knowing is not frozen, for the sessions unit as for the server's: when systemd stops
+/// answering about it during the copy, nothing is started.
+#[test]
+fn a_sessions_unit_systemd_says_nothing_about_starts_nothing() -> TestResult {
+    let mut s = meanwhile(|unit| unit.sessions_silent = true)?;
+    s.world.systemd.lock().map_err(|e| e.to_string())?.sessions = Some(false);
+    assert_eq!(s.run()?, 1);
+    assert!(
+        s.shown().contains("is no longer known to be frozen"),
+        "{}",
+        s.shown()
+    );
+    let events = s.events();
+    assert!(
+        !events.iter().any(|e| e == "new: mark" || e == "new: start"),
+        "{events:?}"
+    );
+    Ok(())
+}
+
+/// Review of the merge (medium): every command a person is told to stop the new instance with
+/// names its sessions unit. A new instance that could not be stopped through the key:
+#[test]
+fn a_new_instance_that_cannot_be_stopped_names_both_units_to_stop() -> TestResult {
+    let mut s = setup()?;
+    s.remote.healthy = false;
+    s.remote.refuse = vec!["stop"];
+    assert_eq!(s.run()?, 1);
+    assert!(
+        s.shown().contains(
+            "the new instance could not be stopped. Stop it on the new host (`systemctl \
+             disable --now yulius.service; systemctl stop yulius-sandboxes.service`)"
+        ),
+        "{}",
+        s.shown()
+    );
+    // Frozen is safe: nothing of the old instance was thawed.
+    assert!(s.world.systemd.lock().map_err(|e| e.to_string())?.frozen);
+    Ok(())
+}
+
+/// Review of the merge (low): a server's unit that was stopped from outside during the copy is
+/// not thawed (systemd thaws no unit that does not run) and does not "run as before": the line
+/// says that it is down and how to start it.
+#[test]
+fn a_server_stopped_during_the_copy_is_not_reported_as_thawed() -> TestResult {
+    // Without a sessions unit, and with one (not frozen before the move).
+    for sessions in [None, Some(false)] {
+        let mut s = meanwhile(|unit| {
+            unit.frozen = false;
+            unit.stopped = true;
+        })?;
+        s.world.systemd.lock().map_err(|e| e.to_string())?.sessions = sessions;
+        assert_eq!(s.run()?, 1);
+        assert!(!s.shown().contains("it runs as before"), "{}", s.shown());
+        assert!(
+            s.shown().contains(
+                "yulius.service is not running: start it (`systemctl start yulius.service`)"
+            ),
+            "{}",
+            s.shown()
+        );
+        // What the move froze of it is thawed all the same.
+        let unit = s.world.systemd.lock().map_err(|e| e.to_string())?;
+        assert_eq!(unit.sessions, sessions);
+        if sessions.is_some() {
+            assert!(
+                s.events()
+                    .iter()
+                    .any(|e| e == "old: systemctl thaw sessions"),
+                "{:#?}",
+                s.events()
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Review of the merge (nit): with nothing of the old instance to thaw, the command a failed
+/// abort names is one that runs, not `systemctl thaw` without a unit.
+#[test]
+fn an_abort_that_cannot_start_the_old_unit_names_a_command_that_runs() -> TestResult {
+    let mut s = setup()?;
+    assert_eq!(s.run()?, 0);
+    if let Ok(mut unit) = s.world.systemd.lock() {
+        unit.stopped = true;
+        unit.frozen = false;
+        unit.no_enable = true;
+    }
+    s.world.https = false;
+    assert_eq!(s.abort()?, 1);
+    assert!(
+        s.shown().contains(
+            "yulius.service could not be brought back: `systemctl enable --now yulius.service`"
+        ),
+        "{}",
+        s.shown()
+    );
+    assert!(!s.shown().contains("systemctl thaw ;"), "{}", s.shown());
+    Ok(())
+}
+
+/// Review of the merge (nit): what the cutover says when the instance is not frozen as a whole
+/// right after its freeze depends on what systemd said.
+#[test]
+fn the_cutover_says_why_the_instance_is_not_frozen_after_its_freeze() {
+    use crate::instance::migrate::{Old, not_frozen_after_freeze};
+    let stopped = not_frozen_after_freeze(
+        "yulius.service",
+        Some(Old {
+            active: false,
+            any_frozen: false,
+            all_frozen: false,
+        }),
+    );
+    assert!(
+        stopped.contains("is not running any more: start it (`systemctl start yulius.service`)"),
+        "{stopped}"
+    );
+    for state in [
+        None,
+        Some(Old {
+            active: true,
+            any_frozen: true,
+            all_frozen: false,
+        }),
+    ] {
+        let unknown = not_frozen_after_freeze("yulius.service", state);
+        assert!(!unknown.contains("is not running any more"), "{unknown}");
+        assert!(
+            unknown.contains("not known to be frozen as a whole"),
+            "{unknown}"
+        );
+    }
+}
+
+/// A recorded start goes on only with the whole old instance frozen: its sessions unit thawed
+/// alone is an old instance that runs.
+#[test]
+fn a_recorded_start_goes_on_only_with_the_sessions_unit_frozen_too() -> TestResult {
+    let mut s = killed_while_starting()?;
+    s.world.systemd.lock().map_err(|e| e.to_string())?.sessions = Some(false);
+    assert_eq!(s.run()?, 0, "{}", s.shown());
+    let events = s.events();
+    assert_eq!(events.first().map(String::as_str), Some("new: health"));
+    assert!(!events.iter().any(|e| e == "new: start"), "{events:?}");
+    assert!(
+        s.shown()
+            .contains("Make sure nothing of the old one runs here")
+            && s.shown().contains("yulius-sandboxes.service"),
+        "{}",
+        s.shown()
+    );
+    Ok(())
+}
+
+/// The server's unit stopped since the plan while its sessions unit runs: the freeze takes the
+/// sessions unit alone, the move ends, and nothing of the old instance may stay frozen for it.
+#[test]
+fn a_server_stopped_since_the_plan_leaves_no_sessions_frozen() -> TestResult {
+    let mut s = setup()?;
+    s.world.systemd.lock().map_err(|e| e.to_string())?.sessions = Some(false);
+    s.remote.meanwhile = Some((
+        "before_start",
+        |unit| unit.stopped = true,
+        Arc::clone(&s.world.systemd),
+    ));
+    assert_eq!(s.run()?, 1);
+    assert!(
+        s.shown().contains("is not running any more: start it"),
+        "{}",
+        s.shown()
+    );
+    let unit = s.world.systemd.lock().map_err(|e| e.to_string())?;
+    assert_eq!(unit.sessions, Some(false), "{:#?}", s.events());
+    Ok(())
+}
+
+/// An abort on a host whose server's unit no longer runs while its sessions unit is frozen:
+/// the server is started and the sessions are thawed, not left frozen under "runs here again".
+#[test]
+fn abort_with_a_stopped_server_thaws_its_sessions_unit() -> TestResult {
+    let mut s = setup()?;
+    s.world.systemd.lock().map_err(|e| e.to_string())?.sessions = Some(false);
+    assert_eq!(s.run()?, 0, "{}", s.shown());
+    if let Ok(mut unit) = s.world.systemd.lock() {
+        unit.stopped = true;
+        unit.frozen = false;
+        unit.sessions = Some(true);
+    }
+    s.world.https = false;
+    assert_eq!(s.abort()?, 0, "{}", s.shown());
+    let unit = s.world.systemd.lock().map_err(|e| e.to_string())?;
+    assert!(!unit.stopped && !unit.disabled && !unit.frozen);
+    assert_eq!(unit.sessions, Some(false));
+    Ok(())
+}
+
 #[test]
 fn a_new_instance_that_does_not_come_up_is_stopped_before_the_old_one_thaws() -> TestResult {
     let mut s = setup()?;
@@ -1188,6 +1512,24 @@ fn what_cannot_be_moved_from_here_is_refused() -> TestResult {
     );
     assert_eq!(s.run()?, 2);
     assert!(s.shown().contains("would freeze itself"));
+    // From inside the sessions unit (SPEC-458): the move freezes that unit too.
+    let mut s = setup()?;
+    s.local.says(
+        &[
+            "systemctl",
+            "show",
+            "--property=ControlGroup",
+            "--value",
+            "yulius-sandboxes.service",
+        ],
+        "/yulius.slice/yulius-sandboxes.service\n",
+    );
+    s.local.file(
+        "/proc/self/cgroup",
+        "0::/yulius.slice/yulius-sandboxes.service/sandboxes/x/agents\n",
+    );
+    assert_eq!(s.run()?, 2);
+    assert!(s.shown().contains("would freeze itself"));
     // While an update runs.
     let mut s = setup()?;
     s.local.says(
@@ -1238,9 +1580,15 @@ fn abort_never_leaves_both_running() -> TestResult {
     // After the finish the key is gone: while the new URL answers, nothing is touched.
     assert_eq!(s.abort()?, 1);
     assert_eq!(s.old_unit(), (true, true));
+    // The new host is set up by this build: its sessions live in their own unit, which a stop
+    // of the server's unit leaves running (SPEC-458 MOV-004).
     assert!(
+        s.shown().contains(
+            "it still answers at https://185-189-47-160.sslip.io: stop it on the new host \
+             (`systemctl disable --now yulius.service; systemctl stop yulius-sandboxes.service`)"
+        ),
+        "{}",
         s.shown()
-            .contains("it still answers at https://185-189-47-160.sslip.io")
     );
     assert!(State::load(&s.opts.state_dir).is_some());
 
@@ -1249,7 +1597,14 @@ fn abort_never_leaves_both_running() -> TestResult {
     s.opts.yes = false;
     assert_eq!(s.abort()?, 1);
     assert_eq!(s.old_unit(), (true, true));
-    assert!(s.shown().contains("does not prove that it is stopped"));
+    assert!(
+        s.shown().contains(
+            "does not prove that it is stopped: stop it on the new host (`systemctl disable \
+             --now yulius.service; systemctl stop yulius-sandboxes.service`)"
+        ),
+        "{}",
+        s.shown()
+    );
     s.world.answer = Some(false);
     assert_eq!(s.abort()?, 1);
     assert_eq!(s.old_unit(), (true, true));

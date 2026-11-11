@@ -29,9 +29,9 @@ const CONTROLLERS: [&str; 3] = ["cpu", "memory", "pids"];
 /// Processes moved out of the unit's root at most (a bound for a pathological unit).
 const MAX_MOVED: usize = 4096;
 /// The leaf of processes found in the unit's root.
-const LEGACY_LEAF: &str = "legacy";
+pub(crate) const LEGACY_LEAF: &str = "legacy";
 /// The parent of sandbox groups.
-const SANDBOXES: &str = "sandboxes";
+pub(crate) const SANDBOXES: &str = "sandboxes";
 /// A sandbox's leaves and their `cpu.weight` (SPEC-053 CPU-201): CI gets four times the agents'
 /// share, so up to 80 % of the sandbox under full contention while the holder and the engine
 /// idle. The engine's group (SPEC-187 DKR-005) is the root of its cgroup namespace: containers
@@ -43,7 +43,7 @@ const LEAVES: [(&str, u32); 4] = [
     ("engine", 100),
 ];
 /// The engine's group, also without the `cpu` split.
-const ENGINE_LEAF: &str = "engine";
+pub(crate) const ENGINE_LEAF: &str = "engine";
 /// A sandbox group's `cpu.weight` while none of its CI jobs runs (the kernel's default).
 const BASE_WEIGHT: u32 = 100;
 /// What running CI jobs add to their sandbox group's weight (SPEC-362 CSW-002): what the `ci`
@@ -232,8 +232,32 @@ fn writable(path: &Path) -> bool {
     nix::unistd::access(path, nix::unistd::AccessFlags::W_OK).is_ok()
 }
 
-/// The delegated unit of a server whose cgroup is `own` (a path relative to `fs_root`), when the
-/// parent of `own` is ours: `DelegateSubgroup=` placed the server one level down.
+/// Whether this user may place processes in the group `dir` and hand controllers to its children.
+fn delegated_to_us(dir: &Path) -> bool {
+    [
+        dir.join("cgroup.procs"),
+        dir.join("cgroup.subtree_control"),
+        dir.to_path_buf(),
+    ]
+    .iter()
+    .all(|p| writable(p))
+}
+
+/// The sessions unit beside the server's unit `parent` (ADR-0298), when the host has one this
+/// user can use: its group is delegated to us, and so is `cgroup.procs` of the slice both units
+/// share, which the kernel checks when a process moves from one unit to the other.
+fn sessions_unit(fs_root: &Path, parent: &str) -> Option<PathBuf> {
+    let (slice, service) = parent.rsplit_once('/')?;
+    let unit = fs_root
+        .join(slice)
+        .join(crate::units::sessions_unit(service)?);
+    (delegated_to_us(&unit) && writable(&fs_root.join(slice).join("cgroup.procs"))).then_some(unit)
+}
+
+/// The group sandboxes live in, for a server whose cgroup is `own` (a path relative to
+/// `fs_root`): the sessions unit beside the server's unit when the host has one (ADR-0298), else
+/// the server's own unit when the parent of `own` is ours (`DelegateSubgroup=` placed the server
+/// one level down).
 ///
 /// # Errors
 /// Why there is no usable delegation (for logs and `yulius doctor`).
@@ -247,13 +271,11 @@ pub fn detect(fs_root: &Path, own: &str) -> Result<PathBuf, String> {
             "the server's cgroup /{own} has no delegated parent"
         ));
     };
+    if let Some(unit) = sessions_unit(fs_root, parent) {
+        return Ok(unit);
+    }
     let unit = fs_root.join(parent);
-    let needed = [
-        unit.join("cgroup.procs"),
-        unit.join("cgroup.subtree_control"),
-        unit.clone(),
-    ];
-    if needed.iter().all(|p| writable(p)) {
+    if delegated_to_us(&unit) {
         Ok(unit)
     } else {
         Err(format!(
@@ -830,6 +852,53 @@ mod tests {
         assert!(detect(root.path(), "/").is_err());
         assert!(detect(root.path(), "/lonely").is_err());
         assert!(detect(root.path(), "/system.slice/other.service/server").is_err());
+        Ok(())
+    }
+
+    /// A fake delegated group: the directory and the two files a server must be able to write.
+    fn delegated(dir: &Path) -> io::Result<()> {
+        std::fs::create_dir_all(dir)?;
+        std::fs::write(dir.join("cgroup.procs"), "")?;
+        std::fs::write(dir.join("cgroup.subtree_control"), "")
+    }
+
+    #[test]
+    fn the_sessions_unit_beside_the_server_is_preferred() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let root = tempfile::tempdir()?;
+        let slice = root.path().join("yulius.slice");
+        let server = slice.join("yulius.service");
+        let sessions = slice.join("yulius-sandboxes.service");
+        delegated(&server)?;
+        let own = "/yulius.slice/yulius.service/server";
+        // No sessions unit: the server's own unit, as before.
+        assert_eq!(detect(root.path(), own)?, server);
+        // A sessions unit the server cannot move processes into (the slice's file is missing).
+        delegated(&sessions)?;
+        assert_eq!(detect(root.path(), own)?, server);
+        std::fs::write(slice.join("cgroup.procs"), "")?;
+        assert_eq!(detect(root.path(), own)?, sessions);
+        // It alone is enough: the server's unit needs no delegation then.
+        std::fs::remove_file(server.join("cgroup.subtree_control"))?;
+        assert_eq!(detect(root.path(), own)?, sessions);
+        // Each missing permission falls back (here to an error: the server's unit is not ours).
+        std::fs::remove_file(sessions.join("cgroup.subtree_control"))?;
+        assert!(detect(root.path(), own).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn a_server_outside_a_service_unit_has_no_sessions_unit()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let scope = root.path().join("user.slice/run-1.scope");
+        delegated(&scope)?;
+        delegated(&root.path().join("user.slice/run-1.scope-sandboxes.service"))?;
+        std::fs::write(root.path().join("user.slice/cgroup.procs"), "")?;
+        assert_eq!(
+            detect(root.path(), "/user.slice/run-1.scope/server")?,
+            scope
+        );
         Ok(())
     }
 

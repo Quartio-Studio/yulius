@@ -18,6 +18,24 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   above it and stop without freezing after five such passes. A pass cut by a broken link or a
   killed command is continued by the same command, and nothing the new host acknowledged is sent
   twice. The operations guide §7 describes it.
+- A restart of the server keeps its sessions on systemd 258 and later (SPEC-458, task #440,
+  ADR-0298). On Ubuntu 26.04 (systemd 259) `yulius.service` could be stopped but not started
+  again while one session ran, so a restart or an update took the instance down until every
+  session was ended by hand (production, 2026-11-11). Sessions and sandboxes now live in a unit
+  of their own, `yulius-sandboxes.service`, which a restart of the server never touches, and a
+  root step before every start moves what an earlier layout left in the server's unit. `sudo
+  yulius host setup` writes the units and restarts nothing. Until a host has them, Restart… and
+  Update now are refused there with the reason instead of stopping the server, and `yulius
+  doctor` and `yulius host check` name the missing setup. **On a host with systemd 258 or later,
+  put the three units in place before the update that brings this** (`docs/operations.md` §8,
+  "Upgrading to sessions in their own unit", with the way back if it was skipped). Sandbox Docker
+  engines end once at that first restart and start again on demand.
+- A task that starts while the server starts up is no longer shown as stopped, and a refused
+  restart no longer breaks a task whose run is alive (SPEC-458, from task #439). The start-up
+  sweep rested a task whose launch it had itself begun; and Restart on a task that still had a
+  live run was refused only after its status had changed, so the task ended as "failed" beside a
+  running agent that no button reached. A start is now refused before anything changes, a run
+  that no server holds is settled first, and Stop ends a run that is still on record.
 - Sandboxes never run a Claude Code that does not know Yulius's default model (SPEC-461, task
   #443, ADR-0293). On production the default model (Fable 5.2) had outrun the Claude Code that
   npm's `stable` offered (2.1.311), so a session's own model picker and its `fable` alias meant

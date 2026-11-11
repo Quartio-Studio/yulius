@@ -16,6 +16,41 @@ fn paths(list: &[PathBuf]) -> Vec<&str> {
     list.iter().filter_map(|p| p.to_str()).collect()
 }
 
+/// SPEC-458 beside SPEC-460 (review of the merge, low): limits for all sandboxes are set on the
+/// sessions unit. Its unit file is written by the new host's setup; what an operator added to
+/// it travels with the server unit's own drop-ins.
+#[test]
+fn the_sessions_units_drop_ins_travel_too() -> Result<(), String> {
+    let mut host = old_host();
+    host.says(
+        &["systemctl", "show", "yulius-sandboxes.service"],
+        "LoadState=loaded\nFragmentPath=/etc/systemd/system/yulius-sandboxes.service\n\
+         DropInPaths=/etc/systemd/system/yulius-sandboxes.service.d/50-limits.conf \
+         /etc/systemd/system.control/yulius-sandboxes.service.d/50-TasksMax.conf\n",
+    );
+    host.file(
+        "/etc/systemd/system/yulius-sandboxes.service.d/50-limits.conf",
+        "[Service]\nTasksMax=60000\n",
+    );
+    let p = read(&mut host)?;
+    let units: Vec<&str> = p.units.iter().filter_map(|f| f.path.to_str()).collect();
+    assert_eq!(
+        units.last(),
+        Some(&"/etc/systemd/system/yulius-sandboxes.service.d/50-limits.conf"),
+        "{units:?}"
+    );
+    // Its own file is the new host's setup's to write, and systemd's runtime settings are not
+    // an operator's file.
+    assert!(
+        !units
+            .iter()
+            .any(|path| path.ends_with("yulius-sandboxes.service")
+                || path.contains("system.control")),
+        "{units:?}"
+    );
+    Ok(())
+}
+
 #[test]
 fn the_old_hosts_profile_names_everything_a_move_carries() -> Result<(), String> {
     let mut host = old_host();
