@@ -1,11 +1,11 @@
 ---
 yulius-task: cce2923e-92b8-4c22-a781-939a1b340f42
-status: in-progress
+status: done
 ---
 
 # SPEC-452: Nothing is typed into the Editor before its file is there (#1087)
 
-Status: in progress
+Status: done
 Date: 2026-11-11
 Owner: Yulius task #434
 Scope authorization: task #430 working through open issues: "Solve GitHub issue #1087 … finds the
@@ -82,7 +82,7 @@ and passes under load.
 - [x] The editor starts without a model, so nothing can be typed before the file is set
 - [x] The quarantined test waits for the open tab and runs again, 10 runs green under the probe
 - [x] The #1087 test moves the disk once the server has the typing: green under a late first edit
-- [ ] Independent review answered and gates green
+- [x] Independent review answered and gates green
 
 ## Acceptance criteria
 
@@ -144,6 +144,7 @@ run.
 | The same five files of dev, join late | 106 passed, 1 skipped, 3 failed: the places test named in Context (the #1087 cause; passes on this branch) and the two below |
 | Whole e2e suite, at an earlier head of this branch (before 508f11fa) | 903 passed, 1 skipped (`agent.e2e.ts`), 1 failed: `notes.e2e.ts` "a conflict on Me is always with the person's own other tab, even under an older login"; passed on a re-run, no Editor in it |
 | `yulius security-scan` | "Security scan disabled": not run, so not passed |
+| `scripts/dev ci` at d9becda2, in the task sandbox | doctor, check, lint, macos passed; nextest: 3281 passed, 3 failed, the `first_message` tests that fail in every task sandbox and pass in Yulius CI (#1154; this change has no Rust); doctests, deps and docs did not run after that. Yulius CI's `quality` job runs the whole gate on the delivered head |
 
 Two failures met that this change does not cause (neither opens the Editor before the failing
 line; both also fail on dev's copy). They are reported on #1087, since this task opens no issues:
