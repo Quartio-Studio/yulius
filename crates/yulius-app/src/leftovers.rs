@@ -935,7 +935,7 @@ impl App {
     /// Why the CI checkout `name` (or its cache, `what`) is stale given the job keys `used`;
     /// `None` when it is not.
     fn checkout_stale(&self, what: &str, name: &str, used: &HashSet<String>) -> Option<String> {
-        let lanes = self.config.ci.lanes.max(1);
+        let lanes = self.ci_lanes();
         let (unlaned, lane) = match name.split_once('@') {
             Some((key, lane)) => (key, lane.parse::<u32>().ok()),
             None => (name, Some(0)),

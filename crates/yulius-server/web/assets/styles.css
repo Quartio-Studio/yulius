@@ -2814,6 +2814,19 @@ a.update-text:hover { text-decoration: underline; text-underline-offset: 2px; }
 .leftovers-what > div + div { margin-top: 2px; }
 .leftovers-path { overflow-wrap: anywhere; color: var(--muted); }
 .update-confirm-steps { display: flex; flex-direction: column; gap: 8px; margin: 0; padding-left: 20px; }
+/* The instance page's Resource limits card (SPEC-459 HSL-008). */
+.limits-intro { margin: 0; max-width: 72ch; }
+.limits-notice { align-items: flex-start; }
+.limits-notice .banner-text { display: flex; flex-direction: column; gap: 8px; }
+.limits-stale { margin: 0; padding-left: 16px; }
+.limits-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.limit { display: flex; flex-direction: column; gap: 6px; padding: 12px 0; border-top: 1px solid var(--border); }
+.limit-head { gap: 8px; flex-wrap: wrap; }
+.limit-name { font-size: var(--fs); line-height: var(--lh); }
+.limit-value { font-variant-numeric: tabular-nums; font-weight: 600; }
+.limit-note { margin: 0; max-width: 88ch; }
+.limit-form { flex-wrap: wrap; }
+.limit-input { width: 112px; }
 .jev-status { display: flex; align-items: center; gap: 8px; }
 .jev-status.jev-on .icon { color: var(--ok); }
 .jev-form { display: flex; flex-direction: column; gap: 8px; max-width: 520px; }

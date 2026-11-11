@@ -230,6 +230,9 @@ an older one.
   Nits: `PUT …/channel` needs the field; the doctor leaves out a refusal the host's install has
   overtaken; a version that is not plain is not waited for; the card redraws only on a change
   (focus and the alert stay); what was sent to older versions is forgotten at the next move.
+- **Migration `0050_claude_code.sql` is schema version 51.** Its number was reserved first, but
+  SPEC-459's `0051_instance_limits.sql` merged first as version 50; a version is a migration's
+  place in the list, so this one goes after it.
 - **Not from this change:** `first_message::{a_draft_typed_during_the_opening_turn_is_left_alone,
   focus_and_mouse_reports_do_not_keep_the_goal_out,
   trust_words_after_the_session_started_are_no_trust_prompt}` and

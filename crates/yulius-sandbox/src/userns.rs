@@ -26,6 +26,25 @@ const INFO_TIMEOUT: Duration = Duration::from_secs(10);
 /// Longest `--info-fd` report read.
 const MAX_INFO_BYTES: u64 = 4096;
 
+/// The options of the namespace a sandbox's holder runs in, after `bwrap --unshare-user --uid 0
+/// --gid 0` and up to its command.
+pub const HOLDER_NAMESPACE: [&str; 9] = [
+    "--unshare-net",
+    "--dev-bind",
+    "/",
+    "/",
+    "--cap-add",
+    "ALL",
+    "--chdir",
+    "/",
+    "--",
+];
+
+/// What a namespace proof runs in it (SPEC-456): a mount by the child. bwrap's own start is not
+/// enough: an AppArmor profile that confines what bwrap starts (Ubuntu 26.04's
+/// `bwrap-userns-restrict`) lets the namespace begin and denies its child every capability.
+pub const PROOF_COMMAND: [&str; 5] = ["mount", "-t", "tmpfs", "none", "/tmp"];
+
 /// The programs and id maps of a mapped namespace.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Mapper {
@@ -118,10 +137,11 @@ fn read_info(reader: OwnedFd) -> io::Result<u32> {
         .recv_timeout(INFO_TIMEOUT)
         .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "bwrap did not report"))?;
     info_child_pid(&text).ok_or_else(|| {
-        io::Error::other(format!(
-            "bwrap did not start its namespace ({})",
-            text.trim()
-        ))
+        let said = match text.trim() {
+            "" => String::new(),
+            said => format!(" ({said})"),
+        };
+        io::Error::other(format!("bwrap did not start its namespace{said}"))
     })
 }
 
@@ -194,20 +214,27 @@ impl Mapper {
     /// Start failure, a timeout (the child is killed) or a non-zero exit with its stderr.
     pub fn run(&self, args: &[OsString], limit: Duration) -> io::Result<()> {
         let log = tempfile_like()?;
-        let (mut child, _) = self.spawn(args, Stdio::from(log.try_clone()?))?;
+        let (mut child, _) = match self.spawn(args, Stdio::from(log.try_clone()?)) {
+            Ok(started) => started,
+            // What bwrap said before it gave up (`setting up uid map: Permission denied`).
+            Err(error) => {
+                let said = said(log);
+                return Err(if said.is_empty() {
+                    error
+                } else {
+                    io::Error::new(error.kind(), format!("{error}: {said}"))
+                });
+            }
+        };
         let deadline = std::time::Instant::now() + limit;
         loop {
             if let Some(status) = child.try_wait()? {
                 if status.success() {
                     return Ok(());
                 }
-                let mut text = String::new();
-                let mut file = log;
-                let _ = std::io::Seek::rewind(&mut file);
-                let _ = (&mut file).take(4096).read_to_string(&mut text);
                 return Err(io::Error::other(format!(
                     "namespace command failed ({status}): {}",
-                    text.trim()
+                    said(log)
                 )));
             }
             if std::time::Instant::now() >= deadline {
@@ -221,6 +248,33 @@ impl Mapper {
             std::thread::sleep(Duration::from_millis(50));
         }
     }
+
+    /// Proves that a sandbox's namespace works on this host (SPEC-456 BNS-009): bwrap with the
+    /// ids mapped as a sandbox's are, in the holder's namespace, whose child mounts
+    /// ([`PROOF_COMMAND`]).
+    ///
+    /// # Errors
+    /// What bwrap or the mount said.
+    pub fn probe(&self) -> io::Result<()> {
+        self.run(&proof_args(), Duration::from_secs(20))
+    }
+}
+
+/// What a proof passes to bwrap after its id options: the holder's namespace, then the mount.
+fn proof_args() -> Vec<OsString> {
+    HOLDER_NAMESPACE
+        .iter()
+        .chain(&PROOF_COMMAND)
+        .map(OsString::from)
+        .collect()
+}
+
+/// The start of what a child wrote to its stderr file.
+fn said(mut log: std::fs::File) -> String {
+    let mut text = String::new();
+    let _ = std::io::Seek::rewind(&mut log);
+    let _ = (&mut log).take(4096).read_to_string(&mut text);
+    text.trim().to_owned()
 }
 
 /// An anonymous file for a child's stderr.
@@ -258,6 +312,53 @@ mod tests {
         assert_eq!(
             info_child_pid("bwrap: setting up uid map: Permission denied"),
             None
+        );
+    }
+
+    /// SPEC-456 BNS-009: the proof starts what a sandbox's holder runs in (its network, the
+    /// host's root, every capability) and mounts there. Host setup's item passes the same words.
+    #[test]
+    fn the_proof_mounts_in_the_holders_namespace() {
+        let args: Vec<String> = proof_args()
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            args.join(" "),
+            "--unshare-net --dev-bind / / --cap-add ALL --chdir / -- mount -t tmpfs none /tmp"
+        );
+    }
+
+    /// SPEC-456 BNS-009: a proof that cannot start says what the program said, not only that it
+    /// did not report (`sh` stands in for a bwrap that refuses).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_failed_proof_carries_what_the_program_said() {
+        let ids = IdMap {
+            host: 1000,
+            sub_start: 100_000,
+            count: 65_536,
+        };
+        let mapper = Mapper {
+            bwrap: PathBuf::from("/bin/sh"),
+            newuidmap: PathBuf::from("/bin/true"),
+            newgidmap: PathBuf::from("/bin/true"),
+            uid: ids,
+            gid: ids,
+        };
+        let Err(error) = mapper.probe() else {
+            panic!("sh is no bwrap");
+        };
+        let error = error.to_string();
+        let (ours, said) = error.split_once(": ").unwrap_or((&error, ""));
+        assert!(
+            ours.starts_with("bwrap did not start its namespace"),
+            "{error}"
+        );
+        assert!(said.contains("option"), "the program's own words: {error}");
+        assert!(
+            !ours.contains("()"),
+            "nothing reported, nothing quoted: {error}"
         );
     }
 }

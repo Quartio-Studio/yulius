@@ -42,6 +42,7 @@ pub mod hygiene;
 pub(crate) mod playground;
 mod prove;
 mod rollback;
+mod slots;
 mod tools;
 
 use std::collections::{HashMap, HashSet};
@@ -50,7 +51,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use tokio::sync::{Notify, Semaphore, watch};
+use tokio::sync::{Notify, watch};
 use yulius_contracts::api::ci::{CiGate, CiJob, CiJobSpec, CiOverview, CiRun};
 use yulius_domain::ci::{
     self as dom, CiRef, Gate, GateResult, GateSource, Job, RunFacts, RunState, RunSummary, Target,
@@ -265,7 +266,7 @@ pub(crate) struct GateView {
 /// Process-local CI state.
 #[derive(Default)]
 pub struct CiState {
-    slots: OnceLock<Arc<Semaphore>>,
+    slots: OnceLock<Arc<slots::JobSlots>>,
     /// The CPUs and MiB of memory CI jobs share, sized from the sandbox capacity at the first
     /// job (SPEC-082 RES-003).
     pub(crate) budget: OnceLock<crate::resources::CiPools>,
@@ -519,14 +520,21 @@ impl App {
             })
     }
 
-    fn ci_slots(&self) -> Arc<Semaphore> {
+    fn ci_slots(&self) -> Arc<slots::JobSlots> {
         self.ci
             .slots
-            .get_or_init(|| {
-                let jobs = usize::try_from(self.config.ci.max_jobs.max(1)).unwrap_or(1);
-                Arc::new(Semaphore::new(jobs))
-            })
+            .get_or_init(|| slots::JobSlots::new(self.ci_job_slots()))
             .clone()
+    }
+
+    fn ci_job_slots(&self) -> usize {
+        usize::try_from(self.ci_max_jobs()).unwrap_or(1)
+    }
+
+    /// Makes the job slots as many as the limit in force says (SPEC-459 HSL-006): more at once,
+    /// fewer as running jobs end.
+    pub(crate) fn ci_resize_slots(&self) {
+        self.ci_slots().resize(self.ci_job_slots());
     }
 
     /// Counts one more (`started`) or one fewer running CI job of `sandbox` and tells the
@@ -1347,7 +1355,7 @@ impl App {
         let Ok(active) = self.deps.store.active_ci_runs().await else {
             return;
         };
-        let lanes = self.config.ci.lanes.max(1);
+        let lanes = self.ci_lanes();
         for run in active.into_iter().filter(|r| r.state == RunState::Queued) {
             // Over the disk quota a run waits in the queue instead of erroring (CI-301); asked
             // only when a lane is free.

@@ -269,6 +269,36 @@ impl UpdateStore for SqliteStore {
         .await
     }
 
+    async fn limits(&self) -> AppResult<Option<String>> {
+        self.call(|c| {
+            let doc = c
+                .query_row("SELECT limits FROM instance WHERE singleton = 1", [], |r| {
+                    r.get::<_, Option<String>>(0)
+                })
+                .optional()
+                .map_err(db)?;
+            Ok(doc.flatten())
+        })
+        .await
+    }
+
+    async fn set_limits(&self, doc: &str) -> AppResult<()> {
+        let doc = doc.to_owned();
+        self.call(move |c| {
+            let changed = c
+                .execute(
+                    "UPDATE instance SET limits = ?1 WHERE singleton = 1",
+                    params![doc],
+                )
+                .map_err(db)?;
+            if changed == 0 {
+                return Err(AppError::Conflict("the instance is not set up yet".into()));
+            }
+            Ok(())
+        })
+        .await
+    }
+
     async fn claude_channel(&self) -> AppResult<Option<ChosenChannel>> {
         self.call(|c| {
             let row = c

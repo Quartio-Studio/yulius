@@ -47,6 +47,7 @@ mod intake;
 mod isolation;
 mod jev_key;
 mod leftovers;
+mod limits;
 mod live_claude;
 mod live_display;
 mod live_files;

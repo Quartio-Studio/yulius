@@ -198,6 +198,86 @@ pub struct StartRestart {
     pub confirm: bool,
 }
 
+/// `GET /api/admin/limits`: the instance's resource limits (SPEC-459), each with its value in
+/// force, where it comes from and what this host would get by default.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct LimitsView {
+    /// This host.
+    pub host: LimitsHost,
+    /// The limits, in the order they are shown.
+    pub limits: Vec<LimitView>,
+}
+
+/// A host's size, as far as it reports it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct LimitsHost {
+    /// Logical CPUs.
+    pub cpus: Option<u32>,
+    /// Memory in bytes.
+    pub memory_bytes: Option<u64>,
+    /// Size in bytes of the filesystem that holds the data directory.
+    pub disk_bytes: Option<u64>,
+}
+
+/// One resource limit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct LimitView {
+    /// Its key (`max_sessions`, `ci_max_jobs`, `ci_lanes`, `sandbox_memory_gb`,
+    /// `sandbox_disk_gb`, `cd_run_disk_gb`).
+    pub key: String,
+    /// Its name for a person.
+    pub label: String,
+    /// The unit's variable (`YULIUS_MAX_SESSIONS`).
+    pub env: String,
+    /// What the value counts: empty, `GiB` or `GB`.
+    pub suffix: String,
+    /// The value in force.
+    pub value: u64,
+    /// Where it comes from: `default` (host-sized), `unit` (the variable) or `settings` (a
+    /// number saved here).
+    pub source: String,
+    /// What this host gets without a pin.
+    pub host_sized: u64,
+    /// The host-sized formula in words.
+    pub formula: String,
+    /// The unit's number, also while a setting overrules it.
+    pub unit_value: Option<u64>,
+    /// What is saved in settings; `None` when nothing is.
+    pub setting: Option<LimitSettingView>,
+    /// The host the pinned number in force was configured on.
+    pub configured_on: Option<LimitsHost>,
+    /// The pinned number in force was sized for a host of another size and no longer fits.
+    pub stale: bool,
+    /// The smallest number a setting may take.
+    pub min: u64,
+    /// The largest.
+    pub max: u64,
+    /// A change applies while the server runs (else at its next restart).
+    pub live: bool,
+    /// The value in force is not what the server runs with until it restarts.
+    pub restart_needed: bool,
+}
+
+/// What settings hold for a limit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct LimitSettingView {
+    /// The saved number; `None`: host-sized, whatever the unit says.
+    pub value: Option<u64>,
+    /// Who saved it (login; `migration` after an instance move).
+    pub set_by: String,
+    /// When (RFC 3339).
+    pub set_at: String,
+}
+
+/// `PUT /api/admin/limits/{key}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetLimit {
+    /// The number to pin; `null`: host-sized, whatever the unit says. The field is required:
+    /// a body without it is not read as host-sized.
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub value: Option<u64>,
+}
+
 /// `GET /api/admin/jev`: the Jev key's state, never the key.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct JevKeyView {

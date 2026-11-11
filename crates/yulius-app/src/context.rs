@@ -256,6 +256,8 @@ pub struct App {
     pub(crate) vault: crate::vault::VaultState,
     /// Yulius-run CI and repository hygiene (SPEC-002 ADR-21).
     pub(crate) ci: crate::ci::CiState,
+    /// The resource limits in force (SPEC-459): sessions, CI jobs and lanes, a CD run's disk.
+    pub(crate) limits: crate::limits::LimitState,
     /// Sandbox isolation (SPEC-002 ADR-22); unset: contained runs keep the previous containment.
     pub(crate) isolation: OnceLock<Arc<dyn crate::ports::isolation::SandboxIsolation>>,
     /// The Claude Code sandboxes get (SPEC-461); unset: runs use the host's as it is.
@@ -293,8 +295,10 @@ impl App {
             .collect();
         let events = EventBus::new(1024);
         let connection_health = crate::connection_health::connection_health(events.clone());
+        let limits = crate::limits::LimitState::new(&config);
         Arc::new(Self {
             instance_tag,
+            limits,
             config,
             deps,
             events,
