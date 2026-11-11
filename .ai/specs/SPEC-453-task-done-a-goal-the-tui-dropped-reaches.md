@@ -81,7 +81,7 @@ task reads Your turn, instead of staying Working for good with the agent idle.
 - [x] Regression tests that fail without the fix: a wiped verdict wait and a stale Stop copy
 - [x] Fix: the transcript's prompt and the clean Stop take the turn order
 - [x] Proof on the original test: the forced race and the phase loop pass with the fix
-- [ ] ADR, architecture, changes entry and the full gate
+- [x] ADR, architecture, changes entry and the full gate
 - [ ] Independent review and its findings answered
 
 ## Acceptance criteria
@@ -169,3 +169,9 @@ the watcher has no entry of its own.
     prompt's check and its writes.
 - **Affected suites**: `task_done::`, `intake::`, `session_sync::`, `task_pause::` and
   `subscription_pool::` of `crates/yulius/tests/main.rs`, 16 threads: 106 passed, 0 failed.
+- **Full gate.** `scripts/dev ci` at `a087543c` (dev `e2dd441d` merged in): exit 0, 3287 tests
+  run, 3287 passed, 16 skipped, among them the two new tests (5.4 s and 1.4 s) and
+  `task_done::a_goal_the_tui_dropped_is_submitted_again` (16.6 s). A first run at `5ef0b822`
+  failed on four tests this change does not touch (`first_message` three times, `merge_train`
+  once); they fail the same way on dev's code at `911e3127` and were fixed on dev by #1150.
+- `yulius security-scan`: "Security scan disabled" (Vidoc is turned off for the project), exit 0.
