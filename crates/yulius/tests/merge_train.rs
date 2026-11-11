@@ -1744,10 +1744,12 @@ async fn a_member_that_cannot_merge_is_told_instead_of_tested_again() -> TestRes
     f.advance_dev("other.txt")?;
     app.merge_armed(&f.sandbox).await;
     assert_eq!(f.train_runs(&app).await?.len(), 1);
-    f.settle(&app).await?;
+    // While the train's run is still queued: the end of the run decides the member in the
+    // background, and an owner disabled only after it may find the member merged already.
     f.h.store
         .update_user_flags(&UserId::parse("u-alice")?, Some(Some(app.now())), None)
         .await?;
+    f.settle(&app).await?;
     f.decide_until(&app, || async {
         Ok(f.wait(1, &worktree).await?["merge_armed"] == false)
     })

@@ -56,7 +56,7 @@ finish on their own:
 | DLV-012 | `yulius wait` (the agents' shell command; `POST /internal/agent/wait` with the task token) returns when the Yulius CI checks at the agent's head end, its delivery stage changes, or an armed merge is decided, and says how the armed merge ended (SPEC-028 MSR-003; notices are gone); it reads only Yulius's records. | `wait_cli` tests, the armed-merge test |
 | TSK-010 | A goal task's request file (`<sandbox home>/.yulius/tasks/<number>.md`: the request, its attached files to open, the definition of done, how to wait) is written at each start, and `/goal` names it; a short request without files is also quoted in the condition (≤ 450 characters; SPEC-117: up to 2000, and the attached files are named). SPEC-212 amends the condition: the launch `/goal` is the whole request (each file in place as `[file N: <path>]`), then the definition of done, up to 4000 UTF-16 code units and pointing at the request file only when cut; a typed goal is one line of at most 700 units, naming the request file when the request does not fit. | `request` unit tests, `task_done.rs` `a_goal_task_starts_from_its_request_file` |
 | TSK-010 | `/goal` is the launch prompt of a new session (SPEC-117); a resumed session gets it typed after the SessionStart hook and quiet output, retried (Enter, retype, Enter; 5–30 s apart). Either is confirmed by Claude Code's goal record; a goal never taken flags the task (needs attention, notice in the terminal). | `task_done.rs` |
-| HRN-012 | A task that names no model runs Claude Code's `opus` (the latest Opus; superseded by SPEC-023 DEF-001: `claude-opus-5-5` at effort `high`); auto-compact is on for every run (run settings outrank the sandbox's `settings.json`); Bash defaults to 10 minutes, at most 30. | `yulius-harness` launch tests |
+| HRN-012 | A task that names no model runs Claude Code's `opus` (the latest Opus; superseded by SPEC-023 DEF-001, DEF-002: today `claude-fable-5-2` at effort `high`); auto-compact is on for every run (run settings outrank the sandbox's `settings.json`); Bash defaults to 10 minutes, at most 30. | `yulius-harness` launch tests |
 | COM-004 | The briefing stays under 9,500 bytes (Claude Code keeps larger hook context in a file and shows a 2 KB preview), lists tools by name, ends the delivery path at the merge into the integration branch and its environments, says never to promote unless asked, and tells agents to wait with `yulius wait`. | `briefing` tests |
 
 ## Design
@@ -84,7 +84,7 @@ finish on their own:
    is told not to promote unless asked.
 2. A goal task with an attached image gets a request file listing it and a `/goal` naming the file.
 3. `delivery_merge` on pending checks arms; on green Yulius merges and the wait returns.
-4. Every launch has `--model` (default `opus`, superseded by SPEC-023: `claude-opus-5-5`) and `autoCompactEnabled: true`.
+4. Every launch has `--model` (default `opus`, superseded by SPEC-023: today `claude-fable-5-2`) and `autoCompactEnabled: true`.
 
 ## Test plan
 

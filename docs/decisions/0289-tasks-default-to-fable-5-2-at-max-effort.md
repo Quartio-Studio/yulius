@@ -2,8 +2,9 @@
 
 ## Status
 
-Accepted (2026-11-10). Supersedes the model and effort of
-[ADR-0024](0024-default-model-and-effort.md); specified in
+Accepted (2026-11-10); its effort (`max`) is superseded by
+[ADR-0295](0295-the-default-effort-is-high-again.md) (`high`), the rest stands. Supersedes the
+model and effort of [ADR-0024](0024-default-model-and-effort.md); specified in
 [SPEC-023](../../.ai/specs/SPEC-023-make-sure-the-default-model-is-always-op.md).
 
 ## Context
