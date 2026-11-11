@@ -113,7 +113,7 @@ the fix. Nobody writes an AppArmor rule by hand again.
 - [x] Host check and dry run report the item without changing the host
 - [x] The contained doctor proves a mapped user namespace
 - [x] Instance import names the step when the host lacks it
-- [ ] Operations guide, architecture and changes describe the rule
+- [x] Operations guide, architecture and changes describe the rule
 - [ ] Proof on real Ubuntu 24.04, Ubuntu 26.04 and Debian hosts
 - [ ] Gates and independent review
 
