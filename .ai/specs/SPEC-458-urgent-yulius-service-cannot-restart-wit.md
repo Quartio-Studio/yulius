@@ -103,16 +103,25 @@ Two defects made it unusable meanwhile:
   and `Wants=` and `After=` for the sessions unit and the adopt unit.
 - **LAY-004** Adopt unit: `<stem>-adopt.service`, a root oneshot (`Requires=` and `After=` the
   sessions unit) running `yulius host adopt-sessions --service <unit>` before every start of the
-  server. It mirrors `<old unit>/sandboxes` into the sessions unit (same relative paths,
-  controllers passed down, `cpu.max`, `cpu.weight`, `memory.max`, `memory.high`, `pids.max` of
-  groups it creates, owned by the service user), moves every process, removes the emptied groups
-  and takes the controllers from the old unit. The old unit is the one systemd names
-  (`ControlGroup`), else `system.slice/<unit>` and `<slice>/<unit>`. Bounded: 4096 groups, depth
-  8. Nothing to adopt is success.
+  server. For each group the server's unit may hold (the one systemd names as `ControlGroup`,
+  `system.slice/<unit>`, `<slice>/<unit>`) it makes every child group but `server` again in the
+  sessions unit (same relative paths, controllers passed down, and for a group it creates
+  `cpu.max`, `cpu.weight`, `memory.high`, `memory.max`, `pids.max` and `cgroup.freeze`, owned
+  by the service user), moves every process, removes the emptied groups and takes the
+  controllers from the old unit. Where the unit changes its place, what the server left in
+  `server/` moves to `legacy/` of the sessions unit, so that the old group empties. It then
+  waits up to 5 s until systemd names the old group no more and removes what is left of it:
+  systemd sweeps the emptied groups too and gives the unit's group up without removing it where
+  that sweep crosses the step's own, so the group being there says nothing. A group that cannot
+  be made or emptied is reported (the unit fails, which the server's `Wants=` survives) and the
+  others still move. Bounded: 4096 groups, depth 8. Nothing to adopt is success.
 - **LAY-005** A sandbox's `engine` group is not moved: its Docker engine runs in a cgroup
   namespace rooted there and could not manage containers from elsewhere. Adopt kills it
   (`cgroup.kill`), waits up to 10 s for it to empty and removes it; the engine starts again on
-  demand as after a reboot. Said in the operations guide.
+  demand as after a reboot. The sandbox's Docker front was started with the old group's path:
+  the server replaces a running engine front when the group it was given is gone and the
+  sandbox's engine group is another one now (a group that is still there may hold a running
+  engine and is never given up). Said in the operations guide.
 - **LAY-006** The needrestart rule also names the sessions unit, so a package install never
   restarts it.
 
@@ -133,8 +142,10 @@ Two defects made it unusable meanwhile:
 ### Restart and Update now
 
 - **RST-001** `restart_safety::blocker`: a restart of the server's unit would fail when systemd
-  is 258 or later, `<unit's group>/sandboxes` has processes, and the unit does not `Wants=` its
-  adopt unit. Pure over the facts (version text, `cgroup.events`, `systemctl show`).
+  is 258 or later, `sandboxes` below one of the unit's groups (LAY-004's list) has processes,
+  and the unit does not `Wants=` its adopt unit. Pure over the facts (the first line of
+  `systemctl --version`, `cgroup.events`, `LoadState`, `ControlGroup` and `Wants` of `systemctl
+  show`). A systemd that cannot be asked blocks nothing.
 - **RST-002** The update helper checks it before it stops the service, for `restart` and
   `install`: it fails the request with the reason and stops nothing.
 - **RST-003** The server checks it when Restart or Update now is asked: `409` with the reason,
@@ -175,10 +186,13 @@ Two defects made it unusable meanwhile:
 ## Acceptance criteria
 
 - On systemd 259.5 and 255.4, with the layout set up, `systemctl restart <unit>` and a `kill -9`
-  of the server with `Restart=on-failure` keep every session process; the server comes back
-  active and attaches to them.
+  of the server with `Restart=on-failure` keep every session process, and the server comes back
+  active.
 - On a host with the old layout and live sessions, after `host setup` from the new binary the
   first restart moves the sessions and succeeds on both versions.
+- The first restart that installs the fix, done by the pre-fix helper with the three units in
+  place, keeps every session on both versions. Without the units it fails on systemd 259 as it
+  did on production, and the guide's way back restores the server with its sessions.
 - With the new binary and the old layout on systemd 259, Restart and Update now are refused
   with the reason, by the server and by the helper, and nothing is stopped.
 - The helper's restart, install and rollback paths end healthy with sessions alive on both
@@ -197,10 +211,15 @@ Two defects made it unusable meanwhile:
   with the sessions unit (frozen, thawed, stopped server, move); supervisor: the
   reconciliation during a launch; a refused start and a stop with a run this server holds; a
   start and a stop with a run no server holds (host killed, host alive).
-- Real hosts (QEMU, Ubuntu 24.04 and 26.04, the real binary as `yulius.service` with real
-  sessions): the acceptance list above; logs kept in the Evidence section.
+- Real hosts (QEMU guests, Ubuntu 24.04 and 26.04): the pre-fix binary set up by its own
+  `yulius host setup`, the update helper installed as the operations guide says, the builds
+  staged by hand where the helper would build them, and stand-in session processes placed as
+  the server places a sandbox's (by the service user from the server's group, in the groups
+  `cgroup.rs` makes): the acceptance list above; results in the Evidence section.
 - Not testable here: production itself (the first restart is a person's, by the operations
-  guide).
+  guide); real agent sessions, sandboxes and Docker engines in the guests (they need a GitHub
+  App, a Claude subscription and a sandbox base), so reattaching to a session's terminal and an
+  engine starting again after the move are covered by unit tests and unchanged code only.
 
 ## Decisions
 
@@ -220,5 +239,14 @@ Two defects made it unusable meanwhile:
   too. The launch marks its task instead of the sweep waiting for the launch lock: a start-up
   never waits for a slow launch, and a test can hold a launch and reconcile without a
   deadlock.
+- The keeper is root's: the service user owns the unit's group and could signal a keeper of
+  its own, and the keeper's end is the end of every session.
+- The first restart cannot be made safe by code alone: the helper that installs this build is
+  the build before it, and nothing of a failing unit runs before its start on systemd 258. So
+  the three files ship in `deploy/systemd`, the guide gives the steps for before the update and
+  the way back that keeps the sessions, and both were run in the guests.
+- Adopt asks systemd whether it let go of the old group instead of waiting for the group to
+  vanish: found on 26.04, where the first restart with two sandboxes left the emptied group
+  behind and the step reported a failure that was none.
 - One pull request although it passes 400 lines: the layout, its setup, the adopt step and the
   guard are one fix that is unsafe in parts; the #439 recovery was asked for in the same fix.

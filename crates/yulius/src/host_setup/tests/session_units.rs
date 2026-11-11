@@ -214,6 +214,27 @@ fn the_deploy_examples_are_what_the_setup_writes() {
     );
 }
 
+/// docs/operations.md §3 shows the same three files, for an operator who writes them by hand.
+#[test]
+fn the_operations_guide_shows_the_units_the_setup_writes() {
+    let guide = include_str!("../../../../../docs/operations.md");
+    for text in [
+        sessions_unit_text("yulius.service", "yulius", "yulius.slice"),
+        adopt_unit_text(
+            "yulius.service",
+            "yulius-sandboxes.service",
+            Path::new("/usr/local/bin/yulius"),
+        ),
+        drop_in_text(
+            "yulius-sandboxes.service",
+            "yulius-adopt.service",
+            "yulius.slice",
+        ),
+    ] {
+        assert!(guide.contains(&format!("```ini\n{text}```")), "{text}");
+    }
+}
+
 #[test]
 fn another_service_name_gets_its_own_units_and_slice() {
     let mut fake = Fake::fresh();

@@ -92,10 +92,26 @@ counts as the sandbox's, one above the service does not
 [SPEC-316](../.ai/specs/SPEC-316-limit-counters-count-forks-refused-at-th.md),
 [decision 0201](decisions/0201-all-sandboxes-share-a-task-limit-below-the-services.md)).
 
+The sandboxes' groups do not live in the server's unit. systemd 258 and later start a unit
+inside the unit's own group, which the kernel refuses while a group below it holds processes, so
+a server whose sandboxes lived in its unit could not start again while one session ran. They live
+in the sessions unit `yulius-sandboxes.service`, in one slice with the server; the slice's
+`cgroup.procs` is the service user's, which lets a process move between the two units. A root
+unit, `yulius-adopt.service`, runs before every start of the server and moves what an earlier
+layout left in the server's unit. `yulius host setup` writes all three; without them the server
+uses its own unit as before, and Restart and Update now are refused where the restart would fail
+([SPEC-458](../.ai/specs/SPEC-458-urgent-yulius-service-cannot-restart-wit.md),
+[decision 0298](decisions/0298-sessions-live-in-their-own-unit.md)). The task limits below are
+then the sessions unit's.
+
 ```mermaid
 flowchart TD
-  UNIT["yulius.service: pids.max (TasksMax)"] --> SRV["server/: yulius serve"]
-  UNIT --> ALL["sandboxes/: pids.max 3/4 of the service's"]
+  SLICE["yulius.slice: cgroup.procs is the service user's"] --> UNIT["yulius.service: restarted freely"]
+  UNIT --> SRV["server/: yulius serve"]
+  SLICE --> SESS["yulius-sandboxes.service: pids.max (TasksMax); stopping it ends every session"]
+  SESS --> KEEP["keeper/: sleep infinity, root's"]
+  SESS --> ALL["sandboxes/: pids.max 3/4 of the unit's"]
+  ADOPT["yulius-adopt.service: root, before every start of yulius.service"] -.->|"moves sandboxes/ an earlier layout left in yulius.service"| SESS
   ALL --> SBX
   SBX["sandboxes/sandbox: cpu.weight 500 while CI jobs run, else 100; cpu.max, memory.max, pids.max"] --> SYS["system/ weight 100: holder, slirp4netns"]
   SBX --> AGS["agents/ weight 100: agent runs, shells, browsers"]
@@ -156,9 +172,12 @@ superseding [0140](decisions/0140-isolated-sandboxes-have-no-container-engine-ag
   restart stops it instead of adopting it. A run's own processes end with the run (its own PID
   namespace). A CD deploy already running finishes.
 - **Idle stop.** The engine stops after the idle time with no client and no container. Its
-  `engine/` leaf is then empty, so systemd prunes it when `yulius.service` stops
-  (`KillMode=process` keeps the holder and front running). The front makes it again before each
-  start, and the upkeep tick does the same for a kept engine or relay front (SPEC-201, #614).
+  `engine/` leaf is then empty, so where the sandboxes still live in `yulius.service` systemd
+  prunes it when that unit stops (`KillMode=process` keeps the holder and front running). The
+  front makes it again before each start, and the upkeep tick does the same for a kept engine or
+  relay front (SPEC-201, #614). A front whose engine group is gone because the sandbox's groups
+  moved to the sessions unit is replaced, since the path it was started with leads nowhere
+  (SPEC-458 LAY-005).
 - **Disk.** Its storage counts toward the quota, and so do the production holder's layer and
   engine storage (consumer `production`). Under pressure, a running engine's unused images
   and build cache are pruned through its own control socket, the production engine's too; a
@@ -2942,8 +2961,9 @@ The UI's event stream (`WS /api/events`) beats every 20 s; the page replaces a s
 
 `yulius instance export` and `yulius instance import` (SPEC-329, ADR-0222, module
 `crates/yulius/src/instance/`) copy a whole instance to another host. Both run as root on the host,
-outside Yulius. The export freezes the whole `yulius.service` unit with systemd's freezer (the
-cgroup v2 `cgroup.freeze` of the unit, above every run's own freeze of ADR-0131), so the server and
+outside Yulius. The export freezes the whole `yulius.service` unit and its sessions unit
+(`yulius-sandboxes.service`, ADR-0298) with systemd's freezer (the
+cgroup v2 `cgroup.freeze` of each unit, above every run's own freeze of ADR-0131), so the server and
 everything it started stop at once and the data directory is read-only while it is read. A first
 walk of the data directory plans the archive's exact length and a fingerprint of its headers; the
 second streams an uncompressed pax tar to stdout (`archive.rs`): the manifest with the total first,
@@ -2961,7 +2981,7 @@ sequenceDiagram
   participant I as yulius instance import (new VM)
   participant N as New data directory
   O->>E: sudo yulius instance export | ssh root@new yulius instance import
-  E->>D: systemctl freeze yulius.service (wait for frozen)
+  E->>D: systemctl freeze yulius.service, then yulius-sandboxes.service (wait for frozen)
   E->>F: walk 1: exact length + header fingerprint
   E->>I: manifest (total_bytes) first
   I->>I: check format, schema, free space, no instance, make user and ids
