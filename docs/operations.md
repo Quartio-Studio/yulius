@@ -1471,7 +1471,9 @@ and drop-ins for the new host name, validated and started, so its certificate is
 cutover; ufw's rules (enabled at the very end); and `host setup` up to the sandbox base. Limits pinned in the unit travel unchanged and
 are named; the new instance re-sizes those that no longer fit (SPEC-459).
 
-**Cutover.** The old unit is frozen, the data directory is streamed into the new host's import
+**Cutover.** The old unit is frozen, and with it its sessions unit `yulius-sandboxes.service`
+where the host has one ([Where sessions live](#where-sessions-live)); every thaw below is of
+both. The data directory is streamed into the new host's import
 (compressed with `zstd` when both have it), and both hosts count the copy: entries and bytes for
 each top-level folder and a fingerprint over every entry's name, kind, size, owner, mode, time and
 restorable attributes. Only when they are equal is the copy marked and the new instance started
