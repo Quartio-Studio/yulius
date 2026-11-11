@@ -154,6 +154,12 @@ pub enum Request {
         /// The new one.
         to: String,
     },
+    /// Mark a copy that was installed but never started as unfinished, so the next run removes
+    /// it.
+    Discard {
+        /// The data directory.
+        data_dir: PathBuf,
+    },
     /// Finish `host setup`, start the instance and wait until it reports `build`.
     Start {
         /// The instance.
@@ -1485,6 +1491,16 @@ pub fn handle(host: &mut dyn Host, env: &mut Env<'_>, request: &Request) -> Repl
             release,
         } => inventory(host, env, manifest, old, release, &mut reply, &mut l),
         Request::Mark { setup, from, to } => mark(host, setup, from.as_deref(), to, &mut l),
+        Request::Discard { data_dir } => {
+            let marker = data_dir.join(INCOMPLETE);
+            match host.write(&marker, "", 0o600) {
+                Ok(()) => l.changed(
+                    "copy",
+                    "marked unfinished on the new host: the next run removes it and copies again",
+                ),
+                Err(why) => l.failed("copy", format!("cannot write {}: {why}", marker.display())),
+            }
+        }
         Request::Start {
             setup,
             build,

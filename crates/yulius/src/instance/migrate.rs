@@ -389,14 +389,23 @@ impl<'a> Move<'a> {
             );
             return Ok(());
         }
-        if self.state.cutover != Cutover::Moved {
-            let facts = self.plan(&profile)?;
-            if failed(&self.lines) {
-                return Err(Stop::Failed);
+        match self.state.cutover {
+            Cutover::Moved => {}
+            // A run that ended while the new instance was starting: its state decides, and
+            // nothing is planned or copied again.
+            Cutover::Starting => {
+                self.key()?;
+                self.resume_start(&profile)?;
             }
-            self.confirm()?;
-            self.prepare(&profile, &facts)?;
-            self.cutover(&profile, &facts)?;
+            Cutover::No | Cutover::RolledBack => {
+                let facts = self.plan(&profile)?;
+                if failed(&self.lines) {
+                    return Err(Stop::Failed);
+                }
+                self.confirm()?;
+                self.prepare(&profile, &facts)?;
+                self.cutover(&profile, &facts)?;
+            }
         }
         self.after(&profile)?;
         self.finish(&profile);
@@ -1059,30 +1068,66 @@ impl<'a> Move<'a> {
         let mut manifest = manifest;
         manifest.total_bytes = plan.total;
         manifest.entries = plan.entries;
-        self.call(
-            "copy proven",
-            &Request::Inventory {
-                manifest,
-                old,
-                release: p.release.clone(),
-            },
-        )?;
-        self.call(
-            "move mark",
-            &Request::Mark {
-                setup: self.setup(p),
-                from: p.public_url.clone(),
-                to: self.state.new_url.clone().unwrap_or_default(),
-            },
-        )?;
-        Ok(())
+        let proven = self
+            .call(
+                "copy proven",
+                &Request::Inventory {
+                    manifest,
+                    old,
+                    release: p.release.clone(),
+                },
+            )
+            .and_then(|_| {
+                self.call(
+                    "move mark",
+                    &Request::Mark {
+                        setup: self.setup(p),
+                        from: p.public_url.clone(),
+                        to: self.state.new_url.clone().unwrap_or_default(),
+                    },
+                )
+            });
+        if proven.is_err() {
+            // Never started and not what the old host holds: the next run copies again.
+            let _ = self.call(
+                "copy",
+                &Request::Discard {
+                    data_dir: opts.data_dir.clone(),
+                },
+            );
+        }
+        proven.map(|_| ())
     }
 
+    /// Thaws the old unit, whoever froze it (an earlier run of this move that was killed left
+    /// it frozen): after a cutover that did not happen the old instance runs.
     fn thaw(&mut self, held: Freeze) {
-        match held.release() {
-            Ok(()) => self.changed("old instance", "thawed: it runs as before"),
+        held.leave_frozen();
+        let unit = self.opts.service.clone();
+        match self.world.freezer().systemctl(&["thaw", &unit]) {
+            Ok((0, _)) => self.changed("old instance", "thawed: it runs as before"),
+            _ => {
+                self.fail(
+                    "old instance",
+                    format!("`systemctl thaw {unit}` failed: run it by hand"),
+                );
+            }
+        }
+    }
+
+    /// Freezes the old unit for the cutover; a signal thaws it until the move claims its end.
+    fn freeze(&mut self) -> Result<Freeze, Stop> {
+        let opts = self.opts;
+        self.world.arm(&opts.service);
+        match freeze::freeze(self.world.freezer(), &opts.service, &opts.update_service) {
+            Ok(held) => {
+                // Also when it was frozen already: the move answers for the freeze from here.
+                self.world.frozen(true);
+                Ok(held)
+            }
             Err(why) => {
-                self.fail("old instance", why);
+                self.world.refused();
+                Err(self.fail("old instance", why))
             }
         }
     }
@@ -1100,21 +1145,8 @@ impl<'a> Move<'a> {
 
     fn cutover(&mut self, p: &Profile, facts: &Facts) -> Result<(), Stop> {
         self.phase("Cutover");
-        let opts = self.opts;
-        let unit = opts.service.as_str();
-        self.world.arm(unit);
-        let mut held = match freeze::freeze(self.world.freezer(), unit, &opts.update_service) {
-            Ok(held) => held,
-            Err(why) => {
-                self.world.refused();
-                return Err(self.fail("old instance", why));
-            }
-        };
-        self.world.frozen(held.ours());
-        if self.state.cutover == Cutover::Starting {
-            // A run that ended while the new instance was starting: its state decides.
-            return self.resume_start(p, held);
-        }
+        let unit = self.opts.service.clone();
+        let mut held = self.freeze()?;
         self.changed(
             "old instance",
             format!("{unit} is frozen: every Yulius process is paused until the new one runs"),
@@ -1192,7 +1224,9 @@ impl<'a> Move<'a> {
         Err(Stop::Failed)
     }
 
-    fn resume_start(&mut self, p: &Profile, held: Freeze) -> Result<(), Stop> {
+    fn resume_start(&mut self, p: &Profile) -> Result<(), Stop> {
+        self.phase("Cutover");
+        let held = self.freeze()?;
         if !self.world.claim() {
             loop {
                 std::thread::park();
@@ -1208,21 +1242,11 @@ impl<'a> Move<'a> {
                         service: unit.clone(),
                     },
                 );
-                held.leave_frozen();
                 if stopped.is_err() {
+                    held.leave_frozen();
                     return Err(Stop::Failed);
                 }
-                // The earlier run's freeze is not this one's to release: thaw by name.
-                let mut systemd = self.world.freezer();
-                match systemd.systemctl(&["thaw", &unit]) {
-                    Ok((0, _)) => self.changed("old instance", "thawed: it runs as before"),
-                    _ => {
-                        self.fail(
-                            "old instance",
-                            format!("`systemctl thaw {unit}` failed: run it by hand"),
-                        );
-                    }
-                }
+                self.thaw(held);
                 self.state.cutover = Cutover::RolledBack;
                 self.save_state()?;
                 Err(Stop::Failed)
@@ -1351,13 +1375,12 @@ impl<'a> Move<'a> {
             key: self.state.key_comment(),
             firewall: p.firewall == Carried::Yes,
         };
-        let removed = self.call("one-time key", &finish).is_ok();
+        let _ = self.call("one-time key", &finish);
         self.remote.forget();
         self.changed("one-time key (old host)", "deleted");
-        if removed {
-            self.state.finished = true;
-            let _ = self.save_state();
-        }
+        // Without the key nothing more can be done from here: what failed above is a person's.
+        self.state.finished = true;
+        let _ = self.save_state();
         let new = self.state.new_url.clone().unwrap_or_default();
         if p.public_url.as_deref().is_some_and(|old| old != new) {
             self.manual("GitHub App", github_note(&new));

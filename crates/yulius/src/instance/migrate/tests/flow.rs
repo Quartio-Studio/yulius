@@ -770,12 +770,21 @@ fn a_copy_that_differs_thaws_the_old_instance_and_starts_nothing() -> TestResult
     assert!(!events.iter().any(|e| e == "new: start" || e == "new: mark"));
     let state = State::load(&s.opts.state_dir).ok_or("no state")?;
     assert_eq!(state.cutover, Cutover::No);
+
     assert_eq!(
         s.local
             .text(profile::CADDYFILE)
             .map(|t| t.contains("reverse_proxy")),
         Some(true)
     );
+
+    // The copy that was not proven is marked unfinished: the same command removes it, copies
+    // again and completes.
+    assert!(events.contains(&"new: discard".to_owned()));
+    s.remote.tamper = None;
+    assert_eq!(s.run()?, 0, "{}", s.shown());
+    assert!(s.remote.host.ran("rm -rf --one-file-system -- "));
+    assert_eq!(s.old_unit(), (true, true));
     Ok(())
 }
 
@@ -1030,5 +1039,96 @@ fn abort_during_a_move_stops_the_new_host_through_the_key() -> TestResult {
         Some("ssh-ed25519 AAAA admin@laptop\n")
     );
     assert!(!s.remote.key);
+    Ok(())
+}
+
+#[test]
+fn a_unit_an_earlier_run_left_frozen_is_thawed_when_the_cutover_fails() -> TestResult {
+    let mut s = setup()?;
+    if let Ok(mut unit) = s.world.systemd.lock() {
+        unit.frozen = true;
+    }
+    s.remote.tamper = Some(|copy| {
+        let _ = fs::remove_file(copy.join("master.key"));
+    });
+    assert_eq!(s.run()?, 1);
+    assert_eq!(s.old_unit(), (false, false), "{}", s.shown());
+    Ok(())
+}
+
+/// A move whose earlier run ended (was killed) after it ordered the new instance's start.
+fn killed_while_starting() -> Result<Setup, Box<dyn std::error::Error>> {
+    let mut s = setup()?;
+    let mut state = s.state()?;
+    state.cutover = Cutover::Starting;
+    state.new_url = Some(NEW_URL.into());
+    state.save(&s.opts.state_dir)?;
+    s.remote.comment = state.key_comment();
+    s.remote.install_key()?;
+    s.remote.put_build(Path::new("/usr/local/bin/yulius"))?;
+    if let Ok(mut unit) = s.world.systemd.lock() {
+        unit.frozen = true;
+    }
+    if let Ok(mut events) = s.world.events.lock() {
+        events.clear();
+    }
+    Ok(s)
+}
+
+#[test]
+fn a_run_that_ended_while_the_new_instance_started_goes_on_from_its_state() -> TestResult {
+    // The new instance came up: the old one is disabled and the move finishes. Nothing is
+    // planned, prepared or copied again.
+    let mut s = killed_while_starting()?;
+    assert_eq!(s.run()?, 0, "{}", s.shown());
+    assert_eq!(s.old_unit(), (true, true));
+    let events = s.events();
+    assert!(events.contains(&"new: start".to_owned()), "{events:?}");
+    assert!(
+        !events.iter().any(|e| {
+            [
+                "new: copy",
+                "new: packages",
+                "new: sources",
+                "old: systemctl freeze",
+            ]
+            .contains(&e.as_str())
+        }),
+        "{events:?}"
+    );
+    let state = State::load(&s.opts.state_dir).ok_or("no state")?;
+    assert_eq!((state.cutover, state.finished), (Cutover::Moved, true));
+
+    // It did not: it is stopped there, then the old one is thawed.
+    let mut s = killed_while_starting()?;
+    s.remote.healthy = false;
+    assert_eq!(s.run()?, 1);
+    let events = s.events();
+    let at = |what: &str| {
+        events
+            .iter()
+            .position(|e| e == what)
+            .ok_or(format!("no {what}: {events:?}"))
+    };
+    assert!(at("new: stop")? < at("old: systemctl thaw")?);
+    assert_eq!(s.old_unit(), (false, false));
+    let state = State::load(&s.opts.state_dir).ok_or("no state")?;
+    assert_eq!(state.cutover, Cutover::RolledBack);
+    Ok(())
+}
+
+#[test]
+fn a_firewall_that_cannot_be_enabled_fails_the_run_but_the_move_is_finished() -> TestResult {
+    let mut s = setup()?;
+    s.remote.host.fails(
+        &["ufw", "--force", "enable"],
+        "ERROR: problem running ufw-init",
+    );
+    assert_eq!(s.run()?, 1);
+    assert_eq!(outcome(&s.status()?, "firewall"), Some(HostOutcome::Failed));
+    // The key is gone on both hosts: the same command has nothing more to do.
+    let state = State::load(&s.opts.state_dir).ok_or("no state")?;
+    assert!(state.finished && !s.remote.key);
+    assert_eq!(s.run()?, 0);
     Ok(())
 }
