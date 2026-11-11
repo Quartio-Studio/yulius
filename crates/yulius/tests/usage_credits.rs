@@ -5,18 +5,20 @@
 //! to send "continue". Real processes, as in `pool_supervision.rs`.
 
 use crate::pool_supervision::{
-    HOUR, ScriptedUsage, build_with, has_status, new_task, refresh, runtime, screen, seed, stop,
-    temp, usage, wait_for,
+    HOUR, ScriptedUsage, build_with, has_status, new_task, refresh, runtime, seed, stop, temp,
+    usage, wait_for,
 };
 use crate::subscription_moves::{live_run, ready, run_accounts, running_on_first};
 use crate::support::TestResult;
 use crate::support::agents::{FakeAgentOptions, limit_resume_problems};
 
-use std::path::Path;
+use std::io::Write as _;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use yulius_app::auth::AuthContext;
+use serde_json::{Value, json};
+use yulius_app::auth::{AuthContext, rfc3339};
 use yulius_app::context::App;
 use yulius_app::lifecycle::NewTask;
 use yulius_app::model::{AccountStatus, PauseKind, TaskMode, TaskOrigin};
@@ -532,8 +534,8 @@ fn a_refused_move_at_a_usage_credits_limit_still_asks_a_person() -> TestResult {
     Ok(())
 }
 
-/// Whether a Claude transcript under `data` holds the usage-credits refusal.
-fn refusal_written(data: &Path) -> bool {
+/// The transcript of the one session under `data`, once its first turn is in it whole.
+fn session_transcript(data: &Path) -> Option<PathBuf> {
     let mut dirs = vec![data.to_path_buf()];
     while let Some(dir) = dirs.pop() {
         for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
@@ -541,32 +543,87 @@ fn refusal_written(data: &Path) -> bool {
             if entry.file_type().is_ok_and(|t| t.is_dir()) {
                 dirs.push(path);
             } else if path.extension().is_some_and(|e| e == "jsonl")
+                && path.components().any(|c| c.as_os_str() == "projects")
                 && std::fs::read_to_string(&path)
-                    .is_ok_and(|text| text.contains("model_requires_usage_credits"))
+                    .is_ok_and(|text| text.contains("msg_fake_1") && text.ends_with('\n'))
             {
-                return true;
+                return Some(path);
             }
         }
     }
-    false
+    None
 }
 
-/// Yulius is down while Claude Code is refused and pauses the goal. The restart reads both from
-/// the transcript: the limit is acted on, and the pause is the limit's there too. Here the move
-/// is refused, so the pause the replay held asks a person, once.
+/// What Claude Code 2.1.311 appends to `transcript` when a prompt is refused for usage credits
+/// in a goal session (task #438's records of 2026-11-11, ids replaced): the prompt, the refusal,
+/// the goal's pause notice and the record closing the turn, written `at`.
+fn refused_turn(transcript: &Path, at: Timestamp) -> Result<String, Box<dyn std::error::Error>> {
+    let text = std::fs::read_to_string(transcript)?;
+    let last: Value = serde_json::from_str(text.lines().last().ok_or("an empty transcript")?)?;
+    let session = last["sessionId"].as_str().ok_or("a session id")?.to_owned();
+    let mut parent = last["uuid"].as_str().ok_or("a uuid")?.to_owned();
+    let mut lines = String::new();
+    let mut record = |kind: &str, name: &str, extra: Value| {
+        let uuid = format!("down-{name}");
+        let mut record = json!({"type": kind, "uuid": uuid, "parentUuid": parent,
+            "isSidechain": false, "sessionId": session, "timestamp": rfc3339(at),
+            "userType": "external", "version": "2.1.311"});
+        if let (Some(map), Some(more)) = (record.as_object_mut(), extra.as_object()) {
+            map.extend(more.clone());
+        }
+        lines.push_str(&format!("{record}\n"));
+        parent = uuid;
+    };
+    record(
+        "user",
+        "prompt",
+        json!({"message": {"role": "user", "content": "go on"}}),
+    );
+    record(
+        "assistant",
+        "refusal",
+        json!({"isApiErrorMessage": true, "error": "rate_limit",
+            "apiError": "model_requires_usage_credits", "apiErrorStatus": 429,
+            "message": {"id": "down-refusal", "type": "message", "role": "assistant",
+                "model": "<synthetic>", "stop_reason": "stop_sequence",
+                "content": [{"type": "text",
+                    "text": "You're out of usage credits. /model to switch models."}]}}),
+    );
+    record(
+        "system",
+        "notice",
+        json!({"subtype": "informational", "isMeta": false, "level": "notice", "content":
+            "Goal paused \u{b7} the request was rate limited \u{b7} send a message to retry"}),
+    );
+    record(
+        "system",
+        "duration",
+        json!({"subtype": "turn_duration", "durationMs": 250, "isMeta": false}),
+    );
+    Ok(lines)
+}
+
+/// Yulius is down while Claude Code is refused and pauses the goal: what Claude Code wrote is
+/// appended to the session's transcript while no server runs, so none saw it live. The restart
+/// reads both from the transcript: the limit is acted on, and the pause is the limit's there
+/// too. Here the move is refused, so the pause the replay held asks a person.
+///
+/// It asks once per limit. Another restart reads the same refusal and pause again and tries
+/// the move again, but the request made for that limit is still open: nothing new is asked or
+/// audited, whatever the task read meanwhile (the replay also settles the closed turn as Your
+/// turn, and that may land after the request), and the task is under Needs you again.
 #[test]
 fn a_usage_credits_refusal_written_while_yulius_was_down_is_read_at_restart() -> TestResult {
     use yulius_app::ports::Crypto;
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
     let (_dir, data) = temp()?;
     let probe = Arc::new(ScriptedUsage::default());
-    // The turn takes long enough for Yulius to be down when the refusal is written.
     let agent = FakeAgentOptions {
-        echo_turn_ms: Some(4_000),
-        ..refused_for_credits(None)
+        transcript: true,
+        ..FakeAgentOptions::default()
     };
     let first = runtime()?;
-    let id = first.block_on(async {
+    let (id, transcript) = first.block_on(async {
         let app = build_with(&data, &fake, probe.clone(), agent.clone())?;
         let (id, _user) = running_on_first(&app, &probe, &data).await?;
         let other = AccountId::parse("b-second")?;
@@ -576,38 +633,44 @@ fn a_usage_credits_refusal_written_while_yulius_was_down_is_read_at_restart() ->
             .set_account_credential(&other, &foreign, AccountStatus::Ok, app.now())
             .await?;
         app.send_input(&id, b"hello\r").await?;
-        wait_for("the typed line", Duration::from_secs(30), || {
-            let app = app.clone();
-            let id = id.clone();
-            async move { screen(&app, &id).contains("hello") }
+        let mut transcript = None;
+        wait_for("the first turn", Duration::from_secs(30), || {
+            transcript = session_transcript(&data);
+            let written = transcript.is_some();
+            async move { written }
         })
         .await?;
-        Ok::<_, Box<dyn std::error::Error>>(id)
+        Ok::<_, Box<dyn std::error::Error>>((id, transcript.ok_or("transcript")?))
     })?;
     first.shutdown_timeout(Duration::from_secs(5));
 
+    let at = Timestamp(i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_millis(),
+    )?);
+    let refused = refused_turn(&transcript, at)?;
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(&transcript)?
+        .write_all(refused.as_bytes())?;
+
     let second = runtime()?;
-    second.block_on(async {
-        wait_for(
-            "the refusal in the transcript",
-            Duration::from_secs(30),
-            || {
-                let found = refusal_written(&data);
-                async move { found }
-            },
-        )
-        .await?;
+    let asked = second.block_on(async {
         let app = build_with(&data, &fake, probe.clone(), agent.clone())?;
-        // Nothing of it was seen before the restart.
         assert!(app.deps.store.task_needs_you(&id).await?.is_none());
-        assert!(app.deps.store.switches(&id).await?.is_empty());
+        assert_eq!(refused_moves(&app, &id).await, 0);
         app.reconcile().await?;
+        // The pause and the refused move reach each other in either order.
         wait_for("the request", Duration::from_secs(30), || async {
-            app.deps
-                .store
-                .task_needs_you(&id)
-                .await
-                .is_ok_and(|asked| asked.is_some())
+            refused_moves(&app, &id).await == 1
+                && pauses_audited(&app, &id).await == 1
+                && app
+                    .deps
+                    .store
+                    .task_needs_you(&id)
+                    .await
+                    .is_ok_and(|asked| asked.is_some())
         })
         .await?;
         let asked = app.deps.store.task_needs_you(&id).await?.ok_or("request")?;
@@ -616,29 +679,37 @@ fn a_usage_credits_refusal_written_while_yulius_was_down_is_read_at_restart() ->
             Some("Goal paused \u{b7} the request was rate limited."),
             "{asked:?}"
         );
-        assert_eq!(refused_moves(&app, &id).await, 1);
         assert_eq!(run_accounts(&app, &id).await, [Some("a-first".to_owned())]);
-        assert_eq!(pauses_audited(&app, &id).await, 1);
-        Ok::<_, Box<dyn std::error::Error>>(())
+        Ok::<_, Box<dyn std::error::Error>>(asked)
     })?;
     second.shutdown_timeout(Duration::from_secs(5));
 
-    // Another restart reads the same refusal and the same pause again. The move is tried and
-    // refused once more, and the person, asked already, is told nothing new.
     let third = runtime()?;
     third.block_on(async {
         let app = build_with(&data, &fake, probe.clone(), agent)?;
+        // As if the replay's settle of the closed turn had landed after the request.
+        app.deps
+            .store
+            .set_activity(&id, Some(Activity::Waiting), app.now())
+            .await?;
         app.reconcile().await?;
         wait_for(
             "the move refused again",
             Duration::from_secs(30),
-            || async { refused_moves(&app, &id).await == 2 },
+            || async {
+                refused_moves(&app, &id).await == 2
+                    && app.deps.store.task(&id).await.is_ok_and(|task| {
+                        task.is_some_and(|task| task.activity == Some(Activity::NeedsAttention))
+                    })
+            },
         )
         .await?;
         assert_eq!(pauses_audited(&app, &id).await, 1, "asked once");
-        let task = app.deps.store.task(&id).await?.ok_or("task")?;
-        assert_eq!(task.activity, Some(Activity::NeedsAttention));
-        assert!(app.deps.store.task_needs_you(&id).await?.is_some());
+        assert_eq!(
+            app.deps.store.task_needs_you(&id).await?.as_ref(),
+            Some(&asked),
+            "the same request"
+        );
         stop(&app, &id).await?;
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
