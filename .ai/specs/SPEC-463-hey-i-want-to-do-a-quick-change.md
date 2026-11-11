@@ -1,0 +1,163 @@
+---
+yulius-task: 4aa3a527-c2da-49fd-bb26-1546636dce4a
+status: in-progress
+---
+
+# SPEC-463: A subscription's email is typed in place, like its name
+
+Status: in-progress
+Date: 2026-11-11
+Owner: Yulius task #448
+Scope authorization: task #448 (`/goal`, with a screenshot of the Subscriptions page: three
+cards, two of them named by an address, each over "email unknown"): "We need to have a
+possibility to change address email and the main text. The format should be following", then two
+lines: "Agent TEAM" and, under it, the team's address (written here as `agent@example.com`; this
+repository is public). "The rest stays the same. Only this small UI fix (those 2 editable lines).
+Just add it and don't change anything else." Amends SPEC-244 (SUB-003, SUB-006), SPEC-243
+(LGN-003) and SPEC-001 ROT-009 and UI-022.
+
+## Goal
+
+On the Subscriptions page both lines of a subscription's head are edited in place: the name, as
+today, and the email under it, which is new. A card then reads "Agent TEAM" over
+"agent@example.com". Nothing else on the card or the page changes.
+
+## Context
+
+Confirmed against `dev` at dbec951d.
+
+- **What the person sees.** Every subscription of the production instance reads "email unknown",
+  so the address went into the name, and the name had nowhere to go.
+- **Why the email is unknown.** Yulius signs a subscription in with `claude setup-token`. The
+  email is read only from Claude's profile with that credential (SPEC-244 SUB-003,
+  [ADR-0185](../../docs/decisions/0185-a-subscription-email-comes-from-claudes-profile-at-sign-in.md)),
+  and such a sign-in may not read the profile. ADR-0185 foresaw this ("every subscription reads
+  'email unknown'") and named a follow-up, reading the email from the token exchange through the
+  egress proxy. That follow-up was not built.
+- **The name is already edited in place** (SPEC-244 SUB-001): `renamableName` in `layout.js`, saved
+  by `PATCH /api/admin/accounts/{id}` with `{"label"}` (`App::update_account`, administrators
+  only, audited `account.updated`).
+- **The email is read-only.** `accounts.email` and `email_checked_at` (schema 38) are written by
+  `record_account_email` (after a sign-in, and once by the background usage round) and cleared by
+  every new credential (`set_account_credential`): the new sign-in may be another Claude account.
+- **Typing the email was rejected before.** ADR-0185: "that is a second name, not the account
+  behind the credential, and a typo would be shown as fact". That reason still holds. The owner
+  now asks for it and takes that risk: without it the line says nothing.
+- **Who reads the email.** Administrators, wherever a subscription is named (SUB-005, UI-022):
+  the Subscriptions page, the Status panel, the Dashboard pool, Task details, the analytics. The
+  toast after a sign-in also names it: "*name* is connected as *email*" (SPEC-243 LGN-003).
+  Every one of them reads `accounts.email`.
+- **Parallel work.** Pull request #1144 (connect a subscription by pasting a token) changes the
+  same files for another flow and adds two such toasts; its new token clears the email, which
+  stays true for an email read from Claude. Task #441 added migration 0051.
+
+## Requirements
+
+| ID | Requirement |
+| --- | --- |
+| EML-001 | On the Subscriptions page the email line of each subscription is edited in place, as its name is: a pencil button "Change the email of *name*" (or a click on the email, or on "email unknown") turns the line into a field holding the current email, empty when it is unknown. Enter or leaving the field saves it, and Escape cancels, even after an email was typed. The value is trimmed; an unchanged one closes the field without a request. A value that is not an address is refused before anything is sent ("Type an address like name@example.com."), and one the server refuses gets the server's message; either way the field stays open. Focus returns to the field only after Enter, never when the person left it. Once a key ends the edit, the keyboard is back on the pencil. A saved email shows at once on the card and, through `account.updated`, in every open view. An update that arrives while a field is open neither closes it nor saves it. |
+| EML-002 | Enter in an empty field removes the typed email: the subscription then shows what Claude shares for its sign-in, or "email unknown". Leaving an emptied field removes nothing: the field closes and the email stays. |
+| EML-003 | `PATCH /api/admin/accounts/{id}` takes `label`, `email`, or both; a request with neither, or with any other field, is `invalid` (422). `email` is a string, trimmed: an address (one `@` with text on both sides, no whitespace or control characters, at most 254 characters), or empty to remove it. Nothing is written when either field is refused. Only instance administrators and the superadmin may call it (403 otherwise, unchanged ACC-009). It is audited as `account.updated` with `email=set` or `email=removed`, never the address. |
+| EML-004 | A typed email is the person's, like the name: it stays when the subscription signs in again, and an answer from Claude never replaces it. Removing it lets the background round ask Claude again, once. An email read from Claude is still dropped by a new sign-in (SUB-003 unchanged). |
+| EML-005 | The typed email is shown where, and to whom, the email was shown before (SUB-005, UI-022): administrators only, wherever a subscription is named; task summaries never carry it. The name edit, the other card elements, the Status panel and the Dashboard are as before; there the email stays read-only. |
+| EML-006 | Yulius never says that Claude confirmed a typed email. `AccountView` carries `email_typed` (`true` when an administrator typed the email), and the toast after a sign-in names the email only when Claude gave it: with a typed one it reads "*name* is connected. Tasks can use it now." (amends LGN-003). |
+
+## Plan
+
+- [x] Read the product context and related work, then write and validate the spec
+- [x] The store keeps a typed email across sign-ins and Claude's answers
+- [x] PATCH /api/admin/accounts/{id} sets or removes the email for administrators
+- [ ] The Subscriptions page edits the email line in place
+- [ ] ADR-0300, architecture, API reference and product spec say the email can be typed
+- [ ] Independent review in a fresh session, findings fixed test-first
+- [ ] Every gate green, docs and the changes log updated
+
+## Acceptance criteria
+
+- On the Subscriptions page, renaming a subscription to "Agent TEAM" and typing
+  "agent@example.com" as its email leaves a card whose first line reads "Agent TEAM" and whose
+  second reads "agent@example.com"; the Status panel shows both, and offers no pencil (e2e).
+- A value that is not an address is refused with the field kept open, and nothing is sent or
+  stored; Escape keeps the earlier email; Enter in an empty field brings "email unknown" back;
+  leaving an emptied field keeps the email (e2e, API test).
+- A field that is open keeps its text and its focus when another subscription's change arrives
+  (e2e).
+- A member is refused the change with 403, and sees no email anywhere (API test).
+- A request with a good name and a bad email, or the reverse, writes neither; `{"email": null}`
+  alone is 422 (API test).
+- A typed email is still there after the subscription signs in again, whether Claude refuses the
+  profile or answers another address; an email read from Claude is still dropped by a new sign-in
+  (store and integration tests).
+- After a typed email is removed, the background round asks Claude for it once more (integration
+  test).
+- The audit entry of an email change does not hold the address (integration test).
+- After a sign-in of a subscription with a typed email, the toast does not say "as *email*"
+  (e2e); `AccountView.email_typed` says which emails were typed (integration test).
+- The tests that were in the `subscription-names` and `subscriptions` e2e specs before this
+  change pass as they were written: the name edit is intact.
+
+## Test plan
+
+- Store (`crates/yulius-store/tests/store.rs`, and the upgrade test in `src/lib.rs`): the
+  migration adds `email_typed` and leaves stored emails Claude's; a typed email survives
+  `set_account_credential` and `set_account_email`, which still stamps `email_checked_at`;
+  removing it clears the email and the check; a rename leaves it alone; an empty change writes
+  nothing.
+- App and API (`crates/yulius/tests/account_email.rs`), with the fake profile and the fake
+  sign-in host: an administrator sets, changes and removes the email; a bad address, an empty
+  request, `null`, an unknown field and a good field beside a bad one are 422 and write nothing;
+  a member gets 403; the views carry the typed email for administrators only, and `email_typed`
+  on `AccountView`; a re-sign-in keeps it; removal makes the background round ask again; the
+  audit detail has no address.
+- Web: the mock's `PATCH` follows the server's rule. The e2e `subscription-names` spec edits the
+  email in place (refusal, Escape, save, removal by Enter, leaving an emptied field, the two-line
+  format, an update while a field is open, focus back on the pencil) with no WCAG violation; the
+  `subscriptions` spec signs a subscription with a typed email in again and reads the toast.
+- Gates: `scripts/dev ci`, the e2e suite, `scripts/dev security`.
+
+## Decisions
+
+- **A person may type the email; it reverses one alternative rejected in ADR-0185.** The owner
+  asks for it and takes the risk ADR-0185 named, that a typo is shown as the account's address.
+  EML-006 bounds it: Yulius never presents a typed email as confirmed by Claude. Reading the email
+  from Claude's token exchange stays the way to know it for certain; it is not part of this
+  change. Recorded in
+  [ADR-0300](../../docs/decisions/0300-an-administrator-can-type-a-subscriptions-email.md).
+- **The typed email lives in `accounts.email`, marked by a new `email_typed` column.** Every view
+  already reads `email`, so no reader changes. Rejected:
+  - *No marker.* The next sign-in would clear what the person typed, and a late answer from
+    Claude would replace it.
+  - *A second column shown in preference.* Every reader (views, task details, the analytics'
+    SQL) would have to choose between two columns.
+- **The store keeps the rule in SQL.** Its three writes (`set_account_email`,
+  `set_account_credential`, the person's change) each settle a typed email in one statement, so
+  an answer from Claude that arrives while a person types cannot replace it. The cost is one
+  profile request per sign-in whose answer is not stored.
+- **The marker reaches `AccountView` only.** The sign-in toast is the one place that says where
+  an email comes from ("connected as"), and it reads the account view. The Status panel, the
+  Dashboard, Task details and the analytics show the email as they did; telling the two apart
+  there needs a field on four more views and is not asked for.
+- **`PATCH /api/admin/accounts/{id}` is reused**, with `label` now optional. It is already
+  limited to administrators, validated and audited. An empty string removes the email; JSON
+  `null` means "not given", as for any optional field here.
+- **One rule for an address.** The typed email passes `plausible_email`, the check Claude's
+  answer passes (SUB-006); the page applies the same rule before sending, so a refused value
+  costs no request. Nothing is sent to the address, so no stricter check is needed.
+- **Removing needs Enter.** Leaving a field saves what was typed, as for the name, but an emptied
+  field that is left removes nothing: the audit trail does not hold the address, so a slip would
+  lose the only copy.
+- **The address is not written to the audit trail** (`email=set` or `email=removed`): SUB-006
+  keeps the email out of logs, and the audit row outlives the subscription.
+- **Assumed (reversible): removing an email read from Claude asks Claude again**, so it may come
+  back within minutes. The line shows what the administrator typed, else what Claude shares; a
+  third state ("show none") is not asked for.
+- **The email is edited only on the Subscriptions page**, where the name is. The Status panel and
+  the Dashboard stay read-only, hint included.
+- **One implementation for both lines.** The focus rules of the name edit took SPEC-244 three
+  review rounds; the email line uses the same code, so they cannot drift apart.
+- **Initials are unchanged**: an avatar takes them from the email's name part when there is an
+  email, else from the name.
+- **Rollback is as for every schema change** (ADR-0264): the update restores the database it
+  backed up when the new build fails to start. An older build refuses the newer schema, so
+  undoing this change later means reverting its code and keeping the migration; the column is
+  then unused.
