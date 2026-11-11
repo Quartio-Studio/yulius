@@ -4,6 +4,14 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-11
+
+- The default effort is high again (SPEC-462, task #444, ADR-0295); the default model stays Fable
+  5.2. A task, Cockpit or Superagent that names no effort runs at `high` from its next start, and
+  one that chose an effort, also Max, keeps it. The composer's and Settings' "Default" says High,
+  and the `task_create` tool now names the real defaults (it said "default Opus"); both are held to
+  the launch constants by tests. Production gets this with the next promotion and update.
+
 ## 2026-11-10
 
 - Text stays inside its box (SPEC-449, task #431, ADR-0290). A long URL, path or identifier
