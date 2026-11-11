@@ -1344,8 +1344,12 @@ test('a folder chosen while the worktrees are read switches to it once the quest
   await content.focus();
   await browser.keyboard.type('unsaved ');
   await expect(screen.getByRole('tab', /^README\.md\s*, modified/)).toBeVisible();
+  // The server has the typing before the disk moves on, as in `conflictOn`: the look of the file's
+  // activation is still on its way here, and one that reached the server first would take the
+  // disk's text as the saved one, the typing would land on it and nothing would be asked (#1087).
+  await expect.poll(() => browser.evaluate(() => (window as unknown as LiveText).__yuliusMock.liveDoc('README.md')?.text.startsWith('unsaved ') ?? false)).toBe(true);
   await browser.evaluate(() => (window as unknown as { __yuliusMock: { repoFile(s: string, p: string, t: string): void } }).__yuliusMock.repoFile('sb_studio', 'README.md', 'theirs\n'));
-  await expect.poll(() => statusText(browser), { timeout: 10_000 }).toContain('Changed on disk');
+  await expect.poll(() => statusText(browser), { timeout: LOOKS_MS }).toContain('Changed on disk');
   expect(await folderOptions(browser)).toEqual(['Sandbox', 'Task #12 worktree']);
 
   await chooseFolder(browser, 'Task #12 worktree');
