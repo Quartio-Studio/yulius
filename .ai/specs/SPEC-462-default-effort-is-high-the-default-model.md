@@ -1,11 +1,11 @@
 ---
 yulius-task: 175ec3ab-48e5-4288-b7d9-7a5e88ea650e
-status: in-progress
+status: done
 ---
 
 # SPEC-462: the default effort is high (the default model stays Fable 5.2)
 
-Status: in-progress
+Status: done
 Date: 2026-11-11
 Owner: Yulius task #444
 Scope authorization: the person's decision of 2026-11-11: "the default effort is **high**. Not max,
@@ -41,10 +41,10 @@ day. SPEC-002's launch table, SPEC-011 and SPEC-021 still named Opus 5.5 as the 
 
 ## Plan
 
-- [ ] Launches without an effort send --effort high, proven by launch and Cockpit tests
-- [ ] The composer, Settings and task_create describe the default as Fable 5.2 at High
-- [ ] SPEC-023, ADR-0295, the API and product documents and the changes log state the default
-- [ ] Every gate green and the independent review answered
+- [x] Launches without an effort send --effort high, proven by launch and Cockpit tests
+- [x] The composer, Settings and task_create describe the default as Fable 5.2 at High
+- [x] SPEC-023, ADR-0295, the API and product documents and the changes log state the default
+- [x] Every gate green and the independent review answered
 
 ## Acceptance criteria
 
