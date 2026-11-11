@@ -1,11 +1,11 @@
 ---
 yulius-task: ac14490d-7f71-495d-8f11-10b0b42c2326
-status: in-progress
+status: done
 ---
 
 # SPEC-460: Run migration: one command moves the whole instance to another host
 
-Status: in-progress
+Status: done
 Date: 2026-11-11
 Owner: Yulius task #442 (continues #439)
 Scope authorization: task #442, asked by the project's owner: "One command 'run migration' that
@@ -267,7 +267,9 @@ Settings → Instance (slice D)
 - [x] Tasks that were live come back by themselves at the first start after a move
 - [x] Operations guide §7, architecture, product summary, changes
 - [x] Chained tasks created for slices B, C and D
-- [ ] Gates run and the independent review answered
+- [x] Three rounds of independent review answered in code, each fix with a test
+- [x] Real moves between two Ubuntu 26.04 hosts, and the defects they showed fixed
+- [x] Gates green and the reviewer's confirmation of the final head
 
 ## Acceptance criteria
 
@@ -342,3 +344,79 @@ Settings → Instance (slice D)
   copied files, and reinstalling packages per sandbox is a product feature of its own.
 - **307, not 302 or 308**: temporary, so an abort is not defeated by a cached redirect, and
   method-preserving, so a client that follows it keeps posting.
+
+## Evidence
+
+Head of the gate and of the last real run: `45031ebc` (2026-11-11); the commits after it change this document only.
+
+- `scripts/dev ci`: exit 0; nextest 3388 tests run, 3388 passed, 16 skipped; doctests and docs
+  built.
+- `cargo test -p yulius --lib instance::`: the move's unit and flow tests (82 in
+  `instance::migrate`, 9 in `instance::inventory`, the export, import, walk, extract and freeze
+  tests): all pass. `cargo test -p yulius --test main host_move::`: 3 passed.
+  `cargo test -p yulius --test main cli::instance_migrate`: 1 passed.
+- `cargo clippy -p yulius -p yulius-app --all-targets -- -D warnings`: clean.
+  `python3 scripts/check_repository.py`: passed.
+- `yulius security-scan`: "Security scan disabled" (Vidoc is off for this project): disabled, not
+  passed.
+- Real hosts: two Ubuntu 26.04.1 guests (QEMU, systemd 259, kernel 7.0), the old one with a
+  running instance, a unit with two drop-ins, a key file and an environment file outside the data
+  directory, GitHub's apt source with its key, Caddy (`tls internal`), ufw, GNU coreutils selected,
+  software in `/usr/local` and `/opt`, and sandbox-like data (hard link, link, `user.` attribute,
+  subordinate owners, an overlay whiteout and opaque directory, a setuid file of root); the new
+  one fresh, with two blank disks. The bwrap AppArmor rule of SPEC-456 was put on both by hand.
+  - `yulius instance migrate root@10.0.2.2 --ssh-port 20102 --data-disk /dev/vdc --data-disk
+    /dev/vdd --public-url https://b-10-0-2-15.sslip.io --yes`, four times end to end (the last at
+    this head): exit 0, "changed 15, left alone 37, manual 6, failed 0" in the last. Without a terminal the
+    first run printed the key line; added by hand, the same command went on.
+  - On the new host afterwards: `/dev/md127` (RAID1 of the two disks, ext4) mounted at the data
+    directory from `fstab`, the array in `mdadm.conf`; GNU coreutils (`ls (GNU coreutils) 9.7`);
+    `gh`, `caddy`, `ufw` installed; `/usr/local/bin/fake-cli` and `/opt/tool/run` run; the unit
+    with `YULIUS_PUBLIC_URL=https://b-10-0-2-15.sslip.io`, both drop-ins, `RequiresMountsFor`;
+    `/etc/yulius/jev.key` owned by `yulius` 0600; Caddy serving the new host name
+    (`https://b-10-0-2-15.sslip.io/healthz` answers `ok` there); `yulius.service` active and
+    reporting the build; ufw active with the old rules and SSH from the old host; no move key in
+    `authorized_keys`; no `/var/lib/yulius-migrate`.
+  - The copy: "83 entries and 3.8 MiB in 14 folders, the same on both hosts" (5.3 MiB in the
+    earlier runs); SHA-256 of
+    `master.key` and of a 3 MB file equal on both; the hard link (2 links), the link, the
+    `user.note` and `trusted.overlay.opaque` attributes, the whiteout (0,0) and the subordinate
+    owners (100001:100002) as on the old host; root's setuid file became the service user's, 0755.
+  - On the old host afterwards: unit `FreezerState=frozen`, `UnitFileState=disabled`; its Caddy
+    site answers `HTTP/2 307`, `location: https://b-10-0-2-15.sslip.io/s/x?y=1`,
+    `x-yulius-moved-to`, with its `tls internal` kept; `state.json` 0600 and `status.json` 0644 in
+    a 0711 directory.
+  - `--abort` (three times): refused while nobody said the new instance is stopped ("does not prove that
+    it is stopped"); after `systemctl disable --now` on the new host and `--abort --yes`: unit
+    running and enabled, the earlier Caddyfile back, state removed. With the old unit stopped by
+    hand the move was refused before anything ("is not running: start it").
+  - Five defects found only there and fixed with tests: package lists not read on a fresh host
+    (`caddy` named missing); the coreutils selector packages conflicting in the package
+    transaction; a noisy first probe; an empty `/opt` entry carried; `host setup` failing on the
+    sandbox base only after the copy (the base is now built before the freeze).
+- Independent review: three rounds in fresh read-only sessions (at `3da54b56`, `f580a4ba` and
+  `d8e9e795`: 2 blockers and 11 majors in all), then the last reviewer's confirmation of the fixes.
+  Every finding is answered in code with a test, or with the reason here: moving an old unit that
+  does not run was taken out again (it is refused before anything; what it left running could
+  not be frozen);
+  carried trees and files are sent again on every run (nothing tells cheaply that they are
+  equal); ssh steps have no overall timeout (remote commands carry their own, ServerAlive ends a
+  dead link); a top-level name of the data directory that is not UTF-8 fails the proof;
+  `RealWorld`'s signal wiring and the "could not be queued" branch have no test (they need real
+  signals and a store that fails).
+
+Not tested here:
+
+- A move from Ubuntu 24.04 to 26.04 on real hosts (a build made in this sandbox does not run on
+  24.04's glibc): the codename rewrite, the fallback to the old suite and the package rename
+  (`libicu74` → `libicu78`) are covered by fake-host tests, and `apt-cache` on 26.04 was checked
+  by hand to answer as the tests assume.
+- The HTTPS check from the old host and a certificate from a public CA: both guests have the same
+  private address, so the name leads the old guest to itself (the checklist said `manual`, as
+  designed); the new instance was checked from inside the new guest.
+- The first start bringing tasks back with real sessions: the guests' instances had no tasks
+  ("0 tasks"); covered by `host_move` tests on a real store.
+- The update helper's units, the old host's interactive sign-in (password, second factor), a
+  failure of the new instance on real hosts, and a data set of production's size (275.8 GiB,
+  6.4 million entries); the inventory with remapped owners as root runs only where ids are mapped
+  (it skips in a sandbox; the real runs above cover it).
