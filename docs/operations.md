@@ -16,6 +16,7 @@ been performed or verified** as part of the implementation work.
 | Claude Code (`claude`) | Claude tasks and Claude account login | installed with npm system-wide (`npm install -g @anthropic-ai/claude-code`; verified with 2.1.292). Isolated sandboxes then get newer releases by themselves: see [Claude Code updates](#claude-code-updates). |
 | GitHub CLI (`gh`) ≥ 2.82.1 | `gh` in every sandbox, logged in as the person (their shells) or the task's creator (agents) | install it on the host from [GitHub's package repository](https://github.com/cli/cli/blob/trunk/docs/install_linux.md), not the distribution's package: Ubuntu 24.04 ships 2.45, and since GitHub retired Projects (classic) `gh pr edit` and `gh issue view --comments` fail with a GraphQL error before 2.82.1. Sandboxes copy the host system, so rebuild the base afterwards (`yulius sandbox-base build`). `yulius doctor` warns without it or below 2.82.1. |
 | bubblewrap (`bwrap`) | containment (`--contained`) | strongly recommended in production; without it runs are marked "not contained". `yulius host setup` installs it. |
+| An AppArmor rule that lets `/usr/bin/bwrap` create user namespaces | every sandbox, on Ubuntu 24.04 and later (`kernel.apparmor_restrict_unprivileged_userns = 1`) | `yulius host setup` writes `/etc/apparmor.d/yulius-bwrap` and, on Ubuntu 26.04, disables the shipped `bwrap-userns-restrict`; never write one by hand (see [Sandbox isolation](#sandbox-isolation)). Debian needs none. |
 | `uidmap` (`newuidmap`, `newgidmap`) and a subordinate id range for the service user | sandbox isolation (SPEC-002 ADR-22): `apt` in sandboxes, private networks | `/etc/subuid` and `/etc/subgid` lines of at least 65,536 ids (see [Sandbox isolation](#sandbox-isolation)); `yulius host setup` installs both. |
 | `slirp4netns` | sandbox egress (isolation) | `yulius host setup` installs it. |
 | Chromium / Google Chrome | sandbox browser | optional; found on `PATH` or set `--chromium`. Google Chrome (`google-chrome`) is recommended: it decodes and plays H.264 pages and is what captchas expect. |
@@ -37,8 +38,8 @@ permissions and the session socket path budget (the data directory path must be 
 
 ## 2. Build and install
 
-Two commands on a fresh Ubuntu 24.04 (or Debian) host: install the binary, then run the host
-setup as root (SPEC-203, [ADR-0162](decisions/0162-one-host-setup-command-brings-and-keeps-docker-in-sandboxes.md)).
+Two commands on a fresh Ubuntu 24.04 or Ubuntu 26.04 (or Debian) host: install the binary, then
+run the host setup as root (SPEC-203, [ADR-0162](decisions/0162-one-host-setup-command-brings-and-keeps-docker-in-sandboxes.md)).
 
 ```sh
 cargo build --release -p yulius            # from a checkout; output: target/release/yulius
@@ -67,20 +68,27 @@ reason) or `FAIL`, then a summary; it exits 1 when an item failed. In order:
 6. **service user**: the data directory's owner, else `--user` (default `yulius`), created as a
    system user with the data directory (mode 0700) as its home.
 7. **subordinate ids**: a range of 65,536 ids after every range in use.
-8. **yulius.service**: written from §3 and enabled when missing (`--public-url` is needed then).
+8. **bwrap namespaces**: starts bwrap as the service user in a user namespace whose child mounts
+   a tmpfs, which is what a sandbox does first. When that works, nothing is written. When
+   AppArmor restricts user namespaces (Ubuntu 24.04 and later), it writes and loads
+   `/etc/apparmor.d/yulius-bwrap`; on Ubuntu 26.04 it first disables the package's
+   `bwrap-userns-restrict` with a link in `/etc/apparmor.d/disable/` (the file itself is never
+   edited). A step that fails is undone and the line says so. A rule a person wrote for
+   `/usr/bin/bwrap` is left as it is and named. See [Sandbox isolation](#sandbox-isolation).
+9. **yulius.service**: written from §3 and enabled when missing (`--public-url` is needed then).
    Otherwise, a drop-in `yulius.service.d/10-yulius-sandboxes.conf` adds `Delegate=yes`,
    `DelegateSubgroup=server` and `KillMode=process` if they are missing. The restart that applies
    it is manual: run it when it suits. A unit file systemd has not loaded is never overwritten.
-9. **update helper**: when `yulius-update.service` is installed, a drop-in lets its re-check
-   write `/etc/modules-load.d` and `/etc/needrestart/conf.d` (§8).
-10. **yulius binary**: the running binary and the unit's, links resolved, are made root-owned,
+10. **update helper**: when `yulius-update.service` is installed, a drop-in lets its re-check
+    write `/etc/modules-load.d` and `/etc/needrestart/conf.d` (§8).
+11. **yulius binary**: the running binary and the unit's, links resolved, are made root-owned,
     writable by root alone. A binary in a directory the service user or others may write fails
     instead: fixing the file would not stop it being replaced.
-11. **sandbox base**: built now, as the service user, when there is none, when it lacks the
+12. **sandbox base**: built now, as the service user, when there is none, when it lacks the
     host's `dockerd`, or when it no longer matches the host. Live sandboxes' bases are kept
     ([ADR-0161](decisions/0161-a-base-a-live-holder-mounts-is-never-collected.md)), so this is
     safe while sandboxes run.
-12. A unit it wrote is started; then "sandbox Docker", the verdict `yulius doctor` gives; the
+13. A unit it wrote is started; then "sandbox Docker", the verdict `yulius doctor` gives; the
     contained doctor as the service user; and the Docker smoke test (`--no-smoke` skips it; it
     needs Docker Hub).
 
@@ -492,10 +500,44 @@ shells and CI jobs join it. A sandbox gets:
   "Docker in sandboxes" below.
 
 **Install once** (as root): `sudo yulius host setup` (§2). It installs the packages, gives the
-service user a subordinate range, gives the unit its delegation, and builds the first base (a
+service user a subordinate range, lets bwrap create user namespaces, gives the unit its
+delegation, and builds the first base (a
 few minutes, about 6 GB under `<data>/system`). Then, if it added the drop-in, restart once:
 `systemctl restart yulius`. Install `gh` from GitHub's repository (§1) before the setup, so
 the base copies it.
+
+**AppArmor and user namespaces** (SPEC-456,
+[ADR-0296](decisions/0296-host-setup-writes-the-apparmor-profile-that-lets-bwrap-create-user-namespaces.md)).
+Ubuntu since 24.04 sets `kernel.apparmor_restrict_unprivileged_userns = 1`: a program gets a
+working user namespace only when an AppArmor profile allows it `userns`. A sandbox is such a
+namespace, made by `/usr/bin/bwrap` as the service user, so without a rule no sandbox starts:
+
+| Host | Without the rule | What `host setup` does |
+| --- | --- | --- |
+| Ubuntu 24.04 | `bwrap: setting up uid map: Permission denied` | writes and loads `/etc/apparmor.d/yulius-bwrap` |
+| Ubuntu 26.04 | the package's `bwrap-userns-restrict` allows the namespace but denies every capability to what bwrap starts: `mount: … permission denied` | disables that profile (`/etc/apparmor.d/disable/bwrap-userns-restrict`, a link; the package's file is untouched and the link survives its upgrades), then writes and loads `/etc/apparmor.d/yulius-bwrap` |
+| Debian 12, 13; no AppArmor | works | nothing |
+
+The profile is `profile yulius-bwrap /usr/bin/bwrap flags=(unconfined) { userns, }`, as Ubuntu
+ships for other programs that need user namespaces; AppArmor loads it at every boot. Add your
+own rules in `/etc/apparmor.d/local/yulius-bwrap`, not in the file (setup rewrites it). It lets
+any local user create a user namespace through bwrap, as on Debian; the restriction stays for
+every other program. On Ubuntu 26.04 other users of bwrap (Flatpak) lose the shipped confinement
+of what bwrap starts.
+
+Nothing is decided from files alone: `host setup`, `yulius host check` (so the update helper's
+re-check and Settings → Instance) and `yulius doctor --contained` ("sandbox namespaces") start
+bwrap and mount inside. `host check` and the doctor only report, with
+`sudo yulius host setup` as the fix. A profile for `/usr/bin/bwrap` that a person wrote (a
+hand-written `/etc/apparmor.d/bwrap`, for example) is never changed: when bwrap works with it,
+it is adopted ("not written by Yulius, left as it is"); when it does not, the item fails and
+prints the two commands that disable it (for a file AppArmor's parser refuses: the parser's
+words, and the file is to be corrected first, since the parser cannot unload it either). To move from such a rule to Yulius's, disable it
+(`sudo ln -s /etc/apparmor.d/bwrap /etc/apparmor.d/disable/ && sudo apparmor_parser -R /etc/apparmor.d/bwrap`)
+and run the setup again. **After a release upgrade from 24.04 to 26.04**, run
+`sudo yulius host setup` once: the upgrade installs the shipped profile next to Yulius's, and
+sandboxes fail until it is disabled. A host whose AppArmor cannot load the profile is reported
+as unsupported.
 
 **A build by hand** (`sudo -u yulius yulius sandbox-base build --data-dir /var/lib/yulius`, for
 example after installing a package on the host) is safe while sandboxes run: it keeps the new
@@ -1302,7 +1344,8 @@ included) becomes the service user's, without setuid. File capabilities and ACLs
 (it says how many). A cut or damaged stream fails (exit 1) and leaves the data directory marked
 incomplete: remove it (`sudo rm -rf /var/lib/yulius`) and import again. Then run `host setup`
 with the public URL the import prints (it writes the unit, builds the sandbox base for this host,
-checks Docker and starts Yulius), copy other `Environment=` lines you changed in the old unit
+checks Docker and starts Yulius; on a host where bwrap cannot create user namespaces yet, the
+import says that this step fixes it), copy other `Environment=` lines you changed in the old unit
 (keys; leave the resource limits behind), and point the reverse proxy and DNS at the new VM. The
 import leaves a mark (`<data>/.yulius-limits-adapt`): the first start on the new host replaces
 every [resource limit](#resource-limits) pinned for the old one by its host-sized value, also
@@ -1596,7 +1639,8 @@ commits. Nothing updates by itself: a superadmin chooses **Update now** and conf
    Once the new version is healthy, the helper runs **its** `yulius host check --json` (at most 2
    minutes; SPEC-203). That re-checks what sandboxes need for Docker, with only safe, idempotent
    fixes: the needrestart rule, the host's own Docker units, the modules file and loading, the
-   binary's owner. A failed item, or a "sandbox Docker" that does not hold, is a regression. The
+   binary's owner. It also starts bwrap in a user namespace ("bwrap namespaces") and reports,
+   never fixes, a host where that fails (after a release upgrade, for example). A failed item, or a "sandbox Docker" that does not hold, is a regression. The
    update's outcome says it in one line ("Sandboxes may have lost Docker with this update" when
    the report's "sandbox Docker" does not hold; "Sandboxes still get Docker; the host check after
    it left N items to fix" when only other items failed), and the Sandbox Docker card lists the
@@ -1713,6 +1757,15 @@ should set the commit it is built from: `YULIUS_BUILD_COMMIT=$(git rev-parse HEA
 
 ### Notes for specific upgrades
 
+- Upgrading to host setup's bwrap rule (SPEC-456, ADR-0296, 2026-11-11): nothing to do on an
+  Ubuntu 24.04 or Debian host whose sandboxes work. A hand-written `/etc/apparmor.d/bwrap` keeps
+  working and is reported as adopted; `sudo yulius host setup` changes nothing there. On Ubuntu
+  26.04 run `sudo yulius host setup` once even when sandboxes work with a hand-written `bwrap`
+  profile: the package's `bwrap-userns-restrict` declares the same profile name and whichever
+  loads last wins, so until setup has disabled the shipped one `yulius host check` and Settings →
+  Instance report the item as failed. A host whose sandboxes fail with `setting up uid map:
+  Permission denied` or a denied mount now says so in `yulius host check`, Settings → Instance
+  and `yulius doctor --contained`: run `sudo yulius host setup`. No migration.
 - Upgrading to host-sized resource limits (SPEC-459, ADR-0294, 2026-11-11): migration 0051 adds
   the limits record. A limit the unit does not set is now sized from the host instead of the
   fixed 8 sessions, 4 CI jobs, 2 lanes, 100 GB and 20 GB (the same numbers on a 12-CPU host with

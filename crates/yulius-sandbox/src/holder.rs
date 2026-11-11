@@ -32,7 +32,7 @@ use yulius_contracts::sandbox::{
     OUTBOUND_SOCKET, SYSTEM_ROOT_DIR,
 };
 
-use crate::userns::{Mapper, cloexec_pipe, inheritable};
+use crate::userns::{HOLDER_NAMESPACE, Mapper, cloexec_pipe, inheritable};
 
 /// Time the holder has to mount its system layer and serve its sockets.
 pub const READY_TIMEOUT: Duration = Duration::from_secs(30);
@@ -235,27 +235,19 @@ pub fn start(spec_path: &Path) -> Result<HolderRecord, String> {
         .map_err(|e| format!("holder log: {e}"))?;
     let (ready_read, ready_write) = cloexec_pipe().map_err(|e| e.to_string())?;
     inheritable(&ready_write).map_err(|e| e.to_string())?;
-    let args: Vec<OsString> = [
-        "--unshare-net",
-        "--dev-bind",
-        "/",
-        "/",
-        "--cap-add",
-        "ALL",
-        "--chdir",
-        "/",
-        "--",
-        &spec.exe,
-        "sandbox-host",
-        "inner",
-        "--spec",
-        &spec_path.to_string_lossy(),
-        "--ready-fd",
-        &ready_write.as_raw_fd().to_string(),
-    ]
-    .into_iter()
-    .map(OsString::from)
-    .collect();
+    let args: Vec<OsString> = HOLDER_NAMESPACE
+        .into_iter()
+        .chain([
+            spec.exe.as_str(),
+            "sandbox-host",
+            "inner",
+            "--spec",
+            &spec_path.to_string_lossy(),
+            "--ready-fd",
+            &ready_write.as_raw_fd().to_string(),
+        ])
+        .map(OsString::from)
+        .collect();
     let mapper = Mapper {
         bwrap: PathBuf::from(&spec.bwrap),
         newuidmap: PathBuf::from(&spec.newuidmap),

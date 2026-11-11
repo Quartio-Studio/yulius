@@ -222,9 +222,12 @@ flowchart LR
 [decision 0162](decisions/0162-one-host-setup-command-brings-and-keeps-docker-in-sandboxes.md)).
 `yulius host setup` (root, `crates/yulius/src/host_setup.rs`) brings a host to what sandboxes
 need for Docker: Docker Engine for the bases to copy, the host's own daemon stopped, the
-modules, the service user and its ids, the unit's delegation, a root-owned binary, a current
-base. Each item reads the host through a `Host` trait, so the same items run against a fake host
-in tests. `yulius host check` is the same list with only the safe fixes. After each healthy
+modules, the service user and its ids, an AppArmor rule that lets bwrap create user namespaces
+where the host restricts them (`host_setup/bwrap_userns.rs`, proven by starting bwrap;
+[decision 0296](decisions/0296-host-setup-writes-the-apparmor-profile-that-lets-bwrap-create-user-namespaces.md)),
+the unit's delegation, a root-owned binary, a current base. Each item reads the host through a
+`Host` trait, so the same items run against a fake host in tests. `yulius host check` is the
+same list with only the safe fixes. After each healthy
 install, the update helper runs the **new** binary's `host check --json` and keeps the report.
 One verdict, `yulius_sandbox::docker_status::verdict`, gives "sandbox Docker" to the doctor, the
 setup and the server. The server's isolation adapter adds the base's rebuild and the sandboxes
@@ -233,7 +236,7 @@ on their own Docker. Settings → Instance reads it all from `GET /api/admin/san
 
 ```mermaid
 flowchart LR
-  OP["operator: sudo yulius host setup"] --> HS["host items: needrestart rule, packages, Docker Engine, host units off, modules, user + ids, unit drop-in, binary owner, base build"]
+  OP["operator: sudo yulius host setup"] --> HS["host items: needrestart rule, packages, Docker Engine, host units off, modules, user + ids, bwrap's AppArmor rule, unit drop-in, binary owner, base build"]
   HS --> V["verdict: sandbox Docker"]
   HS --> SM["doctor --contained, doctor --docker-smoke"]
   UH["update helper (root), after a healthy install"] -->|"new binary: host check --json (safe fixes)"| HC["status.host_check, host-check.json"]
