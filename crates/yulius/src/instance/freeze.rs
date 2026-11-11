@@ -317,26 +317,27 @@ impl Freeze {
     }
 }
 
-/// The sessions unit of the server's unit `unit` (SPEC-458), when the host has one that runs:
-/// whether it is frozen. `None` when there is none, it does not run, or systemd does not say.
-pub fn sessions_state(host: &mut dyn Host, unit: &str) -> Option<bool> {
-    let name = yulius_sandbox::units::sessions_unit(unit)?;
-    let found = show(host, &name).ok()?;
-    (found.load == "loaded" && runs(&found)).then_some(found.freezer == "frozen")
-}
-
-/// Whether the sessions unit of the server's unit `unit` runs frozen.
-pub fn sessions_frozen(host: &mut dyn Host, unit: &str) -> bool {
-    sessions_state(host, unit) == Some(true)
+/// The sessions unit of the server's unit `unit` (SPEC-458): `Some(frozen)` when the host has
+/// one that runs, `None` when it has none or it does not run.
+///
+/// # Errors
+/// systemd did not say. That is not "no sessions unit": nothing may be started on it.
+pub fn sessions_state(host: &mut dyn Host, unit: &str) -> Result<Option<bool>, String> {
+    let Some(name) = yulius_sandbox::units::sessions_unit(unit) else {
+        return Ok(None);
+    };
+    let found = show(host, &name)?;
+    Ok((found.load == "loaded" && runs(&found)).then_some(found.freezer == "frozen"))
 }
 
 /// The units to thaw to bring the instance of the server's unit `unit` back, in that order: its
 /// sessions unit first, when the host has one that runs, then `unit` (SPEC-458 EXP-001). A
 /// server's unit that systemd says does not run is left out: systemd refuses to thaw it, and
-/// there is nothing of it to thaw. One systemd says nothing about stays in.
+/// there is nothing of it to thaw. A unit systemd says nothing about stays in: a thaw that
+/// reports a failure is better than a unit left frozen.
 pub fn thaw_units(host: &mut dyn Host, unit: &str) -> Vec<String> {
     let mut units = Vec::new();
-    if sessions_state(host, unit).is_some()
+    if !matches!(sessions_state(host, unit), Ok(None))
         && let Some(name) = yulius_sandbox::units::sessions_unit(unit)
     {
         units.push(name);

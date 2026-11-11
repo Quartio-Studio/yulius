@@ -26,6 +26,8 @@ struct Fake {
     /// `systemctl show` answers for the sessions unit (the last one repeats); none: the host
     /// has no such unit.
     sessions: Rc<RefCell<VecDeque<String>>>,
+    /// systemd does not answer `show` for the sessions unit.
+    sessions_silent: bool,
 }
 
 const SESSIONS: &str = "yulius-sandboxes.service";
@@ -83,6 +85,9 @@ impl Host for Fake {
         self.log.borrow_mut().push(call.clone());
         let code = self.codes.get(args[0]).copied().unwrap_or(0);
         match args[0] {
+            "show" if args.last() == Some(&SESSIONS) && self.sessions_silent => {
+                Err("Failed to connect to bus".into())
+            }
             "show" if args.last() == Some(&SESSIONS) => Ok((
                 0,
                 next(&self.sessions).unwrap_or_else(|| "LoadState=not-found\n".into()),
@@ -458,7 +463,7 @@ fn units_frozen_before_the_export_are_named_as_they_are() -> TestResult {
 #[test]
 fn thawing_the_instance_thaws_its_sessions_unit_first() -> TestResult {
     let mut fake = Fake::new(&[("active", "frozen")]).with_sessions(&[("active", "frozen")]);
-    assert!(sessions_frozen(&mut fake, UNIT));
+    assert_eq!(sessions_state(&mut fake, UNIT), Ok(Some(true)));
     assert_eq!(thaw_units(&mut fake, UNIT), [SESSIONS, UNIT]);
     thaw_instance(&mut fake, UNIT)?;
     assert_eq!(
@@ -467,14 +472,14 @@ fn thawing_the_instance_thaws_its_sessions_unit_first() -> TestResult {
     );
 
     let mut plain = Fake::new(&[("active", "frozen")]);
-    assert!(!sessions_frozen(&mut plain, UNIT));
+    assert_eq!(sessions_state(&mut plain, UNIT), Ok(None));
     assert_eq!(thaw_units(&mut plain, UNIT), [UNIT]);
     thaw_instance(&mut plain, UNIT)?;
     assert_eq!(plain.calls(), ["thaw yulius.service"]);
 
     // A sessions unit that runs unfrozen is not the frozen instance.
     let mut running = Fake::new(&[("active", "frozen")]).with_sessions(&[("active", "running")]);
-    assert!(!sessions_frozen(&mut running, UNIT));
+    assert_eq!(sessions_state(&mut running, UNIT), Ok(Some(false)));
     Ok(())
 }
 
@@ -483,15 +488,26 @@ fn thawing_the_instance_thaws_its_sessions_unit_first() -> TestResult {
 #[test]
 fn a_stopped_servers_unit_is_left_out_of_the_thaw() -> TestResult {
     let mut fake = Fake::new(&[("inactive", "running")]).with_sessions(&[("active", "frozen")]);
-    assert_eq!(sessions_state(&mut fake, UNIT), Some(true));
+    assert_eq!(sessions_state(&mut fake, UNIT), Ok(Some(true)));
     assert_eq!(thaw_units(&mut fake, UNIT), [SESSIONS]);
     thaw_instance(&mut fake, UNIT)?;
     assert_eq!(fake.calls(), ["thaw yulius-sandboxes.service"]);
     // A sessions unit that does not run is no part of the instance to thaw.
     let mut none = Fake::new(&[("active", "frozen")]).with_sessions(&[("inactive", "running")]);
-    assert_eq!(sessions_state(&mut none, UNIT), None);
+    assert_eq!(sessions_state(&mut none, UNIT), Ok(None));
     assert_eq!(thaw_units(&mut none, UNIT), [UNIT]);
     Ok(())
+}
+
+/// A systemd that does not say what the sessions unit does is not a host without one: the
+/// state is unknown (nothing is started on it), and a thaw tries the unit all the same, since
+/// a sessions unit left frozen is worse than a thaw that says it failed.
+#[test]
+fn an_unanswered_question_about_the_sessions_unit_is_not_no_unit() {
+    let mut fake = Fake::new(&[("active", "frozen")]).with_sessions(&[("active", "frozen")]);
+    fake.sessions_silent = true;
+    assert!(sessions_state(&mut fake, UNIT).is_err());
+    assert_eq!(thaw_units(&mut fake, UNIT), [SESSIONS, UNIT]);
 }
 
 #[test]

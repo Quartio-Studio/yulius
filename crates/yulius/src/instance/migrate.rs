@@ -1295,8 +1295,9 @@ impl<'a> Move<'a> {
                 .map(str::to_owned)
         };
         let (active, freezer) = (value("ActiveState")?, value("FreezerState")?);
-        // Its sessions live in a unit of their own where the host has one (SPEC-458).
-        let sessions = freeze::sessions_state(&mut *self.world.freezer(), &unit);
+        // Its sessions live in a unit of their own where the host has one (SPEC-458). Not
+        // knowing its state is not knowing the instance's.
+        let sessions = freeze::sessions_state(&mut *self.world.freezer(), &unit).ok()?;
         let frozen = freezer == "frozen";
         (code == 0).then_some(Old {
             active: active == "active",
@@ -1320,8 +1321,12 @@ impl<'a> Move<'a> {
     fn old_units(&mut self) -> String {
         let unit = self.opts.service.clone();
         match yulius_sandbox::units::sessions_unit(&unit) {
+            // Named also when systemd does not say whether it runs.
             Some(sessions)
-                if freeze::sessions_state(&mut *self.world.freezer(), &unit).is_some() =>
+                if !matches!(
+                    freeze::sessions_state(&mut *self.world.freezer(), &unit),
+                    Ok(None)
+                ) =>
             {
                 format!("{unit} {sessions}")
             }

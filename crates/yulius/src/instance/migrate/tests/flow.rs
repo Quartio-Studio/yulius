@@ -52,6 +52,8 @@ struct Systemd {
     silent: bool,
     /// The host's sessions unit (SPEC-458) and whether it is frozen; `None`: it has none.
     sessions: Option<bool>,
+    /// systemd does not answer `show` for the sessions unit.
+    sessions_silent: bool,
 }
 
 struct FakeSystemd(Arc<Mutex<Systemd>>, Events);
@@ -65,6 +67,7 @@ impl freeze::Host for FakeSystemd {
             .is_some_and(|name| name.ends_with("-sandboxes.service"));
         match args[0] {
             "show" if unit.silent => Err("Failed to connect to bus".into()),
+            "show" if of_sessions && unit.sessions_silent => Err("Failed to connect to bus".into()),
             "show" if of_sessions => said(match unit.sessions {
                 None => "LoadState=not-found\nActiveState=inactive\nFreezerState=running\n".into(),
                 Some(frozen) => format!(
@@ -1001,6 +1004,26 @@ fn one_unit_thawed_alone_during_the_copy_starts_nothing() -> TestResult {
         let unit = s.world.systemd.lock().map_err(|e| e.to_string())?;
         assert_eq!((unit.frozen, unit.sessions), (false, Some(false)));
     }
+    Ok(())
+}
+
+/// Not knowing is not frozen, for the sessions unit as for the server's: when systemd stops
+/// answering about it during the copy, nothing is started.
+#[test]
+fn a_sessions_unit_systemd_says_nothing_about_starts_nothing() -> TestResult {
+    let mut s = meanwhile(|unit| unit.sessions_silent = true)?;
+    s.world.systemd.lock().map_err(|e| e.to_string())?.sessions = Some(false);
+    assert_eq!(s.run()?, 1);
+    assert!(
+        s.shown().contains("is no longer known to be frozen"),
+        "{}",
+        s.shown()
+    );
+    let events = s.events();
+    assert!(
+        !events.iter().any(|e| e == "new: mark" || e == "new: start"),
+        "{events:?}"
+    );
     Ok(())
 }
 
