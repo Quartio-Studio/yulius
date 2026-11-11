@@ -6,11 +6,14 @@
 //! **Install.** A newer version's platform package is downloaded from the registry (the tarball
 //! must be on it), its sha512 checked against the registry's `integrity`, and only its native
 //! binary `package/claude` taken into a temporary directory: it must be a 64-bit ELF for this
-//! platform that embeds the version (`VERSION:"X.Y.Z"`, as Claude Code's builds do). It is never
-//! run on the host. The binary then moves to `<data>/claude-code/versions/<v>/bin/claude.exe` and
+//! platform that embeds the version (`VERSION:"X.Y.Z"`, as Claude Code's builds do) and names
+//! Yulius's default model (SPEC-461 CCM-003: a release that does not know it is refused; one
+//! that lacks another offered model is taken, and the gap reported). It is never run on the
+//! host. The binary then moves to `<data>/claude-code/versions/<v>/bin/claude.exe` and
 //! `current` is pointed at it by an atomic rename; the version before it stays, older ones go
 //! once no process runs them. The host's install is never written, and nothing runs `npm` or a
-//! package script.
+//! package script. On `stable`, `latest`'s release is taken when neither the version in use nor
+//! stable's release knows the default model (CCM-004).
 //!
 //! **Use.** [`agent_cli_source`] says which directory a run binds at the host package's path:
 //! chosen when the run starts, so a running process keeps its binary and the next start gets
@@ -18,6 +21,7 @@
 //! `CLAUDE_CODE_OAUTH_TOKEN`), so nobody signs in again.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use base64::Engine as _;
@@ -26,9 +30,11 @@ use sha2::{Digest, Sha512};
 use tokio::io::AsyncWriteExt as _;
 use yulius_app::ports::session::Bind;
 use yulius_domain::agent_cli::{
-    self as policy, Channel, PACKAGE, REGISTRY_HOST, Version, elf_machine, platform_package,
-    should_install,
+    self as policy, Channel, PACKAGE, REGISTRY_HOST, Version, elf_machine, gap_text, lacks_default,
+    platform_package, should_install,
 };
+
+use crate::wiring::claude_models::{BuildScan, Known};
 
 /// npm's registry.
 pub const REGISTRY: &str = "https://registry.npmjs.org";
@@ -64,20 +70,69 @@ pub enum Outcome {
     Installed(Version),
 }
 
+/// A release that was not taken because it does not know the default model (SPEC-461 CCM-003).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Refusal {
+    /// The release.
+    pub version: Version,
+    /// The offered models its binary does not name, the default first.
+    pub missing: Vec<String>,
+}
+
 /// Why a check installed nothing.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct UpdateError(String);
+pub struct UpdateError {
+    message: String,
+    refused: Vec<Refusal>,
+}
+
+impl UpdateError {
+    fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            refused: Vec::new(),
+        }
+    }
+
+    /// The releases refused for the models they lack, in the order tried: the channel's, then
+    /// the one it fell forward to. Empty for any other failure.
+    #[must_use]
+    pub fn refused(&self) -> &[Refusal] {
+        &self.refused
+    }
+
+    /// A release without the default model.
+    fn lacking(version: Version, missing: Vec<String>) -> Self {
+        Self {
+            message: format!(
+                "the release was refused: {}",
+                gap_text(&version.to_string(), &missing)
+            ),
+            refused: vec![Refusal { version, missing }],
+        }
+    }
+
+    /// Two releases refused in one check.
+    fn and(mut self, other: Self) -> Self {
+        let later = other
+            .message
+            .trim_start_matches("the release was refused: ");
+        self.message = format!("{}; {later}", self.message);
+        self.refused.extend(other.refused);
+        self
+    }
+}
 
 impl std::fmt::Display for UpdateError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
+        f.write_str(&self.message)
     }
 }
 
 impl std::error::Error for UpdateError {}
 
 fn fail<T>(why: impl Into<String>) -> Result<T, UpdateError> {
-    Err(UpdateError(why.into()))
+    Err(UpdateError::new(why))
 }
 
 /// Checks the registry and installs newer Claude Code releases under `root`.
@@ -89,6 +144,8 @@ pub struct ClaudeUpdater {
     platform: Option<String>,
     max_tarball: u64,
     max_binary: u64,
+    /// What the Claude Code runs get knows, read once per file (SPEC-461 CCM-005).
+    known: Arc<Known>,
 }
 
 impl ClaudeUpdater {
@@ -132,6 +189,7 @@ impl ClaudeUpdater {
             platform,
             max_tarball: MAX_TARBALL,
             max_binary: MAX_BINARY,
+            known: Arc::default(),
         })
     }
 
@@ -187,27 +245,73 @@ impl ClaudeUpdater {
         let tags = self
             .document(&format!("/-/package/{}/dist-tags", encoded(PACKAGE)))
             .await?;
-        let Some(offered) = tags
-            .get(tag)
-            .and_then(Value::as_str)
-            .and_then(Version::parse)
-        else {
+        let tagged = |tag: &str| {
+            tags.get(tag)
+                .and_then(Value::as_str)
+                .and_then(Version::parse)
+        };
+        let Some(offered) = tagged(tag) else {
             return fail(format!("the registry names no plain version as `{tag}`"));
         };
         let in_use = host_version(host_dir).max(self.current());
-        if let Some(in_use) = in_use
-            && !should_install(offered, Some(in_use))
-        {
-            return Ok(Outcome::UpToDate(in_use));
+        // The channel's release, when it is newer: refused when it lacks the default model.
+        let mut refused = None;
+        if should_install(offered, in_use) {
+            match self.take(platform, offered).await {
+                Err(error) if !error.refused().is_empty() => refused = Some(error),
+                taken => return taken,
+            }
+        } else if self.in_use_knows_default(host_dir).await {
+            return Ok(in_use.map_or(Outcome::UpToDate(offered), Outcome::UpToDate));
         }
+        // Neither the version in use nor the channel's release knows the default model: on
+        // `stable`, `latest`'s release is taken instead (SPEC-461 CCM-004).
+        if let Some(forward) = channel.falls_forward_to().and_then(tagged)
+            && forward != offered
+            && should_install(forward, in_use)
+        {
+            return match (self.take(platform, forward).await, refused) {
+                (Err(error), Some(first)) if !error.refused().is_empty() => Err(first.and(error)),
+                (taken, _) => taken,
+            };
+        }
+        match refused {
+            Some(error) => Err(error),
+            // Nothing newer exists: what the version in use lacks is the report's to say.
+            None => Ok(in_use.map_or(Outcome::UpToDate(offered), Outcome::UpToDate)),
+        }
+    }
+
+    /// Whether the Claude Code runs get knows the default model; a binary that cannot be read
+    /// counts as knowing it, so nothing is installed on a guess.
+    async fn in_use_knows_default(&self, host_dir: &Path) -> bool {
+        self.in_use_missing(host_dir)
+            .await
+            .is_none_or(|missing| !lacks_default(&missing))
+    }
+
+    /// The offered models the Claude Code runs get does not know (the newer of the host's and
+    /// Yulius's `current`); `None` when its binary cannot be read.
+    pub async fn in_use_missing(&self, host_dir: &Path) -> Option<Vec<String>> {
+        let binary = agent_cli_source(&self.root, host_dir).join(BINARY);
+        let known = Arc::clone(&self.known);
+        // About 340 MB the first time for a file.
+        tokio::task::spawn_blocking(move || known.missing(&binary))
+            .await
+            .ok()
+            .flatten()
+    }
+
+    /// Downloads, verifies and installs `version`, and makes it current.
+    async fn take(&self, platform: &str, version: Version) -> Result<Outcome, UpdateError> {
         let staging = self
             .root
-            .join(format!("{}{offered}-{}", TEMPORARY[0], unique_suffix()));
-        let installed = self.install(platform, offered, &staging).await;
+            .join(format!("{}{version}-{}", TEMPORARY[0], unique_suffix()));
+        let installed = self.install(platform, version, &staging).await;
         let _ = tokio::fs::remove_dir_all(&staging).await;
         installed?;
-        self.remove_old(offered).await;
-        Ok(Outcome::Installed(offered))
+        self.remove_old(version).await;
+        Ok(Outcome::Installed(version))
     }
 
     async fn install(
@@ -236,7 +340,7 @@ impl ClaudeUpdater {
         let package = staging.join("package");
         tokio::fs::create_dir_all(package.join("bin"))
             .await
-            .map_err(|e| UpdateError(format!("cannot create {}: {e}", staging.display())))?;
+            .map_err(|e| UpdateError::new(format!("cannot create {}: {e}", staging.display())))?;
         // Readable by every sandbox user, whatever the service's umask.
         for dir in [package.clone(), package.join("bin")] {
             set_mode(&dir, 0o755).await?;
@@ -255,10 +359,21 @@ impl ClaudeUpdater {
             max: self.max_binary,
         };
         let (from, to) = (tarball.clone(), package.join(BINARY));
-        tokio::task::spawn_blocking(move || extract_binary(&from, &to, &expect))
+        let missing = tokio::task::spawn_blocking(move || extract_binary(&from, &to, &expect))
             .await
-            .map_err(|e| UpdateError(format!("extraction stopped: {e}")))??;
+            .map_err(|e| UpdateError::new(format!("extraction stopped: {e}")))??;
         let _ = tokio::fs::remove_file(&tarball).await;
+        // A release that does not know the default model never becomes current (CCM-003).
+        if lacks_default(&missing) {
+            return Err(UpdateError::lacking(version, missing));
+        }
+        if !missing.is_empty() {
+            tracing::warn!(
+                %version,
+                missing = %missing.join(", "),
+                "this Claude Code release does not know every model Yulius offers"
+            );
+        }
         self.switch(&package, version).await
     }
 
@@ -271,7 +386,7 @@ impl ClaudeUpdater {
             .timeout(DOCUMENT_TIMEOUT)
             .send()
             .await
-            .map_err(|_| UpdateError(format!("{REGISTRY_HOST} is unreachable")))?;
+            .map_err(|_| UpdateError::new(format!("{REGISTRY_HOST} is unreachable")))?;
         if !response.status().is_success() {
             return fail(format!(
                 "{REGISTRY_HOST} answered HTTP {}",
@@ -282,7 +397,7 @@ impl ClaudeUpdater {
         while let Some(chunk) = response
             .chunk()
             .await
-            .map_err(|_| UpdateError(format!("{REGISTRY_HOST} stopped answering")))?
+            .map_err(|_| UpdateError::new(format!("{REGISTRY_HOST} stopped answering")))?
         {
             if body.len() + chunk.len() > MAX_DOCUMENT {
                 return fail("the registry's document is too long");
@@ -290,7 +405,7 @@ impl ClaudeUpdater {
             body.extend_from_slice(&chunk);
         }
         serde_json::from_slice(&body)
-            .map_err(|_| UpdateError("the registry's document is not JSON".into()))
+            .map_err(|_| UpdateError::new("the registry's document is not JSON"))
     }
 
     /// Streams the tarball to `to`, bounded; its sha512.
@@ -301,7 +416,7 @@ impl ClaudeUpdater {
             .timeout(DOWNLOAD_TIMEOUT)
             .send()
             .await
-            .map_err(|_| UpdateError("the tarball could not be downloaded".into()))?;
+            .map_err(|_| UpdateError::new("the tarball could not be downloaded"))?;
         if !response.status().is_success() {
             return fail(format!(
                 "the tarball's download answered HTTP {}",
@@ -316,13 +431,13 @@ impl ClaudeUpdater {
         }
         let mut file = tokio::fs::File::create(to)
             .await
-            .map_err(|e| UpdateError(format!("cannot write the tarball: {e}")))?;
+            .map_err(|e| UpdateError::new(format!("cannot write the tarball: {e}")))?;
         let mut hasher = Sha512::new();
         let mut size = 0u64;
         while let Some(chunk) = response
             .chunk()
             .await
-            .map_err(|_| UpdateError("the tarball's download stopped".into()))?
+            .map_err(|_| UpdateError::new("the tarball's download stopped"))?
         {
             size += chunk.len() as u64;
             if size > self.max_tarball {
@@ -331,11 +446,11 @@ impl ClaudeUpdater {
             hasher.update(&chunk);
             file.write_all(&chunk)
                 .await
-                .map_err(|e| UpdateError(format!("cannot write the tarball: {e}")))?;
+                .map_err(|e| UpdateError::new(format!("cannot write the tarball: {e}")))?;
         }
         file.flush()
             .await
-            .map_err(|e| UpdateError(format!("cannot write the tarball: {e}")))?;
+            .map_err(|e| UpdateError::new(format!("cannot write the tarball: {e}")))?;
         Ok(hasher.finalize().to_vec())
     }
 
@@ -343,7 +458,7 @@ impl ClaudeUpdater {
     async fn switch(&self, package: &Path, version: Version) -> Result<(), UpdateError> {
         let versions = self.root.join("versions");
         let target = versions.join(version.to_string());
-        let io = |what: &str, e: std::io::Error| UpdateError(format!("cannot {what}: {e}"));
+        let io = |what: &str, e: std::io::Error| UpdateError::new(format!("cannot {what}: {e}"));
         tokio::fs::create_dir_all(&versions)
             .await
             .map_err(|e| io("create the versions directory", e))?;
@@ -571,7 +686,7 @@ async fn set_mode(path: &Path, mode: u32) -> Result<(), UpdateError> {
     use std::os::unix::fs::PermissionsExt as _;
     tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
         .await
-        .map_err(|e| UpdateError(format!("cannot set the mode of {}: {e}", path.display())))
+        .map_err(|e| UpdateError::new(format!("cannot set the mode of {}: {e}", path.display())))
 }
 
 /// Whether the host package's `claude` is `bin/claude.exe`, the file Yulius's copies hold: the
@@ -648,7 +763,7 @@ fn sha512_of(integrity: &str) -> Result<Vec<u8>, UpdateError> {
         .find_map(|hash| hash.strip_prefix("sha512-"))
         .and_then(|b64| base64::engine::general_purpose::STANDARD.decode(b64).ok())
         .filter(|digest| digest.len() == 64)
-        .ok_or_else(|| UpdateError("the registry gives no sha512 integrity".into()))
+        .ok_or_else(|| UpdateError::new("the registry gives no sha512 integrity"))
 }
 
 /// What the platform binary must be.
@@ -663,12 +778,17 @@ struct Expected {
 
 /// Takes the regular file `package/claude` from the gzip tarball into `to` (mode 0755), bounded,
 /// and checks it is a 64-bit little-endian ELF for `expect.machine` that embeds
-/// `VERSION:"<version>"`.
-fn extract_binary(tarball: &Path, to: &Path, expect: &Expected) -> Result<(), UpdateError> {
+/// `VERSION:"<version>"`. Answers the offered models it does not name (SPEC-461 CCM-003), read in
+/// the same pass.
+fn extract_binary(
+    tarball: &Path,
+    to: &Path,
+    expect: &Expected,
+) -> Result<Vec<String>, UpdateError> {
     use std::io::{Read as _, Write as _};
     use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
-    let io = |e: std::io::Error| UpdateError(format!("cannot read the tarball: {e}"));
-    let write = |e: std::io::Error| UpdateError(format!("cannot write the binary: {e}"));
+    let io = |e: std::io::Error| UpdateError::new(format!("cannot read the tarball: {e}"));
+    let write = |e: std::io::Error| UpdateError::new(format!("cannot write the binary: {e}"));
     let file = std::fs::File::open(tarball).map_err(io)?;
     let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(file));
     for entry in archive.entries().map_err(io)? {
@@ -685,10 +805,8 @@ fn extract_binary(tarball: &Path, to: &Path, expect: &Expected) -> Result<(), Up
             .mode(0o755)
             .open(to)
             .map_err(write)?;
-        let needle = format!("VERSION:\"{}\"", expect.version).into_bytes();
+        let mut scan = BuildScan::new(Some(expect.version)).map_err(UpdateError::new)?;
         let mut header = Vec::with_capacity(20);
-        let mut window: Vec<u8> = Vec::new();
-        let mut named = false;
         let mut size = 0u64;
         let mut buf = vec![0u8; 64 * 1024];
         loop {
@@ -705,15 +823,8 @@ fn extract_binary(tarball: &Path, to: &Path, expect: &Expected) -> Result<(), Up
                 let take = (20 - header.len()).min(n);
                 header.extend_from_slice(&chunk[..take]);
             }
-            if !named {
-                // The needle may straddle two reads: keep its length less one byte.
-                window.extend_from_slice(chunk);
-                named = window.windows(needle.len()).any(|w| w == needle.as_slice());
-                let keep = needle.len() - 1;
-                if window.len() > keep {
-                    window.drain(..window.len() - keep);
-                }
-            }
+            // The version and the model ids may straddle two reads: the scan keeps what it needs.
+            scan.feed(chunk);
             out.write_all(chunk).map_err(write)?;
         }
         let elf = header.len() == 20
@@ -727,13 +838,15 @@ fn extract_binary(tarball: &Path, to: &Path, expect: &Expected) -> Result<(), Up
                 expect.machine
             ));
         }
+        let (named, missing) = scan.finish();
         if !named {
             return fail(format!("the binary does not name {}", expect.version));
         }
         // The open's mode passed through the umask; every sandbox user runs it.
         out.set_permissions(std::fs::Permissions::from_mode(0o755))
             .map_err(write)?;
-        return out.sync_all().map_err(write);
+        out.sync_all().map_err(write)?;
+        return Ok(missing);
     }
     fail("the tarball holds no `package/claude`")
 }

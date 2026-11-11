@@ -100,12 +100,17 @@ pub struct IsolationArgs {
     /// the sandbox's system).
     #[arg(long = "sandbox-docker", env = "YULIUS_SANDBOX_DOCKER", value_enum, default_value_t = DockerMode::On)]
     pub docker: DockerMode,
-    /// Claude Code releases isolated sandboxes follow (SPEC-421): `stable` (default), `latest`,
-    /// or `off` (the host's Claude Code only).
-    #[arg(long = "claude-updates", env = "YULIUS_CLAUDE_UPDATES", default_value = "stable",
+    /// Claude Code releases isolated sandboxes follow (SPEC-421, SPEC-461): `latest` (default),
+    /// `stable`, or `off` (the host's Claude Code only). A channel chosen in Settings, Instance
+    /// wins over it.
+    #[arg(long = "claude-updates", env = "YULIUS_CLAUDE_UPDATES", default_value = DEFAULT_CHANNEL,
           value_parser = parse_channel)]
     pub claude_updates: Channel,
 }
+
+/// The channel of `--claude-updates` when nothing names one, for `serve` and `doctor`: npm's
+/// `latest` (SPEC-461 CCM-001).
+pub const DEFAULT_CHANNEL: &str = "latest";
 
 /// `stable`, `latest` or `off`.
 ///
@@ -128,7 +133,7 @@ impl Default for IsolationArgs {
             forward: Vec::new(),
             idle_minutes: 5,
             docker: DockerMode::On,
-            claude_updates: Channel::Stable,
+            claude_updates: Channel::default(),
         }
     }
 }

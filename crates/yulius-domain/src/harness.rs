@@ -7,6 +7,17 @@ use std::fmt;
 /// task #21). A subscription's own default would be Sonnet.
 pub const DEFAULT_CLAUDE_MODEL: &str = "claude-fable-5-2";
 
+/// The Claude models the composer offers (SPEC-461 CCM-002), the default first. The web UI's
+/// `models.js` lists the same ids, and a test keeps the two equal. A Claude Code release is read
+/// for them before sandboxes get it.
+pub const OFFERED_CLAUDE_MODELS: [&str; 5] = [
+    DEFAULT_CLAUDE_MODEL,
+    "claude-fable-5-1",
+    "claude-opus-5-5",
+    "claude-sonnet-5-5",
+    "claude-haiku-4-5",
+];
+
 /// The effort of a task that names none (2026-11-10: max; before it high, task #21), sent so
 /// Claude Code never picks its own.
 pub const DEFAULT_CLAUDE_EFFORT: &str = "max";

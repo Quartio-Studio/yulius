@@ -2,6 +2,7 @@
 
 pub mod browser;
 pub mod claude_cli;
+pub mod claude_models;
 pub mod clock;
 pub mod egress;
 pub mod git;

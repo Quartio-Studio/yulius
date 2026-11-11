@@ -63,9 +63,13 @@ impl Stub {
 /// ELF's `e_machine` of x86-64.
 const X86_64: u16 = 62;
 
+/// The models the composer offers, the default first.
+const OFFERED: [&str; 5] = yulius_domain::harness::OFFERED_CLAUDE_MODELS;
+
 /// A stand-in for the native binary: an ELF64 header for `machine`, then filler, then the
-/// version as the real binary embeds it (`VERSION:"X.Y.Z"`), across a 64 KiB boundary.
-fn binary(machine: u16, version: &str) -> Vec<u8> {
+/// version as the real binary embeds it (`VERSION:"X.Y.Z"`), across a 64 KiB boundary, then the
+/// model ids it knows as its model tables name them.
+fn binary_knowing(machine: u16, version: &str, models: &[&str]) -> Vec<u8> {
     let mut bytes = vec![0x7f, b'E', b'L', b'F', 2, 1, 1, 0];
     bytes.resize(16, 0);
     bytes.extend_from_slice(&2u16.to_le_bytes());
@@ -73,7 +77,25 @@ fn binary(machine: u16, version: &str) -> Vec<u8> {
     bytes.resize(65_536 - 7, b'.');
     bytes.extend_from_slice(format!("VERSION:\"{version}\"").as_bytes());
     bytes.extend_from_slice(b"...");
+    for model in models {
+        bytes.extend_from_slice(format!("{{id:\"{model}\",family:\"x\"}},").as_bytes());
+    }
     bytes
+}
+
+/// A stand-in that knows every offered model.
+fn binary(machine: u16, version: &str) -> Vec<u8> {
+    binary_knowing(machine, version, &OFFERED)
+}
+
+/// A release of `version` whose binary knows only `models`.
+fn knowing(version: &str, models: &[&str]) -> std::io::Result<Release> {
+    Ok(Release {
+        tarball: tarball_of(&[("claude", binary_knowing(X86_64, version, models))])?,
+        integrity: None,
+        url: None,
+        chunked: false,
+    })
 }
 
 /// A tarball as npm publishes a platform package, with `files` under `package/`.
@@ -180,8 +202,17 @@ fn host_install(root: &Path, version: &str) -> Result<PathBuf, Box<dyn std::erro
             r#"{{"name":"@anthropic-ai/claude-code","version":"{version}","bin":{{"claude":"bin/claude.exe"}}}}"#
         ),
     )?;
-    std::fs::write(dir.join("bin/claude.exe"), "host")?;
+    // A host install that knows every offered model, as one installed from npm today does.
+    std::fs::write(dir.join("bin/claude.exe"), binary(X86_64, version))?;
     Ok(dir)
+}
+
+/// The host's Claude Code replaced by one that knows only `models` (same version).
+fn host_knows(host: &Path, version: &str, models: &[&str]) -> std::io::Result<()> {
+    std::fs::write(
+        host.join("bin/claude.exe"),
+        binary_knowing(X86_64, version, models),
+    )
 }
 
 struct Setup {
@@ -650,5 +681,197 @@ async fn a_version_a_process_runs_is_not_removed() -> TestResult {
         Outcome::UpToDate(v("2.1.318"))
     );
     assert_eq!(installed(&s.root), ["2.1.311", "2.1.318"]);
+    Ok(())
+}
+
+/// SPEC-461 AC1 (the incident of 2026-11-11): a release whose binary does not know the default
+/// model never becomes current, and the refusal names the release and the model.
+#[tokio::test]
+async fn a_release_that_lacks_the_default_model_is_refused() -> TestResult {
+    let s = setup("2.1.292").await?;
+    s.stub.tag("latest", "2.1.300");
+    s.stub.release("2.1.300", good("2.1.300")?);
+    s.updater.check(Channel::Latest).await?;
+    // 2.1.311 knows Fable 5.1 and the rest, not Fable 5.2.
+    s.stub.tag("latest", "2.1.311");
+    s.stub
+        .release("2.1.311", knowing("2.1.311", &OFFERED[1..])?);
+    let refused = s.updater.check(Channel::Latest).await;
+    assert!(
+        refused.as_ref().is_err_and(|e| e
+            .to_string()
+            .contains("2.1.311 does not know claude-fable-5-2")),
+        "{refused:?}"
+    );
+    assert_eq!(s.updater.current(), Some(v("2.1.300")));
+    assert_eq!(installed(&s.root), ["2.1.300"]);
+    assert!(leftovers(&s.root).is_empty(), "{:?}", leftovers(&s.root));
+    // The same release with the model is taken.
+    s.stub.release("2.1.311", good("2.1.311")?);
+    assert_eq!(
+        s.updater.check(Channel::Latest).await?,
+        Outcome::Installed(v("2.1.311"))
+    );
+    Ok(())
+}
+
+/// SPEC-461 AC3: on `stable`, when neither the version in use nor stable's release knows the
+/// default model, `latest`'s release is taken; when it does not know it either, nothing is, and
+/// both are named.
+#[tokio::test]
+async fn stable_falls_forward_to_latest_for_the_default_model() -> TestResult {
+    // The incident: the host and npm's `stable` are 2.1.311, which knows Fable 5.1 only.
+    let s = setup("2.1.311").await?;
+    host_knows(&s.host, "2.1.311", &OFFERED[1..])?;
+    s.stub.tag("stable", "2.1.311");
+    s.stub.tag("latest", "2.1.322");
+    s.stub
+        .release("2.1.311", knowing("2.1.311", &OFFERED[1..])?);
+
+    // `latest` does not know it either: nothing is installed, and the release is named.
+    s.stub
+        .release("2.1.322", knowing("2.1.322", &OFFERED[1..])?);
+    let refused = s.updater.check(Channel::Stable).await;
+    let error = refused.as_ref().err().ok_or("a refusal")?;
+    assert!(
+        error
+            .to_string()
+            .contains("2.1.322 does not know claude-fable-5-2"),
+        "{error}"
+    );
+    assert_eq!(error.refused().len(), 1);
+    assert_eq!(error.refused()[0].version, v("2.1.322"));
+    assert_eq!(error.refused()[0].missing, [OFFERED[0]]);
+    assert!(s.updater.current().is_none());
+    assert!(leftovers(&s.root).is_empty(), "{:?}", leftovers(&s.root));
+
+    // `latest` knows it: it is taken, though the channel is `stable`.
+    s.stub.release("2.1.322", good("2.1.322")?);
+    assert_eq!(
+        s.updater.check(Channel::Stable).await?,
+        Outcome::Installed(v("2.1.322"))
+    );
+    assert_eq!(
+        agent_cli_source(&s.root, &s.host),
+        s.root.join("versions/2.1.322").canonicalize()?
+    );
+    // From then on stable's older release changes nothing.
+    assert_eq!(
+        s.updater.check(Channel::Stable).await?,
+        Outcome::UpToDate(v("2.1.322"))
+    );
+    Ok(())
+}
+
+/// SPEC-461 AC3: a newer stable release without the default model is refused, then `latest`
+/// too, and both are named; a version in use that knows the default model keeps `stable` on
+/// stable's releases.
+#[tokio::test]
+async fn stable_names_both_refusals_and_stays_stable_while_the_default_is_known() -> TestResult {
+    let s = setup("2.1.292").await?;
+    host_knows(&s.host, "2.1.292", &OFFERED[1..])?;
+    s.stub.tag("stable", "2.1.311");
+    s.stub.tag("latest", "2.1.318");
+    s.stub
+        .release("2.1.311", knowing("2.1.311", &OFFERED[1..])?);
+    s.stub
+        .release("2.1.318", knowing("2.1.318", &OFFERED[1..])?);
+    let refused = s.updater.check(Channel::Stable).await;
+    let error = refused.as_ref().err().ok_or("a refusal")?;
+    let text = error.to_string();
+    assert!(
+        text.contains("2.1.311 does not know claude-fable-5-2")
+            && text.contains("2.1.318 does not know claude-fable-5-2"),
+        "{text}"
+    );
+    let versions: Vec<_> = error.refused().iter().map(|r| r.version).collect();
+    assert_eq!(versions, [v("2.1.311"), v("2.1.318")]);
+    assert!(s.updater.current().is_none());
+    assert!(leftovers(&s.root).is_empty());
+    // On `latest` there is nothing newer to take: its own refusal is the answer.
+    let refused = s.updater.check(Channel::Latest).await;
+    assert!(
+        refused
+            .as_ref()
+            .is_err_and(|e| e.refused().len() == 1 && e.refused()[0].version == v("2.1.318")),
+        "{refused:?}"
+    );
+
+    // A version in use that knows the default model: `stable` takes stable's release and never
+    // asks for `latest`'s.
+    host_knows(&s.host, "2.1.292", &OFFERED)?;
+    s.stub.release("2.1.311", good("2.1.311")?);
+    s.stub.release("2.1.318", good("2.1.318")?);
+    assert_eq!(
+        s.updater.check(Channel::Stable).await?,
+        Outcome::Installed(v("2.1.311"))
+    );
+    let downloads = s.stub.downloads.load(Ordering::SeqCst);
+    assert_eq!(
+        s.updater.check(Channel::Stable).await?,
+        Outcome::UpToDate(v("2.1.311"))
+    );
+    assert_eq!(s.stub.downloads.load(Ordering::SeqCst), downloads);
+    Ok(())
+}
+
+/// SPEC-461 AC4: a release that knows the default model but not another offered one is taken;
+/// what it lacks is what the version in use lacks from then on.
+#[tokio::test]
+async fn a_release_lacking_another_offered_model_is_taken_and_the_gap_known() -> TestResult {
+    let s = setup("2.1.292").await?;
+    s.stub.tag("latest", "2.1.400");
+    // Haiku 4.5 left the binary; the composer still lists it.
+    s.stub
+        .release("2.1.400", knowing("2.1.400", &OFFERED[..4])?);
+    assert_eq!(s.updater.in_use_missing(&s.host).await, Some(Vec::new()));
+    assert_eq!(
+        s.updater.check(Channel::Latest).await?,
+        Outcome::Installed(v("2.1.400"))
+    );
+    assert_eq!(
+        s.updater.in_use_missing(&s.host).await,
+        Some(vec!["claude-haiku-4-5".to_owned()])
+    );
+    Ok(())
+}
+
+/// SPEC-461 AC2: an instance follows `latest` unless told otherwise, on `serve` and `doctor`
+/// (both declare [`DEFAULT_CHANNEL`]).
+#[test]
+fn the_channel_defaults_to_latest() -> TestResult {
+    use yulius::wiring::sandbox::{DEFAULT_CHANNEL, IsolationArgs};
+    assert_eq!(DEFAULT_CHANNEL, "latest");
+    assert_eq!(parse_channel(DEFAULT_CHANNEL), Ok(Channel::default()));
+    assert_eq!(IsolationArgs::default().claude_updates, Channel::Latest);
+    // The declared default, not a parse: parsing reads the environment (YULIUS_CLAUDE_UPDATES).
+    let command = <IsolationArgs as clap::Args>::augment_args(clap::Command::new("serve"));
+    let declared = command
+        .get_arguments()
+        .find(|arg| arg.get_long() == Some("claude-updates"))
+        .ok_or("--claude-updates")?;
+    assert_eq!(declared.get_default_values(), ["latest"]);
+    Ok(())
+}
+
+/// SPEC-461 CCM-002: the composer's list (`models.js`) and the server's are the same ids, the
+/// default first.
+#[test]
+fn the_composer_offers_the_models_the_server_checks() -> TestResult {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../yulius-server/web/assets/models.js");
+    let text = std::fs::read_to_string(path)?;
+    let list = text
+        .split_once("export const PROVIDERS")
+        .and_then(|(_, rest)| rest.split_once("export const EFFORTS"))
+        .map(|(providers, _)| providers)
+        .ok_or("the PROVIDERS list")?;
+    let ids: Vec<&str> = list
+        .split("{ id: '")
+        .skip(1)
+        .filter_map(|rest| rest.split('\'').next())
+        .filter(|id| id.starts_with("claude-"))
+        .collect();
+    assert_eq!(ids, OFFERED, "models.js and OFFERED_CLAUDE_MODELS differ");
+    assert_eq!(OFFERED[0], yulius_domain::harness::DEFAULT_CLAUDE_MODEL);
     Ok(())
 }

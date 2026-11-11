@@ -1,9 +1,12 @@
 //! Claude Code kept current by Yulius (SPEC-421, ADR-0266): which release channel, which
-//! versions, which platform package, which installed versions to keep.
+//! versions, which platform package, which installed versions to keep; and which models a build
+//! must know before sandboxes get it (SPEC-461, ADR-0293).
 //!
-//! Pure: the caller reads the registry, downloads, installs and removes.
+//! Pure: the caller reads the registry, downloads, reads the binary, installs and removes.
 
 use std::fmt;
+
+use crate::harness::{DEFAULT_CLAUDE_MODEL, OFFERED_CLAUDE_MODELS};
 
 /// The npm package of the Claude Code CLI.
 pub const PACKAGE: &str = "@anthropic-ai/claude-code";
@@ -52,13 +55,15 @@ impl fmt::Display for Version {
     }
 }
 
-/// Which releases an instance follows (`YULIUS_CLAUDE_UPDATES`).
+/// Which releases an instance follows (`YULIUS_CLAUDE_UPDATES`, or the channel chosen in
+/// Settings).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Channel {
     /// npm's `stable` tag: about a week behind `latest`, without releases that regressed.
-    #[default]
     Stable,
-    /// npm's `latest` tag.
+    /// npm's `latest` tag: the default, so a new default model never outruns the Claude Code
+    /// that runs it (SPEC-461 CCM-001; the incident of 2026-11-11).
+    #[default]
     Latest,
     /// No checks: runs get the host's Claude Code.
     Off,
@@ -85,6 +90,70 @@ impl Channel {
             Self::Off => None,
         }
     }
+
+    /// `stable`, `latest` or `off`: what [`Self::parse`] reads.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Stable => "stable",
+            Self::Latest => "latest",
+            Self::Off => "off",
+        }
+    }
+
+    /// The dist-tag taken instead when neither the version in use nor this channel's release
+    /// knows the default model (SPEC-461 CCM-004): `latest` for `stable`, nothing newer for
+    /// `latest`.
+    #[must_use]
+    pub fn falls_forward_to(self) -> Option<&'static str> {
+        (self == Self::Stable).then_some("latest")
+    }
+}
+
+/// The text after a model id that ends it: anything but a letter, a digit or a hyphen, or the end
+/// of the file (SPEC-461 CCM-002). So `claude-fable-5-2` is not read in `claude-fable-5-20`, nor
+/// `claude-fable-5` in `claude-fable-5-2`.
+#[must_use]
+pub fn ends_model_id(next: Option<u8>) -> bool {
+    next.is_none_or(|byte| !byte.is_ascii_alphanumeric() && byte != b'-')
+}
+
+/// The offered models a build does not know, the default first, given the ids its binary names.
+#[must_use]
+pub fn missing_models(known: &[&str]) -> Vec<String> {
+    OFFERED_CLAUDE_MODELS
+        .iter()
+        .filter(|model| !known.contains(model))
+        .map(|model| (*model).to_owned())
+        .collect()
+}
+
+/// Whether a build that lacks `missing` must never run in a sandbox: it does not know the
+/// default model (SPEC-461 CCM-003). A gap in the other offered models is reported, not refused.
+#[must_use]
+pub fn lacks_default(missing: &[String]) -> bool {
+    missing.iter().any(|model| model == DEFAULT_CLAUDE_MODEL)
+}
+
+/// "2.1.311 does not know claude-fable-5-2 (Yulius's default model) and claude-opus-5-5".
+#[must_use]
+pub fn gap_text(version: &str, missing: &[String]) -> String {
+    let named: Vec<String> = missing
+        .iter()
+        .map(|model| {
+            if model == DEFAULT_CLAUDE_MODEL {
+                format!("{model} (Yulius's default model)")
+            } else {
+                model.clone()
+            }
+        })
+        .collect();
+    let list = match named.as_slice() {
+        [] => return format!("{version} knows every model Yulius offers"),
+        [one] => one.clone(),
+        [first @ .., last] => format!("{} and {last}", first.join(", ")),
+    };
+    format!("{version} does not know {list}")
 }
 
 /// The platform package holding the native binary, for Rust's `os` and `arch` names and the C
@@ -176,10 +245,69 @@ mod tests {
         assert_eq!(Channel::parse("latest"), Some(Channel::Latest));
         assert_eq!(Channel::parse("off"), Some(Channel::Off));
         assert_eq!(Channel::parse("next"), None);
-        assert_eq!(Channel::default(), Channel::Stable);
+        for channel in [Channel::Stable, Channel::Latest, Channel::Off] {
+            assert_eq!(Channel::parse(channel.as_str()), Some(channel));
+        }
         assert_eq!(Channel::Stable.dist_tag(), Some("stable"));
         assert_eq!(Channel::Latest.dist_tag(), Some("latest"));
         assert_eq!(Channel::Off.dist_tag(), None);
+    }
+
+    /// SPEC-461 AC2: an instance follows `latest` unless told otherwise.
+    #[test]
+    fn the_default_channel_is_latest() {
+        assert_eq!(Channel::default(), Channel::Latest);
+        assert_eq!(Channel::default().dist_tag(), Some("latest"));
+    }
+
+    /// SPEC-461 CCM-004: only `stable` has a newer tag to fall forward to.
+    #[test]
+    fn only_stable_falls_forward_to_latest() {
+        assert_eq!(Channel::Stable.falls_forward_to(), Some("latest"));
+        assert_eq!(Channel::Latest.falls_forward_to(), None);
+        assert_eq!(Channel::Off.falls_forward_to(), None);
+    }
+
+    /// SPEC-461 CCM-002: an id ends where a longer id would go on.
+    #[test]
+    fn a_model_id_ends_before_anything_but_a_letter_digit_or_hyphen() {
+        for ends in [b'"', b'\'', b'[', b']', b',', b' ', b'@', 0] {
+            assert!(ends_model_id(Some(ends)), "{ends}");
+        }
+        assert!(ends_model_id(None), "the end of the file");
+        for goes_on in *b"09aZ-" {
+            assert!(!ends_model_id(Some(goes_on)), "{goes_on}");
+        }
+    }
+
+    /// SPEC-461 CCM-003: the default model is the gate, the other offered models a reported gap.
+    #[test]
+    fn a_build_without_the_default_model_is_refused_and_another_gap_is_named() {
+        assert_eq!(OFFERED_CLAUDE_MODELS[0], DEFAULT_CLAUDE_MODEL);
+        assert!(missing_models(&OFFERED_CLAUDE_MODELS).is_empty());
+        let without_default = missing_models(&OFFERED_CLAUDE_MODELS[1..]);
+        assert_eq!(without_default, [DEFAULT_CLAUDE_MODEL]);
+        assert!(lacks_default(&without_default));
+        let without_haiku = missing_models(&OFFERED_CLAUDE_MODELS[..4]);
+        assert_eq!(without_haiku, ["claude-haiku-4-5"]);
+        assert!(!lacks_default(&without_haiku));
+        assert!(!lacks_default(&[]));
+        assert_eq!(
+            gap_text("2.1.311", &without_default),
+            "2.1.311 does not know claude-fable-5-2 (Yulius's default model)"
+        );
+        assert_eq!(
+            gap_text(
+                "2.1.311",
+                &missing_models(&["claude-opus-5-5", "claude-sonnet-5-5"])
+            ),
+            "2.1.311 does not know claude-fable-5-2 (Yulius's default model), claude-fable-5-1 \
+             and claude-haiku-4-5"
+        );
+        assert_eq!(
+            gap_text("2.1.322", &[]),
+            "2.1.322 knows every model Yulius offers"
+        );
     }
 
     #[test]

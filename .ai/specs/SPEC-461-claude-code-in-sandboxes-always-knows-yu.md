@@ -66,7 +66,7 @@ an older one.
 | ID | Requirement |
 | --- | --- |
 | CCM-001 | **Channel default.** `YULIUS_CLAUDE_UPDATES` (`--claude-updates`) defaults to `latest`; `stable` and `off` stay. |
-| CCM-002 | **Offered models.** The server knows the Claude models the composer offers (one list, the default first; a test keeps `models.js` equal to it). A Claude Code build *knows* a model when its binary holds the model id as text not followed by a letter or a digit (so `claude-fable-5-2` is not found in `claude-fable-5-20`). The binary is read, never run. |
+| CCM-002 | **Offered models.** The server knows the Claude models the composer offers (one list, the default first; a test keeps `models.js` equal to it). A Claude Code build *knows* a model when its binary holds the model id as text not followed by a letter, a digit or a hyphen (so `claude-fable-5-2` is not read in `claude-fable-5-20`, nor `claude-fable-5` in `claude-fable-5-2`; in 2.1.322 every offered id stands that way at least 26 times, mostly before a quote). The binary is read, never run. |
 | CCM-003 | **Verified before current.** A downloaded release is checked for every offered model in the same pass as its version. One that does not know the default model is refused: nothing is installed, `current` stays, no temporary directory is left, and the refusal names the release and the model. One that knows the default model but not another offered model becomes current and the gap is reported (CCM-006). |
 | CCM-004 | **`stable` never falls behind the default model.** On `stable`, when neither the version runs get nor stable's release knows the default model, `latest`'s release is taken instead, under CCM-003, and the report says so. On `latest` there is nothing newer to take: the refusal is reported. On `off` nothing is installed. |
 | CCM-005 | **The version in use is checked too.** The Claude Code runs get (the newer of the host's install and Yulius's `current`) is read for the offered models when the server starts, after every check and when the channel changes (cached per file while it does not change). |
@@ -126,7 +126,8 @@ an older one.
   forward to `latest`; the refusal's and the fix's words. `crates/yulius-domain/src/harness.rs`:
   the offered list starts with the default.
 - Unit, `crates/yulius/src/wiring/claude_models.rs`: the streaming model scan (ids across chunk
-  boundaries, at the end of the file, followed by a digit or a letter, absent).
+  boundaries, at the end of the file, followed by a digit, a letter or a hyphen, absent) and its
+  per-file memory.
 - Integration, `crates/yulius/tests/claude_updates.rs` (the registry stub of SPEC-421, whose
   binary stand-in now embeds the offered model ids): AC1, AC3, AC4, the status file after each
   outcome, AC5 (the doctor's level and text), the composer's list equal to the server's
