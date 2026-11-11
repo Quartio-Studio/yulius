@@ -127,6 +127,8 @@ pub struct FakeFault {
     pub status: u16,
     /// How many matching requests receive the fault.
     pub times: u32,
+    /// How many matching requests are answered normally before the fault starts.
+    pub skip: u32,
     /// Extra response headers (e.g. `retry-after`).
     pub headers: Vec<(String, String)>,
     /// `message` field of the JSON body.
@@ -142,9 +144,18 @@ impl FakeFault {
             path: path.into(),
             status,
             times,
+            skip: 0,
             headers: Vec::new(),
             message: format!("injected {status}"),
         }
+    }
+
+    /// Lets the first `requests` matching requests through: the fault answers the ones after
+    /// them (the second request of a call that makes two).
+    #[must_use]
+    pub fn after(mut self, requests: u32) -> Self {
+        self.skip = requests;
+        self
     }
 
     /// Adds a response header.
@@ -996,11 +1007,19 @@ async fn handle(
     while state.requests.len() > MAX_RECORDED_REQUESTS {
         state.requests.pop_front();
     }
-    if let Some(index) = state
+    let matching = state
         .faults
         .iter()
-        .position(|f| f.method == method.as_str() && f.path == rest && f.times > 0)
-    {
+        .position(|f| f.method == method.as_str() && f.path == rest && f.times > 0);
+    // A fault that waits lets this request through.
+    let due = matching.filter(|&index| {
+        let waits = state.faults[index].skip > 0;
+        if waits {
+            state.faults[index].skip -= 1;
+        }
+        !waits
+    });
+    if let Some(index) = due {
         let fault = state.faults[index].clone();
         state.faults[index].times -= 1;
         if state.faults[index].times == 0 {

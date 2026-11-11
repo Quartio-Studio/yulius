@@ -168,6 +168,16 @@ async fn a_callback_url_is_registered_missing_or_not_known() -> TestResult {
     );
     assert_eq!(fake.count("POST", "/login/oauth/access_token"), 1);
 
+    // The control question failing is no answer either: "registered" is never said on half a
+    // proof.
+    fake.clear_requests();
+    fake.inject_fault(FakeFault::new("POST", "/login/oauth/access_token", 503, 1).after(1));
+    assert_eq!(
+        client.callback_registered(new).await,
+        Err(GitHubError::Upstream(503))
+    );
+    assert_eq!(fake.count("POST", "/login/oauth/access_token"), 2);
+
     // A refused secret is said with GitHub's code, never with the secret.
     let mut wrong = fake.config();
     if let Some(app) = wrong.app.as_mut() {

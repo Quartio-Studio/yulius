@@ -411,8 +411,8 @@ mod tests {
         assert_eq!(recheck_after(11), 60_000);
         assert_eq!(recheck_after(12), 120_000);
         assert_eq!(recheck_after(13), 240_000);
-        // Four minutes at most, however long it stands: what the sign-in page says of a
-        // callback added since is never older.
+        // Four minutes at most between two questions while someone keeps reading, however
+        // long the answer stands.
         assert_eq!(recheck_after(14), 240_000);
         assert_eq!(recheck_after(u32::MAX), 240_000);
 

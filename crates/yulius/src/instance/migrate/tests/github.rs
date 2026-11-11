@@ -184,10 +184,22 @@ fn the_checklist_line_says_what_github_answered() {
     // Nothing a terminal would obey, and nothing that reorders or hides text, travels in a line.
     let mut odd = facts("unknown", NEW);
     odd.reason =
-        Some("it said\u{1b}[2J\nmanual  fake \u{202e}desrever\u{2066}\u{200b}\u{feff} end".into());
+        Some(
+            "it said\u{1b}[2J\nmanual  fake \u{202e}desrever\u{2066}\u{200b}\u{feff}\u{ad}\u{2028}\u{2029}\u{e0041} end"
+                .into(),
+        );
     let (_, detail) = line(Ok(Some(odd)), NEW);
     assert!(!detail.chars().any(char::is_control), "{detail:?}");
-    for hidden in ['\u{202e}', '\u{2066}', '\u{200b}', '\u{feff}'] {
+    for hidden in [
+        '\u{202e}',
+        '\u{2066}',
+        '\u{200b}',
+        '\u{feff}',
+        '\u{ad}',
+        '\u{2028}',
+        '\u{2029}',
+        '\u{e0041}',
+    ] {
         assert!(!detail.contains(hidden), "{detail:?}");
     }
     assert!(

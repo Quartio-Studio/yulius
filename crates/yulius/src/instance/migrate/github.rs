@@ -108,18 +108,26 @@ pub(crate) fn ask(address: &str, key: &str, public_url: Option<&str>, limit: Dur
     }
 }
 
-/// Characters that reorder or hide text (bidirectional controls, zero-width marks): a line is
-/// read by a person, and must read as it is written.
+/// Characters that reorder or hide text (bidirectional controls, zero-width marks, the soft
+/// hyphen, tag characters): a line is read by a person, and must read as it is written.
 fn hidden(c: char) -> bool {
     matches!(
         c,
-        '\u{061c}'
+        '\u{ad}'
+            | '\u{061c}'
             | '\u{200b}'..='\u{200f}'
             | '\u{202a}'..='\u{202e}'
             | '\u{2060}'..='\u{2064}'
             | '\u{2066}'..='\u{2069}'
             | '\u{feff}'
+            | '\u{e0000}'..='\u{e007f}'
     )
+}
+
+/// A line break in any spelling a terminal or an editor honours: the controls, and Unicode's
+/// line and paragraph separators.
+fn breaks(c: char) -> bool {
+    c.is_control() || matches!(c, '\u{2028}' | '\u{2029}')
 }
 
 /// The checklist's "GitHub App" line for a move to `new`, from what the instance said.
@@ -129,7 +137,7 @@ pub fn line(asked: Asked, new: &str) -> (HostOutcome, String) {
     let plain = |text: String| -> String {
         text.chars()
             .filter(|c| !hidden(*c))
-            .map(|c| if c.is_control() { ' ' } else { c })
+            .map(|c| if breaks(c) { ' ' } else { c })
             .collect()
     };
     let new = new.trim_end_matches('/');
