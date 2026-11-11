@@ -24,6 +24,7 @@ use yulius_contracts::browser::{
     ViewerClientMsg,
 };
 use yulius_domain::ids::{SandboxId, TaskId};
+use zeroize::Zeroizing;
 
 use crate::cdp::{CdpClient, CdpConfig, CdpEvent, FrameSink, ScreencastFrame, wait_closed};
 use crate::display::VirtualDisplay;
@@ -80,6 +81,42 @@ const FOCUS_FUNCTION: &str = "function (selector) {
   element.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
   element.focus();
   return { found: true };
+}";
+
+/// Distinct secrets one tab remembers (SPEC-450); typing another one is refused.
+const SECRETS_PER_TAB: usize = 32;
+
+/// Reads what a page can show (SPEC-450 SSC-001): its visible text and the values of fields
+/// drawn as text (`shown`) and of password fields (`masked`), through open shadow roots and
+/// same-origin frames; `over` when that exceeds the bound. Nothing is passed in: Yulius compares
+/// the typed values, which never reach the page. The marker comment names it for the fake.
+const SECRET_PROBE_FUNCTION: &str = "function () {
+  // yulius:secret-probe
+  const shown = [], masked = [];
+  let size = 0, over = false;
+  const add = (list, text) => {
+    if (!text) return;
+    size += text.length;
+    if (size > 4000000) over = true; else list.push(String(text));
+  };
+  const walk = (root) => {
+    for (const el of root.querySelectorAll('*')) {
+      const tag = el.tagName;
+      if (tag === 'INPUT') {
+        const type = String(el.type).toLowerCase();
+        if (type === 'password') add(masked, el.value); else if (type !== 'hidden') add(shown, el.value);
+      } else if (tag === 'TEXTAREA') add(shown, el.value);
+      if (el.shadowRoot) { add(shown, el.shadowRoot.textContent); walk(el.shadowRoot); }
+      if (tag === 'IFRAME' || tag === 'FRAME') {
+        let doc = null;
+        try { doc = el.contentDocument; } catch (_) {}
+        if (doc) { add(shown, doc.body ? doc.body.innerText : ''); walk(doc); }
+      }
+    }
+  };
+  add(shown, this.body ? this.body.innerText : '');
+  walk(this);
+  return { shown, masked, over };
 }";
 
 const TEXT_FALLBACK_EXPRESSION: &str =
@@ -403,11 +440,66 @@ impl Pointer {
     }
 }
 
+/// A secret value typed into a tab with [`BrowserInstance::tool_type_secret`] (SPEC-450).
+#[derive(Clone)]
+struct SecretGuard {
+    value: Zeroizing<String>,
+    seen: Seen,
+}
+
+/// Where the probe found a typed secret right after typing it.
+#[derive(Clone, PartialEq, Eq)]
+enum Seen {
+    /// In a field or text the probe reads: screenshots are refused while it is still there.
+    Readable,
+    /// Nowhere the probe reads (a cross-origin frame, a closed shadow root, a field that cut or
+    /// reformatted it): screenshots of the document it was typed into (its main frame's loader
+    /// id; `None` when unknown, which never matches) are refused.
+    Nowhere { loader: Option<String> },
+}
+
+/// What a page can show, as [`SECRET_PROBE_FUNCTION`] read it.
+struct PageText {
+    /// Visible text and the values of fields drawn as text.
+    shown: Vec<String>,
+    /// The values of password fields (drawn as dots).
+    masked: Vec<String>,
+}
+
+impl PageText {
+    fn parse(value: &Value) -> Option<Self> {
+        let strings = |name: &str| -> Option<Vec<String>> {
+            value
+                .get(name)?
+                .as_array()?
+                .iter()
+                .map(|item| item.as_str().map(str::to_owned))
+                .collect()
+        };
+        if value.get("over").and_then(Value::as_bool) != Some(false) {
+            return None;
+        }
+        Some(Self {
+            shown: strings("shown")?,
+            masked: strings("masked")?,
+        })
+    }
+
+    fn shows(&self, value: &str) -> bool {
+        self.shown.iter().any(|text| text.contains(value))
+    }
+
+    fn holds(&self, value: &str) -> bool {
+        self.shows(value) || self.masked.iter().any(|text| text.contains(value))
+    }
+}
+
 struct State {
     tabs: Vec<TabEntry>,
     active: Option<TabId>,
     sessions: HashMap<TabId, String>,
     actions: HashMap<TabId, ActionRequest>,
+    secrets: HashMap<TabId, Vec<SecretGuard>>,
     screencasts: HashMap<TabId, Screencast>,
     viewport: (u32, u32),
     pointer: Pointer,
@@ -435,6 +527,7 @@ impl State {
     fn remove(&mut self, tab: &TabId) -> (Option<String>, bool) {
         self.tabs.retain(|entry| &entry.id != tab);
         let had_action = self.actions.remove(tab).is_some();
+        self.secrets.remove(tab);
         self.screencasts.remove(tab);
         let session = self.sessions.remove(tab);
         if self.active.as_ref() == Some(tab) {
@@ -662,6 +755,7 @@ impl BrowserInstance {
                 active: None,
                 sessions: HashMap::new(),
                 actions: HashMap::new(),
+                secrets: HashMap::new(),
                 screencasts: HashMap::new(),
                 viewport,
                 pointer: Pointer::default(),
@@ -2082,6 +2176,24 @@ impl BrowserInstance {
     /// # Errors
     /// Parameter errors, [`BrowserError::ElementNotFound`], tab or CDP failures.
     pub async fn tool_type(&self, params: &TypeParams) -> Result<TypeResult, BrowserError> {
+        self.type_text(params, false).await
+    }
+
+    /// `browser_fill_secret`'s typing: as [`Self::tool_type`], and the tab remembers the text
+    /// (until it closes) so that a screenshot of a page showing it is refused (SPEC-450).
+    ///
+    /// # Errors
+    /// As [`Self::tool_type`]; [`BrowserError::InvalidInput`] when the tab already remembers
+    /// [`SECRETS_PER_TAB`] other secrets.
+    pub async fn tool_type_secret(&self, params: &TypeParams) -> Result<TypeResult, BrowserError> {
+        self.type_text(params, true).await
+    }
+
+    async fn type_text(
+        &self,
+        params: &TypeParams,
+        secret: bool,
+    ) -> Result<TypeResult, BrowserError> {
         self.touch();
         params.validate()?;
         let session = self.session(&params.tab_id).await?;
@@ -2093,17 +2205,127 @@ impl BrowserInstance {
                 return Err(BrowserError::ElementNotFound);
             }
         }
+        if secret {
+            // Guarded before it is typed: a screenshot taken meanwhile is refused.
+            self.guard_secret(&params.tab_id, &params.text, Seen::Nowhere { loader: None })?;
+        }
+        let typed = self.type_lines(&session, params).await;
+        if secret {
+            let seen = match self.read_page(&session).await {
+                Some(page) if page.holds(&params.text) => Seen::Readable,
+                _ => Seen::Nowhere {
+                    loader: self.loader(&session).await,
+                },
+            };
+            // Fails only for a tab closed meanwhile, which took the secret with it.
+            let _ = self.guard_secret(&params.tab_id, &params.text, seen);
+        }
+        typed
+    }
+
+    /// Remembers `text` as typed into `tab` (replacing what was known about the same text).
+    fn guard_secret(&self, tab: &TabId, text: &str, seen: Seen) -> Result<(), BrowserError> {
+        let mut state = lock(&self.state);
+        if !state.has(tab) {
+            return Err(BrowserError::TabNotFound(tab.clone()));
+        }
+        let guards = state.secrets.entry(tab.clone()).or_default();
+        if let Some(guard) = guards.iter_mut().find(|guard| guard.value.as_str() == text) {
+            guard.seen = seen;
+        } else if guards.len() >= SECRETS_PER_TAB {
+            return Err(BrowserError::InvalidInput(format!(
+                "{SECRETS_PER_TAB} secrets were typed into this tab already; open a new tab"
+            )));
+        } else {
+            guards.push(SecretGuard {
+                value: Zeroizing::new(text.to_owned()),
+                seen,
+            });
+        }
+        Ok(())
+    }
+
+    /// The page's readable text ([`SECRET_PROBE_FUNCTION`]); `None` when it cannot be read.
+    async fn read_page(&self, session: &str) -> Option<PageText> {
+        match self
+            .call_on_document(session, SECRET_PROBE_FUNCTION, "")
+            .await
+        {
+            Ok(value) => PageText::parse(&value),
+            Err(error) => {
+                debug!(%error, "reading the page for typed secrets failed");
+                None
+            }
+        }
+    }
+
+    /// The loader id of the document the tab's main frame shows; `None` when unknown.
+    async fn loader(&self, session: &str) -> Option<String> {
+        let tree = self
+            .cdp
+            .call_session(session, "Page.getFrameTree", json!({}))
+            .await
+            .ok()?;
+        tree.pointer("/frameTree/frame/loaderId")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+    }
+
+    /// Refuses a screenshot of `tab` while its page may show a secret typed into it
+    /// (SPEC-450): one its readable text or fields show, one typed into this document where the
+    /// probe could not find it, or any when the page cannot be read.
+    async fn ensure_no_secret_shown(&self, tab: &TabId, session: &str) -> Result<(), BrowserError> {
+        let guards = lock(&self.state)
+            .secrets
+            .get(tab)
+            .cloned()
+            .unwrap_or_default();
+        if guards.is_empty() {
+            return Ok(());
+        }
+        let page = self
+            .read_page(session)
+            .await
+            .ok_or(BrowserError::SecretOnPage)?;
+        if guards.iter().any(|guard| page.shows(&guard.value)) {
+            return Err(BrowserError::SecretOnPage);
+        }
+        let unseen: Vec<&Option<String>> = guards
+            .iter()
+            .filter_map(|guard| match &guard.seen {
+                Seen::Nowhere { loader } => Some(loader),
+                Seen::Readable => None,
+            })
+            .collect();
+        if !unseen.is_empty() {
+            let current = self.loader(session).await;
+            if current.is_none()
+                || unseen
+                    .iter()
+                    .any(|loader| loader.is_none() || **loader == current)
+            {
+                return Err(BrowserError::SecretOnPage);
+            }
+        }
+        Ok(())
+    }
+
+    async fn type_lines(
+        &self,
+        session: &str,
+        params: &TypeParams,
+    ) -> Result<TypeResult, BrowserError> {
         let _input = self.input_lock.lock().await;
         let mut chars = 0;
         for (index, line) in params.text.split('\n').enumerate() {
             if index > 0 {
-                self.press_enter(&session).await?;
+                self.press_enter(session).await?;
                 chars += 1;
             }
             let line = line.strip_suffix('\r').unwrap_or(line);
             if !line.is_empty() {
                 self.cdp
-                    .call_session(&session, "Input.insertText", json!({"text": line}))
+                    .call_session(session, "Input.insertText", json!({"text": line}))
                     .await?;
                 chars += line.chars().count();
             }
@@ -2176,13 +2398,16 @@ impl BrowserInstance {
     /// [`SCREENSHOT_MAX_BASE64_BYTES`].
     ///
     /// # Errors
-    /// [`BrowserError::ResultTooLarge`], tab or CDP failures.
+    /// [`BrowserError::SecretOnPage`] while the page may show a secret typed with
+    /// [`Self::tool_type_secret`]; [`BrowserError::ResultTooLarge`], tab or CDP failures.
     pub async fn tool_screenshot(
         &self,
         params: &ScreenshotParams,
     ) -> Result<ScreenshotResult, BrowserError> {
         self.touch();
         let session = self.session(&params.tab_id).await?;
+        self.ensure_no_secret_shown(&params.tab_id, &session)
+            .await?;
         let shot = self
             .cdp
             .call_session(&session, "Page.captureScreenshot", json!({"format": "png"}))
@@ -2208,8 +2433,9 @@ impl BrowserInstance {
     /// callers can map coordinates of a downscaled image back to the viewport.
     ///
     /// # Errors
-    /// [`BrowserError::ResultTooLarge`] when even the smallest step exceeds the budget; tab or
-    /// CDP failures.
+    /// [`BrowserError::SecretOnPage`] while the page may show a secret typed with
+    /// [`Self::tool_type_secret`]; [`BrowserError::ResultTooLarge`] when even the smallest step
+    /// exceeds the budget; tab or CDP failures.
     pub async fn tool_screenshot_within(
         &self,
         params: &ScreenshotParams,
@@ -2217,6 +2443,8 @@ impl BrowserInstance {
     ) -> Result<BoundedScreenshot, BrowserError> {
         self.touch();
         let session = self.session(&params.tab_id).await?;
+        self.ensure_no_secret_shown(&params.tab_id, &session)
+            .await?;
         let viewport = lock(&self.state).viewport;
         let limit = max_base64_bytes.min(SCREENSHOT_MAX_BASE64_BYTES);
         for step in BOUNDED_SCREENSHOT_STEPS {

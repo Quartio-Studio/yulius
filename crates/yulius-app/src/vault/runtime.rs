@@ -865,7 +865,7 @@ impl App {
             text: text.to_string(),
             selector: args.selector.clone(),
         };
-        browser.tool_type(&params).await?;
+        browser.tool_type_secret(&params).await?;
         browser.agent_activity(&args.tab_id, None, "type", &user.label());
         self.note_agent_use(
             (&user.run(), &user.actor()),

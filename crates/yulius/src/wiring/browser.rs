@@ -33,7 +33,8 @@ fn failure(error: BrowserError) -> BrowserFailure {
         | BrowserError::ToolParams(_)
         | BrowserError::InvalidSelector(_)
         | BrowserError::ElementNotFound
-        | BrowserError::ElementNotVisible => BrowserFailureKind::Invalid,
+        | BrowserError::ElementNotVisible
+        | BrowserError::SecretOnPage => BrowserFailureKind::Invalid,
         BrowserError::ResultTooLarge { .. } => BrowserFailureKind::TooLarge,
         BrowserError::Profile(_) | BrowserError::NotReaped { .. } => BrowserFailureKind::Internal,
         BrowserError::Spawn(_)
@@ -296,6 +297,10 @@ impl BrowserSession for Session {
 
     async fn tool_type(&self, params: &TypeParams) -> Result<TypeResult, BrowserFailure> {
         self.0.tool_type(params).await.map_err(failure)
+    }
+
+    async fn tool_type_secret(&self, params: &TypeParams) -> Result<TypeResult, BrowserFailure> {
+        self.0.tool_type_secret(params).await.map_err(failure)
     }
 
     async fn tool_snapshot(

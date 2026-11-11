@@ -673,7 +673,12 @@ async fn a_screenshot_never_shows_a_secret_typed_into_a_page() -> TestResult {
             &f.writer,
         )
         .await?;
-        assert_eq!(created.status, axum::http::StatusCode::CREATED, "{}", created.body);
+        assert_eq!(
+            created.status,
+            axum::http::StatusCode::CREATED,
+            "{}",
+            created.body
+        );
         let opened = mcp_tool(
             &f.h,
             TOKEN,
@@ -739,7 +744,10 @@ async fn a_screenshot_never_shows_a_secret_typed_into_a_page() -> TestResult {
         assert_eq!(shot["isError"], false, "{shot}");
         assert_eq!(shot["content"][0]["type"], "image");
         f.fake.set_password_field("#password", false);
-        assert!(refused(&screenshot().await?), "a revealed password is shown");
+        assert!(
+            refused(&screenshot().await?),
+            "a revealed password is shown"
+        );
         f.fake.set_password_field("#password", true);
 
         // A page that cannot be read is not captured (fail closed).

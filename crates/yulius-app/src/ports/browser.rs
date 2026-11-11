@@ -284,6 +284,9 @@ pub trait BrowserSession: Send + Sync {
     async fn tool_click(&self, params: &ClickParams) -> Result<ClickResult, BrowserFailure>;
     /// `browser_type`.
     async fn tool_type(&self, params: &TypeParams) -> Result<TypeResult, BrowserFailure>;
+    /// `browser_fill_secret`'s typing: as `tool_type`, and screenshots of a page that may show
+    /// the text are refused until the tab closes (SPEC-450).
+    async fn tool_type_secret(&self, params: &TypeParams) -> Result<TypeResult, BrowserFailure>;
     /// `browser_snapshot`.
     async fn tool_snapshot(
         &self,

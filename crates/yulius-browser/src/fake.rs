@@ -43,7 +43,7 @@ use crate::video::{
 };
 
 /// The comment that marks the secret probe's function (`Runtime.callFunctionOn`).
-const SECRET_PROBE_MARKER: &str = "yulius:secret-probe";
+const SECRET_PROBE_MARKER: &str = "// yulius:secret-probe";
 /// Maximum recorded requests; older entries are discarded.
 const MAX_RECORDED: usize = 10_000;
 /// Screencast frames Chromium keeps unacknowledged.
@@ -126,7 +126,7 @@ impl FakeState {
                 }
             }
         }
-        json!({"shown": shown, "masked": masked})
+        json!({"shown": shown, "masked": masked, "over": false})
     }
 }
 
@@ -766,13 +766,19 @@ fn respond(
             let loader = lock(&shared.state)
                 .page(session_id)
                 .map_or(0, |page| page.loader);
-            Ok(json!({"frameTree": {"frame": {"id": "frame-1", "loaderId": format!("loader-{loader}")}}}))
+            Ok(
+                json!({"frameTree": {"frame": {"id": "frame-1", "loaderId": format!("loader-{loader}")}}}),
+            )
         }
         "Input.insertText" => {
             let typed = text("text");
             if let Some(page) = lock(&shared.state).page(session_id) {
                 let focused = page.focused.clone();
-                match page.fields.iter_mut().find(|(selector, _)| *selector == focused) {
+                match page
+                    .fields
+                    .iter_mut()
+                    .find(|(selector, _)| *selector == focused)
+                {
                     Some((_, value)) => value.push_str(&typed),
                     None => page.fields.push((focused, typed)),
                 }
