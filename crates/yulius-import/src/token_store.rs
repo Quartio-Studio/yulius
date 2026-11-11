@@ -172,12 +172,14 @@ impl TokenStore {
     pub fn save(&self, server: &Url, token: &Secret) -> Result<(), TokenStoreError> {
         let mut file = self.read()?;
         let key = Self::server_key(server);
-        if let Some(followed) = file.moved.remove(&key)
-            && file
-                .servers
-                .get(&followed)
+        // The URL is a server again, whatever the token; what had followed its move comes back
+        // only with the token that followed.
+        let followed = file.moved.remove(&key).filter(|followed| {
+            file.servers
+                .get(followed)
                 .is_some_and(|there| there.token == *token)
-        {
+        });
+        if let Some(followed) = followed {
             file.servers.remove(&followed);
             for target in file
                 .moved
