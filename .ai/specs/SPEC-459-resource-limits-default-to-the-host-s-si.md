@@ -1,11 +1,11 @@
 ---
 yulius-task: daf7a54d-e960-47e4-81cd-8c61824a49b3
-status: in-progress
+status: done
 ---
 
 # SPEC-459: Resource limits default to the host's size and adapt after a move
 
-Status: in-progress
+Status: done
 Date: 2026-11-11
 Owner: Yulius task #441
 Scope authorization: task #441, asked by the project's owner ("Resource limits size themselves to
@@ -109,7 +109,7 @@ host-sized one, by the migration flow itself.
 - [x] `instance import` marks the copy and the first start adapts the limits by itself
 - [x] Settings → Instance card with values, sources, formulas and the moved-host notice
 - [x] Docs: operations, API, architecture, product summary and changes
-- [ ] Gates green and an independent review in a fresh session
+- [x] Gates green and an independent review in a fresh session
 
 ## Acceptance criteria
 
@@ -163,3 +163,39 @@ host-sized one, by the migration flow itself.
   happens at its start, and the migration flow's part is the mark its import leaves.
 - One pull request although it is past 400 lines outside tests: defaults, sources, settings and
   the moved-host handling share one record and one view, and none of them is usable alone.
+
+## Evidence
+
+Run on 2026-11-11 in the task's worktree; the logs are in the ignored `target/evidence/`.
+
+- `scripts/dev ci` at `1a54ad18`: exit 0, 3336 tests passed, 16 skipped (check, lint, docs, tests,
+  dependencies). Earlier runs: green at `be90ee78` (3328) and at `7157c7b7` (3334); two before
+  them failed on this change and were fixed (a CSS gap off the 4 px scale, a rustdoc link to a
+  private item).
+- `(cd e2e && npx e2e run)` at `1a54ad18`: exit 0, 77 files, 911 tests passed, 2 skipped. A run
+  beside the gate at an earlier head had one failure in `queued-messages.e2e.ts` (the terminal's
+  focus, a file this change does not touch); it passed alone (21 of 21) and in both later full
+  runs.
+- After `1a54ad18` only the card's script, the mock, the limits browser tests, this spec and
+  `docs/operations.md` changed (the third review's findings): `python3 scripts/check_repository.py`
+  passed, `cargo test -p yulius-server` passed (25), `npx e2e run tests/instance-limits.e2e.ts`
+  9 of 9. The full gate on the final head is Yulius CI's run on the pull request.
+- Tests first: the formula, precedence and staleness tests failed before the domain code; each
+  review fix has a test that failed before it (`target/evidence/test-review-red.log`,
+  `test-review2-red.log`, `e2e-limits-review-red.log`, `e2e-limits-review2-red.log`). Mutation
+  checks: without the slot resize the lowered-CI-limit test fails; with a request sent beside a
+  refusal, or the focus left alone after a failed save, the two browser assertions fail
+  (`e2e-limits-review3-mutated.log`).
+- `cargo test -p yulius --test main limits::`: 18 passed (two hosts, the mark, adapt, keep,
+  settings over unit, refusals, audit, restart, the queued task starting, unreadable and
+  unparseable records, a failed save, a failed audit).
+- `yulius security-scan`: "Security scan disabled" (Vidoc is turned off for this project):
+  nothing was scanned, so it is reported as disabled, not as passed.
+- Independent review in fresh read-only sessions, three rounds: `246cbcb7` approved with minor
+  findings, `7157c7b7` approved with minor findings, `1a54ad18` changes requested (one browser
+  assertion that could not fail); all own-code findings were fixed test-first, and the reviewer
+  confirmed the head that carries the last fix. Left as it was, with the reviewer's agreement:
+  the unit's `YULIUS_*` values have no range check (so before this change too).
+- Not tested: a real move between two machines (the detection and the start after an import run
+  on a real store with a probe reporting the two real hosts' sizes); the sandbox memory limit
+  reaching running sandboxes (it applies at a restart by design).
