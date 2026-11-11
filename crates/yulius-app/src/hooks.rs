@@ -620,6 +620,13 @@ impl App {
         sent: i64,
     ) -> AppResult<HookReply> {
         let store = &self.deps.store;
+        // A prompt submitted from the session's prompt box empties it, also one held below:
+        // what was typed before it is no draft any more (SPEC-468 CCF-010).
+        if crate::finish::from_prompt_box(input.prompt.as_deref()) {
+            self.runtime(&ctx.task.id)
+                .box_emptied_ms
+                .fetch_max(sent, Ordering::SeqCst);
+        }
         // A person wrote to the task (they typed it, even a prompt held below): what its agent
         // asked a person is answered (SPEC-134 CDT-004). Prompts Yulius types do not count.
         if crate::finish::is_typed_prompt(input.prompt.as_deref())

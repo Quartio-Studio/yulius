@@ -15,7 +15,7 @@ use std::time::Duration;
 use yulius_contracts::api::updates::{ClaudeCodeBehind, ClaudeCodeRefused, ClaudeCodeView};
 use yulius_domain::agent_cli::{
     Channel, MoveFacts, NewestFacts, RegistryRead, Version, default_model_fix,
-    default_model_problem, gap_text, lacks_default, moves_now, newest_lacking_default,
+    default_model_problem, gap_text, is_draft, lacks_default, moves_now, newest_lacking_default,
 };
 use yulius_domain::harness::DEFAULT_CLAUDE_MODEL;
 use yulius_domain::ids::{AccountId, AttemptId, TaskId};
@@ -318,6 +318,18 @@ impl App {
         (typed > 0).then(|| self.now().0.saturating_sub(typed))
     }
 
+    /// Whether a person typed into the task's session since its prompt box was last empty
+    /// (its run's start, or the last prompt submitted from it): what they typed may still sit
+    /// there, and a restart would lose it (SPEC-468 CCF-010). Public for tests.
+    #[must_use]
+    pub fn has_draft(&self, task_id: &TaskId) -> bool {
+        let runtime = self.runtime(task_id);
+        is_draft(
+            runtime.typed_at_ms.load(Ordering::SeqCst),
+            runtime.box_emptied_ms.load(Ordering::SeqCst),
+        )
+    }
+
     /// What a turn's end knows about restarting the task's session, which runs `runs`, on
     /// `target`. All of it is cheap to read, so it is read again after the looks that take
     /// seconds; `background` is what those looks found.
@@ -341,6 +353,7 @@ impl App {
             sent_to,
             stopped_for,
             typed_ms_ago: self.typed_ms_ago(task_id),
+            draft: self.has_draft(task_id),
             switch_refused: self.switch_cooling(task_id) || self.claude_move_cooling(task_id),
             paused: self.is_paused_by_person(task_id).await,
             update_holds: self.update_holds_starts(),
@@ -351,7 +364,8 @@ impl App {
     /// The newer Claude Code the session of `attempt` moves to now, at its turn's end (SPEC-461
     /// CCM-013); `None` when it stays: it runs the version runs get (or names none), it was
     /// sent to that version before, a session could not continue on that version, a person
-    /// typed into it in the last minute or paused it, an update of the instance holds the runs,
+    /// typed into it in the last minute, left a draft in its prompt box (typed since its last
+    /// prompt) or paused it, an update of the instance holds the runs,
     /// a switch was refused moments ago, it has background shells (a `yulius wait` included),
     /// agents or monitors, which a restart would end, or that could not be told within
     /// [`crate::context::AppConfig::claude_code_decision_ms`].

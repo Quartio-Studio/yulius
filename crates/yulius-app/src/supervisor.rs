@@ -148,6 +148,10 @@ pub struct TaskRuntime {
     pub(crate) typed_at_ms: AtomicI64,
     /// Who typed last.
     pub(crate) typed_by: Mutex<Option<yulius_domain::ids::UserId>>,
+    /// When the session's prompt box was last known empty (ms, 0 = not known): its run's
+    /// launch, or the last prompt submitted from it. What a person typed after that may still
+    /// sit there (SPEC-468 CCF-010).
+    pub(crate) box_emptied_ms: AtomicI64,
     /// Whose personal MCP servers the current run was started with (SPEC-332 MSC-009): a live
     /// run keeps its MCP configuration, so a hand-over restarts it, and only that person messages
     /// it meanwhile.
@@ -392,6 +396,7 @@ impl TaskRuntime {
             auto_pr_head: Mutex::new(None),
             merged_covers: Mutex::new(None),
             typed_at_ms: AtomicI64::new(0),
+            box_emptied_ms: AtomicI64::new(0),
             typed_by: Mutex::new(None),
             personal_mcp_of: Mutex::new(None),
             goal_achieved: AtomicBool::new(false),
@@ -1639,8 +1644,9 @@ impl App {
                 .await?;
         }
         // Typing from now on, once viewers can write to this run, is a person's draft in it
-        // (SPEC-068).
+        // (SPEC-068): its prompt box starts empty (SPEC-468 CCF-010).
         let typed_before = runtime.typed_at_ms.load(Ordering::SeqCst);
+        runtime.box_emptied_ms.store(self.now().0, Ordering::SeqCst);
         self.attach_run(&task.id, &attempt, &host_token).await?;
         runtime.hub.state_changed();
         self.publish_task(&task.id).await;

@@ -508,6 +508,10 @@ mod moves {
             crate::pool_supervision::add_account(&s.app, "b-second").await?;
             turn(&s, "one").await?;
             settled(&s, Activity::Waiting).await?;
+            // What a person typed into the old session is no draft in the new one, whose
+            // prompt box starts empty (SPEC-468 CCF-010).
+            s.app.record_typing(&s.id, &s.user);
+            assert!(s.app.has_draft(&s.id));
             let ctx = s.ctx().await?;
             s.app
                 .switch_task(
@@ -519,6 +523,7 @@ mod moves {
                 )
                 .await?;
             second_run_live(&s).await?;
+            assert!(!s.app.has_draft(&s.id), "a new run's prompt box is empty");
             settled(&s, Activity::Waiting).await?;
             // The next turn works and rests as before.
             turn(&s, "two").await?;
@@ -566,6 +571,113 @@ mod moves {
             stop(&s.app, &s.id).await
         })?;
         rt.shutdown_timeout(Duration::from_secs(5));
+        Ok(())
+    }
+
+    /// A hook of the run whose token is `token`, sent now, over the internal listener.
+    async fn hook(
+        h: &crate::support::Harness,
+        token: &str,
+        event: &str,
+        body: serde_json::Value,
+    ) -> TestResult {
+        use tower::ServiceExt as _;
+        let request = axum::http::Request::post(format!("/hooks/claude/{event}"))
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/json")
+            .header("x-yulius-hook-sent-ms", h.app.now().0.to_string())
+            .body(axum::body::Body::from(body.to_string()))?;
+        let status = h.internal.clone().oneshot(request).await?.status();
+        if status != axum::http::StatusCode::OK {
+            return Err(format!("the {event} hook answered {status}").into());
+        }
+        Ok(())
+    }
+
+    /// SPEC-468 CCF-010 (the review's question of direction): a draft that sits in a session's
+    /// prompt box keeps the session however long ago it was typed. Yulius cannot read the box,
+    /// but it sees every keystroke and every submitted prompt: a session typed into since its
+    /// last prompt is left alone, and the next submitted prompt lifts that. The clock is the
+    /// test's, the hooks come over the internal listener, and no process runs: a restart that
+    /// is tried is refused (the sandbox has no repository), which is what shows the try.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_draft_typed_since_the_last_prompt_keeps_the_session() -> TestResult {
+        use crate::support::{harness, seed_github_user, seed_sandbox, seed_task};
+        use yulius_app::model::AttemptRecord;
+        use yulius_domain::ids::AttemptId;
+        const TOKEN: &str = "task-token-for-claude-move-tests-0123456789";
+        const MINUTE: i64 = 60_000;
+        let prompt = |text: &str| {
+            serde_json::json!({"hook_event_name": "UserPromptSubmit", "session_id": "s",
+                "prompt": text})
+        };
+        let stop = || {
+            serde_json::json!({"hook_event_name": "Stop", "session_id": "s",
+                "stop_hook_active": false})
+        };
+        let h = harness()?;
+        seed_github_user(&h, "u-alice", "alice").await?;
+        seed_sandbox(&h, "s1", "fixture", "u-alice").await?;
+        let account = crate::pool_supervision::add_account(&h.app, "acc-1").await?;
+        let task = seed_task(&h, "t-draft", "s1", "u-alice", TaskStatus::Running, None).await?;
+        let run = AttemptId::parse("a-t-draft")?;
+        let store = &h.app.deps.store;
+        store
+            .insert_attempt(&AttemptRecord {
+                id: run.clone(),
+                task_id: task.id.clone(),
+                seq: 1,
+                harness: yulius_domain::harness::Harness::ClaudeCode,
+                account_id: Some(account),
+                provider_session_id: None,
+                launch_kind: LaunchKind::New,
+                state: AttemptState::Live,
+                run_dir: "/nonexistent/run".into(),
+                token_hash: h.app.deps.crypto.sha256_hex(TOKEN.as_bytes()),
+                host_token: h.app.deps.crypto.seal(&[1u8; 32])?,
+                ptyhost_pid: None,
+                child_pid: None,
+                started_at: h.app.now(),
+                ended_at: None,
+                exit_code: None,
+                exit_reason: None,
+            })
+            .await?;
+        // Its session runs 2.1.311, and runs get 2.1.322.
+        store
+            .set_run_cli_version(&run, &task.id, "2.1.311", h.app.now())
+            .await?;
+        let installed = Arc::new(Installed(Mutex::new(Some(v("2.1.322")))));
+        assert!(h.app.set_agent_cli(installed as Arc<_>, Channel::Latest));
+        let alice = UserId::parse("u-alice")?;
+
+        // A prompt is submitted and its turn runs. Meanwhile its person types the next message
+        // and does not send it.
+        hook(&h, TOKEN, "UserPromptSubmit", prompt("first")).await?;
+        h.clock.0.fetch_add(1_000, Ordering::SeqCst);
+        h.app.record_typing(&task.id, &alice);
+        assert!(h.app.has_draft(&task.id));
+        // The turn ends five minutes later: the minute after a keystroke is long over.
+        h.clock.0.fetch_add(5 * MINUTE, Ordering::SeqCst);
+        let probed = reached(Point::ClaudeMoveProbed, &task.id);
+        let flag = decided(&task.id);
+        hook(&h, TOKEN, "Stop", stop()).await?;
+        until_decided(&flag).await?;
+        assert!(
+            !probed.load(Ordering::SeqCst) && !h.app.claude_move_cooling(&task.id),
+            "a session with a draft is not looked at, and no restart is tried"
+        );
+
+        // They send it: the box is empty again, and that turn's end restarts the session.
+        h.clock.0.fetch_add(1_000, Ordering::SeqCst);
+        hook(&h, TOKEN, "UserPromptSubmit", prompt("second")).await?;
+        assert!(!h.app.has_draft(&task.id), "typed, then submitted");
+        h.clock.0.fetch_add(5 * MINUTE, Ordering::SeqCst);
+        let flag = decided(&task.id);
+        hook(&h, TOKEN, "Stop", stop()).await?;
+        until_decided(&flag).await?;
+        assert!(probed.load(Ordering::SeqCst), "the session was looked at");
+        assert!(h.app.claude_move_cooling(&task.id), "the restart was tried");
         Ok(())
     }
 

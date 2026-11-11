@@ -124,6 +124,8 @@ pub struct MoveFacts {
     pub stopped_for: Option<Version>,
     /// How long ago a person typed into the session, when one did.
     pub typed_ms_ago: Option<i64>,
+    /// A person typed into the session since its prompt box was last empty ([`is_draft`]).
+    pub draft: bool,
     /// A switch of this task, or an earlier restart for a newer Claude Code, was refused moments
     /// ago.
     pub switch_refused: bool,
@@ -140,12 +142,21 @@ pub struct MoveFacts {
 /// under them (their draft would be lost).
 pub const TYPED_RECENTLY_MS: i64 = 60_000;
 
+/// Whether a keystroke at `typed_at_ms` (0: none) may have left a draft in a session's prompt
+/// box, last known empty at `box_emptied_ms` (its run's start, or the last prompt submitted from
+/// it; SPEC-468 CCF-010): it came after that. Yulius cannot read the box: what was typed and not
+/// submitted since may still sit there, however long ago it was typed.
+#[must_use]
+pub fn is_draft(typed_at_ms: i64, box_emptied_ms: i64) -> bool {
+    typed_at_ms > 0 && typed_at_ms > box_emptied_ms
+}
+
 /// Whether the session is restarted on `target` now: it runs an older version, was not sent to
 /// `target` before (a session that still names the old one afterwards is not restarted at every
 /// turn's end), no session failed to continue on `target`, nobody typed into it in the last
-/// minute or paused it, no update of the instance holds the runs, no switch was just refused,
-/// and nothing of it runs in the background, which a restart would end (unknown counts as
-/// running).
+/// minute, left a draft in its prompt box or paused it, no update of the instance holds the
+/// runs, no switch was just refused, and nothing of it runs in the background, which a restart
+/// would end (unknown counts as running).
 #[must_use]
 pub fn moves_now(facts: &MoveFacts) -> bool {
     facts.runs < facts.target
@@ -154,6 +165,7 @@ pub fn moves_now(facts: &MoveFacts) -> bool {
         && facts
             .typed_ms_ago
             .is_none_or(|ago| ago >= TYPED_RECENTLY_MS)
+        && !facts.draft
         && !facts.switch_refused
         && !facts.paused
         && !facts.update_holds
@@ -489,6 +501,7 @@ mod tests {
             sent_to: None,
             stopped_for: None,
             typed_ms_ago: None,
+            draft: false,
             switch_refused: false,
             paused: false,
             update_holds: false,
@@ -530,6 +543,15 @@ mod tests {
                 ..due
             },
             "a person just typed",
+        );
+        // SPEC-468 CCF-010: typed long ago, and not submitted since.
+        stays(
+            MoveFacts {
+                typed_ms_ago: Some(5 * TYPED_RECENTLY_MS),
+                draft: true,
+                ..due
+            },
+            "a draft may sit in its prompt box",
         );
         stays(
             MoveFacts {
@@ -573,6 +595,27 @@ mod tests {
             typed_ms_ago: Some(TYPED_RECENTLY_MS),
             ..due
         }));
+    }
+
+    /// SPEC-468 CCF-010: a keystroke is a draft when it came after the session's prompt box was
+    /// last empty: after its run started and after the last prompt submitted from it.
+    #[test]
+    fn a_keystroke_after_the_last_prompt_is_a_draft() {
+        assert!(!is_draft(0, 0), "nobody typed");
+        assert!(!is_draft(0, 1_000), "nobody typed");
+        assert!(
+            is_draft(2_000, 1_000),
+            "typed after the prompt box was emptied"
+        );
+        assert!(
+            is_draft(2_000, 0),
+            "typed, and the box was never known empty"
+        );
+        assert!(
+            !is_draft(1_000, 2_000),
+            "typed, then submitted (or the run started)"
+        );
+        assert!(!is_draft(1_000, 1_000), "the keystroke that submitted it");
     }
 
     /// SPEC-461 CCM-007 (review round 2): npm's newest release is said not to know the default
