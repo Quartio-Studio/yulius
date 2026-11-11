@@ -85,8 +85,8 @@ impl GitHubClient {
     /// API to read them, but its token endpoint compares the URI before it looks at the code: a
     /// made-up code answers `redirect_uri_mismatch` when the URI is not registered and
     /// `bad_verification_code` when it is. "Registered" is believed only when GitHub also
-    /// refuses a URL that cannot be registered ([`CALLBACK_CONTROL_URI`]): `None` when it takes
-    /// that one too, so it does not say for this App. One request, or two for a URI it takes,
+    /// refuses a URL that cannot be registered (one under the reserved `.invalid` domain): `None`
+    /// when it takes that one too, so it does not say for this App. One request, or two for a URI it takes,
     /// with the App's own client and nobody's token.
     ///
     /// # Errors
