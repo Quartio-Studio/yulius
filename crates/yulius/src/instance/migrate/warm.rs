@@ -87,14 +87,21 @@ pub fn sampled(root: &Path, cold: Duration) -> Option<(u64, f64)> {
     (again > 0).then(|| (again, again as f64 / took.as_secs_f64().max(1e-6)))
 }
 
+/// The time of a pass that went to entries every pass sends again, in seconds: those that
+/// earned no receipt, and those the new host could not install (`deferred`, by their number
+/// among the entries sent).
+fn again(sent: &Sent, deferred: &[u64]) -> f64 {
+    (sent.unearned + sent.waiting(deferred)).as_secs_f64()
+}
+
 /// The estimated freeze in words: what it is made of.
 fn freeze_said(measured: &Measured) -> String {
     let (total, changes) = estimate(measured);
     let again = measured.again.clamp(0.0, measured.sending).round() as u64;
     let every = if again > 0 {
         format!(
-            " ({} of it for entries that every pass sends: they change all the time, or lie on \
-             another filesystem)",
+            " ({} of it for entries that every pass sends: they change all the time, lie on \
+             another filesystem, or wait for the freeze behind a directory)",
             span(again)
         )
     } else {
@@ -183,7 +190,7 @@ impl Move<'_> {
             .stage
             .reconcile(reply.stage.as_ref(), &at)
             .map_err(|why| self.fail("copy", why))?;
-        self.say_outdated(&found);
+        self.say_outdated(&found, true);
         if found.fresh && had {
             self.changed(
                 "copy",
@@ -195,8 +202,18 @@ impl Move<'_> {
     }
 
     /// Says that what this host knew of the staged copy was dropped, and why (SPEC-465
-    /// WCP-016).
-    fn say_outdated(&mut self, found: &Reconciled) {
+    /// WCP-016). After a frozen pass (`live` is false) nothing is sent again: nothing changed
+    /// while the instance was frozen, and the proof that follows counts the whole copy.
+    fn say_outdated(&mut self, found: &Reconciled, live: bool) {
+        if found.outdated.is_some() && !live {
+            self.changed(
+                "copy",
+                "this host's clock was set back during the frozen pass: what this host knew of \
+                 the staged copy is dropped. Nothing changed while the instance was frozen, and \
+                 the copy is proven next",
+            );
+            return;
+        }
         let why = match found.outdated {
             Some(Outdated::Restarted) => {
                 "this host was restarted since the last pass: after a crash a file may be newer \
@@ -335,12 +352,15 @@ impl Move<'_> {
     }
 
     /// Sends one stream into the new host's staged copy and takes its answer: what the new
-    /// host says of it. Its marker, which came with the answer, is what the receipts follow.
+    /// host says of it, and the entries it could not install (by their number among those
+    /// sent). Its marker, which came with the answer, is what the receipts follow. `live`
+    /// says whether the instance runs meanwhile.
     fn stream(
         &mut self,
         zstd: bool,
+        live: bool,
         write: &mut dyn FnMut(&mut dyn Write, &mut Stage) -> io::Result<()>,
-    ) -> Result<String, Stop> {
+    ) -> Result<(String, Vec<u64>), Stop> {
         self.call(
             "copy",
             &Request::Expect(Expect {
@@ -365,20 +385,27 @@ impl Move<'_> {
                 .stage
                 .reconcile(Some(mark), &at)
                 .map_err(|why| self.fail("copy", why))?;
-            self.say_outdated(&found);
+            self.say_outdated(&found, live);
         }
+        let deferred = reply
+            .stage
+            .as_ref()
+            .and_then(|mark| mark.last.as_ref())
+            .map(|last| last.deferred.clone())
+            .unwrap_or_default();
         if failed(&reply.lines) {
             for line in reply.lines {
                 self.push(shown(line));
             }
             return Err(Stop::Failed);
         }
-        Ok(reply
+        let answer = reply
             .lines
             .into_iter()
             .next()
             .map(|line| shown(line).detail)
-            .unwrap_or_default())
+            .unwrap_or_default();
+        Ok((answer, deferred))
     }
 
     /// One pass while the instance runs.
@@ -415,7 +442,7 @@ impl Move<'_> {
         let started = Instant::now();
         let mut sent = Sent::default();
         let mut walked = 0.0;
-        let answer = self.stream(zstd, &mut |out, stage| {
+        let answer = self.stream(zstd, true, &mut |out, stage| {
             sent = export::send_live(&opts.data_dir, &manifest, out, stage, began, &mut |done| {
                 progress.tick(done)
             })?;
@@ -423,9 +450,9 @@ impl Move<'_> {
             Ok(())
         });
         progress.end();
-        let answer = answer?;
+        let (answer, deferred) = answer?;
         let secs = started.elapsed().as_secs_f64();
-        let again = sent.vanished + sent.torn;
+        let later = sent.vanished + sent.torn;
         self.changed(
             "copy",
             format!(
@@ -435,8 +462,8 @@ impl Move<'_> {
                 sent.walked,
                 bytes(sent.bytes),
                 span(secs.ceil() as u64),
-                if again > 0 {
-                    format!(" ({again} vanished or changed while read: a later pass has them)")
+                if later > 0 {
+                    format!(" ({later} vanished or changed while read: a later pass has them)")
                 } else {
                     String::new()
                 }
@@ -446,7 +473,7 @@ impl Move<'_> {
         Ok(Measured {
             walk: (walked - sending).max(0.0),
             sending,
-            again: sent.unearned.as_secs_f64(),
+            again: again(&sent, &deferred),
             tail: (secs - walked).max(0.0),
             secs,
             window: before.map_or(0.0, |before| {
@@ -505,7 +532,7 @@ impl Move<'_> {
         ));
         let mut progress = Progress::new("Sent", plan.total);
         let started = Instant::now();
-        let answer = self.stream(zstd, &mut |out, stage| {
+        let answer = self.stream(zstd, false, &mut |out, stage| {
             export::send_pass(
                 &opts.data_dir,
                 &plan,
@@ -518,7 +545,7 @@ impl Move<'_> {
             .map(|_| ())
         });
         progress.end();
-        let answer = answer?;
+        let (answer, _) = answer?;
         self.changed(
             "copy",
             format!(
@@ -570,13 +597,24 @@ mod tests {
         // or lie on another filesystem): the freeze sends them whatever happens, and only the
         // rest is scaled.
         let unsettled = Measured {
-            again: 12.0,
+            again: again(
+                &Sent {
+                    sending: Duration::from_secs(30),
+                    unearned: Duration::from_secs(2),
+                    // The second entry sent took 10 s and earned a receipt; the new host
+                    // could not install it (a directory is in its way).
+                    took: vec![0, 100_000, 5],
+                    ..Sent::default()
+                },
+                &[1],
+            ),
             ..measured
         };
         assert_eq!(estimate(&unsettled), (4 * 60 + 10 + 13 + START_SECS, 13));
         assert!(freeze_said(&unsettled).contains(
             "what changes meanwhile takes about 13 s to send (12 s of it for entries that \
-             every pass sends: they change all the time, or lie on another filesystem)"
+             every pass sends: they change all the time, lie on another filesystem, or wait \
+             for the freeze behind a directory)"
         ));
         assert!(
             freeze_said(&measured).contains("what changes meanwhile takes about 1 s to send, the"),

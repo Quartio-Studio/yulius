@@ -2007,7 +2007,7 @@ fn an_old_unit_not_known_to_be_frozen_starts_nothing() -> TestResult {
 }
 
 #[test]
-fn a_unit_that_stopped_since_the_plan_is_found_before_the_copy() -> TestResult {
+fn a_unit_that_stopped_since_the_plan_is_found_before_anything_is_copied_frozen() -> TestResult {
     let mut s = setup()?;
     // The last step before the cutover: the unit is stopped meanwhile.
     s.remote.meanwhile = Some((
@@ -2578,8 +2578,9 @@ fn a_staged_copy_that_is_gone_or_another_one_makes_the_next_pass_a_full_one() ->
 #[test]
 fn entries_too_fresh_for_a_receipt_are_sent_again_and_the_move_still_ends_right() -> TestResult {
     let mut s = setup()?;
-    // The pass begins now: everything was written within the last two seconds.
-    s.world.ahead = 0;
+    // The pass begins before the tree was written: nothing in it is old enough, however long
+    // the test takes.
+    s.world.ahead = -3600;
     s.remote.churn = vec![churn];
     assert_eq!(s.run()?, 0, "{}", s.shown());
     let sent: Vec<usize> = s
@@ -3005,5 +3006,29 @@ fn a_pass_of_changes_that_lost_its_receipts_is_not_followed_by_a_freeze() -> Tes
     );
     assert!(!events.contains(&"old: systemctl thaw".to_owned()));
     assert_eq!(content(&s.remote.copy_dir)?, content(&s.opts.data_dir)?);
+    Ok(())
+}
+
+#[test]
+fn a_clock_set_back_during_the_frozen_pass_does_not_announce_another_copy() -> TestResult {
+    // Nothing changes while the instance is frozen, so the move goes on to the proof; what it
+    // drops is only what a later run would have built on.
+    let mut s = setup()?;
+    s.world.set_back_at = Some(("new: copy frozen", 1));
+    assert_eq!(s.run()?, 0, "{}", s.shown());
+    assert!(
+        !s.shown()
+            .contains("everything is sent into the staged copy again"),
+        "{}",
+        s.shown()
+    );
+    assert!(
+        s.shown()
+            .contains("this host's clock was set back during the frozen pass"),
+        "{}",
+        s.shown()
+    );
+    assert_eq!(passes(&s), [(true, 13), (true, 0), (false, 0)]);
+    assert_eq!(s.old_unit(), (true, true));
     Ok(())
 }

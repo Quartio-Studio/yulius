@@ -293,7 +293,7 @@ pub fn send_pass(
 }
 
 /// What a live pass did.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Sent {
     /// Entries the walk found.
     pub walked: u64,
@@ -312,6 +312,27 @@ pub struct Sent {
     /// The part of `sending` that went to entries that earned no receipt: the next pass sends
     /// them again whether they change or not.
     pub unearned: Duration,
+    /// For each entry sent, in the stream's order: how long sending it took, in units of
+    /// [`TOOK`]; 0 for one that earned no receipt (its time is in `unearned`).
+    pub took: Vec<u32>,
+}
+
+/// The unit of [`Sent::took`].
+pub const TOOK: Duration = Duration::from_micros(100);
+
+impl Sent {
+    /// The time that went to the entries numbered `deferred` among those sent: what the new
+    /// host says it could not install (a warm pass removes no directory). They earned a
+    /// receipt here and lose it, so every pass sends them again, like what is in `unearned`.
+    #[must_use]
+    pub fn waiting(&self, deferred: &[u64]) -> Duration {
+        let units: u64 = deferred
+            .iter()
+            .filter_map(|at| self.took.get(usize::try_from(*at).ok()?))
+            .map(|took| u64::from(*took))
+            .sum();
+        Duration::from_micros(units.saturating_mul(TOOK.as_micros() as u64))
+    }
 }
 
 /// Whether an entry last changed at `ctime` is old enough at a pass that began at `began` to
@@ -425,6 +446,10 @@ pub fn send_live(
         sent.sending += took;
         if earned.is_none() {
             sent.unearned += took;
+            sent.took.push(0);
+        } else {
+            let units = took.as_micros() / TOOK.as_micros();
+            sent.took.push(u32::try_from(units).unwrap_or(u32::MAX));
         }
         Ok(true)
     })?;

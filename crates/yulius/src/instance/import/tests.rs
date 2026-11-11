@@ -1149,3 +1149,41 @@ fn directory_times_that_could_not_be_set_leave_nothing_known() -> TestResult {
     assert!(h.new.join("sandboxes/sb/made").is_dir());
     Ok(())
 }
+
+#[test]
+fn what_a_warm_pass_could_not_install_is_measured_with_what_every_pass_sends() -> TestResult {
+    let mut h = hosts()?;
+    fs::create_dir(h.old.join("aaa"))?;
+    fs::write(h.old.join("aaa/below"), b"b")?;
+    arrived(h.warm()?)?;
+    // A directory became a large file. A warm pass removes no directory, so the new host
+    // leaves the file out, and every pass sends it again until the freeze.
+    fs::remove_dir_all(h.old.join("aaa"))?;
+    fs::write(h.old.join("aaa"), vec![7u8; 8 << 20])?;
+    h.reconcile()?;
+    let m = h.manifest(true);
+    let nonce = m.pass.as_ref().map(|p| p.nonce.clone()).unwrap_or_default();
+    h.stage.begin(&nonce, true, 1_000, &era())?;
+    let mut out = Vec::new();
+    let sent = send_live(
+        &h.old,
+        &m,
+        &mut out,
+        &mut h.stage,
+        (i64::MAX / 2, 0),
+        &mut |_| {},
+    )?;
+    arrived(h.land(out))?;
+    let deferred = h.last()?.deferred;
+    assert_eq!(deferred.len(), 1, "{deferred:?}");
+    // The file was stable and old enough when it was read, so its time is not in what earned
+    // no receipt: the freeze's estimate would count it as a change that may not come again.
+    assert_eq!(sent.unearned, std::time::Duration::ZERO);
+    let waiting = sent.waiting(&deferred);
+    assert!(waiting > std::time::Duration::ZERO, "{sent:?}");
+    assert!(waiting <= sent.sending, "{sent:?}");
+    // What was installed is not counted, nor a number the pass never sent.
+    assert_eq!(sent.waiting(&[]), std::time::Duration::ZERO);
+    assert_eq!(sent.waiting(&[9_999]), std::time::Duration::ZERO);
+    Ok(())
+}
