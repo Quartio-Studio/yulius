@@ -1506,9 +1506,11 @@ fn stop(host: &mut dyn Host, env: &mut Env<'_>, service: &str, l: &mut Lines) {
     kill(host, service);
     // Where the host keeps sessions in a unit of their own (SPEC-458, which this build's host
     // setup writes), a stop of the server's unit leaves every agent, terminal and engine
-    // running: that unit ends with it.
+    // running: that unit ends with it. A systemd that does not say whether the unit is there is
+    // not a host without one: it is ended as far as that goes, and the step fails.
+    let mut unanswered = false;
     let sessions = yulius_sandbox::units::sessions_unit(service).filter(|sessions| {
-        sh(
+        let shown = sh(
             host,
             &[
                 "systemctl",
@@ -1517,10 +1519,9 @@ fn stop(host: &mut dyn Host, env: &mut Env<'_>, service: &str, l: &mut Lines) {
                 "--value",
                 sessions,
             ],
-        )
-        .stdout
-        .trim()
-            == "loaded"
+        );
+        unanswered = !shown.ok();
+        unanswered || shown.stdout.trim() == "loaded"
     });
     if let Some(sessions) = &sessions {
         kill(host, sessions);
@@ -1542,6 +1543,15 @@ fn stop(host: &mut dyn Host, env: &mut Env<'_>, service: &str, l: &mut Lines) {
     };
     let group = group_of(host, service);
     let sessions_group = sessions.as_deref().and_then(|unit| group_of(host, unit));
+    // Whether a process lives in the group or below it. A delegated unit keeps its processes
+    // in subgroups (`DelegateSubgroup=server`, the sandboxes'), so its own `cgroup.procs` is
+    // empty by construction: `populated` covers them all.
+    let populated = |host: &mut dyn Host, group: &Option<PathBuf>| {
+        group.as_ref().is_some_and(|group| {
+            host.read(&group.join("cgroup.events"))
+                .is_some_and(|events| events.lines().any(|l| l.trim() == "populated 1"))
+        })
+    };
     // What still runs: the first unit of the two that is active or whose group holds a process.
     let running = |host: &mut dyn Host| -> Option<String> {
         let active = |host: &mut dyn Host, unit: &str| {
@@ -1552,17 +1562,12 @@ fn stop(host: &mut dyn Host, env: &mut Env<'_>, service: &str, l: &mut Lines) {
                 host.read(&group.join("cgroup.procs"))
                     .is_some_and(|pids| !pids.trim().is_empty())
             })
+            || populated(host, &group)
         {
             return Some(service.to_owned());
         }
         let sessions = sessions.as_deref()?;
-        // Its processes live in groups below the unit's: `populated` covers them all.
-        (active(host, sessions)
-            || sessions_group.as_ref().is_some_and(|group| {
-                host.read(&group.join("cgroup.events"))
-                    .is_some_and(|events| events.lines().any(|l| l.trim() == "populated 1"))
-            }))
-        .then(|| sessions.to_owned())
+        (active(host, sessions) || populated(host, &sessions_group)).then(|| sessions.to_owned())
     };
     let mut waited = 0;
     while running(host).is_some() && waited < 15 {
@@ -1578,6 +1583,14 @@ fn stop(host: &mut dyn Host, env: &mut Env<'_>, service: &str, l: &mut Lines) {
         l.failed(
             ITEM,
             format!("processes of {unit} still run on the new host after it was killed"),
+        );
+    } else if let (true, Some(sessions)) = (unanswered, &sessions) {
+        l.failed(
+            ITEM,
+            format!(
+                "systemd does not say whether {sessions} is there, so nobody knows that nothing \
+                 of the new instance runs: stop it on the new host (`systemctl stop {sessions}`)"
+            ),
         );
     } else {
         l.changed(

@@ -1145,6 +1145,64 @@ fn stopping_ends_the_sessions_unit_too() {
         "{detail}"
     );
 
+    // Review of the merge (low): a systemd that does not say whether the sessions unit is there
+    // is not a host without one: the step fails instead of saying that nothing runs.
+    let mut host = new_host();
+    host.fails(
+        &[
+            "systemctl",
+            "show",
+            "--property=LoadState",
+            "--value",
+            sessions,
+        ],
+        "Failed to connect to bus",
+    );
+    let reply = step(
+        &mut host,
+        &Request::Stop {
+            service: "yulius.service".into(),
+        },
+    );
+    let (outcome, detail) = only(&reply);
+    assert_eq!(outcome, HostOutcome::Failed);
+    assert!(
+        detail.contains("systemd does not say whether yulius-sandboxes.service is there"),
+        "{detail}"
+    );
+
+    // Review of the merge (low): the server's unit keeps its processes in subgroups
+    // (`DelegateSubgroup=server`, and its sandboxes on a host without a sessions unit), so its
+    // own `cgroup.procs` is empty by construction: `cgroup.events` says whether any is left.
+    let mut host = new_host();
+    host.says(
+        &[
+            "systemctl",
+            "show",
+            "--property=ControlGroup",
+            "--value",
+            "yulius.service",
+        ],
+        "/system.slice/yulius.service\n",
+    );
+    host.file(
+        "/sys/fs/cgroup/system.slice/yulius.service/cgroup.procs",
+        "",
+    );
+    host.file(
+        "/sys/fs/cgroup/system.slice/yulius.service/cgroup.events",
+        "populated 1\nfrozen 0\n",
+    );
+    let reply = step(
+        &mut host,
+        &Request::Stop {
+            service: "yulius.service".into(),
+        },
+    );
+    let (outcome, detail) = only(&reply);
+    assert_eq!(outcome, HostOutcome::Failed);
+    assert!(detail.contains("yulius.service still run"), "{detail}");
+
     // A host without the unit is stopped as before, and asked nothing more about it.
     let mut host = new_host();
     let reply = step(
