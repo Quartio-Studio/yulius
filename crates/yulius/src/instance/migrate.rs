@@ -611,12 +611,27 @@ impl<'a> Move<'a> {
     }
 
     fn key(&mut self) -> Result<(), Stop> {
-        const ITEM: &str = "one-time key";
-        if self.remote.reachable().is_ok() {
-            let seen = self.host_key_note();
-            self.ok(ITEM, format!("signs in to {}{seen}", self.target()));
-            return Ok(());
+        match self.remote.reachable() {
+            Ok(()) => {
+                self.key_signs_in();
+                Ok(())
+            }
+            Err(_) => self.add_key(),
         }
+    }
+
+    fn key_signs_in(&mut self) {
+        let seen = self.host_key_note();
+        self.ok(
+            "one-time key",
+            format!("signs in to {}{seen}", self.target()),
+        );
+    }
+
+    /// Makes the one-time key when there is none and adds it to the new host through the
+    /// person's own sign-in; without one, the line to add is shown and the run ends.
+    fn add_key(&mut self) -> Result<(), Stop> {
+        const ITEM: &str = "one-time key";
         let public = self.remote.key().map_err(|why| self.fail(ITEM, why))?;
         self.world.show(&format!(
             "Signing in to {} once to add the move's key (a password or a second factor may be \
@@ -657,22 +672,26 @@ impl<'a> Move<'a> {
     /// The one-time key in a run that goes on from a recorded start. The run that ordered the
     /// start had added it, so a new host that does not answer is not a key to add again: it is
     /// waited for, and nothing is decided or touched meanwhile. A key that is missing here or
-    /// refused there is made and added as in a plan.
+    /// refused there is made and added as in a plan. One answer decides which it is.
     fn key_again(&mut self) -> Result<(), Stop> {
         match self.remote.reachable() {
-            Err(why) if !(why.contains(remote::KEY_REFUSED) || why.contains(remote::NO_KEY)) => {
-                Err(self.fail(
-                    "new host",
-                    format!(
-                        "cannot be reached ({why}), so nobody knows whether the new instance \
-                         runs. Nothing was started, stopped, frozen or thawed: run the command \
-                         again when the new host answers (it decides from the new instance's \
-                         state); `yulius instance migrate --abort` only once the new instance \
-                         is known to be stopped"
-                    ),
-                ))
+            Ok(()) => {
+                self.key_signs_in();
+                Ok(())
             }
-            _ => self.key(),
+            Err(why) if why.contains(remote::KEY_REFUSED) || why.contains(remote::NO_KEY) => {
+                self.add_key()
+            }
+            Err(why) => Err(self.fail(
+                "new host",
+                format!(
+                    "cannot be reached ({why}), so nobody knows whether the new instance runs. \
+                     Nothing was started, stopped, frozen or thawed: run the command again \
+                     when the new host answers (it decides from the new instance's state); \
+                     `yulius instance migrate --abort` only once the new instance is known to \
+                     be stopped"
+                ),
+            )),
         }
     }
 
@@ -1674,9 +1693,17 @@ impl<'a> Move<'a> {
             ),
             Err(why) => {
                 let runs = if known { "runs" } else { "may run" };
+                // The freeze `moved` asks for may fail again: systemd freezes only a unit
+                // that runs, not one on its way up or down or with a process stuck in the
+                // kernel. Stopping and killing ends the old instance in every state.
                 self.fail(
                     "old instance",
-                    format!("{unit} {runs} beside the new instance and could not be frozen: {why}"),
+                    format!(
+                        "{unit} {runs} beside the new instance and could not be frozen: {why}. \
+                         If a freeze keeps failing (systemd freezes only a unit that runs), \
+                         stop it for good instead: `systemctl stop {unit}; systemctl kill \
+                         --kill-whom=all {unit}`"
+                    ),
                 );
             }
         }

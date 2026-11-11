@@ -67,22 +67,24 @@ messages and documents say what the code does.
   - an old unit that runs unfrozen, that is on its way up or down (`activating`, `reloading`,
     `deactivating`: a restart after a crash, a start or a stop in progress), or whose state
     systemd does not say, is frozen by the run, to stay (bounded by the freeze's wait), and
-    then disabled and checked as after any start.
-    When it is frozen the checklist says that it ran beside the new instance (`changed`); when
-    it cannot be frozen the line is `FAIL` with the reason and the commands, the move is still
-    recorded as done (the new instance has taken over, MIG-004) and the run exits 1. Nothing
-    thaws on that path: a freeze that systemd refuses or that is not complete within the wait is
-    left as it stands (SPEC-460 MIG-004: once the start was ordered nothing thaws the old
-    instance).
+    then disabled and checked as after any start. When it is frozen the checklist says that it
+    ran beside the new instance, or that it may have when its state was not known or in between
+    (`changed`); when it cannot be frozen the line is `FAIL` with the reason and the commands,
+    among them the ones that stop the unit for good when a freeze keeps failing (systemd freezes
+    only a unit that runs), the move is still recorded as done (the new instance has taken
+    over, MIG-004) and the run exits 1. Nothing thaws on that path: a freeze that systemd
+    refuses or that is not complete within the wait is left as it stands (SPEC-460 MIG-004:
+    once the start was ordered nothing thaws the old instance).
 - LFT-003 **The new host's silence is not "does not run".** A run that goes on from a recorded
   start and cannot reach the new host with the move's key (no connection, no answer) fails
   saying so, with `ssh`'s reason, and tells to run the command again when the new host answers
   (the abort only once the new instance is known to be stopped). It does not ask for the key
   again: the run that ordered the start had added it; only a key that is missing on the old
-  host or refused by the new one is made and added as in a plan. The same holds when the host
-  is reached and the question about the new instance gets no answer. A new instance that
-  answers and does not report the build keeps the line that points to `--abort`. None of these
-  starts, stops, freezes or thaws anything, and the recorded start stays.
+  host or refused by the new one is made and added as in a plan (the key is tried once, and
+  that one answer decides between the three). The same holds when the host is reached and the
+  question about the new instance gets no answer. A new instance that answers and does not
+  report the build keeps the line that points to `--abort`. None of these starts, stops,
+  freezes or thaws anything, and the recorded start stays.
 - LFT-004 **A finish that was done is found done.** `finish` takes a key that no longer exists
   on the old host for a finish that was done: only a finish deletes it, once the new host's
   finish answered. The finish is recorded (`finished`), the checklist says so (`manual`: look at
@@ -111,7 +113,7 @@ messages and documents say what the code does.
 - [x] The limits mark is left out of the export and of both counts (finding 4)
 - [x] ADR index in order, the guide's Ctrl-C paragraph true, changes entry (findings 5 and 6)
 - [x] A real move between two QEMU guests through the fixed paths
-- [ ] A freeze beside a running new instance never thaws, and a new host that cannot be reached is waited for
+- [x] A freeze beside a running new instance never thaws, and a new host that cannot be reached is waited for
 - [ ] Gates green and the independent review answered
 
 ## Acceptance criteria

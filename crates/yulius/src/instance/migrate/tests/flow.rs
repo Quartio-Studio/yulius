@@ -49,6 +49,8 @@ struct Systemd {
     disabled: bool,
     /// Not running at all (the old host was restarted after the move).
     stopped: bool,
+    /// Not running, and systemd says `failed` (its start limit was hit).
+    failed: bool,
     /// `systemctl disable` fails.
     no_disable: bool,
     /// systemd does not answer `show`.
@@ -93,7 +95,9 @@ impl freeze::Host for FakeSystemd {
                 said(format!(
                     "LoadState=loaded\nActiveState={}\nFreezerState={}\n\
                      ControlGroup=/system.slice/yulius.service\n",
-                    if unit.stopped {
+                    if unit.failed {
+                        "failed"
+                    } else if unit.stopped {
                         "inactive"
                     } else if unit.starting {
                         "activating"
@@ -117,7 +121,7 @@ impl freeze::Host for FakeSystemd {
                 match verb {
                     // systemd refuses to freeze or thaw a unit that does not run, and to
                     // freeze one that is on its way up or down.
-                    "freeze" if unit.no_freeze || unit.stopped || unit.starting => {
+                    "freeze" if unit.no_freeze || unit.stopped || unit.failed || unit.starting => {
                         return Ok((1, String::new()));
                     }
                     "freeze" => {
@@ -125,7 +129,7 @@ impl freeze::Host for FakeSystemd {
                         unit.freezing = unit.never_frozen;
                         unit.looks = Some(0);
                     }
-                    "thaw" if unit.stopped => return Ok((1, String::new())),
+                    "thaw" if unit.stopped || unit.failed => return Ok((1, String::new())),
                     "thaw" => {
                         unit.frozen = false;
                         unit.freezing = false;
@@ -168,6 +172,8 @@ struct FakeRemote {
     signs_in: bool,
     /// The new host cannot be reached at all.
     down: bool,
+    /// How often the key was tried ([`Remote::reachable`]).
+    asked: u32,
     /// The key's file was deleted on the old host ([`Remote::forget`]).
     deleted: bool,
     healthy: bool,
@@ -201,6 +207,7 @@ fn step_name(request: &Request) -> String {
 
 impl Remote for FakeRemote {
     fn reachable(&mut self) -> Result<(), String> {
+        self.asked += 1;
         if self.deleted {
             // As the real connection: without its key it does not even try, whatever the
             // new host does.
@@ -609,6 +616,7 @@ fn setup() -> Result<Setup, Box<dyn std::error::Error>> {
             comment: String::new(),
             signs_in: true,
             down: false,
+            asked: 0,
             deleted: false,
             healthy: true,
             tamper: None,
@@ -1845,6 +1853,10 @@ fn a_finish_that_was_done_but_not_recorded_is_found_done() -> TestResult {
     Ok(())
 }
 
+/// The way out a failed freeze beside a running new instance names.
+const STOP_FOR_GOOD: &str = "stop it for good instead: `systemctl stop yulius.service; systemctl \
+                             kill --kill-whom=all yulius.service`";
+
 #[test]
 fn a_recorded_start_never_ends_with_both_instances_running() -> TestResult {
     // Thawed by hand since, and the new instance reports the build: it has taken over, so the
@@ -1898,6 +1910,8 @@ fn a_recorded_start_never_ends_with_both_instances_running() -> TestResult {
         "{shown}"
     );
     assert!(shown.contains("must be frozen and disabled now"), "{shown}");
+    // And what to do when a freeze keeps failing: systemd freezes only a unit that runs.
+    assert!(shown.contains(STOP_FOR_GOOD), "{shown}");
     assert!(
         !shown.contains("Make sure nothing of the old one runs here"),
         "{shown}"
@@ -1919,6 +1933,7 @@ fn a_recorded_start_never_ends_with_both_instances_running() -> TestResult {
     let shown = s.shown();
     assert!(shown.contains("the freeze is left in place"), "{shown}");
     assert!(shown.contains("must be frozen and disabled now"), "{shown}");
+    assert!(shown.contains(STOP_FOR_GOOD), "{shown}");
     let events = s.events();
     assert!(
         events.contains(&"old: systemctl freeze".to_owned()),
@@ -1947,6 +1962,9 @@ fn a_recorded_start_never_ends_with_both_instances_running() -> TestResult {
         "{shown}"
     );
     assert!(shown.contains("must be frozen and disabled now"), "{shown}");
+    // A unit on its way up or down is not frozen by systemd whatever is tried: the line says
+    // how to end it.
+    assert!(shown.contains(STOP_FOR_GOOD), "{shown}");
     assert!(
         !shown.contains("does not run here any more")
             && !shown.contains("Make sure nothing of the old one runs here"),
@@ -2068,6 +2086,21 @@ fn a_recorded_start_goes_on_only_with_the_old_unit_frozen() -> TestResult {
     let state = State::load(&s.opts.state_dir).ok_or("no state")?;
     assert_eq!(state.cutover, Cutover::Moved);
 
+    // The same for a unit that systemd reports failed (its start limit was hit).
+    let mut s = killed_while_starting()?;
+    if let Ok(mut unit) = s.world.systemd.lock() {
+        unit.frozen = false;
+        unit.failed = true;
+    }
+    assert_eq!(s.run()?, 0, "{}", s.shown());
+    assert!(untouched(&s), "{:?}", s.events());
+    assert!(
+        s.shown()
+            .contains("Make sure nothing of the old one runs here"),
+        "{}",
+        s.shown()
+    );
+
     // The new instance does not run either: nothing is started; the abort is the way back.
     let mut s = stopped()?;
     s.remote.healthy = false;
@@ -2090,7 +2123,11 @@ fn a_recorded_start_goes_on_only_with_the_old_unit_frozen() -> TestResult {
             unit.stopped = !runs;
         }
         s.remote.refuse = vec!["health"];
+        let asked = s.remote.asked;
         assert_eq!(s.run()?, 1);
+        // The key is tried once: one answer decides whether it signs in, is to be added again
+        // or the host is to be waited for.
+        assert_eq!(s.remote.asked - asked, 1);
         let shown = s.shown();
         assert!(
             shown.contains("run the command again when the new host answers"),
