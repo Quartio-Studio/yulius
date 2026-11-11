@@ -2441,6 +2441,9 @@ pub fn main(opts: &Options, action: Action) -> ExitCode {
         return refused(&why);
     }
     let opts = &opts;
+    // The copy walks the data directory while the instance runs, with every directory it is in
+    // held open.
+    target::raise_open_files();
     let mut ssh = remote::Ssh::new(
         &state.target,
         state.port,

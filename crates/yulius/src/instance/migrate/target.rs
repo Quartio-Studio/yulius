@@ -2044,9 +2044,9 @@ impl std::io::Read for Watched {
     }
 }
 
-/// Lets this process hold as many open files as the host allows: removing a tree holds one
-/// directory open for each level it is deep.
-fn raise_open_files() {
+/// Lets this process hold as many open files as the host allows: removing a tree, and walking
+/// one while the instance runs, holds one directory open for each level it is deep.
+pub(super) fn raise_open_files() {
     use nix::sys::resource::{Resource, getrlimit, setrlimit};
     if let Ok((soft, hard)) = getrlimit(Resource::RLIMIT_NOFILE) {
         let wanted = hard.min(1 << 16);
