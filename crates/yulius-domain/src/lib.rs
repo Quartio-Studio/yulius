@@ -26,6 +26,7 @@ pub mod harness;
 pub mod ids;
 pub mod intake;
 pub mod leftovers;
+pub mod notify;
 pub mod numbering;
 pub mod permission;
 pub mod pricing;

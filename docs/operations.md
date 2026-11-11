@@ -142,6 +142,8 @@ Environment=YULIUS_BROWSER_DISPLAY=auto
 #Environment=YULIUS_JEV_API_KEY_FILE=/var/lib/yulius/jev.key
 # Optional: a Vidoc key file (see "Security scans (Vidoc)" below); Settings → Instance wins too.
 #Environment=YULIUS_VIDOC_API_KEY_FILE=/var/lib/yulius/vidoc.key
+# Optional: another Telegram Bot API (see "Telegram notifications" below); the bot is set in Settings.
+#Environment=YULIUS_TELEGRAM_API_URL=https://api.telegram.org
 # Optional: a token that may read Quartio-Studio/yulius, when the GitHub App cannot (see §8).
 #Environment=YULIUS_UPDATE_TOKEN_FILE=/var/lib/yulius/update.token
 # Recommended behind the proxy: the secret it shares with Yulius, so sign-in limits are per client
@@ -726,6 +728,20 @@ wins over the file.
 - Each check of a typed prompt logs one line without the prompt: `scope check of a typed prompt
   task=… verdict=context|new_scope|drops_scope|redirect percent=…`; a held prompt is also audited
   as `prompt.held`. `journalctl -u yulius | grep 'scope check'` shows whether intake runs.
+
+### Telegram notifications
+
+An instance administrator sets one Telegram bot (from @BotFather) in Settings → Administration →
+Telegram bot; people then link their own chats in Settings → Notifications (SPEC-444). The server
+only makes outbound HTTPS requests to Telegram (long polling `getUpdates`, `sendMessage`), so no
+port is opened and an instance on a private network works. After an error it retries with backoff
+(1 s doubling to 60 s); the card says `retrying` and why (`refused`: the token was revoked, set a
+new one; `conflict`: another program polls with the same token). Removing the bot stops it at once
+and unlinks every chat. The log names the bot, never its token.
+
+| Setting (flag / environment) | Default | Meaning |
+| --- | --- | --- |
+| `--telegram-api-url` / `YULIUS_TELEGRAM_API_URL` | `https://api.telegram.org` | Telegram's Bot API for the personal notification channel (SPEC-444). HTTPS, or HTTP on a loopback host only (a fake Bot API in tests). The bot token itself is set in Settings → Administration, never here; the server only makes outbound requests (long polling), so no port is opened. |
 
 ### Security scans (Vidoc)
 

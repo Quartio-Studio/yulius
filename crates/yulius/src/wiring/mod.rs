@@ -16,6 +16,7 @@ pub mod sandbox;
 pub mod session;
 pub mod split;
 pub mod system;
+pub mod telegram;
 pub mod update_files;
 pub mod usage;
 pub mod vidoc;

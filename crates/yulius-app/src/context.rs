@@ -247,6 +247,8 @@ pub struct App {
     pub(crate) intake: OnceLock<crate::intake::IntakeServices>,
     /// The instance Vidoc key (SPEC-195); unset means Vidoc is off.
     pub(crate) vidoc: OnceLock<crate::vidoc_key::VidocServices>,
+    /// The personal notification channel (SPEC-444); unset means the channel is off.
+    pub(crate) channel: OnceLock<crate::telegram::ChannelServices>,
     /// Serializes writes of sandbox profiles, so the Vidoc switch and a profile update never undo
     /// each other (SPEC-338 VOF-001).
     pub(crate) profile_writes: tokio::sync::Mutex<()>,
@@ -319,6 +321,7 @@ impl App {
             attachment_reads: crate::task_prompt::AttachmentReads::default(),
             intake: OnceLock::new(),
             vidoc: OnceLock::new(),
+            channel: OnceLock::new(),
             profile_writes: tokio::sync::Mutex::new(()),
             updates: crate::updates::UpdateState::default(),
             vault: crate::vault::VaultState::default(),

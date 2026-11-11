@@ -1731,6 +1731,13 @@ span.composer-attachment-open { cursor: default; }
 .agent-token-label { font-weight: 500; }
 .settings-row-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .settings-row-control { display: flex; align-items: center; gap: 8px; }
+/* The personal Telegram channel (SPEC-444): its link, code and choices span the row's text column. */
+.telegram-row { grid-template-columns: 20px minmax(0, 1fr); align-items: start; }
+.telegram-link { display: grid; gap: 8px; margin-top: 8px; }
+.telegram-link .row { flex-wrap: wrap; }
+.telegram-code { padding: 2px 8px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-2); overflow-wrap: anywhere; }
+.telegram-choices { display: grid; gap: 6px; margin: 0; padding: 0; border: 0; min-width: 0; }
+.telegram-choice { display: flex; align-items: baseline; gap: 8px; }
 .settings-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; padding: 16px 20px; }
 .settings-tile { display: flex; align-items: flex-start; gap: 12px; padding: 16px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface-2); color: var(--text); }
 .settings-tile .icon { color: var(--accent); flex: none; margin-top: 1px; }

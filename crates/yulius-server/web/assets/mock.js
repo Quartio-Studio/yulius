@@ -184,6 +184,14 @@ function seed(params) {
     jev: { key: null, setAt: null, setBy: null, config: params.get('jev') === 'config' },
     // The instance Vidoc key (SPEC-195): `vidoc=config` (YULIUS_VIDOC_API_KEY_FILE is set).
     protectPatchFail: params.get('protect_patch_fail') === '1',
+    // The personal Telegram channel (SPEC-444): `telegram=1` (a bot is set), `telegram=linked`
+    // (and the signed-in person's chat is linked). `__yuliusMock.telegramStart(text)` is a message
+    // the bot receives, as `/start <code>` from the person's chat.
+    telegram: {
+      bot: params.get('telegram') ? 'yulius_mock_bot' : null, setAt: params.get('telegram') ? '2026-11-07T08:00:00Z' : null, setBy: params.get('telegram') ? 'mkarp' : null,
+      linkedAt: params.get('telegram') === 'linked' ? '2026-11-07T09:00:00Z' : null, code: null,
+      choices: { needs_you: true, done: false, failed: false, account: false },
+    },
     vidoc: { key: null, setAt: null, setBy: null, config: params.get('vidoc') === 'config', offAt: params.get('vidoc_off') ? '2026-10-30T09:00:00Z' : null, offBy: params.get('vidoc_off') ? 'superadmin' : null, fail: params.get('vidoc_fail') === '1', repo: params.get('vidoc_repo'), patchFail: params.get('vidoc_patch_fail') === '1' },
     // fail=<path> answers 500 to GET requests of that exact path, to show how a view says a load
     // failed (in place, naming what failed, with Try again; #147). A test may set `failPath` later;
@@ -4559,6 +4567,44 @@ route('POST', '/api/admin/jev/test', ({ db }) => {
   return { ok: true, result: 'ok', message: 'Jev answered: the key works.', latency_ms: 240 };
 });
 
+// The personal Telegram channel (SPEC-444): the bot (instance administrators) and the person's chat.
+function telegramBotView(db) {
+  const t = db.telegram;
+  return { configured: Boolean(t.bot), bot_username: t.bot, set_at: t.setAt, set_by: t.setBy, state: t.bot ? 'polling' : 'off', last_error: null, linked: t.linkedAt ? 1 : 0 };
+}
+function myTelegramView(db) {
+  const t = db.telegram;
+  const linked = Boolean(t.bot && t.linkedAt);
+  return { available: Boolean(t.bot), bot_username: t.bot, linked, linked_at: linked ? t.linkedAt : null, choices: linked ? { ...t.choices } : { needs_you: true, done: false, failed: false, account: false }, account_choice: isAdmin(db) };
+}
+const instanceAdminOnly = (db) => { if (!isAdmin(db)) fail(403, 'forbidden', 'instance administrators only'); };
+route('GET', '/api/admin/telegram', ({ db }) => { instanceAdminOnly(db); return telegramBotView(db); });
+route('PUT', '/api/admin/telegram', ({ db, body }) => {
+  instanceAdminOnly(db);
+  const token = String(body.token || '').trim();
+  if (!/^\d+:[A-Za-z0-9_-]+$/.test(token)) fail(422, 'invalid', 'this is not a Telegram bot token (it looks like 123456789:ABC…, from @BotFather)');
+  if (token.includes('refused')) fail(422, 'invalid', 'Telegram refused this token. Copy it again from @BotFather.');
+  Object.assign(db.telegram, { bot: 'yulius_mock_bot', setAt: new Date().toISOString(), setBy: db.me.user.login });
+  return telegramBotView(db);
+});
+route('DELETE', '/api/admin/telegram', ({ db }) => {
+  instanceAdminOnly(db);
+  Object.assign(db.telegram, { bot: null, setAt: null, setBy: null, linkedAt: null, code: null });
+  return telegramBotView(db);
+});
+route('GET', '/api/me/telegram', ({ db }) => myTelegramView(db));
+route('POST', '/api/me/telegram/link', ({ db }) => {
+  if (!db.telegram.bot) fail(409, 'conflict', 'no Telegram bot is set up on this instance');
+  db.telegram.code = 'k7mq2xw9tz4hb8np';
+  return { code: db.telegram.code, link: `https://t.me/${db.telegram.bot}?start=${db.telegram.code}`, expires_at: new Date(Date.now() + 10 * MIN).toISOString() };
+});
+route('DELETE', '/api/me/telegram', ({ db }) => { db.telegram.linkedAt = null; return myTelegramView(db); });
+route('PUT', '/api/me/telegram/choices', ({ db, body }) => {
+  if (!db.telegram.linkedAt) fail(409, 'conflict', 'link a Telegram chat first');
+  db.telegram.choices = { needs_you: Boolean(body.needs_you), done: Boolean(body.done), failed: Boolean(body.failed), account: Boolean(body.account) && isAdmin(db) };
+  return myTelegramView(db);
+});
+
 // The instance Vidoc key (SPEC-195 VDK-002): the Jev key's routes, for Vidoc.
 function vidocView(db) {
   const v = db.vidoc;
@@ -6205,6 +6251,14 @@ export function createMockTransport(params) {
     // Like the server, events reach only viewers of the sandbox (none without GitHub).
     if (db.noBrowserAsk || !db.sandboxes.some((s) => s.id === 'sb_studio')) return false;
     emit(db, { type: 'browser.action_requested', sandbox_id: 'sb_studio', tab_id: 'tab-aws', reason: 'Sign in to AWS so task #10 can deploy', task_id: 'tsk_studio_10' });
+    return true;
+  };
+  // The bot receives `text` from the person's chat (SPEC-444): `/start <code>` with the shown code
+  // links it, once. Says whether it linked.
+  db.telegramStart = (text) => {
+    const code = String(text).replace(/^\/start\s+/, '');
+    if (!db.telegram.bot || !db.telegram.code || code !== db.telegram.code) return false;
+    Object.assign(db.telegram, { code: null, linkedAt: new Date().toISOString() });
     return true;
   };
   // The person's Superagent in `source` asks to start a task in another sandbox (SPEC-335).

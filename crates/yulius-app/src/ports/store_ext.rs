@@ -736,6 +736,7 @@ pub trait ExtensionStores:
     + crate::ports::session_docs::SessionDocStore
     + NoteStore
     + SpanStore
+    + crate::ports::notify::ChatLinkStore
 {
 }
 
@@ -760,5 +761,6 @@ impl<T> ExtensionStores for T where
         + crate::ports::session_docs::SessionDocStore
         + NoteStore
         + SpanStore
+        + crate::ports::notify::ChatLinkStore
 {
 }

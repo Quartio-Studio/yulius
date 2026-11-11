@@ -1,6 +1,5 @@
 //! `WS /api/events`: permission-filtered UI events with bounded buffering.
 
-use std::collections::HashMap;
 use std::time::Duration;
 
 use axum::extract::State;
@@ -10,6 +9,7 @@ use axum::response::Response;
 use tokio::sync::broadcast::error::RecvError;
 use yulius_app::auth::AuthContext;
 use yulius_app::error::AppError;
+use yulius_app::events::Reach;
 use yulius_contracts::events::UiEvent;
 
 use crate::AppState;
@@ -38,13 +38,11 @@ pub async fn events(
 
 async fn pump(app: AppState, ctx: AuthContext, mut socket: WebSocket) {
     let mut rx = app.events.subscribe();
-    let mut visible: HashMap<String, bool> = HashMap::new();
-    // Sandboxes whose files this person may read (SPEC-127), decided again with `visible`.
-    let mut writable: HashMap<String, bool> = HashMap::new();
+    // Which sandboxes' events this person sees and whose files they may read (SPEC-127),
+    // decided once and again at each re-check (`App::envelope_reaches`, also SPEC-444's rule).
+    let mut reach = Reach::default();
     // The person as of the last re-check: their roles decide admin-only events (#722).
     let mut user = ctx.user.clone();
-    // A playground's guest gets only their playground's events and their own (SPEC-410 GST-004).
-    let guest = app.is_guest(&ctx.user);
     let mut recheck =
         tokio::time::interval(Duration::from_millis(app.config.viewer_recheck_ms.max(100)));
     recheck.tick().await;
@@ -69,8 +67,7 @@ async fn pump(app: AppState, ctx: AuthContext, mut socket: WebSocket) {
                     break;
                 };
                 user = current;
-                visible.clear();
-                writable.clear();
+                reach.forget();
             }
             incoming = socket.recv() => {
                 match incoming {
@@ -82,42 +79,13 @@ async fn pump(app: AppState, ctx: AuthContext, mut socket: WebSocket) {
                 let envelope = match event {
                     Ok(envelope) => envelope,
                     Err(RecvError::Lagged(_)) => {
-                        visible.clear();
-                        writable.clear();
+                        reach.forget();
                         if send(&mut socket, &UiEvent::Resync).await.is_err() { break; }
                         continue;
                     }
                     Err(RecvError::Closed) => break,
                 };
-                if envelope.admin_only && !(user.is_superadmin || user.is_instance_admin) { continue; }
-                // A person's own event (their notepad, SPEC-103) reaches no one else.
-                if envelope.user.as_ref().is_some_and(|id| *id != user.id) { continue; }
-                if let Some(sandbox) = &envelope.sandbox {
-                    let key = sandbox.to_string();
-                    let allowed = match visible.get(&key) {
-                        Some(v) => *v,
-                        None => {
-                            let ok = app.can_view(&user, sandbox).await;
-                            visible.insert(key.clone(), ok);
-                            ok
-                        }
-                    };
-                    if !allowed { continue; }
-                    // What the editor shows (who has which file open) is for those who may open it.
-                    if envelope.writers_only {
-                        let allowed = match writable.get(&key) {
-                            Some(v) => *v,
-                            None => {
-                                let ok = app.can_work_in(&user, sandbox).await;
-                                writable.insert(key, ok);
-                                ok
-                            }
-                        };
-                        if !allowed { continue; }
-                    }
-                } else if envelope.writers_only || (guest && envelope.user.is_none()) {
-                    continue;
-                }
+                if !app.envelope_reaches(&user, &envelope, &mut reach).await { continue; }
                 if send(&mut socket, &envelope.event).await.is_err() { break; }
             }
         }

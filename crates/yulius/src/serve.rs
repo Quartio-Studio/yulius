@@ -123,6 +123,12 @@ pub struct ServeArgs {
     /// through the egress proxy. Unset or unusable: Vidoc is off, and the scan says "not run".
     #[arg(long, env = "YULIUS_VIDOC_API_KEY_FILE")]
     pub vidoc_api_key_file: Option<PathBuf>,
+    /// Telegram's Bot API for the personal notification channel (SPEC-444): HTTPS, or HTTP on a
+    /// loopback host for a fake in tests. The bot's token is set in Settings, never here.
+    #[arg(long, env = "YULIUS_TELEGRAM_API_URL",
+          default_value = crate::wiring::telegram::TELEGRAM_API,
+          value_parser = crate::wiring::telegram::api_base)]
+    pub telegram_api_url: String,
     /// Probability of "several workstreams" Jev must give before a split is proposed (0.5–1).
     #[arg(long, env = "YULIUS_JEV_SPLIT_THRESHOLD", default_value_t = yulius_domain::intake::DEFAULT_SPLIT_THRESHOLD, value_parser = parse_threshold)]
     pub jev_split_threshold: f64,
@@ -478,6 +484,14 @@ pub fn build_app(args: &ServeArgs) -> Result<Arc<App>, String> {
     let app = App::new(config, deps);
     app.set_intake(intake_services(args));
     app.set_vidoc(vidoc_services(args));
+    // The personal Telegram channel (SPEC-444): its bot is set by an instance administrator.
+    app.set_channel(yulius_app::telegram::ChannelServices::new(
+        Arc::new(crate::wiring::telegram::TelegramBots::new(
+            args.telegram_api_url.clone(),
+            crate::wiring::telegram::POLL_SECONDS,
+        )),
+        yulius_app::telegram::ChannelTuning::default(),
+    ));
     app.set_updates(update_services(args)?);
     if let Some(shell) = &args.shell {
         app.set_shell_program(shell.clone());
@@ -555,6 +569,8 @@ pub async fn serve(args: ServeArgs) -> Result<(), String> {
     tracing::info!(public = %args.bind, internal = %args.internal_bind, "yulius listening");
     app.start_background();
     app.start_update_loop();
+    // Long polling of the saved bot, if any, and the notifier (SPEC-444 TGC-003).
+    app.start_channel().await;
     match app.install_skill_catalog().await {
         Ok(files) => tracing::debug!(files, "skill catalog ready"),
         Err(err) => tracing::error!(error = %err, "cannot install the skill catalog"),

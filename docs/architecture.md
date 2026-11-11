@@ -40,6 +40,7 @@ flowchart LR
   AG -->|"MCP (yulius mcp stdio bridge) + hooks"| INT
   AG -->|"HTTP(S) via the egress proxy: secrets for bound hosts"| INT
   APP <--> GH["GitHub App + REST"]
+  APP -->|"long poll getUpdates, sendMessage"| TG["Telegram Bot API"]
   AG <--> AN["Anthropic"]
   APP <-->|"DevTools pipe (fds 3/4)"| CH["Chrome on Xvfb"]
 ```
@@ -1800,6 +1801,48 @@ flowchart LR
   JOB -->|"request with yulius-secret-VIDOC_API_KEY"| X["Egress proxy: client ci:run"]
   X -->|"value only toward bound hosts"| V["model.vidocsecurity.com"]
   X -->|"vault.agent.use, actor ci:run"| AUD["secrets audit"]
+```
+
+## The personal Telegram channel
+
+Each person can get their notifications in their own Telegram chat
+([SPEC-444](../.ai/specs/SPEC-444-telegram-channel-part-1-issue-1107-upstr.md),
+[decision 0287](decisions/0287-a-personal-telegram-channel-behind-a-notification-channel-port.md)).
+
+- **The port.** `NotificationChannel` (`crates/yulius-app/src/ports/notify.rs`: `check`, `send`,
+  `receive`) is all a chat service implements; `crates/yulius/src/wiring/telegram.rs` is Telegram's
+  Bot API over `reqwest` (`YULIUS_TELEGRAM_API_URL`, no redirects, bounded answers, errors typed
+  without the token-bearing URL). The store keeps the bot in the `instance` row (sealed like the Jev
+  and Vidoc keys) and `telegram_links` / `telegram_link_codes` (migration 0050).
+- **The bot and linking** (`crates/yulius-app/src/telegram.rs`). An instance administrator sets the
+  token (`getMe` first); `App::activate` aborts the previous long poll and starts one for the new
+  bot, which retries with 1-60 s backoff. Received messages are only `/start <code>` (a private
+  chat, a code from `POST /api/me/telegram/link`, consumed by its hash) and `/stop`; anything else
+  gets a fixed reply. Replies go through one bounded send queue.
+- **The notifier** (`crates/yulius-app/src/notify.rs`) subscribes to the UI event bus. For a task
+  event it reads the task, classifies it with `App::task_group` (`AttentionFacts`, the sidebar's
+  rule) and `yulius_domain::notify::task_notice`, remembers the last signature per task (a new
+  `needs_you` request is new), and after a restart tells only states entered since. For each linked
+  person who chose that kind it applies `App::envelope_reaches`, the same function that filters
+  `WS /api/events`, then the person's `Throttle` (5 a minute, the rest folded into a summary). Text
+  passes `App::redact_for_sandbox` (account text: the shape-based `redact`).
+
+```mermaid
+sequenceDiagram
+  participant P as Person (browser)
+  participant Y as yulius serve
+  participant T as Telegram Bot API
+  participant C as Person's chat
+  P->>Y: POST /api/me/telegram/link (session only)
+  Y-->>P: code, t.me/<bot>?start=<code>
+  C->>T: /start <code>
+  Y->>T: getUpdates (long poll)
+  T-->>Y: message from chat
+  Y->>Y: consume code hash, link chat, audit telegram.linked
+  Note over Y: a task enters Needs you: event bus → notifier
+  Y->>Y: envelope_reaches(person) · choices · redact · throttle
+  Y->>T: sendMessage(chat, text with /s/{slug}/t/{n})
+  T-->>C: notification
 ```
 
 ## Vidoc: the instance key and the security scan
