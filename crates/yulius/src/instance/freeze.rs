@@ -237,6 +237,12 @@ impl Freeze {
         self.thaw_now().map_or(Ok(()), Err)
     }
 
+    /// Leaves the unit frozen without disabling it: a move whose new instance may still run
+    /// must not thaw the old one (SPEC-460 MIG-004).
+    pub fn leave_frozen(mut self) {
+        self.ours = false;
+    }
+
     /// For a move: leaves the unit as it is (frozen) and disables it, so a reboot does not start
     /// the old instance beside the new one.
     ///

@@ -13,6 +13,8 @@ pub mod export;
 pub mod extract;
 pub mod freeze;
 pub mod import;
+pub mod inventory;
+pub mod migrate;
 pub mod walk;
 
 /// The manifest's archive path, the first entry.
