@@ -17,8 +17,10 @@ use crate::instance::{Manifest, Pass, Progress};
 
 /// The delta passes one run makes before it freezes anyway, or stops when the freeze is bound.
 pub const MAX_DELTA_PASSES: u32 = 5;
-/// What the start of the new instance is allowed in the estimate.
-const START_SECS: u64 = 180;
+/// What the estimate allows for what follows the proof: the mark, the last items of
+/// `host setup`, the unit's start and its first answer. They took under ten seconds between two
+/// emulated hosts (SPEC-465's Evidence).
+const START_SECS: u64 = 30;
 /// Without a bound the move copies again while the changes alone take longer than this to send.
 const WORTH_SECS: u64 = 60;
 
@@ -161,7 +163,7 @@ impl Move<'_> {
         let said = format!(
             "about {} frozen: the entries are counted four times ({} each, twice on each host), \
              what changes meanwhile takes about {} to send, the new host's sync {}, and the \
-             start up to {}",
+             start about {}",
             span(total),
             span(measured.walk.round() as u64),
             span(changes),

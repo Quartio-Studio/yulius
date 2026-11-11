@@ -1383,7 +1383,7 @@ usual.
 - A pass removes nothing on the new host: what no longer exists goes during the freeze.
 - After every pass that sent only changes, the line `downtime` gives the estimated freeze: the
   entries are counted four times (twice on each host), what changes meanwhile is sent, the new
-  host syncs, and the start is allowed three minutes. Without `--max-downtime` the move copies
+  host syncs, and the start is allowed half a minute. Without `--max-downtime` the move copies
   again while the changes alone would take more than a minute to send, at most five times, and
   then freezes. With `--max-downtime <minutes>` it freezes only when the estimate is at most
   that; after five passes above it the move ends with exit 1, nothing was frozen, and the staged

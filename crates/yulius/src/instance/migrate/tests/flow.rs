@@ -2011,7 +2011,7 @@ fn the_copy_runs_warm_and_the_freeze_sends_only_the_last_changes() -> TestResult
     assert!(
         downtime
             .detail
-            .starts_with("about 3 min frozen: the entries are counted four times"),
+            .starts_with("about 30 s frozen: the entries are counted four times"),
         "{}",
         downtime.detail
     );
@@ -2027,8 +2027,8 @@ fn the_copy_runs_warm_and_the_freeze_sends_only_the_last_changes() -> TestResult
 #[test]
 fn a_freeze_above_the_bound_is_never_begun() -> TestResult {
     let mut s = setup()?;
-    // The start alone is allowed three minutes in the estimate.
-    s.opts.max_downtime = Some(1);
+    // The start alone is allowed half a minute in the estimate: no bound below that is met.
+    s.opts.max_downtime = Some(0);
     assert_eq!(s.run()?, 1);
     let status = s.status()?;
     assert_eq!(status.phase, "Copy");
@@ -2037,7 +2037,7 @@ fn a_freeze_above_the_bound_is_never_begun() -> TestResult {
     assert!(
         downtime
             .detail
-            .contains("above --max-downtime 1 after 5 passes")
+            .contains("above --max-downtime 0 after 5 passes")
             && downtime.detail.contains("Nothing was frozen"),
         "{}",
         downtime.detail
@@ -2061,7 +2061,7 @@ fn a_freeze_above_the_bound_is_never_begun() -> TestResult {
         .ok_or("no plan line")?;
     assert!(
         plan.detail
-            .contains("with --max-downtime 1 it begins only when that is at most 1 min"),
+            .contains("with --max-downtime 0 it begins only when that is at most 0 min"),
         "{}",
         plan.detail
     );
@@ -2135,7 +2135,7 @@ fn a_pass_that_was_cut_is_continued_by_the_same_command() -> TestResult {
 fn a_staged_copy_that_is_gone_or_another_one_makes_the_next_pass_a_full_one() -> TestResult {
     let bounded = || -> Result<Setup, Box<dyn std::error::Error>> {
         let mut s = setup()?;
-        s.opts.max_downtime = Some(1);
+        s.opts.max_downtime = Some(0);
         assert_eq!(s.run()?, 1);
         assert!(Mark::read(&s.remote.copy_dir).is_some());
         s.opts.max_downtime = None;
@@ -2239,7 +2239,7 @@ fn a_rolled_back_move_leaves_no_staged_copy_to_go_on_with() -> TestResult {
 #[test]
 fn a_rerun_does_not_ask_again_for_the_room_the_staged_copy_already_takes() -> TestResult {
     let mut s = setup()?;
-    s.opts.max_downtime = Some(1);
+    s.opts.max_downtime = Some(0);
     assert_eq!(s.run()?, 1);
     // The staged copy fills most of the new disk: less is free than the data takes.
     s.remote
@@ -2272,7 +2272,7 @@ fn a_rerun_does_not_ask_again_for_the_room_the_staged_copy_already_takes() -> Te
 #[test]
 fn an_abort_before_the_cutover_names_the_staged_copy_left_on_the_new_host() -> TestResult {
     let mut s = setup()?;
-    s.opts.max_downtime = Some(1);
+    s.opts.max_downtime = Some(0);
     assert_eq!(s.run()?, 1);
     assert!(s.opts.state_dir.join("copy/stage.json").exists());
     let looks = |s: &Setup| s.events().iter().filter(|e| *e == "new: stage").count();
@@ -2373,5 +2373,20 @@ fn a_finished_move_keeps_no_receipts_however_it_got_there() -> TestResult {
     let state = State::load(&s.opts.state_dir).ok_or("no state")?;
     assert_eq!((state.cutover, state.finished), (Cutover::Moved, true));
     assert!(!copy.exists(), "the receipts are still there");
+    Ok(())
+}
+
+#[test]
+fn a_bound_of_a_minute_can_be_met() -> TestResult {
+    // The estimate allows the start half a minute: a quiet instance moves within one minute.
+    let mut s = setup()?;
+    s.opts.max_downtime = Some(1);
+    assert_eq!(s.run()?, 0, "{}", s.shown());
+    assert_eq!(s.old_unit(), (true, true));
+    assert!(
+        !s.shown().contains("so the move copies again"),
+        "{}",
+        s.shown()
+    );
     Ok(())
 }
