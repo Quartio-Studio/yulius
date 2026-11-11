@@ -520,6 +520,46 @@ fn resolve(file: &str, spec: &str) -> String {
     format!("/{}", parts.join("/"))
 }
 
+/// SPEC-462 EFF-003: the composer and Settings describe "Default" as the model and effort a
+/// launch really uses (`yulius_domain::harness`), so a changed constant cannot leave the labels
+/// behind.
+#[test]
+fn the_ui_describes_default_as_the_model_and_effort_a_launch_uses() -> TestResult {
+    use yulius_domain::harness::{DEFAULT_CLAUDE_EFFORT, DEFAULT_CLAUDE_MODEL};
+    let models = std::fs::read_to_string(web_dir().join("assets/models.js"))?;
+    // The listed entry with the default's id gives the name people read ("Fable 5.2", "High").
+    let named = |id: &str| -> Result<&str, String> {
+        let listed = format!("{{ id: '{id}', name: '");
+        models
+            .split_once(&listed)
+            .and_then(|(_, rest)| rest.split_once('\''))
+            .map(|(name, _)| name)
+            .ok_or(format!("models.js does not list {id}"))
+    };
+    let name = named(DEFAULT_CLAUDE_MODEL)?;
+    assert!(
+        models.contains(&format!("{{ label: 'Default', description: '{name}',")),
+        "the model menu's Default is not {name}"
+    );
+    let level = named(DEFAULT_CLAUDE_EFFORT)?;
+    assert!(
+        models.contains(&format!(
+            "{{ label: 'Default', description: '{level} (none for Haiku)',"
+        )),
+        "the effort menu's Default is not {level}"
+    );
+    assert!(
+        models.contains(&format!("{name} at {DEFAULT_CLAUDE_EFFORT} effort")),
+        "the module comment names another default"
+    );
+    let composer = std::fs::read_to_string(web_dir().join("assets/taskview.js"))?;
+    assert!(
+        composer.contains(&format!("'Model: default, {name}'")),
+        "the composer's model chip names another default"
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn embedded_assets_serve_with_content_types_and_every_import_resolves() -> TestResult {
     let h = harness()?;
