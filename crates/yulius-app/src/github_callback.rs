@@ -83,10 +83,11 @@ fn recheck_after(same: u32) -> i64 {
 }
 
 impl Kept {
-    /// Whether a read at `now` asks GitHub again.
+    /// Whether a read at `now` asks GitHub again. An answer dated after `now` (the clock stepped
+    /// back) is due too: nothing waits for the clock to catch up.
     fn stale(&self, now: Timestamp) -> bool {
         self.state != CallbackState::Registered
-            && now.0.saturating_sub(self.at.0) >= recheck_after(self.same)
+            && !(0..recheck_after(self.same)).contains(&now.0.saturating_sub(self.at.0))
     }
 
     /// Whether `state` says the same as this answer (an unknown answer for whatever reason).
@@ -226,8 +227,17 @@ impl App {
         let known = self.kept_answer();
         if own
             && let Some(kept) = &known
-            && (Some(kept.number) != before || self.now().0.saturating_sub(kept.at.0) < reuse_ms)
+            && (Some(kept.number) != before
+                || (0..reuse_ms).contains(&self.now().0.saturating_sub(kept.at.0)))
         {
+            // A demand that takes another check's answer is a demand all the same: someone is
+            // here, and the next reads ask quickly again.
+            if !by_a_read
+                && let Ok(mut answer) = self.github_callback.answer.lock()
+                && let Some(answer) = answer.as_mut()
+            {
+                answer.same = 0;
+            }
             return Ok(Some(facts(
                 url,
                 settings,
@@ -299,6 +309,13 @@ impl App {
                 tracing::warn!(error = %err, "could not ask GitHub about the sign-in callback");
             }
         });
+    }
+
+    /// Whether a check a read or the start began is still on its way. It is marked before the
+    /// read that began it answers, so a test can tell that a read began none.
+    #[must_use]
+    pub fn github_callback_check_running(&self) -> bool {
+        self.github_callback.refreshing.load(Ordering::SeqCst)
     }
 
     /// GitHub just exchanged a sign-in code for the instance's callback URL, so it is registered,
@@ -425,8 +442,10 @@ mod tests {
         assert!(!kept(CallbackState::Missing, 3).says(&CallbackState::Registered));
         // "Registered" is kept until the next start or demand.
         assert!(!kept(CallbackState::Registered, 0).stale(at(86_400_000)));
-        // A clock that went back asks nothing.
-        assert!(!kept(CallbackState::Missing, 0).stale(Timestamp(0)));
+        // An answer dated in the future (the clock stepped back) is due, not kept until then.
+        assert!(kept(CallbackState::Missing, 0).stale(Timestamp(0)));
+        assert!(kept(CallbackState::Missing, 0).stale(at(-1)));
+        assert!(!kept(CallbackState::Registered, 0).stale(Timestamp(0)));
     }
 
     #[test]

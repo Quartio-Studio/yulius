@@ -133,7 +133,7 @@ async fn a_missing_callback_is_said_and_rechecked_until_it_is_registered() -> Te
     later(&h, 20_000);
     assert_eq!(github(&h, &admin).await?["state"], "missing");
     assert!(says_missing(&h).await?);
-    assert_eq!(asked(&h), 1);
+    not_asked(&h, &admin, 1).await?;
 
     // Older than 30 s: a read asks again in the background, and nobody restarts anything.
     later(&h, 11_000);
@@ -145,7 +145,7 @@ async fn a_missing_callback_is_said_and_rechecked_until_it_is_registered() -> Te
     later(&h, 3_600_000);
     assert_eq!(github(&h, &admin).await?["state"], "registered");
     assert!(!says_missing(&h).await?);
-    assert_eq!(asked(&h), 2);
+    not_asked(&h, &admin, 2).await?;
     Ok(())
 }
 
@@ -578,8 +578,21 @@ async fn until_asked(h: &Harness, admin: &Creds, count: usize) -> TestResult {
     Err(format!("GitHub was asked {} times, not {count}", asked(h)).into())
 }
 
+/// A read now finds the answer not due: GitHub is not asked, in the read or beside it. A check
+/// that a read starts is marked as on its way before the read answers, so this needs no wait.
+async fn not_asked(h: &Harness, admin: &Creds, count: usize) -> TestResult {
+    github(h, admin).await?;
+    assert!(
+        !h.app.github_callback_check_running(),
+        "a read asked GitHub before the answer was due"
+    );
+    assert_eq!(asked(h), count);
+    Ok(())
+}
+
 /// MVC-003: a missing callback that nobody fixes is asked for ever less often while it is read,
-/// and a person's demand makes the next looks quick again.
+/// never before it is due, and a person's demand or a changed answer makes the next looks quick
+/// again.
 #[tokio::test]
 async fn a_callback_that_stays_missing_is_asked_for_less_often_until_someone_demands() -> TestResult
 {
@@ -591,44 +604,188 @@ async fn a_callback_that_stays_missing_is_asked_for_less_often_until_someone_dem
     until_state(&h, &admin, "missing").await?;
     assert_eq!(asked(&h), 1);
 
-    // Someone watches the page: every 30 s for the first eleven looks.
+    // Someone watches the page: asked again 30 s after each answer, not a moment earlier, for
+    // the first eleven looks.
     for look in 0..11 {
-        later(&h, 30_000);
+        later(&h, 29_999);
+        not_asked(&h, &admin, look + 1).await?;
+        later(&h, 1);
         until_asked(&h, &admin, look + 2).await?;
     }
     assert_eq!(asked(&h), 12);
-    // From then on the wait doubles: 60 s.
-    later(&h, 60_000);
-    until_asked(&h, &admin, 13).await?;
-    // And again: 120 s.
-    later(&h, 120_000);
-    until_asked(&h, &admin, 14).await?;
-    assert_eq!(asked(&h), 14);
+    // From then on the wait doubles: 60 s, 120 s, and 4 minutes for as long as it stands.
+    let mut count = 12;
+    for wait in [60_000, 120_000, 240_000, 240_000, 240_000] {
+        later(&h, 30_000);
+        not_asked(&h, &admin, count).await?;
+        later(&h, wait - 30_001);
+        not_asked(&h, &admin, count).await?;
+        later(&h, 1);
+        count += 1;
+        until_asked(&h, &admin, count).await?;
+    }
+    assert_eq!(asked(&h), 17);
 
     // "Check again": a person is here, so the next looks are 30 s apart again.
     let checked = call(&h.router, Method::POST, CHECK, Some(json!({})), &admin).await?;
     assert_eq!(checked.body["github"]["state"], "missing");
-    assert_eq!(asked(&h), 15);
-    later(&h, 30_000);
-    until_asked(&h, &admin, 16).await?;
-    assert_eq!(asked(&h), 16);
+    assert_eq!(asked(&h), 18);
+    later(&h, 29_999);
+    not_asked(&h, &admin, 18).await?;
+    later(&h, 1);
+    until_asked(&h, &admin, 19).await?;
 
     // An answer that changes is news: it is asked for again quickly, whatever stood before.
     for look in 0..10 {
         later(&h, 30_000);
-        until_asked(&h, &admin, look + 17).await?;
+        until_asked(&h, &admin, look + 20).await?;
     }
-    later(&h, 60_000);
-    until_asked(&h, &admin, 27).await?;
+    // Twelve equal answers since the demand: 60 s by now.
+    later(&h, 30_000);
+    not_asked(&h, &admin, 29).await?;
     if let Ok(mut error) = h.github.callback_error.lock() {
         *error = Some("GitHub: timed out".into());
     }
-    later(&h, 120_000);
-    until_asked(&h, &admin, 28).await?;
-    until_state(&h, &admin, "unknown").await?;
     later(&h, 30_000);
-    until_asked(&h, &admin, 29).await?;
-    assert_eq!(asked(&h), 29);
+    until_asked(&h, &admin, 30).await?;
+    until_state(&h, &admin, "unknown").await?;
+    later(&h, 29_999);
+    not_asked(&h, &admin, 30).await?;
+    later(&h, 1);
+    until_asked(&h, &admin, 31).await?;
+    assert_eq!(asked(&h), 31);
+    Ok(())
+}
+
+/// MVC-003: a demand that waited for a check a read had started takes its answer, and is a
+/// demand all the same: the next looks are 30 s apart again.
+#[tokio::test]
+async fn a_demand_that_waited_for_a_read_s_check_makes_the_looks_quick_again() -> TestResult {
+    use std::future::Future as _;
+    use yulius_app::github_callback::CallbackState;
+    let h = harness()?;
+    let admin = setup_superadmin_creds(&h).await?;
+    configure_github_app(&h).await?;
+    register(&h, &[]);
+    h.app.start_github_callback_check();
+    until_state(&h, &admin, "missing").await?;
+    for look in 0..11 {
+        later(&h, 30_000);
+        until_asked(&h, &admin, look + 2).await?;
+    }
+    // The next look is due after 60 s; its check is on its way when a person presses Check again.
+    let hold = Arc::new(tokio::sync::Notify::new());
+    if let Ok(mut held) = h.github.callback_hold.lock() {
+        *held = Some(Arc::clone(&hold));
+    }
+    later(&h, 60_000);
+    github(&h, &admin).await?;
+    h.github.callback_entered.notified().await;
+    let mut demand = std::pin::pin!(h.app.check_github_callback(None, 0));
+    let waits =
+        std::future::poll_fn(|cx| std::task::Poll::Ready(demand.as_mut().poll(cx).is_pending()))
+            .await;
+    assert!(waits);
+    if let Ok(mut held) = h.github.callback_hold.lock() {
+        *held = None;
+    }
+    hold.notify_one();
+    let told = demand.await?.map(|facts| facts.state);
+    assert_eq!(told, Some(CallbackState::Missing));
+    assert_eq!(asked(&h), 13);
+
+    // Without the demand the thirteenth equal answer would wait 120 s.
+    later(&h, 29_999);
+    not_asked(&h, &admin, 13).await?;
+    later(&h, 1);
+    until_asked(&h, &admin, 14).await?;
+    Ok(())
+}
+
+/// MVC-003: a clock that steps back (a correction, a resumed machine) does not silence the
+/// checks: "Check again" asks whatever the clock says, and a read of an answer dated in the
+/// future asks again instead of waiting for the clock to catch up.
+#[tokio::test]
+async fn a_clock_that_steps_back_does_not_silence_the_checks() -> TestResult {
+    let h = harness()?;
+    let admin = setup_superadmin_creds(&h).await?;
+    configure_github_app(&h).await?;
+    register(&h, &[]);
+    let first = call(&h.router, Method::POST, CHECK, Some(json!({})), &admin).await?;
+    assert_eq!(first.body["github"]["state"], "missing");
+    assert_eq!(asked(&h), 1);
+
+    later(&h, -3_600_000);
+    let again = call(&h.router, Method::POST, CHECK, Some(json!({})), &admin).await?;
+    assert_eq!(again.body["github"]["state"], "missing");
+    assert_eq!(asked(&h), 2);
+
+    later(&h, -3_600_000);
+    until_asked(&h, &admin, 3).await?;
+    assert_eq!(asked(&h), 3);
+    Ok(())
+}
+
+/// MVC-003: the instance asks at its start, before anyone reads anything.
+#[tokio::test]
+async fn the_start_asks_github_without_a_read() -> TestResult {
+    let h = harness()?;
+    setup_superadmin_creds(&h).await?;
+    configure_github_app(&h).await?;
+    register(&h, &[]);
+    h.app.start_background();
+    for _ in 0..500 {
+        if asked(&h) == 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(asked(&h), 1);
+    Ok(())
+}
+
+/// MVC-003: storing the App through the manifest flow asks GitHub about its callback, before
+/// anyone reads anything.
+#[tokio::test]
+async fn storing_the_app_asks_github_without_a_read() -> TestResult {
+    let h = harness()?;
+    let admin = setup_superadmin_creds(&h).await?;
+    let prepared = call(
+        &h.router,
+        Method::POST,
+        "/api/admin/github/manifest",
+        Some(json!({"owner_login": "Quartio-Studio", "owner_kind": "org"})),
+        &admin,
+    )
+    .await?;
+    assert_eq!(prepared.status, StatusCode::OK, "{:?}", prepared.body);
+    let post_url = prepared.body["post_url"].as_str().ok_or("post_url")?;
+    let state = post_url.split("state=").nth(1).ok_or("state")?;
+    assert_eq!(asked(&h), 0);
+    let stored = call(
+        &h.router,
+        Method::GET,
+        &format!("/api/admin/github/manifest/callback?code=manifest-code&state={state}"),
+        None,
+        &admin,
+    )
+    .await?;
+    assert!(stored.status.is_redirection(), "{}", stored.status);
+    for _ in 0..500 {
+        if asked(&h) == 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(asked(&h), 1);
+    assert_eq!(
+        h.github
+            .callback_asked
+            .lock()
+            .map(|a| a.clone())
+            .unwrap_or_default(),
+        [CALLBACK]
+    );
     Ok(())
 }
 
