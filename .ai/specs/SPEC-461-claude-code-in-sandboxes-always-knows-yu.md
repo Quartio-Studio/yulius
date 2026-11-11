@@ -75,7 +75,7 @@ an older one.
 | CCM-008 | **Instance page.** Settings, Instance has a "Claude Code" card (superadmin): the channel and where it is set, the version in use and where it comes from, the host's version, npm's `latest` and `stable` at the last check, when it was checked and what it did; a danger banner with the fix while the version in use does not know the default model; a warning for another unknown offered model, a refused release and a failed check; "Check now"; the channel as a choice of Latest, Stable and Off; and the tasks that still run an older Claude Code (CCM-013). |
 | CCM-009 | **Channel in Settings.** `PUT /api/admin/claude-code/channel {"channel": "latest"\|"stable"\|"off"\|null}` (superadmin) stores the channel in the database (`null`: back to `YULIUS_CLAUDE_UPDATES`; a body without the field is refused, 422). A stored channel wins over the unit's. It applies at once, without a restart: the next check runs now, runs started from then on bind as the channel says (`off`: the host's install), and it is audited `claude_code.channel`. An unknown channel is refused (422). |
 | CCM-010 | **Check now.** `POST /api/admin/claude-code/check` (superadmin) starts a check at once and answers 202 with the view saying it runs; one check runs at a time (a second request joins the running one). The hourly check and the first check 2 minutes after a start stay. `GET /api/admin/claude-code` answers the view. |
-| CCM-011 | **Sessions record what ran.** Each session of a task records the Claude Code version the records of its own thread in its transcript name (`metrics.cli_version`; Claude Code writes its version on every record, and a sub-agent's names nothing for the session), beside the model that answered (kept already), as soon as a line names it: a session resumed with nothing typed names it with the first record it writes, not with its next prompt. |
+| CCM-011 | **Sessions record what ran.** Each session of a task records the Claude Code version the records of its own thread in its transcript name (`metrics.cli_version`; Claude Code writes its version on every record, and a sub-agent's names nothing for the session), beside the model that answered (kept already), as soon as a line names it: a session resumed with nothing typed names it with the first record it writes, not with its next prompt. A recount of a run's transcript records it too. At most 64 bytes of what a record names are kept. |
 | CCM-012 | **Task info.** A task's info shows the model it asks for with its effort (marked "default" when the task names none), the models that answered, and the Claude Code version of its latest session, with "moves to X when its turn ends, or at its next start" while its running session is on an older one; each row of its Sessions table shows what that session ran on (its Claude Code version and model). `GET /api/tasks/{tid}` carries them (`model`, `model_default`, `effort`, `cli_version`, `cli_moves_to`; per attempt `model`, `cli_version`). |
 | CCM-013 | **A running task moves.** When a turn of a running task ends and its session runs an older Claude Code than runs get now, Yulius restarts the session on the newer one in the same Claude session (`claude --resume`, same subscription, the path a subscription move takes at a turn boundary) and says so in one line in its terminal. A session that works on after the turn (a gate's block, a goal that is set and not yet achieved) moves at that turn's Stop hook and gets the gate's reasons, and its goal again, as after a subscription move; a goal task that is Done keeps its session at a follow-up's end (its goal would be typed again); a prompt-mode session that goes idle moves once the turn has settled (its pull request opened, chains advanced), with nothing typed, and is idle again. Not while its background shells, agents or monitors run, a shell that only runs `yulius wait` included (its news would never arrive), not while a person typed into it in the last minute or paused it, not while an instance update holds the runs, not within ten minutes of a refused subscription switch or of a refused restart, and once per version per task. Deciding takes at most 3.5 s of the Stop hook's 5 s (one wait for the turn's lines, one look at the session's processes); a decision that would take longer is left to a later turn's end. A restart that cannot start now (its subscription at its limit, a sandbox that cannot be joined) says nothing, is no switch decision, keeps no subscription switch waiting (it has its own ten-minute wait) and is tried at a later turn's end. A version a session could not continue on gets no other running session, and the card names the task and what happened: the restart could not be launched, the restarted session ended by itself before it started (its SessionStart hook), or it did not start within two minutes (that session is left as it is, for its person). A newer version, or a restart of the server, lifts it. A task that is idle keeps its version until its next turn ends or its next start, and so does a run without hooks. The Superagent, shells and CI jobs get the newer version when they next start, as before. A restart for a newer Claude Code is no subscription switch in the task's info. |
 
@@ -140,7 +140,9 @@ an older one.
   one a record of its own thread names (a resume's meta record, a tool result, an attachment,
   an answer), never a sub-agent's. `crates/yulius/src/wiring/harness.rs`: a run resumed with
   nothing typed names its version at its first record, never the earlier run's, and a recount
-  says the same.
+  says the same, from its window's lines only. `tests/observe.rs`: a version of megabytes is
+  kept as 64 bytes, whichever record names it. `crates/yulius/tests/metrics_recount.rs`: a
+  recount records the version its runs' lines name.
 - Integration, `crates/yulius/tests/claude_updates.rs` (the registry stub of SPEC-421, whose
   binary stand-in now embeds the offered model ids): AC1, AC3, AC4, the status file and the
   in-memory record after each outcome, AC5 (the doctor's level and text), the composer's list
@@ -324,11 +326,24 @@ an older one.
     and the statement none of a run whose figures were saved first: a store test of the three
     cases, and `a_restarted_session_keeps_the_version_its_transcript_named_first`, which holds
     the restart's write at the pause point `ClaudeMoveRestarted` until the transcript's version
-    is recorded (the fake agent's `--resume-record` writes the meta record a real resume
-    writes first). Comments that described the old rule; a recount's window pinned for the
+    is recorded (the fake agent's `--resume-record` writes a meta record, as a real resume may
+    before any prompt). Comments that described the old rule; a recount's window pinned for the
     version (the first run's, and a window without a line); the changes entry's first sentence,
     which promised more than the fix; three wordings of this section; a clone made before it
     was known to be needed; a blank line.
+  - *Its second look* (the same reviewer, at fc6ff2f3): approved again, with one minor (the new
+    restart test's last check did not wait for the turn's decision, so it could not see a
+    third restart: it waits now) and a wording nit (a meta record is one of the records a real
+    resume writes before any prompt, not always the first), both fixed. It also named what was
+    still open beside the fix: a recount read a run's version and dropped it, so a run only a
+    recount read (its live watch did not see its lines) had none. A recount records it now.
+  - *The version is cut at 64 bytes where it is kept* (`UsageAccumulator::note_cli_version`).
+    Task #452 answers the third review's finding that the stored version is whatever a
+    transcript line holds (a line may be megabytes) by cutting it in the parser's prompt
+    records. The first-record rule reads it from every record, past that cut; both changes
+    would have merged without a conflict and left the string unbounded. Cut where every path
+    ends, with the parser's own rule (a character boundary, an ellipsis, a version that is no
+    plain `X.Y.Z` kept), the two agree whichever merges first.
 - **Migration `0050_claude_code.sql` is schema version 51.** Its number was reserved first, but
   SPEC-459's `0051_instance_limits.sql` merged first as version 50; a version is a migration's
   place in the list, so this one goes after it.
@@ -473,8 +488,8 @@ an older one.
   version without the condition, the statement doing nothing where a row exists, and a recount
   naming versions from lines outside its window.
 - `scripts/dev ci` at f9b2b5ce (the review's answers, with `dev` up to 4b59bce3 merged): exit
-  0, nextest 3639 passed / 16 skipped, and every other step as above. The commit after it
-  changes this file only.
+  0, nextest 3639 passed / 16 skipped, and every other step as above; the reviewer ran it at
+  fc6ff2f3 with the same result, and the new restart test 26 times (20 alone, 6 with its file).
 - `yulius security-scan`: "Security scan disabled: Vidoc is turned off in Yulius" (exit 0):
   disabled, not passed.
 - Not tested: anything that needs a signed-in Claude subscription, which the guest has none
