@@ -233,6 +233,15 @@ an older one.
 - **Migration `0050_claude_code.sql` is schema version 51.** Its number was reserved first, but
   SPEC-459's `0051_instance_limits.sql` merged first as version 50; a version is a migration's
   place in the list, so this one goes after it.
+- **A shared CI blocker, fixed with the parallel task's own commit.** This pull request's first
+  Yulius CI run (bb150014, at 8f5a2972) failed in `e2e` on `onboarding.e2e.ts` "a composer left
+  before its reads answer adds no second toast to the start" (`expected 2 to be 1`), exactly as
+  PR #1168's run had four minutes earlier with none of this change in it. The test set its hold
+  on `GET /api/auth/recovery` while an earlier read could still be on its way through the mock's
+  50 to 200 ms latency, so two reads reached the hold between two polls of the count. Task #432
+  had fixed it in fa895b4e (PR #1151, not merged yet): the hold is set once every read asked so
+  far has answered. That commit is cherry-picked here unchanged (3896abb2), so both pull requests
+  carry the identical change and whichever merges second merges cleanly.
 - **Not from this change:** `first_message::{a_draft_typed_during_the_opening_turn_is_left_alone,
   focus_and_mouse_reports_do_not_keep_the_goal_out,
   trust_words_after_the_session_started_are_no_trust_prompt}` and
@@ -245,8 +254,14 @@ an older one.
 - `scripts/dev ci` at 457d02f7 (the review fixes and `dev` up to bbd65665 merged): exit 0.
   Repository contracts, check, fmt, clippy `-D warnings` on Linux and for macOS, nextest 3402
   passed / 16 skipped, doctests, `cargo deny` (advisories, bans, licenses, sources ok), `cargo
-  shear`, doc. Earlier runs passed at a0f7ae35 (3318 tests) and e22a0d8a (3325). The commit after
-  457d02f7 changes this file only.
+  shear`, doc. Earlier runs passed at a0f7ae35 (3318 tests) and e22a0d8a (3325). The commits
+  after 457d02f7 change this file, one counter in the mock (`recoveryAnswered`) and
+  `onboarding.e2e.ts` only.
+- Yulius CI at 8f5a2972 (run bb150014): `e2e` 918 passed, 1 skipped, 1 failed (the onboarding
+  race above; `quality` was cancelled by that failure). Reproduced here by letting the recovery
+  reads asked within the same 3 s arrive together: the test and mock before the fix failed 3 of
+  3 (`expected 2 to be 1`, then `3` twice), with the cherry-picked fix 3 of 3 passed, and the
+  file passes with the mock as it is (14 passed).
 - The incident as a test, seen failing first:
   `claude_updates::a_release_that_lacks_the_default_model_is_refused` answered
   `Ok(Installed(2.1.311))` on the base (a release without `claude-fable-5-2` became current); it
