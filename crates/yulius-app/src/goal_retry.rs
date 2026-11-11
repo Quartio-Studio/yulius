@@ -21,6 +21,7 @@ use std::sync::atomic::Ordering;
 
 use yulius_domain::ids::TaskId;
 use yulius_domain::task::{Activity, TaskStatus};
+use yulius_domain::time::Timestamp;
 
 use crate::context::App;
 use crate::model::TaskRecord;
@@ -151,18 +152,24 @@ impl App {
     }
 
     /// The goal pause written at the limit where `task`'s session stays needs a person: asked
-    /// and audited once per limit. While the request made for this limit is open (it was asked
-    /// at or after Claude Code recorded the limit), reading the same pause again says nothing
-    /// new: a restart replays it, and the task may read otherwise meanwhile (the replay settles
-    /// the closed turn as Your turn, which can land after the request). The task is only put
-    /// back under Needs you. A refusal after a later prompt (Yulius's own, which ends no
-    /// request) is a new limit: it is audited, and the open request is kept.
+    /// and audited once per limit. The audit is the record of that: an entry written at or after
+    /// Claude Code recorded the limit says this limit was asked about (the request itself may
+    /// be an earlier limit's, kept, or the agent's own). Reading the same pause again says
+    /// nothing new then: a restart replays it, and the task may read otherwise meanwhile (the
+    /// replay settles the closed turn as Your turn, which can land after the request), so it is
+    /// only put back under Needs you. A refusal after a later prompt (Yulius's own, which ends
+    /// no request) is a new limit.
     async fn limit_goal_pause_needs_a_person(&self, task: &TaskRecord, notice: &str) {
         let limit_at = self.runtime(&task.id).limit_at_ms.load(Ordering::SeqCst);
-        let asked = matches!(
-            self.deps.store.task_needs_you(&task.id).await,
-            Ok(Some(open)) if open.action == RETRY_ACTION && open.at >= limit_at
-        );
+        // A limit Claude Code did not date cannot be told from an earlier one: it is asked about.
+        let asked = limit_at > 0
+            && matches!(
+                self.deps
+                    .store
+                    .last_audit(task.id.as_str(), AUDIT_ACTION, Timestamp(limit_at))
+                    .await,
+                Ok(Some(_))
+            );
         if !asked {
             self.goal_retries_spent(task, notice).await;
         } else if let Err(err) = self.set_task_activity(task, Activity::NeedsAttention).await {
