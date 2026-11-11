@@ -11,7 +11,7 @@ import { taskTime } from '../tasktime.js';
 import { taskInfo, activityLine, isLive, limitCause } from '../status.js';
 import { openDeliveryDialog, stageLabel } from '../actions.js';
 import { initials } from '../layout.js';
-import { modelLabel } from '../models.js';
+import { modelLabel, findEffort } from '../models.js';
 import { loadWaterfall } from '../stages.js';
 import { pipelineHref } from './pipeline.js';
 import { worktreeMissing } from './git.js';
@@ -108,10 +108,13 @@ export function mountTaskInfoView(ctx, sandbox, task) {
     // Explicit roles keep the table a table for screen readers when a narrow page stacks it.
     const cell = (label, content, attrs = {}) => h('td', { ...attrs, role: 'cell', dataset: { label } }, h('span', null, content));
     return h('table', { class: 'table ti-sessions', role: 'table', 'aria-label': 'Sessions' },
-      h('thead', { role: 'rowgroup' }, h('tr', { role: 'row' }, ['#', 'Subscription', 'Started', 'Ended', 'Open for', 'State'].map((label) => h('th', { scope: 'col', role: 'columnheader' }, label)))),
+      h('thead', { role: 'rowgroup' }, h('tr', { role: 'row' }, ['#', 'Subscription', 'Ran on', 'Started', 'Ended', 'Open for', 'State'].map((label) => h('th', { scope: 'col', role: 'columnheader' }, label)))),
       h('tbody', { role: 'rowgroup' }, list.map((a) => h('tr', { role: 'row' },
         cell('#', String(a.seq)),
         cell('Subscription', [accountRef(a.account_label, a.account_email, { unknown: ctx.isInstanceAdmin() }) || '—', a.launch_kind && a.launch_kind !== 'new' ? h('span', { class: 'muted xs' }, ` · ${LAUNCH_KIND[a.launch_kind] || a.launch_kind}`) : null]),
+        // What the session's transcript names: its Claude Code and the model that answered
+        // (SPEC-461 CCM-012); unknown until a line says.
+        cell('Ran on', [a.cli_version ? `Claude Code ${a.cli_version}` : null, a.model ? modelLabel(a.model) : null].filter(Boolean).join(' · ') || '—'),
         cell('Started', a.started_at ? relLong(a.started_at) : '—', { title: dateTime(a.started_at) }),
         cell('Ended', a.ended_at ? relLong(a.ended_at) : 'running', { title: a.ended_at ? dateTime(a.ended_at) : null }),
         cell('Open for', a.started_at ? duration(Math.max(0, (a.ended_at ? Date.parse(a.ended_at) : Date.now()) - Date.parse(a.started_at))) : '—'),
@@ -155,7 +158,11 @@ export function mountTaskInfoView(ctx, sandbox, task) {
       ['Origin', ORIGINS[current.origin] || current.origin || '—'],
       ['Mode', current.mode === 'prompt' ? 'Prompt' : 'Goal (works until it is met)'],
       ['Subscription', accountRef(current.account_label, current.account_email, { unknown: ctx.isInstanceAdmin() }) || '—'],
-      ['Models', m.models && m.models.length ? m.models.map((id) => modelLabel(id)).join(', ') : '—'],
+      // What the task asks Claude Code for, what answered (its transcripts' word) and which
+      // Claude Code runs it (SPEC-461 CCM-012).
+      ['Model', detail.model ? [modelLabel(detail.model), detail.model_default ? h('span', { class: 'muted' }, ' (default)') : null, detail.effort ? h('span', { class: 'muted' }, ` · ${(findEffort(detail.effort) || { name: detail.effort }).name} effort`) : null] : '—'],
+      ['Answered by', m.models && m.models.length ? m.models.map((id) => modelLabel(id)).join(', ') : '—'],
+      ['Claude Code', detail.cli_version ? [detail.cli_version, detail.cli_moves_to ? h('span', { class: 'muted' }, ` · moves to ${detail.cli_moves_to} when its turn ends`) : null] : '—'],
       ['Turns', m.turns === null || m.turns === undefined ? '—' : int(m.turns)],
       ['Subscription switches', String(m.switches ?? (detail.switches || []).length ?? 0)],
       ['Branch', current.branch ? h('code', null, current.branch) : 'not created yet'],
