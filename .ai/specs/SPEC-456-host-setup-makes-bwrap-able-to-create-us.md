@@ -119,6 +119,7 @@ the fix. Nobody writes an AppArmor rule by hand again.
 - [x] Gates and independent review
 - [x] After the merge: the review's last nits (issue #1165) and Settings → Instance in a browser
 - [x] The follow-up's review answered: a header's variables are read as AppArmor reads them, and a kernel limit is its own clause
+- [ ] The second review answered: a header's alternations, slashes and names are read as apparmor_parser reads them
 
 ## Acceptance criteria
 
