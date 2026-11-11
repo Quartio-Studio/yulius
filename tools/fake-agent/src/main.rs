@@ -492,7 +492,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
             "--credits-out" => options.credits_out = true,
             "--credits-reset-s" => {
                 let seconds: i64 = parse_number(&flag, args.next())?;
-                options.credits_reset_s = Some(seconds.clamp(1, 8 * 24 * 3600));
+                options.credits_reset_s = Some(seconds.clamp(1, 10 * 365 * 24 * 3600));
             }
             "--prompt" => options.prompt = Some(args.next().ok_or("--prompt needs a text")?),
             other => return Err(format!("unknown argument {other:?}")),

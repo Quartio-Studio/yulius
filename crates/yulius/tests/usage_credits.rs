@@ -9,8 +9,8 @@ use crate::pool_supervision::{
     usage, wait_for,
 };
 use crate::subscription_moves::{live_run, ready, run_accounts, running_on_first};
-use crate::support::TestResult;
 use crate::support::agents::{FakeAgentOptions, limit_resume_problems};
+use crate::support::{TestResult, hold_point, point_reached};
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -107,6 +107,57 @@ fn a_task_out_of_usage_credits_moves_on_by_itself() -> TestResult {
         assert!(problems.is_empty(), "{problems:?}");
         assert!(has_status(&app, &id, TaskStatus::Running).await);
         needs_nobody(&app, &id).await?;
+        // The limit is the model's though nothing says when it ends: its window is full with no
+        // reset, and the subscription's own windows and limit are untouched.
+        let (status, stored) = stored_usage(&app, "a-first").await?;
+        assert_eq!(stored["weekly_fable"]["used_percent"], 100.0, "{stored}");
+        assert!(stored["weekly_fable"]["resets_at"].is_null(), "{stored}");
+        assert_eq!(stored["limit_reached"], false, "{stored}");
+        assert!(stored["secondary"].is_null(), "{stored}");
+        assert_eq!(status, AccountStatus::Limited);
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// The reset comes from the session's transcript, which is the agent's own file (review round
+/// 1): one further ahead than any window lasts is not believed. The task still moves, but the
+/// subscription is out for the model only until a provider's reading, not until the year the
+/// record names.
+#[test]
+fn a_reset_no_window_could_have_does_not_outlive_a_provider_reading() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let app = build_with(
+            &data,
+            &fake,
+            probe.clone(),
+            refused_for_credits(Some(400 * 24 * 3600)),
+        )?;
+        let (id, user) = running_on_first(&app, &probe, &data).await?;
+        app.send_input(&id, b"hello\r").await?;
+        live_run(&app, &id, 2).await?;
+        assert_eq!(
+            run_accounts(&app, &id).await[1].as_deref(),
+            Some("b-second")
+        );
+        let (status, stored) = stored_usage(&app, "a-first").await?;
+        assert_eq!(stored["weekly_fable"]["used_percent"], 100.0, "{stored}");
+        assert!(
+            stored["weekly_fable"]["resets_at"].is_null(),
+            "a reset 400 days ahead is not believed: {stored}"
+        );
+        assert_eq!(status, AccountStatus::Limited);
+        probe.set("a-first", usage(0.0, 5 * HOUR, 10.0, 100));
+        refresh(&app, &user, "a-first").await?;
+        let (status, stored) = stored_usage(&app, "a-first").await?;
+        assert!(stored["weekly_fable"].is_null(), "{stored}");
+        assert_eq!(status, AccountStatus::Ok);
         stop(&app, &id).await?;
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
@@ -290,29 +341,6 @@ fn a_usage_credits_limit_binds_the_model_of_the_task_that_hit_it() -> TestResult
     Ok(())
 }
 
-/// Holds the server at `point` for the subscription `account` until the returned sender is used
-/// (or 60 s pass); the receiver says when it got there.
-fn hold_at(
-    point: Point,
-    account: &str,
-) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
-    let (reached, at) = std::sync::mpsc::channel();
-    let (go, wait) = std::sync::mpsc::channel::<()>();
-    yulius_app::race::on(point, Path::new(account), move || {
-        let _ = reached.send(());
-        let _ = wait.recv_timeout(Duration::from_secs(60));
-    });
-    (at, go)
-}
-
-/// Waits until the server reached the point `at` stands for.
-async fn reached(at: std::sync::mpsc::Receiver<()>) -> TestResult {
-    tokio::task::spawn_blocking(move || at.recv_timeout(Duration::from_secs(60)))
-        .await?
-        .map_err(|_| "the server never reached the point")?;
-    Ok(())
-}
-
 /// A limit Claude reports while a usage reading of the same subscription is under way is not
 /// written over by that reading (a reading wiped #159's limit on 2026-11-11). The reading is
 /// held once it has read what is stored, which knows no limit yet; the refusal arrives; the
@@ -346,8 +374,8 @@ fn a_limit_reported_during_a_usage_reading_is_kept() -> TestResult {
         refresh(&app, &user, second).await?;
 
         probe.set(first, usage(10.0, 4 * HOUR, 61.0, 100));
-        let (read, go_on) = hold_at(Point::UsageRead, first);
-        let (recording, pass) = hold_at(Point::LimitRecord, first);
+        let (read, go_on) = hold_point(Point::UsageRead, first);
+        let (recording, pass) = hold_point(Point::LimitRecord, first);
         pass.send(())?;
         let reading = {
             let (app, user) = (app.clone(), user.clone());
@@ -357,9 +385,9 @@ fn a_limit_reported_during_a_usage_reading_is_kept() -> TestResult {
                     .map_err(|err| err.to_string())
             })
         };
-        reached(read).await?;
+        point_reached(read).await?;
         app.send_input(&id, b"hello\r").await?;
-        reached(recording).await?;
+        point_reached(recording).await?;
         let written = wait_for("the limit's write", Duration::from_millis(500), || async {
             stored_usage(&app, first)
                 .await
@@ -402,6 +430,19 @@ fn a_task_paused_for_usage_credits_resumes_at_their_reset_by_itself() -> TestRes
         ready(&app, &id).await?;
         let started = app.now();
         app.send_input(&id, b"hello\r").await?;
+        // The reset Claude named, read while the task waits for it.
+        wait_for("the pause", Duration::from_secs(30), || async {
+            app.deps
+                .store
+                .pauses_since(started)
+                .await
+                .is_ok_and(|pauses| !pauses.is_empty())
+        })
+        .await?;
+        let (_, stored) = stored_usage(&app, "a-first").await?;
+        let resets = stored["weekly_fable"]["resets_at"]
+            .as_i64()
+            .ok_or("the reset")?;
         live_run(&app, &id, 2).await?;
         let attempts = app.deps.store.attempts(&id).await?;
         assert_eq!(
@@ -422,6 +463,12 @@ fn a_task_paused_for_usage_credits_resumes_at_their_reset_by_itself() -> TestRes
         assert!(
             waited < 60_000,
             "resumed at the reset, not at a recheck: {waited} ms"
+        );
+        let ended = pauses[0].ended_at.ok_or("the pause ended")?;
+        assert!(
+            ended.0 >= resets,
+            "not before the reset: ended {} ms early",
+            resets - ended.0
         );
         needs_nobody(&app, &id).await?;
         stop(&app, &id).await?;
