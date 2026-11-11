@@ -198,17 +198,19 @@ pub(crate) fn data_dir() -> Result<(tempfile::TempDir, PathBuf), BoxError> {
 }
 
 /// A goal task that got its goal (its launch prompt, SPEC-117), then moved by a person to
-/// another subscription: the new session opens with a turn on "Continue the task …" of 12 s
-/// (`--opening-turn-ms`), after which its goal is typed again (ONE-007). Returns the task, its
-/// creator's context and a writer's terminal on the new session during that turn.
+/// another subscription while the goal's turn still runs (`--goal-delay-ms` holds it open; a
+/// task moved after its turn ended gets nothing typed, SPEC-447 MOV-001): the new session opens
+/// with a turn on "Continue the task …" of 12 s (`--opening-turn-ms`), after which its goal is
+/// typed again (ONE-007). Returns the task, its creator's context and a writer's terminal on the
+/// new session during that turn.
 async fn goal_in_a_continued_turn(
     app: &Arc<App>,
     data: &Path,
 ) -> Result<(TaskId, AuthContext, yulius_app::terminal::TerminalAttach), BoxError> {
     let (sandbox, user) = seed(app, data, &["a-first", "b-second"]).await?;
     let id = new_task(app, &sandbox, &user, "Make the header blue", TaskMode::Goal).await?;
-    wait_for("the first goal", Duration::from_secs(60), || async {
-        screen(app, &id).contains("GOAL SET")
+    wait_for("the first goal's turn", Duration::from_secs(60), || async {
+        screen(app, &id).contains("GOAL SET") && activity(app, &id).await == Some(Activity::Working)
     })
     .await?;
     let ctx = AuthContext {
@@ -244,6 +246,8 @@ fn opening_turn() -> FakeAgentOptions {
     FakeAgentOptions {
         // Long enough that a busy test machine still types into the running turn.
         opening_turn_ms: Some(12_000),
+        // The goal's turn outlasts the move that cuts it, however fast its hooks are answered.
+        goal_delay_ms: Some(60_000),
         ..hooked()
     }
 }
