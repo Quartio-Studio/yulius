@@ -2515,6 +2515,71 @@ async fn a_raised_job_limit_starts_waiting_jobs_while_one_runs() -> TestResult {
     Ok(())
 }
 
+/// Two jobs per run: `a` runs until `<data>/go-a` exists and `b` until `<data>/go-b`; each
+/// writes `s` to `<data>/log` when it starts and `e` when it ends.
+fn two_logged_toml(data: &Path) -> String {
+    let dir = data.display();
+    let job = |name: &str| {
+        format!(
+            "[[ci.jobs]]\nname = \"{name}\"\ncpus = 1\ncommand = 'echo s >> \"{dir}/log\"; \
+             while [ ! -e \"{dir}/go-{name}\" ]; do sleep 0.05; done; echo e >> \"{dir}/log\"'\n"
+        )
+    };
+    format!("{}\n{}", job("a"), job("b"))
+}
+
+/// SPEC-459 HSL-007: lowered in Settings while jobs run, the limit lets them finish and starts
+/// no waiting job beside them: with two of four jobs running and the limit lowered to one, no
+/// two jobs run at once after the first of them ended.
+#[tokio::test]
+async fn a_lowered_job_limit_starts_no_job_beside_the_ones_it_lets_finish() -> TestResult {
+    use yulius_domain::limits::Limit;
+    let f = fixture_with(false, two_logged_toml).await?;
+    f.h.app.load_limits([(Limit::CiJobs, 2)].into()).await;
+    let admin = support::superadmin_bearer(&f.h).await?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    let in_state = |runs: &[(String, Vec<Value>)], state: &str| {
+        runs.iter()
+            .flat_map(|(_, jobs)| jobs)
+            .filter(|job| job["state"] == state)
+            .count()
+    };
+    until_runs(&f, |runs| {
+        in_state(runs, "running") == 2 && in_state(runs, "queued") == 2
+    })
+    .await?;
+    let lowered = call(
+        &f.h.router,
+        Method::PUT,
+        "/api/admin/limits/ci_max_jobs",
+        Some(serde_json::json!({ "value": 1 })),
+        &admin,
+    )
+    .await?;
+    assert_eq!(lowered.status, StatusCode::OK, "{}", lowered.body);
+    std::fs::write(f.data.join("go-a"), "")?;
+    until_runs(&f, |runs| in_state(runs, "passed") >= 1).await?;
+    std::fs::write(f.data.join("go-b"), "")?;
+    f.settle().await?;
+
+    let log = std::fs::read_to_string(f.data.join("log"))?;
+    let (mut running, mut ended) = (0_u32, 0_u32);
+    for line in log.lines() {
+        if line == "s" {
+            running += 1;
+            assert!(
+                ended == 0 || running <= 1,
+                "two at once under a limit of 1: {log}"
+            );
+        } else {
+            running = running.saturating_sub(1);
+            ended += 1;
+        }
+    }
+    assert_eq!(ended, 4, "{log}");
+    Ok(())
+}
+
 /// SPEC-435 JTL-001: a job cancelled while it waits for its turn ends cancelled without having
 /// started, and the turn still comes to a later run of the job.
 #[tokio::test]
