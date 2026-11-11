@@ -1796,6 +1796,7 @@ impl<'a> Move<'a> {
             key: self.state.key_comment(),
             firewall: p.firewall == Carried::Yes,
         };
+        let mut deleted_before = false;
         match self.remote.call(&finish) {
             Ok(reply) => {
                 for line in reply.lines {
@@ -1807,6 +1808,7 @@ impl<'a> Move<'a> {
                 if key.contains(remote::NO_KEY) {
                     // Deleted here, which only a finish does, once the new host's finish
                     // answered: that run's record did not survive. Nothing is waited for.
+                    deleted_before = true;
                     self.manual(
                         "one-time key",
                         format!(
@@ -1846,7 +1848,9 @@ impl<'a> Move<'a> {
             }
         }
         self.remote.forget();
-        self.changed("one-time key (old host)", "deleted");
+        if !deleted_before {
+            self.changed("one-time key (old host)", "deleted");
+        }
         // Without the key nothing more can be done from here: what failed above is a person's.
         self.state.finished = true;
         let _ = self.save_state();
