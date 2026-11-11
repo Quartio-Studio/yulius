@@ -108,15 +108,45 @@ pub(crate) fn ask(address: &str, key: &str, public_url: Option<&str>, limit: Dur
     }
 }
 
+/// Characters that reorder or hide text (bidirectional controls, zero-width marks): a line is
+/// read by a person, and must read as it is written.
+fn hidden(c: char) -> bool {
+    matches!(
+        c,
+        '\u{061c}'
+            | '\u{200b}'..='\u{200f}'
+            | '\u{202a}'..='\u{202e}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{2069}'
+            | '\u{feff}'
+    )
+}
+
 /// The checklist's "GitHub App" line for a move to `new`, from what the instance said.
 #[must_use]
 pub fn line(asked: Asked, new: &str) -> (HostOutcome, String) {
     // The answer came from another process, and may quote GitHub: nothing a terminal obeys.
-    let plain = |text: String| text.replace(|c: char| c.is_control(), " ");
+    let plain = |text: String| -> String {
+        text.chars()
+            .filter(|c| !hidden(*c))
+            .map(|c| if c.is_control() { ' ' } else { c })
+            .collect()
+    };
+    let new = new.trim_end_matches('/');
     match asked {
         Ok(None) => (
             HostOutcome::Ok,
             "no GitHub App is connected: nothing to register on GitHub".to_owned(),
+        ),
+        // "ok" is said only of the URL the move goes to.
+        Ok(Some(app)) if app.homepage_url.trim_end_matches('/') != new => (
+            HostOutcome::Manual,
+            plain(format!(
+                "the instance answers for {}, not for {new}: change YULIUS_PUBLIC_URL where it \
+                 still names the old URL (an environment file?) and restart the service. {}",
+                app.homepage_url.trim_end_matches('/'),
+                super::github_note(new)
+            )),
         ),
         Ok(Some(app)) if app.state == "registered" => (
             HostOutcome::Ok,

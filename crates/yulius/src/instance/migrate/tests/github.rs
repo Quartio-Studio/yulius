@@ -181,11 +181,45 @@ fn the_checklist_line_says_what_github_answered() {
     );
     assert!(detail.contains("settings/apps/<app>"), "{detail}");
     assert!(detail.contains("connection refused"), "{detail}");
-    // Nothing a terminal would obey travels in a line.
+    // Nothing a terminal would obey, and nothing that reorders or hides text, travels in a line.
     let mut odd = facts("unknown", NEW);
-    odd.reason = Some("it said\u{1b}[2J\nmanual  fake".into());
+    odd.reason =
+        Some("it said\u{1b}[2J\nmanual  fake \u{202e}desrever\u{2066}\u{200b}\u{feff} end".into());
     let (_, detail) = line(Ok(Some(odd)), NEW);
     assert!(!detail.chars().any(char::is_control), "{detail:?}");
+    for hidden in ['\u{202e}', '\u{2066}', '\u{200b}', '\u{feff}'] {
+        assert!(!detail.contains(hidden), "{detail:?}");
+    }
+    assert!(
+        detail.contains("it said") && detail.contains("end"),
+        "{detail:?}"
+    );
+}
+
+/// MVC-022: "ok" is said only of the URL the move goes to. An instance that answers for another
+/// one (its unit or an environment file still names the old URL) is a person's to look at.
+#[test]
+fn an_answer_about_another_url_is_never_ok() {
+    let old = "https://old.example";
+    for state in ["registered", "missing", "unknown"] {
+        let (outcome, detail) = line(Ok(Some(facts(state, old))), NEW);
+        assert_eq!(outcome, HostOutcome::Manual, "{state}");
+        assert!(
+            detail.contains("answers for https://old.example, not for https://new.example"),
+            "{state}: {detail}"
+        );
+        assert!(detail.contains("YULIUS_PUBLIC_URL"), "{state}: {detail}");
+        // What to register for the new URL is still said.
+        assert!(
+            detail.contains("https://new.example/api/auth/github/callback"),
+            "{state}: {detail}"
+        );
+        assert!(!detail.contains("GitHub accepts"), "{state}: {detail}");
+    }
+    // A trailing slash is the same URL.
+    let mut slash = facts("registered", NEW);
+    slash.homepage_url = format!("{NEW}/");
+    assert_eq!(line(Ok(Some(slash)), NEW).0, HostOutcome::Ok);
 }
 
 /// MVC-022: the step of the new host asks the server there, with the key of its data directory.
