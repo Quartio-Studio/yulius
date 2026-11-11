@@ -416,9 +416,10 @@ container: at `b74138b1` for the first runs, at `39c85810` for the runs after re
   - The kernel's "conflicting profile attachments" message, seen in the earlier guest run, was
     in neither guest's log this time (`kauditd_printk_skb: … callbacks suppressed`): the
     line does not promise it, and the guide says the log may show it.
-  - Gates at the head that carries this section: `cargo check --workspace --all-targets`,
-    `cargo fmt --all -- --check`, `cargo clippy -p yulius --all-targets -- -D warnings`,
-    `cargo test -p yulius --lib` (437 pass), `python3 scripts/check_repository.py` and
+  - Gates at the head that carries this section, `dev` merged in (`e444288b`):
+    `cargo check --workspace --all-targets`, `cargo fmt --all -- --check`,
+    `cargo clippy -p yulius --all-targets -- -D warnings`, `cargo test -p yulius --lib` (450
+    pass; 437 before the merge), `python3 scripts/check_repository.py` and
     `spec_check` here; the whole gate (`scripts/dev ci`) and e2e are Yulius CI's run on the
     pull request's head. The security scan is turned off for this project (Vidoc): nothing was
     scanned.
