@@ -263,7 +263,7 @@ Settings → Instance (slice D)
 - [x] Units, update helper, proxy and firewall carried to the target
 - [x] `yulius instance migrate`: plan, confirm, prepare, frozen copy, proof, start, redirect, finish, with resume, status and abort
 - [x] Tasks that were live come back by themselves at the first start after a move
-- [ ] Operations guide §7, architecture, product summary, changes
+- [x] Operations guide §7, architecture, product summary, changes
 - [x] Chained tasks created for slices B, C and D
 - [ ] Gates run and the independent review answered
 
