@@ -61,6 +61,7 @@ name says what is reserved and a name that works, so nobody guesses one rename a
 - [x] Anthropic names reserved by what the agent CLI and SDKs read (fix, ADR-0292, docs)
 - [x] Review round 1: own-key forms under the reserved prefix, refusals that say why
 - [x] Independent review answered and gates green
+- [x] e2e tests wait for what they act on, on the faster CI machine
 
 ## Acceptance criteria
 
@@ -127,6 +128,15 @@ name says what is reserved and a name that works, so nobody guesses one rename a
   sandboxed toolset shell drops `ANTHROPIC_*`.
 - Not tested here: the Add agent secret dialog in a browser (the server message is what it shows;
   the e2e suite runs in Yulius CI). Vidoc: switched off for this project (`YULIUS_VIDOC=off`).
+- e2e (shared CI blocker, separate commits): Yulius CI's e2e job moved to a 21-CPU host (10
+  workers, 4 min instead of 24) and every pull request failed it (#1150, #1151, this one), on
+  tests no change touched. Each was a test acting before the state it checks: a tool opened
+  before the page had its sandbox (the Superagent then shows All sandboxes, the Shell and Notes
+  miss their focus), the production protection switch's stored value read while it was sent, and
+  text typed before README.md was in the editor (Monaco's placeholder model, "Model is
+  disposed!", #1087, whose app fix is task #434's). `openSuperagent` and `openShellPanel` wait
+  for the page's heading; four tests wait for task #12's; one polls the stored switch; one waits
+  for README.md's text. `npx e2e run`: 902 passed, 2 skipped; each fixed file 2 to 4 runs green.
 
 ## Decisions
 
