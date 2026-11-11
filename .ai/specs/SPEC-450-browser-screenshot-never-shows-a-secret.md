@@ -62,6 +62,12 @@ with `browser_fill_secret`. A password field, drawn as dots, keeps screenshots w
   site: in Chromium an out-of-process frame is out of the probe's reach, listed by
   `Page.getFrameTree` without its address or not at all, and only its own `iframe` target
   (`Target.getTargets`, `parentFrameId`) says where it is (seen on Google Chrome).
+- **Review round 4.** No leak path was left, but the rule that a filled document needs the value
+  whole in a password field refused a single-page app's dashboard after a sign-in: the field goes
+  away while the document stays (`pushState`), and the site was then exposed until Yulius
+  restarted. An edit and its Enter in one `browser_type` were checked only after the Enter had
+  submitted the form, and a frame inside another out-of-process frame names a parent no target
+  lists.
 
 ## Requirements
 
@@ -73,17 +79,19 @@ with `browser_fill_secret`. A password field, drawn as dots, keeps screenshots w
   each document a value went into (the main frame's loader id from `Page.getFrameTree`, read
   before and after typing) and each host (at most 256 each). The `BrowserManager` keeps this per
   sandbox, so a restarted browser (idle, crash) starts with it; only documents, which belong to
-  the old process, are forgotten. A fill whose document cannot be told, or beyond 32 values, is
-  refused before anything is typed.
+  the old process, are forgotten (a value lost after typing, below, keeps refusing). A fill whose
+  document cannot be told, or beyond 32 values, is refused before anything is typed.
 - **SSC-002 Only a password field keeps a value out of the pixels.** Right after typing, the page
   is read. Unless the value is whole in a password field and nowhere in `shown`, its host (before
-  and after a navigation meanwhile) is exposed: every page of it is refused from then on. In a
-  document a value was typed into, a screenshot also needs that value whole in a password field
-  and nowhere in `shown`, and any other typing there (`browser_type`, a user name) checks the same
-  at once, exposing the host when it fails. A value edited in place, cut or reformatted, typed into
-  a cross-origin frame or revealed is therefore refused, and so is every page of its site. When
-  the page after typing cannot be read, or its document is lost, or a bound is passed, every
-  screenshot of that browser is refused.
+  and after a navigation meanwhile) is exposed: every page of it is refused from then on. A value
+  cut or reformatted by the field, or typed into a cross-origin frame, is therefore refused, and
+  so is every page of its host. Any other typing into a document a value went into
+  (`browser_type`, a user name) may edit it (a character into its middle). A value whole in a
+  password field before the typing and not after a line of it, checked before that line's Enter
+  may submit the form, exposes the host. A value gone from the page is no edit: a single-page
+  app's sign-in removes the field and keeps the document, and keeps screenshots. When the page
+  after typing cannot be read, or its document is lost, or a bound is passed, every screenshot is
+  refused until Yulius restarts.
 - **SSC-003 Any page that may show a secret is refused.** Before capturing any tab, once a value
   was typed or the sandbox has agent secrets, a probe reads the page. `shown` is the `textContent`
   of its documents (all but `head`), open shadow roots, same-origin frames, objects and embeds,
@@ -119,7 +127,8 @@ with `browser_fill_secret`. A password field, drawn as dots, keeps screenshots w
 - [x] Review round 2: exposed origins, the redactor's check and a second look after the capture
 - [x] Independent review rounds 1 and 2 answered
 - [x] Review round 3: edits in filled documents, memory across browser restarts, framed sites
-- [ ] Independent review round 4 approves the head
+- [x] Review round 4: a single-page sign-in keeps screenshots, edits checked as typed
+- [ ] Independent review round 5 approves the head
 - [ ] Gates green with evidence
 
 ## Acceptance criteria
@@ -157,7 +166,9 @@ with `browser_fill_secret`. A password field, drawn as dots, keeps screenshots w
 - `crates/yulius-browser/tests/real_chromium.rs` (opt-in, `YULIUS_TEST_CHROMIUM`): on a real page
   a password fill keeps screenshots, its reveal and a text-field fill on another origin refuse
   them, and a third site framing the filled one is refused, so the probe expression, the isolated
-  world, the frame tree and the `iframe` targets work in Chromium.
+  world, the frame tree and the `iframe` targets work in Chromium. The page's named elements
+  shadow `document.documentElement` and `document.querySelectorAll`, which the probe reads through
+  the prototypes.
 - `crates/yulius-browser/tests/instance.rs`:
   - `typed_secrets_refuse_screenshots_while_a_page_may_show_them`: an unseen fill and its origin,
     the isolated world's frame and context, another origin echoing the value, probe answers over
@@ -170,11 +181,15 @@ with `browser_fill_secret`. A password field, drawn as dots, keeps screenshots w
     unknown document.
   - `nothing_slips_between_the_look_and_the_capture`: input waits, a page changed during the
     capture drops the image.
-  - `typing_into_a_filled_password_field_can_expose_its_site`.
-  - `a_page_framing_a_filled_site_is_not_captured`: frame tree and `iframe` targets.
+  - `typing_into_a_filled_password_field_can_expose_its_site`: an edit, and an edit with its
+    Enter in one call.
+  - `a_page_framing_a_filled_site_is_not_captured`: frame tree and `iframe` targets, a parent
+    nothing lists, another tab's.
   - `a_long_key_fits_and_its_armour_is_not_a_secret`.
-- `crates/yulius-browser/tests/manager.rs` `typed_secrets_outlive_the_browser`.
+  - `a_single_page_sign_in_keeps_screenshots`.
   - `a_page_showing_any_hidden_secret_is_not_captured`.
+- `crates/yulius-browser/tests/manager.rs`: `typed_secrets_outlive_the_browser`,
+  `a_lost_secret_refuses_screenshots_after_a_restart`.
 
 ## Decisions
 
@@ -183,11 +198,13 @@ with `browser_fill_secret`. A password field, drawn as dots, keeps screenshots w
   watches, misses values the page echoes outside fields, cannot reach cross-origin frames, and
   fails open when the style does not apply. A refusal keeps every case closed, and
   `browser_snapshot` reads the page with the value redacted.
-- **Judge a filled place by where the value is, not by where it is not.** An exact substring
-  search is defeated by editing the value; requiring it whole in a password field is not. A value
-  that went anywhere else exposes its whole origin, since the site may show an edited copy on any
-  of its pages. That costs screenshots of that site until the browser stops (30 minutes idle), not
-  the sign-in with a password.
+- **Judge a fill and each edit by where the value is, not by where it is not.** An exact
+  substring search is defeated by editing the value; requiring it whole in a password field right
+  after the fill, and after each line typed into its document, is not. A value that went anywhere
+  else exposes its host, since the site may show an edited copy on any of its pages. That costs
+  screenshots of that host until Yulius restarts, not the sign-in with a password. At screenshot
+  time a filled document is not required to still hold the value: a single-page app's sign-in
+  removes the field, which is no edit, and edits are only typed.
 - **Per sandbox, not per tab or per browser, plus the redactor's matcher.** Tabs are the agent's
   to open and close, and a browser stops when the agent leaves it idle; values and exposed hosts
   stay with the sandbox until Yulius restarts (bounded). The matcher the MCP results are redacted
@@ -206,8 +223,15 @@ with `browser_fill_secret`. A password field, drawn as dots, keeps screenshots w
 - Pixels a person sees (the viewer's live view), and input a person gives on the virtual display
   (XTest mouse and keys, which do not pass through the instance's lock): the person may see what
   they allowed.
-- A value drawn in a canvas or an image, or shown through CSS (`content: attr(…)`); an edited copy
-  on another site than the one it was typed into; an edited copy kept by the site past a Yulius
-  restart (the memory is in the server process); a never-filled agent secret inside a frame of
-  another site.
+- A value drawn in a canvas or an image, or shown through CSS (`content: attr(…)`), or in a
+  closed shadow root.
+- An edited copy:
+  - on another host than the one it was typed into (exposure is by host, not by registrable
+    domain);
+  - kept by the site past a Yulius restart (the memory is in the server process);
+  - seen from another sandbox's browser signed in to the same account;
+  - made by the page or the site itself after a fill that stayed whole in a password field (a
+    script reformatting it, a server truncating it).
+  Exact copies are still refused by the redactor's matcher.
+- A never-filled agent secret inside a frame of another site.
 - A page changing and changing back between the two looks of one screenshot.

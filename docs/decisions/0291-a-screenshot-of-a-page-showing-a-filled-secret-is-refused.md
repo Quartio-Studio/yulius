@@ -38,9 +38,11 @@ The agent drives tabs, clicks and typing, and can run tools concurrently.
   typed; past another bound every screenshot of that browser is refused.
 - **Only a password field keeps a value out of the pixels.** Right after typing, the page is read.
   Unless the value is whole in a password field and shown nowhere, its host is exposed, and every
-  page of it is refused from then on. Any other typing into a document a value went into checks
-  the same at once (an edit in place). A page that cannot be read then refuses every screenshot of
-  that browser.
+  page of it is refused from then on. Any other typing into a document a value went into may edit
+  it in place: a value whole in a password field before the typing and not after a line of it
+  (checked before that line's Enter) exposes the host. A value gone from the page is no edit (a
+  single-page sign-in). A page that cannot be read after a fill refuses every screenshot until
+  Yulius restarts.
 - **Look at every page before the capture.** Once a value was typed or the sandbox has agent
   secrets, a probe reads the page about to be captured, in any tab. It runs in an isolated world
   (`Page.createIsolatedWorld`), and returns:
@@ -53,14 +55,14 @@ The agent drives tabs, clicks and typing, and can run tools concurrently.
   - the page's host is exposed;
   - it frames a host a value went into, or an exposed one, where the probe cannot read: another
     host in the frame tree, or an `iframe` target (`Target.getTargets`) whose parent frame is the
-    tab's or not said, as Chromium lists an out-of-process frame without its address or not at
-    all in the tree;
-  - `shown` holds a remembered value, which also exposes the origin;
-  - the page is a document a value was typed into, and that value is not whole in a password field
-    and shown nowhere, which also exposes the origin;
+    tab's, not said, or no target listed, as Chromium lists an out-of-process frame without its
+    address or not at all in the tree;
+  - `shown` holds a remembered value, which also exposes the host;
   - `shown` holds any agent secret the redactor's matcher finds for the sandbox (values, their
     encodings, lines);
   - the document, the frame targets, the page or the agent secrets cannot be read.
+- **Read the page as it is.** The probe reads the document's own properties through the
+  prototypes, so a page's named elements cannot hide its text.
 - **Leave no gap around the capture.** A screenshot holds the instance's input lock from the probe
   to its last capture, and the agent's typing and clicks take it too. After the capture, the page
   is read again, and the image is dropped unless the same document passes again.
@@ -81,6 +83,9 @@ The agent drives tabs, clicks and typing, and can run tools concurrently.
   and a browser stops after 30 minutes without use, while the site keeps what was typed.
 - **Check exposure only at screenshots**: a value edited in a password field and saved, with no
   screenshot in between, reaches the next page unnoticed.
+- **Require the value in a password field of its document at every screenshot** (the third
+  version): a single-page app's sign-in removes the field and keeps the document, which then
+  refused its dashboard and exposed the site.
 - **Read frames from `Page.getFrameTree` only**: an out-of-process frame is listed there without
   its address, or not at all.
 - **Record at fill time whether the field was a password field**: it misses a revealed password
@@ -99,7 +104,10 @@ The agent drives tabs, clicks and typing, and can run tools concurrently.
 - A screenshot in a sandbox with agent secrets costs a `Page.getFrameTree`, a `Target.getTargets`,
   an isolated world and a probe, twice; one without any captures as before. Agent input waits for a
   screenshot's capture.
-- Not detected: a value drawn in a canvas, an image or through CSS (`content: attr(…)`); an edited
-  copy on another site, or kept by the site past a Yulius restart; a never-filled agent secret in a
-  frame of another site; a page that changes and changes back between the two looks. Input a person
-  gives on the virtual display does not take the lock; the person's own live view is not affected.
+- Not detected: a value drawn in a canvas, an image, through CSS (`content: attr(…)`) or in a
+  closed shadow root; an edited copy on another host, kept by the site past a Yulius restart, seen
+  from another sandbox's browser, or made by the page or the site after a fill that stayed in a
+  password field; a never-filled agent secret in a frame of another site; a page that changes and
+  changes back between the two looks. Exact copies are still refused by the redactor's matcher.
+  Input a person gives on the virtual display does not take the lock; the person's own live view
+  is not affected.

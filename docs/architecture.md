@@ -287,9 +287,9 @@ redacted, so the `BrowserManager` keeps per sandbox, across browser restarts, ea
 a password field. Before and after a capture the browser instance reads the page's text and
 fields with a probe in an isolated world and its frames (frame tree, `iframe` targets), and
 searches them in Yulius, also with the redactor's matcher, holding the input lock throughout:
-`browser_screenshot` is refused while the page shows an agent secret, is on an exposed host,
-frames a host a secret went into, is a document one was typed into without it whole in a password
-field, or cannot be read; password sign-ins keep screenshots
+`browser_screenshot` is refused while the page shows an agent secret, is on an exposed host
+(a value went outside a password field, or was edited as typed), frames a host a secret went
+into, or cannot be read; password sign-ins keep screenshots
 ([SPEC-450](../.ai/specs/SPEC-450-browser-screenshot-never-shows-a-secret.md),
 [decision 0291](decisions/0291-a-screenshot-of-a-page-showing-a-filled-secret-is-refused.md)).
 

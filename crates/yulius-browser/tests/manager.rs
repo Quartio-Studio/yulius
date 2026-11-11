@@ -236,6 +236,54 @@ async fn typed_secrets_outlive_the_browser() -> TestResult {
     Ok(())
 }
 
+/// SPEC-450: a secret whose page was lost after typing refuses every screenshot, also in the next
+/// browser of the sandbox: the site may keep it.
+#[tokio::test]
+async fn a_lost_secret_refuses_screenshots_after_a_restart() -> TestResult {
+    let fake = FakeCdpServer::start().await?;
+    let dir = tempfile::tempdir()?;
+    let exe = write_fake_chromium(
+        dir.path(),
+        "fake-chromium",
+        FakeChromium::Ready {
+            port: fake.pipe_port(),
+        },
+    )?;
+    let manager = BrowserManager::new(config(exe, dir.path()));
+    let sandbox = SandboxId::parse("sbx-lost")?;
+    let profile = manager.default_profile_dir(&sandbox);
+    let first = manager.ensure(&sandbox, &profile).await?;
+    let tab = first.tabs().first().ok_or("no tab")?.id.clone();
+    fake.set_password_field("#pw", true);
+    let reads = fake.calls_for("Page.getFrameTree").len();
+    fake.fail_nth("Page.getFrameTree", reads + 2, -32000, "no frame tree");
+    first
+        .tool_type_secret(&TypeParams {
+            tab_id: tab,
+            text: "pw-lost-secret-2".into(),
+            selector: Some("#pw".into()),
+        })
+        .await?;
+    assert!(manager.shutdown(&sandbox).await?);
+
+    let second = manager.ensure(&sandbox, &profile).await?;
+    let tab = second.tabs().first().ok_or("no tab")?.id.clone();
+    second
+        .tool_navigate(&NavigateParams {
+            tab_id: tab.clone(),
+            url: "https://elsewhere.example/".into(),
+        })
+        .await?;
+    assert!(matches!(
+        second
+            .tool_screenshot_within(&ScreenshotParams { tab_id: tab }, 100_000)
+            .await,
+        Err(BrowserError::SecretOnPage)
+    ));
+    assert!(manager.shutdown(&sandbox).await?);
+    Ok(())
+}
+
 #[tokio::test]
 async fn shutdown_escalates_to_sigkill_for_a_browser_ignoring_sigterm() -> TestResult {
     let fake = FakeCdpServer::start().await?;
