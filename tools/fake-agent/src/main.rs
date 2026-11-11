@@ -30,7 +30,9 @@
 //!   a delay (≤ 60 s), `/size` prints `SIZE <rows> <cols>` of its terminal (via `stty size`),
 //!   `/read <path>` prints `READ <file name> OK <n>` or `READ <file name> ERR <kind>` (containment
 //!   probe; never the contents), `/sh <command>` runs `/bin/sh -c <command>` on the terminal and
-//!   prints `SH EXIT <code>` (like an agent's Bash tool),
+//!   prints `SH EXIT <code>` (like an agent's Bash tool), `/bg <command>` leaves a background
+//!   shell running `<command>` as that tool's `run_in_background` does and prints
+//!   `BACKGROUND <pid>`,
 //!   `/flood <n>` floods like `--mode flood` on demand. `/clear <id>` starts session `<id>` in the
 //!   same process as Claude Code's `/clear` does: `SessionEnd` (`reason: clear`) for the old
 //!   session, a transcript `<id>.jsonl` next to the old one, `SessionStart` (`source: clear`)
@@ -1923,6 +1925,19 @@ fn echo_loop(options: &Options, session_id: &str) -> io::Result<i32> {
                     .status();
                 let code = status.ok().and_then(|s| s.code()).unwrap_or(-1);
                 say(&format!("SH EXIT {code}"))?;
+            }
+            _ if line.starts_with("/bg ") => {
+                // Leaves a background shell shaped like Claude Code's Bash tool
+                // (`run_in_background`) running `<command>`; it is not waited for and wakes
+                // nobody.
+                let command = line["/bg ".len()..].trim();
+                let child = Command::new("/bin/sh")
+                    .args(["-c", &format!("{command} && pwd -P >| /dev/null")])
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .spawn()?;
+                say(&format!("BACKGROUND {}", child.id()))?;
             }
             _ if line.starts_with("/later ") => {
                 let mut parts = line.splitn(3, ' ').skip(1);

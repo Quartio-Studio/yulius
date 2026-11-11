@@ -696,19 +696,20 @@ async fn the_doctor_fails_on_a_claude_code_without_the_default_model() -> TestRe
         text.contains("npm's `latest` (chosen in Settings, Instance)"),
         "{text}"
     );
-    assert!(text.contains("2.1.322, the newest, was refused"), "{text}");
+    assert!(text.contains("2.1.322, the newest, does not"), "{text}");
     assert!(!text.contains(HOST_INSTALL), "{text}");
 
     // A release that knows it arrives: the next check installs it and the doctor is content.
-    s.stub.release("2.1.322", good("2.1.322")?);
+    s.stub.tag("latest", "2.1.323");
+    s.stub.release("2.1.323", good("2.1.323")?);
     assert_eq!(
         service.check().await,
-        Some(CheckResult::Installed(v("2.1.322")))
+        Some(CheckResult::Installed(v("2.1.323")))
     );
     let (health, text) = doctor_line(&s.root, Some(&s.host), Channel::Latest);
     assert_eq!(health, Health::Ok, "{text}");
     assert!(
-        text.starts_with("2.1.322, kept current by Yulius"),
+        text.starts_with("2.1.323, kept current by Yulius"),
         "{text}"
     );
 
@@ -770,6 +771,12 @@ async fn every_check_is_recorded_for_the_page_and_the_doctor() -> TestResult {
     assert_eq!(file.latest.as_deref(), Some("2.1.322"));
     assert!(leftovers(&s.root).iter().all(|name| name == "status.json"));
 
+    // A restarted server shows that refusal before its own first check.
+    let service = ClaudeCode::new(updater_of(&s)?, Channel::Latest, false);
+    assert!(matches!(
+        service.status().await.result,
+        Some(CheckResult::Refused(_))
+    ));
     // Installed: runs get Yulius's copy, which knows every model.
     s.stub.release("2.1.322", good("2.1.322")?);
     assert_eq!(
@@ -983,11 +990,25 @@ async fn a_release_that_lacks_the_default_model_is_refused() -> TestResult {
     assert_eq!(s.updater.current(), Some(v("2.1.300")));
     assert_eq!(installed(&s.root), ["2.1.300"]);
     assert!(leftovers(&s.root).is_empty(), "{:?}", leftovers(&s.root));
-    // The same release with the model is taken.
-    s.stub.release("2.1.311", good("2.1.311")?);
+    // A published version never changes: the next checks refuse it again without downloading
+    // and reading it once more.
+    let downloads = s.stub.downloads.load(Ordering::SeqCst);
+    for _ in 0..2 {
+        let again = s.updater.check(Channel::Latest).await;
+        assert!(
+            again
+                .as_ref()
+                .is_err_and(|e| e.refused().len() == 1 && e.refused()[0].version == v("2.1.311")),
+            "{again:?}"
+        );
+    }
+    assert_eq!(s.stub.downloads.load(Ordering::SeqCst), downloads);
+    // The next release knows the model: it is taken.
+    s.stub.tag("latest", "2.1.312");
+    s.stub.release("2.1.312", good("2.1.312")?);
     assert_eq!(
         s.updater.check(Channel::Latest).await?,
-        Outcome::Installed(v("2.1.311"))
+        Outcome::Installed(v("2.1.312"))
     );
     Ok(())
 }
@@ -1022,20 +1043,21 @@ async fn stable_falls_forward_to_latest_for_the_default_model() -> TestResult {
     assert!(s.updater.current().is_none());
     assert!(leftovers(&s.root).is_empty(), "{:?}", leftovers(&s.root));
 
-    // `latest` knows it: it is taken, though the channel is `stable`.
-    s.stub.release("2.1.322", good("2.1.322")?);
+    // The next `latest` knows it: it is taken, though the channel is `stable`.
+    s.stub.tag("latest", "2.1.323");
+    s.stub.release("2.1.323", good("2.1.323")?);
     assert_eq!(
         s.updater.check(Channel::Stable).await?,
-        Outcome::Installed(v("2.1.322"))
+        Outcome::Installed(v("2.1.323"))
     );
     assert_eq!(
         agent_cli_source(&s.root, &s.host),
-        s.root.join("versions/2.1.322").canonicalize()?
+        s.root.join("versions/2.1.323").canonicalize()?
     );
     // From then on stable's older release changes nothing.
     assert_eq!(
         s.updater.check(Channel::Stable).await?,
-        Outcome::UpToDate(v("2.1.322"))
+        Outcome::UpToDate(v("2.1.323"))
     );
     Ok(())
 }
@@ -1079,8 +1101,10 @@ async fn stable_names_both_refusals_and_stays_stable_while_the_default_is_known(
     // is not asked for.
     host_knows(&s.host, "2.1.292", &OFFERED)?;
     s.stub.release("2.1.318", good("2.1.318")?);
+    // (A server started since: it reads stable's release itself.)
+    let restarted = updater_of(&s)?;
     let downloads = s.stub.downloads.load(Ordering::SeqCst);
-    let refused = s.updater.check(Channel::Stable).await;
+    let refused = restarted.check(Channel::Stable).await;
     let error = refused
         .as_ref()
         .err()
@@ -1094,17 +1118,17 @@ async fn stable_names_both_refusals_and_stays_stable_while_the_default_is_known(
     );
     assert!(s.updater.current().is_none());
 
-    // Stable's release knows it: taken, and `latest`'s still not asked for.
-    s.stub.release("2.1.311", good("2.1.311")?);
-    s.stub.release("2.1.318", good("2.1.318")?);
+    // Stable's next release knows it: taken, and `latest`'s still not asked for.
+    s.stub.tag("stable", "2.1.312");
+    s.stub.release("2.1.312", good("2.1.312")?);
     assert_eq!(
-        s.updater.check(Channel::Stable).await?,
-        Outcome::Installed(v("2.1.311"))
+        restarted.check(Channel::Stable).await?,
+        Outcome::Installed(v("2.1.312"))
     );
     let downloads = s.stub.downloads.load(Ordering::SeqCst);
     assert_eq!(
-        s.updater.check(Channel::Stable).await?,
-        Outcome::UpToDate(v("2.1.311"))
+        restarted.check(Channel::Stable).await?,
+        Outcome::UpToDate(v("2.1.312"))
     );
     assert_eq!(s.stub.downloads.load(Ordering::SeqCst), downloads);
     Ok(())
@@ -1168,5 +1192,75 @@ fn the_composer_offers_the_models_the_server_checks() -> TestResult {
         .collect();
     assert_eq!(ids, OFFERED, "models.js and OFFERED_CLAUDE_MODELS differ");
     assert_eq!(OFFERED[0], yulius_domain::harness::DEFAULT_CLAUDE_MODEL);
+    Ok(())
+}
+
+/// Review round 1: requests that arrive together (a channel changed twice before the loop woke)
+/// never leave the card "checking": the loop runs the follow-up itself, whatever became of its
+/// wake-ups.
+#[tokio::test]
+async fn requests_that_arrive_together_do_not_leave_it_checking() -> TestResult {
+    let s = setup("2.1.292").await?;
+    s.stub.tag("stable", "2.1.311");
+    s.stub.tag("latest", "2.1.322");
+    s.stub.release("2.1.311", good("2.1.311")?);
+    s.stub.release("2.1.322", good("2.1.322")?);
+    let service = ClaudeCode::new(updater_of(&s)?, Channel::Off, false);
+    let looping = service.start_every(Duration::from_secs(3600), Duration::from_secs(3600));
+    for _ in 0..20 {
+        service.check_now();
+        service.set_channel(Channel::Stable, true);
+        service.set_channel(Channel::Latest, true);
+        assert!(service.is_checking());
+        until("the checks ended", || !service.is_checking()).await;
+    }
+    assert_eq!(s.updater.current(), Some(v("2.1.322")));
+    // Nothing is left pending: a later request is a check again.
+    s.stub.tag("latest", "2.1.323");
+    s.stub.release("2.1.323", good("2.1.323")?);
+    service.check_now();
+    until("the later check", || {
+        s.updater.current() == Some(v("2.1.323"))
+    })
+    .await;
+    until("it ended", || !service.is_checking()).await;
+    looping.abort();
+    Ok(())
+}
+
+/// Review round 1: when runs already get npm's newest release and it does not know the default
+/// model, the doctor does not promise a check or the host's install: no release knows it yet.
+#[tokio::test]
+async fn the_doctor_says_when_no_release_knows_the_default_model() -> TestResult {
+    let s = setup("2.1.322").await?;
+    host_knows(&s.host, "2.1.322", &OFFERED[1..])?;
+    s.stub.tag("latest", "2.1.322");
+    s.stub.tag("stable", "2.1.311");
+    let service = ClaudeCode::new(updater_of(&s)?, Channel::Latest, false);
+    assert_eq!(
+        service.check().await,
+        Some(CheckResult::UpToDate(v("2.1.322")))
+    );
+    let (health, text) = doctor_line(&s.root, Some(&s.host), Channel::Latest);
+    assert_eq!(health, Health::Fail, "{text}");
+    assert!(
+        text.contains("No Claude Code release knows it yet (2.1.322, the newest, does not)"),
+        "{text}"
+    );
+    assert!(!text.contains(HOST_INSTALL), "{text}");
+
+    // A refusal the host's own update has overtaken is history, not a warning.
+    s.stub.tag("latest", "2.1.330");
+    s.stub
+        .release("2.1.330", knowing("2.1.330", &OFFERED[1..])?);
+    assert!(matches!(
+        service.check().await,
+        Some(CheckResult::Refused(_))
+    ));
+    host_install_manifest(&s.host, "2.1.400")?;
+    host_knows(&s.host, "2.1.400", &OFFERED)?;
+    let (health, text) = doctor_line(&s.root, Some(&s.host), Channel::Latest);
+    assert_eq!(health, Health::Ok, "{text}");
+    assert!(!text.contains("refused"), "{text}");
     Ok(())
 }

@@ -192,15 +192,16 @@ pub fn default_model_problem(version: &str) -> String {
 }
 
 /// How a Claude Code that does not know the default model is fixed, in one sentence: what
-/// Yulius does by itself on `channel`, and the host's way. `refused` is the newest release when
-/// the last check refused it for the same model: then no release knows it yet.
+/// Yulius does by itself on `channel`, and the host's way. `newest_lacks` is npm's newest
+/// release when that does not know the model either (the last check refused it, or it is what
+/// runs get): then no release knows it yet, and neither a check nor the host's install helps.
 #[must_use]
-pub fn default_model_fix(channel: Channel, refused: Option<&str>) -> String {
-    if let Some(newest) = refused {
+pub fn default_model_fix(channel: Channel, newest_lacks: Option<&str>) -> String {
+    if let Some(newest) = newest_lacks {
         return format!(
-            "No Claude Code release knows it yet ({newest}, the newest, was refused): the \
-             default model is ahead of Claude Code, so choose a model it knows for tasks until \
-             a release does"
+            "No Claude Code release knows it yet ({newest}, the newest, does not): the default \
+             model is ahead of Claude Code, so choose a model it knows for tasks until a \
+             release does"
         );
     }
     match channel {
@@ -413,10 +414,7 @@ mod tests {
         assert!(off.contains(HOST_INSTALL), "{off}");
         // The newest release itself was refused: installing it on the host would not help.
         let ahead = default_model_fix(Channel::Latest, Some("2.1.322"));
-        assert!(
-            ahead.contains("2.1.322, the newest, was refused"),
-            "{ahead}"
-        );
+        assert!(ahead.contains("2.1.322, the newest, does not"), "{ahead}");
         assert!(!ahead.contains(HOST_INSTALL), "{ahead}");
     }
 

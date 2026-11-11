@@ -116,6 +116,12 @@ pub enum Point {
     /// `launch_attempt` (SPEC-447): a subscription was chosen and its credential opened; the run's
     /// attempt is not recorded yet. The path is the task id.
     AccountChosen,
+    /// A turn's end (SPEC-461) found a session on an older Claude Code with nothing in the
+    /// background; who typed and what pauses it are not read again yet. The path is the task id.
+    ClaudeMoveProbed,
+    /// A settled turn (SPEC-461) decided whether its idle session restarts on a newer Claude
+    /// Code, and started that restart if so. The path is the task id.
+    ClaudeMoveSettled,
 }
 
 #[cfg(feature = "test-support")]

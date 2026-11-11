@@ -256,6 +256,40 @@ async fn the_superadmin_changes_the_channel_stored_audited_and_applied() -> Test
             .await?;
     assert_eq!(audited, ["configuration", "off", "stable"]);
 
+    // A body without the channel (a misspelt field) is refused: it is no "back to the
+    // configuration".
+    call(
+        &i.h.router,
+        Method::PUT,
+        CHANNEL,
+        Some(json!({"channel": "stable"})),
+        &i.admin,
+    )
+    .await?;
+    let misspelt = call(
+        &i.h.router,
+        Method::PUT,
+        CHANNEL,
+        Some(json!({"chanel": "off"})),
+        &i.admin,
+    )
+    .await?;
+    assert_eq!(
+        misspelt.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{}",
+        misspelt.body
+    );
+    assert_eq!(
+        i.h.store
+            .claude_channel()
+            .await?
+            .map(|c| c.channel)
+            .as_deref(),
+        Some("stable")
+    );
+    let asked = cli.asked().len();
+
     // An unknown channel is refused and changes nothing.
     let bad = call(
         &i.h.router,
@@ -266,7 +300,7 @@ async fn the_superadmin_changes_the_channel_stored_audited_and_applied() -> Test
     )
     .await?;
     assert_eq!(bad.status, StatusCode::UNPROCESSABLE_ENTITY, "{}", bad.body);
-    assert_eq!(cli.asked().len(), 3);
+    assert_eq!(cli.asked().len(), asked);
 
     // Only the superadmin: an instance administrator and a visitor are refused everywhere.
     for (method, path, body) in [
@@ -284,7 +318,7 @@ async fn the_superadmin_changes_the_channel_stored_audited_and_applied() -> Test
         let visitor = call(&i.h.router, method, path, body, &Creds::default()).await?;
         assert_eq!(visitor.status, StatusCode::UNAUTHORIZED, "{path}");
     }
-    assert_eq!(cli.asked().len(), 3);
+    assert_eq!(cli.asked().len(), asked);
     assert_eq!(cli.checks.load(Ordering::SeqCst), 0);
     Ok(())
 }
@@ -324,7 +358,7 @@ async fn check_now_starts_a_check_and_the_view_says_what_is_wrong() -> TestResul
     );
     // The newest release was refused for it: installing on the host would not help.
     let fix = view.body["fix"].as_str().ok_or("a fix")?;
-    assert!(fix.contains("2.1.322, the newest, was refused"), "{fix}");
+    assert!(fix.contains("2.1.322, the newest, does not"), "{fix}");
     assert_eq!(view.body["result"], "refused");
     assert_eq!(
         view.body["result_text"],
@@ -354,6 +388,17 @@ async fn check_now_starts_a_check_and_the_view_says_what_is_wrong() -> TestResul
         "{fix}"
     );
     assert_eq!(view.body["refused"], json!([]));
+
+    // Runs get npm's newest release and it does not know the model: a check or the host's
+    // install would not help, and the fix says so.
+    if let Ok(mut status) = cli.status.lock() {
+        status.result = Some(CheckResult::UpToDate(v("2.1.322")));
+        status.version = Some(v("2.1.322"));
+    }
+    let view = call(&i.h.router, Method::GET, VIEW, None, &i.admin).await?;
+    let fix = view.body["fix"].as_str().ok_or("a fix")?;
+    assert!(fix.contains("2.1.322, the newest, does not"), "{fix}");
+    assert!(!fix.contains(HOST_INSTALL), "{fix}");
 
     let check = call(&i.h.router, Method::POST, CHECK, None, &i.admin).await?;
     assert_eq!(check.status, StatusCode::ACCEPTED, "{}", check.body);

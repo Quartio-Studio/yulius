@@ -122,6 +122,9 @@ pub struct FakeAgentOptions {
     /// The transcript's records name the Claude Code version read from this file at each start
     /// (`--cli-version-file`): rewriting it stands for a newer Claude Code at the next start.
     pub cli_version_file: Option<PathBuf>,
+    /// Planning a launch fails while this file exists: the run cannot start, as when the agent
+    /// CLI is broken, after a switch's preflight passed.
+    pub fail_launch_file: Option<PathBuf>,
 }
 
 /// See the module docs.
@@ -147,6 +150,16 @@ impl FakeAgentHarness {
 
 impl HarnessPort for FakeAgentHarness {
     fn plan(&self, launch: &HarnessLaunch) -> AppResult<HarnessPlan> {
+        if self
+            .options
+            .fail_launch_file
+            .as_ref()
+            .is_some_and(|file| file.exists())
+        {
+            return Err(yulius_app::error::AppError::Conflict(
+                "the agent CLI did not start".into(),
+            ));
+        }
         let mut plan = self.inner.plan(launch)?;
         // Tests read what each launch asked for from its run directory.
         let _ = std::fs::write(

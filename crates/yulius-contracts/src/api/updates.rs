@@ -373,7 +373,9 @@ pub struct ClaudeCodeRefused {
 /// `PUT /api/admin/claude-code/channel` (SPEC-461 CCM-009).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SetClaudeChannel {
-    /// `latest`, `stable` or `off`; `null` follows the server's configuration again.
+    /// `latest`, `stable` or `off`; `null` follows the server's configuration again. The field
+    /// must be there: a body without it (a misspelt name) changes nothing.
+    #[serde(deserialize_with = "Option::deserialize")]
     pub channel: Option<String>,
 }
 

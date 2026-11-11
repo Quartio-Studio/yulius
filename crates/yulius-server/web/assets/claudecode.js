@@ -97,6 +97,8 @@ export function claudeCodeCard(ctx) {
   let gone = false;
   let failed = false;
   let saving = false;
+  /** What is drawn: a poll that reads the same leaves the card (its focus, its alert) alone. */
+  let drawn = '';
 
   /** The channel choice, and where the channel in effect is set. */
   function channel(view) {
@@ -115,6 +117,11 @@ export function claudeCodeCard(ctx) {
   }
 
   function render(view) {
+    clearTimeout(timer);
+    if (!gone && view.checking) timer = setTimeout(refresh, POLL_MS);
+    const shown = JSON.stringify([view, saving]);
+    if (shown === drawn) return;
+    drawn = shown;
     checkButton.disabled = !view.managed || view.checking || view.channel === 'off';
     checkButton.classList.toggle('busy', Boolean(view.checking));
     checkButton.title = !view.managed ? `${BRAND.name} keeps nothing current on this server` : view.channel === 'off' ? 'Updates are off' : '';
@@ -129,8 +136,6 @@ export function claudeCodeCard(ctx) {
       behind(view),
     ];
     setChildren(body, ...parts.filter(Boolean));
-    clearTimeout(timer);
-    if (!gone && view.checking) timer = setTimeout(refresh, POLL_MS);
   }
 
   async function refresh() {
@@ -141,6 +146,7 @@ export function claudeCodeCard(ctx) {
       render(view);
     } catch (error) {
       if (gone) return;
+      drawn = '';
       setChildren(body, h('p', { class: 'muted small' }, 'Couldn’t read which Claude Code sandboxes run.'));
       // One toast per outage.
       if (!failed) errorToast(error, 'Couldn’t read Claude Code');

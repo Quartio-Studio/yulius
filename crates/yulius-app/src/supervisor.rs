@@ -3281,8 +3281,11 @@ impl App {
         let elsewhere = account.is_some()
             && attempt.as_ref().map(|a| a.account_id.as_ref()) != Some(account.as_ref());
         let fresh = matches!(start, RunStart::Fresh { .. });
-        // A restart for a newer Claude Code said so itself (SPEC-461 CCM-013).
-        if reason != crate::claude_code::MOVE_REASON {
+        // A restart for a newer Claude Code says that, in its one line (SPEC-461 CCM-013).
+        let for_claude_code = reason == crate::claude_code::MOVE_REASON;
+        if for_claude_code {
+            runtime.hub.notice(self.claude_code_move_notice());
+        } else {
             runtime.hub.notice(if fresh {
                 "↻ Yulius starts a fresh session for this task…"
             } else if elsewhere {
@@ -3414,11 +3417,13 @@ impl App {
                         self.rest_after_idle_switch(task_id, activity, turn_began)
                             .await;
                     }
-                    runtime.hub.notice(if fresh {
-                        "↻ The task continues in a fresh session."
-                    } else {
-                        "↻ The session continues where it left off."
-                    });
+                    if !for_claude_code {
+                        runtime.hub.notice(if fresh {
+                            "↻ The task continues in a fresh session."
+                        } else {
+                            "↻ The session continues where it left off."
+                        });
+                    }
                 }
                 Ok(())
             }
@@ -3614,7 +3619,9 @@ impl App {
             .switch_refused_ms
             .store(self.now().0, Ordering::SeqCst);
         tracing::warn!(task = %task.id, error = %err, "switch refused; the running session stays");
-        if repeat {
+        // A restart for a newer Claude Code that cannot start now is no switch of subscriptions
+        // and nothing a person must read: a later turn's end tries again (SPEC-461 CCM-013).
+        if repeat || reason == crate::claude_code::MOVE_REASON {
             return;
         }
         self.runtime(&task.id)

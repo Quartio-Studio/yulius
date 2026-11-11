@@ -4490,7 +4490,7 @@ function claudeView(db) {
     default_model: CLAUDE_DEFAULT_MODEL, models_read: true, unknown_models: c.unknown,
     problem: lacksDefault ? `Claude Code ${c.version} does not know ${CLAUDE_DEFAULT_MODEL}, Yulius's default model: tasks still ask for it by id, but what a session picks by itself (its model picker, a model alias, its subagents) is an older model.` : null,
     fix: !lacksDefault ? null
-      : newestRefused ? `No Claude Code release knows it yet (${newestRefused}, the newest, was refused): the default model is ahead of Claude Code, so choose a model it knows for tasks until a release does.`
+      : newestRefused ? `No Claude Code release knows it yet (${newestRefused}, the newest, does not): the default model is ahead of Claude Code, so choose a model it knows for tasks until a release does.`
         : off ? 'Claude Code updates are off: choose Latest in Settings, Instance, Claude Code, or install a newer one on the host: `sudo npm install -g @anthropic-ai/claude-code@latest`.'
           : CLAUDE_HOST_FIX,
     refused: c.result === 'refused' ? c.refused : [],

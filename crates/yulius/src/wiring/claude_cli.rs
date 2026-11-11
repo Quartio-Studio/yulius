@@ -160,6 +160,9 @@ pub struct ClaudeUpdater {
     max_binary: u64,
     /// What the Claude Code runs get knows, read once per file (SPEC-461 CCM-005).
     known: Arc<Known>,
+    /// Releases refused for the default model while this process runs: a published version
+    /// never changes, so it is not downloaded and read again at every check.
+    refused: std::sync::Mutex<Vec<Refusal>>,
 }
 
 impl ClaudeUpdater {
@@ -204,6 +207,7 @@ impl ClaudeUpdater {
             max_tarball: MAX_TARBALL,
             max_binary: MAX_BINARY,
             known: Arc::default(),
+            refused: std::sync::Mutex::default(),
         })
     }
 
@@ -397,8 +401,32 @@ impl ClaudeUpdater {
             .flatten()
     }
 
-    /// Downloads, verifies and installs `version`, and makes it current.
+    /// Downloads, verifies and installs `version`, and makes it current. A release refused
+    /// before for the default model is refused again without a download.
     async fn take(&self, platform: &str, version: Version) -> Result<Outcome, UpdateError> {
+        let known = self.refused.lock().ok().and_then(|refused| {
+            refused
+                .iter()
+                .find(|refusal| refusal.version == version)
+                .cloned()
+        });
+        if let Some(refusal) = known {
+            return Err(UpdateError::lacking(refusal.version, refusal.missing));
+        }
+        let taken = self.download_and_install(platform, version).await;
+        if let Err(error) = &taken
+            && let Ok(mut refused) = self.refused.lock()
+        {
+            refused.extend(error.refused().iter().cloned());
+        }
+        taken
+    }
+
+    async fn download_and_install(
+        &self,
+        platform: &str,
+        version: Version,
+    ) -> Result<Outcome, UpdateError> {
         let staging = self
             .root
             .join(format!("{}{version}-{}", TEMPORARY[0], unique_suffix()));

@@ -1374,6 +1374,26 @@ impl App {
         }
     }
 
+    /// [`Self::background_work_now`], counting also a shell that only runs `yulius wait`: the
+    /// agent waits there for Yulius's news (its checks, a deploy, an armed merge) and would never
+    /// hear it if its session were restarted (SPEC-461 CCM-013). `None` when the probe gives no
+    /// answer.
+    pub(crate) async fn background_or_wait_now(&self, task_id: &TaskId) -> Option<bool> {
+        if self.background_work_now(task_id).await? {
+            return Some(true);
+        }
+        let attempt = self.deps.store.live_attempt(task_id).await.ok()?;
+        let Some(pid) = attempt.and_then(|attempt| attempt.child_pid) else {
+            return Some(false);
+        };
+        let host = Arc::clone(&self.deps.session_host);
+        let probe = tokio::task::spawn_blocking(move || host.background_probe(pid));
+        match tokio::time::timeout(SHELL_PROBE_TIMEOUT, probe).await {
+            Ok(Ok(Some(found))) => Some(found.shells > 0 || found.waits > 0),
+            _ => None,
+        }
+    }
+
     /// Since when the idle task's background shells have been running, when they are.
     pub(crate) fn background_shells_since(&self, task_id: &TaskId) -> Option<i64> {
         let runtime = self.existing_runtime(task_id)?;

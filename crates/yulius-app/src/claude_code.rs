@@ -201,11 +201,31 @@ impl App {
         Ok(behind)
     }
 
-    /// The Claude Code version `attempt`'s transcript names, when it names a plain one.
-    async fn run_cli_version(&self, task_id: &TaskId, attempt: &AttemptId) -> Option<Version> {
+    /// The Claude Code version `attempt`'s transcript names: `None` while it names none,
+    /// `Some(None)` for one that is no plain `X.Y.Z` (it is never compared).
+    async fn run_cli_version(
+        &self,
+        task_id: &TaskId,
+        attempt: &AttemptId,
+    ) -> Option<Option<Version>> {
         let facts = self.deps.store.task_run_facts(task_id).await.ok()?;
         let named = facts.into_iter().find(|facts| facts.attempt == *attempt)?;
-        Version::parse(named.cli_version.as_deref()?)
+        Some(Version::parse(named.cli_version.as_deref()?))
+    }
+
+    /// The one line a session's terminal gets when it restarts on a newer Claude Code.
+    pub(crate) fn claude_code_move_notice(&self) -> String {
+        let version = self.claude_code_for_new_runs().map_or_else(
+            || "A newer Claude Code".to_owned(),
+            |v| format!("Claude Code {v}"),
+        );
+        format!("↻ {version} is installed: this session restarts on it and continues…")
+    }
+
+    /// How long ago a person typed into the task's terminal, when one did.
+    fn typed_ms_ago(&self, task_id: &TaskId) -> Option<i64> {
+        let typed = self.runtime(task_id).typed_at_ms.load(Ordering::SeqCst);
+        (typed > 0).then(|| self.now().0.saturating_sub(typed))
     }
 
     /// The newer Claude Code the session of `attempt` moves to now, at its turn's end (SPEC-461
@@ -221,14 +241,13 @@ impl App {
         let services = self.agent_cli.get()?;
         let target = services.adapter.version_for_new_runs()?;
         let runs = match self.run_cli_version(task_id, attempt).await {
-            Some(runs) => runs,
+            Some(runs) => runs?,
             // The lines of this turn name it: they are read first.
             None => {
                 self.await_transcript_read(task_id).await;
-                self.run_cli_version(task_id, attempt).await?
+                self.run_cli_version(task_id, attempt).await??
             }
         };
-        let typed = self.runtime(task_id).typed_at_ms.load(Ordering::SeqCst);
         let mut facts = MoveFacts {
             runs,
             target,
@@ -239,7 +258,7 @@ impl App {
                 .ok()?
                 .as_ref()
                 .map(|(version, _)| *version),
-            typed_ms_ago: (typed > 0).then(|| self.now().0.saturating_sub(typed)),
+            typed_ms_ago: self.typed_ms_ago(task_id),
             switch_refused: self.switch_cooling(task_id),
             // Asked last: it reads the turn's lines and probes the session's processes.
             background: Some(false),
@@ -247,9 +266,20 @@ impl App {
         if !moves_now(&facts) {
             return None;
         }
-        // Background work started in this turn is known from its lines (SPEC-079 BGW-004).
+        // Background work started in this turn is known from its lines (SPEC-079 BGW-004); a
+        // shell that only runs `yulius wait` counts: its news would never arrive.
         self.await_transcript_read(task_id).await;
-        facts.background = self.background_work_now(task_id).await;
+        facts.background = self.background_or_wait_now(task_id).await;
+        crate::race::reached(
+            crate::race::Point::ClaudeMoveProbed,
+            std::path::Path::new(task_id.as_str()),
+        );
+        // That took seconds: a person may have started a draft, paused the task, or an update
+        // of the instance begun to freeze its runs meanwhile.
+        facts.typed_ms_ago = self.typed_ms_ago(task_id);
+        if self.is_paused_by_person(task_id).await || self.update_holds_starts() {
+            return None;
+        }
         moves_now(&facts).then_some(target)
     }
 
@@ -267,16 +297,24 @@ impl App {
         let Some(services) = self.agent_cli.get() else {
             return;
         };
-        self.runtime(task_id).hub.notice(format!(
-            "↻ Claude Code {version} is installed: this session restarts on it and continues…"
-        ));
         let Err(err) = self
             .switch_task_now(task_id, account, MOVE_REASON, prompt)
             .await
         else {
             // Sent once: a session that still names the old version is not restarted again.
+            // What was sent to older versions is of no use any more.
             if let Ok(mut moved) = services.moved.lock() {
+                moved.retain(|_, sent| *sent == version);
                 moved.insert(task_id.clone(), version);
+            }
+            // The new run names its Claude Code with its first prompt: until then it is the
+            // one it was restarted on.
+            if let Ok(Some(run)) = self.deps.store.live_attempt(task_id).await {
+                let _ = self
+                    .deps
+                    .store
+                    .set_run_cli_version(&run.id, task_id, &version.to_string(), self.now())
+                    .await;
             }
             return;
         };
@@ -304,6 +342,14 @@ impl App {
     /// goal is typed again into a resumed session, which would start work nobody asked for; it
     /// moves at a boundary where it works on anyway.
     pub(crate) async fn move_idle_to_newer_claude_code(self: &Arc<Self>, task_id: &TaskId) {
+        self.move_idle_session(task_id).await;
+        crate::race::reached(
+            crate::race::Point::ClaudeMoveSettled,
+            std::path::Path::new(task_id.as_str()),
+        );
+    }
+
+    async fn move_idle_session(self: &Arc<Self>, task_id: &TaskId) {
         if self.agent_cli.get().is_none() {
             return;
         }
@@ -422,7 +468,8 @@ fn view_of(
             .collect(),
         _ => Vec::new(),
     };
-    // The newest release itself was refused: no release knows the default model yet.
+    // The newest release does not know the default model either: it was refused, or it is what
+    // runs get. Then no release knows it yet.
     let newest_refused = match &status.result {
         Some(CheckResult::Refused(refused)) => refused
             .last()
@@ -430,6 +477,13 @@ fn view_of(
             .map(|(version, _)| version.to_string()),
         _ => None,
     };
+    let newest_lacks = newest_refused.or_else(|| {
+        status
+            .version
+            .zip(status.latest)
+            .filter(|(runs, latest)| runs >= latest)
+            .map(|(runs, _)| runs.to_string())
+    });
     let unknown = status.missing.clone().unwrap_or_default();
     let (problem, fix) = if lacks_default(&unknown) {
         let named = version.as_deref().unwrap_or("in use");
@@ -437,7 +491,7 @@ fn view_of(
             Some(format!("{}.", default_model_problem(named))),
             Some(format!(
                 "{}.",
-                default_model_fix(status.channel, newest_refused.as_deref())
+                default_model_fix(status.channel, newest_lacks.as_deref())
             )),
         )
     } else {

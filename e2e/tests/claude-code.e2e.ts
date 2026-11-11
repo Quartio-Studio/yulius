@@ -68,7 +68,7 @@ test('a refused release, another unknown model, a failed check and stopped moves
   await app.open(mock('/admin/instance', '&claude=ahead'));
   await firstShown(screen.getByText('default model unknown'));
   let text = await cardText(browser);
-  expect(text).toMatch(/No Claude Code release knows it yet \(2\.1\.322, the newest, was refused\)/);
+  expect(text).toMatch(/No Claude Code release knows it yet \(2\.1\.322, the newest, does not\)/);
   expect(text).toMatch(/Refused, nothing was installed: 2\.1\.322 does not know claude-fable-5-2 \(Yulius's default model\)\./);
   expect(text).not.toMatch(/sudo npm install/);
   expect(await axeViolations(browser)).toEqual([]);

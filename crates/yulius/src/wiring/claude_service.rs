@@ -204,8 +204,12 @@ impl ClaudeCode {
                     () = tokio::time::sleep(wait) => {}
                     () = service.wake.notified() => {}
                 }
-                // Each request and the download have their own deadline.
+                // Each request and the download have their own deadline. A check asked for
+                // while one ran (a channel change) follows here, whatever became of its wake-up.
                 service.check().await;
+                while service.again.swap(false, Ordering::SeqCst) {
+                    service.check().await;
+                }
                 wait = every;
             }
         })
@@ -252,9 +256,11 @@ impl ClaudeCode {
             last.result.clone_from(&result);
         }
         self.report().await;
-        // A check asked for meanwhile follows at once: the page keeps saying it checks.
-        let again = self.again.swap(false, Ordering::SeqCst);
-        self.checking.store(again, Ordering::SeqCst);
+        // A check asked for meanwhile follows at once (the loop runs it): the page keeps saying
+        // it checks until that one ended.
+        if !self.again.load(Ordering::SeqCst) {
+            self.checking.store(false, Ordering::SeqCst);
+        }
         result
     }
 
@@ -430,18 +436,24 @@ pub fn doctor_line(root: &Path, host_dir: Option<&Path>, configured: Channel) ->
     };
     let version = version.map_or_else(|| "of an unknown version".to_owned(), |v| v.to_string());
     let version = version.as_str();
-    // The releases the server's last check refused, when they are newer than what runs get.
+    let runs = Version::parse(version);
+    // The releases the server's last check refused that are newer than what runs get now (an
+    // install on the host since then makes an older refusal history).
     let refused: Vec<&RefusedRelease> = file
         .iter()
         .filter(|file| file.result.as_deref() == Some("refused"))
         .flat_map(|file| &file.refused)
+        .filter(|release| Version::parse(&release.version) > runs)
         .collect();
     if lacks_default(&missing) {
-        // The newest release itself was refused: no release knows the default model yet.
+        // npm's newest release does not know the default model either: it was refused, or it is
+        // what runs get. Then no release knows it yet.
+        let latest = file.as_ref().and_then(|f| f.latest.as_deref());
         let newest = refused
             .last()
-            .filter(|r| file.as_ref().and_then(|f| f.latest.as_ref()) == Some(&r.version))
-            .map(|r| r.version.as_str());
+            .filter(|r| latest == Some(r.version.as_str()))
+            .map(|r| r.version.as_str())
+            .or_else(|| latest.filter(|latest| runs.is_some() && runs >= Version::parse(latest)));
         return (
             Health::Fail,
             format!(

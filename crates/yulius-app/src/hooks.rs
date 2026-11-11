@@ -800,8 +800,16 @@ impl App {
         // older Claude Code than runs get now restarts on the newer one here, as a move to
         // another subscription does (SPEC-461 CCM-013): the resumed session gets the gate's
         // reasons, and its goal again. An idle session moves once its turn has settled.
+        // A goal that is achieved, or not set, is not typed again for it: such a session waits
+        // for its next start.
+        let works_on = gate_continues || {
+            let runtime = self.runtime(&task.id);
+            task.mode == TaskMode::Goal
+                && runtime.goal_open.load(Ordering::SeqCst)
+                && !runtime.goal_achieved.load(Ordering::SeqCst)
+        };
         if matches!(decision.0, Decision::Stay)
-            && continues
+            && works_on
             && let Some(version) = self.claude_code_move_due(&task.id, &ctx.attempt.id).await
         {
             let continuation = gate_continues.then(|| reasons.join("\n\n"));

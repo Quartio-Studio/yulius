@@ -136,6 +136,7 @@ mod moves {
     use crate::support::agents::FakeAgentOptions;
 
     use std::path::Path;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
@@ -145,9 +146,10 @@ mod moves {
     use yulius_app::hub::HubFrame;
     use yulius_app::model::{LaunchKind, TaskMode};
     use yulius_app::ports::agent_cli::{AgentCli, AgentCliStatus, CliSource};
+    use yulius_app::race::{self, Point};
     use yulius_domain::agent_cli::{Channel, Version};
-    use yulius_domain::ids::{TaskId, UserId};
-    use yulius_domain::task::{Activity, AttemptState, TaskStatus};
+    use yulius_domain::ids::{SandboxId, TaskId, UserId};
+    use yulius_domain::task::{Activity, AttemptState, StopReason, TaskStatus};
     use yulius_ptyhost::test_support::locate_fake_agent;
 
     fn v(text: &str) -> Version {
@@ -192,90 +194,108 @@ mod moves {
         }
     }
 
-    fn agent(file: &Path, more: FakeAgentOptions) -> FakeAgentOptions {
-        FakeAgentOptions {
-            cli_version_file: Some(file.to_path_buf()),
-            ..more
-        }
-    }
-
     struct Server {
         app: Arc<App>,
         installed: Arc<Installed>,
+        sandbox: SandboxId,
         user: UserId,
         id: TaskId,
     }
 
-    /// A served app whose runs get Claude Code 2.1.311, and a running task of `mode`.
+    impl Server {
+        async fn ctx(&self) -> Result<AuthContext, Box<dyn std::error::Error>> {
+            Ok(AuthContext {
+                user: self.app.deps.store.user(&self.user).await?.ok_or("user")?,
+                csrf_token: None,
+                session_hash: None,
+                token: None,
+            })
+        }
+    }
+
+    async fn ready(app: &Arc<App>, id: &TaskId) -> TestResult {
+        wait_for("the run", Duration::from_secs(60), || async {
+            screen(app, id).contains("FAKE-AGENT READY")
+        })
+        .await
+    }
+
+    /// A served app whose sessions start on Claude Code 2.1.311 (the version file) while runs
+    /// get `gets`, and a running task of `mode`.
     async fn server(
         data: &Path,
         version: &Path,
         options: FakeAgentOptions,
         mode: TaskMode,
+        gets: &str,
     ) -> Result<Server, Box<dyn std::error::Error>> {
         let fake =
             locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
         std::fs::write(version, "2.1.311\n")?;
         let probe = Arc::new(ScriptedUsage::default());
-        let (app, _port) = start(data, &fake, agent(version, options), 0, probe).await?;
-        let installed = Arc::new(Installed(Mutex::new(Some(v("2.1.311")))));
+        let options = FakeAgentOptions {
+            cli_version_file: Some(version.to_path_buf()),
+            ..options
+        };
+        let (app, _port) = start(data, &fake, options, 0, probe).await?;
+        let installed = Arc::new(Installed(Mutex::new(Some(v(gets)))));
         assert!(app.set_agent_cli(installed.clone() as Arc<_>, Channel::Latest));
         let (sandbox, user) = seed(&app, data, &["a-first"]).await?;
         let id = new_task(&app, &sandbox, &user, "Stay current", mode).await?;
-        wait_for("the run", Duration::from_secs(60), || async {
-            screen(&app, &id).contains("FAKE-AGENT READY")
-        })
-        .await?;
+        ready(&app, &id).await?;
         Ok(Server {
             app,
             installed,
+            sandbox,
             user,
             id,
         })
     }
 
-    async fn turn(s: &Server, text: &str) -> TestResult {
-        let before = s.app.deps.store.attempts(&s.id).await?.len();
-        s.app
-            .send_input(&s.id, format!("{text}\r").as_bytes())
-            .await?;
+    /// A release is installed: runs get `version`, and a session started from now names it.
+    fn release(s: &Server, file: &Path, version: &str) -> TestResult {
+        std::fs::write(file, format!("{version}\n"))?;
+        s.installed.release(version);
+        Ok(())
+    }
+
+    async fn turn_of(app: &Arc<App>, id: &TaskId, text: &str) -> TestResult {
+        let before = app.deps.store.attempts(id).await?.len();
+        app.send_input(id, format!("{text}\r").as_bytes()).await?;
         wait_for("the turn", Duration::from_secs(60), || async {
-            screen(&s.app, &s.id).contains(&format!("ECHO: {text}"))
-                || s.app
-                    .deps
-                    .store
-                    .attempts(&s.id)
-                    .await
-                    .unwrap_or_default()
-                    .len()
-                    > before
+            screen(app, id).contains(&format!("ECHO: {text}"))
+                || app.deps.store.attempts(id).await.unwrap_or_default().len() > before
         })
         .await
     }
 
+    async fn turn(s: &Server, text: &str) -> TestResult {
+        turn_of(&s.app, &s.id, text).await
+    }
+
+    async fn state(app: &App, id: &TaskId) -> Option<(TaskStatus, Option<Activity>)> {
+        let task = app.deps.store.task(id).await.ok().flatten();
+        task.map(|t| (t.status, t.activity))
+    }
+
     async fn settled(s: &Server, activity: Activity) -> TestResult {
-        let state = || async {
-            let task = s.app.deps.store.task(&s.id).await.ok().flatten();
-            task.map(|t| (t.status, t.activity))
-        };
         let waited = wait_for("the task to settle", Duration::from_secs(30), || async {
-            state().await == Some((TaskStatus::Running, Some(activity)))
+            state(&s.app, &s.id).await == Some((TaskStatus::Running, Some(activity)))
         })
         .await;
         if waited.is_err() {
-            return Err(format!("the task is {:?}, not {activity:?}", state().await).into());
+            let now = state(&s.app, &s.id).await;
+            return Err(format!("the task is {now:?}, not {activity:?}").into());
         }
         Ok(())
     }
 
+    async fn runs_of(app: &App, id: &TaskId) -> usize {
+        app.deps.store.attempts(id).await.unwrap_or_default().len()
+    }
+
     async fn runs(s: &Server) -> usize {
-        s.app
-            .deps
-            .store
-            .attempts(&s.id)
-            .await
-            .unwrap_or_default()
-            .len()
+        runs_of(&s.app, &s.id).await
     }
 
     async fn second_run_live(s: &Server) -> TestResult {
@@ -296,41 +316,70 @@ mod moves {
         out
     }
 
+    /// Set once the next settled turn of `id` decided whether its session moves (and started
+    /// the restart if so): what a test waits for instead of a pause.
+    fn decided(id: &TaskId) -> Arc<AtomicBool> {
+        let flag = Arc::new(AtomicBool::new(false));
+        let set = Arc::clone(&flag);
+        race::on(
+            Point::ClaudeMoveSettled,
+            Path::new(id.as_str()),
+            move || {
+                set.store(true, Ordering::SeqCst);
+            },
+        );
+        flag
+    }
+
+    async fn until_decided(flag: &AtomicBool) -> TestResult {
+        wait_for(
+            "the turn's end to decide",
+            Duration::from_secs(60),
+            || async { flag.load(Ordering::SeqCst) },
+        )
+        .await
+    }
+
+    /// A turn of the session ends and decides to leave it where it is.
+    async fn turn_that_stays(s: &Server, text: &str) -> TestResult {
+        let flag = decided(&s.id);
+        turn(s, text).await?;
+        until_decided(&flag).await?;
+        assert_eq!(runs(s).await, 1, "the session was restarted after {text:?}");
+        Ok(())
+    }
+
     /// AC9: an idle prompt-mode session on 2.1.311 is restarted once its turn ended, when runs
     /// get 2.1.322: the same Claude session and subscription, by resume, with one line in its
-    /// terminal; it is not restarted again, and the task's info shows both sessions.
+    /// terminal; it is idle again, names the new version at once, is not restarted again, and
+    /// the task's info shows both sessions and no subscription switch.
     #[test]
     fn a_running_task_moves_to_the_new_claude_code_when_its_turn_ends() -> TestResult {
         let (_dir, data) = data_dir()?;
         let version = data.join("claude-version");
         let rt = runtime()?;
         rt.block_on(async {
-            let s = server(&data, &version, hooked(), TaskMode::Prompt).await?;
-            // Runs get what the session runs: its turns end and nothing restarts.
-            turn(&s, "one").await?;
+            let s = server(&data, &version, hooked(), TaskMode::Prompt, "2.1.311").await?;
+            // Runs get what the session runs: its turn ends and nothing restarts.
+            turn_that_stays(&s, "one").await?;
             settled(&s, Activity::Waiting).await?;
-            wait_for("the version", Duration::from_secs(30), || async {
-                run_versions(&s.app, &s.id).await == [Some("2.1.311".to_owned())]
-            })
-            .await?;
-            assert_eq!(runs(&s).await, 1, "nothing to move to");
+            assert_eq!(
+                run_versions(&s.app, &s.id).await,
+                [Some("2.1.311".to_owned())]
+            );
 
-            // A release is installed: new runs get 2.1.322. Nothing happens mid-idle.
-            std::fs::write(&version, "2.1.322\n")?;
-            s.installed.release("2.1.322");
-            let ctx = AuthContext {
-                user: s.app.deps.store.user(&s.user).await?.ok_or("user")?,
-                csrf_token: None,
-                session_hash: None,
-                token: None,
-            };
+            // A release is installed: new runs get 2.1.322, and the task is behind.
+            release(&s, &version, "2.1.322")?;
+            let ctx = s.ctx().await?;
             let behind = s.app.claude_code_view(&ctx).await?.behind;
             assert_eq!(behind.len(), 1, "{behind:?}");
-            assert_eq!((behind[0].number, behind[0].version.as_str()), (1, "2.1.311"));
+            assert_eq!(
+                (behind[0].number, behind[0].version.as_str()),
+                (1, "2.1.311")
+            );
             assert_eq!(behind[0].sandbox, "pool");
             let detail = s.app.task_detail(&ctx, s.id.as_str()).await?;
             assert_eq!(detail.cli_moves_to.as_deref(), Some("2.1.322"));
-            tokio::time::sleep(Duration::from_millis(500)).await;
             assert_eq!(runs(&s).await, 1, "an idle session is left alone");
 
             // Its next turn ends: the session restarts on the new Claude Code.
@@ -345,32 +394,40 @@ mod moves {
             );
             assert_eq!(attempts[0].account_id, attempts[1].account_id);
             settled(&s, Activity::Waiting).await?;
+            // One line, about Claude Code, and none about subscriptions.
             let notices = said(&mut watch);
-            assert!(
-                notices.iter().any(|n| n
-                    == "↻ Claude Code 2.1.322 is installed: this session restarts on it and continues…"),
-                "{notices:?}"
+            assert_eq!(
+                notices,
+                ["↻ Claude Code 2.1.322 is installed: this session restarts on it and continues…"]
             );
-            assert!(
-                !notices.iter().any(|n| n.contains("subscription")),
-                "{notices:?}"
-            );
-
-            // The restarted session names the new version and is not restarted again.
-            turn(&s, "three").await?;
-            wait_for("the new version", Duration::from_secs(30), || async {
-                run_versions(&s.app, &s.id).await
-                    == [Some("2.1.311".to_owned()), Some("2.1.322".to_owned())]
-            })
+            // The restarted session counts as on the new version before its first prompt.
+            wait_for(
+                "the new session's version",
+                Duration::from_secs(30),
+                || async {
+                    run_versions(&s.app, &s.id).await
+                        == [Some("2.1.311".to_owned()), Some("2.1.322".to_owned())]
+                },
+            )
             .await?;
-            settled(&s, Activity::Waiting).await?;
-            tokio::time::sleep(Duration::from_millis(800)).await;
-            assert_eq!(runs(&s).await, 2, "moved once");
             let detail = s.app.task_detail(&ctx, s.id.as_str()).await?;
             assert_eq!(detail.cli_version.as_deref(), Some("2.1.322"));
             assert_eq!(detail.cli_moves_to, None);
-            assert!(detail.switches.is_empty(), "no subscription switch: {:?}", detail.switches);
             assert!(s.app.claude_code_view(&ctx).await?.behind.is_empty());
+
+            // Its next turn ends there, and it is not restarted again.
+            let flag = decided(&s.id);
+            turn(&s, "three").await?;
+            until_decided(&flag).await?;
+            settled(&s, Activity::Waiting).await?;
+            assert_eq!(runs(&s).await, 2, "moved once");
+            let detail = s.app.task_detail(&ctx, s.id.as_str()).await?;
+            assert_eq!(detail.cli_version.as_deref(), Some("2.1.322"));
+            assert!(
+                detail.switches.is_empty(),
+                "no subscription switch: {:?}",
+                detail.switches
+            );
             stop(&s.app, &s.id).await
         })?;
         rt.shutdown_timeout(Duration::from_secs(5));
@@ -386,16 +443,11 @@ mod moves {
         let version = data.join("claude-version");
         let rt = runtime()?;
         rt.block_on(async {
-            let s = server(&data, &version, hooked(), TaskMode::Prompt).await?;
+            let s = server(&data, &version, hooked(), TaskMode::Prompt, "2.1.311").await?;
             crate::pool_supervision::add_account(&s.app, "b-second").await?;
             turn(&s, "one").await?;
             settled(&s, Activity::Waiting).await?;
-            let ctx = AuthContext {
-                user: s.app.deps.store.user(&s.user).await?.ok_or("user")?,
-                csrf_token: None,
-                session_hash: None,
-                token: None,
-            };
+            let ctx = s.ctx().await?;
             s.app
                 .switch_task(
                     &ctx,
@@ -416,27 +468,88 @@ mod moves {
         Ok(())
     }
 
-    /// AC9: a session a person typed into in the last minute is not restarted under them, and
-    /// one that runs the version runs get is left alone at every turn's end.
+    /// AC9: a session a person typed into in the last minute is not restarted under them, also
+    /// when they start typing while the turn's end looks at the session's background work.
     #[test]
     fn a_session_someone_types_into_is_not_restarted() -> TestResult {
         let (_dir, data) = data_dir()?;
         let version = data.join("claude-version");
         let rt = runtime()?;
         rt.block_on(async {
-            let s = server(&data, &version, hooked(), TaskMode::Prompt).await?;
-            turn(&s, "one").await?;
-            settled(&s, Activity::Waiting).await?;
-            std::fs::write(&version, "2.1.322\n")?;
-            s.installed.release("2.1.322");
-            // A person is typing a draft while the agent answers.
-            s.app.record_typing(&s.id, &s.user);
-            turn(&s, "two").await?;
-            settled(&s, Activity::Waiting).await?;
-            tokio::time::sleep(Duration::from_secs(2)).await;
-            assert_eq!(runs(&s).await, 1, "their draft is not lost");
-            let facts = run_versions(&s.app, &s.id).await;
-            assert_eq!(facts, [Some("2.1.311".to_owned())]);
+            let s = server(&data, &version, hooked(), TaskMode::Prompt, "2.1.311").await?;
+            turn_that_stays(&s, "one").await?;
+            release(&s, &version, "2.1.322")?;
+            // The draft starts after the turn's end found nothing in the background.
+            let (app, id, user) = (s.app.clone(), s.id.clone(), s.user.clone());
+            let probed = Arc::new(AtomicBool::new(false));
+            let seen = Arc::clone(&probed);
+            race::on(
+                Point::ClaudeMoveProbed,
+                Path::new(s.id.as_str()),
+                move || {
+                    app.record_typing(&id, &user);
+                    seen.store(true, Ordering::SeqCst);
+                },
+            );
+            turn_that_stays(&s, "two").await?;
+            assert!(
+                probed.load(Ordering::SeqCst),
+                "the move was due until they typed"
+            );
+            // A draft typed before the turn ended keeps the session too.
+            turn_that_stays(&s, "three").await?;
+            assert_eq!(
+                run_versions(&s.app, &s.id).await,
+                [Some("2.1.311".to_owned())]
+            );
+            stop(&s.app, &s.id).await
+        })?;
+        rt.shutdown_timeout(Duration::from_secs(5));
+        Ok(())
+    }
+
+    /// AC9 (review round 1, finding 1): a session with a background shell is left alone, and so
+    /// is one whose only background shell runs `yulius wait`: restarted, it would never hear
+    /// what it waits for.
+    #[test]
+    fn a_session_with_background_work_or_a_yulius_wait_is_not_restarted() -> TestResult {
+        let (_dir, data) = data_dir()?;
+        let version = data.join("claude-version");
+        // A stand-in for `yulius wait`: a process named `yulius` whose first argument is `wait`,
+        // blocked on a FIFO until the test lets it go.
+        let waiting = data.join("waiting");
+        std::fs::create_dir_all(&waiting)?;
+        std::fs::copy("/bin/cat", waiting.join("yulius"))?;
+        let fifo = waiting.join("wait");
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(&fifo)
+                .status()?
+                .success()
+        );
+        let rt = runtime()?;
+        rt.block_on(async {
+            let s = server(&data, &version, hooked(), TaskMode::Prompt, "2.1.311").await?;
+            turn_that_stays(&s, "one").await?;
+            release(&s, &version, "2.1.322")?;
+
+            // The agent waits for Yulius's news in the background and ends its turn.
+            let wait = format!("/bg cd {} && ./yulius wait\r", waiting.display());
+            s.app.send_input(&s.id, wait.as_bytes()).await?;
+            wait_for("the wait", Duration::from_secs(30), || async {
+                screen(&s.app, &s.id).contains("BACKGROUND ")
+            })
+            .await?;
+            turn_that_stays(&s, "two").await?;
+
+            // The wait ends; a build runs in the background instead.
+            drop(std::fs::OpenOptions::new().write(true).open(&fifo)?);
+            s.app.send_input(&s.id, b"/bg sleep 25\r").await?;
+            turn_that_stays(&s, "three").await?;
+            assert_eq!(
+                run_versions(&s.app, &s.id).await,
+                [Some("2.1.311".to_owned())]
+            );
             stop(&s.app, &s.id).await
         })?;
         rt.shutdown_timeout(Duration::from_secs(5));
@@ -452,13 +565,13 @@ mod moves {
         let rt = runtime()?;
         rt.block_on(async {
             let options = FakeAgentOptions {
-                // Time to install the release before the goal turn ends.
+                // The goal turn lasts while the session's goal is recorded as open.
                 goal_delay_ms: Some(3_000),
                 ..hooked()
             };
-            let s = server(&data, &version, options, TaskMode::Goal).await?;
+            // Runs get 2.1.322 from the start; the first session started on 2.1.311.
+            let s = server(&data, &version, options, TaskMode::Goal, "2.1.322").await?;
             std::fs::write(&version, "2.1.322\n")?;
-            s.installed.release("2.1.322");
             second_run_live(&s).await?;
             let attempts = s.app.deps.store.attempts(&s.id).await?;
             assert_eq!(attempts[1].launch_kind, LaunchKind::Resume);
@@ -478,6 +591,88 @@ mod moves {
                 [Some("2.1.311".to_owned()), Some("2.1.322".to_owned())]
             );
             stop(&s.app, &s.id).await
+        })?;
+        rt.shutdown_timeout(Duration::from_secs(5));
+        Ok(())
+    }
+
+    /// Review round 1, finding 7: a goal task that is Done is not restarted at the end of a
+    /// follow-up turn: its goal would be typed again, which is work nobody asked for.
+    #[test]
+    fn a_done_goal_task_keeps_its_session_after_a_follow_up() -> TestResult {
+        let (_dir, data) = data_dir()?;
+        let version = data.join("claude-version");
+        let rt = runtime()?;
+        rt.block_on(async {
+            let s = server(&data, &version, hooked(), TaskMode::Goal, "2.1.311").await?;
+            settled(&s, Activity::Done).await?;
+            release(&s, &version, "2.1.322")?;
+            let flag = decided(&s.id);
+            turn(&s, "one more thing").await?;
+            until_decided(&flag).await?;
+            assert_eq!(runs(&s).await, 1, "the goal is not set again");
+            let goals = screen(&s.app, &s.id).matches("GOAL SET").count();
+            assert_eq!(goals, 1, "{}", screen(&s.app, &s.id));
+            stop(&s.app, &s.id).await
+        })?;
+        rt.shutdown_timeout(Duration::from_secs(5));
+        Ok(())
+    }
+
+    /// CCM-013 (review round 1, finding 3): a session that cannot continue on a version stops
+    /// its task, and no other session is sent to that version: the card says so.
+    #[test]
+    fn a_version_a_session_could_not_continue_on_gets_no_other_session() -> TestResult {
+        let (_dir, data) = data_dir()?;
+        let version = data.join("claude-version");
+        let broken = data.join("launch-fails");
+        let rt = runtime()?;
+        rt.block_on(async {
+            let options = FakeAgentOptions {
+                fail_launch_file: Some(broken.clone()),
+                ..hooked()
+            };
+            let s = server(&data, &version, options, TaskMode::Prompt, "2.1.311").await?;
+            turn_that_stays(&s, "one").await?;
+            release(&s, &version, "2.1.322")?;
+            // The new Claude Code does not start.
+            std::fs::write(&broken, "")?;
+            turn(&s, "two").await?;
+            wait_for("the failed move", Duration::from_secs(90), || async {
+                state(&s.app, &s.id).await.map(|(status, _)| status)
+                    == Some(TaskStatus::Stopped(StopReason::SwitchFailed))
+            })
+            .await?;
+            let ctx = s.ctx().await?;
+            wait_for("the card to say so", Duration::from_secs(30), || async {
+                s.app
+                    .claude_code_view(&ctx)
+                    .await
+                    .is_ok_and(|view| view.moves_stopped.is_some())
+            })
+            .await?;
+            let stopped = s.app.claude_code_view(&ctx).await?.moves_stopped;
+            let stopped = stopped.ok_or("why moves stopped")?;
+            assert!(
+                stopped.starts_with(
+                    "Running tasks are no longer moved to 2.1.322: task #1 could not continue on it"
+                ),
+                "{stopped}"
+            );
+
+            // Another task, still on the old version, keeps its session at its turn's end.
+            std::fs::remove_file(&broken)?;
+            std::fs::write(&version, "2.1.311\n")?;
+            let other = new_task(&s.app, &s.sandbox, &s.user, "Another", TaskMode::Prompt).await?;
+            ready(&s.app, &other).await?;
+            let flag = decided(&other);
+            turn_of(&s.app, &other, "hello").await?;
+            until_decided(&flag).await?;
+            assert_eq!(runs_of(&s.app, &other).await, 1, "not sent to that version");
+            let behind = s.app.claude_code_view(&ctx).await?.behind;
+            assert_eq!(behind.len(), 1, "{behind:?}");
+            assert_eq!(behind[0].number, 2);
+            stop(&s.app, &other).await
         })?;
         rt.shutdown_timeout(Duration::from_secs(5));
         Ok(())
