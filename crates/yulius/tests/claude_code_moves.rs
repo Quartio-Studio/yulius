@@ -1075,96 +1075,116 @@ mod moves {
         Ok(())
     }
 
+    /// Two turn ends of one task that both decided to restart its session on 2.1.322 before
+    /// either began: the first waits for the second to decide, and the second goes on once the
+    /// first's restart reached `second_goes_on_at`. The restarted session never starts and has
+    /// 2 s for it. One restart must come of it, and it must be on the breaker's watch.
+    async fn two_turn_ends_decide(data: &Path, second_goes_on_at: Point) -> TestResult {
+        const HELD: Duration = Duration::from_secs(60);
+        let version = data.join("claude-version");
+        let stuck = data.join("stuck-at-start");
+        let options = FakeAgentOptions {
+            stuck_at_start_file: Some(stuck.clone()),
+            ..hooked()
+        };
+        let s = server_with(
+            data,
+            &version,
+            options,
+            TaskMode::Prompt,
+            "2.1.311",
+            |config| config.claude_code_start_ms = 2_000,
+        )
+        .await?;
+        turn_that_stays(&s, "one").await?;
+        release(&s, &version, "2.1.322")?;
+        std::fs::write(&stuck, "")?;
+        let first_decided = Arc::new(AtomicBool::new(false));
+        let in_order = Arc::new(AtomicBool::new(false));
+        let (second_tx, second_rx) = std::sync::mpsc::channel::<()>();
+        let (go_on_tx, go_on_rx) = std::sync::mpsc::channel::<()>();
+        let task = Path::new(s.id.as_str());
+        let there = Arc::clone(&first_decided);
+        race::on(Point::ClaudeMoveDecided, task, move || {
+            there.store(true, Ordering::SeqCst);
+            let _ = tokio::task::block_in_place(|| second_rx.recv_timeout(HELD));
+        });
+        let order = Arc::clone(&in_order);
+        race::on(Point::ClaudeMoveDecided, task, move || {
+            let _ = second_tx.send(());
+            let first = tokio::task::block_in_place(|| go_on_rx.recv_timeout(HELD));
+            order.store(first.is_ok(), Ordering::SeqCst);
+        });
+        // Hooks of one point run in the order they were set: the first's restart gets this
+        // one, and each turn's end that is over one of the flags after it.
+        race::on(second_goes_on_at, task, move || {
+            let _ = go_on_tx.send(());
+        });
+        let mut over = vec![decided(&s.id)];
+        if second_goes_on_at != Point::ClaudeMoveSettled {
+            over.push(decided(&s.id));
+        }
+        let judged = reached(Point::ClaudeMoveStartJudged, &s.id);
+        turn(&s, "two").await?;
+        wait_for(
+            "the first turn's end to decide",
+            Duration::from_secs(60),
+            || async { first_decided.load(Ordering::SeqCst) },
+        )
+        .await?;
+        turn(&s, "three").await?;
+        for flag in &over {
+            until_decided(flag).await?;
+        }
+        assert!(
+            in_order.load(Ordering::SeqCst),
+            "the second turn's end decided before the first began, and went on after it"
+        );
+        assert_eq!(runs(&s).await, 2, "one restart");
+        // It is watched: the session that never starts is noticed.
+        wait_for(
+            "its time to start to pass",
+            Duration::from_secs(60),
+            || async { judged.load(Ordering::SeqCst) },
+        )
+        .await?;
+        let view = s.app.claude_code_view(&s.ctx().await?).await?;
+        let stopped = view.moves_stopped.unwrap_or_default();
+        assert!(
+            stopped.starts_with(
+                "Running tasks are no longer moved to 2.1.322: the session of task #1 did not \
+                 start on it within 2 s."
+            ),
+            "the restart was not watched: {stopped:?}"
+        );
+        assert_eq!(runs(&s).await, 2, "one restart");
+        std::fs::remove_file(&stuck)?;
+        stop(&s.app, &s.id).await
+    }
+
     /// SPEC-468 CCF-006 (review round 3, nit 6): two turn ends of one task that both decide to
-    /// restart its session. One restarts it and the other, which comes while that restart is
-    /// under way, leaves the session to it: the restart stays on the breaker's watch, and its
-    /// session, which never starts here, stops further restarts on that version. The second
-    /// used to register an equal start, be refused its switch, and take the first's start off
-    /// the watch with its own.
+    /// restart its session. The second, which comes while the first's switch is under way (the
+    /// task is switching), leaves the session to it. It used to register an equal start, be
+    /// refused its switch, and take the first's start off the watch with its own, so a session
+    /// that never started stopped nothing.
     #[test]
     fn two_turn_ends_that_decide_at_once_make_one_watched_restart() -> TestResult {
         let (_dir, data) = data_dir()?;
-        let version = data.join("claude-version");
-        let stuck = data.join("stuck-at-start");
         let rt = runtime()?;
-        rt.block_on(async {
-            let options = FakeAgentOptions {
-                stuck_at_start_file: Some(stuck.clone()),
-                ..hooked()
-            };
-            let s = server_with(
-                &data,
-                &version,
-                options,
-                TaskMode::Prompt,
-                "2.1.311",
-                |config| config.claude_code_start_ms = 2_000,
-            )
-            .await?;
-            turn_that_stays(&s, "one").await?;
-            release(&s, &version, "2.1.322")?;
-            std::fs::write(&stuck, "")?;
-            // Both turn ends have decided before either begins: the first waits there for
-            // the second, and the second until the first's switch is under way (the task is
-            // switching), so it is the second that comes too late.
-            const HELD: Duration = Duration::from_secs(60);
-            let first_decided = Arc::new(AtomicBool::new(false));
-            let in_order = Arc::new(AtomicBool::new(false));
-            let (second_tx, second_rx) = std::sync::mpsc::channel::<()>();
-            let (switching_tx, switching_rx) = std::sync::mpsc::channel::<()>();
-            let task = Path::new(s.id.as_str());
-            let there = Arc::clone(&first_decided);
-            race::on(Point::ClaudeMoveDecided, task, move || {
-                there.store(true, Ordering::SeqCst);
-                let _ = tokio::task::block_in_place(|| second_rx.recv_timeout(HELD));
-            });
-            let order = Arc::clone(&in_order);
-            race::on(Point::ClaudeMoveDecided, task, move || {
-                let _ = second_tx.send(());
-                let switching = tokio::task::block_in_place(|| switching_rx.recv_timeout(HELD));
-                order.store(switching.is_ok(), Ordering::SeqCst);
-            });
-            race::on(Point::SwitchDecided, task, move || {
-                let _ = switching_tx.send(());
-            });
-            let (one, other) = (decided(&s.id), decided(&s.id));
-            let judged = reached(Point::ClaudeMoveStartJudged, &s.id);
-            turn(&s, "two").await?;
-            wait_for(
-                "the first turn's end to decide",
-                Duration::from_secs(60),
-                || async { first_decided.load(Ordering::SeqCst) },
-            )
-            .await?;
-            turn(&s, "three").await?;
-            until_decided(&one).await?;
-            until_decided(&other).await?;
-            assert!(
-                in_order.load(Ordering::SeqCst),
-                "the second turn's end decided before the first began, and went on once the \
-                 first's switch was under way"
-            );
-            // One restart, and it is watched: the session that never starts is noticed.
-            second_run_live(&s).await?;
-            wait_for(
-                "its time to start to pass",
-                Duration::from_secs(60),
-                || async { judged.load(Ordering::SeqCst) },
-            )
-            .await?;
-            let view = s.app.claude_code_view(&s.ctx().await?).await?;
-            let stopped = view.moves_stopped.unwrap_or_default();
-            assert!(
-                stopped.starts_with(
-                    "Running tasks are no longer moved to 2.1.322: the session of task #1 did \
-                     not start on it within 2 s."
-                ),
-                "the restart was not watched: {stopped:?}"
-            );
-            assert_eq!(runs(&s).await, 2, "one restart");
-            std::fs::remove_file(&stuck)?;
-            stop(&s.app, &s.id).await
-        })?;
+        rt.block_on(two_turn_ends_decide(&data, Point::SwitchDecided))?;
+        rt.shutdown_timeout(Duration::from_secs(5));
+        Ok(())
+    }
+
+    /// SPEC-468 CCF-006: the second turn's end comes once the first's restart is over. It
+    /// finds the session sent to that version and restarts nothing: the restarted session
+    /// would be ended for a third run, and the first restart's start replaced on the watch.
+    #[test]
+    fn a_turn_end_that_decided_before_a_restart_and_comes_after_it_restarts_nothing() -> TestResult
+    {
+        let (_dir, data) = data_dir()?;
+        let rt = runtime()?;
+        rt.block_on(two_turn_ends_decide(&data, Point::ClaudeMoveSettled))?;
         rt.shutdown_timeout(Duration::from_secs(5));
         Ok(())
     }
