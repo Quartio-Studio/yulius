@@ -125,7 +125,8 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0048_ci_job_limit_and_wait.sql"),
     // Schema version 49 (SPEC-440).
     include_str!("migrations/0049_vault_copy_requests.sql"),
-    // Schema version 50 (SPEC-459).
+    // Schema version 50 (SPEC-459). The file is 0051, the number `record_number` gave this
+    // task (0050 went to another reservation); a version is a migration's place in this list.
     include_str!("migrations/0051_instance_limits.sql"),
 ];
 

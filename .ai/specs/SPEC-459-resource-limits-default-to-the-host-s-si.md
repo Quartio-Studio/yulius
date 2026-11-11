@@ -67,7 +67,7 @@ host-sized one, by the migration flow itself.
   A unit value seen again with the same number keeps its record, also after the unit dropped it
   for a while.
 - HSL-004: a pin no longer fits when a fact its formula uses differs from this host's by a quarter
-  or more (either way) and its number differs from this host's host-sized value. The instance says
+  or more (either way: the larger reading is at least a quarter above the smaller) and its number differs from this host's host-sized value. The instance says
   so at start (a warning naming each such limit, its number, the host it was configured on and
   the host-sized value), in the limits view and on Settings → Instance, where one action takes the
   host-sized values for all of them and another keeps them (recording them for this host).

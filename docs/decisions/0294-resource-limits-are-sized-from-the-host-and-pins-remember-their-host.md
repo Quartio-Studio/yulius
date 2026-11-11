@@ -49,7 +49,9 @@ with the host's facts when it first saw that number. A record survives the unit 
 value, so a drop-in copied from the old machine days after the move is still recognised.
 
 **"No longer fits".** A pin is flagged when a fact its formula uses differs from this host's by a
-quarter or more, either way, and its number is not what this host would get anyway. A quarter
+quarter or more, either way, and its number is not what this host would get anyway. The quarter
+is measured on the smaller reading (the larger is at least 1.25 times the smaller), so the rule
+answers the same on both hosts of a move. A quarter
 ignores a few GiB of firmware or a filesystem reserve and catches any real resize. The instance
 warns at start, shows it on Settings → Instance and offers two answers: take the host-sized
 values, or keep the numbers (which records them for this host).

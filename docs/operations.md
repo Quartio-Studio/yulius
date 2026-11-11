@@ -516,7 +516,7 @@ other instead of overlapping.
 | `YULIUS_SANDBOX_MEMORY_GB` | the RAM but an eighth (at least 4 GiB kept for the host); a [resource limit](#resource-limits) | `memory.max` per sandbox. One sandbox runs all its agents and CI jobs: size it to the sessions, not to half the host. |
 | `YULIUS_SANDBOX_CPUS` | none | `cpu.max` per sandbox. Without it the CPU is shared by weight: a quota of all CPUs but two throttled the sandbox in half of its busy periods while the two CPUs it left idled (SPEC-082). The sandbox's capacity for budgets is this limit, else the host's CPUs. |
 | `YULIUS_SANDBOX_PIDS` | a quarter of the host's `kernel.threads-max` or `kernel.pid_max`, whichever is smaller, at least 8192, at most three quarters of `yulius.service`'s own `pids.max` | `pids.max` per sandbox: processes and threads of all its tasks, CI jobs and containers together. With the CPU split, CI jobs (`ci/`) and the Docker engine with its containers (`engine/`) each get 3/8 of it, so agent sessions keep at least a quarter (ADR-0198). All sandboxes together stop at three quarters of the service's limit (ADR-0201): a higher explicit value is not capped, but that common limit binds it. |
-| `YULIUS_SANDBOX_DISK_GB` | a quarter of the data disk, at least 100; a [resource limit](#resource-limits) | Soft quota: the sandbox directory plus its installed packages, measured every 10 minutes (again when a refusal would rest on a reading older than a minute); from 90 % Yulius prunes the build caches of idle tasks, ended tasks' caches and closed or cancelled tasks' worktrees always (every 5 minutes), see [SPEC-008](../.ai/specs/SPEC-008-sandbox-disk.md); above it, new sessions are refused (live ones continue). `0` turns it off. Persistent CI job checkouts, and each one's own `YULIUS_CI_CACHE` (`ci/cache/<checkout>`, SPEC-351), are pruned the same way while no CI run executes, and one job's cache beyond a quarter of the quota at once. A project declares its own caches in `yulius.toml`: `[disk]` `caches = "target build/cache"`. Caches are found and removed only with no link from the sandbox directory down, and on Linux only ([SPEC-263](../.ai/specs/SPEC-263-disk-upkeep-refuses-links-at-worktrees-a.md)). |
+| `YULIUS_SANDBOX_DISK_GB` | a quarter of the data disk, at least 100, at most half the disk; a [resource limit](#resource-limits) | Soft quota: the sandbox directory plus its installed packages, measured every 10 minutes (again when a refusal would rest on a reading older than a minute); from 90 % Yulius prunes the build caches of idle tasks, ended tasks' caches and closed or cancelled tasks' worktrees always (every 5 minutes), see [SPEC-008](../.ai/specs/SPEC-008-sandbox-disk.md); above it, new sessions are refused (live ones continue). `0` turns it off. Persistent CI job checkouts, and each one's own `YULIUS_CI_CACHE` (`ci/cache/<checkout>`, SPEC-351), are pruned the same way while no CI run executes, and one job's cache beyond a quarter of the quota at once. A project declares its own caches in `yulius.toml`: `[disk]` `caches = "target build/cache"`. Caches are found and removed only with no link from the sandbox directory down, and on Linux only ([SPEC-263](../.ai/specs/SPEC-263-disk-upkeep-refuses-links-at-worktrees-a.md)). |
 | `YULIUS_SANDBOX_FORWARD` | — | Extra host loopback ports reachable inside every sandbox at the same port (for example a loopback MCP server), comma-separated. |
 | `YULIUS_SANDBOX_IDLE_MINUTES` | 5 | A holder without runs is stopped after this long; the next run starts a fresh one on the newest base. A sandbox's Docker engine stops after this long without a client and without a running container. |
 | `YULIUS_CLAUDE_UPDATES` | `stable` | Claude Code releases isolated sandboxes follow: `stable` or `latest` (npm's dist-tags), or `off` (the host's install only). See [Claude Code updates](#claude-code-updates). |
@@ -556,7 +556,8 @@ GiB, the data directory's filesystem in GB), so a bigger host takes more by itse
 | Sandbox disk quota (GB) | `YULIUS_SANDBOX_DISK_GB` | a quarter of the data disk, at least 100, at most half the disk | 100 | 875 | at once |
 | CD run disk (GB) | `YULIUS_CD_RUN_DISK_GB` | a twentieth of the data disk, at least 20, at most half the disk | 20 | 175 | from the next run |
 
-A fact the host does not report leaves that limit at 8, 4, 2, 100 GB or 20 GB.
+A fact the host does not report leaves that limit at 8, 4, 2, 2 GiB (the memory), 100 GB or
+20 GB.
 
 **Where a value comes from.** Settings → Instance → Resource limits shows each value with its
 source and the formula. In this order: a number saved there (`settings`); "host-sized" saved
@@ -567,8 +568,9 @@ setting there, without editing the unit; each change is audited (`limits.set`,
 
 **A host of another size.** Every pinned number is recorded with the host it was configured on
 (a unit value at the first start that sees it, a setting when it is saved). When a fact its
-formula uses differs from this host's by a quarter or more and the number is not what this host
-would get, the limit no longer fits: the server warns at start ("… is pinned to …, sized for another host …; this host would get
+formula uses differs from this host's by a quarter or more (the larger of the two readings is at
+least a quarter above the smaller, so 48 GiB against 38 GiB counts and 47 against 45 does not)
+and the number is not what this host would get, the limit no longer fits: the server warns at start ("… is pinned to …, sized for another host …; this host would get
 …", with the number, the host it was configured on and the host-sized value) and the card lists it,
 with "Use host-sized values" (host-sized for all of them, overruling the unit) and "Keep these
 numbers" (they are recorded for this host). After `yulius instance import` the first start takes
