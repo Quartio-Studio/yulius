@@ -100,7 +100,7 @@ host-sized one, by the migration flow itself.
 - [x] Sessions, CI lanes and the CD run disk read the live limits, and CI job slots resize while jobs run
 - [x] The sandbox disk quota changes live, and memory and disk settings reach the isolation at start
 - [x] Superadmin API: read, set, host-sized, remove, adapt and keep, audited
-- [ ] `instance import` marks the copy and the first start adapts the limits by itself
+- [x] `instance import` marks the copy and the first start adapts the limits by itself
 - [ ] Settings → Instance card with values, sources, formulas and the moved-host notice
 - [ ] Docs: operations, API, architecture, product summary and changes
 - [ ] Gates green and an independent review in a fresh session
