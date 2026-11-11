@@ -247,6 +247,44 @@ flowchart LR
   SMJ -->|"one check per line"| UI
 ```
 
+## Resource limits
+
+Six limits decide how much work the host takes: live sessions, CI jobs, CI runs per sandbox, a
+sandbox's memory, its disk quota and the disk bound of a CD or environment run
+([SPEC-459](../.ai/specs/SPEC-459-resource-limits-default-to-the-host-s-si.md),
+[decision 0294](decisions/0294-resource-limits-are-sized-from-the-host-and-pins-remember-their-host.md)). The rules are pure
+functions in `yulius_domain::limits`: `Limit::host_sized` (the formula over the host's CPUs,
+memory and the data directory's filesystem), `Limit::resolve` (a Settings number, else
+"host-sized" saved in Settings, else the unit's `YULIUS_*` value, else the formula) and
+`Pin::stale` (a number configured on a host that differs by a quarter or more). The application
+part is `crates/yulius-app/src/limits.rs`: `App::load_limits` runs once at start, before the
+isolation is built; it reads the host through the system probe port, records each unit number
+with the host it was first seen on (one JSON document, `instance.limits`, migration 0051), adapts
+by itself when `yulius instance import` left `<data>/.yulius-limits-adapt`, and answers the
+start values. From then on the values in force live in the `App`: the session queue, the CI lanes
+and the CD run disk read them at each use, the CI job slots (`ci/slots.rs`) resize while jobs
+run, and the disk quota reaches the sandbox manager through the isolation port's
+`set_disk_quota`. Only the sandbox memory waits for a restart: each sandbox's `memory.max` and
+the CI budget pools are sized at start. Settings → Instance works through
+`/api/admin/limits*` (superadmin; every change audited).
+
+```mermaid
+flowchart LR
+  UNIT["service unit: YULIUS_* numbers (optional)"] --> LOAD
+  PROBE["system probe: CPUs, memory, data disk"] --> LOAD["App::load_limits (at start)"]
+  MARK["instance import: .yulius-limits-adapt"] -->|"first start: host-sized for pins of another host"| LOAD
+  LOAD <--> ROW[("instance.limits: settings, pins with their host")]
+  LOAD -->|"memory, disk quota"| ISO["isolation (sandbox manager)"]
+  LOAD --> LIVE["limits in force (in the App)"]
+  UI["Settings → Instance: Resource limits"] -->|"/api/admin/limits*"| SET["set, host-sized, remove, adapt, keep"]
+  SET --> ROW
+  SET --> LIVE
+  LIVE --> Q["session queue"]
+  LIVE --> CI["CI job slots and lanes"]
+  LIVE --> CD["CD run disk bound"]
+  SET -->|"set_disk_quota"| ISO
+```
+
 ## Claude Code updates
 
 Sessions run with Claude Code's own updater off (#45). The server keeps the CLI current instead,

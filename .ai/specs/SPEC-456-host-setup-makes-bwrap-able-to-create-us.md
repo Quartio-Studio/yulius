@@ -248,7 +248,10 @@ container: at `b74138b1` for the first runs, at `39c85810` for the runs after re
   tests run, 3317 passed, 16 skipped). After that `origin/dev` (#1161, a test fix in the turn
   code) was merged: `cargo check -p yulius --all-targets` and the filters above pass, and
   `python3 scripts/check_repository.py` passes. After round 2's fixes the same filters (115 tests),
-  clippy and the repository check pass; the full gate on the final head is Yulius CI's run.
+  clippy and the repository check pass. A later `origin/dev` (#1163, host-sized limits)
+  conflicted in the import's next steps, its tests and the operations guide: both sides are
+  kept (step 2 has #1163's words about limits), and the filters plus `limits` (140 tests),
+  clippy and the repository check pass. The full gate on the final head is Yulius CI's run.
   Security scan: disabled (Vidoc is turned off for
   this project; `yulius security-scan` scanned nothing).
 - **Review**: round 1 (fresh read-only session, `om-code-review`) asked for changes in own code:
