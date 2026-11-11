@@ -363,7 +363,7 @@ impl UsageAccumulator {
             Observed::SessionMeta {
                 version: Some(version),
                 ..
-            } => self.cli_version = Some(version.clone()),
+            } => self.note_cli_version(version),
             Observed::Malformed => self.malformed += 1,
             _ => {}
         }
@@ -438,11 +438,19 @@ impl UsageAccumulator {
         self.model.as_deref()
     }
 
-    /// The CLI version the session's latest prompt record names, if any (Claude Code writes its
-    /// own version on every record).
+    /// The CLI version the latest record of the session's own thread names, if any (Claude Code
+    /// writes its own version on every record).
     #[must_use]
     pub fn cli_version(&self) -> Option<&str> {
         self.cli_version.as_deref()
+    }
+
+    /// A record of the session's own thread names `version`
+    /// ([`crate::claude::observe_versioned`]): the session runs it from here on.
+    pub fn note_cli_version(&mut self, version: &str) {
+        if self.cli_version.as_deref() != Some(version) {
+            self.cli_version = Some(version.to_owned());
+        }
     }
 
     /// Number of malformed lines seen (a diagnostic; never fatal).

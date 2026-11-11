@@ -83,6 +83,67 @@ fn the_cli_version_is_the_latest_prompt_records() {
     assert_eq!(acc.cli_version(), Some("2.1.322"));
 }
 
+/// SPEC-461 CCM-011 (found with a real session's transcript): every record of the session's own
+/// thread names the Claude Code that wrote it, so a session resumed with nothing typed names
+/// its version before any prompt. The records have the structure of the first ones Claude Code
+/// 2.1.322 and 2.1.311 wrote after a resume on 2026-11-11 (texts made up).
+#[test]
+fn every_record_of_the_sessions_own_thread_names_its_claude_code() {
+    let resumed_meta = r#"{"parentUuid":"a1","isSidechain":false,"type":"user","message":{"role":"user","content":[{"type":"text","text":"Continue from where you left off."}]},"isMeta":true,"uuid":"u2","timestamp":"2026-11-11T11:56:37.389Z","turnPosition":{"promptIndex":3,"turnIndex":4},"userType":"external","entrypoint":"cli","cwd":"/w","sessionId":"s1","version":"2.1.322","gitBranch":"b","slug":"s"}"#;
+    let interrupted_tool = r#"{"parentUuid":"a1","isSidechain":false,"promptId":"p1","type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"[Request interrupted by user for tool use]","is_error":true,"tool_use_id":"toolu_1"}]},"uuid":"u3","timestamp":"2026-11-11T11:28:40.573Z","toolUseResult":"Error: interrupted","toolDenialKind":"interrupted","sourceToolAssistantUUID":"a1","userType":"external","entrypoint":"cli","cwd":"/w","sessionId":"s1","version":"2.1.311","gitBranch":"b","slug":"s"}"#;
+    let attachment = r#"{"parentUuid":"u2","isSidechain":false,"attachment":{"type":"remote_session_change","url":null,"commit":"c","pr":"p","sendUserFileHint":false,"managedCommit":false,"managedPr":false},"type":"attachment","uuid":"at1","timestamp":"2026-11-11T11:56:37.692Z","userType":"external","entrypoint":"cli","cwd":"/w","sessionId":"s1","version":"2.1.322"}"#;
+    let answer = r#"{"parentUuid":"at1","isSidechain":false,"message":{"model":"claude-fable-5-2","id":"msg_2","type":"message","role":"assistant","content":[{"type":"thinking","thinking":"hm","signature":"x"}],"stop_reason":"tool_use","usage":{"input_tokens":4,"output_tokens":9}},"type":"assistant","uuid":"a2","timestamp":"2026-11-11T11:57:36.901Z","userType":"external","entrypoint":"cli","cwd":"/w","sessionId":"s1","version":"2.1.322"}"#;
+    let turn_duration = r#"{"parentUuid":"p","isSidechain":false,"type":"system","subtype":"turn_duration","durationMs":453250,"messageCount":155,"timestamp":"2026-11-11T12:04:55.411Z","uuid":"u","isMeta":false,"userType":"external","entrypoint":"cli","cwd":"/w","sessionId":"s1","version":"2.1.322"}"#;
+    let request = r#"{"type":"api-request","timestamp":"2026-11-11T11:56:37.725Z","sessionId":"s1","version":"2.1.322"}"#;
+    for (line, version) in [
+        (resumed_meta, "2.1.322"),
+        (interrupted_tool, "2.1.311"),
+        (attachment, "2.1.322"),
+        (answer, "2.1.322"),
+        (turn_duration, "2.1.322"),
+        (request, "2.1.322"),
+    ] {
+        let (observed, named) = claude::observe_versioned(line);
+        assert_eq!(named.as_deref(), Some(version), "{line}");
+        assert_eq!(observed, claude::observe_line(line), "{line}");
+    }
+    // The resumed session's first record is no prompt: it starts no turn and names no session.
+    assert_eq!(claude::observe_line(resumed_meta), []);
+
+    // A sub-agent's record in the session's file, a record without a version and a line that
+    // is no record name nothing.
+    let side = answer.replace(r#""isSidechain":false"#, r#""isSidechain":true"#);
+    assert_eq!(claude::observe_versioned(&side).1, None);
+    let own = r#"{"type":"last-prompt","lastPrompt":"Fix the bug","sessionId":"s1"}"#;
+    assert_eq!(claude::observe_versioned(own), (Vec::new(), None));
+    assert_eq!(
+        claude::observe_versioned("not json"),
+        (vec![Observed::Malformed], None)
+    );
+    let untyped = r#"{"version":"2.1.322","sessionId":"s1"}"#;
+    assert_eq!(
+        claude::observe_versioned(untyped),
+        (vec![Observed::Malformed], None)
+    );
+
+    // The run's version follows its lines: the latest one named, kept where none is.
+    let mut acc = UsageAccumulator::new();
+    for (line, version) in [
+        (own, None),
+        (interrupted_tool, Some("2.1.311")),
+        (own, Some("2.1.311")),
+        (resumed_meta, Some("2.1.322")),
+        (side.as_str(), Some("2.1.322")),
+    ] {
+        let (observed, named) = claude::observe_versioned(line);
+        if let Some(named) = named {
+            acc.note_cli_version(&named);
+        }
+        acc.observe_all(observed.iter());
+        assert_eq!(acc.cli_version(), version, "{line}");
+    }
+}
+
 #[test]
 fn claude_session_turns_meta_and_ignored_records() {
     let per_line = observe_all(CLAUDE_SESSION, claude::observe_line);
