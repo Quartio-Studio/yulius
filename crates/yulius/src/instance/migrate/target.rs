@@ -1912,7 +1912,7 @@ pub struct Watched {
     at: usize,
     ended: bool,
     every: Duration,
-    stopped: Box<dyn FnMut() -> bool>,
+    stopped: Box<dyn FnMut() -> bool + Send>,
 }
 
 impl std::fmt::Debug for Watched {
@@ -1928,7 +1928,7 @@ impl Watched {
     pub fn new(
         mut input: impl std::io::Read + Send + 'static,
         every: Duration,
-        stopped: impl FnMut() -> bool + 'static,
+        stopped: impl FnMut() -> bool + Send + 'static,
     ) -> Self {
         let (send, chunks) = std::sync::mpsc::sync_channel(8);
         std::thread::spawn(move || {

@@ -1581,7 +1581,17 @@ fn holds_exclude_as_the_protocol_needs() -> Result<(), Box<dyn std::error::Error
     // first, only so long.
     let stream = receiving(dir.path(), long)?;
     assert!(!stream.told_to_stop());
-    assert!(receiving(dir.path(), Duration::from_millis(300)).is_err());
+    // (Tried on a thread of its own: a second stream that never gave up would hang the test.)
+    let (tried, gave_up) = mpsc::channel();
+    let path = dir.path().to_path_buf();
+    std::thread::spawn(move || {
+        let _ = tried.send(receiving(&path, Duration::from_millis(300)).is_err());
+    });
+    assert_eq!(
+        gave_up.recv_timeout(Duration::from_secs(10)),
+        Ok(true),
+        "a second stream did not give up"
+    );
     // A Start in flight is another matter.
     drop(hold_in(dir.path(), Hold::Landed, long));
     drop(hold_in(dir.path(), Hold::Flight, long));
@@ -1671,10 +1681,16 @@ fn a_watched_stream_whose_sender_is_gone_ends_when_told_to()
     let mut five = [0u8; 5];
     watched.read_exact(&mut five)?;
     assert_eq!(&five, b"hello");
-    // Nothing more comes and nobody closes the link: the read would wait for ever.
+    // Nothing more comes and nobody closes the link: the read would wait for ever. (Read on a
+    // thread of its own, so a stream that did not hear the word fails the test, not hangs it.)
     stop.store(true, Ordering::SeqCst);
-    let err = watched
-        .read(&mut [0u8; 8])
+    let (read, ended) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = read.send(watched.read(&mut [0u8; 8]));
+    });
+    let err = ended
+        .recv_timeout(Duration::from_secs(10))
+        .map_err(|_| "it went on waiting for the sender")?
         .err()
         .ok_or("it went on reading")?;
     assert!(
