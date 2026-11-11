@@ -27,8 +27,10 @@ hand-made list of them missed a dozen (review round 1).
 - `ANTHROPIC_` stays a reserved prefix, so a name the agent CLI starts reading later is covered.
 - A person's own key extending a credential name is accepted: `ANTHROPIC_API_KEY_<NAME>` and
   `ANTHROPIC_AUTH_TOKEN_<NAME>` (at least one character after the `_`), except a name ending in
-  `_FILE`, which by convention points a tool at a credential file. The agent CLI reads none of
-  these; the unit test pins all 76 names it holds as refused.
+  `_FILE`, which by convention points a tool at a credential file. The agent CLI never reads
+  these as settings or credentials: it only lists `ANTHROPIC_*` names (their names go into its
+  startup telemetry, and its sandboxed toolset shell drops them). The unit test pins the 76
+  names in its strings as refused.
 - Every refusal says what is reserved and a name that works: "… as is every name starting with
   GIT_; choose another name, such as APP_GIT_TOKEN"; for `ANTHROPIC_` it names the own-key forms.
 - Every other reserved name and prefix is unchanged, and so is the repository's `[resources.env]`
@@ -46,6 +48,7 @@ hand-made list of them missed a dozen (review round 1).
 ## Consequences
 
 - `ANTHROPIC_API_KEY_QUARTIO` works; `ANTHROPIC_KEY_PROD` is still refused, and its message
-  says to use `ANTHROPIC_API_KEY_PROD` or `APP_ANTHROPIC_KEY_PROD`.
+  names the forms `ANTHROPIC_API_KEY_<NAME>` (not ending in `_FILE`) and suggests
+  `APP_ANTHROPIC_KEY_PROD`.
 - If the agent CLI ever reads a name of the own-key form (other than `_FILE`), it must be added
   here; the pinned list in the test is the place to check on a CLI upgrade.

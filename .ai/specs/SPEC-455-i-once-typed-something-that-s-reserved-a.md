@@ -1,11 +1,11 @@
 ---
 yulius-task: eb6e7bbc-ecf2-47d3-a18b-f6095b090583
-status: in-progress
+status: done
 ---
 
 # SPEC-455: Own Anthropic keys are accepted, and a reserved name says why
 
-Status: in-progress
+Status: done
 Date: 2026-11-11
 Owner: Yulius task #437
 Scope authorization: task #437 (`/goal`, with a screenshot of the Add agent secret dialog refusing
@@ -50,7 +50,7 @@ name says what is reserved and a name that works, so nobody guesses one rename a
   `ANTHROPIC_API_KEY_<NAME>` or `ANTHROPIC_AUTH_TOKEN_<NAME>` (at least one character after the
   `_`) that does not end in `_FILE`.
 - **RSV-002** A refusal for a reserved prefix names the prefix; for `ANTHROPIC_` it names the
-  own-key forms. Every refusal suggests `APP_<NAME>` when that fits in 64 characters.
+  own-key forms (not ending in `_FILE`). Every refusal suggests `APP_<NAME>` when that fits in 64 characters.
 - **RSV-003** Every other reserved name and prefix is unchanged; the web mock's variable check
   follows RSV-001.
 
@@ -60,7 +60,7 @@ name says what is reserved and a name that works, so nobody guesses one rename a
 - [x] Regression test: own ANTHROPIC_ names accepted, the agent CLI's still refused
 - [x] Anthropic names reserved by what the agent CLI and SDKs read (fix, ADR-0292, docs)
 - [x] Review round 1: own-key forms under the reserved prefix, refusals that say why
-- [ ] Independent review answered and gates green
+- [x] Independent review answered and gates green
 
 ## Acceptance criteria
 
@@ -69,7 +69,8 @@ name says what is reserved and a name that works, so nobody guesses one rename a
   `ANTHROPIC_AUTH_TOKEN_FILE` and `ANTHROPIC_KEY_PROD` are refused as reserved.
 - AC-3 The refusal of `ANTHROPIC_KEY_PROD` names `ANTHROPIC_`, the own-key form and
   `APP_ANTHROPIC_KEY_PROD`; that of `GIT_TOKEN` names `GIT_` and no Anthropic form; a suggestion
-  parses; none is offered past 64 characters.
+  parses, also at exactly 64 characters, and none is offered past them; the refusal of
+  `ANTHROPIC_API_KEY_FILE` says "not ending in _FILE".
 - AC-4 The existing refusals (`PATH`, `YULIUS_*`, `CLAUDE_*`, `GIT_*`, `LD_*`, `NODE_*`, …) hold.
 
 ## Test plan
@@ -78,7 +79,7 @@ name says what is reserved and a name that works, so nobody guesses one rename a
   `own_anthropic_keys_are_accepted_and_every_other_anthropic_name_is_reserved` (AC-1, AC-2, the
   CLI's names pinned in `CLI_READS`), `a_refusal_names_the_reserved_prefix_and_a_name_that_works`
   (AC-3), `names_are_environment_style_and_not_reserved` (AC-4). Each failed before its fix
-  (commits 0472eb89, 9aa4cb50).
+  (commits 0472eb89, 9aa4cb50, and the round-2 test commit).
 - The server integration tests that refuse reserved names (`variables`, `secrets_create`,
   `secrets_copy`) match on "reserved", which the new messages keep.
 
@@ -93,6 +94,35 @@ name says what is reserved and a name that works, so nobody guesses one rename a
   ADR understated variables' real values: rewritten. (6, low, own) Plan boxes: ticked. (7, low,
   pre-existing) the refusal never named the prefix: fixed here, as it is the reported "kept
   telling me" symptom.
+
+- Round 2 (APPROVE on d0169fcc, all low): (1, own) the ADR said the CLI reads none of the
+  own-key names, while it lists `ANTHROPIC_*` names for telemetry, forwarding and its toolset
+  shell: reworded. (2, own) the refusal of `ANTHROPIC_API_KEY_FILE` offered a form it already
+  looked like: it now says "not ending in _FILE", test-first. (3, own) the test comment claimed
+  every string: reworded (the reviewer's 77th, `ANTHROPIC_API_ERROR`, is a substring of
+  `SETUP_FAILURE_KIND_ANTHROPIC_API_ERROR`, not a variable). (4, own) the 64-character suggestion
+  boundary: tested. (5, pre-existing) the mock's variable refusal text is its own short sentence
+  and the mock's agent-secret POST checks no reserved names; the mock serves e2e only and its
+  accept/refuse rule now matches the server, so it stays.
+
+## Evidence
+
+- `cargo test -p yulius-domain --lib vault::`: 54 passed; the three `vault::names` tests failed
+  before their fixes (0472eb89 on `ANTHROPIC_API_KEY_QUARTIO`, 9aa4cb50 on `ANTHROPIC_API_HOST`
+  and the message, round 2 on the `_FILE` message).
+- `cargo clippy -p yulius-domain --all-targets -- -D warnings`, `scripts/dev check`: pass.
+- `scripts/dev ci` (twice): 3282 of 3286 tests passed. The four failures,
+  `merge_train::a_member_that_cannot_merge_is_told_instead_of_tested_again` and three
+  `first_message::*`, fail the same with the branch's code files reverted to `origin/dev` and
+  under `env -i`; Yulius CI passed them on dev 911e3127. They are outside this change, tracked in
+  #1154. The gate stops at nextest, so its later stages ran only in Yulius CI.
+- The web mock's rule was checked with `node` (QUARTIO accepted; `ANTHROPIC_API_KEY`, `_FILE`,
+  `ANTHROPIC_KEY_PROD`, `PATH` refused).
+- The agent CLI's names: `grep -aoE 'ANTHROPIC_[A-Z0-9_]+'` on Claude Code 2.1.292 gives the 76
+  names in `CLI_READS`; its main Bash tool's optional scrub is an exact-name list, and only a
+  sandboxed toolset shell drops `ANTHROPIC_*`.
+- Not tested here: the Add agent secret dialog in a browser (the server message is what it shows;
+  the e2e suite runs in Yulius CI). Vidoc: switched off for this project (`YULIUS_VIDOC=off`).
 
 ## Decisions
 

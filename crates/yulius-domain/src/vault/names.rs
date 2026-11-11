@@ -114,7 +114,7 @@ impl SecretName {
         }
         if let Some(prefix) = reserved_prefix(text) {
             let own = if prefix == "ANTHROPIC_" {
-                ", except your own ANTHROPIC_API_KEY_<NAME> or ANTHROPIC_AUTH_TOKEN_<NAME>"
+                ", except your own ANTHROPIC_API_KEY_<NAME> or ANTHROPIC_AUTH_TOKEN_<NAME> not ending in _FILE"
             } else {
                 ""
             };
@@ -225,7 +225,10 @@ mod tests {
         let Err(VaultError::Name(message)) = SecretName::parse(&at_limit) else {
             panic!("{at_limit} is reserved");
         };
-        assert!(message.contains(&format!("such as APP_{at_limit}")), "{message}");
+        assert!(
+            message.contains(&format!("such as APP_{at_limit}")),
+            "{message}"
+        );
         assert!(SecretName::parse(&format!("APP_{at_limit}")).is_ok());
         let long = format!("GIT_{}", "A".repeat(MAX_NAME_LEN - 4));
         let Err(VaultError::Name(message)) = SecretName::parse(&long) else {
