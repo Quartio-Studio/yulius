@@ -447,7 +447,11 @@ watching, steering and unblocking.
   restart; the agents don't notice (SPEC-160). A deploy (CD or environment run) running when the
   new version is built finishes first, and new deploys are refused until the update installed, so an
   update never cuts a deploy (SPEC-342). **Restart…** on the Instance page restarts the server
-  the same way without installing anything (SPEC-432). A task session whose Yulius tools Claude
+  the same way without installing anything (SPEC-432). Sessions live in a systemd unit of their
+  own, so the restart keeps them on every systemd; on a host not set up for that, where the
+  server could not start again while a session runs (systemd 258 and later), Restart and Update
+  now are refused with the fix, `sudo yulius host setup`, instead of taking the instance down
+  (SPEC-458). A task session whose Yulius tools Claude
   Code dropped is reconnected by Yulius, and an agent can call any Yulius tool from its shell with
   `yulius tool` (SPEC-432).
 

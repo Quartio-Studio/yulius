@@ -1784,6 +1784,44 @@ async fn a_deploy_running_while_draining_holds_the_install() -> TestResult {
     Ok(())
 }
 
+/// SPEC-458 RST-003: where the server's unit would not start again, Restart and Update now are
+/// refused with the reason before a task is paused or anything is built.
+#[tokio::test]
+async fn restart_and_update_now_are_refused_where_the_server_would_not_come_back() -> TestResult {
+    let (i, host) = freezing_instance().await?;
+    two_tasks(&i).await?;
+    post(&i, "/api/admin/update/check", None, &i.admin).await?;
+    let why = "yulius.service would not start again: run `sudo yulius host setup`";
+    *i.helper.blocker.lock().map_err(|_| "lock")? = Some(why.into());
+    let confirmed = Some(json!({"confirm": true}));
+    for (path, body) in [
+        ("/api/admin/restart", confirmed.clone()),
+        (
+            "/api/admin/update",
+            Some(json!({"commit": NEW, "confirm": true})),
+        ),
+    ] {
+        let r = post(&i, path, body, &i.admin).await?;
+        assert_eq!(r.status, StatusCode::CONFLICT, "{path}: {}", r.body);
+        let message = r.body["error"]["message"].as_str().unwrap_or_default();
+        assert!(message.starts_with(why), "{path}: {message}");
+        assert!(
+            message.ends_with("nothing was stopped"),
+            "{path}: {message}"
+        );
+    }
+    let _ = i.h.app.update_round().await;
+    assert!(i.helper.last().is_none(), "nothing was asked of the helper");
+    assert!(host.frozen().is_empty(), "no task was paused");
+    let view = i.h.app.update_view(&support_ctx(&i).await?).await?;
+    assert!(view.run.is_none(), "no run was opened");
+
+    *i.helper.blocker.lock().map_err(|_| "lock")? = None;
+    let r = post(&i, "/api/admin/restart", confirmed, &i.admin).await?;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "{}", r.body);
+    Ok(())
+}
+
 /// SPEC-432 RST-002: a superadmin restarts Yulius with the build it runs: every task freezes,
 /// the helper restarts that build, and the tasks thaw. Others are refused, a confirmation is
 /// needed, and a second run conflicts.

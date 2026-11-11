@@ -6,7 +6,7 @@
 //! - every attempt records exactly one terminal outcome;
 //! - a record that says "running" is never respawned automatically after a restart.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -534,11 +534,42 @@ pub enum RunStart {
     AfterLimit,
 }
 
+/// The statuses of a task whose run lives, starts or ends.
+const LIVE_WITH_A_RUN: [TaskStatus; 4] = [
+    TaskStatus::Starting,
+    TaskStatus::Switching,
+    TaskStatus::Stopping,
+    TaskStatus::Running,
+];
+
 /// Supervisor-owned per-process state.
 #[derive(Default)]
 pub struct SupervisorState {
     runtimes: Mutex<HashMap<TaskId, Arc<TaskRuntime>>>,
     launch: tokio::sync::Mutex<()>,
+    /// The task the one launch under `launch` works on: `Starting` with no run on record yet,
+    /// which the start-up reconciliation must not take for a dead server's (SPEC-458 RUN-001).
+    launching: Mutex<Option<TaskId>>,
+}
+
+/// Names the task being launched until dropped (SPEC-458 RUN-001).
+struct Launching<'a>(&'a Mutex<Option<TaskId>>);
+
+impl<'a> Launching<'a> {
+    fn start(slot: &'a Mutex<Option<TaskId>>, task: &TaskId) -> Self {
+        if let Ok(mut launching) = slot.lock() {
+            *launching = Some(task.clone());
+        }
+        Self(slot)
+    }
+}
+
+impl Drop for Launching<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut launching) = self.0.lock() {
+            *launching = None;
+        }
+    }
 }
 
 /// File in a run directory holding the run's final screen (`<cols> <rows>\n` + redraw bytes).
@@ -1162,6 +1193,7 @@ impl App {
         only: Option<TaskStatus>,
     ) -> BoxFuture<'a, AppResult<bool>> {
         Box::pin(async move {
+            self.settle_resting_run(task_id).await?;
             let guard = self.supervisor.launch.lock().await;
             let task = self
                 .deps
@@ -1221,7 +1253,9 @@ impl App {
                 }
                 return Ok(true);
             }
+            let launching = Launching::start(&self.supervisor.launching, &task.id);
             let result = self.launch_attempt(&task, start, account).await;
+            drop(launching);
             drop(guard);
             if let Err(err) = &result {
                 let reason = crate::account_gate::fail_reason(err);
@@ -1553,6 +1587,7 @@ impl App {
             exit_reason: None,
         };
         store.insert_attempt(&attempt).await?;
+        crate::race::reached(crate::race::Point::RunRecorded, Path::new(task.id.as_str()));
         // Removed since it was chosen (SPEC-447 MOV-003): the removal looked for runs on it before
         // this one was recorded, so this launch never starts on it and chooses again.
         if store.account(&account.id).await?.is_none() {
@@ -2414,6 +2449,69 @@ impl App {
         Ok(())
     }
 
+    /// Whether this server holds the task's run: attached, watched, its end being recorded, or
+    /// being launched (between the run's record and its attach it is none of the first three).
+    async fn holds_run(&self, task_id: &TaskId) -> bool {
+        let launching = self
+            .supervisor
+            .launching
+            .lock()
+            .is_ok_and(|launching| launching.as_ref() == Some(task_id));
+        if launching {
+            return true;
+        }
+        let runtime = self.runtime(task_id);
+        runtime.has_run().await
+            || runtime.watcher_alive.load(Ordering::SeqCst)
+            || *runtime.finalizing.borrow() > 0
+    }
+
+    /// Before a start (SPEC-458 RUN-002, #439): a resting task with a run still on record. A run
+    /// this server holds lives on, so the start is refused before anything changes: started all
+    /// the same it would be refused later, as "task already has a live run", and leave the task
+    /// `failed_precondition` with that run going on. A run no server holds is settled as after a
+    /// restart (ADR-0050): ended and counted, or killed and, once proven gone, recorded lost.
+    ///
+    /// # Errors
+    /// `Conflict` while the run lives on or cannot be ended.
+    async fn settle_resting_run(self: &Arc<Self>, task_id: &TaskId) -> AppResult<()> {
+        let store = &self.deps.store;
+        let Some(task) = store.task(task_id).await? else {
+            return Ok(());
+        };
+        if !task.status.is_resting() {
+            return Ok(());
+        }
+        let Some(run) = store.live_attempt(task_id).await? else {
+            return Ok(());
+        };
+        if self.holds_run(task_id).await {
+            return Err(AppError::Conflict(
+                "the task still has a live run: stop it first".into(),
+            ));
+        }
+        self.settle_unheld_run(task_id, &run.id).await
+    }
+
+    /// Settles a live run on record that this server holds no connection to (ADR-0050).
+    ///
+    /// # Errors
+    /// `Conflict` when the run could not be ended: it stays live.
+    async fn settle_unheld_run(
+        self: &Arc<Self>,
+        task_id: &TaskId,
+        attempt_id: &AttemptId,
+    ) -> AppResult<()> {
+        tracing::warn!(task = %task_id, run = %attempt_id, "settling a live run no server holds");
+        self.resolve_lost_connection(task_id, attempt_id).await;
+        match self.deps.store.attempt(attempt_id).await? {
+            Some(run) if !run.state.is_terminal() => Err(AppError::Conflict(
+                "the task's run could not be ended; try again".into(),
+            )),
+            _ => Ok(()),
+        }
+    }
+
     async fn resolve_lost_connection(self: &Arc<Self>, task_id: &TaskId, attempt_id: &AttemptId) {
         let Ok(Some(attempt)) = self.deps.store.attempt(attempt_id).await else {
             return;
@@ -3044,6 +3142,22 @@ impl App {
             if store.live_attempt(task_id).await?.is_some() {
                 self.end_stopped_run(task_id).await;
             }
+            return Ok(true);
+        }
+        // A resting task with a run still on record (SPEC-458 RUN-003, #439): the stop ends that
+        // run instead of answering "task is …" and leaving it. One no server holds is settled as
+        // after a restart (ADR-0050).
+        if task.status.is_resting()
+            && let Some(run) = store.live_attempt(task_id).await?
+        {
+            if !self.holds_run(task_id).await {
+                self.settle_unheld_run(task_id, &run.id).await?;
+                return Ok(true);
+            }
+            if let Ok(mut intent) = self.runtime(task_id).intent.lock() {
+                replace_intent(&mut intent, Some(EndIntent::Cancel), SwitchEnd::Stopped);
+            }
+            self.end_stopped_run(task_id).await;
             return Ok(true);
         }
         if task.status == TaskStatus::Queued
@@ -3771,6 +3885,17 @@ impl App {
     /// Store failures.
     pub(crate) async fn reconcile_lost(self: &Arc<Self>) -> AppResult<Vec<(TaskId, TaskStatus)>> {
         let store = &self.deps.store;
+        // What the server before this one left live. Only these can be without a run for its
+        // death: a task this server starts meanwhile (the queue does, as soon as a lost run frees
+        // a slot) is `Starting` with no run on record until its launch records one (SPEC-458
+        // RUN-001, #439).
+        let left: HashSet<TaskId> = store
+            .tasks_with_status(&LIVE_WITH_A_RUN)
+            .await?
+            .into_iter()
+            .map(|task| task.id)
+            .collect();
+        let mut held_again = HashSet::new();
         let mut lost = Vec::new();
         for attempt in store.live_attempts().await? {
             let host_token: Option<[u8; 32]> = self
@@ -3859,6 +3984,7 @@ impl App {
                 if launch_goal_pending(run_dir) {
                     self.spawn_goal_watch(&attempt.task_id, &attempt.id, run_dir);
                 }
+                held_again.insert(attempt.task_id.clone());
                 continue;
             }
             let inspection = self.deps.session_host.inspect(Path::new(&attempt.run_dir));
@@ -3896,17 +4022,21 @@ impl App {
                 }
             }
         }
-        // Tasks that claim to be starting/switching/stopping without a live attempt.
-        for task in store
-            .tasks_with_status(&[
-                TaskStatus::Starting,
-                TaskStatus::Switching,
-                TaskStatus::Stopping,
-                TaskStatus::Running,
-            ])
-            .await?
-        {
-            if store.live_attempt(&task.id).await?.is_none() {
+        crate::race::reached(crate::race::Point::ReconcileSweep, &self.config.data_dir);
+        // Tasks that claim to be starting/switching/stopping without a live attempt: those the
+        // dead server left so. One whose run this server holds again, or which it is launching,
+        // is this server's: its own code moves it on.
+        for task in store.tasks_with_status(&LIVE_WITH_A_RUN).await? {
+            if !left.contains(&task.id) || held_again.contains(&task.id) {
+                continue;
+            }
+            // Asked before the run: a launch records its run before it stops being the launch.
+            let launching = self
+                .supervisor
+                .launching
+                .lock()
+                .is_ok_and(|launching| launching.as_ref() == Some(&task.id));
+            if !launching && store.live_attempt(&task.id).await?.is_none() {
                 let next = task
                     .status
                     .after_loss(task.activity, StopReason::ServerLost)
