@@ -386,6 +386,12 @@ mod tests {
             assert!(!kept(state.clone(), 400).stale(at(1_919_999)));
             assert!(kept(state, 400).stale(at(1_920_000)));
         }
+        // An answer GitHub did not give says the same whatever the reason; another answer is news.
+        let unknown = |why: &str| CallbackState::Unknown(why.into());
+        assert!(kept(unknown("timed out"), 3).says(&unknown("connection failed")));
+        assert!(kept(CallbackState::Missing, 3).says(&CallbackState::Missing));
+        assert!(!kept(CallbackState::Missing, 3).says(&unknown("timed out")));
+        assert!(!kept(CallbackState::Missing, 3).says(&CallbackState::Registered));
         // "Registered" is kept until the next start or demand.
         assert!(!kept(CallbackState::Registered, 0).stale(at(86_400_000)));
         // A clock that went back asks nothing.
