@@ -18,6 +18,7 @@ use std::time::Duration;
 use yulius_sandbox::{adopt, cgroup, units};
 
 use super::{Cmd, Mode, Run, service_name_ok, unit_safe};
+use crate::restart_safety::unit_groups;
 
 /// The name of the server unit's second drop-in.
 pub const DROP_IN_NAME: &str = "20-yulius-sessions.conf";
@@ -169,21 +170,14 @@ impl Run<'_> {
     }
 }
 
-/// The group systemd names for `service` (`ControlGroup`), below `root`; `None` when it names
-/// none (a stopped unit that left nothing) or cannot be asked.
-fn control_group(root: &Path, service: &str) -> Option<PathBuf> {
+/// What systemd names as the group of `service` (`ControlGroup`); `None` when it cannot be asked.
+fn control_group(service: &str) -> Option<String> {
     let out = std::process::Command::new("systemctl")
         .args(["show", "--property=ControlGroup", "--value", "--", service])
         .stdin(std::process::Stdio::null())
         .output()
         .ok()?;
-    let text = String::from_utf8_lossy(&out.stdout);
-    let relative = text.trim().strip_prefix('/')?;
-    let safe = !relative.is_empty()
-        && Path::new(relative)
-            .components()
-            .all(|part| matches!(part, std::path::Component::Normal(_)));
-    safe.then(|| root.join(relative))
+    Some(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 /// `yulius host adopt-sessions --service <unit>` (SPEC-458 LAY-004): as root, before the server
@@ -203,19 +197,7 @@ pub fn adopt_main(service: &str) -> ExitCode {
     let root = Path::new(cgroup::CGROUP_ROOT);
     let sessions_dir = root.join(&slice).join(&sessions);
     let wanted = root.join(&slice).join(service);
-    let mut old: Vec<PathBuf> = Vec::new();
-    for candidate in [
-        control_group(root, service),
-        Some(root.join("system.slice").join(service)),
-        Some(wanted.clone()),
-    ]
-    .into_iter()
-    .flatten()
-    {
-        if !old.contains(&candidate) {
-            old.push(candidate);
-        }
-    }
+    let old = unit_groups(root, service, control_group(service).as_deref());
     let mut failed = false;
     for unit in old {
         match adopt::adopt(&unit, &sessions_dir, unit == wanted, ENGINE_WAIT) {

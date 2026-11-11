@@ -327,6 +327,14 @@ fn isolation_checks(data_dir: &Path) -> Vec<Check> {
     let delegation = delegation_check();
     let delegated = delegation.level == Level::Ok;
     checks.push(delegation);
+    checks.extend(restart_check(
+        SERVICE,
+        &crate::restart_safety::read(
+            Path::new(yulius_sandbox::cgroup::CGROUP_ROOT),
+            SERVICE,
+            &|args: &[&str]| output_of(Path::new("systemctl"), args),
+        ),
+    ));
     let setting = if std::env::var("YULIUS_SANDBOX_DOCKER").as_deref() == Ok("off") {
         Err(yulius_sandbox::manager::DOCKER_OFF.to_owned())
     } else {
@@ -369,6 +377,50 @@ fn docker_checks(
         ));
     }
     checks
+}
+
+/// The server's unit on a host set up by `yulius host setup`.
+const SERVICE: &str = "yulius.service";
+
+/// SPEC-458 HST-002: whether a restart of the server keeps its sessions. No line on a machine
+/// without the unit.
+fn restart_check(service: &str, facts: &crate::restart_safety::Facts) -> Option<Check> {
+    const NAME: &str = "restart with sessions";
+    if !facts.loaded {
+        return None;
+    }
+    if facts.adopt_wired {
+        let sessions = yulius_sandbox::units::sessions_unit(service).unwrap_or_default();
+        let detail = if facts.sessions_in_unit {
+            format!("the next restart of {service} moves its sessions to {sessions} and keeps them")
+        } else {
+            format!("sessions live in {sessions}: a restart of {service} keeps them")
+        };
+        return Some(check(NAME, Level::Ok, detail));
+    }
+    let systemd = facts
+        .systemd
+        .map_or_else(|| "unknown".to_owned(), |version| version.to_string());
+    let effect = match crate::restart_safety::blocker(service, facts) {
+        Some(_) => "sessions run there now, so Restart and Update now are refused",
+        None if facts
+            .systemd
+            .is_some_and(|v| v < crate::restart_safety::FIRST_AFFECTED) =>
+        {
+            "this systemd still restarts it"
+        }
+        None => "a restart while sessions run would leave the server down",
+    };
+    Some(check(
+        NAME,
+        Level::Warn,
+        format!(
+            "sessions live in {service}'s own group, where systemd {first} and later cannot start \
+             the unit again while one runs (this host: systemd {systemd}; {effect}): run `sudo \
+             yulius host setup`",
+            first = crate::restart_safety::FIRST_AFFECTED
+        ),
+    ))
 }
 
 fn delegation_check() -> Check {
@@ -543,10 +595,58 @@ pub fn doctor(
 #[cfg(test)]
 mod tests {
     use super::{
-        GH_INSTALL_URL, Level, docker_checks, github_cli_check, proxy_secret_check, run_checks,
-        version_of, visible_when_contained,
+        GH_INSTALL_URL, Level, docker_checks, github_cli_check, proxy_secret_check, restart_check,
+        run_checks, version_of, visible_when_contained,
     };
+    use crate::restart_safety::Facts;
     use std::path::{Path, PathBuf};
+
+    fn restart_line(systemd: Option<u32>, sessions_in_unit: bool, adopt_wired: bool) -> String {
+        let facts = Facts {
+            systemd,
+            loaded: true,
+            sessions_in_unit,
+            adopt_wired,
+        };
+        restart_check("yulius.service", &facts)
+            .map(|check| format!("{:?} {}: {}", check.level, check.name, check.detail))
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn the_restart_line_warns_while_sessions_live_in_the_servers_unit() {
+        let down = restart_line(Some(259), true, false);
+        assert!(down.starts_with("Warn restart with sessions: "), "{down}");
+        assert!(down.contains("this host: systemd 259"), "{down}");
+        assert!(
+            down.contains("Restart and Update now are refused"),
+            "{down}"
+        );
+        assert!(down.contains("`sudo yulius host setup`"), "{down}");
+        let idle = restart_line(Some(259), false, false);
+        assert!(idle.contains("would leave the server down"), "{idle}");
+        let old = restart_line(Some(255), true, false);
+        assert!(old.starts_with("Warn "), "{old}");
+        assert!(old.contains("this systemd still restarts it"), "{old}");
+        assert!(restart_line(None, true, false).contains("systemd unknown"));
+    }
+
+    #[test]
+    fn the_restart_line_is_fine_with_the_sessions_unit_and_absent_without_the_unit() {
+        let set_up = restart_line(Some(259), false, true);
+        assert_eq!(
+            set_up,
+            "Ok restart with sessions: sessions live in yulius-sandboxes.service: a restart of \
+             yulius.service keeps them"
+        );
+        let first = restart_line(Some(259), true, true);
+        assert!(first.starts_with("Ok "), "{first}");
+        assert!(
+            first.contains("the next restart of yulius.service moves"),
+            "{first}"
+        );
+        assert!(restart_check("yulius.service", &Facts::default()).is_none());
+    }
 
     #[test]
     fn the_proxy_secret_check_never_shows_the_secret() -> Result<(), Box<dyn std::error::Error>> {
