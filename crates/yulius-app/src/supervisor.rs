@@ -24,7 +24,7 @@ use yulius_domain::task::{
     Activity, AttemptState, STOP_INTERRUPT_GRACE_MS, StopReason, TaskEvent, TaskStatus,
 };
 use yulius_domain::time::Timestamp;
-use yulius_domain::usage::{AccountUsage, ModelFamily, ReportedLimit};
+use yulius_domain::usage::{AccountUsage, LimitScope, ModelFamily, ReportedLimit};
 
 use crate::auth::hex_token;
 use crate::context::App;
@@ -46,6 +46,12 @@ pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 /// A usage window that is used up, in percent.
 const FULL_PERCENT: f64 = 100.0;
+
+/// How often a task is tried again by itself at a model's limit nothing says the end of, when
+/// no other subscription can take it: once (a provider's reading ends such a limit, and a
+/// session resumed on a newer Claude Code names the reset). Refused the same way again, it asks
+/// a person instead of restarting its session at every reading (SPEC-464 UCL-010).
+const BLIND_LIMIT_RETRIES: u32 = 1;
 
 /// Default PTY size before the first viewer reports its size.
 pub const DEFAULT_SIZE: (u16, u16) = (120, 40);
@@ -137,9 +143,16 @@ pub struct TaskRuntime {
     /// The goal pause Claude Code wrote at that limit, held for the limit path, or that path's
     /// word that the session stays there (SPEC-464 UCL-007).
     pub(crate) limit_goal_pause: Mutex<crate::goal_retry::LimitGoalPause>,
-    /// When Claude Code recorded that limit (ms, 0 = unknown): a request made at or after it is
-    /// this limit's (SPEC-464 UCL-007).
+    /// When Claude Code recorded that limit (ms, 0 = unknown): what was audited at or after it
+    /// is this limit's (SPEC-464 UCL-007).
     pub(crate) limit_at_ms: AtomicI64,
+    /// That limit is a model's and nothing says when it ends (no believable reset): a wait for
+    /// it is blind (SPEC-464 UCL-010).
+    pub(crate) limit_blind: AtomicBool,
+    /// Blind waits in a row: limits nothing says the end of that left the task with nowhere to
+    /// go, with no answer from the agent in between. After [`BLIND_LIMIT_RETRIES`] the task is
+    /// not tried again by itself (SPEC-464 UCL-010).
+    pub(crate) blind_limit_waits: AtomicU32,
     /// When the current turn started (ms, 0 = no turn in progress). Active agent time comes
     /// from the transcript (SPEC-087 MET-001), not from this.
     turn_started_ms: AtomicI64,
@@ -396,6 +409,8 @@ impl TaskRuntime {
             at_limit: AtomicBool::new(false),
             limit_goal_pause: Mutex::new(crate::goal_retry::LimitGoalPause::None),
             limit_at_ms: AtomicI64::new(0),
+            limit_blind: AtomicBool::new(false),
+            blind_limit_waits: AtomicU32::new(0),
             turn_started_ms: AtomicI64::new(0),
             auto_pr_head: Mutex::new(None),
             merged_covers: Mutex::new(None),
@@ -3388,7 +3403,7 @@ impl App {
         // The turn a limit cut is continued by the new session itself (SPEC-034): nobody has to
         // send the message a goal pause at that limit asked for (SPEC-464 UCL-007).
         if matches!(start, RunStart::AfterLimit) {
-            self.end_goal_retry_request(task_id).await;
+            self.end_limit_requests(task_id).await;
         }
         let from_desc = match &attempt {
             Some(a) => self.account_desc(a.harness, a.account_id.as_ref()).await,
@@ -4394,12 +4409,17 @@ impl App {
                 tracing::info!(task = %task_id, %message, ?scope, "usage limit reached");
                 runtime.end_turn(self.now());
                 runtime.limit_cut_the_turn(at);
+                let limit = ReportedLimit {
+                    scope,
+                    window_minutes,
+                    resets_at,
+                };
+                runtime.limit_blind.store(
+                    matches!(scope, LimitScope::Model(_))
+                        && limit.believed_reset(self.now()).is_none(),
+                    Ordering::SeqCst,
+                );
                 if let Some(account) = &attempt.account_id {
-                    let limit = ReportedLimit {
-                        scope,
-                        window_minutes,
-                        resets_at,
-                    };
                     let family = self.task_family(task_id).await;
                     self.record_limit(account, limit, family).await;
                 }
@@ -4419,6 +4439,7 @@ impl App {
                 tracing::warn!(task = %task_id, %message, "subscription access refused");
                 runtime.end_turn(self.now());
                 runtime.limit_cut_the_turn(at);
+                runtime.limit_blind.store(false, Ordering::SeqCst);
                 runtime.limit_resets_at.store(0, Ordering::SeqCst);
                 let mut refused = None;
                 if let Some(account) = &attempt.account_id {
@@ -4504,6 +4525,8 @@ impl App {
                 // A sub-agent's turn end (no time) leaves the session at its limit.
                 if at.is_some() {
                     runtime.at_limit.store(false, Ordering::SeqCst);
+                    // The session got an answer: a later limit is not a retry of an earlier one.
+                    runtime.blind_limit_waits.store(0, Ordering::SeqCst);
                 }
                 // With hooks the Stop hook is the boundary that switches or pauses; the
                 // transcript decides only for a run without them.
@@ -4531,6 +4554,7 @@ impl App {
             }
             Observation::AgentWork { at } => {
                 runtime.goal_retry_armed.store(false, Ordering::SeqCst);
+                runtime.blind_limit_waits.store(0, Ordering::SeqCst);
                 self.context_replied(task_id, &attempt.id);
                 // A usage limit ends the turn, so a `limit` pause is open only between turns (or
                 // after a limit replayed at a restart, which may find a turn open).
@@ -4604,7 +4628,19 @@ impl App {
                     tracing::warn!(error = %err, task = %task_id, "automatic switch failed");
                 }
             }
-            Decision::Wait { .. } => {
+            Decision::Wait { until } => {
+                // A model's limit nothing says the end of, with nowhere to go: tried again by
+                // itself only so often, then a person is asked (SPEC-464 UCL-010).
+                let runtime = self.runtime(task_id);
+                if limit
+                    && until.is_none()
+                    && runtime.limit_blind.load(Ordering::SeqCst)
+                    && runtime.blind_limit_waits.fetch_add(1, Ordering::SeqCst)
+                        >= BLIND_LIMIT_RETRIES
+                {
+                    self.limit_without_end(&task).await;
+                    return;
+                }
                 let kind = if limit {
                     PauseKind::Limit
                 } else {

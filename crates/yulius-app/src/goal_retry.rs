@@ -177,13 +177,14 @@ impl App {
         }
     }
 
-    /// The session goes on past the limit that cut its turn, with nothing typed: a request to
-    /// send it a message for the goal pause written at that limit is answered (SPEC-464
-    /// UCL-007). Any other request stays.
-    pub(crate) async fn end_goal_retry_request(&self, task_id: &TaskId) {
+    /// The session goes on past the limit that cut its turn, with nothing typed: a request made
+    /// for that limit is answered, be it for the goal pause written there (SPEC-464 UCL-007) or
+    /// for a limit nothing says the end of (UCL-010). Any other request stays.
+    pub(crate) async fn end_limit_requests(&self, task_id: &TaskId) {
         if matches!(
             self.deps.store.task_needs_you(task_id).await,
-            Ok(Some(open)) if open.action == RETRY_ACTION
+            Ok(Some(open)) if [RETRY_ACTION, crate::moves::LIMIT_WITHOUT_END_ACTION]
+                .contains(&open.action.as_str())
         ) {
             self.end_needs_you(task_id).await;
         }

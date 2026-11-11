@@ -11,7 +11,7 @@ use yulius_domain::task::{Activity, TaskStatus};
 use crate::account_gate::AgentAccounts;
 use crate::context::App;
 use crate::error::{AppError, AppResult};
-use crate::model::PauseKind;
+use crate::model::{PauseKind, TaskRecord};
 use crate::needs_you::NeedsYouRecord;
 use crate::supervisor::RunStart;
 
@@ -19,6 +19,15 @@ use crate::supervisor::RunStart;
 /// the task gets a subscription again.
 pub(crate) const NO_SUBSCRIPTION_ACTION: &str =
     "Sign a Claude subscription in again or add one in Subscriptions";
+
+/// What a task is asked for when Claude refused it at a limit nothing says the end of, again
+/// right after a retry, and no subscription can take it (SPEC-464 UCL-010). The request ends by
+/// itself when the task goes on past the limit.
+pub(crate) const LIMIT_WITHOUT_END_ACTION: &str = "Run the task on another subscription or model, or end the limit (for example with \
+     usage credits), then send the task a message";
+
+/// The audit action of such a request.
+const LIMIT_WITHOUT_END_AUDIT: &str = "task.limit_without_end";
 
 /// Why a task left its subscription, as its terminal says it.
 pub(crate) enum Left {
@@ -145,6 +154,67 @@ impl App {
         if !matches!(store.task(task_id).await, Ok(Some(t)) if t.status == TaskStatus::WaitingCapacity)
         {
             self.end_no_subscription_request(task_id).await;
+        }
+    }
+
+    /// Claude refused `task` at a model's limit nothing says the end of, again right after a
+    /// retry, and no subscription can take it (SPEC-464 UCL-010). It is not paused to be tried
+    /// again: its session stays at the refusal, and a person is asked (unless a request is open
+    /// already), in the terminal and under Needs you. A move to a subscription that can run it,
+    /// or a message once the limit is over, takes it on.
+    pub(crate) async fn limit_without_end(&self, task: &TaskRecord) {
+        let runtime = self.runtime(&task.id);
+        // The goal pause Claude Code wrote there says less than this request: not asked too.
+        if let Ok(mut pause) = runtime.limit_goal_pause.lock() {
+            *pause = crate::goal_retry::LimitGoalPause::None;
+        }
+        tracing::warn!(task = %task.id, "refused again at a limit nothing says the end of: the task needs a person");
+        runtime.hub.notice(
+            "⏸ Claude refused this session at a usage limit again and does not say when the limit \
+             ends. No subscription can take the task now, so it waits for you: run it on another \
+             subscription or model, or send it a message once the limit is over.",
+        );
+        let store = &self.deps.store;
+        let now = self.now();
+        if matches!(store.task_needs_you(&task.id).await, Ok(None)) {
+            let request = NeedsYouRecord {
+                action: LIMIT_WITHOUT_END_ACTION.into(),
+                happened: Some(
+                    "Claude refused the task at a usage limit again and did not say when the \
+                     limit ends."
+                        .into(),
+                ),
+                problem: Some(
+                    "No subscription can run the task now, and nothing says when one can: the \
+                     task does not go on by itself."
+                        .into(),
+                ),
+                decision: false,
+                link: Some(crate::account_gate::CONNECT_PATH.into()),
+                at: now.0,
+            };
+            if let Err(err) = store
+                .set_task_needs_you(&task.id, Some(&request), now)
+                .await
+            {
+                tracing::warn!(task = %task.id, error = %err, "recording a Needs you failed");
+            }
+        }
+        if let Err(err) = self.set_task_activity(task, Activity::NeedsAttention).await {
+            tracing::warn!(task = %task.id, error = %err, "could not flag a limit nothing says the end of");
+        }
+        self.publish_task(&task.id).await;
+        if let Err(err) = store
+            .audit(
+                now,
+                "system",
+                LIMIT_WITHOUT_END_AUDIT,
+                Some(task.id.as_str()),
+                Some("refused again without a reset time; not retried"),
+            )
+            .await
+        {
+            tracing::warn!(task = %task.id, error = %err, "could not log a limit nothing says the end of");
         }
     }
 
