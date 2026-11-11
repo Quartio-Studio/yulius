@@ -122,9 +122,17 @@ pub struct FakeAgentOptions {
     /// The transcript's records name the Claude Code version read from this file at each start
     /// (`--cli-version-file`): rewriting it stands for a newer Claude Code at the next start.
     pub cli_version_file: Option<PathBuf>,
-    /// Planning a launch fails while this file exists: the run cannot start, as when the agent
-    /// CLI is broken, after a switch's preflight passed.
+    /// Planning a launch fails while this file exists: the run cannot be started at all (a
+    /// harness, MCP or isolation error), after a switch's preflight passed.
     pub fail_launch_file: Option<PathBuf>,
+    /// While this file exists the agent exits at once when it starts (`--exit-at-start-file`),
+    /// like a release that cannot start or cannot resume a session.
+    pub exit_at_start_file: Option<PathBuf>,
+    /// While this file exists the agent stays at its start without starting its session
+    /// (`--stuck-at-start-file`), like a release that opens on a dialog nobody answers.
+    pub stuck_at_start_file: Option<PathBuf>,
+    /// A goal turn or an echoed turn ends only once this file exists (`--turn-hold-file`).
+    pub turn_hold_file: Option<PathBuf>,
 }
 
 /// See the module docs.
@@ -216,11 +224,15 @@ impl HarnessPort for FakeAgentHarness {
         if self.options.tui {
             argv.push("--tui".into());
         }
-        if let Some(path) = &self.options.cli_version_file {
-            argv.extend([
-                "--cli-version-file".into(),
-                path.to_string_lossy().into_owned(),
-            ]);
+        for (flag, path) in [
+            ("--cli-version-file", &self.options.cli_version_file),
+            ("--exit-at-start-file", &self.options.exit_at_start_file),
+            ("--stuck-at-start-file", &self.options.stuck_at_start_file),
+            ("--turn-hold-file", &self.options.turn_hold_file),
+        ] {
+            if let Some(path) = path {
+                argv.extend([flag.into(), path.to_string_lossy().into_owned()]);
+            }
         }
         if self.options.hooks {
             argv.extend([

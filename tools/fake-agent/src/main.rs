@@ -17,7 +17,8 @@
 //!            [--goal-continue-ms MS
 //!            [--goal-continue-verdict] [--goal-continue-dies]] [--goal-delay-ms MS] [--drop-lines N]
 //!            [--interrupts] [--rate-limits-file PATH] [--session-start] [--opening-turn-ms MS]
-//!            [--cli-version-file PATH]
+//!            [--cli-version-file PATH] [--exit-at-start-file PATH] [--stuck-at-start-file PATH]
+//!            [--turn-hold-file PATH]
 //!            [--echo-turn-ms MS] [--context-full-after N] [--compact-fails] [--compact-hangs]
 //!            [--prompt TEXT] [--limit-continues-ms MS [--limit-continues-answer-only]]
 //!            [--idle-compact-ms MS] [--trust-prompt] [--goal-api-errors N [--goal-retry-ms MS]
@@ -117,6 +118,14 @@
 //! `--cli-version-file PATH`: the transcript's records name the version read from PATH when the
 //! agent starts (as Claude Code writes its own `version` on every record), `0.0.0-fake` without
 //! it; a test rewrites the file to stand for a newer Claude Code at the next start (SPEC-461).
+//!
+//! `--exit-at-start-file PATH`: while PATH exists, the agent prints `EXITING AT START` and exits 3
+//! before anything else, like a release that cannot start or cannot resume a session.
+//! `--stuck-at-start-file PATH`: while PATH exists, it prints `STUCK AT START` and stays there
+//! without starting its session (no SessionStart hook, no prompt box), like a release that opens
+//! on a dialog nobody answers (SPEC-461). `--turn-hold-file PATH`: a goal turn or an echoed turn
+//! ends only once PATH exists (bounded by 60 s), so a test says when a turn ends instead of a
+//! timer.
 //!
 //! `--rate-limits-file PATH` runs Claude Code's status line command as Yulius configures it
 //! (`YULIUS_EXE hook claude StatusLine`, with `--hooks`) at the start and after every turn, with
@@ -252,6 +261,9 @@ struct Options {
     interrupts: bool,
     rate_limits_file: Option<PathBuf>,
     cli_version_file: Option<PathBuf>,
+    exit_at_start_file: Option<PathBuf>,
+    stuck_at_start_file: Option<PathBuf>,
+    turn_hold_file: Option<PathBuf>,
     context_full_after: Option<u64>,
     compact_fails: bool,
     compact_hangs: bool,
@@ -308,6 +320,9 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
         interrupts: false,
         rate_limits_file: None,
         cli_version_file: None,
+        exit_at_start_file: None,
+        stuck_at_start_file: None,
+        turn_hold_file: None,
         context_full_after: None,
         compact_fails: false,
         compact_hangs: false,
@@ -431,6 +446,24 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
             "--cli-version-file" => {
                 options.cli_version_file =
                     Some(args.next().ok_or("--cli-version-file needs a path")?.into());
+            }
+            "--exit-at-start-file" => {
+                options.exit_at_start_file = Some(
+                    args.next()
+                        .ok_or("--exit-at-start-file needs a path")?
+                        .into(),
+                );
+            }
+            "--stuck-at-start-file" => {
+                options.stuck_at_start_file = Some(
+                    args.next()
+                        .ok_or("--stuck-at-start-file needs a path")?
+                        .into(),
+                );
+            }
+            "--turn-hold-file" => {
+                options.turn_hold_file =
+                    Some(args.next().ok_or("--turn-hold-file needs a path")?.into());
             }
             "--context-full-after" => {
                 options.context_full_after = Some(parse_number(&flag, args.next())?);
@@ -592,6 +625,18 @@ static CLI_VERSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
 fn cli_version() -> &'static str {
     CLI_VERSION.get().map_or("0.0.0-fake", String::as_str)
+}
+
+/// Holds a turn until `--turn-hold-file` exists (bounded by [`MAX_WORK_MS`]); nothing without
+/// the option.
+fn hold_turn(options: &Options) {
+    let Some(file) = &options.turn_hold_file else {
+        return;
+    };
+    let started = std::time::Instant::now();
+    while !file.exists() && started.elapsed() < Duration::from_millis(MAX_WORK_MS) {
+        std::thread::sleep(Duration::from_millis(25));
+    }
 }
 
 struct Transcript {
@@ -1548,6 +1593,7 @@ fn goal_turn(
         say(&format!("BACKGROUND {pid}"))?;
     }
     std::thread::sleep(Duration::from_millis(options.goal_delay_ms));
+    hold_turn(options);
     let answer = format!("ECHO: {line}");
     say(&answer)?;
     if let Some(transcript) = transcript
@@ -2025,6 +2071,7 @@ fn echo_message(
         return status_line(options, hooks);
     }
     std::thread::sleep(Duration::from_millis(options.echo_turn_ms));
+    hold_turn(options);
     let answer = format!("ECHO: {line}");
     say(&answer)?;
     state.turns += 1;
@@ -2268,6 +2315,23 @@ fn run(options: &Options) -> io::Result<i32> {
         }
         _ => {}
     }
+    if options
+        .exit_at_start_file
+        .as_ref()
+        .is_some_and(|file| file.exists())
+    {
+        say("EXITING AT START")?;
+        return Ok(3);
+    }
+    if options
+        .stuck_at_start_file
+        .as_ref()
+        .is_some_and(|file| file.exists())
+    {
+        say("STUCK AT START")?;
+        std::thread::sleep(Duration::from_secs(MAX_SLEEP_SECONDS));
+        return Ok(0);
+    }
     if options.tui {
         start_tui(&session_id)?;
     }
@@ -2358,6 +2422,9 @@ mod tests {
         assert!(parse(&["--interrupts"]).is_ok_and(|o| o.interrupts));
         assert!(parse(&["--rate-limits-file"]).is_err());
         assert!(parse(&["--cli-version-file"]).is_err());
+        assert!(parse(&["--exit-at-start-file"]).is_err());
+        assert!(parse(&["--stuck-at-start-file"]).is_err());
+        assert!(parse(&["--turn-hold-file"]).is_err());
         assert!(
             parse(&["--goal-background", "3", "--goal-delay-ms", "999999"])
                 .is_ok_and(|o| o.goal_background == Some(3) && o.goal_delay_ms == MAX_GOAL_DELAY_MS)
