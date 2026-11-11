@@ -774,6 +774,18 @@ impl<'a> Move<'a> {
         }
         // What an earlier run staged there is found before the plan speaks of room and time.
         self.agree()?;
+        // The staged copy keeps its marker under names that no entry of the copy may have.
+        for name in super::import::MARKERS {
+            if std::fs::symlink_metadata(opts.data_dir.join(name)).is_ok() {
+                self.fail(
+                    "old host",
+                    format!(
+                        "{data} holds {name}, the mark of a copy that was never finished. \
+                         Remove that file when this instance is whole, then run the command again"
+                    ),
+                );
+            }
+        }
         self.ran = self.world.running(&self.health_address(p));
         self.space(p, &facts);
         match self.remote.measure(LINK_TEST) {
@@ -1911,6 +1923,12 @@ impl<'a> Move<'a> {
             return self.end_abort(false);
         }
         if reachable {
+            if self.stage.id().is_some() {
+                // A stream the new host is still taking in is closed before its files go.
+                let _ = self.remote.call(&Request::Stage {
+                    data_dir: self.opts.data_dir.clone(),
+                });
+            }
             let _ = self.call(
                 "one-time key",
                 &Request::Finish {

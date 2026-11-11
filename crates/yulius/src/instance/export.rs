@@ -156,6 +156,11 @@ pub fn plan_pass(
     })
 }
 
+/// `e` with the archive path it happened at, still of its kind.
+fn at(path: &[u8], e: io::Error) -> io::Error {
+    io::Error::new(e.kind(), format!("{}: {e}", String::from_utf8_lossy(path)))
+}
+
 fn open(disk: &Path) -> io::Result<File> {
     // Never through a link, and never waiting on what took a file's place (a FIFO).
     File::options()
@@ -360,7 +365,7 @@ pub fn send_live(
                     sent.vanished += 1;
                     return Ok(false);
                 }
-                Err(err) => return Err(err),
+                Err(err) => return Err(at(&e.path, err)),
             };
             // The header is the open file's own: what is read is that file's content.
             let kind = Kind::File { size: meta.len() };

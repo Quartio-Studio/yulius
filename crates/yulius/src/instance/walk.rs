@@ -63,6 +63,8 @@ pub fn gone(e: &io::Error) -> bool {
         rustix::io::Errno::NOTDIR,
         rustix::io::Errno::LOOP,
         rustix::io::Errno::STALE,
+        // What cannot be opened: a socket where a file was.
+        rustix::io::Errno::NXIO,
     ]
     .iter()
     .any(|errno| e.raw_os_error() == Some(errno.raw_os_error()))
@@ -151,7 +153,7 @@ pub fn walk_seen(
                     Kind::Dir
                 } else if ft.is_symlink() {
                     Kind::Symlink {
-                        target: std::fs::read_link(&disk)?.into_os_string().into_vec(),
+                        target: link_text(&disk)?,
                     }
                 } else if ft.is_file() {
                     match first_paths.get(&(meta.dev(), meta.ino())) {
@@ -204,6 +206,18 @@ pub fn walk_seen(
         }
     }
     Ok(skipped)
+}
+
+/// A link's text. A path that is no link any more (it was one when it was looked at) is
+/// gone ([`gone`]).
+fn link_text(disk: &Path) -> io::Result<Vec<u8>> {
+    match std::fs::read_link(disk) {
+        Ok(target) => Ok(target.into_os_string().into_vec()),
+        Err(e) if e.raw_os_error() == Some(rustix::io::Errno::INVAL.raw_os_error()) => Err(
+            io::Error::from_raw_os_error(rustix::io::Errno::NOENT.raw_os_error()),
+        ),
+        Err(e) => Err(e),
+    }
 }
 
 fn seen<'a>(entry: &'a Entry, disk: &'a Path, meta: &std::fs::Metadata) -> Seen<'a> {

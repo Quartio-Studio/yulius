@@ -19,6 +19,9 @@ use crate::wiring::update_files::write_atomic;
 pub const INCOMPLETE: &str = ".yulius-import-incomplete";
 /// The marker while it is rewritten ([`write_atomic`]).
 const INCOMPLETE_NEW: &str = "..yulius-import-incomplete.tmp";
+/// The names a staged copy keeps for its marker at the data directory's top: no entry of a
+/// copy may have them.
+pub const MARKERS: [&str; 2] = [INCOMPLETE, INCOMPLETE_NEW];
 
 /// What the marker of a staged copy says (SPEC-465 WCP-005): the copy a move fills in passes
 /// until it is proven. An empty marker is a plain import that did not finish.
@@ -564,7 +567,7 @@ fn entries<R: Read>(
     let _ = r.end_entry();
     let mut sums = [r.sum(); 2];
     let mut kept: Option<Vec<[u8; 16]>> = None;
-    let markers = [INCOMPLETE, INCOMPLETE_NEW].map(|name| [b"data/", name.as_bytes()].concat());
+    let markers = MARKERS.map(|name| [b"data/", name.as_bytes()].concat());
     let ended: io::Result<()> = loop {
         let e = match r.next_item() {
             Ok(Item::End) => break Ok(()),

@@ -256,3 +256,20 @@ fn an_open_file_s_attributes_are_its_path_s() -> TestResult {
     assert_eq!(xattrs_of(&fs::File::open(&path)?)?, xattrs(&path)?);
     Ok(())
 }
+
+#[test]
+fn a_link_that_is_a_file_by_the_time_it_is_read_is_gone() -> TestResult {
+    let dir = tree()?;
+    let root = dir.path();
+    assert_eq!(link_text(&root.join("sandboxes/sb/out"))?, b"/etc/passwd");
+    // A link when the walk looked at it, a file when its text is read.
+    let late = link_text(&root.join("master.key"));
+    assert!(late.as_ref().is_err_and(gone), "{late:?}");
+    // What cannot be opened at all (a socket took a file's place) is gone too.
+    let socket = std::io::Error::from_raw_os_error(rustix::io::Errno::NXIO.raw_os_error());
+    assert!(gone(&socket));
+    assert!(!gone(&std::io::Error::from_raw_os_error(
+        rustix::io::Errno::ACCESS.raw_os_error()
+    )));
+    Ok(())
+}

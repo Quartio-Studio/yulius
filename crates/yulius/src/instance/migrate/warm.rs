@@ -74,8 +74,8 @@ impl Move<'_> {
         });
         let copy = if self.stage.whole() {
             format!(
-                "the new host holds a staged copy ({} entries): the instance runs while what \
-                 changed since is sent",
+                "the new host holds a staged copy ({} entries acknowledged): the instance runs \
+                 while what changed since is sent",
                 self.stage.receipts()
             )
         } else {
@@ -169,8 +169,9 @@ impl Move<'_> {
             span(START_SECS)
         );
         let last = deltas >= MAX_DELTA_PASSES;
+        let above = |max: u64| total > max.saturating_mul(60);
         match self.opts.max_downtime {
-            Some(max) if total > max * 60 && last => {
+            Some(max) if above(max) && last => {
                 self.fail(
                     "downtime",
                     format!(
@@ -182,7 +183,7 @@ impl Move<'_> {
                 );
                 Err(Stop::Failed)
             }
-            Some(max) if total > max * 60 => {
+            Some(max) if above(max) => {
                 self.ok(
                     "downtime",
                     format!("{said}: above --max-downtime {max}, so the move copies again"),
@@ -253,8 +254,8 @@ impl Move<'_> {
             self.fail(
                 "copy",
                 format!(
-                    "{why}. The staged copy keeps what arrived: the same command goes on from \
-                     there"
+                    "{why}. Run the command again: it goes on from what the new host \
+                     acknowledged"
                 ),
             )
         })?;

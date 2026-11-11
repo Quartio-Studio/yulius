@@ -575,6 +575,19 @@ fn what_took_a_file_s_place_is_never_followed_or_waited_on() -> TestResult {
     assert!(!fifo.metadata()?.is_file());
     assert!(open(&dir.path().join("missing")).is_err_and(|e| walk::gone(&e)));
     assert!(open(&dir.path().join("secret"))?.metadata()?.is_file());
+    // A socket cannot be opened: gone as well.
+    let _socket = std::os::unix::net::UnixListener::bind(dir.path().join("sock"))?;
+    assert!(open(&dir.path().join("sock")).is_err_and(|e| walk::gone(&e)));
+    // Anything else names the path it failed at and stays what it was.
+    let denied = at(
+        b"data/sandboxes/sb/f",
+        io::Error::from(io::ErrorKind::PermissionDenied),
+    );
+    assert_eq!(denied.kind(), io::ErrorKind::PermissionDenied);
+    assert!(
+        denied.to_string().starts_with("data/sandboxes/sb/f: "),
+        "{denied}"
+    );
     Ok(())
 }
 

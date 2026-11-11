@@ -2082,7 +2082,7 @@ fn a_freeze_above_the_bound_is_never_begun() -> TestResult {
     );
     assert!(
         s.shown()
-            .contains("the new host holds a staged copy (13 entries)"),
+            .contains("the new host holds a staged copy (13 entries acknowledged)"),
         "{}",
         s.shown()
     );
@@ -2275,6 +2275,8 @@ fn an_abort_before_the_cutover_names_the_staged_copy_left_on_the_new_host() -> T
     s.opts.max_downtime = Some(1);
     assert_eq!(s.run()?, 1);
     assert!(s.opts.state_dir.join("copy/stage.json").exists());
+    let looks = |s: &Setup| s.events().iter().filter(|e| *e == "new: stage").count();
+    let before = looks(&s);
     assert_eq!(s.abort()?, 0, "{}", s.shown());
     let status = s.status()?;
     let left = line(&status, "new host").ok_or("no line of the new host")?;
@@ -2288,6 +2290,11 @@ fn an_abort_before_the_cutover_names_the_staged_copy_left_on_the_new_host() -> T
     // What this host knew of it goes with the move.
     assert!(!s.opts.state_dir.join("copy").exists());
     assert_eq!(s.old_unit(), (false, false));
+    // A stream the new host may still be taking in is closed before the flow's files go.
+    let events = s.events();
+    let last = |what: &str| events.iter().rposition(|e| e == what);
+    assert!(last("new: stage").is_some() && last("new: stage") < last("new: finish"));
+    assert_eq!(looks(&s), before + 1);
     Ok(())
 }
 
@@ -2316,5 +2323,35 @@ fn an_instance_updated_during_the_copy_is_not_frozen() -> TestResult {
     s.world.updated_to = None;
     s.world.looks = 0;
     assert_eq!(s.run()?, 0, "{}", s.shown());
+    Ok(())
+}
+
+#[test]
+fn any_bound_is_a_number_of_minutes() -> TestResult {
+    let mut s = setup()?;
+    s.opts.max_downtime = Some(u64::MAX);
+    assert_eq!(s.run()?, 0, "{}", s.shown());
+    assert_eq!(s.old_unit(), (true, true));
+    Ok(())
+}
+
+#[test]
+fn a_data_directory_that_holds_the_copy_s_marker_is_refused_in_the_plan() -> TestResult {
+    for name in import::MARKERS {
+        let mut s = setup()?;
+        fs::write(s.opts.data_dir.join(name), b"")?;
+        assert_eq!(s.run()?, 1);
+        let status = s.status()?;
+        assert_eq!(status.phase, "Plan", "{name}");
+        let old = line(&status, "old host").ok_or("no line")?;
+        assert_eq!(old.outcome, HostOutcome::Failed);
+        assert!(
+            old.detail.contains(&format!("holds {name}")),
+            "{}",
+            old.detail
+        );
+        assert!(s.remote.streams.is_empty() && s.remote.sent.is_empty());
+        assert_eq!(s.old_unit(), (false, false));
+    }
     Ok(())
 }
