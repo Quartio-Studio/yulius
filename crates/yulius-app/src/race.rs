@@ -116,6 +116,12 @@ pub enum Point {
     /// `launch_attempt` (SPEC-447): a subscription was chosen and its credential opened; the run's
     /// attempt is not recorded yet. The path is the task id.
     AccountChosen,
+    /// A provider's usage reading (SPEC-464): the subscription's stored usage was read for the
+    /// reading to keep what it cannot see; nothing is written yet. The path is the account id.
+    UsageRead,
+    /// A usage limit Claude reported (SPEC-464) is about to be recorded on its subscription: its
+    /// stored usage is not read yet. The path is the account id.
+    LimitRecord,
     /// A turn's end (SPEC-461) looked at the background work of a session on an older Claude
     /// Code, whatever it found; who typed and what pauses it are not read again yet. The path is
     /// the task id.

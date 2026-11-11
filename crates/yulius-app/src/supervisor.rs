@@ -3152,6 +3152,7 @@ impl App {
         limit: ReportedLimit,
         family: ModelFamily,
     ) {
+        crate::race::reached(crate::race::Point::LimitRecord, Path::new(account.as_str()));
         let mut usage = match self.deps.store.account(account).await {
             Ok(Some(a)) => a
                 .usage_json

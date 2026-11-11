@@ -20,6 +20,7 @@ use yulius_app::auth::AuthContext;
 use yulius_app::context::App;
 use yulius_app::lifecycle::NewTask;
 use yulius_app::model::{AccountStatus, PauseKind, TaskMode, TaskOrigin};
+use yulius_app::race::Point;
 use yulius_contracts::api::tasks::ContinueTask;
 use yulius_domain::harness::Harness;
 use yulius_domain::ids::{AccountId, SandboxId, TaskId, UserId};
@@ -281,6 +282,101 @@ fn a_usage_credits_limit_binds_the_model_of_the_task_that_hit_it() -> TestResult
         for task in [&other, &fable, &id] {
             stop(&app, task).await?;
         }
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// Holds the server at `point` for the subscription `account` until the returned sender is used
+/// (or 60 s pass); the receiver says when it got there.
+fn hold_at(
+    point: Point,
+    account: &str,
+) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
+    let (reached, at) = std::sync::mpsc::channel();
+    let (go, wait) = std::sync::mpsc::channel::<()>();
+    yulius_app::race::on(point, Path::new(account), move || {
+        let _ = reached.send(());
+        let _ = wait.recv_timeout(Duration::from_secs(60));
+    });
+    (at, go)
+}
+
+/// Waits until the server reached the point `at` stands for.
+async fn reached(at: std::sync::mpsc::Receiver<()>) -> TestResult {
+    tokio::task::spawn_blocking(move || at.recv_timeout(Duration::from_secs(60)))
+        .await?
+        .map_err(|_| "the server never reached the point")?;
+    Ok(())
+}
+
+/// A limit Claude reports while a usage reading of the same subscription is under way is not
+/// written over by that reading (a reading wiped #159's limit on 2026-11-11). The reading is
+/// held once it has read what is stored, which knows no limit yet; the refusal arrives; the
+/// reading goes on. A limit written meanwhile would be lost to the reading's write, so the limit
+/// waits for the reading instead and is added to what the reading stored.
+///
+/// Half a second is the limit's chance to be written while the reading is held: unguarded it is
+/// written at once. Guarded it waits, so that wait always runs out.
+#[test]
+fn a_limit_reported_during_a_usage_reading_is_kept() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let app = build_with(
+            &data,
+            &fake,
+            probe.clone(),
+            refused_for_credits(Some(40 * 3600)),
+        )?;
+        // Subscriptions of this test's own, so its holds meet no other test's reading.
+        let (first, second) = ("held-reading-first", "held-reading-second");
+        let (sandbox, user) = seed(&app, &data, &[first, second]).await?;
+        probe.set(second, usage(99.0, 4 * HOUR, 30.0, 100));
+        refresh(&app, &user, second).await?;
+        let id = new_task(&app, &sandbox, &user, "Read while limited").await?;
+        ready(&app, &id).await?;
+        assert_eq!(run_accounts(&app, &id).await, [Some(first.to_owned())]);
+        probe.set(second, usage(0.0, 5 * HOUR, 30.0, 100));
+        refresh(&app, &user, second).await?;
+
+        probe.set(first, usage(10.0, 4 * HOUR, 61.0, 100));
+        let (read, go_on) = hold_at(Point::UsageRead, first);
+        let (recording, pass) = hold_at(Point::LimitRecord, first);
+        pass.send(())?;
+        let reading = {
+            let (app, user) = (app.clone(), user.clone());
+            tokio::spawn(async move {
+                refresh(&app, &user, first)
+                    .await
+                    .map_err(|err| err.to_string())
+            })
+        };
+        reached(read).await?;
+        app.send_input(&id, b"hello\r").await?;
+        reached(recording).await?;
+        let written = wait_for("the limit's write", Duration::from_millis(500), || async {
+            stored_usage(&app, first)
+                .await
+                .is_ok_and(|(_, usage)| !usage["weekly_fable"].is_null())
+        })
+        .await
+        .is_ok();
+        go_on.send(())?;
+        reading.await??;
+        live_run(&app, &id, 2).await?;
+        assert_eq!(run_accounts(&app, &id).await[1].as_deref(), Some(second));
+        let (status, usage) = stored_usage(&app, first).await?;
+        assert_eq!(
+            usage["weekly_fable"]["used_percent"], 100.0,
+            "the reading wrote over the limit (written while it was held: {written}): {usage}"
+        );
+        assert_eq!(usage["secondary"]["used_percent"], 61.0, "{usage}");
+        assert_eq!(status, AccountStatus::Limited);
+        stop(&app, &id).await?;
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));

@@ -664,6 +664,10 @@ impl App {
                     Ok(Some(current)) => account_usage(&current),
                     _ => account_usage(account),
                 };
+                crate::race::reached(
+                    crate::race::Point::UsageRead,
+                    std::path::Path::new(account.id.as_str()),
+                );
                 let usage = usage.keeping_unread(&stored, now);
                 self.record_account_usage(&account.id, &usage).await;
                 self.record_usage_samples(&account.id, &usage, crate::model::USAGE_FROM_PROBE)
