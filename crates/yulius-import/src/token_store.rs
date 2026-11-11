@@ -41,6 +41,10 @@ pub enum TokenStoreError {
 struct CredentialsFile {
     version: u32,
     servers: BTreeMap<String, StoredCredential>,
+    /// Server keys whose instance moved, each to the key its sign-in is under now (SPEC-466
+    /// MVC-032). Absent in files written before, and while nothing moved.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    moved: BTreeMap<String, String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -151,13 +155,47 @@ impl TokenStore {
     /// I/O failure or a corrupt existing file.
     pub fn save(&self, server: &Url, token: &Secret) -> Result<(), TokenStoreError> {
         let mut file = self.read()?;
+        let key = Self::server_key(server);
+        // Signed in at this URL: it is a server again, whatever moved from it before.
+        file.moved.remove(&key);
         file.servers.insert(
-            Self::server_key(server),
+            key,
             StoredCredential {
                 token: token.clone(),
             },
         );
         self.write(&file)
+    }
+
+    /// Moves the sign-in saved for `from` to `to`, where its instance moved (SPEC-466 MVC-030),
+    /// and remembers the move, so `from` and every earlier name lead to `to`
+    /// ([`Self::moved_to`]). A sign-in already saved for `to` is kept. Returns whether `from`
+    /// had one; without one nothing changes.
+    ///
+    /// # Errors
+    /// I/O failure or a corrupt file.
+    pub fn relocate(&self, from: &Url, to: &Url) -> Result<bool, TokenStoreError> {
+        let mut file = self.read()?;
+        let (from, to) = (Self::server_key(from), Self::server_key(to));
+        let Some(credential) = file.servers.remove(&from) else {
+            return Ok(false);
+        };
+        file.servers.entry(to.clone()).or_insert(credential);
+        for target in file.moved.values_mut().filter(|target| **target == from) {
+            target.clone_from(&to);
+        }
+        file.moved.insert(from, to.clone());
+        file.moved.remove(&to);
+        self.write(&file)?;
+        Ok(true)
+    }
+
+    /// The server key the sign-in of `server` moved to, when its instance moved.
+    ///
+    /// # Errors
+    /// I/O failure or a corrupt file.
+    pub fn moved_to(&self, server: &Url) -> Result<Option<String>, TokenStoreError> {
+        Ok(self.read()?.moved.remove(&Self::server_key(server)))
     }
 
     /// The servers with a saved token (normalized keys, sorted), so `yulius onboard` can use the
@@ -220,7 +258,7 @@ impl TokenStore {
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 return Ok(CredentialsFile {
                     version: CREDENTIALS_VERSION,
-                    servers: BTreeMap::new(),
+                    ..CredentialsFile::default()
                 });
             }
             Err(error) => return Err(self.io_error(&self.path)(error)),
@@ -359,6 +397,81 @@ mod tests {
         assert!(!store.remove(&local)?);
         assert_eq!(store.load(&local)?, None);
         assert_eq!(store.load(&prod)?, Some(Secret::new("yul_prod_2")));
+        Ok(())
+    }
+
+    /// SPEC-466 MVC-030, MVC-032: the sign-in of an instance that moved is kept under its new
+    /// URL, and its old name leads there.
+    #[test]
+    fn a_moved_sign_in_follows_the_instance() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let store = TokenStore::new(dir.path().join("remote-credentials.json"));
+        let old = Url::parse("https://old.example")?;
+        let new = Url::parse("https://new.example/")?;
+        let newer = Url::parse("https://newer.example")?;
+        // Nothing saved for it: nothing moves and nothing is remembered.
+        assert!(!store.relocate(&old, &new)?);
+        assert_eq!(store.moved_to(&old)?, None);
+        assert!(!store.path().exists());
+
+        store.save(&old, &Secret::new("yul_token"))?;
+        assert!(store.relocate(&old, &new)?);
+        assert_eq!(store.load(&old)?, None);
+        assert_eq!(store.load(&new)?, Some(Secret::new("yul_token")));
+        assert_eq!(store.servers()?, ["https://new.example"]);
+        assert_eq!(
+            store.moved_to(&old)?.as_deref(),
+            Some("https://new.example")
+        );
+        assert_eq!(store.moved_to(&new)?, None);
+
+        // Moved again: every earlier name leads to where the sign-in is now.
+        assert!(store.relocate(&new, &newer)?);
+        for name in [&old, &new] {
+            assert_eq!(
+                store.moved_to(name)?.as_deref(),
+                Some("https://newer.example")
+            );
+        }
+        // And back (a move undone): the name it returns to is a plain server again.
+        assert!(store.relocate(&newer, &old)?);
+        assert_eq!(store.moved_to(&old)?, None);
+        assert_eq!(store.load(&old)?, Some(Secret::new("yul_token")));
+        for name in [&new, &newer] {
+            assert_eq!(
+                store.moved_to(name)?.as_deref(),
+                Some("https://old.example")
+            );
+        }
+
+        // A sign-in made at a URL forgets that the URL had moved.
+        store.save(&new, &Secret::new("yul_fresh"))?;
+        assert_eq!(store.moved_to(&new)?, None);
+        assert_eq!(store.load(&new)?, Some(Secret::new("yul_fresh")));
+        // A sign-in already at the new URL is kept; the old one goes.
+        assert!(store.relocate(&old, &new)?);
+        assert_eq!(store.load(&new)?, Some(Secret::new("yul_fresh")));
+        assert_eq!(store.load(&old)?, None);
+        assert_eq!(store.servers()?, ["https://new.example"]);
+        Ok(())
+    }
+
+    /// A file written before moves were remembered loads, and one without moves has no such
+    /// field (an older CLI reads it as it always did).
+    #[test]
+    fn a_file_without_moves_is_read_and_written_as_before() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("remote-credentials.json");
+        fs::write(
+            &path,
+            br#"{"version":1,"servers":{"https://y.example":{"token":"yul_x"}}}"#,
+        )?;
+        let store = TokenStore::new(path.clone());
+        let server = Url::parse("https://y.example")?;
+        assert_eq!(store.load(&server)?, Some(Secret::new("yul_x")));
+        assert_eq!(store.moved_to(&server)?, None);
+        store.save(&server, &Secret::new("yul_y"))?;
+        assert!(!fs::read_to_string(&path)?.contains("moved"));
         Ok(())
     }
 

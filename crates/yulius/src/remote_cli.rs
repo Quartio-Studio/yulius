@@ -265,12 +265,44 @@ fn client(opts: &RemoteOpts) -> Result<(Url, RemoteClient), String> {
             }
         },
     };
+    // An instance that moved is named by its old URL too (SPEC-466 MVC-032).
+    let server = match store.moved_to(&server).map_err(|e| e.to_string())? {
+        Some(now) => parse_url(&now)?,
+        None => server,
+    };
     let token = store
         .load(&server)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("no token for {server}: run `yulius remote login {server}`"))?;
     let client = RemoteClient::new(&server, token).map_err(|e| e.to_string())?;
     Ok((server, client))
+}
+
+/// Asks the instance with `ask`. When its old URL answers that it moved (a redirect with
+/// `X-Yulius-Moved-To`, SPEC-466 MVC-030), the saved sign-in moves to the new URL, one line says
+/// so and `ask` runs once more there; a second move is the error it reads as.
+fn following<T>(
+    opts: &RemoteOpts,
+    ask: impl Fn(&Url, &RemoteClient) -> Result<T, RemoteError>,
+) -> Result<T, String> {
+    let (server, client) = client(opts)?;
+    let to = match ask(&server, &client) {
+        Err(RemoteError::Moved(to)) => to,
+        other => return other.map_err(|e| e.to_string()),
+    };
+    let store = store()?;
+    store.relocate(&server, &to).map_err(|e| e.to_string())?;
+    eprintln!(
+        "yulius: {} moved to {}; the saved sign-in follows it.",
+        TokenStore::server_key(&server),
+        TokenStore::server_key(&to)
+    );
+    let token = store
+        .load(&to)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("no token for {to}: run `yulius remote login {to}`"))?;
+    let client = RemoteClient::new(&to, token).map_err(|e| e.to_string())?;
+    ask(&to, &client).map_err(|e| e.to_string())
 }
 
 /// `--project`, else the GitHub `origin` of the checkout around the current directory.
@@ -324,11 +356,9 @@ fn run(command: &str, opts: &RemoteOpts, tool: &str, args: Value, with_project: 
             Err(err) => return fail(command, err),
         }
     }
-    let (_, client) = match client(opts) {
-        Ok(found) => found,
-        Err(err) => return fail(command, err),
-    };
-    match client.call(tool, Value::Object(args)) {
+    match following(opts, |_, client| {
+        client.call(tool, Value::Object(args.clone()))
+    }) {
         Ok(outcome) => {
             if opts.json && !outcome.is_error {
                 let record = outcome.record.unwrap_or(Value::Null);
@@ -372,11 +402,8 @@ pub fn remote(action: RemoteAction, opts: &RemoteOpts) -> ExitCode {
                 Err(err) => fail("remote logout", err),
             }
         }
-        RemoteAction::Status => match client(opts).and_then(|(server, client)| {
-            client
-                .initialize()
-                .map(|info| (server, info))
-                .map_err(|e| e.to_string())
+        RemoteAction::Status => match following(opts, |server, client| {
+            client.initialize().map(|info| (server.clone(), info))
         }) {
             Ok((server, info)) => {
                 let meta = &info["_meta"];
@@ -390,26 +417,24 @@ pub fn remote(action: RemoteAction, opts: &RemoteOpts) -> ExitCode {
             }
             Err(err) => fail("remote status", err),
         },
-        RemoteAction::Tools => {
-            match client(opts).and_then(|(_, c)| c.tools().map_err(|e| e.to_string())) {
-                Ok(tools) => {
-                    if opts.json {
-                        println!(
-                            "{}",
-                            serde_json::to_string_pretty(&tools).unwrap_or_default()
-                        );
-                    } else {
-                        for tool in tools {
-                            let description = tool["description"].as_str().unwrap_or("");
-                            let first = description.split(". ").next().unwrap_or(description);
-                            println!("{:<28} {first}", tool["name"].as_str().unwrap_or("?"));
-                        }
+        RemoteAction::Tools => match following(opts, |_, client| client.tools()) {
+            Ok(tools) => {
+                if opts.json {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&tools).unwrap_or_default()
+                    );
+                } else {
+                    for tool in tools {
+                        let description = tool["description"].as_str().unwrap_or("");
+                        let first = description.split(". ").next().unwrap_or(description);
+                        println!("{:<28} {first}", tool["name"].as_str().unwrap_or("?"));
                     }
-                    ExitCode::SUCCESS
                 }
-                Err(err) => fail("remote tools", err),
+                ExitCode::SUCCESS
             }
-        }
+            Err(err) => fail("remote tools", err),
+        },
         RemoteAction::Call { tool, args } => {
             let args = match args.as_deref().map(text_arg).transpose() {
                 Ok(text) => text,
@@ -423,9 +448,8 @@ pub fn remote(action: RemoteAction, opts: &RemoteOpts) -> ExitCode {
             };
             // A project tool's `project` comes from --project or the checkout when absent.
             let wants_project = opts.project.is_some()
-                || client(opts)
+                || following(opts, |_, client| client.tools())
                     .ok()
-                    .and_then(|(_, c)| c.tools().ok())
                     .and_then(|tools| {
                         tools
                             .into_iter()
@@ -540,18 +564,14 @@ pub fn project_cmd(action: ProjectAction, opts: &RemoteOpts) -> ExitCode {
                 );
             }
             // The file itself, as `cat` prints it.
-            let (_, client) = match client(opts) {
-                Ok(found) => found,
-                Err(err) => return fail(command, err),
-            };
             let project = match project(opts) {
                 Ok(project) => project,
                 Err(err) => return fail(command, err),
             };
-            match client.call(
-                "project_file_read",
-                json!({"project": project, "path": path, "ref": reference}),
-            ) {
+            let read = json!({"project": project, "path": path, "ref": reference});
+            match following(opts, |_, client| {
+                client.call("project_file_read", read.clone())
+            }) {
                 Ok(outcome) if !outcome.is_error => {
                     let content = outcome
                         .record

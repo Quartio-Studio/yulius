@@ -1789,12 +1789,20 @@ impl<'a> Move<'a> {
                 Some(lines) => lines.into_iter().for_each(|line| self.push(shown(line))),
                 None => self.manual("GitHub App", github_note(&new)),
             }
+            // The old URL's redirect leads `yulius remote` to the new one (SPEC-466 MVC-030).
+            let cli = if self.state.redirected {
+                "`yulius remote` follows the old URL's redirect by itself while the old host \
+                 answers"
+                    .to_owned()
+            } else {
+                format!("`yulius remote login {new}` keeps the token")
+            };
             self.manual(
                 "remote clients",
                 format!(
-                    "laptops point at the old URL: `yulius remote login {new}` keeps the token; \
-                     in Claude Code `claude mcp remove yulius`, then `claude mcp add --transport \
-                     http yulius {new}/mcp --header \"Authorization: Bearer <token>\"`"
+                    "laptops point at the old URL: {cli}; in Claude Code `claude mcp remove \
+                     yulius`, then `claude mcp add --transport http yulius {new}/mcp --header \
+                     \"Authorization: Bearer <token>\"`"
                 ),
             );
         }

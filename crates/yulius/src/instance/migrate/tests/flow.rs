@@ -781,6 +781,14 @@ fn a_move_runs_from_the_plan_to_the_finish() -> TestResult {
         app.detail
             .contains(&format!("{NEW_URL}/api/auth/github/callback"))
     );
+    // Laptops' CLI follows the old URL's redirect by itself; Claude Code's connection does not.
+    let clients = line(&status, "remote clients").ok_or("no line for clients")?;
+    assert!(
+        clients.detail.contains("`yulius remote` follows")
+            && clients.detail.contains("claude mcp add"),
+        "{}",
+        clients.detail
+    );
     // With the App's own settings page, which only the running instance knows (SPEC-466).
     assert!(
         app.detail
@@ -1727,6 +1735,15 @@ fn a_proxy_file_with_nothing_to_rewrite_is_left_alone() -> TestResult {
     let status = s.status()?;
     let old_url = line(&status, "old URL").ok_or("no line")?;
     assert_eq!(old_url.outcome, HostOutcome::Manual);
+    // Without the redirect nothing leads a laptop's CLI to the new URL.
+    let clients = line(&status, "remote clients").ok_or("no line for clients")?;
+    assert!(
+        clients
+            .detail
+            .contains(&format!("`yulius remote login {NEW_URL}`")),
+        "{}",
+        clients.detail
+    );
     assert!(
         old_url
             .detail
