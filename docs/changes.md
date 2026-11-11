@@ -4,6 +4,14 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-11
+
+- Nothing is typed into the Editor before its file is in it (SPEC-452, task #434, #1087). The
+  editor is made with no model, so it shows no text to type into while the first file's read and
+  live join are on their way. Before, Monaco's own empty model took that typing, the file's model
+  replaced it (the text was lost) and Monaco threw "Model is disposed!" twice. The quarantined
+  e2e "a folder chosen while the worktrees are read…" runs again and waits for the open tab.
+
 ## 2026-11-10
 
 - Text stays inside its box (SPEC-449, task #431, ADR-0290). A long URL, path or identifier
