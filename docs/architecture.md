@@ -3081,7 +3081,8 @@ A move to another URL leaves one thing only a person can do: add the new callbac
 GitHub App (GitHub has no API for it). The instance finds out by itself whether that is done
 (SPEC-466, ADR-0302, `yulius-app::github_callback`): it posts its own client id and secret, a
 made-up code and its callback URL to GitHub's token endpoint, which answers `redirect_uri_mismatch`
-or `bad_verification_code`, and keeps the answer (registered, missing, or unknown with the reason)
+or `bad_verification_code` (believed only when a control question about a URL that cannot be
+registered is refused), and keeps the answer (registered, missing, or unknown with the reason)
 in memory. GitHub is asked at start, on demand, and when an answer that is not "registered" is
 read once it is due (30 s old; after eleven answers in a row that say the same the wait doubles
 with each one, up to 4 minutes, until a demand or a changed answer); never in a loop, and one

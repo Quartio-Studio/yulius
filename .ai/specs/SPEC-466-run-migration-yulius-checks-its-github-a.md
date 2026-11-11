@@ -52,10 +52,13 @@ Instance page says where the instance came from and what its first start did wit
 The check
 
 - MVC-001 **Ask GitHub.** `GitHubClient::callback_registered(uri)` posts the App's client id and
-  secret, a fixed made-up code and the URI to the token endpoint, once, within the client's
-  request timeout (10 s). `bad_verification_code` is **registered**, `redirect_uri_mismatch` is
-  **missing**; anything else (another OAuth error, an HTTP error, a timeout, no network) is an
-  error whose text never holds the secret. No person's token is used.
+  secret, a fixed made-up code and the URI to the token endpoint, within the client's request
+  timeout (10 s), never retried. `redirect_uri_mismatch` is **missing**. `bad_verification_code`
+  is **registered** only when GitHub also refuses a control URL that cannot be registered
+  (`https://callback-check.invalid/…`, a second request): a GitHub that takes that one too does
+  not compare callback URLs for this App, so it does not say, and the answer is unknown with
+  that reason, never "registered". Anything else (another OAuth error, an HTTP error, a timeout,
+  no network) is an error whose text never holds the secret. No person's token is used.
 - MVC-002 **Three answers, kept.** The instance keeps the last answer for its own callback in
   memory: registered, missing, or unknown with the reason, and when it was given. Without a GitHub
   App there is no answer and GitHub is not asked.
@@ -65,8 +68,10 @@ The check
   is due: 30 s old at first, so a missing callback is re-checked until it is registered, and
   nothing asks GitHub while nobody looks. A page left open does not ask for ever at that pace:
   after eleven answers in a row that say the same and were asked for by reads, the wait doubles
-  with each one, up to 4 minutes (what a page says of a callback added since is never older); a
-  demand or a changed answer makes it 30 s again. A GitHub sign-in that completes proves the
+  with each one, up to 4 minutes (so the kept answer is at most that far behind a callback added
+  since, for whoever reads next); a demand or a changed answer makes it 30 s again, also a demand
+  that took the answer of a check already on its way. A clock that steps back silences nothing:
+  a demand asks whatever the clock says, and an answer dated after now is due. A GitHub sign-in that completes proves the
   callback: GitHub exchanged a code for it, so the answer is "registered" at once, without
   another question, and an answer that was on its way meanwhile does not undo it. One check runs
   at a time: a second request waits for it and takes its answer, and a check that dies does not
@@ -116,7 +121,10 @@ The root command
 - MVC-022 **The final checklist.** Before it removes its key the flow asks the new instance, on
   the new host, through the staged build, and the checklist's "GitHub App" line is `ok` when the
   callback is registered and `manual` with the exact link and both values when it is not; when it
-  cannot ask, the general note as before.
+  cannot ask, the general note as before. `ok` is said only of the URL the move goes to: an
+  instance that answers for another one (an environment file still names the old URL) is
+  `manual`, with that said. What the instance or GitHub said reaches the checklist without
+  control characters and without characters that reorder or hide text.
 
 Remote clients
 
@@ -129,10 +137,16 @@ Remote clients
   old URL was itself a loopback development server), with no credentials, path, query or
   fragment, and another URL than the one asked. Without the header, with another `Location`, or
   with a header that is not such an origin, the redirect is the error it is today and the token
-  is sent nowhere else.
-- MVC-032 **The old name keeps working.** The store remembers the move (`moved` in
-  `remote-credentials.json`), so a command that names the old URL (`--server`, `YULIUS_SERVER`)
-  uses the sign-in at the new one. `yulius remote login` at a URL forgets a move recorded from it.
+  is sent nowhere else. A move onto a URL where another sign-in is saved is not followed and
+  changes nothing (an instance cannot make itself a name of another one); the same sign-in
+  saved under both names becomes one.
+- MVC-032 **The old name keeps working, and there is a way back.** The store remembers the move
+  (`moved` in `remote-credentials.json`), so a command that names the old URL (`--server`,
+  `YULIUS_SERVER`) uses the sign-in at the new one. When the instance a sign-in followed does
+  not answer, the error says where the sign-in came from and how to go back; the token is sent
+  nowhere to find out. `yulius remote login <old URL>` brings the sign-in back after a move that
+  was undone: an empty token takes the one that followed the move (tokens are shown once), what
+  followed is forgotten, and the names that led there lead to the old URL.
 
 ## Design
 
@@ -149,15 +163,18 @@ Remote clients
   `registered` (kept until the next start or demand).
 - **Move** (`instance/migrate/github.rs`). `asked_instance` reads the key file and sends one
   HTTP/1.0 request to the loopback listener (connecting, sending and the whole answer each
-  bounded at 30 s, above the 20 s the server needs at worst for a check behind another; a
+  bounded at 45 s, above the 40 s the server needs at worst: two questions of 10 s behind a
+  check of two; a
   `public_url` that is not `https://host` is never sent); `line` makes the checklist's "GitHub
   App" line of the answer. The plan asks through `World::github` (the old instance, the new URL);
   before the finish the flow sends `Request::Callback` to the new host, whose step asks the
   instance there about its own URL, so that instance keeps the answer too.
 - **Remote client.** `RemoteClient` returns `RemoteError::Moved(new base URL)` for a valid move
   (`moved_base`) and never follows anything itself; `remote_cli::following` moves the sign-in
-  (`TokenStore::relocate`), says the line and asks once more; `client` resolves a name that moved
-  (`TokenStore::moved_to`).
+  (`TokenStore::relocate`, which refuses another sign-in at the new URL), says the line and asks
+  once more; `client` resolves a name that moved (`TokenStore::moved_to`); `failed` adds where a
+  sign-in came from (`moved_from`) to a transport error; `TokenStore::save` at a URL that had
+  moved brings the sign-in back.
 
 ## Plan
 
@@ -175,9 +192,11 @@ Remote clients
 
 ## Acceptance criteria
 
-- Against the fake GitHub with registered callbacks: a registered URI answers registered, another
-  one missing, a wrong client secret an error naming GitHub's code and not the secret, a GitHub
-  that does not answer an error within the request timeout.
+- Against the fake GitHub with registered callbacks: a registered URI answers registered (after
+  the control question was refused), another one missing in one request, a wrong client secret
+  an error naming GitHub's code and not the secret, a GitHub that does not answer an error within
+  the request timeout, and a GitHub that takes every URI no word at all (unknown with the reason
+  for the superadmin), never registered.
 - A server whose App's callback is not registered answers `state: "missing"` on the address API
   with the organization's (and a person's) settings link and both values; after the callback is
   registered at GitHub a read 30 s after the last answer makes it `registered` without a restart,
@@ -197,12 +216,17 @@ Remote clients
 - A move whose URL changes: the plan's "GitHub App" line is `ok` when the old instance says the
   new callback is registered, `manual` with the exact link and both values when missing, and
   `manual` with the general note when the instance cannot be asked; the final checklist's line
-  is `ok` when the new instance says registered.
+  is `ok` when the new instance says registered, and never `ok` when the instance answers for
+  another URL than the new one.
 - `yulius remote` against a server that answers 307 with the header and the same path at another
   server: the call is answered by the new server, the store holds the token under the new URL
   only, the line is on standard error; `--server <old>` works afterwards. A redirect without the
   header, to another path, to `http` from an `https` server, or with a header carrying a path is
-  not followed and the store is unchanged; a second move in a row is an error.
+  not followed and the store is unchanged; a second move in a row is an error. A move onto a URL
+  where another sign-in is saved is not followed and the file is unchanged byte for byte. After
+  a move that is undone, the failing command names the URL the sign-in came from without
+  contacting it, and `yulius remote login <old URL>` with an empty token brings the sign-in
+  back: the file holds the token under the old URL only.
 - e2e on the mock: the Address card shows the warning, the link, both values and the move; after
   GitHub accepts the callback the card says so without a reload; "Check again" works while the
   card reads by itself and a read that answers late changes nothing; coming back to the page asks

@@ -22,10 +22,12 @@ C of [0297](0297-one-root-command-moves-an-instance-and-drives-the-new-host-over
 
 ## Decision
 
-- **The token endpoint is the question.** The instance posts its own client id and secret, a fixed
-  made-up code and its callback URL: `bad_verification_code` means registered,
-  `redirect_uri_mismatch` missing, anything else unknown with the reason. One bounded request, no
-  person's token, nothing changed at GitHub.
+- **The token endpoint is the question, and a control question keeps it honest.** The instance
+  posts its own client id and secret, a fixed made-up code and its callback URL:
+  `redirect_uri_mismatch` means missing, anything unexpected unknown with the reason.
+  `bad_verification_code` means registered only if GitHub refuses, in a second request, a URL
+  that cannot be registered (under `.invalid`): a GitHub that took any URL would otherwise read
+  as "registered" for ever. Bounded requests, no person's token, nothing changed at GitHub.
 - **Asked on demand and while someone looks.** At start, when the App is stored, on a superadmin's
   "Check again" or return to the page, for the move's plan, and when a page
   reads an answer that is not "registered" and due: 30 s old at first, and, once eleven such
@@ -76,11 +78,16 @@ C of [0297](0297-one-root-command-moves-an-instance-and-drives-the-new-host-over
 - A "registered" answer is as old as the last start or demand: a callback removed at GitHub later
   shows on GitHub's own error page first, and on the Instance page after "Check again".
 - The check's meaning rests on GitHub's answers for a made-up code, measured with an OAuth app.
-  If GitHub renames the codes the answer becomes "unknown". If it ever checked the code before
-  the URI, a missing callback would read "registered" and GitHub's own error page would be the
-  first sign, as before this change; if it ever refused a registered URI this way, the pages
-  would say "missing" wrongly and sign-in would work all the same.
+  If GitHub renames the codes, or checks the code before the URI for an App (the control
+  question then gets the same answer), the answer is "unknown" with the reason, and the move's
+  checklist stays `manual`. If it ever refused a registered URI this way, the pages would say
+  "missing" wrongly and sign-in would work all the same.
 - Whoever can make the old URL answer over TLS can move a laptop's saved sign-in to another
   `https` origin: the old host stays trusted with the token until its name is retired, as it was
-  before the move.
+  before the move. It cannot move it onto another instance the laptop is signed in to: a move
+  onto a URL with another saved sign-in is refused.
+- After a move that was undone, laptops that had followed point at the stopped instance. Their
+  CLI says where the sign-in came from and never probes the old URL with the token by itself (a
+  retired name may belong to someone else by then); `yulius remote login <old URL>` takes the
+  sign-in back.
 - `yulius login`, `yulius onboard` and `yulius secrets import` do not follow a move (SPEC-466).

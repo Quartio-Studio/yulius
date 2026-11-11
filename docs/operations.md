@@ -1064,7 +1064,7 @@ Yulius notices and says exactly what to do:
   buttons: the **callback URL** to add (an App takes several, so the old one may stay until the old
   host is retired) and the **homepage URL** to replace. Save on GitHub; the card says "GitHub
   accepts this address for sign-in" at once when you come back to the page or press Check again,
-  and by itself within half a minute while you watch it (a page left open for long asks GitHub
+  and by itself within about 40 seconds while you watch it (a page left open for long asks GitHub
   less often, every four minutes at the least), or as soon as someone signs in with GitHub. When
   GitHub gave no answer (it is down, the server has no route to it, it refuses the App's client id
   and secret) the card says why; sign-in is not affected by that.
@@ -1076,8 +1076,10 @@ Yulius notices and says exactly what to do:
   moved, with the same link and values ([Move the instance](#move-the-instance-to-another-host)).
 
 The check sends GitHub's token endpoint the App's own client id and secret, a made-up code and
-the callback URL; GitHub answers whether the URL is registered. No sign-in happens and nothing is
-changed at GitHub.
+the callback URL; GitHub answers whether the URL is registered. A URL it accepts is followed by
+a control question about one that cannot be registered: only when GitHub refuses that one does
+"accepted" mean anything, otherwise the card says that GitHub does not say. No sign-in happens
+and nothing is changed at GitHub.
 
 ### CI on this machine
 
@@ -1479,6 +1481,9 @@ still answers and otherwise asks you to confirm that it is stopped, `--yes` answ
 the old proxy configuration back, thaws and enables the old unit and removes the key and the
 state. The copy on the new host, with `master.key` and every secret, stays there until you remove it.
 It never leaves both running. Work done on the new host after the move is not copied back.
+Laptops whose `yulius remote` had already followed the move point at the stopped instance: their
+commands say where the sign-in came from, and `yulius remote login <old URL>` takes it back
+(Enter at the token prompt, [remote control](remote-control.md#2-connect-your-agent)).
 
 A run that hangs after the start was ordered ignores Ctrl-C on purpose (it must not thaw the old
 instance beside a new one). End it with `kill -9`, then run the same command again (it decides

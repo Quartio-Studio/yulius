@@ -58,9 +58,13 @@ shortcuts (`yulius project`, `task`, `ci`, `vars`, `secrets list` and `delete`) 
 sign-in under the new URL, print `yulius: <old URL> moved to <new URL>; the saved sign-in follows
 it.` once and repeat the call there. The token stays the same, and a command that still names the
 old URL (`--server`, `YULIUS_SERVER`) reaches the new one. Only that redirect is followed: the
-header must name an `https` address alone and lead to the same path there; your token is never
-sent anywhere else a response points. Once the old host is gone nothing redirects any more: run
-`yulius remote login <new URL>` on a computer that had not followed yet. Claude Code's own
+header must name an `https` address alone (plain `http` only between two servers on your own
+computer) and lead to the same path there; your token is never sent anywhere else a response
+points, and a move onto a URL where you saved another sign-in is not followed. Once the old host
+is gone nothing redirects any more: run `yulius remote login <new URL>` on a computer that had
+not followed yet. If the move is undone after your CLI followed it, the new URL stops answering
+and the error names the URL the sign-in came from: `yulius remote login <old URL>` and Enter at
+the token prompt take it back (an empty token on stdin with `--token-stdin`). Claude Code's own
 connection does not follow a move: `claude mcp remove yulius`, then add it again with the new
 URL as above. `yulius login`, `yulius onboard` and `yulius secrets import` take the new URL with
 `--server`.
