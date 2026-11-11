@@ -24,7 +24,7 @@ use crate::restart_safety::unit_groups;
 pub const DROP_IN_NAME: &str = "20-yulius-sessions.conf";
 /// How long an ended Docker engine may take to leave (SPEC-458 LAY-005).
 const ENGINE_WAIT: Duration = Duration::from_secs(10);
-/// How long systemd may take to remove the server unit's emptied old group.
+/// How long systemd may take to let go of the server unit's emptied old group.
 const RELEASE_WAIT: Duration = Duration::from_secs(5);
 
 /// The sessions unit of the server unit `service`, delegated to `user` in `slice`. It keeps the
@@ -206,10 +206,16 @@ pub fn adopt_main(service: &str) -> ExitCode {
     let sessions_dir = root.join(&slice).join(&sessions);
     let wanted = root.join(&slice).join(service);
     let old = unit_groups(root, service, control_group(service).as_deref());
+    let shown = || control_group(service);
     let mut failed = false;
     for unit in old {
         match adopt::adopt(&unit, &sessions_dir, unit == wanted, ENGINE_WAIT) {
-            Ok(done) if done.nothing() => {}
+            Ok(done) if done.nothing() => {
+                // What an earlier move left of the old group, once systemd names it no more.
+                if unit != wanted {
+                    let _ = adopt::let_go(&unit, root, &shown, Duration::ZERO);
+                }
+            }
             Ok(done) => {
                 println!(
                     "moved {} processes in {} groups from {} to {} ({} Docker engines ended: \
@@ -225,10 +231,10 @@ pub fn adopt_main(service: &str) -> ExitCode {
                 }
                 failed |= !done.left.is_empty();
                 // The server starts where systemd still holds its group: wait for it to let go.
-                if unit != wanted && !adopt::wait_gone(&unit, RELEASE_WAIT) {
+                if unit != wanted && !adopt::let_go(&unit, root, &shown, RELEASE_WAIT) {
                     eprintln!(
-                        "yulius host adopt-sessions: {} is still there: {service} starts in it \
-                         once more and moves at its next restart",
+                        "yulius host adopt-sessions: systemd still holds {} for {service}, which \
+                         starts in it once more and moves at its next restart",
                         unit.display()
                     );
                     failed = true;

@@ -269,18 +269,29 @@ pub fn adopt(
     Ok(done)
 }
 
-/// Waits up to `wait` for systemd to remove the emptied group `old`: a stopped unit keeps the
-/// place of its group while one process is left there, whatever its `Slice=` says, and lets go
-/// of it when it removes the group. Whether it is gone.
+/// Waits up to `wait` until systemd no longer names the emptied group `old` (below `root`) as
+/// its unit's group, then removes what is left of it. `shown` is what systemd names now
+/// (`ControlGroup`; `None` when it cannot be asked, which is no reason to fail a start).
+///
+/// A stopped unit keeps the place of its group while one process is left there, whatever its
+/// `Slice=` says, and lets go once the group is empty. It sweeps the emptied groups itself then,
+/// and where that sweep crosses [`adopt`]'s own removals it gives the group up without removing
+/// it: that the group is still there says nothing, only systemd's answer does. Whether it let go.
 #[must_use]
-pub fn wait_gone(old: &Path, wait: Duration) -> bool {
+pub fn let_go(old: &Path, root: &Path, shown: &dyn Fn() -> Option<String>, wait: Duration) -> bool {
+    let name = old.strip_prefix(root).map_or_else(
+        |_| old.display().to_string(),
+        |relative| format!("/{}", relative.display()),
+    );
     let deadline = Instant::now() + wait;
-    while old.exists() {
+    while shown().is_some_and(|group| group.trim() == name) {
         if Instant::now() >= deadline {
             return false;
         }
         std::thread::sleep(ENGINE_POLL);
     }
+    // Only an empty group goes: one that holds anything is refused by the kernel.
+    let _ = std::fs::remove_dir(old);
     true
 }
 
@@ -465,11 +476,66 @@ mod tests {
         Ok(())
     }
 
+    /// What systemd names as the unit's group: the old one for the first `held` questions.
+    fn systemd(
+        held: u32,
+    ) -> (
+        std::rc::Rc<std::cell::Cell<u32>>,
+        impl Fn() -> Option<String>,
+    ) {
+        let asked = std::rc::Rc::new(std::cell::Cell::new(0_u32));
+        let count = std::rc::Rc::clone(&asked);
+        (asked, move || {
+            count.set(count.get() + 1);
+            Some(if count.get() <= held {
+                "/system.slice/yulius.service\n".to_owned()
+            } else {
+                String::new()
+            })
+        })
+    }
+
     #[test]
-    fn the_wait_for_an_emptied_unit_is_bounded() -> TestResult {
+    fn the_emptied_unit_is_let_go_once_systemd_names_it_no_more() -> TestResult {
         let root = tempfile::tempdir()?;
-        assert!(wait_gone(&root.path().join("gone"), Duration::ZERO));
-        assert!(!wait_gone(root.path(), Duration::from_millis(1)));
+        let old = root.path().join("system.slice/yulius.service");
+        std::fs::create_dir_all(&old)?;
+        // systemd gave the group up without removing it (its sweep crossed ours): the leftover
+        // goes, and that it was there is no failure.
+        let (asked, shown) = systemd(2);
+        assert!(let_go(&old, root.path(), &shown, Duration::from_secs(5)));
+        assert_eq!(asked.get(), 3, "asked until systemd named it no more");
+        assert!(!old.exists(), "the empty leftover is removed");
+        // Removed by systemd already: nothing to do.
+        assert!(let_go(&old, root.path(), &systemd(0).1, Duration::ZERO));
+        Ok(())
+    }
+
+    #[test]
+    fn a_unit_systemd_still_holds_is_not_let_go_and_the_wait_is_bounded() -> TestResult {
+        let root = tempfile::tempdir()?;
+        let old = root.path().join("system.slice/yulius.service");
+        std::fs::create_dir_all(&old)?;
+        let (_, shown) = systemd(u32::MAX);
+        assert!(!let_go(&old, root.path(), &shown, Duration::from_millis(1)));
+        assert!(old.exists(), "a group systemd holds is left alone");
+        Ok(())
+    }
+
+    #[test]
+    fn a_group_that_holds_something_stays_and_an_unanswered_question_is_no_failure() -> TestResult {
+        let root = tempfile::tempdir()?;
+        let old = root.path().join("system.slice/yulius.service");
+        std::fs::create_dir_all(old.join("sandboxes"))?;
+        assert!(let_go(&old, root.path(), &|| None, Duration::ZERO));
+        assert!(old.join("sandboxes").exists());
+        // Another group of the same unit is not the one asked about.
+        assert!(let_go(
+            &old,
+            root.path(),
+            &|| Some("/yulius.slice/yulius.service".to_owned()),
+            Duration::ZERO
+        ));
         Ok(())
     }
 
