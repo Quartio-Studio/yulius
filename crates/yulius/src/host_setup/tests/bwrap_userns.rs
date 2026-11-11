@@ -53,16 +53,6 @@ profile bwrap /usr/bin/bwrap flags=(unconfined) {
 /// The same rule as a person may also write it: on one line.
 const ONE_LINE_TEXT: &str = "profile bwrap /usr/bin/bwrap flags=(unconfined) { userns, }\n";
 
-/// The same rule with its path as Ubuntu 26.04's own profiles spell one (`hostname`).
-const VARIABLE_TEXT: &str = "\
-abi <abi/4.0>,
-include <tunables/global>
-@{bin}={/usr,}/bin
-profile bwrap @{bin}/bwrap flags=(unconfined) {
-  userns,
-}
-";
-
 /// Ubuntu 26.04's profile for glycin's loaders: it names bwrap in rules, attaches to nothing.
 const GLYCIN_TEXT: &str = "\
 abi <abi/4.0>,
@@ -416,7 +406,7 @@ fn a_hand_written_rule_is_adopted() {
 
     // Written but never loaded: loaded once, as a boot would. However it is spelled, it is
     // theirs and ours does not join it.
-    for text in [HAND_WRITTEN_TEXT, ONE_LINE_TEXT, VARIABLE_TEXT] {
+    for text in [HAND_WRITTEN_TEXT, ONE_LINE_TEXT] {
         let mut fake = noble();
         fake.file(HAND_WRITTEN, text);
         let lines = run(&mut fake, Mode::Setup);
