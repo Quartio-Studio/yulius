@@ -315,11 +315,12 @@ struct Variables<'a> {
 }
 
 impl Variables<'_> {
-    /// Takes `bytes` of what is left; `false` once that is spent.
-    fn spend(&self, bytes: usize) -> bool {
+    /// `parts` as one text, paid for from the bytes left; `None` once those are spent.
+    fn text(&self, parts: &[&str]) -> Option<String> {
+        let size: usize = parts.iter().map(|part| part.len()).sum();
         let left = self.left.get();
-        self.left.set(left.saturating_sub(bytes + 1));
-        left > bytes
+        self.left.set(left.saturating_sub(size + 1));
+        (left > size).then(|| parts.concat())
     }
 
     /// Whether a top-level header gives bwrap as its profile's program: its attachment where
@@ -363,33 +364,30 @@ impl Variables<'_> {
             let (before, after) = (&text[..at], &text[end + 1..]);
             let values = self.values(&text[at + 2..end], 0)?;
             let leads = before.ends_with('/') && before.contains(|c| c != '/');
-            let trimmed: Vec<&str> = values
-                .iter()
-                .map(|value| {
-                    if leads {
-                        value.trim_start_matches('/')
-                    } else {
-                        value
-                    }
-                })
-                .map(|value| {
-                    if after.starts_with('/') {
-                        value.trim_end_matches('/')
-                    } else {
-                        value
-                    }
-                })
-                .collect();
-            let size: usize = trimmed.iter().map(|value| value.len() + 1).sum();
-            if !self.spend(size + after.len()) {
-                return None;
+            let mut parts = Vec::with_capacity(2 * values.len() + 2);
+            for value in &values {
+                let value = if leads {
+                    value.trim_start_matches('/')
+                } else {
+                    value
+                };
+                let value = if after.starts_with('/') {
+                    value.trim_end_matches('/')
+                } else {
+                    value
+                };
+                parts.extend([if parts.is_empty() { "{" } else { "," }, value]);
             }
-            let put = match trimmed.as_slice() {
-                [one] => (*one).to_owned(),
-                many => format!("{{{}}}", many.join(",")),
-            };
+            // One value stands as it is, several as an alternation.
+            if values.len() == 1 {
+                parts.remove(0);
+            } else {
+                parts.push("}");
+            }
+            parts.push(after);
+            let rest = self.text(&parts)?;
             done.push_str(before);
-            text = format!("{put}{after}");
+            text = rest;
         }
         Some(done + &text)
     }
@@ -404,11 +402,10 @@ impl Variables<'_> {
             return None;
         }
         let var = self.vars.get(name);
-        let own = var.map_or(&[][..], |var| &var.values[..]);
-        if !self.spend(own.iter().map(|value| value.len() + 1).sum()) {
-            return None;
+        let mut raw = Vec::new();
+        for value in var.map_or(&[][..], |var| &var.values[..]) {
+            raw.push(self.text(&[value])?);
         }
-        let mut raw: Vec<String> = own.iter().map(|value| (*value).to_owned()).collect();
         if !var.is_some_and(|var| var.declared) {
             raw.push(if name == "bin" { "/usr/bin" } else { UNKNOWN }.to_owned());
         }
@@ -419,10 +416,7 @@ impl Variables<'_> {
                 continue;
             };
             for inner in self.values(&value[at + 2..end], depth + 1)? {
-                if !self.spend(value.len() + inner.len()) {
-                    return None;
-                }
-                raw.push(format!("{}{inner}{}", &value[..at], &value[end + 1..]));
+                raw.push(self.text(&[&value[..at], &inner, &value[end + 1..]])?);
             }
         }
         Some(done)
@@ -443,10 +437,10 @@ impl Variables<'_> {
                 continue;
             };
             for alternative in alternatives {
-                if !self.spend(alternative.len() + after.len()) {
+                let Some(pattern) = self.text(&[alternative, after]) else {
                     return false;
-                }
-                tries.push((format!("{alternative}{after}"), path));
+                };
+                tries.push((pattern, path));
             }
         }
         false
@@ -918,7 +912,10 @@ mod tests {
             "include <tunables/global>\nprofile bwrap /usr/bin/bwrap flags=(unconfined)\n{\n  \
              userns,\n}\n",
             "profile bwrap /usr/bin/bwrap flags=(unconfined, attach_disconnected) {\n}\n",
+            // AppArmor wants a space before this brace: read all the same.
             "/usr/bin/bwrap{\n  userns,\n}\n",
+            "profile b \"/usr/bin/bwrap\"{\n}\n",
+            "profile b /usr/bin/bwrap flags=(complain){\n}\n",
             "profile x /usr/bin/x {\n  userns,\n}\nprofile b /usr/bin/bwrap {\n}\n",
             "profile bwrap /usr/bin/bwrap {userns,}\n",
             "/usr/bin/bwrap {}\n",
@@ -945,6 +942,7 @@ mod tests {
         for other in [
             "profile outer /usr/bin/outer {\n  profile inner /usr/bin/bwrap {\n    userns,\n  \
              }\n}\n",
+            "profile outer /usr/bin/outer {\n  profile inner \"/usr/bin/bwrap\"{\n  }\n}\n",
             "profile x /usr/bin/x { /usr/bin/bwrap Px -> bwrap, }\n",
             "profile x /usr/bin/x flags=(unconfined) /usr/bin/bwrap {\n}\n",
             "profile x /usr/bin/x { # /usr/bin/bwrap {\n}\n",
@@ -995,6 +993,10 @@ mod tests {
             "profile b ///usr/bin/bwrap {\n}\n",
             "profile b /usr/bin/bwrap (unconfined) {\n}\n",
             "/usr/bin/x /usr/bin/bwrap {\n}\n",
+            // An include's line and a switch's are no part of the header that follows.
+            "include <tunables/global>\n/usr/bin/bwrap {\n}\n",
+            "$flag = true\n/usr/bin/bwrap {\n}\n",
+            "profile b /usr/bin/bwrap xattrs=(user.x=1) {\n}\n",
             "profile \"my bwrap\" /usr/bin/bwrap {\n}\n",
             "@{d} = /usr/bin\nprofile @{d}/bwrap {\n}\n",
             // A value's slash goes where the name has its own: no child's `//` is left.
@@ -1024,8 +1026,6 @@ mod tests {
             // In a name, `//` parts a child from its parent.
             "/usr/bin//bwrap {\n}\n",
             "include <tunables/global>\nprofile /usr/bin//bwrap (complain) {\n}\n",
-            "include <tunables/global>\n/usr/bin//bwrap {\n}\n",
-            "$flag = true\n/usr/bin//bwrap {\n}\n",
             "@{p} = /usr/bin//bwrap\nprofile @{p} {\n}\n",
             // Beside an attachment the name is none.
             "profile /usr/bin/bwrap /usr/bin/x {\n}\n",
