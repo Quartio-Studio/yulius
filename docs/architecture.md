@@ -2406,7 +2406,9 @@ each sandbox and on each sandbox page, including the filters pages keep in their
 Tasks and Git back links) go back there, and a link to where the person already is opens the plain
 path. The tool panel (`panels.js`) keeps each sandbox's open tool, and the Superagent, Browser,
 Editor and Shell views of the 3 sandboxes used last stay alive, hidden; the editor of a sandbox in
-the background keeps its files' text without Monaco models. Sign-out and an expired session forget
+the background keeps its files' text without Monaco models. A tool chosen while a sandbox's page
+loads and no sandbox is the panel's context yet waits, shown pressed, and opens in that sandbox
+([SPEC-450](../.ai/specs/SPEC-450-browser-screenshot-never-shows-a-secret.md) SSC-007). Sign-out and an expired session forget
 the places. The editor loads Monaco once and makes its editor only when all of `editor.main` has
 run: Monaco's main chunk sets `window.monaco` before the chunk that registers some of its services,
 and an editor made earlier lacks them (decision 0122). Monaco ends a worker it no longer needs (the

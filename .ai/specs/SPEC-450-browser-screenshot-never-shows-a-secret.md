@@ -79,6 +79,19 @@ with `browser_fill_secret`. A password field, drawn as dots, keeps screenshots w
   that path. This change makes a screenshot show nothing a snapshot of the same page would redact,
   and adds the edit checks of SSC-002 as defense in depth, not as a guarantee against every
   edit.
+- **The e2e job on this branch (met on the way).** Yulius CI's `e2e` job failed at 52fb2584 on
+  tests this change does not touch: the host Yulius moved to on 2026-11-11 is faster and showed
+  races that fail every pull request.
+  - An app defect. Opening a task's page, `handleRoute` (`app.js`) tells the tool panel that the
+    sandbox is arriving (`panels.arrive`), reads the tasks, and only then makes the sandbox the
+    panel's context (`setContext`). A tool opened in between opened for no sandbox: the Shell said
+    "Open a sandbox first." and never took the keyboard (SPEC-170 TKS-002), and the Superagent was
+    the Global one (SPEC-428 SAT-005). A person on a slow connection meets the same. Fixed here
+    (SSC-007); `dev` meanwhile got waits in the tests that met it (#1150).
+  - Races in tests only: production protection read the stored switch while it was being sent;
+    the places editor test typed before README.md's text was in Monaco's model (#1087); the
+    left-composer onboarding test (#581) set its hold on recovery reads while an earlier read was
+    still on its way, so two or three waited there instead of one.
 
 ## Requirements
 
@@ -102,13 +115,16 @@ with `browser_fill_secret`. A password field, drawn as dots, keeps screenshots w
   are exposed too, so another site framing them is refused. Any other typing into a document a value went into (`browser_type`, a
   user name) may edit it (a character into its middle):
   - before the typing, a page that shows such a value (a password revealed) or cannot be read
-    exposes its host, as an edit would go unseen;
+    exposes its host, as an edit would go unseen; a read that failed because a navigation
+    committed meanwhile exposes nothing, unless the page now shown is itself one a value went
+    into (restored from the back/forward cache with its loader id);
   - a value whole in a password field before the typing and not after a line of it, checked
     before that line's Enter may submit the form, exposes the host.
   A value gone from the page between typings is no edit: a single-page app's sign-in removes the
   field and keeps the document, and keeps screenshots. When the page after a fill cannot be read,
-  or its document is lost, or a bound is passed, every screenshot is refused until Yulius
-  restarts.
+  or its document is lost, or the fill names no host to expose (an opaque page), or it went into
+  a frame whose targets cannot be listed, or a bound is passed, every screenshot is refused until
+  Yulius restarts.
 - **SSC-003 Any page that may show a secret is refused.** Before capturing any tab, once a value
   was typed or the sandbox has agent secrets, a probe reads the page. `shown` is the `textContent`
   of its documents (all but `head`), open shadow roots, same-origin frames, objects and embeds,
@@ -116,8 +132,8 @@ with `browser_fill_secret`. A password field, drawn as dots, keeps screenshots w
   The screenshot is refused when:
   - the page's host is exposed;
   - it frames a host a value was typed into, or an exposed one, in a frame the probe cannot read
-    (frames of another origin in the frame tree, and the `iframe` targets whose parent frame is
-    the tab's, is not said, or is no target listed);
+    (frames of another origin or of an opaque, sandboxed one in the frame tree, and the `iframe`
+    targets whose parent frame is the tab's, is not said, or is no target listed);
   - its `shown` holds a remembered value or line, which also exposes its host;
   - its `shown` holds any agent secret the redactor hides for the sandbox (its matcher: values,
     their encodings and lines). That also covers a stored key nobody filled.
@@ -133,6 +149,13 @@ with `browser_fill_secret`. A password field, drawn as dots, keeps screenshots w
 - **SSC-006 The value never leaves for the page; every agent.** The probe takes no argument:
   Yulius compares. The check is in the browser instance, so a task's agent and both Superagents
   get it.
+- **SSC-007 A tool chosen while its sandbox's page loads opens in that sandbox** (the web app's
+  tool panel; found by the e2e job). While a sandbox's page loads and no sandbox is the panel's
+  context yet, a tool the person opens (rail, link, shortcut) is remembered and shown pressed, and
+  opens in that sandbox once it is the context, taking the keyboard as a tool opened then does;
+  the tool chosen last wins. Choosing it again or hiding the tools cancels it; a page that ends
+  outside a sandbox drops it. The rail's tools are enabled while a sandbox arrives. Unchanged: a
+  tool opened while another sandbox is still the context (A shown, B loading) opens in A.
 
 ## Plan
 
@@ -151,8 +174,8 @@ with `browser_fill_secret`. A password field, drawn as dots, keeps screenshots w
 - [x] Independent review of the round 6 fixes approves the head
 - [x] Gates green with evidence
 - [x] Final review: untested fail-closed branches, sandboxed frames, restored pages
-- [ ] A tool chosen while its sandbox's page loads opens in that sandbox
-- [ ] The e2e job's other failures: production protection and the #1087 editor test
+- [x] A tool chosen while its sandbox's page loads opens in that sandbox
+- [x] The e2e job's other failures: production protection and the #1087 editor test
 - [ ] Independent review of the final head
 
 ## Acceptance criteria
@@ -216,9 +239,25 @@ with `browser_fill_secret`. A password field, drawn as dots, keeps screenshots w
     cutting field.
   - `typing_where_an_edit_cannot_be_seen_exposes_the_site`: a revealed password, an unreadable
     page.
+  - `a_fill_into_an_unreadable_frame_exposes_the_framed_site`: its frames' hosts, frames by origin.
+  - `a_navigation_during_the_look_before_typing_exposes_nothing`.
+  - `a_restored_filled_page_during_the_look_exposes_its_site`.
+  - `fills_that_cannot_be_placed_refuse_every_screenshot`: no host, frame targets unknown, a
+    sandboxed frame.
   - `a_page_showing_any_hidden_secret_is_not_captured`.
 - `crates/yulius-browser/tests/manager.rs`: `typed_secrets_outlive_the_browser`,
   `a_lost_secret_refuses_screenshots_after_a_restart`.
+- SSC-007, in the mock with the task page's read of the tasks held
+  (`hold=/api/sandboxes/sb_studio/tasks`):
+  - `e2e/tests/terminals.e2e.ts`: "the Shell chosen while its sandbox’s page loads opens there
+    with the keyboard", "a tool chosen twice while its sandbox’s page loads does not open", "a
+    tool chosen while its sandbox’s page loads does not open once the tools are hidden", "the tool
+    chosen last on the way into a sandbox opens there" (from Settings, outside a sandbox).
+  - `e2e/tests/agent-panel.e2e.ts`: "the Superagent chosen while its sandbox’s page loads is that
+    sandbox’s own".
+- `e2e/tests/onboarding.e2e.ts`, "a composer left before its reads answer adds no second toast to
+  the start": holds the recovery reads once those asked earlier have answered (the mock counts
+  the answers, `recoveryAnswered`).
 
 ## Decisions
 
@@ -249,6 +288,12 @@ with `browser_fill_secret`. A password field, drawn as dots, keeps screenshots w
   value into the page would hand it to whatever origin the tab shows by then; the isolated world
   keeps page scripts from spoofing the probe; the second look catches a page that changed by
   itself while the image was taken.
+- **SSC-007: remember the choice.** Rejected: keeping the rail disabled until the sandbox is the
+  context (the person's click is lost, and on a slow connection the tools look dead); making the
+  sandbox the context before its tasks are read (the panel's context carries the page's task, not
+  known yet, and the tools would open for a task the page does not show); waits in the tests only
+  (as `dev` has since #1150: the tests pass, the person still gets a Shell without a sandbox).
+  Remembering costs one variable in `panels.js` and changes nothing once a sandbox is the context.
 
 ## Out of scope
 
@@ -272,6 +317,8 @@ with `browser_fill_secret`. A password field, drawn as dots, keeps screenshots w
   read.
 - A never-filled agent secret inside a frame of another site.
 - A page changing and changing back between the two looks of one screenshot.
+- SSC-007: a tool opened while another sandbox is still the context (A shown, B's page loading)
+  opens in A and stays there when B arrives, as before.
 
 ## Evidence
 
@@ -300,15 +347,31 @@ with `browser_fill_secret`. A password field, drawn as dots, keeps screenshots w
   failed only `cargo deny --locked check` on RUSTSEC-2026-0486 (rustix 1.1.5, new, failing every
   pull request), fixed by `ada375dc` (`cargo update -p rustix@1.1.5`, lockfile only; `cargo deny
   --locked check`: advisories ok, bans ok, licenses ok, sources ok). `scripts/dev ci` at ada375dc:
-  exit 0: fmt, clippy, the macOS build, 3302 tests passed (16 skipped), 152 script tests OK, `cargo deny` ok, docs built.
+  exit 0: fmt, clippy, the macOS build, 3302 tests passed (16 skipped), 152 script tests OK,
+  `cargo deny` ok, docs built.
+- **The e2e job** (`cd e2e && npx e2e run`, 11 workers here). The five SSC-007 tests were committed
+  first (`03b5bf75`) and failed on that head: the Shell showed "Open a sandbox first." without the
+  keyboard, the Superagent was the Global one; they pass with `6ef301ee`. Removing the "chosen
+  again" and the "tools hidden" guards by hand fails their tests. The onboarding race was
+  reproduced by letting every recovery read arrive at the same moment in the mock (failed 3 of 3,
+  "expected 3 to be 1") and passes under the same probe with `fa895b4e`. The whole suite at
+  `fa895b4e`, with `dev` (e2dd441d) merged: exit 0, 907 passed, 2 skipped (skipped on `dev` too).
+  Before the onboarding fix it ran three times: 907 passed twice, and once two failed, the
+  onboarding test and "the navigation drawer rows fit a 320 px phone with task and pull request
+  numbers". That one failed once in four whole runs and never in 17 runs alone (every row measured
+  as spilling right after the drawer opened); it opens no tool and this change does not touch its
+  page, so it is reported on #1113, not fixed here.
 - **Security scan.** `scripts/dev security`: "Security scan disabled: Vidoc is turned off in
   Yulius, for this project or the whole instance; nothing was scanned" (exit 0): disabled, not
   passed.
-- **Review.** Six independent review rounds in fresh sessions (read-only, no builds while the gate
+- **Review.** Independent review rounds in fresh sessions (read-only, no builds while the gate
   ran); rounds 1 to 5 requested changes, each answered test-first in this branch; round 6 approved
-  64832478 with minors, fixed in `e8fa42d2`/`3d3a06cf`. Pre-existing findings, reported on #1113
-  (this task creates no issues): the redactor's exact matching lets an edit in place through
-  `browser_snapshot`; `browser_fill_secret` checks only the main frame's URL, so a focused
+  64832478 with minors, fixed in `e8fa42d2`/`3d3a06cf`; the review of 0e4ffd03 found two of those
+  fail-closed branches untested (now pinned by tests that fail without them, checked by removing
+  each), a sandboxed frame counted as readable and a restored page left unwatched, fixed
+  test-first; the final head is reviewed again before the merge. Pre-existing findings, reported
+  on #1113 (this task creates no issues): the redactor's exact matching lets an edit in place
+  through `browser_snapshot`; `browser_fill_secret` checks only the main frame's URL, so a focused
   cross-origin frame receives the value.
 - **Not tested here.** macOS at run time (the gate only compiles for it), a person's display input,
   and real sites (single-page sign-ins, framing with cookies) beyond the fake server and the local

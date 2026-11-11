@@ -49,7 +49,7 @@ involved; that is outside what a screenshot guard can close.
   read, the hosts of the page's frames are exposed too. Any other typing into a document a
   value went into may edit it in place:
   - a page that shows such a value (revealed) or cannot be read before the typing exposes the
-    host;
+    host, unless a navigation committed meanwhile to a document no value went into;
   - a value whole in a password field before the typing and not after a line of it (checked
     before that line's Enter) exposes the host.
   A value gone from the page between typings is no edit (a single-page sign-in). A page that
@@ -108,6 +108,9 @@ involved; that is outside what a screenshot guard can close.
 
 ## Consequences
 
+- A fill into a frame the probe cannot read exposes every host the page frames, not only the
+  focused frame's: a captcha or an ad host on that page loses its screenshots too. A fill that
+  names no host, or into a frame whose targets cannot be listed, refuses every screenshot.
 - An agent that typed a key into a text field reads that site with `browser_snapshot` until
   Yulius restarts; so does an agent whose page framed a site it signed in to. A page of another
   site is refused only while it shows an agent secret, even scrolled out of view. A password
@@ -118,7 +121,8 @@ involved; that is outside what a screenshot guard can close.
 - A value that leaves the page during a typed line (a form that submits on input, or `a\nb`
   whose first Enter signs in on a single-page app) counts as an edit: its host gives up
   screenshots.
-- Not detected: every edit that defeats exact matching (a snapshot returns it as text already);
+- Not detected: frames with an opaque origin and no host (`data:`, a sandboxed `srcdoc`) as
+  framed hosts; every edit that defeats exact matching (a snapshot returns it as text already);
   a value drawn in a canvas, an image, through CSS (`content: attr(…)`) or in a
   closed shadow root; an edited copy on another host, kept by the site past a Yulius restart, seen
   from another sandbox's browser, or made by the page or the site after a fill that stayed in a

@@ -15,6 +15,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   sign-ins keep screenshots working. This covers a task's agent and both Superagents. An edit in
   place already defeats the text redactor in `browser_snapshot` (on `dev` before; reported on
   #1113).
+- A tool chosen while its sandbox's page loads opens in that sandbox (SPEC-450 SSC-007, task
+  #432). The Shell, Superagent or another tool opened before a task's page had its sandbox opened
+  for no sandbox: a Shell saying "Open a sandbox first." without the keyboard, or the Global
+  Superagent. It now waits, shown pressed, and opens there; choosing it again or hiding the tools
+  cancels it. Found by the `e2e` job on the faster host, together with three test-only races
+  (production protection, the places editor test of #1087, the left-composer onboarding test).
 - `yulius tool` and `yulius remove` work in task sessions (SPEC-451, task #433, #1109). The
   `/yulius/bin/yulius` wrapper first on a session's `PATH` passed only `wait` and `security-scan`,
   so both commands the briefing names printed its usage line and exited 2. It now passes them too,
