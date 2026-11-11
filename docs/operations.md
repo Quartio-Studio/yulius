@@ -534,14 +534,7 @@ it is adopted ("not written by Yulius, left as it is"); when it does not, the it
 prints the two commands that disable it (for a file AppArmor's parser refuses: the parser's
 words, and the file is to be corrected first, since the parser cannot unload it either). To move from such a rule to Yulius's, disable it
 (`sudo ln -s /etc/apparmor.d/bwrap /etc/apparmor.d/disable/ && sudo apparmor_parser -R /etc/apparmor.d/bwrap`)
-and run the setup again. Yulius finds such a profile by reading its header as AppArmor's parser
-does (the path spelled plainly, with alternations such as `/{,usr/}bin/bwrap`, or with variables
-the file sets). A profile that attaches to bwrap in another way is not found: by a pattern that
-matches the whole path (`/usr/bin/bwrap*`, `/usr/bin/bwra?`), through an `alias` rule or through
-a variable set in an included file. Disable such a profile yourself before the setup, or the two
-profiles for one program cancel each other (the kernel logs "conflicting profile attachments")
-and bwrap fails. A broad glob (`/usr/bin/bw*`, `/usr/bin/*`) needs nothing: AppArmor prefers
-Yulius's profile, which names the path. **After a release upgrade from 24.04 to 26.04**, run
+and run the setup again. **After a release upgrade from 24.04 to 26.04**, run
 `sudo yulius host setup` once: the upgrade installs the shipped profile next to Yulius's, and
 sandboxes fail until it is disabled. A host whose AppArmor cannot load the profile is reported
 as unsupported.

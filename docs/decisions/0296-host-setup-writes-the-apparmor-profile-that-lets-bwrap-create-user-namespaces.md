@@ -41,8 +41,6 @@ other in load order, which a boot does not fix.
   moment (a person's override in `local/bwrap-userns-restrict`, say): Yulius's sandboxes are
   proven against one known state, not against an override nobody at Yulius has seen.
 - **A profile a person wrote is theirs.** Another enabled file that attaches to `/usr/bin/bwrap`
-  (its header read as `apparmor_parser` reads it: alternations and the file's own variables
-  included; a glob, an `alias` or an included file's variable is not followed)
   is adopted when bwrap works with it, and never changed, disabled or joined by Yulius's profile.
   When bwrap does not work with it, the item fails and prints the commands that disable it.
 - **Checks report and never fix.** `yulius host check` (the update helper's re-check, Settings →
