@@ -71,12 +71,20 @@ typing the email, and SPEC-001 ROT-009 and UI-022. The rest of ADR-0185 stands.
   within minutes: the line shows what the administrator typed, else what Claude shares.
 - Schema version 52 adds `accounts.email_typed`; every email stored before stays Claude's. An
   older build refuses the newer database, as for every schema change (ADR-0264).
-- An update no longer redraws the Subscriptions list while a name or an email field is open, also
-  when the list was already being read as the field opened: the refresh waits, and is read once
-  the field's save has settled. A reload the person starts (Add, Remove, a finished sign-in)
-  still redraws. Before, saving one line and going straight on to the other lost the second
-  field, and its blur saved what was half typed; and an update that came while a field was open
-  was not drawn after a save by leaving the field.
+- No list read draws over an open name or email field, whoever asked for it: an update, a read
+  that was already on its way as the field opened, or the page's own read after Add, Remove or a
+  sign-in. The refresh waits and is read once no field is open. A field says itself that it has
+  closed (the event `yulius:edit-closed`), because one that is left as it was, or saved by
+  leaving it, closes without any focus leaving the list. Before, saving one line and going
+  straight on to the other lost the second field and its blur saved what was half typed; the
+  read after a removal did the same to an email being typed; and an update that came while a
+  field was open stayed undrawn.
+- A field that is left by a press on a control saves, refuses or closes only once that press has
+  ended and its click is delivered (`afterPress` in `layout.js`). Done at once, as before, a
+  refusal's line moved the card's buttons from under the pointer and the click was lost
+  ([#1174](https://github.com/Quartio-Studio/yulius/issues/1174), on `dev` for the name; the
+  email line and its pencil, the control right under the name, had it too). Leaving by the
+  keyboard is handled at once, as before.
 - The email field is a text field with an email keyboard, not an `email` field: Chromium returns
   an `email` field's domain in punycode, so the address would not be stored as it was typed.
 - The keyboard stays on a subscription's control when the list is drawn again. A renamed
@@ -85,6 +93,5 @@ typing the email, and SPEC-001 ROT-009 and UI-022. The rest of ADR-0185 stands.
   control), and `keepFocus` looks for that before the control's name or its place. The redraw of
   a card's head after its usage was read keeps the keyboard the same way; before, it dropped it,
   and an idle subscription's usage is read after every list read.
-- Known limit, as before this change ([#1174](https://github.com/Quartio-Studio/yulius/issues/1174)):
-  a refusal shown as a field is left adds a line under it, so a press that was on its way to a
-  control below it in the same card misses once. The email's pencil is now such a control.
+- A field takes the keyboard a moment after it opens. Once the person has left it, it no longer
+  does: the claim could come after Tab and take the keyboard back.
