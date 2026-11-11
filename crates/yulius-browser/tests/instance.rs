@@ -1045,6 +1045,12 @@ async fn a_fill_is_judged_by_the_field_it_went_into() -> TestResult {
             json!({"kind": "other"}),
             "pw-secr",
         ),
+        // A password field that cuts it.
+        (
+            "https://x.example/login",
+            json!({"kind": "password", "value": "pw-secr"}),
+            "Fake page text",
+        ),
     ] {
         let (fake, instance, tab) = setup().await?;
         instance.tool_navigate(&to(&tab, host)).await?;
@@ -1108,6 +1114,87 @@ async fn typing_where_an_edit_cannot_be_seen_exposes_the_site() -> TestResult {
     assert!(refused(
         instance.tool_screenshot_within(&shot(&tab), 100_000).await
     ));
+    Ok(())
+}
+
+/// SPEC-450 (review round 6): a fill that went into a frame the probe cannot read exposes that
+/// frame's host too, so another site framing it is refused; frames are told apart by origin, so a
+/// frame of the same host on another port is one the probe cannot read.
+#[tokio::test]
+async fn a_fill_into_an_unreadable_frame_exposes_the_framed_site() -> TestResult {
+    const VALUE: &str = "pw-secret-4471";
+    let (fake, instance, tab) = setup().await?;
+    instance
+        .tool_navigate(&to(&tab, "https://bound.example/login"))
+        .await?;
+    fake.set_frame_targets(&[(Some(tab.as_str()), "https://auth.example/frame")]);
+    fake.set_secret_probe(Some(
+        json!({"shown": ["Fake page text"], "masked": [], "over": false, "focus": {"kind": "frame"}}),
+    ));
+    instance
+        .tool_type_secret(&TypeParams {
+            tab_id: tab.clone(),
+            text: VALUE.into(),
+            selector: None,
+        })
+        .await?;
+    fake.set_secret_probe(None);
+    fake.set_frame_targets(&[]);
+    instance
+        .tool_navigate(&to(&tab, "https://elsewhere.example/"))
+        .await?;
+    instance
+        .tool_screenshot_within(&shot(&tab), 100_000)
+        .await?;
+    fake.set_child_frames(&["https://auth.example/settings"]);
+    assert!(refused(
+        instance.tool_screenshot_within(&shot(&tab), 100_000).await
+    ));
+
+    // A password sign-in on m.example: its pages framing m.example on another port are refused.
+    let (fake, instance, tab) = setup().await?;
+    instance
+        .tool_navigate(&to(&tab, "https://m.example/login"))
+        .await?;
+    fake.set_password_field("#pw", true);
+    instance.tool_type_secret(&fill(&tab, "#pw", VALUE)).await?;
+    instance
+        .tool_navigate(&to(&tab, "https://m.example/home"))
+        .await?;
+    instance
+        .tool_screenshot_within(&shot(&tab), 100_000)
+        .await?;
+    fake.set_child_frames(&["https://m.example:8443/settings"]);
+    assert!(refused(
+        instance.tool_screenshot_within(&shot(&tab), 100_000).await
+    ));
+    Ok(())
+}
+
+/// SPEC-450 (review round 6): a probe failing before typing because a navigation committed
+/// meanwhile does not expose the site: the typing goes into the next document.
+#[tokio::test]
+async fn a_navigation_during_the_look_before_typing_exposes_nothing() -> TestResult {
+    let (fake, instance, tab) = setup().await?;
+    instance
+        .tool_navigate(&to(&tab, "https://y.example/login"))
+        .await?;
+    fake.set_password_field("#pw", true);
+    instance
+        .tool_type_secret(&fill(&tab, "#pw", "pw-secret-4471"))
+        .await?;
+    let worlds = fake.calls_for("Page.createIsolatedWorld").len();
+    fake.fail_nth(
+        "Page.createIsolatedWorld",
+        worlds + 1,
+        -32000,
+        "context destroyed",
+    );
+    fake.navigate_during_nth("Page.createIsolatedWorld", worlds + 1);
+    instance.tool_type(&fill(&tab, "#q", "invoices")).await?;
+    instance
+        .tool_screenshot_within(&shot(&tab), 100_000)
+        .await?;
     Ok(())
 }
 

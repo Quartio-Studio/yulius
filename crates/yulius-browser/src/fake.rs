@@ -106,6 +106,7 @@ struct FakeState {
     frame_targets: Vec<Value>,
     enter_submits: bool,
     failing_after: HashMap<String, (usize, i64, String)>,
+    navigating_after: HashMap<String, usize>,
     loaders: u64,
     connections: Vec<Arc<Connection>>,
 }
@@ -285,6 +286,7 @@ impl FakeCdpServer {
                 frame_targets: Vec::new(),
                 enter_submits: false,
                 failing_after: HashMap::new(),
+                navigating_after: HashMap::new(),
                 loaders: 0,
                 connections: Vec::new(),
             }),
@@ -481,6 +483,14 @@ impl FakeCdpServer {
     /// Answers the next secret probes with `answers`, in order, before the set one.
     pub fn queue_secret_probes(&self, answers: Vec<Value>) {
         lock(&self.shared.state).secret_probe_queue.extend(answers);
+    }
+
+    /// While the `nth` request of `method` runs (counting from 1), the page of its session moves
+    /// to another document, as a navigation committing meanwhile does.
+    pub fn navigate_during_nth(&self, method: &str, nth: usize) {
+        lock(&self.shared.state)
+            .navigating_after
+            .insert(method.to_owned(), nth);
     }
 
     /// Answer the `nth` request of `method` (counting from 1, all received so far included) with
@@ -717,7 +727,7 @@ async fn handle_request(shared: &Arc<Shared>, connection: &Arc<Connection>, text
         },
     );
     let (muted, failure, delay) = {
-        let state = lock(&shared.state);
+        let mut state = lock(&shared.state);
         let probe = method == "Runtime.evaluate"
             && params
                 .get("expression")
@@ -729,6 +739,14 @@ async fn handle_request(shared: &Arc<Shared>, connection: &Arc<Connection>, text
             .get(&method)
             .filter(|(nth, _, _)| seen == *nth)
             .map(|(_, code, message)| (*code, message.clone()));
+        if state.navigating_after.get(&method) == Some(&seen) {
+            let loader = state.next_loader();
+            if let Some(page) = state.page(session_id.as_deref()) {
+                page.fields.clear();
+                page.focused.clear();
+                page.loader = loader;
+            }
+        }
         (
             state.muted.contains(&method),
             state.failing.get(&method).cloned().or(late),
