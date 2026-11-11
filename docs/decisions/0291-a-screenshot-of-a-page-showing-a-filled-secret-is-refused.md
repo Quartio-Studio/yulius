@@ -22,7 +22,10 @@ The value can also be on a page somewhere other than the field it was typed into
 - a settings page may show the stored key in any tab, also after the browser restarted;
 - a cross-origin frame or a closed shadow root keeps it out of the main document's reach.
 
-The agent drives tabs, clicks and typing, and can run tools concurrently.
+The agent drives tabs, clicks and typing, and can run tools concurrently. The result redactor
+matches a secret's exact value and its encodings, so a value the agent edits in place (a character
+typed into its middle) already reaches it as text through `browser_snapshot`, with no screenshot
+involved; that is outside what a screenshot guard can close.
 
 ## Decision
 
@@ -36,13 +39,20 @@ The agent drives tabs, clicks and typing, and can run tools concurrently.
     after typing (256), forgotten with the browser process.
   A fill into a document that cannot be told, or beyond 32 values, is refused before anything is
   typed; past another bound every screenshot of that browser is refused.
-- **Only a password field keeps a value out of the pixels.** Right after typing, the page is read.
-  Unless the value is whole in a password field and shown nowhere, its host is exposed, and every
-  page of it is refused from then on. Any other typing into a document a value went into may edit
-  it in place: a value whole in a password field before the typing and not after a line of it
-  (checked before that line's Enter) exposes the host. A value gone from the page is no edit (a
-  single-page sign-in). A page that cannot be read after a fill refuses every screenshot until
-  Yulius restarts.
+- **Hide in pixels what a snapshot hides in text.** A screenshot shows nothing that a snapshot of
+  the same page would redact. The edit checks below are defense in depth.
+- **Only a password field keeps a value out of the pixels.** Right after typing, the page is read
+  with the focused element the typing went into (through open shadow roots and same-origin
+  frames). Unless that is a password field holding the value whole, and the value is shown
+  nowhere, its host is exposed, and every page of it is refused from then on; another password
+  field holding it says nothing of where this typing went. Any other typing into a document a
+  value went into may edit it in place:
+  - a page that shows such a value (revealed) or cannot be read before the typing exposes the
+    host;
+  - a value whole in a password field before the typing and not after a line of it (checked
+    before that line's Enter) exposes the host.
+  A value gone from the page between typings is no edit (a single-page sign-in). A page that
+  cannot be read after a fill refuses every screenshot until Yulius restarts.
 - **Look at every page before the capture.** Once a value was typed or the sandbox has agent
   secrets, a probe reads the page about to be captured, in any tab. It runs in an isolated world
   (`Page.createIsolatedWorld`), and returns:
@@ -61,8 +71,8 @@ The agent drives tabs, clicks and typing, and can run tools concurrently.
   - `shown` holds any agent secret the redactor's matcher finds for the sandbox (values, their
     encodings, lines);
   - the document, the frame targets, the page or the agent secrets cannot be read.
-- **Read the page as it is.** The probe reads the document's own properties through the
-  prototypes, so a page's named elements cannot hide its text.
+- **Read the page as it is.** The probe reads a document's root, its query and `textContent`
+  through the prototypes, so a page's named elements cannot replace them.
 - **Leave no gap around the capture.** A screenshot holds the instance's input lock from the probe
   to its last capture, and the agent's typing and clicks take it too. After the capture, the page
   is read again, and the image is dropped unless the same document passes again.
@@ -104,7 +114,11 @@ The agent drives tabs, clicks and typing, and can run tools concurrently.
 - A screenshot in a sandbox with agent secrets costs a `Page.getFrameTree`, a `Target.getTargets`,
   an isolated world and a probe, twice; one without any captures as before. Agent input waits for a
   screenshot's capture.
-- Not detected: a value drawn in a canvas, an image, through CSS (`content: attr(…)`) or in a
+- A value that leaves the page during a typed line (a form that submits on input, or `a\nb`
+  whose first Enter signs in on a single-page app) counts as an edit: its host gives up
+  screenshots.
+- Not detected: every edit that defeats exact matching (a snapshot returns it as text already);
+  a value drawn in a canvas, an image, through CSS (`content: attr(…)`) or in a
   closed shadow root; an edited copy on another host, kept by the site past a Yulius restart, seen
   from another sandbox's browser, or made by the page or the site after a fill that stayed in a
   password field; a never-filled agent secret in a frame of another site; a page that changes and
