@@ -113,6 +113,8 @@ function createApp(root, transport) {
   let githubConfigured = true;
   // Whether GitHub is known to refuse this address for sign-in (after a move, SPEC-466).
   let callbackMissing = false;
+  /** How long after showing that, the sign-in page reads the setup status once more. */
+  const STATUS_AGAIN_MS = 3000;
 
   async function start() {
     setChildren(root, h('main', { class: 'auth' }, placeholder(`Loading ${BRAND.name}…`, 'loading')));
@@ -177,13 +179,12 @@ function createApp(root, transport) {
     navigate(`/signin?next=${encodeURIComponent(next)}`, { replace: true });
     const page = mountSignIn(ctx, { next, problem, githubConfigured, callbackMissing, onDone: (me, target) => signedIn(me, target) });
     setChildren(root, page.el);
-    if (!recheck) return;
     // GitHub may have been connected since the page loaded (another tab, another admin): the
     // setup status says it now, and the page shows or hides GitHub sign-in in place. An answer
     // for a page no longer shown (signed in and out meanwhile) changes nothing.
     let shown = githubConfigured;
     let shownMissing = callbackMissing;
-    api.get('/api/setup/status', { allow401: true }).then((setup) => {
+    const readStatus = () => api.get('/api/setup/status', { allow401: true }).then((setup) => {
       if (root.firstChild !== page.el) return;
       const configured = !(setup && setup.github_configured === false);
       const missing = Boolean(setup && setup.github_callback_missing);
@@ -194,6 +195,14 @@ function createApp(root, transport) {
       shownMissing = missing;
       page.setGithub(configured, missing);
     }).catch(() => { /* the page drawn from what was known stays */ });
+    // While the page says that GitHub refuses this address, the status is read once more a moment
+    // later: reading it made the server ask GitHub again, and the callback may be there by now
+    // (SPEC-466 MVC-012). Once, not in a loop.
+    const onceMore = () => {
+      if (shownMissing) setTimeout(() => { if (root.firstChild === page.el) readStatus(); }, STATUS_AGAIN_MS);
+    };
+    if (recheck) readStatus().then(onceMore);
+    else onceMore();
   }
 
   function renderJoin(me) {

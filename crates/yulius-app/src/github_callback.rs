@@ -23,8 +23,8 @@ const RECHECK_MS: i64 = 30_000;
 const QUICK_RECHECKS: u32 = 10;
 /// After them the wait doubles with every such answer, this often at most (32 minutes).
 const MAX_DOUBLINGS: u32 = 6;
-/// A sign-in start reuses an answer this young, so visitors cannot make the instance ask GitHub
-/// more often.
+/// A sign-in start, and a check started beside a read, reuse an answer this young, so visitors
+/// cannot make the instance ask GitHub more often.
 const REUSE_MS: i64 = 5_000;
 
 /// GitHub's answer about a callback URL.
@@ -263,18 +263,24 @@ impl App {
     /// Asks GitHub in the background, unless a background check is already on its way: at start,
     /// when the App was stored and when a read finds the answer due (SPEC-466 MVC-003).
     pub fn start_github_callback_check(self: &Arc<Self>) {
+        self.ask_github_beside(true);
+    }
+
+    /// Starts a check in the background; `false` when one is already on its way.
+    fn ask_github_beside(self: &Arc<Self>, by_a_read: bool) -> bool {
         if self.github_callback.refreshing.swap(true, Ordering::SeqCst) {
-            return;
+            return false;
         }
         let app = Arc::clone(self);
         tokio::spawn(async move {
-            if let Err(err) = app.ask_github(None, REUSE_MS, true).await {
+            if let Err(err) = app.ask_github(None, REUSE_MS, by_a_read).await {
                 tracing::warn!(error = %err, "could not ask GitHub about the sign-in callback");
             }
             app.github_callback
                 .refreshing
                 .store(false, Ordering::SeqCst);
         });
+        true
     }
 
     /// The kept answer. Reading one that is not "registered" and due ([`Kept::stale`]), or none
@@ -294,16 +300,16 @@ impl App {
         matches!(self.kept_callback(), Some((CallbackState::Missing, _)))
     }
 
-    /// Whether a GitHub sign-in that starts now would end on GitHub's error page: the kept answer
-    /// is "missing" and GitHub, asked again, still says so (SPEC-466 MVC-013). Any other answer
-    /// never blocks sign-in.
-    pub async fn github_sign_in_blocked(&self) -> bool {
-        let missing = |state: &CallbackState| *state == CallbackState::Missing;
-        self.kept_answer().is_some_and(|kept| missing(&kept.state))
-            && self
-                .check_github_callback(None, REUSE_MS)
-                .await
-                .is_ok_and(|facts| facts.is_some_and(|facts| missing(&facts.state)))
+    /// A GitHub sign-in starts. The check never stops it: what GitHub answers to a made-up code
+    /// is advice, and GitHub's own page stays the authority (SPEC-466 MVC-013). While the kept
+    /// answer is "missing" and older than [`REUSE_MS`], the instance asks GitHub again beside the
+    /// sign-in, as a demand, so the sign-in page stops saying so once the callback is there.
+    /// Whether GitHub is asked.
+    pub fn github_sign_in_started(self: &Arc<Self>) -> bool {
+        self.kept_answer().is_some_and(|kept| {
+            kept.state == CallbackState::Missing
+                && self.now().0.saturating_sub(kept.at.0) >= REUSE_MS
+        }) && self.ask_github_beside(false)
     }
 
     fn address_view(&self, github: Option<CallbackFacts>) -> AddressView {

@@ -268,7 +268,7 @@ function recoveryForm(ctx, { onBack, onRecovered }) {
 const GITHUB_UNCONFIGURED = 'GitHub sign-in isn’t set up on this instance yet. The superadmin signs in with the password below and connects GitHub under Administration.';
 
 /** GitHub refuses this instance's sign-in callback: after a move, until the App holds it (SPEC-466). */
-const GITHUB_CALLBACK_MISSING = 'GitHub doesn’t know this address yet, so GitHub sign-in can’t complete here: the instance moved to a new address. The superadmin signs in with the password below and finds what to do in Settings → Instance.';
+const GITHUB_CALLBACK_MISSING = 'GitHub says it doesn’t know this address, so GitHub sign-in won’t complete here until the superadmin adds it to the GitHub App (Settings → Instance says how). The superadmin’s password below works meanwhile.';
 
 const GITHUB_LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
 
@@ -296,8 +296,6 @@ export function signInProblem(reason, login) {
       return { otherAccount: false, text: 'GitHub sign-in was cancelled.' };
     case 'github_unconfigured':
       return { otherAccount: false, github: false, text: GITHUB_UNCONFIGURED };
-    case 'github_callback':
-      return { otherAccount: false, github: false, text: GITHUB_CALLBACK_MISSING };
     default:
       return { otherAccount: false, text: 'Sign-in did not complete. Try again.' };
   }
@@ -307,7 +305,7 @@ export function signInProblem(reason, login) {
  * Sign-in: GitHub (all users) and a compact superadmin password form. Without a GitHub App
  * (`githubConfigured` false, SPEC-422) only the password, open, with why GitHub is missing. While
  * GitHub refuses this address (`callbackMissing`, SPEC-466) the page says so and opens the
- * password; GitHub sign-in stays, and asks GitHub again when pressed.
+ * password; GitHub sign-in stays (GitHub decides), and pressing it makes the server ask again.
  */
 export function mountSignIn(ctx, { next, onDone, problem, githubConfigured = true, callbackMissing = false }) {
   // Same rule as the server (#60): browsers read \\ as / and drop tabs and newlines.
@@ -320,9 +318,8 @@ export function mountSignIn(ctx, { next, onDone, problem, githubConfigured = tru
   // A wrong password is said under the password, not under the GitHub button (WCAG 3.3.1).
   const passwordError = h('div', { class: 'field-error', id: 'password-error', role: 'alert' });
   const submit = h('button', { type: 'submit', class: 'btn' }, 'Sign in');
-  // "GitHub isn't set up" and "GitHub doesn't know this address" are the page's own sentences
-  // when so, and stale when no longer so (connected or registered since): never repeated or shown
-  // as an error.
+  // "GitHub isn't set up" is the page's own sentence when so, and stale when GitHub is set up
+  // (connected since): never repeated or shown as an error.
   const shownProblem = problem && problem.github !== false ? problem : null;
   const errorBox = h('div', { class: 'field-error', role: 'alert' }, shownProblem ? shownProblem.text : '');
   const username = h('input', { type: 'text', name: 'username', autocomplete: 'username', value: 'superadmin', hidden: true, readOnly: true, tabindex: '-1', 'aria-hidden': 'true' });

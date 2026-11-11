@@ -277,27 +277,43 @@ async fn a_second_demand_takes_the_running_check_s_answer() -> TestResult {
     Ok(())
 }
 
-/// MVC-013: a sign-in that starts while the callback is missing asks again first, and returns to
-/// the sign-in page instead of GitHub's error page; password sign-in works throughout.
+/// GitHub was asked `count` times: a check started by a sign-in has ended.
+async fn until_github_was_asked(h: &Harness, count: usize) -> TestResult {
+    for _ in 0..500 {
+        if asked(h) >= count {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    Err(format!("GitHub was asked {} times, not {count}", asked(h)).into())
+}
+
+/// MVC-013: the check never blocks sign-in: GitHub decides. A sign-in that starts while the
+/// callback is known as missing goes to GitHub like any other and makes the instance ask again,
+/// so the sign-in page stops saying so once the callback is there; password sign-in works
+/// throughout.
 #[tokio::test]
-async fn a_sign_in_start_asks_again_before_it_sends_anyone_to_github() -> TestResult {
+async fn a_sign_in_start_always_goes_to_github_and_asks_again_about_a_missing_callback()
+-> TestResult {
+    const GITHUB: &str = "https://github.test/login/oauth/authorize";
     let h = harness()?;
     let admin = setup_superadmin_creds(&h).await?;
     configure_github_app(&h).await?;
     register(&h, &[]);
+    // Nothing is known yet: a start asks nothing.
+    assert!(!h.app.github_sign_in_started());
     let missing = call(&h.router, Method::POST, CHECK, Some(json!({})), &admin).await?;
     assert_eq!(missing.body["github"]["state"], "missing");
+    assert!(says_missing(&h).await?);
 
-    // The answer is a moment old: it is reused, GitHub is not asked for every visitor.
-    let back = start_sign_in(&h).await?;
-    assert_eq!(back, "/signin?error=github_callback&next=/s/app");
-    assert_eq!(asked(&h), 1);
+    // The answer is a moment old: GitHub is not asked again for every visitor.
+    assert!(!h.app.github_sign_in_started());
+    assert!(start_sign_in(&h).await?.starts_with(GITHUB));
+    // Older than 5 s: the start still goes to GitHub, and GitHub is asked again beside it.
     later(&h, 6_000);
-    assert_eq!(
-        start_sign_in(&h).await?,
-        "/signin?error=github_callback&next=/s/app"
-    );
-    assert_eq!(asked(&h), 2);
+    assert!(start_sign_in(&h).await?.starts_with(GITHUB));
+    until_github_was_asked(&h, 2).await?;
+    assert!(says_missing(&h).await?);
 
     let password = call(
         &h.router,
@@ -309,16 +325,26 @@ async fn a_sign_in_start_asks_again_before_it_sends_anyone_to_github() -> TestRe
     .await?;
     assert_eq!(password.status, StatusCode::OK);
 
-    // Registered at GitHub since: the next start finds out by itself and goes to GitHub.
+    // Registered at GitHub since: the next start makes the instance find out by itself.
     register(&h, &[CALLBACK]);
     later(&h, 6_000);
-    assert!(
-        start_sign_in(&h)
-            .await?
-            .starts_with("https://github.test/login/oauth/authorize")
-    );
-    assert_eq!(asked(&h), 3);
+    assert!(start_sign_in(&h).await?.starts_with(GITHUB));
+    until_github_was_asked(&h, 3).await?;
+    assert_eq!(github(&h, &admin).await?["state"], "registered");
     assert!(!says_missing(&h).await?);
+
+    // An answer that is not "missing" is not asked for again by a start.
+    later(&h, 3_600_000);
+    assert!(!h.app.github_sign_in_started());
+    if let Ok(mut error) = h.github.callback_error.lock() {
+        *error = Some("GitHub: timed out".into());
+    }
+    let unknown = call(&h.router, Method::POST, CHECK, Some(json!({})), &admin).await?;
+    assert_eq!(unknown.body["github"]["state"], "unknown");
+    later(&h, 3_600_000);
+    assert!(!h.app.github_sign_in_started());
+    assert!(start_sign_in(&h).await?.starts_with(GITHUB));
+    assert_eq!(asked(&h), 4);
     Ok(())
 }
 

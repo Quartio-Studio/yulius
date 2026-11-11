@@ -186,9 +186,11 @@ function seed(params) {
     // numbers sized for the 12-CPU one it came from. A test sets `failAfterSave` for a save
     // that is applied and answers 500 (its audit entry failed).
     // The instance's address (SPEC-466): `callback=missing|unknown` is GitHub's answer about the
-    // sign-in callback (a test changes `address.state`), `moved=1` a move's report; `answered`
-    // counts the answers given, past a hold.
-    address: { state: params.get('callback') || 'registered', moved: params.get('moved') === '1', answered: 0 },
+    // sign-in callback (a test changes `address.state`), `callback=fixed` a callback added on
+    // GitHub meanwhile (missing in the first setup status, whose read makes the server ask again:
+    // registered from then on), `moved=1` a move's report; `answered` counts the answers given,
+    // past a hold.
+    address: { state: params.get('callback') === 'fixed' ? 'missing' : params.get('callback') || 'registered', fixedOnRead: params.get('callback') === 'fixed', moved: params.get('moved') === '1', answered: 0 },
     limits: { unit: params.get('limits') === 'moved' ? { max_sessions: 8, sandbox_disk_gb: 300 } : {}, kept: false, settings: {}, runningMemory: 660, failAfterSave: false },
     // The instance Vidoc key (SPEC-195): `vidoc=config` (YULIUS_VIDOC_API_KEY_FILE is set).
     protectPatchFail: params.get('protect_patch_fail') === '1',
@@ -808,7 +810,11 @@ function checkNewPassword(body) {
   if (body.password !== body.password_confirm) fail(422, 'invalid', 'passwords do not match');
   if ([...(body.password || '')].length < 8) fail(422, 'invalid', 'the password needs at least 8 characters');
 }
-route('GET', '/api/setup/status', ({ db }) => ({ setup_required: db.setupRequired, github_configured: db.me.instance.github_configured, github_callback_missing: db.me.instance.github_configured && db.address.state === 'missing' }));
+route('GET', '/api/setup/status', ({ db }) => {
+  const missing = db.me.instance.github_configured && db.address.state === 'missing';
+  if (missing && db.address.fixedOnRead) db.address.state = 'registered';
+  return { setup_required: db.setupRequired, github_configured: db.me.instance.github_configured, github_callback_missing: missing };
+});
 route('POST', '/api/setup', ({ db, body }) => {
   if (!db.setupRequired) fail(403, 'forbidden', 'This instance is already set up.');
   if (body.token !== 'YUL-SETUP-1234') fail(403, 'forbidden', 'Wrong setup token. (Mock token: YUL-SETUP-1234)');

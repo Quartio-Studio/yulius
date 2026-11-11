@@ -32,9 +32,9 @@ C of [0297](0297-one-root-command-moves-an-instance-and-drives-the-new-host-over
   answers in a row said the same, twice as old with each further one, up to 32 minutes (a demand
   or a changed answer makes it 30 s again). No loop asks GitHub while nobody looks, a page left
   open asks ever less, and one check runs at a time.
-- **Only "missing" changes sign-in.** The sign-in page then says why and a sign-in start asks
-  again before it returns there; "unknown" never blocks, because GitHub's own page stays the
-  authority.
+- **The check never stops a sign-in.** While the answer is "missing" the sign-in page says so and
+  opens the password; "Sign in with GitHub" still leads to GitHub, whose own page stays the
+  authority, and a start makes the instance ask again. "Unknown" changes nothing at all.
 - **Root's commands get the facts over the loopback listener.** `GET /internal/github-callback`
   takes the key the server writes for `yulius leftovers` (`leftovers-cli.key`) and answers the
   state, the settings link and the two values, for the instance's URL or the one named. The move
@@ -53,8 +53,11 @@ C of [0297](0297-one-root-command-moves-an-instance-and-drives-the-new-host-over
   a failed code exchange every minute for as long as nobody fixes it.
 - **Checking only at start**: the superadmin fixes the App while the server runs; the page would
   stay wrong until a restart.
-- **Hiding GitHub sign-in while the callback is missing**: an answer a few seconds old would lock
-  members out after the fix; the button that asks again cannot be stale.
+- **Hiding GitHub sign-in, or returning a sign-in start to the sign-in page, while the callback is
+  missing**: kinder than GitHub's error page when the answer is right, but the answer rests on
+  what GitHub says to a made-up code, measured with an OAuth app and promised nowhere for a GitHub
+  App. An advisory check that can refuse sign-in could lock every member out of an instance whose
+  sign-in works.
 - **A second key file for the new endpoint**: the same people may read it (root, the service
   user), so it would add a file and no boundary.
 - **Opening the sealed credentials in the root command**: the master key and the database would
@@ -71,7 +74,8 @@ C of [0297](0297-one-root-command-moves-an-instance-and-drives-the-new-host-over
 - The check's meaning rests on GitHub's answers for a made-up code, measured with an OAuth app.
   If GitHub renames the codes the answer becomes "unknown". If it ever checked the code before
   the URI, a missing callback would read "registered" and GitHub's own error page would be the
-  first sign, as before this change.
+  first sign, as before this change; if it ever refused a registered URI this way, the pages
+  would say "missing" wrongly and sign-in would work all the same.
 - Whoever can make the old URL answer over TLS can move a laptop's saved sign-in to another
   `https` origin: the old host stays trusted with the token until its name is retired, as it was
   before the move.

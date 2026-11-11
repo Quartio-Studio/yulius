@@ -1032,9 +1032,10 @@ Yulius notices and says exactly what to do:
   less and less often, every half hour at the least). When GitHub gave no answer (it is down, the
   server has no route to it, it refuses the App's client id and secret) the card says why; sign-in
   is not affected by that.
-- **The sign-in page** says that GitHub does not know this address yet and opens the superadmin
-  password, which keeps working. "Sign in with GitHub" stays: pressing it asks GitHub again, so it
-  works as soon as the callback is saved.
+- **The sign-in page** says that GitHub does not know this address and opens the superadmin
+  password, which keeps working. "Sign in with GitHub" stays and leads to GitHub as always (until
+  the callback is saved GitHub shows its own error there), and pressing it makes the instance ask
+  GitHub again, so the sentence goes once the callback is saved.
 - **`yulius instance migrate`** checks the new URL's callback in its plan, before anything is
   moved, with the same link and values ([Move the instance](#move-the-instance-to-another-host)).
 

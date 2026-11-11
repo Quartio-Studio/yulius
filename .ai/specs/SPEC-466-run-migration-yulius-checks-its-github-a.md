@@ -86,13 +86,16 @@ Settings → Instance and the sign-in page
   After a move: where the instance came from, when, and
   what the first start did with the tasks (back in the queue, left stopped, could not be queued).
 - MVC-012 **Sign-in page.** `GET /api/setup/status` says `github_callback_missing` (true only for
-  the answer "missing"). The page then says, in a fixed sentence, that GitHub does not know this
-  address yet, that the superadmin signs in with the password and finds what to do in Settings →
-  Instance; the password form is open. Password sign-in is unchanged.
-- MVC-013 **Starting sign-in.** `GET /api/auth/github/start` while the answer is "missing" asks
-  GitHub again first (an answer younger than 5 s is reused): still missing, it returns to the
-  sign-in page with `error=github_callback` instead of sending the person to GitHub's error page;
-  otherwise it goes to GitHub as before. Any other answer never blocks sign-in.
+  the answer "missing"). The page then says, in a fixed sentence, that GitHub says it does not
+  know this address, that GitHub sign-in will not complete until the superadmin adds it to the
+  App (Settings → Instance says how) and that the superadmin's password works; the password form
+  is open. While it says so the page reads the status once more 3 s later (reading it made the
+  instance ask GitHub again), and the sentence goes in place once the callback is there.
+  Password sign-in is unchanged.
+- MVC-013 **The check never blocks sign-in.** `GET /api/auth/github/start` goes to GitHub whatever
+  the kept answer is: GitHub's own page stays the authority. A start while the answer is
+  "missing" and older than 5 s makes the instance ask GitHub again beside it (a demand), so a
+  callback registered since is known at the next look.
 
 The root command
 
@@ -133,8 +136,10 @@ Remote clients
   (default: unavailable); `GitHubAdapter` maps it to the client. The fake GitHub server gets a
   list of registered callback URLs (`set_callback_urls`; unset: every URI is registered, as
   before) and checks it after the client credentials and before the code, as GitHub does.
-- **Application** (`yulius-app::github_callback`): the kept answer (`CallbackCheck`), the check
-  behind one async lock, the read that starts a background check, `settings_url`, and the views.
+- **Application** (`yulius-app::github_callback`): the kept answer (`CallbackKept`: the state,
+  when it was given, and how many read-triggered answers in a row said the same), the check
+  behind one async lock, the read that starts a background check when the answer is due
+  (`Kept::stale`, `recheck_after`), `settings_url`, and the views.
   States: no answer yet (owner: the start's or a read's background check; exit: its answer),
   `unknown`/`missing` (owner: whoever reads next once it is due, or a demand; exit: `registered`),
   `registered` (kept until the next start or demand).
@@ -178,8 +183,9 @@ Remote clients
 - After a start with the move's mark the address API names the old URL, the time and the three
   task counts; without `moved.json`, `moved: null`.
 - `GET /api/setup/status` says `github_callback_missing: true` only while the answer is missing;
-  `GET /api/auth/github/start` then returns to `/signin?error=github_callback…` and, once GitHub
-  accepts the callback, redirects to GitHub again; password sign-in works throughout.
+  `GET /api/auth/github/start` redirects to GitHub whatever the answer is and, while it is
+  missing and older than 5 s, makes the instance ask GitHub again, after which the status no
+  longer says missing once GitHub accepts the callback; password sign-in works throughout.
 - `/internal/github-callback` answers 401 without the key, `{"github": …}` with it (`null`
   without an App), checks another `public_url` without changing the kept answer, and refuses
   `public_url=http://x` and `https://x/path` (422).
@@ -226,11 +232,12 @@ Remote clients
 - **One key file for root's commands.** `/internal/github-callback` takes the key of
   `leftovers-cli.key`: the same trust (root or the service user on the host, while the server
   runs), one file to write at start and to explain.
-- **GitHub sign-in is not hidden when the callback is missing.** The page says what is wrong and
-  the button stays: pressing it asks GitHub again, so a callback registered a second ago works
-  without anyone waiting for a poll.
-- **Only "missing" blocks.** "Unknown" (GitHub down, a refused secret) changes nothing for
-  sign-in: the check is advice, GitHub's own page stays the authority.
+- **The check is advice; it never stops a sign-in.** The page says what is wrong and the button
+  stays and leads to GitHub. Returning a start to the sign-in page while the answer is "missing"
+  (as a first version of this change did) would explain more than GitHub's error page, but it
+  would let the check lock every member out if GitHub ever answered a made-up code otherwise for
+  a GitHub App than for the OAuth app it was measured with (not testable here). A wrong answer
+  now costs a wrong sentence, never a sign-in.
 - **One pull request.** The four parts are one slice of SPEC-460 as its owner cut it, and the
   chained task #447 builds on all of it; each part is small and has its own tests.
 - **Not in this change.** `yulius login`, `yulius onboard` and `yulius secrets import` (the
