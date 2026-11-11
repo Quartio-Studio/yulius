@@ -172,13 +172,18 @@ export function claudeCodeCard(ctx) {
     }
   }
 
-  /** Follows `id` (null: the server's configuration again); the select goes back when refused. */
+  /**
+   * Follows `id` (null: the server's configuration again); the select goes back when refused.
+   * While the change is saved neither the select nor "Use the server's" takes another one.
+   */
   async function setChannel(id, select) {
     saving = true;
-    select.disabled = true;
+    for (const control of select.closest('.claude-channel').querySelectorAll('select, button')) control.disabled = true;
     try {
       const view = await ctx.api.put(`${API}/channel`, { channel: id });
       saving = false;
+      // Drawn again whatever the answer says, so the controls are back.
+      drawn = '';
       toast(view.channel === 'off' ? 'Claude Code updates are off: sandboxes run the host’s install from their next start.'
         : `Claude Code follows ${channelName(view.channel)} now. Checking for a release…`, { kind: 'ok' });
       render(view);

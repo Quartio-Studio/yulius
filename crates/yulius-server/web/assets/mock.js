@@ -207,6 +207,7 @@ function seed(params) {
     failPath: params.get('fail') || null,
     failedReads: 0,
     holdPath: params.get('hold') || null,
+    // holdpost=<path> keeps POST, PATCH and PUT requests of that path waiting until `release()`.
     holdPostPath: params.get('holdpost') || null,
     // failpost=<path> does the same to POST requests, to show how an action says it failed;
     // `failedPosts` counts them.
@@ -5133,7 +5134,7 @@ async function handleFetchAfterLatency(db, url, init) {
   }
   // `hold=<path>` keeps GET requests of that path waiting, to look at a view while it loads (SPEC-092).
   // `heldWaiting`: the requests waiting at the hold now, so a test releases them once they are there.
-  if (db.held && ((method === 'GET' && u.pathname === db.holdPath) || ((method === 'POST' || method === 'PATCH') && u.pathname === db.holdPostPath))) {
+  if (db.held && ((method === 'GET' && u.pathname === db.holdPath) || (['POST', 'PATCH', 'PUT'].includes(method) && u.pathname === db.holdPostPath))) {
     db.heldWaiting = (db.heldWaiting || 0) + 1;
     try { await db.held; } finally { db.heldWaiting -= 1; }
   }

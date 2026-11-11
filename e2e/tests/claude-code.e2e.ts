@@ -143,6 +143,31 @@ test('a channel change or a check the server refuses leaves the card as the serv
   await expect.poll(select).toBe('stable on');
 });
 
+test('while a channel change is being saved neither the select nor “Use the server’s” takes another', async ({ app, browser, screen }) => {
+  // The channel's request waits until the test lets it go (#1192).
+  await app.open(mock('/admin/instance', '&holdpost=/api/admin/claude-code/channel'));
+  await firstShown(screen.getByText('Claude Code 2.1.322'));
+  // A channel was chosen here before: the card, drawn again by a check, offers the way back.
+  await browser.evaluate(() => {
+    const claude = (window as unknown as { __yuliusMock: { claude: { channel: string; chosen: { by: string; at: string } } } }).__yuliusMock.claude;
+    claude.channel = 'stable';
+    claude.chosen = { by: 'mkarp', at: new Date().toISOString() };
+  });
+  await screen.getByRole('button', CHECK).click();
+  // The check has ended, so nothing redraws the card while the change is saved.
+  await expect(screen.getByText(/Up to date: runs get 2\.1\.322\./)).toBeVisible({ timeout: 10000 });
+  const controls = () => browser.evaluate(() => [...document.querySelectorAll('.claude-channel select, .claude-channel button')]
+    .map((control) => `${control.tagName.toLowerCase()} ${(control as HTMLButtonElement).disabled ? 'off' : 'on'}`).join(', '));
+  expect(await controls()).toBe('select on, button on');
+  await screen.getByRole('button', 'Use the server’s (Latest)').click();
+  await expect.poll(controls).toBe('select off, button off');
+
+  await browser.evaluate(() => (window as unknown as { __yuliusMock: { release(): void } }).__yuliusMock.release());
+  await expect(screen.getByText(/Claude Code follows Latest now\. Checking for a release…/)).toBeVisible();
+  await expect(screen.getByText(/From the server’s configuration \(YULIUS_CLAUDE_UPDATES\)/)).toBeVisible();
+  await expect.poll(controls).toBe('select on');
+});
+
 test('a server that does not isolate sandboxes says why nothing is kept current', async ({ app, browser, screen }) => {
   await app.open(mock('/admin/instance', '&claude=unmanaged'));
   await firstShown(screen.getByText(/Sandboxes are not isolated on this server, so they run the host’s Claude Code as it is/));
