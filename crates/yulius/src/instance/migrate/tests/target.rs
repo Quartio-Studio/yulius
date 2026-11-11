@@ -1556,9 +1556,43 @@ fn holds_exclude_as_the_protocol_needs() -> Result<(), Box<dyn std::error::Error
     drop(flight);
     heard.recv_timeout(Duration::from_secs(10))?;
     waiter.join().map_err(|_| "the waiter panicked")?;
-    // A look at the staged copy's marker waits for a stream being received, as long; a second
-    // stream waits for the first. A Start in flight is another matter.
-    let receiving = hold_in(dir.path(), Hold::Receive, long);
+    // A stream being received holds the staged copy's marker. A second stream waits for the
+    // first, only so long.
+    let stream = receiving(dir.path(), long)?;
+    assert!(!stream.told_to_stop());
+    assert!(receiving(dir.path(), Duration::from_millis(300)).is_err());
+    // A Start in flight is another matter.
+    drop(hold_in(dir.path(), Hold::Landed, long));
+    drop(hold_in(dir.path(), Hold::Flight, long));
+    // A look at the marker means that the old host went on: the receive, which may wait on a
+    // link that is gone, is told to close its stream, and the look waits until it has.
+    let (looked, heard) = mpsc::channel();
+    let path = dir.path().to_path_buf();
+    let looker = std::thread::spawn(move || {
+        drop(hold_in(&path, Hold::Received, long));
+        let _ = looked.send(());
+    });
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !stream.told_to_stop() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(stream.told_to_stop(), "the receive was not told to stop");
+    assert!(
+        heard.try_recv().is_err(),
+        "it looked while the stream was still open"
+    );
+    drop(stream);
+    heard.recv_timeout(Duration::from_secs(10))?;
+    looker.join().map_err(|_| "the looker panicked")?;
+    // The word is taken back once it was heard, and one nobody took back (the look was cut)
+    // stops no later stream.
+    let next = receiving(dir.path(), long)?;
+    assert!(!next.told_to_stop());
+    drop(next);
+    std::fs::write(dir.path().join("receive.stop"), b"")?;
+    let later = receiving(dir.path(), long)?;
+    assert!(!later.told_to_stop());
+    // A receive that does not end is waited for only so long, and stays told.
     let started = std::time::Instant::now();
     drop(hold_in(
         dir.path(),
@@ -1569,19 +1603,8 @@ fn holds_exclude_as_the_protocol_needs() -> Result<(), Box<dyn std::error::Error
         started.elapsed() >= Duration::from_millis(400),
         "it did not wait for the receive"
     );
-    drop(hold_in(dir.path(), Hold::Landed, long));
-    drop(hold_in(dir.path(), Hold::Flight, long));
-    let (received, heard) = mpsc::channel();
-    let path = dir.path().to_path_buf();
-    let waiters = std::thread::spawn(move || {
-        drop(hold_in(&path, Hold::Received, long));
-        drop(hold_in(&path, Hold::Receive, long));
-        let _ = received.send(());
-    });
-    assert!(heard.recv_timeout(Duration::from_millis(300)).is_err());
-    drop(receiving);
-    heard.recv_timeout(Duration::from_secs(10))?;
-    waiters.join().map_err(|_| "the waiters panicked")?;
+    assert!(later.told_to_stop());
+    drop(later);
     // Nothing in flight: at once. No such directory: nothing held, nothing waited for.
     let started = std::time::Instant::now();
     drop(hold_in(dir.path(), Hold::Received, long));
@@ -1590,4 +1613,83 @@ fn holds_exclude_as_the_protocol_needs() -> Result<(), Box<dyn std::error::Error
     drop(hold_in(&dir.path().join("gone"), Hold::Landed, long));
     assert!(started.elapsed() < Duration::from_secs(5));
     Ok(())
+}
+
+// The stream a receive reads (SPEC-465 WCP-011).
+
+#[test]
+fn a_watched_stream_passes_its_bytes_and_its_end() -> Result<(), Box<dyn std::error::Error>> {
+    use std::io::Read as _;
+    let bytes: Vec<u8> = (0..3_000_000u32).map(|i| (i % 251) as u8).collect();
+    let mut watched = Watched::new(
+        std::io::Cursor::new(bytes.clone()),
+        Duration::from_millis(10),
+        || false,
+    );
+    let mut back = Vec::new();
+    watched.read_to_end(&mut back)?;
+    assert!(back == bytes, "the bytes changed on the way");
+    // Its end stays its end.
+    assert_eq!(watched.read(&mut [0u8; 8])?, 0);
+    Ok(())
+}
+
+#[test]
+fn a_watched_stream_whose_sender_is_gone_ends_when_told_to()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::io::{Read as _, Write as _};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let (reader, mut writer) = std::io::pipe()?;
+    writer.write_all(b"hello")?;
+    let stop = Arc::new(AtomicBool::new(false));
+    let told = Arc::clone(&stop);
+    let mut watched = Watched::new(reader, Duration::from_millis(10), move || {
+        told.load(Ordering::SeqCst)
+    });
+    let mut five = [0u8; 5];
+    watched.read_exact(&mut five)?;
+    assert_eq!(&five, b"hello");
+    // Nothing more comes and nobody closes the link: the read would wait for ever.
+    stop.store(true, Ordering::SeqCst);
+    let err = watched
+        .read(&mut [0u8; 8])
+        .err()
+        .ok_or("it went on reading")?;
+    assert!(
+        err.to_string()
+            .contains("went on without the rest of this stream"),
+        "{err}"
+    );
+    drop(writer);
+
+    // Not told to stop, a sender that is only slow is waited for: here it sends after the
+    // receive has asked three times whether to go on.
+    let (reader, mut writer) = std::io::pipe()?;
+    let mut asked = 0;
+    let mut watched = Watched::new(reader, Duration::from_millis(10), move || {
+        asked += 1;
+        if asked == 3 {
+            let _ = writer.write_all(b"late");
+        }
+        false
+    });
+    let mut four = [0u8; 4];
+    watched.read_exact(&mut four)?;
+    assert_eq!(&four, b"late");
+    Ok(())
+}
+
+#[test]
+fn a_watched_stream_passes_a_read_error() {
+    use std::io::Read as _;
+    struct Broken;
+    impl std::io::Read for Broken {
+        fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::other("the disk is on fire"))
+        }
+    }
+    let mut watched = Watched::new(Broken, Duration::from_millis(10), || false);
+    let err = watched.read(&mut [0u8; 8]).err().map(|e| e.to_string());
+    assert_eq!(err.as_deref(), Some("the disk is on fire"));
 }

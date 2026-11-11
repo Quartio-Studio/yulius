@@ -26,8 +26,16 @@ pub const EXPECT_FILE: &str = "/var/lib/yulius-migrate/expect.json";
 pub const STOPPED: &str = "/var/lib/yulius-migrate/stopped";
 /// The lock files of [`Hold`].
 const HOLD_FILES: [&str; 3] = ["flight.lock", "switch.lock", "receive.lock"];
-/// How long a look at the instance's health waits for a Start that is still in flight.
+/// How long a look at the instance's health waits for a Start that is still in flight, and a
+/// look at the staged copy's marker for a stream that is being closed.
 const FLIGHT_WAIT: Duration = Duration::from_secs(30 * 60);
+/// Written beside the lock of a stream being received: the old host went on without that
+/// stream, so its receiver closes it instead of waiting on a link that may be gone.
+const RECEIVE_STOP: &str = "receive.stop";
+/// How long a stream waits for one before it to be closed.
+const RECEIVE_WAIT: Duration = Duration::from_secs(120);
+/// How often a receive that gets no bytes asks whether it was told to stop.
+const RECEIVE_LOOK: Duration = Duration::from_secs(1);
 /// The reply's line on standard output; everything before it is a command's output.
 pub const REPLY: &str = "YULIUS-REPLY ";
 pub use yulius_app::host_move::{MOVE_PENDING, MOVED};
@@ -313,10 +321,8 @@ pub enum Hold {
     Switch,
     /// Nothing held: waits (bounded) until no Start is in flight.
     Landed,
-    /// A stream being received, from its first byte until its marker is written.
-    Receive,
-    /// Nothing held: waits (bounded) until no stream is being received, so the marker read
-    /// next is what the last stream left.
+    /// Nothing held: tells a stream that is still being received ([`receiving`]) to close and
+    /// waits (bounded) until it has, so the marker read next is what the last stream left.
     Received,
 }
 
@@ -1800,17 +1806,31 @@ pub fn hold_in(dir: &Path, hold: Hold, landing: Duration) -> Box<dyn std::any::A
     let (name, wait) = match hold {
         Hold::Flight => (HOLD_FILES[0], false),
         Hold::Switch => (HOLD_FILES[1], false),
-        Hold::Receive => (HOLD_FILES[2], false),
         Hold::Landed => (HOLD_FILES[0], true),
         Hold::Received => (HOLD_FILES[2], true),
     };
     if wait {
         if let Some(file) = open(name) {
             let deadline = std::time::Instant::now() + landing;
-            while flock(&file, FlockOperation::NonBlockingLockShared).is_err()
-                && std::time::Instant::now() < deadline
-            {
+            let stop = dir.join(RECEIVE_STOP);
+            let mut told = false;
+            let mut free = flock(&file, FlockOperation::NonBlockingLockShared).is_ok();
+            while !free && std::time::Instant::now() < deadline {
+                if hold == Hold::Received && !told {
+                    // One run at a time on the old host: whoever asks, that stream's sender
+                    // is gone.
+                    told = std::fs::write(&stop, b"").is_ok();
+                    eprintln!(
+                        "yulius instance migrate-target: a stream is still being taken in \
+                         here; it is closed first"
+                    );
+                }
                 std::thread::sleep(Duration::from_millis(200));
+                free = flock(&file, FlockOperation::NonBlockingLockShared).is_ok();
+            }
+            // Heard: taken back. A receive that still runs stays told.
+            if told && free {
+                let _ = std::fs::remove_file(&stop);
             }
         }
         return Box::new(());
@@ -1820,6 +1840,161 @@ pub fn hold_in(dir: &Path, hold: Hold, landing: Duration) -> Box<dyn std::any::A
         let _ = flock(file, FlockOperation::LockExclusive);
     }
     Box::new(file)
+}
+
+/// A stream being received, from its first byte until its marker is written.
+#[derive(Debug)]
+pub struct Receiving {
+    _lock: std::fs::File,
+    stop: PathBuf,
+}
+
+impl Receiving {
+    /// Whether the old host went on without this stream ([`Hold::Received`]).
+    #[must_use]
+    pub fn told_to_stop(&self) -> bool {
+        self.stop.exists()
+    }
+
+    /// The file whose presence says so.
+    #[must_use]
+    pub fn stop_file(&self) -> PathBuf {
+        self.stop.clone()
+    }
+}
+
+/// Begins to receive a stream in the state directory `dir`: one at a time, waiting at most
+/// `wait` for a stream before it to be closed.
+///
+/// # Errors
+/// Another stream is still being received, or the lock cannot be made.
+pub fn receiving(dir: &Path, wait: Duration) -> Result<Receiving, String> {
+    use rustix::fs::{FlockOperation, flock};
+    let path = dir.join(HOLD_FILES[2]);
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    let deadline = std::time::Instant::now() + wait;
+    while flock(&lock, FlockOperation::NonBlockingLockExclusive).is_err() {
+        if std::time::Instant::now() >= deadline {
+            return Err(
+                "another stream is still being taken in on the new host: run the command again \
+                 in a few minutes"
+                    .into(),
+            );
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    let stop = dir.join(RECEIVE_STOP);
+    // What an earlier look left (it was cut before it took its word back) is not for this
+    // stream.
+    let _ = std::fs::remove_file(&stop);
+    Ok(Receiving { _lock: lock, stop })
+}
+
+/// A stream's bytes, read on a thread of their own, so a receive whose sender is gone can be
+/// told to close the stream: a link that breaks leaves the new host's end open for hours, and
+/// what arrived counts only once the stream is closed and marked (SPEC-465 WCP-011).
+pub struct Watched {
+    chunks: std::sync::mpsc::Receiver<std::io::Result<Vec<u8>>>,
+    chunk: Vec<u8>,
+    at: usize,
+    ended: bool,
+    every: Duration,
+    stopped: Box<dyn FnMut() -> bool>,
+}
+
+impl std::fmt::Debug for Watched {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Watched")
+            .field("ended", &self.ended)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Watched {
+    /// Reads `input`; when no bytes come for `every`, asks `stopped` whether to give up.
+    pub fn new(
+        mut input: impl std::io::Read + Send + 'static,
+        every: Duration,
+        stopped: impl FnMut() -> bool + 'static,
+    ) -> Self {
+        let (send, chunks) = std::sync::mpsc::sync_channel(8);
+        std::thread::spawn(move || {
+            let mut buf = vec![0u8; 1 << 20];
+            loop {
+                let read = match input.read(&mut buf) {
+                    Ok(n) => Ok(buf[..n].to_vec()),
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(e) => Err(e),
+                };
+                let last = read.as_ref().map_or(true, Vec::is_empty);
+                if send.send(read).is_err() || last {
+                    break;
+                }
+            }
+        });
+        Self {
+            chunks,
+            chunk: Vec::new(),
+            at: 0,
+            ended: false,
+            every,
+            stopped: Box::new(stopped),
+        }
+    }
+}
+
+impl std::io::Read for Watched {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        use std::sync::mpsc::RecvTimeoutError;
+        loop {
+            if self.at < self.chunk.len() {
+                let n = out.len().min(self.chunk.len() - self.at);
+                out[..n].copy_from_slice(&self.chunk[self.at..self.at + n]);
+                self.at += n;
+                return Ok(n);
+            }
+            if self.ended || out.is_empty() {
+                return Ok(0);
+            }
+            match self.chunks.recv_timeout(self.every) {
+                Ok(Ok(chunk)) => {
+                    self.ended = chunk.is_empty();
+                    self.chunk = chunk;
+                    self.at = 0;
+                }
+                Ok(Err(e)) => {
+                    self.ended = true;
+                    return Err(e);
+                }
+                Err(RecvTimeoutError::Disconnected) => self.ended = true,
+                Err(RecvTimeoutError::Timeout) => {
+                    if (self.stopped)() {
+                        self.ended = true;
+                        return Err(std::io::Error::other(
+                            "the old host went on without the rest of this stream",
+                        ));
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Lets this process hold as many open files as the host allows: removing a tree holds one
+/// directory open for each level it is deep.
+fn raise_open_files() {
+    use nix::sys::resource::{Resource, getrlimit, setrlimit};
+    if let Ok((soft, hard)) = getrlimit(Resource::RLIMIT_NOFILE) {
+        let wanted = hard.min(1 << 16);
+        if soft < wanted {
+            let _ = setrlimit(Resource::RLIMIT_NOFILE, wanted, hard);
+        }
+    }
 }
 
 /// The commit the server listening at `address` reports on `/internal/version`.
@@ -1865,9 +2040,23 @@ pub fn receive() -> Reply {
         };
     };
     // One stream at a time, and none unseen by a look at the marker.
-    let _receiving = real_hold(Hold::Receive);
+    let receiving = match receiving(Path::new(STATE_DIR), RECEIVE_WAIT) {
+        Ok(receiving) => receiving,
+        Err(why) => {
+            l.failed(ITEM, why);
+            return Reply {
+                lines: l.0,
+                ..Reply::default()
+            };
+        }
+    };
+    raise_open_files();
+    let stop = receiving.stop_file();
+    let watched = |input: Box<dyn std::io::Read + Send>| {
+        Watched::new(input, RECEIVE_LOOK, move || stop.exists())
+    };
     let mut unpack = None;
-    let input: Box<dyn std::io::Read> = if expect.zstd {
+    let input = if expect.zstd {
         let child = std::process::Command::new("zstd")
             .args(["-d", "-q", "-c"])
             .stdin(std::process::Stdio::inherit())
@@ -1878,8 +2067,8 @@ pub fn receive() -> Reply {
                 let out = child.stdout.take();
                 unpack = Some(child);
                 match out {
-                    Some(out) => Box::new(out),
-                    None => Box::new(std::io::empty()),
+                    Some(out) => watched(Box::new(out)),
+                    None => watched(Box::new(std::io::empty())),
                 }
             }
             Err(e) => {
@@ -1891,11 +2080,11 @@ pub fn receive() -> Reply {
             }
         }
     } else {
-        Box::new(std::io::stdin().lock())
+        watched(Box::new(std::io::stdin()))
     };
     let mut progress: Option<crate::instance::Progress> = None;
     let result = land(
-        std::io::BufReader::with_capacity(1 << 20, input),
+        input,
         &expect.data_dir,
         None,
         &mut |m, target| prepare_host(m, target, None),
@@ -1914,7 +2103,13 @@ pub fn receive() -> Reply {
     if let Some(p) = &progress {
         p.end();
     }
-    let unpacked = unpack.is_none_or(|mut child| child.wait().is_ok_and(|s| s.success()));
+    let unpacked = unpack.is_none_or(|mut child| {
+        // A stream that did not end by itself leaves it waiting on the link.
+        if result.is_err() {
+            let _ = child.kill();
+        }
+        child.wait().is_ok_and(|s| s.success())
+    });
     let mut reply = Reply::default();
     match result {
         Ok(landing) => {
