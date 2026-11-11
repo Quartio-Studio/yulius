@@ -33,12 +33,13 @@ test('an admin turns the production ruleset requirement off and on in the Git pa
   await expect(card.getByRole('switch', 'Require a GitHub ruleset on main')).toBeFocused();
   await expect(card.getByText(/accepted that agents could push to or merge into main/)).toBeVisible();
   await expect(card.getByRole('switch', 'Require a GitHub ruleset on main')).not.toBeChecked();
-  expect(await switchOf(browser, 'studio')).toBe(false);
+  // The switch shows the new state while it is sent: wait for the stored one.
+  await expect.poll(() => switchOf(browser, 'studio')).toBe(false);
   expect(await switchOf(browser, 'product')).toBe(true);
 
   await card.getByRole('switch', 'Require a GitHub ruleset on main').click();
   await expect(card.getByRole('switch', 'Require a GitHub ruleset on main')).toBeChecked();
-  expect(await switchOf(browser, 'studio')).toBe(true);
+  await expect.poll(() => switchOf(browser, 'studio')).toBe(true);
 });
 
 test('a member sees the production protection switch but cannot change it', async ({ app, browser, screen }) => {
