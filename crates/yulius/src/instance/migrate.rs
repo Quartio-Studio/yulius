@@ -1341,16 +1341,33 @@ impl<'a> Move<'a> {
         self.phase("Cutover");
         let unit = self.opts.service.clone();
         let mut held = self.freeze()?;
-        if !self.old_frozen() {
-            // Stopped since the plan: found before the copy, not after it.
+        let state = self.old_unit();
+        if !state.is_some_and(|(_, frozen)| frozen) {
+            // Found before the copy, not after it. The move takes the freeze's end first, so
+            // what is said and thawed here is the only answer to it.
             self.claim(held);
-            return Err(self.fail(
-                "old instance",
-                format!(
+            let why = match state {
+                // Stopped since the plan: nothing of it is frozen.
+                Some((false, _)) => format!(
                     "{unit} is not running any more: start it (`systemctl start {unit}`), so \
                      the move can freeze everything it runs"
                 ),
-            ));
+                Some((true, _)) => format!(
+                    "{unit} runs and is not frozen any more (thawed from outside right after \
+                     the freeze): nothing is copied. Run the command again"
+                ),
+                None => format!(
+                    "systemd does not say whether {unit} is frozen (`systemctl show` failed \
+                     right after the freeze): nothing is copied. Run the command again when it \
+                     answers"
+                ),
+            };
+            self.fail("old instance", why);
+            if state.is_none_or(|(active, _)| active) {
+                // The freeze had worked as far as anyone knows: not left frozen without a word.
+                self.thaw();
+            }
+            return Err(Stop::Failed);
         }
         self.changed(
             "old instance",

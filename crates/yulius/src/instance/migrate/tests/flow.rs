@@ -50,6 +50,13 @@ struct Systemd {
     no_disable: bool,
     /// systemd does not answer `show`.
     silent: bool,
+    /// Looks (`show`) answered since the last `freeze`; `None` before one.
+    looks: Option<u32>,
+    /// What happens to the unit from outside once that many looks were answered since the
+    /// freeze (the freeze's own look, which finds the unit frozen, is the first).
+    after_freeze: Option<(u32, fn(&mut Systemd))>,
+    /// `systemctl freeze` fails.
+    no_freeze: bool,
 }
 
 struct FakeSystemd(Arc<Mutex<Systemd>>, Events);
@@ -58,18 +65,34 @@ impl freeze::Host for FakeSystemd {
     fn systemctl(&mut self, args: &[&str]) -> Result<(i32, String), String> {
         let mut unit = self.0.lock().map_err(|e| e.to_string())?;
         let said = |text: String| Ok((0, text));
+        if args[0] == "show"
+            && let Some((after, change)) = unit.after_freeze
+            && unit.looks.is_some_and(|looks| looks >= after)
+        {
+            unit.after_freeze = None;
+            change(&mut unit);
+        }
         match args[0] {
             "show" if unit.silent => Err("Failed to connect to bus".into()),
-            "show" => said(format!(
-                "LoadState=loaded\nActiveState={}\nFreezerState={}\n\
-                 ControlGroup=/system.slice/yulius.service\n",
-                if unit.stopped { "inactive" } else { "active" },
-                if unit.frozen { "frozen" } else { "running" }
-            )),
+            "show" => {
+                if let Some(looks) = unit.looks.as_mut() {
+                    *looks += 1;
+                }
+                said(format!(
+                    "LoadState=loaded\nActiveState={}\nFreezerState={}\n\
+                     ControlGroup=/system.slice/yulius.service\n",
+                    if unit.stopped { "inactive" } else { "active" },
+                    if unit.frozen { "frozen" } else { "running" }
+                ))
+            }
             "is-active" => Ok((3, "inactive\n".into())),
             verb => {
                 match verb {
-                    "freeze" => unit.frozen = true,
+                    "freeze" if unit.no_freeze => return Ok((1, String::new())),
+                    "freeze" => {
+                        unit.frozen = true;
+                        unit.looks = Some(0);
+                    }
                     // systemd refuses to thaw a unit that does not run.
                     "thaw" if unit.stopped => return Ok((1, String::new())),
                     "thaw" => unit.frozen = false,
@@ -1501,8 +1524,94 @@ fn a_unit_that_stopped_since_the_plan_is_found_before_the_copy() -> TestResult {
     assert!(
         !s.events()
             .iter()
+            .any(|e| e == "new: copy" || e == "new: expect" || e == "old: systemctl thaw")
+    );
+    Ok(())
+}
+
+/// The move freezes the old unit; at its own look right after, something has happened to it.
+fn right_after_the_freeze(change: fn(&mut Systemd)) -> Result<Setup, Box<dyn std::error::Error>> {
+    let s = setup()?;
+    if let Ok(mut unit) = s.world.systemd.lock() {
+        unit.after_freeze = Some((1, change));
+    }
+    Ok(s)
+}
+
+#[test]
+fn a_look_that_fails_right_after_the_freeze_thaws_and_says_what_is_known() -> TestResult {
+    // systemd stops answering: the unit is frozen, and nobody can tell.
+    let mut s = right_after_the_freeze(|unit| unit.silent = true)?;
+    assert_eq!(s.run()?, 1);
+    let shown = s.shown();
+    assert!(
+        shown.contains("systemd does not say whether yulius.service is frozen"),
+        "{shown}"
+    );
+    assert!(!shown.contains("is not running any more"), "{shown}");
+    // Thawed once the move took the freeze's end, and still enabled; nothing was copied.
+    assert_eq!(s.old_unit(), (false, false), "{shown}");
+    let events = s.events();
+    let at = |what: &str| {
+        events
+            .iter()
+            .position(|e| e == what)
+            .ok_or(format!("no {what}: {events:?}"))
+    };
+    assert!(at("old: systemctl freeze")? < at("old: no signal thaws from here")?);
+    assert!(at("old: no signal thaws from here")? < at("old: systemctl thaw")?);
+    assert!(
+        !events
+            .iter()
+            .any(|e| e == "new: copy" || e == "new: expect"),
+        "{events:?}"
+    );
+    let state = State::load(&s.opts.state_dir).ok_or("no state")?;
+    assert_eq!(state.cutover, Cutover::No);
+    // systemd answers again: the same command starts over and completes.
+    if let Ok(mut unit) = s.world.systemd.lock() {
+        unit.silent = false;
+    }
+    assert_eq!(s.run()?, 0, "{}", s.shown());
+    assert_eq!(s.old_unit(), (true, true));
+
+    // Thawed from outside at that moment: it runs, and the line says that.
+    let mut s = right_after_the_freeze(|unit| unit.frozen = false)?;
+    assert_eq!(s.run()?, 1);
+    let shown = s.shown();
+    assert!(
+        shown.contains("yulius.service runs and is not frozen any more"),
+        "{shown}"
+    );
+    assert!(!shown.contains("is not running any more"), "{shown}");
+    assert!(
+        !shown.contains("`systemctl thaw yulius.service` failed"),
+        "{shown}"
+    );
+    assert_eq!(s.old_unit(), (false, false));
+    assert!(
+        !s.events()
+            .iter()
             .any(|e| e == "new: copy" || e == "new: expect")
     );
+
+    // Stopped from outside at that moment (systemd thaws what it stops): nothing is frozen, so
+    // nothing is thawed, and the line says what to do.
+    let mut s = right_after_the_freeze(|unit| {
+        unit.frozen = false;
+        unit.stopped = true;
+    })?;
+    assert_eq!(s.run()?, 1);
+    let shown = s.shown();
+    assert!(
+        shown.contains("is not running any more: start it"),
+        "{shown}"
+    );
+    assert!(
+        !shown.contains("`systemctl thaw yulius.service` failed"),
+        "{shown}"
+    );
+    assert!(!s.events().contains(&"old: systemctl thaw".to_owned()));
     Ok(())
 }
 
