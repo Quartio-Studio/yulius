@@ -634,21 +634,35 @@ async fn a_callback_that_stays_missing_is_asked_for_less_often_until_someone_dem
     until_asked(&h, &admin, 16).await?;
     assert_eq!(asked(&h), 16);
 
-    // An answer that changes is news: it is asked for again quickly, whatever stood before.
+    // A sign-in that starts is a demand too.
     for look in 0..10 {
         later(&h, 30_000);
         until_asked(&h, &admin, look + 17).await?;
     }
     later(&h, 60_000);
     until_asked(&h, &admin, 27).await?;
+    later(&h, 6_000);
+    assert!(h.app.github_sign_in_started());
+    until_github_was_asked(&h, 28).await?;
+    later(&h, 30_000);
+    until_asked(&h, &admin, 29).await?;
+    assert_eq!(asked(&h), 29);
+
+    // An answer that changes is news: it is asked for again quickly, whatever stood before.
+    for look in 0..10 {
+        later(&h, 30_000);
+        until_asked(&h, &admin, look + 30).await?;
+    }
+    later(&h, 60_000);
+    until_asked(&h, &admin, 40).await?;
     if let Ok(mut error) = h.github.callback_error.lock() {
         *error = Some("GitHub: timed out".into());
     }
     later(&h, 120_000);
-    until_asked(&h, &admin, 28).await?;
+    until_asked(&h, &admin, 41).await?;
     until_state(&h, &admin, "unknown").await?;
     later(&h, 30_000);
-    until_asked(&h, &admin, 29).await?;
-    assert_eq!(asked(&h), 29);
+    until_asked(&h, &admin, 42).await?;
+    assert_eq!(asked(&h), 42);
     Ok(())
 }
