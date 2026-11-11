@@ -157,13 +157,19 @@ test('the Shell of a sandbox first visited with it open leaves the keyboard on t
 // shown again for the page without the keyboard; it waits for its sandbox and opens as chosen.
 const studioTasks = '&hold=/api/sandboxes/sb_studio/tasks';
 const studioLoading = (screen: Screen) => expect(screen.getByRole('navigation', 'Sandboxes').getByRole('link', /^studio\b/)).toHaveAttribute('aria-current', 'page');
+/** The rail's Shell, chosen while the page is held (openShellPanel is for a page that is there). */
+async function chooseShell(screen: Screen) {
+  await screen.getByRole('button', /^Show tools/).click();
+  const shell = screen.getByRole('navigation', 'Tools').getByRole('button', 'Shell');
+  await shell.click();
+  return shell;
+}
 const releaseHeld = (browser: Browser) => browser.evaluate(() => (window as unknown as { __yuliusMock: { release: () => void } }).__yuliusMock.release());
 
 test('the Shell chosen while its sandbox’s page loads opens there with the keyboard', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12', studioTasks));
   await studioLoading(screen);
-  await openShellPanel(screen);
-  const shell = screen.getByRole('navigation', 'Tools').getByRole('button', 'Shell');
+  const shell = await chooseShell(screen);
   await expect(shell).toHaveAttribute('aria-pressed', 'true');
   await expect(screen.getByRole('region', 'Tool panel')).toBeHidden();
 
@@ -176,8 +182,7 @@ test('the Shell chosen while its sandbox’s page loads opens there with the key
 test('a tool chosen twice while its sandbox’s page loads does not open', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12', studioTasks));
   await studioLoading(screen);
-  await openShellPanel(screen);
-  const shell = screen.getByRole('navigation', 'Tools').getByRole('button', 'Shell');
+  const shell = await chooseShell(screen);
   await expect(shell).toHaveAttribute('aria-pressed', 'true');
   await expect(screen.getByRole('region', 'Tool panel')).toBeHidden();
   await shell.click();
@@ -192,8 +197,7 @@ test('a tool chosen twice while its sandbox’s page loads does not open', async
 test('a tool chosen while its sandbox’s page loads does not open once the tools are hidden', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12', studioTasks));
   await studioLoading(screen);
-  await openShellPanel(screen);
-  await expect(screen.getByRole('navigation', 'Tools').getByRole('button', 'Shell')).toHaveAttribute('aria-pressed', 'true');
+  await expect(await chooseShell(screen)).toHaveAttribute('aria-pressed', 'true');
   await expect(screen.getByRole('region', 'Tool panel')).toBeHidden();
   await screen.getByRole('button', /^Hide tools/).click();
 
