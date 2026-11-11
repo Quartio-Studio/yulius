@@ -7,7 +7,7 @@
 //! instance can say which numbers were sized for another machine; the first start after
 //! `yulius instance import` (its mark, [`ADAPT_MARK`]) replaces those by host-sized itself.
 //!
-//! The values in force live in [`LimitState`]: the supervisor, CI and CD read them at each use,
+//! The values in force live in `LimitState`: the supervisor, CI and CD read them at each use,
 //! so a change applies while the server runs. The sandbox memory is the exception: sandboxes and
 //! the CI budget pools are sized from it at start.
 
