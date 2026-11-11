@@ -50,8 +50,10 @@ and passes under load.
   across a sandbox switch, without feeding the other sandbox" types after `editorShown` in the same
   way: it failed in the Yulius CI runs e753bd7a (PR #1150) and ae55e33c (PR #1151) on 2026-11-11
   with the missing `README.md, modified` tab and the same two errors, frame for frame. The fix
-  covers it without a change: with no model Monaco builds no view, so `editorShown` now also means
-  the first file is in the editor. For the same reason a test that holds the file's read or join
+  covers it: with no model Monaco builds no view, so `editorShown` now also means the first file is
+  in the editor. PR #1150 meanwhile stepped around it on dev with a wait for README.md's text in a
+  Monaco model before the typing; this change takes that wait out again (there is no placeholder
+  model left to type into, and its comment would name one). For the same reason a test that holds the file's read or join
   can no longer wait on `editorShown`: `places.e2e.ts` "a file opened just before a sandbox switch
   shows when the sandbox is back" waits on the held read instead.
 - **A second race, in the test only.** With the first one gone the test goes on the moment the file
@@ -147,7 +149,10 @@ run.
 | `scripts/dev ci` at d9becda2, in the task sandbox | doctor, check, lint, macos passed; nextest: 3281 passed, 3 failed, the `first_message` tests that fail in every task sandbox and pass in Yulius CI (#1154; this change has no Rust); doctests, deps and docs did not run after that. Yulius CI's `quality` job runs the whole gate on the delivered head |
 
 Two failures met that this change does not cause (neither opens the Editor before the failing
-line; both also fail on dev's copy). They are reported on #1087, since this task opens no issues:
+line; both also fail on dev's copy). They are reported on #1087, since this task opens no issues.
+PR #1150 has since named their cause (a tool opened from the rail before the page gave the panel
+its sandbox opens without one: the Superagent as the Global one, a Shell without the keyboard;
+reported on #1154 and PR #1155) and its waits for the Superagent tests are on dev and merged in:
 
 - `terminal.e2e.ts` "file names a shell prints open the editor": the Shell's textarea is not
   focused in time (once on this branch with the read late, once on dev's copy with the join late;
@@ -159,3 +164,8 @@ line; both also fail on dev's copy). They are reported on #1087, since this task
 Review: round 1 at 52383b1c asked for changes (a places test waited on `editorShown` while holding
 the read: fixed in 508f11fa; the "redundant `aria-selected` wait" nit is kept, it is the condition
 the test types on). The second round approves the delivered head and is named in the merge.
+
+After the merge of dev (e2dd441d, PR #1150) and the removal of its step-around wait (7d1b5547):
+`places` and `editor` (56 tests) with the join answered late: 5 of 5 runs, 56 passed; `editor`,
+`live-editor`, `places`, `terminal`, `terminals`, `filedrop` with no probe: 119 passed. The gate
+was not run again here (it stops at #1154's tests); Yulius CI runs it on the delivered head.
