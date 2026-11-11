@@ -30,7 +30,7 @@ async fn ctx(app: &App, user: &UserId) -> Result<AuthContext, Box<dyn std::error
 }
 
 /// The subscription of every run of `id`, oldest first.
-async fn run_accounts(app: &App, id: &TaskId) -> Vec<Option<String>> {
+pub(crate) async fn run_accounts(app: &App, id: &TaskId) -> Vec<Option<String>> {
     app.deps
         .store
         .attempts(id)
@@ -42,7 +42,7 @@ async fn run_accounts(app: &App, id: &TaskId) -> Vec<Option<String>> {
 }
 
 /// Waits until the task's run number `n` (from 1) is live.
-async fn live_run(app: &App, id: &TaskId, n: usize) -> TestResult {
+pub(crate) async fn live_run(app: &App, id: &TaskId, n: usize) -> TestResult {
     wait_for("the next run", Duration::from_secs(60), || async {
         let attempts = app.deps.store.attempts(id).await.unwrap_or_default();
         attempts.len() == n && attempts[n - 1].state == AttemptState::Live
@@ -51,7 +51,7 @@ async fn live_run(app: &App, id: &TaskId, n: usize) -> TestResult {
 }
 
 /// The notices said so far on a watch of the task's terminal.
-fn notices(watch: &mut broadcast::Receiver<HubFrame>) -> Vec<String> {
+pub(crate) fn notices(watch: &mut broadcast::Receiver<HubFrame>) -> Vec<String> {
     let mut said = Vec::new();
     while let Ok(frame) = watch.try_recv() {
         if let HubFrame::Notice(text) = frame {
@@ -61,7 +61,7 @@ fn notices(watch: &mut broadcast::Receiver<HubFrame>) -> Vec<String> {
     said
 }
 
-async fn ready(app: &Arc<App>, id: &TaskId) -> TestResult {
+pub(crate) async fn ready(app: &Arc<App>, id: &TaskId) -> TestResult {
     wait_for("the run", Duration::from_secs(30), || {
         let app = app.clone();
         let id = id.clone();
@@ -72,7 +72,7 @@ async fn ready(app: &Arc<App>, id: &TaskId) -> TestResult {
 
 /// A task on `a-first` (placed there while `b-second` was nearly full), with `b-second` free
 /// again.
-async fn running_on_first(
+pub(crate) async fn running_on_first(
     app: &Arc<App>,
     probe: &ScriptedUsage,
     data: &std::path::Path,

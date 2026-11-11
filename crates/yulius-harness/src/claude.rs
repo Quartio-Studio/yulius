@@ -1285,6 +1285,36 @@ mod tests {
         assert_eq!(observe_line(transient), Vec::<Observed>::new());
     }
 
+    /// SPEC-464, production 2026-11-11: the refusal of a model that runs on usage credits once
+    /// they are used up ("You're out of usage credits. /model to switch models.") is a usage
+    /// limit. Claude Code 2.1.311 writes it without `rate_limit_info` (task #438's record, ids
+    /// replaced); 2.1.322 adds the allowance's reset (task #443's).
+    #[test]
+    fn a_usage_credits_refusal_is_a_usage_limit() {
+        let old = r#"{"parentUuid":"p1","isSidechain":false,"type":"assistant","uuid":"u1","timestamp":"2026-11-11T14:49:49.800Z","message":{"diagnostics":null,"id":"m1","container":null,"model":"<synthetic>","role":"assistant","stop_details":null,"stop_reason":"stop_sequence","stop_sequence":"","type":"message","usage":{"input_tokens":0,"output_tokens":0},"content":[{"type":"text","text":"You're out of usage credits. /model to switch models."}],"context_management":null},"requestId":"req_1","apiError":"model_requires_usage_credits","error":"rate_limit","errorDetails":"429 {\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"message\":\"This request would exceed your account's rate limit. Please try again later.\"},\"request_id\":\"req_1\"}","isApiErrorMessage":true,"apiErrorStatus":429,"perTurnEffort":null,"userType":"external","entrypoint":"cli","sessionId":"s1","version":"2.1.311"}"#;
+        assert!(
+            matches!(
+                observe_line(old).as_slice(),
+                [Observed::LimitReached { resets_at: None, message, .. }]
+                    if message == "You're out of usage credits. /model to switch models."
+            ),
+            "{:?}",
+            observe_line(old)
+        );
+        let new = r#"{"parentUuid":"p2","isSidechain":false,"type":"assistant","uuid":"u2","timestamp":"2026-11-11T14:49:50.566Z","message":{"id":"m2","model":"<synthetic>","role":"assistant","stop_reason":"stop_sequence","type":"message","content":[{"type":"text","text":"You're out of usage credits. /model to switch models."}]},"requestId":"req_2","apiError":"model_requires_usage_credits","apiErrorParams":{"rate_limit_info":{"status":"rejected","resetsAt":1794556800,"rateLimitType":"seven_day_overage_included","overageStatus":"rejected","overageDisabledReason":"out_of_credits","isUsingOverage":false}},"error":"rate_limit","isApiErrorMessage":true,"apiErrorStatus":429,"version":"2.1.322"}"#;
+        assert!(
+            matches!(
+                observe_line(new).as_slice(),
+                [Observed::LimitReached {
+                    resets_at: Some(Timestamp(1_794_556_800_000)),
+                    ..
+                }]
+            ),
+            "{:?}",
+            observe_line(new)
+        );
+    }
+
     /// The record Claude Code 2.1.292 writes when the API rejects a prompt as too long (#213):
     /// its API-error helper with `error: "invalid_request"` and the `PROMPT_TOO_LONG` text.
     #[test]

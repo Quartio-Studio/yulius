@@ -110,6 +110,7 @@ mod trusted_proxy;
 mod ui_contract;
 mod update_supervision;
 mod uploads;
+mod usage_credits;
 mod variables;
 mod vidoc_key;
 mod vidoc_switch;

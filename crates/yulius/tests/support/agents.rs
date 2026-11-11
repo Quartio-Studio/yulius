@@ -28,6 +28,12 @@ pub struct FakeAgentOptions {
     /// The record after `limit_after` turns is a lapsed subscription's refusal, not a usage
     /// limit (`--access-lost`).
     pub access_lost: bool,
+    /// The record after `limit_after` turns is the refusal of a model whose usage credits are
+    /// used up, as Claude Code 2.1.311 writes it (`--credits-out`).
+    pub credits_out: bool,
+    /// That refusal says, as Claude Code 2.1.322's does, that the model's allowance resets this
+    /// many seconds ahead (`--credits-reset-s`).
+    pub credits_reset_s: Option<u64>,
     /// Draw full screen like Claude Code (`--tui`), redrawing on every resize.
     pub tui: bool,
     /// Run Claude Code's hooks through `yulius hook` like the real CLI (`--hooks`).
@@ -196,6 +202,12 @@ impl HarnessPort for FakeAgentHarness {
         }
         if self.options.access_lost {
             argv.push("--access-lost".into());
+        }
+        if self.options.credits_out {
+            argv.push("--credits-out".into());
+        }
+        if let Some(seconds) = self.options.credits_reset_s {
+            argv.extend(["--credits-reset-s".into(), seconds.to_string()]);
         }
         if self.options.tui {
             argv.push("--tui".into());
@@ -419,8 +431,10 @@ pub fn limit_resume_problems(run_dir: &Path, data: &Path) -> Vec<String> {
                 dirs.push(path);
             } else if path.extension().is_some_and(|e| e == "jsonl")
                 && path.components().any(|c| c.as_os_str() == "projects")
-                && std::fs::read_to_string(&path)
-                    .is_ok_and(|text| text.contains("usage_limit_reached"))
+                && std::fs::read_to_string(&path).is_ok_and(|text| {
+                    text.contains("usage_limit_reached")
+                        || text.contains("model_requires_usage_credits")
+                })
             {
                 problems.push(format!("a limit record left in {}", path.display()));
             }

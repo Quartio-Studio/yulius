@@ -146,6 +146,56 @@ fn claude_transcript_has_one_user_and_assistant_record_per_turn_and_a_limit() ->
     Ok(())
 }
 
+/// SPEC-464: `--credits-out` writes the refusal of a model whose usage credits are used up as
+/// Claude Code 2.1.311 does (no `rate_limit_info`), then goal mode's pause notice and the record
+/// closing the turn; `--credits-reset-s` adds 2.1.322's `rate_limit_info` with the reset.
+#[test]
+fn a_usage_credits_refusal_is_written_as_either_claude_code_version_does() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let transcript =
+        |name: &str, extra: &[&str]| -> Result<Vec<Value>, Box<dyn std::error::Error>> {
+            let path = dir.path().join(format!("projects/x/{name}.jsonl"));
+            let path_text = path.to_string_lossy().into_owned();
+            let mut args = vec![
+                "--session-id",
+                name,
+                "--transcript",
+                &path_text,
+                "--limit-after",
+                "1",
+                "--credits-out",
+            ];
+            args.extend_from_slice(extra);
+            let output = run(&args, "one\n/exit\n")?;
+            assert!(stdout(&output).contains("ECHO: one\nLIMIT REACHED"));
+            read_jsonl(&path)
+        };
+    let old = transcript("s-old", &[])?;
+    assert_eq!(old.len(), 5, "{old:?}");
+    assert_eq!(old[2]["apiError"], "model_requires_usage_credits");
+    assert_eq!(old[2]["error"], "rate_limit");
+    assert_eq!(old[2]["apiErrorStatus"], 429);
+    assert!(old[2].get("apiErrorParams").is_none());
+    assert_eq!(
+        old[2]["message"]["content"][0]["text"],
+        "You're out of usage credits. /model to switch models."
+    );
+    assert_eq!(old[3]["subtype"], "informational");
+    assert_eq!(
+        old[3]["content"],
+        "Goal paused \u{b7} the request was rate limited \u{b7} send a message to retry"
+    );
+    assert_eq!(old[4]["subtype"], "turn_duration");
+
+    let new = transcript("s-new", &["--credits-reset-s", "3600"])?;
+    let info = &new[2]["apiErrorParams"]["rate_limit_info"];
+    assert_eq!(info["status"], "rejected");
+    assert_eq!(info["rateLimitType"], "seven_day_overage_included");
+    assert_eq!(info["overageDisabledReason"], "out_of_credits");
+    assert!(info["resetsAt"].is_i64(), "{info}");
+    Ok(())
+}
+
 /// SPEC-117: like Claude Code 2.1.292, a `/goal` prompt argument sets the goal and runs its turn
 /// before input is read; other prompt arguments are echoed.
 #[test]
