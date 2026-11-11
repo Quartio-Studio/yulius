@@ -1467,7 +1467,9 @@ impl<'a> Run<'a> {
                 _ => return Some(format!("{shown} is not a plain absolute path")),
             }
         }
-        let file = names.pop()?;
+        let Some(file) = names.pop() else {
+            return Some(format!("{shown} names no file"));
+        };
         let mut dir = PathBuf::from("/");
         let mut names = names.into_iter();
         loop {

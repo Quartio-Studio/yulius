@@ -1502,7 +1502,8 @@ still holds a frozen copy with `master.key` and every secret.
 
 **Abort.** `sudo yulius instance migrate --abort` on the old host stops and disables the new
 instance (through the key while the move is not finished; afterwards the key is gone: stop it
-there first with `systemctl disable --now yulius.service`; the abort refuses while the new URL
+there first with `systemctl disable --now yulius.service; systemctl stop
+yulius-sandboxes.service`, since its sessions live in their own unit; the abort refuses while the new URL
 still answers and otherwise asks you to confirm that it is stopped, `--yes` answers for you), puts
 the old proxy configuration back, thaws and enables the old unit and removes the key and the
 state. The copy on the new host, with `master.key` and every secret, stays there until you remove it.

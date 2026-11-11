@@ -478,6 +478,22 @@ fn thawing_the_instance_thaws_its_sessions_unit_first() -> TestResult {
     Ok(())
 }
 
+/// Review of the merge (low): systemd refuses to thaw a unit that does not run. A stopped
+/// server's unit is left out, so its sessions unit is thawed and the thaw does not fail.
+#[test]
+fn a_stopped_servers_unit_is_left_out_of_the_thaw() -> TestResult {
+    let mut fake = Fake::new(&[("inactive", "running")]).with_sessions(&[("active", "frozen")]);
+    assert_eq!(sessions_state(&mut fake, UNIT), Some(true));
+    assert_eq!(thaw_units(&mut fake, UNIT), [SESSIONS]);
+    thaw_instance(&mut fake, UNIT)?;
+    assert_eq!(fake.calls(), ["thaw yulius-sandboxes.service"]);
+    // A sessions unit that does not run is no part of the instance to thaw.
+    let mut none = Fake::new(&[("active", "frozen")]).with_sessions(&[("inactive", "running")]);
+    assert_eq!(sessions_state(&mut none, UNIT), None);
+    assert_eq!(thaw_units(&mut none, UNIT), [UNIT]);
+    Ok(())
+}
+
 #[test]
 fn a_failed_thaw_of_the_instance_names_the_command_for_both_units() {
     let mut fake = Fake::new(&[("active", "frozen")]).with_sessions(&[("active", "frozen")]);

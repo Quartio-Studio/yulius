@@ -587,7 +587,31 @@ impl Profile {
             .split_once("path=")
             .and_then(|(_, rest)| rest.split_whitespace().next())
             .map_or_else(|| PathBuf::from("/usr/local/bin/yulius"), PathBuf::from);
-        for path in own_units(&props) {
+        let mut units = own_units(&props);
+        // Sessions live in a unit of their own where the host has one (SPEC-458). Its file is
+        // the new host's setup's to write; what an operator added to it (limits for all
+        // sandboxes) travels like the server unit's drop-ins.
+        if let Some(sessions) = yulius_sandbox::units::sessions_unit(&unit) {
+            let out = run(
+                host,
+                &[
+                    "systemctl",
+                    "show",
+                    &sessions,
+                    "--property=LoadState,DropInPaths",
+                ],
+            );
+            let props = properties(&out.stdout);
+            if out.ok() && property(&props, "LoadState") == "loaded" {
+                units.extend(
+                    property(&props, "DropInPaths")
+                        .split_whitespace()
+                        .filter(|path| path.starts_with(&format!("{UNITS_DIR}/")))
+                        .map(PathBuf::from),
+                );
+            }
+        }
+        for path in units {
             match text_file(host, &path) {
                 Some(file) => self.units.push(file),
                 None => return Err(format!("cannot read {}", path.display())),

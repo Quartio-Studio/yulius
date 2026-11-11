@@ -317,25 +317,33 @@ impl Freeze {
     }
 }
 
-/// Whether the sessions unit of the server's unit `unit` (SPEC-458) runs frozen; `false` when
-/// the host has none or systemd does not say.
+/// The sessions unit of the server's unit `unit` (SPEC-458), when the host has one that runs:
+/// whether it is frozen. `None` when there is none, it does not run, or systemd does not say.
+pub fn sessions_state(host: &mut dyn Host, unit: &str) -> Option<bool> {
+    let name = yulius_sandbox::units::sessions_unit(unit)?;
+    let found = show(host, &name).ok()?;
+    (found.load == "loaded" && runs(&found)).then_some(found.freezer == "frozen")
+}
+
+/// Whether the sessions unit of the server's unit `unit` runs frozen.
 pub fn sessions_frozen(host: &mut dyn Host, unit: &str) -> bool {
-    yulius_sandbox::units::sessions_unit(unit).is_some_and(|name| {
-        show(host, &name)
-            .is_ok_and(|found| found.load == "loaded" && runs(&found) && found.freezer == "frozen")
-    })
+    sessions_state(host, unit) == Some(true)
 }
 
 /// The units to thaw to bring the instance of the server's unit `unit` back, in that order: its
-/// sessions unit first, when the host has one that runs, then `unit` (SPEC-458 EXP-001).
+/// sessions unit first, when the host has one that runs, then `unit` (SPEC-458 EXP-001). A
+/// server's unit that systemd says does not run is left out: systemd refuses to thaw it, and
+/// there is nothing of it to thaw. One systemd says nothing about stays in.
 pub fn thaw_units(host: &mut dyn Host, unit: &str) -> Vec<String> {
     let mut units = Vec::new();
-    if let Some(name) = yulius_sandbox::units::sessions_unit(unit)
-        && show(host, &name).is_ok_and(|found| found.load == "loaded" && runs(&found))
+    if sessions_state(host, unit).is_some()
+        && let Some(name) = yulius_sandbox::units::sessions_unit(unit)
     {
         units.push(name);
     }
-    units.push(unit.to_owned());
+    if show(host, unit).map_or(true, |found| runs(&found)) {
+        units.push(unit.to_owned());
+    }
     units
 }
 

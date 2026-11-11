@@ -266,6 +266,21 @@ fn the_adopt_unit_names_the_binary_as_the_servers_unit_does() {
     );
 }
 
+/// Review of the merge (nit): a path that names no file is not "root's alone".
+#[test]
+fn a_path_that_names_no_file_is_refused() {
+    let mut fake = Fake::fresh();
+    let mut quiet = |_: &yulius_contracts::update::HostLine| {};
+    let run = Run::new(&mut fake, Mode::Setup, options(), &mut quiet);
+    for path in ["/", "", "usr/local/bin/yulius", "/usr/local/../bin/yulius"] {
+        assert!(
+            run.not_roots_alone(Path::new(path)).is_some(),
+            "{path:?} must be refused"
+        );
+    }
+    assert_eq!(run.not_roots_alone(Path::new(EXE)), None);
+}
+
 /// A directory on the way that cannot be looked at is not taken on trust.
 #[test]
 fn a_directory_that_cannot_be_inspected_gets_no_root_unit() {

@@ -1071,6 +1071,92 @@ fn stopping_leaves_nothing_of_the_copy_running() {
     );
 }
 
+/// SPEC-458 beside SPEC-460 (review of the merge, high): on a host set up for it the new
+/// instance's agents, terminals and engines live in the sessions unit, which a stop of the
+/// server's unit does not touch. The move's stop ends that unit too, and says so when
+/// something of it still runs: "nothing of it runs" must be true before the old one thaws.
+#[test]
+fn stopping_ends_the_sessions_unit_too() {
+    let sessions = "yulius-sandboxes.service";
+    let mut host = new_host();
+    host.says(
+        &[
+            "systemctl",
+            "show",
+            "--property=LoadState",
+            "--value",
+            sessions,
+        ],
+        "loaded\n",
+    );
+    let reply = step(
+        &mut host,
+        &Request::Stop {
+            service: "yulius.service".into(),
+        },
+    );
+    assert_eq!(only(&reply).0, HostOutcome::Changed, "{:?}", only(&reply));
+    assert_eq!(
+        host.runs("systemctl")[..2],
+        [
+            "systemctl disable --now yulius.service",
+            "systemctl kill --kill-whom=all --signal=SIGKILL yulius.service",
+        ]
+    );
+    assert!(host.ran("systemctl kill --kill-whom=all --signal=SIGKILL yulius-sandboxes.service"));
+    assert!(host.ran("systemctl stop yulius-sandboxes.service"));
+
+    // Sessions that outlive it: not stopped, said so after the bounded wait.
+    let mut host = new_host();
+    host.says(
+        &[
+            "systemctl",
+            "show",
+            "--property=LoadState",
+            "--value",
+            sessions,
+        ],
+        "loaded\n",
+    );
+    host.says(
+        &[
+            "systemctl",
+            "show",
+            "--property=ControlGroup",
+            "--value",
+            sessions,
+        ],
+        "/yulius.slice/yulius-sandboxes.service\n",
+    );
+    host.file(
+        "/sys/fs/cgroup/yulius.slice/yulius-sandboxes.service/cgroup.events",
+        "populated 1\nfrozen 0\n",
+    );
+    let reply = step(
+        &mut host,
+        &Request::Stop {
+            service: "yulius.service".into(),
+        },
+    );
+    let (outcome, detail) = only(&reply);
+    assert_eq!(outcome, HostOutcome::Failed);
+    assert!(
+        detail.contains("yulius-sandboxes.service still run"),
+        "{detail}"
+    );
+
+    // A host without the unit is stopped as before, and asked nothing more about it.
+    let mut host = new_host();
+    let reply = step(
+        &mut host,
+        &Request::Stop {
+            service: "yulius.service".into(),
+        },
+    );
+    assert_eq!(only(&reply).0, HostOutcome::Changed);
+    assert!(!host.ran("systemctl stop"), "{:?}", host.runs("systemctl"));
+}
+
 #[test]
 fn a_disk_step_that_was_cut_is_taken_up_where_it_stopped() {
     // The array was made, the filesystem was not: no second create, and its members are not

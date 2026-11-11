@@ -258,6 +258,18 @@ pub trait World {
     fn show(&mut self, text: &str);
 }
 
+/// The old instance as systemd shows it: the server's unit and, where the host has one that
+/// runs, its sessions unit (SPEC-458).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Old {
+    /// The server's unit is active.
+    active: bool,
+    /// Something of it is frozen: it is held, by this move, an earlier run or an export.
+    any_frozen: bool,
+    /// Nothing of it runs unfrozen: what the new instance's start waits for.
+    all_frozen: bool,
+}
+
 /// Why a run ends before its last step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Stop {
@@ -519,10 +531,28 @@ impl<'a> Move<'a> {
                 text.lines()
                     .find_map(|l| l.strip_prefix("0::").map(str::to_owned))
             });
-        if let Some(own) = own
-            && !group.is_empty()
-            && (own == group || own.starts_with(&format!("{group}/")))
-        {
+        // The move freezes the sessions unit too, where the host has one (SPEC-458).
+        let sessions_group = yulius_sandbox::units::sessions_unit(&opts.service)
+            .map(|sessions| {
+                said(
+                    self.local,
+                    &[
+                        "systemctl",
+                        "show",
+                        "--property=ControlGroup",
+                        "--value",
+                        &sessions,
+                    ],
+                )
+            })
+            .unwrap_or_default();
+        let inside = |group: &str| {
+            !group.is_empty()
+                && own
+                    .as_deref()
+                    .is_some_and(|own| own == group || own.starts_with(&format!("{group}/")))
+        };
+        if inside(&group) || inside(&sessions_group) {
             return Err(refuse(
                 self,
                 format!(
@@ -534,10 +564,10 @@ impl<'a> Move<'a> {
         }
         let before = matches!(self.state.cutover, Cutover::No | Cutover::RolledBack);
         match self.old_unit() {
-            Some((true, _)) => {}
+            Some(old) if old.active => {}
             // What a stopped unit left running cannot be frozen, and a unit that is stopped
             // or stopping cannot be told from one stopped under the move.
-            Some((false, _)) if before => {
+            Some(_) if before => {
                 return Err(refuse(
                     self,
                     format!(
@@ -556,7 +586,7 @@ impl<'a> Move<'a> {
             }
             _ => {}
         }
-        if before && self.old_frozen() {
+        if before && self.old_held() {
             let thaw = self.thaw_command();
             return Err(refuse(
                 self,
@@ -1251,8 +1281,8 @@ impl<'a> Move<'a> {
         proven.map(|_| ())
     }
 
-    /// What systemd says of the old unit: active, frozen; `None` when it does not say.
-    fn old_unit(&mut self) -> Option<(bool, bool)> {
+    /// What systemd says of the old instance; `None` when it does not say.
+    fn old_unit(&mut self) -> Option<Old> {
         let unit = self.opts.service.clone();
         let (code, said) = self
             .world
@@ -1265,11 +1295,14 @@ impl<'a> Move<'a> {
                 .map(str::to_owned)
         };
         let (active, freezer) = (value("ActiveState")?, value("FreezerState")?);
-        // The instance is frozen when either of its units is: its sessions live in a unit of
-        // their own where the host has one (SPEC-458).
-        let frozen =
-            freezer == "frozen" || freeze::sessions_frozen(&mut *self.world.freezer(), &unit);
-        (code == 0).then_some((active == "active", frozen))
+        // Its sessions live in a unit of their own where the host has one (SPEC-458).
+        let sessions = freeze::sessions_state(&mut *self.world.freezer(), &unit);
+        let frozen = freezer == "frozen";
+        (code == 0).then_some(Old {
+            active: active == "active",
+            any_frozen: frozen || sessions == Some(true),
+            all_frozen: frozen && sessions != Some(false),
+        })
     }
 
     /// The command that thaws the old instance: its sessions unit, where the host has one, and
@@ -1282,17 +1315,52 @@ impl<'a> Move<'a> {
         )
     }
 
-    /// Whether the old unit is known to be frozen. Not knowing is not frozen: nothing is
-    /// started on a guess.
+    /// The units of the old instance, for a command a person runs by hand: the server's and,
+    /// where the host has one that runs, its sessions unit.
+    fn old_units(&mut self) -> String {
+        let unit = self.opts.service.clone();
+        match yulius_sandbox::units::sessions_unit(&unit) {
+            Some(sessions)
+                if freeze::sessions_state(&mut *self.world.freezer(), &unit).is_some() =>
+            {
+                format!("{unit} {sessions}")
+            }
+            _ => unit,
+        }
+    }
+
+    /// The command that stops the instance on the new host by hand. The new host is set up
+    /// by this build, so its sessions live in their own unit, which a stop of the server's
+    /// unit leaves running (SPEC-458).
+    fn new_stop_command(&self) -> String {
+        let unit = &self.opts.service;
+        match yulius_sandbox::units::sessions_unit(unit) {
+            Some(sessions) => {
+                format!("systemctl disable --now {unit}; systemctl stop {sessions}")
+            }
+            None => format!("systemctl disable --now {unit}"),
+        }
+    }
+
+    /// Whether the whole old instance is known to be frozen: the server's unit and, where it
+    /// runs, its sessions unit. Not knowing is not frozen: nothing is started on a guess.
     fn old_frozen(&mut self) -> bool {
-        self.old_unit().is_some_and(|(_, frozen)| frozen)
+        self.old_unit().is_some_and(|old| old.all_frozen)
+    }
+
+    /// Whether something of the old instance is known to be frozen.
+    fn old_held(&mut self) -> bool {
+        self.old_unit().is_some_and(|old| old.any_frozen)
     }
 
     /// Thaws the old unit, whoever froze it: after a cutover that did not happen the old
     /// instance runs.
     fn thaw(&mut self) {
         let unit = self.opts.service.clone();
-        if self.old_unit() == Some((true, false)) {
+        if self
+            .old_unit()
+            .is_some_and(|old| old.active && !old.any_frozen)
+        {
             return self.ok("old instance", format!("{unit} runs; nothing to thaw"));
         }
         // Frozen, or systemd did not say: thawing a unit that runs changes nothing. Its
@@ -1330,6 +1398,20 @@ impl<'a> Move<'a> {
         }
     }
 
+    /// Ends a freeze the move does not go on with: thaws what it froze, unless a signal already
+    /// took its end.
+    fn give_back(&mut self, held: Freeze) {
+        if !self.world.claim() {
+            // A signal took it first: it thaws and exits, nothing here may go on.
+            loop {
+                std::thread::park();
+            }
+        }
+        if let Err(why) = held.release() {
+            self.fail("old instance", why);
+        }
+    }
+
     /// The move takes the freeze's end: no signal thaws from here, and no guard does when this
     /// process dies or loses its terminal, so the old instance never thaws beside a new one.
     fn claim(&mut self, held: Freeze) {
@@ -1362,8 +1444,9 @@ impl<'a> Move<'a> {
         let unit = self.opts.service.clone();
         let mut held = self.freeze()?;
         if !self.old_frozen() {
-            // Stopped since the plan: found before the copy, not after it.
-            self.claim(held);
+            // Stopped since the plan: found before the copy, not after it. What the freeze took
+            // all the same (the sessions unit of a stopped server) is given back.
+            self.give_back(held);
             return Err(self.fail(
                 "old instance",
                 format!(
@@ -1502,11 +1585,12 @@ impl<'a> Move<'a> {
                 format!("{unit} stays frozen and is disabled: it never runs beside the new one"),
             );
         } else {
+            let units = self.old_units();
             self.fail(
                 "old instance",
                 format!(
                     "{unit} must be frozen and disabled now that the new instance runs: \
-                     `systemctl freeze {unit}; systemctl disable {unit}`"
+                     `systemctl freeze {units}; systemctl disable {unit}`"
                 ),
             );
         }
@@ -1525,12 +1609,12 @@ impl<'a> Move<'a> {
         );
         if stopped.is_err() {
             // Frozen is safe; thawing beside a copy that may run is not.
+            let stop = self.new_stop_command();
             self.manual(
                 "old instance",
                 format!(
                     "{unit} stays frozen: the new instance could not be stopped. Stop it on the \
-                     new host (`systemctl disable --now {unit}`), then `yulius instance migrate \
-                     --abort` here"
+                     new host (`{stop}`), then `yulius instance migrate --abort` here"
                 ),
             );
             return Err(Stop::Failed);
@@ -1567,12 +1651,13 @@ impl<'a> Move<'a> {
         });
         match asked {
             Ok(reply) if reply.started => {
+                let units = self.old_units();
                 self.manual(
                     "old instance",
                     format!(
                         "{unit} is not frozen any more, and the new instance runs. Make sure \
-                         nothing of the old one runs here: `systemctl stop {unit}; systemctl \
-                         kill --kill-whom=all {unit}; systemctl disable {unit}`"
+                         nothing of the old one runs here: `systemctl stop {units}; systemctl \
+                         kill --kill-whom=all {units}; systemctl disable {unit}`"
                     ),
                 );
                 self.state.cutover = Cutover::Moved;
@@ -1846,12 +1931,13 @@ impl<'a> Move<'a> {
                     self.state.target
                 )) == Some(true);
             if !stopped {
+                let stop = self.new_stop_command();
                 self.fail(
                     "new instance",
                     format!(
                         "{url} does not answer, which does not prove that it is stopped: stop \
-                         it on the new host (`systemctl disable --now {unit}`), then run \
-                         `--abort --yes`. Nothing was changed here"
+                         it on the new host (`{stop}`), then run `--abort --yes`. Nothing was \
+                         changed here"
                     ),
                 );
                 return self.end_abort(false);
@@ -1885,11 +1971,15 @@ impl<'a> Move<'a> {
         let mut systemd = self.world.freezer();
         let did = |out: Result<(i32, String), String>| matches!(out, Ok((0, _)));
         let runs = match state {
-            Some((true, frozen)) => {
-                (!frozen || freeze::thaw_instance(&mut *systemd, &unit).is_ok())
+            Some(old) if old.active => {
+                (!old.any_frozen || freeze::thaw_instance(&mut *systemd, &unit).is_ok())
                     && did(systemd.systemctl(&["enable", &unit]))
             }
-            Some((false, _)) => did(systemd.systemctl(&["enable", "--now", &unit])),
+            // The server's unit does not run; its sessions unit may still be frozen.
+            Some(old) => {
+                (!old.any_frozen || freeze::thaw_instance(&mut *systemd, &unit).is_ok())
+                    && did(systemd.systemctl(&["enable", "--now", &unit]))
+            }
             None => false,
         };
         if runs {
