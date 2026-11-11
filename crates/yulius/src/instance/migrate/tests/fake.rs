@@ -5,6 +5,9 @@ use std::path::{Path, PathBuf};
 
 use crate::host_setup::{Cmd, Host, Out};
 
+/// Answers a command from the host's state, or leaves it to the rules.
+pub type Script = fn(&mut FakeHost, &[String]) -> Option<Out>;
+
 /// What a command starting with `prefix` answers, and what it changes.
 pub struct Rule {
     pub prefix: Vec<String>,
@@ -23,6 +26,8 @@ pub struct FakeHost {
     pub log: Vec<String>,
     /// Paths whose write fails.
     pub read_only: BTreeSet<PathBuf>,
+    /// Asked before the rules: answers a command from the host's state, or leaves it to them.
+    pub script: Option<Script>,
 }
 
 impl FakeHost {
@@ -149,6 +154,19 @@ impl Host for FakeHost {
 
     fn run(&mut self, cmd: &Cmd) -> Result<Out, String> {
         self.log.push(cmd.argv.join(" "));
+        // `rm` removes what it names, so a step's cleanup shows in the host's files.
+        if cmd.argv[0] == "rm" {
+            for gone in cmd.argv.iter().filter(|a| a.starts_with('/')) {
+                let gone = Path::new(gone);
+                self.files.retain(|path, _| !path.starts_with(gone));
+                self.dirs.retain(|path| !path.starts_with(gone));
+            }
+        }
+        if let Some(script) = self.script
+            && let Some(out) = script(self, &cmd.argv)
+        {
+            return Ok(out);
+        }
         let Some(at) = self
             .rules
             .iter()
@@ -323,3 +341,54 @@ pub fn old_host() -> FakeHost {
     h.file("/etc/default/ufw", "IPV6=yes\n");
     h
 }
+
+pub const NEW_ADDRESS: &str = "185.189.47.160";
+
+/// `lsblk --json` of the new host: the system disk and two blank NVMe disks.
+pub const LSBLK: &str = r#"{"blockdevices":[
+ {"name":"sda","path":"/dev/sda","type":"disk","size":480103981056,"fstype":null,"pttype":"gpt","mountpoints":[null],"ro":false,
+  "children":[{"name":"sda1","path":"/dev/sda1","type":"part","size":480102932480,"fstype":"ext4","pttype":"gpt","mountpoints":["/"],"ro":false}]},
+ {"name":"nvme0n1","path":"/dev/nvme0n1","type":"disk","size":3840755982336,"fstype":null,"pttype":null,"mountpoints":[null],"ro":false},
+ {"name":"nvme1n1","path":"/dev/nvme1n1","type":"disk","size":3840755982336,"fstype":null,"pttype":null,"mountpoints":[null],"ro":false},
+ {"name":"nvme2n1","path":"/dev/nvme2n1","type":"disk","size":1000,"fstype":"ext4","pttype":null,"mountpoints":[null],"ro":false},
+ {"name":"sr0","path":"/dev/sr0","type":"rom","size":1073741312,"fstype":null,"pttype":null,"mountpoints":[null],"ro":false},
+ {"name":"loop0","path":"/dev/loop0","type":"loop","size":4096,"fstype":null,"pttype":null,"mountpoints":[null],"ro":true}
+]}"#;
+
+/// A fresh Ubuntu 26.04 server: uutils coreutils, no instance, two blank disks.
+pub fn new_host() -> FakeHost {
+    let mut h = FakeHost::default();
+    h.file(
+        "/etc/os-release",
+        "PRETTY_NAME=\"Ubuntu 26.04.1 LTS\"\nID=ubuntu\nVERSION_ID=\"26.04\"\n\
+         VERSION_CODENAME=resolute\n",
+    );
+    h.file("/proc/meminfo", "MemTotal:       791674880 kB\n");
+    h.file(
+        "/etc/passwd",
+        "root:x:0:0:root:/root:/bin/bash\nubuntu:x:1000:1000::/home/ubuntu:/bin/bash\n",
+    );
+    h.file("/etc/fstab", "UUID=1111-aaaa / ext4 defaults 0 1\n");
+    h.file_as(STAGED_BUILD, "build", 0, 0o755);
+    h.dir("/var/lib");
+    h.says(&["uname", "-m"], "x86_64\n");
+    h.says(&["nproc"], "64\n");
+    h.says(
+        &["systemctl", "--version"],
+        "systemd 259 (259.5-0ubuntu1)\n+PAM +AUDIT\n",
+    );
+    h.says(&["systemctl", "is-active"], "inactive\n");
+    h.says(&["systemctl", "is-enabled"], "disabled\n");
+    h.says(&["stat", "-f", "-c"], "4096 100000000 30000000\n");
+    h.says(&["lsblk"], LSBLK);
+    h.says(
+        &["ss", "-H", "-ltnp"],
+        "LISTEN 0 4096 0.0.0.0:22 0.0.0.0:* users:((\"sshd\",pid=900,fd=3))\n",
+    );
+    h.fails(&["findmnt"], "");
+    h.says(&["ls", "--version"], "ls (uutils coreutils) 0.10.0\n");
+    h.fails(&["cmp", "-s"], "");
+    h
+}
+
+pub const STAGED_BUILD: &str = "/var/lib/yulius-migrate/yulius";

@@ -1404,6 +1404,50 @@ fn an_import_makes_only_the_user_and_its_ids() {
     assert!(!fake.ran("systemctl"), "{:#?}", fake.log);
 }
 
+/// SPEC-460 MIG-024: a move runs the host's items before the copy, the rest before it starts the
+/// service itself, and the running service's items after; together they are the whole setup.
+#[test]
+fn a_move_runs_the_setup_in_three_parts() {
+    let whole: Vec<String> = run(&mut Fake::fresh(), Mode::Setup)
+        .into_iter()
+        .map(|l| l.name)
+        .collect();
+
+    let mut fake = Fake::fresh();
+    let host = Run::new(&mut fake, Mode::Setup, options(), &mut |_| {}).host_items();
+    assert!(passed(&host), "{host:#?}");
+    let names: Vec<&str> = host.iter().map(|l| l.name.as_str()).collect();
+    assert_eq!(names.last(), Some(&"subordinate ids"), "{names:?}");
+    assert!(!names.contains(&"yulius.service") && !names.contains(&"sandbox base"));
+    // Nothing of the instance yet: no unit, no base, no start.
+    assert!(!fake.has(UNIT_FILE), "{:#?}", fake.log);
+    assert!(!fake.ran("systemctl start"), "{:#?}", fake.log);
+
+    // Up to the base, with what the host part did found done; nothing is started.
+    let before = Run::new(&mut fake, Mode::Setup, options(), &mut |_| {}).before_start();
+    assert!(passed(&before), "{before:#?}");
+    let names: Vec<&str> = before.iter().map(|l| l.name.as_str()).collect();
+    assert_eq!(names.last(), Some(&"sandbox base"), "{names:?}");
+    assert!(fake.has(UNIT_FILE));
+    assert!(!fake.ran("systemctl start"), "{:#?}", fake.log);
+    assert_eq!(
+        names,
+        whole[..names.len()],
+        "the same items in the same order"
+    );
+
+    // The caller starts the service; the rest follows.
+    fake.service_active = true;
+    let after = Run::new(&mut fake, Mode::Setup, options(), &mut |_| {}).after_start();
+    let names: Vec<&str> = after.iter().map(|l| l.name.as_str()).collect();
+    assert_eq!(names, whole[before.len()..], "{after:#?}");
+    assert_eq!(
+        outcome(&after, "yulius running"),
+        HostOutcome::Ok,
+        "{after:#?}"
+    );
+}
+
 /// SPEC-398 VSH-004 (#677): the setup hands the data directory and the service name to privileged
 /// commands as arguments, so a value that could read as an option is refused before anything runs:
 /// a data directory that is not absolute (setup, check and the import's user step) and a service

@@ -146,7 +146,7 @@ fn drifted() -> io::Error {
 }
 
 /// The facts of the instance at `data_dir` for its manifest.
-fn manifest_of(data_dir: &Path, unit: &str) -> Result<Manifest, String> {
+pub(crate) fn manifest_of(data_dir: &Path, unit: &str) -> Result<Manifest, String> {
     let meta = std::fs::metadata(data_dir)
         .map_err(|e| format!("cannot read {}: {e}", data_dir.display()))?;
     let passwd = super::read_text(Path::new("/etc/passwd")).unwrap_or_default();

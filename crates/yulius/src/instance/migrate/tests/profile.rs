@@ -58,12 +58,18 @@ fn the_old_hosts_profile_names_everything_a_move_carries() -> Result<(), String>
             "/etc/apt/sources.list.d/github-cli.sources",
         ]
     );
+    assert_eq!(
+        paths(&p.keys),
+        [
+            "/etc/apt/keyrings/docker.asc",
+            "/usr/share/keyrings/githubcli-archive-keyring.gpg",
+        ]
+    );
     // Carried as they are: a key file outside the data directory (the one inside travels with
-    // the data), the environment file, apt keys, the helper's units and record, Caddy, ufw.
+    // the data), the environment file, the helper's units and record, Caddy, ufw.
     assert_eq!(
         paths(&p.files),
         [
-            "/etc/apt/keyrings/docker.asc",
             "/etc/caddy",
             "/etc/default/ufw",
             "/etc/systemd/system/caddy.service.d",
@@ -74,7 +80,6 @@ fn the_old_hosts_profile_names_everything_a_move_carries() -> Result<(), String>
             "/etc/ufw/user6.rules",
             "/etc/yulius/env",
             "/etc/yulius/jev.key",
-            "/usr/share/keyrings/githubcli-archive-keyring.gpg",
             "/var/lib/yulius-update/installed-commit",
         ]
     );

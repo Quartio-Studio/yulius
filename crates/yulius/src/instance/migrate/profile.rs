@@ -156,6 +156,8 @@ pub struct Profile {
     pub sources: Vec<TextFile>,
     /// Caddy's configuration.
     pub caddyfile: Option<TextFile>,
+    /// The key files the apt sources name, carried as they are before the sources.
+    pub keys: Vec<PathBuf>,
     /// Files and directories carried as they are, by path.
     pub files: Vec<PathBuf>,
     /// Software outside apt.
@@ -594,7 +596,7 @@ impl Profile {
             };
             for key in key_paths(&file.content) {
                 if host.is_file(&key) {
-                    push_path(&mut self.files, key);
+                    push_path(&mut self.keys, key);
                 }
             }
             self.sources.push(file);

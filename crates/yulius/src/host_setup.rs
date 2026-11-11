@@ -214,7 +214,7 @@ pub fn needrestart_rule(service: &str) -> String {
 }
 
 /// Whether `service` is a unit name the setup accepts (`[A-Za-z0-9@._-]+.service`).
-fn service_name_ok(service: &str) -> bool {
+pub(crate) fn service_name_ok(service: &str) -> bool {
     service.strip_suffix(".service").is_some_and(|stem| {
         !stem.is_empty()
             && !stem.starts_with('-')

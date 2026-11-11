@@ -248,7 +248,11 @@ pub fn install(
 }
 
 /// Makes the service user and its ids with `host setup`'s items and maps the copy's ids to them.
-fn prepare_host(m: &Manifest, target: &Path, user: Option<&str>) -> Result<IdMap, String> {
+pub(crate) fn prepare_host(
+    m: &Manifest,
+    target: &Path,
+    user: Option<&str>,
+) -> Result<IdMap, String> {
     let opts = crate::host_setup::Options {
         data_dir: target.to_path_buf(),
         user: user.unwrap_or(&m.service.user).to_owned(),
@@ -272,18 +276,23 @@ fn prepare_host(m: &Manifest, target: &Path, user: Option<&str>) -> Result<IdMap
     if !crate::host_setup::passed(&lines) {
         return Err("the service user or its subordinate ids could not be made (see above)".into());
     }
+    id_map(m, &opts.user)
+}
+
+/// How the copy's ids map to this host's service user `user` and its subordinate ranges.
+pub(crate) fn id_map(m: &Manifest, user: &str) -> Result<IdMap, String> {
     let passwd = super::read_text(Path::new("/etc/passwd")).unwrap_or_default();
-    let (uid, gid) = super::user_by_name(&passwd, &opts.user)
-        .ok_or_else(|| format!("no user {} after the setup", opts.user))?;
+    let (uid, gid) =
+        super::user_by_name(&passwd, user).ok_or_else(|| format!("no user {user} on this host"))?;
     let range = |file: &str, old: Option<super::IdRange>| -> Result<_, String> {
         let Some(old) = old else { return Ok(None) };
         let text = super::read_text(Path::new(file)).unwrap_or_default();
-        let (start, count) = yulius_sandbox::subid::find_range(&text, &opts.user, uid)
-            .ok_or_else(|| format!("{} has no range in {file}", opts.user))?;
+        let (start, count) = yulius_sandbox::subid::find_range(&text, user, uid)
+            .ok_or_else(|| format!("{user} has no range in {file}"))?;
         if count < old.count {
             return Err(format!(
-                "{}'s range in {file} has {count} ids, the copy's had {}",
-                opts.user, old.count
+                "{user}'s range in {file} has {count} ids, the copy's had {}",
+                old.count
             ));
         }
         Ok(Some((old.start, start, old.count)))
