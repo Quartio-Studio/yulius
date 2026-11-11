@@ -160,8 +160,10 @@ fn read(conn: &Connection, query: &AnalyticsQuery) -> AppResult<AnalyticsData> {
     let switches = collect(
         conn,
         &format!(
+            // A restart on a newer Claude Code keeps the subscription (SPEC-461 CCM-013).
             "{cohort} SELECT d.task_id, d.at, d.inputs FROM switch_decisions d \
-             JOIN cohort c ON c.id = d.task_id ORDER BY d.at, d.id"
+             JOIN cohort c ON c.id = d.task_id WHERE d.reason <> 'claude_code' \
+             ORDER BY d.at, d.id"
         ),
         &params,
         |row| {

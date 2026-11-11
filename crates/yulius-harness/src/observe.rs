@@ -282,6 +282,8 @@ pub struct UsageAccumulator {
     seen_order: VecDeque<String>,
     limit: Option<LimitSignal>,
     model: Option<String>,
+    /// The CLI version the session's prompt records name, latest last (SPEC-461 CCM-011).
+    cli_version: Option<String>,
     malformed: u64,
     /// Claude Code's turn records (`turn_duration`): one per turn of the session.
     turn_records: u64,
@@ -357,6 +359,11 @@ impl UsageAccumulator {
             }
             Observed::TurnInterrupted { at: Some(at) } => self.active.close(*at),
             Observed::BackgroundStarted { at: Some(at), .. } => self.active.seen(*at),
+            // The Claude Code that wrote the session's lines: a resumed run names its own.
+            Observed::SessionMeta {
+                version: Some(version),
+                ..
+            } => self.cli_version = Some(version.clone()),
             Observed::Malformed => self.malformed += 1,
             _ => {}
         }
@@ -429,6 +436,13 @@ impl UsageAccumulator {
     #[must_use]
     pub fn model(&self) -> Option<&str> {
         self.model.as_deref()
+    }
+
+    /// The CLI version the session's latest prompt record names, if any (Claude Code writes its
+    /// own version on every record).
+    #[must_use]
+    pub fn cli_version(&self) -> Option<&str> {
+        self.cli_version.as_deref()
     }
 
     /// Number of malformed lines seen (a diagnostic; never fatal).

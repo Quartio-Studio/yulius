@@ -236,6 +236,8 @@ pub struct UsageSnapshot {
     pub tokens: TokenUsage,
     /// Model seen.
     pub model: Option<String>,
+    /// The agent CLI's version, as the run's lines name it (SPEC-461 CCM-011).
+    pub cli_version: Option<String>,
     /// Completed turns (Claude Code's turn records).
     pub turns: u64,
     /// Active agent time (ms): the union of the turns' spans, a turn in progress up to the
