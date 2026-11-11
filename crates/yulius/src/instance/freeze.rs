@@ -174,6 +174,41 @@ pub fn freeze(mut host: Box<dyn Host>, unit: &str, update_unit: &str) -> Result<
     }
 }
 
+/// Freezes `unit` to stay frozen: for a move whose new instance has taken over, so the old one
+/// must not run beside it (SPEC-467 LFT-002). Unlike [`freeze`] nothing here ever thaws, and
+/// the update helper is not asked: a freeze that fails, or is not complete within
+/// [`FREEZE_WAIT`], is left as it stands for the caller to report, because the more of the old
+/// instance is frozen the better.
+///
+/// # Errors
+/// `systemctl` did not run or refused the freeze, or the unit was not reported frozen within
+/// the wait.
+pub fn freeze_to_stay(host: &mut dyn Host, unit: &str) -> Result<(), String> {
+    let (code, _) = host.systemctl(&["freeze", unit])?;
+    if code != 0 {
+        // Refused: also when an earlier freeze is still on its way, or has landed since.
+        if show(host, unit).is_ok_and(|state| state.freezer == "frozen") {
+            return Ok(());
+        }
+        return Err(format!("`systemctl freeze {unit}` failed (exit {code})"));
+    }
+    let mut waited = Duration::ZERO;
+    loop {
+        if show(host, unit)?.freezer == "frozen" {
+            return Ok(());
+        }
+        if waited >= FREEZE_WAIT {
+            return Err(format!(
+                "{unit} was not frozen within {} s (a process may hang in the kernel); the \
+                 freeze is left in place",
+                FREEZE_WAIT.as_secs()
+            ));
+        }
+        host.sleep(POLL);
+        waited += POLL;
+    }
+}
+
 impl Freeze {
     /// Whether the export froze the unit (so it thaws it).
     #[must_use]

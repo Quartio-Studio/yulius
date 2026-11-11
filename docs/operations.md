@@ -1403,20 +1403,23 @@ It never leaves both running. Work done on the new host after the move is not co
 The run that ordered the start ignores Ctrl-C, SIGTERM and a lost terminal from then on, on
 purpose (it must not thaw the old instance beside a new one). If it hangs, end it with `kill -9`,
 then run the same command again or `--abort`: a start still in flight on the new host finds the
-abort's stop and starts nothing. A run that goes on from a recorded start froze nothing itself
-and watches no signal: Ctrl-C ends it at once and thaws nothing, and the same command goes on
-again.
+abort's stop and starts nothing. A run that goes on from a recorded start watches no signal:
+Ctrl-C ends it at once and thaws nothing (also when it had just frozen the old unit again), and
+the same command goes on again.
 
 The same command after a run that ended there plans and copies nothing; the new instance's state
-decides. With the old unit still frozen it orders the start again and goes on as above. With the
-old unit no longer frozen it starts nothing and only asks the new instance. When that reports the
-build, the move stands: an old unit that runs (thawed by hand, or started by a restart of the old
-host) is frozen again and disabled, and the checklist says that it ran beside the new instance
-(what its agents did meanwhile is on the old host only); if it cannot be frozen that is a `FAIL`
-line with the reason and the two commands to run. An old unit that does not run is named for you
-to make sure nothing of it is left. When the new instance answers and does not run, `--abort` is
-the way back; when the new host does not answer, nothing is touched and the same command asks
-again once it does.
+decides. A new host that cannot be reached is waited for: the run fails saying so, touches
+nothing and asks for no key again (only a key that is missing on the old host or refused by the
+new one is added anew). With the old unit still frozen the run orders the start again and goes
+on as above. With the old unit no longer frozen it starts nothing and only asks the new instance.
+When that reports the build, the move stands: an old unit that runs (thawed or started by hand)
+is frozen again and disabled, and the checklist says that it ran beside the new instance (what
+its agents did meanwhile is on the old host only). If it cannot be frozen, that is a `FAIL` line
+with the reason and the two commands to run; nothing is thawed then either, and a freeze that
+did not complete within a minute is left on its way. An old unit that does not run is named for
+you to make sure nothing of it is left. When the new instance answers and does not run, `--abort`
+is the way back; when the new host does not answer the question, nothing is touched and the same
+command asks again once it does.
 
 Not part of a move: packages installed inside sandboxes keep their files; on another release the
 checklist names those sandboxes. The sandbox base is built for the new host while preparing, so

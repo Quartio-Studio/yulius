@@ -251,6 +251,58 @@ fn the_helper_is_checked_again_on_request() -> TestResult {
     Ok(())
 }
 
+/// SPEC-467 LFT-002: beside a new instance that has taken over, the old unit is frozen to stay.
+#[test]
+fn a_freeze_to_stay_never_thaws_and_asks_no_helper() -> TestResult {
+    let quiet = |fake: &Fake| {
+        !fake
+            .log
+            .borrow()
+            .iter()
+            .any(|call| call.starts_with("is-active") || call.starts_with("thaw"))
+    };
+    // Frozen after a moment.
+    let mut fake = Fake::new(&[("active", "freezing"), ("active", "frozen")]);
+    // An update that runs would refuse an export; here the unit must be frozen all the same.
+    *fake.helper.borrow_mut() = VecDeque::from(["active".to_owned()]);
+    freeze_to_stay(&mut fake, UNIT)?;
+    assert_eq!(fake.calls(), ["freeze yulius.service"]);
+    assert!(quiet(&fake), "{:?}", fake.log.borrow());
+
+    // Not frozen within the wait: said, and left on its way instead of thawed.
+    let mut fake = Fake::new(&[("active", "freezing")]);
+    let err = freeze_to_stay(&mut fake, UNIT)
+        .err()
+        .ok_or("expected an error")?;
+    assert!(
+        err.contains("was not frozen within 60 s") && err.contains("left in place"),
+        "{err}"
+    );
+    assert_eq!(fake.calls(), ["freeze yulius.service"]);
+    assert!(quiet(&fake), "{:?}", fake.log.borrow());
+
+    // `systemctl freeze` is refused: said, and nothing else is done.
+    let mut fake = Fake::new(&[("active", "running")]);
+    fake.codes.insert("freeze".into(), 1);
+    let err = freeze_to_stay(&mut fake, UNIT)
+        .err()
+        .ok_or("expected an error")?;
+    assert!(
+        err.contains("`systemctl freeze yulius.service` failed (exit 1)"),
+        "{err}"
+    );
+    assert_eq!(fake.calls(), ["freeze yulius.service"]);
+    assert!(quiet(&fake), "{:?}", fake.log.borrow());
+
+    // Refused because an earlier freeze had landed meanwhile: the unit is frozen, which is all
+    // that is asked.
+    let mut fake = Fake::new(&[("active", "frozen")]);
+    fake.codes.insert("freeze".into(), 1);
+    freeze_to_stay(&mut fake, UNIT)?;
+    assert!(quiet(&fake), "{:?}", fake.log.borrow());
+    Ok(())
+}
+
 #[test]
 fn a_signal_thaws_only_a_freeze_the_export_holds() {
     use std::sync::atomic::Ordering::SeqCst;

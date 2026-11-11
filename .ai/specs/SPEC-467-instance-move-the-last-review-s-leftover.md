@@ -64,16 +64,23 @@ messages and documents say what the code does.
   reports the build:
   - an old unit that does not run stays a `manual` line (make sure nothing of it runs) and the
     move is recorded as done;
-  - an old unit that runs unfrozen, or whose state systemd does not say, is frozen by the run
-    (the export's freeze: bounded, refused while an update runs) and then disabled and checked as
-    after any start. When it is frozen the checklist says that it ran beside the new instance
-    (`changed`); when it cannot be frozen the line is `FAIL` with the reason and the commands, the
-    move is still recorded as done (the new instance has taken over, MIG-004) and the run exits 1.
-- LFT-003 **The new host's silence is not "does not run".** In the same resume, a new host that
-  cannot be asked is a `FAIL` line that says so, with the reason, and tells to run the command
-  again when it answers (the abort only once the new instance is known to be stopped). A new
-  instance that answers and does not report the build keeps the line that points to `--abort`.
-  Neither starts, stops, freezes or thaws anything, and the recorded start stays.
+  - an old unit that runs unfrozen, or whose state systemd does not say, is frozen by the run,
+    to stay (bounded by the freeze's wait), and then disabled and checked as after any start.
+    When it is frozen the checklist says that it ran beside the new instance (`changed`); when
+    it cannot be frozen the line is `FAIL` with the reason and the commands, the move is still
+    recorded as done (the new instance has taken over, MIG-004) and the run exits 1. Nothing
+    thaws on that path: a freeze that systemd refuses or that is not complete within the wait is
+    left as it stands (SPEC-460 MIG-004: once the start was ordered nothing thaws the old
+    instance).
+- LFT-003 **The new host's silence is not "does not run".** A run that goes on from a recorded
+  start and cannot reach the new host with the move's key (no connection, no answer) fails
+  saying so, with `ssh`'s reason, and tells to run the command again when the new host answers
+  (the abort only once the new instance is known to be stopped). It does not ask for the key
+  again: the run that ordered the start had added it; only a key that is missing on the old
+  host or refused by the new one is made and added as in a plan. The same holds when the host
+  is reached and the question about the new instance gets no answer. A new instance that
+  answers and does not report the build keeps the line that points to `--abort`. None of these
+  starts, stops, freezes or thaws anything, and the recorded start stays.
 - LFT-004 **A finish that was done is found done.** `finish` takes a key that no longer exists
   on the old host for a finish that was done: only a finish deletes it, once the new host's
   finish answered. The finish is recorded (`finished`), the checklist says so (`manual`: look at
@@ -96,12 +103,13 @@ messages and documents say what the code does.
 ## Plan
 
 - [x] Spec SPEC-467 for the seven findings
-- [ ] A failed look right after the freeze thaws the unit and says what is known (finding 1)
-- [ ] A recorded start freezes an old unit that runs beside the new instance, and a silent new host is told from one that does not run (findings 2 and 7)
-- [ ] A finish that was done but not recorded is found done by the missing key (finding 3)
-- [ ] The limits mark is left out of the export and of both counts (finding 4)
-- [ ] ADR index in order, the guide's Ctrl-C paragraph true, changes entry (findings 5 and 6)
-- [ ] A real move between two QEMU guests through the fixed paths
+- [x] A failed look right after the freeze thaws the unit and says what is known (finding 1)
+- [x] A recorded start freezes an old unit that runs beside the new instance, and a silent new host is told from one that does not run (findings 2 and 7)
+- [x] A finish that was done but not recorded is found done by the missing key (finding 3)
+- [x] The limits mark is left out of the export and of both counts (finding 4)
+- [x] ADR index in order, the guide's Ctrl-C paragraph true, changes entry (findings 5 and 6)
+- [x] A real move between two QEMU guests through the fixed paths
+- [ ] A freeze beside a running new instance never thaws, and a new host that cannot be reached is waited for
 - [ ] Gates green and the independent review answered
 
 ## Acceptance criteria
@@ -113,13 +121,19 @@ messages and documents say what the code does.
   nothing is copied. Stopped at that look: the line and the outcome as before.
 - A recorded start, the old unit running unfrozen, the new instance reporting the build: the run
   freezes and disables the old unit, records `Moved`, shows no "Make sure nothing of the old one
-  runs" line, and finishes with exit 0. The same with a freeze that fails: exit 1, a `FAIL` line
-  with the reason, `Moved`. With an old unit that does not run: the `manual` line, `Moved`, exit
-  0, and nothing frozen, started or stopped.
-- A recorded start, the old unit not frozen, the new host not answering the question: exit 1, a
-  line with "run the command again when the new host answers", no `systemctl` verb on the old
-  host, the state still `Starting`. With a new instance that answers and does not run: the line
-  with `--abort`, as before.
+  runs" line, and finishes with exit 0. The same with a freeze that systemd refuses, and with one
+  that never completes: exit 1, a `FAIL` line with the reason, `Moved`, and no `systemctl thaw`.
+  With an old unit that does not run: the `manual` line, `Moved`, exit 0, and nothing frozen,
+  started or stopped.
+- A recorded start and a new host that cannot be reached, with the old unit frozen or not: exit
+  1, a line with `ssh`'s reason and "run the command again when the new host answers", no
+  sign-in and no "add this line", nothing done on either host, the state still `Starting`; once
+  it answers the same command completes. A key the new host refuses is added again and the run
+  goes on.
+- A recorded start, the old unit not frozen, the new host reached but not answering the question:
+  exit 1, a line with "run the command again when the new host answers", no `systemctl` verb on
+  the old host, the state still `Starting`. With a new instance that answers and does not run:
+  the line with `--abort`, as before.
 - A move whose finish ran, with `finished` not saved: the next run ends with exit 0, says that the
   finish on the new host was done and records `finished`, with the new URL answering or not.
 - An old data directory with a `.yulius-limits-adapt` of another time: the export's plan does
@@ -133,8 +147,10 @@ messages and documents say what the code does.
 
 - Flow tests (`instance::migrate::tests::flow`, two fake hosts, the real export and extraction):
   one per acceptance scenario of LFT-001 to LFT-004. The fake systemd gets "after n looks since
-  the freeze, this happens to the unit"; the fake connection says "there is no one-time key yet"
-  once its key was deleted, as the real one does.
+  the freeze, this happens to the unit", a freeze that is refused and one that never completes;
+  the fake connection says "there is no one-time key yet" once its key was deleted and `ssh`'s
+  words for a host that cannot be reached, as the real one does.
+- Freeze tests (`instance::freeze::tests`): the freeze to stay never thaws and asks no helper.
 - Inventory test (`instance::inventory::tests`): the leftover mark, through the real export and
   import. Walk test: the mark is not listed at the top and is kept below it. Import test: the
   crafted archive with a link at the mark's name.
@@ -151,13 +167,26 @@ messages and documents say what the code does.
 - **Freeze, not only fail, when both run (LFT-002).** The review allowed either. The new instance
   has taken over once it reports the build (MIG-004), so the old one must stop running, and the
   run can do that itself at once; a `FAIL` line alone would leave both running until a person
-  reads it. The freeze is the export's own (`freeze::freeze`): it refuses while the update helper
-  runs and gives up after its bound, and then the line is the `FAIL` the review asked for. A
-  freeze that fails undoes its own attempt, as in an export (the unit is as it was found:
-  running); nothing else thaws in a resumed run (SPEC-460).
+  reads it. When the freeze fails, the line is the `FAIL` the review asked for.
+- **Not the export's freeze (LFT-002).** The first version of this fix called `freeze::freeze`.
+  Its failure paths thaw: a freeze that takes longer than the wait, a `systemctl freeze` that
+  fails, an update helper that became active. That is right for an export and before a start is
+  ordered (a failed freeze must leave the instance running) and wrong beside a new instance that
+  has taken over: the more of the old one is frozen the better, and SPEC-460 lets nothing thaw
+  after the start was ordered. Its refusals are also worded for an export ("start it so the
+  export can freeze them"), which here would tell a person to start the old instance beside the
+  new one. `freeze::freeze_to_stay` sends the freeze, waits the same bound and never thaws; it
+  does not ask the update helper, which every run already refuses to start beside.
 - **Unknown is treated as running (LFT-002).** When systemd does not say what the old unit does,
   "it does not run" would be a guess that ends in exit 0; the run tries the freeze, and the check
   after it fails closed.
+- **An unreachable new host is said before the key is asked for (LFT-003).** With the real
+  connection a host that is down fails the key's check, which comes before the question about
+  the new instance: the run then tried the operator's sign-in again, printed "add this line to
+  authorized_keys" and ended with exit 0, with the old instance frozen and nobody knowing what
+  the new one does. In a run that goes on from a recorded start the key was added already, so
+  only a missing or refused key is a key matter; anything else is the host, and is waited for.
+  A plan's first sign-in is unchanged.
 - **The mark is left out of the export, not only out of the counts (LFT-005).** One rule
   (`walk::left_out`) for the export's walk and for the copy's count: what is not sent cannot be
   counted differently, and a directory or link at that name on the old host cannot fail the

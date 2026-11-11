@@ -468,7 +468,7 @@ impl<'a> Move<'a> {
             // A run that ended while the new instance was starting: its state decides, and
             // nothing is planned or copied again.
             Cutover::Starting => {
-                self.key()?;
+                self.key_again()?;
                 self.resume_start(&profile)?;
             }
             Cutover::No | Cutover::RolledBack => {
@@ -651,6 +651,28 @@ impl<'a> Move<'a> {
                 );
                 Err(Stop::Ended)
             }
+        }
+    }
+
+    /// The one-time key in a run that goes on from a recorded start. The run that ordered the
+    /// start had added it, so a new host that does not answer is not a key to add again: it is
+    /// waited for, and nothing is decided or touched meanwhile. A key that is missing here or
+    /// refused there is made and added as in a plan.
+    fn key_again(&mut self) -> Result<(), Stop> {
+        match self.remote.reachable() {
+            Err(why) if !(why.contains(remote::KEY_REFUSED) || why.contains(remote::NO_KEY)) => {
+                Err(self.fail(
+                    "new host",
+                    format!(
+                        "cannot be reached ({why}), so nobody knows whether the new instance \
+                         runs. Nothing was started, stopped, frozen or thawed: run the command \
+                         again when the new host answers (it decides from the new instance's \
+                         state); `yulius instance migrate --abort` only once the new instance \
+                         is known to be stopped"
+                    ),
+                ))
+            }
+            _ => self.key(),
         }
     }
 
@@ -1618,26 +1640,23 @@ impl<'a> Move<'a> {
     }
 
     /// Freezes an old unit that runs beside a new instance that has taken over (a recorded
-    /// start, the unit thawed or started since). The freeze stays whatever ends this run, and
-    /// [`Self::moved`] says whether it holds. `known`: systemd said that the unit runs.
+    /// start, the unit thawed or started since), to stay: the start was ordered, so nothing
+    /// here thaws, also not when the freeze fails ([`freeze::freeze_to_stay`], not the
+    /// export's freeze, which undoes itself). [`Self::moved`] says whether it holds. `known`:
+    /// systemd said that the unit runs.
     fn freeze_beside_new(&mut self, known: bool) {
-        let opts = self.opts;
-        let unit = &opts.service;
-        match freeze::freeze(self.world.freezer(), unit, &opts.update_service) {
-            Ok(held) => {
-                let ours = held.ours();
-                held.leave_frozen();
-                if ours {
-                    self.changed(
-                        "old instance",
-                        format!(
-                            "{unit} ran here beside the new instance (thawed or started since \
-                             the start was ordered): it is frozen again. What its agents did \
-                             meanwhile is on this host only"
-                        ),
-                    );
-                }
-            }
+        let unit = self.opts.service.clone();
+        match freeze::freeze_to_stay(&mut *self.world.freezer(), &unit) {
+            Ok(()) if known => self.changed(
+                "old instance",
+                format!(
+                    "{unit} ran here beside the new instance (thawed or started since the \
+                     start was ordered): it is frozen again. What its agents did meanwhile is \
+                     on this host only"
+                ),
+            ),
+            // Whether it ran is not known: `moved` says that it is frozen.
+            Ok(()) => {}
             Err(why) => {
                 let runs = if known { "runs" } else { "may run" };
                 self.fail(

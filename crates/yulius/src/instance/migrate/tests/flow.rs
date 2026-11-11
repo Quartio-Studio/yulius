@@ -39,6 +39,9 @@ fn build() -> String {
     crate::serve::build_commit().unwrap_or_else(|| "0".repeat(40))
 }
 
+/// What happens to the old unit from outside.
+type Outside = fn(&mut Systemd);
+
 /// systemd on the old host, as the freeze sees it.
 #[derive(Debug, Default)]
 struct Systemd {
@@ -54,9 +57,13 @@ struct Systemd {
     looks: Option<u32>,
     /// What happens to the unit from outside once that many looks were answered since the
     /// freeze (the freeze's own look, which finds the unit frozen, is the first).
-    after_freeze: Option<(u32, fn(&mut Systemd))>,
+    after_freeze: Option<(u32, Outside)>,
     /// `systemctl freeze` fails.
     no_freeze: bool,
+    /// A freeze never completes (a process hangs in the kernel): the unit stays `freezing`.
+    never_frozen: bool,
+    /// The freezer is on its way.
+    freezing: bool,
 }
 
 struct FakeSystemd(Arc<Mutex<Systemd>>, Events);
@@ -82,20 +89,32 @@ impl freeze::Host for FakeSystemd {
                     "LoadState=loaded\nActiveState={}\nFreezerState={}\n\
                      ControlGroup=/system.slice/yulius.service\n",
                     if unit.stopped { "inactive" } else { "active" },
-                    if unit.frozen { "frozen" } else { "running" }
+                    if unit.frozen {
+                        "frozen"
+                    } else if unit.freezing {
+                        "freezing"
+                    } else {
+                        "running"
+                    }
                 ))
             }
             "is-active" => Ok((3, "inactive\n".into())),
             verb => {
                 match verb {
-                    "freeze" if unit.no_freeze => return Ok((1, String::new())),
+                    // systemd refuses to freeze or thaw a unit that does not run.
+                    "freeze" if unit.no_freeze || unit.stopped => {
+                        return Ok((1, String::new()));
+                    }
                     "freeze" => {
-                        unit.frozen = true;
+                        unit.frozen = !unit.never_frozen;
+                        unit.freezing = unit.never_frozen;
                         unit.looks = Some(0);
                     }
-                    // systemd refuses to thaw a unit that does not run.
                     "thaw" if unit.stopped => return Ok((1, String::new())),
-                    "thaw" => unit.frozen = false,
+                    "thaw" => {
+                        unit.frozen = false;
+                        unit.freezing = false;
+                    }
                     "disable" if unit.no_disable => return Ok((1, String::new())),
                     "disable" => unit.disabled = true,
                     "enable" => {
@@ -132,6 +151,8 @@ struct FakeRemote {
     /// The one-time key's comment (the move's id), as the real connection is given it.
     comment: String,
     signs_in: bool,
+    /// The new host cannot be reached at all.
+    down: bool,
     /// The key's file was deleted on the old host ([`Remote::forget`]).
     deleted: bool,
     healthy: bool,
@@ -152,6 +173,10 @@ struct FakeRemote {
     sent: Vec<PathBuf>,
 }
 
+/// What `ssh` says of a host that cannot be reached, as the real connection reports it.
+const DOWN: &str = "ssh ended with exit status: 255: ssh: connect to host 185.189.47.160 port \
+                    22: Connection timed out";
+
 fn step_name(request: &Request) -> String {
     serde_json::to_value(request)
         .ok()
@@ -161,6 +186,9 @@ fn step_name(request: &Request) -> String {
 
 impl Remote for FakeRemote {
     fn reachable(&mut self) -> Result<(), String> {
+        if self.down {
+            return Err(DOWN.into());
+        }
         if self.deleted {
             // As the real connection: it does not even try without its key.
             Err("there is no one-time key yet".into())
@@ -177,6 +205,9 @@ impl Remote for FakeRemote {
     }
 
     fn install_key(&mut self) -> Result<(), String> {
+        if self.down {
+            return Err("the sign-in to root@185.189.47.160 ended with exit status: 255".into());
+        }
         if !self.signs_in {
             return Err("no terminal to sign in from".into());
         }
@@ -197,6 +228,9 @@ impl Remote for FakeRemote {
     }
 
     fn call(&mut self, request: &Request) -> Result<Reply, String> {
+        if self.down {
+            return Err(DOWN.into());
+        }
         if !self.key {
             return Err("Permission denied (publickey)".into());
         }
@@ -559,6 +593,7 @@ fn setup() -> Result<Setup, Box<dyn std::error::Error>> {
             key: false,
             comment: String::new(),
             signs_in: true,
+            down: false,
             deleted: false,
             healthy: true,
             tamper: None,
@@ -1832,7 +1867,8 @@ fn a_recorded_start_never_ends_with_both_instances_running() -> TestResult {
     assert_eq!((state.cutover, state.finished), (Cutover::Moved, true));
 
     // It cannot be frozen: a failure with the reason and the commands, never exit 0; the move
-    // is recorded all the same, for the new instance has taken over.
+    // is recorded all the same, for the new instance has taken over. And nothing is thawed:
+    // once a start was ordered no failure thaws, the freeze's own included.
     let mut s = killed_while_starting()?;
     if let Ok(mut unit) = s.world.systemd.lock() {
         unit.frozen = false;
@@ -1849,8 +1885,33 @@ fn a_recorded_start_never_ends_with_both_instances_running() -> TestResult {
         !shown.contains("Make sure nothing of the old one runs here"),
         "{shown}"
     );
-    // A freeze that fails undoes its own attempt and nothing else: the unit is as it was found.
+    assert!(!s.events().contains(&"old: systemctl thaw".to_owned()));
     assert_eq!(s.old_unit(), (false, true));
+    let state = State::load(&s.opts.state_dir).ok_or("no state")?;
+    assert_eq!(state.cutover, Cutover::Moved);
+
+    // A freeze that does not complete (a process hangs in the kernel) is left on its way: the
+    // more of the old instance is frozen the better, so the export's way out, a thaw, is not
+    // taken beside a new instance that runs.
+    let mut s = killed_while_starting()?;
+    if let Ok(mut unit) = s.world.systemd.lock() {
+        unit.frozen = false;
+        unit.never_frozen = true;
+    }
+    assert_eq!(s.run()?, 1);
+    let shown = s.shown();
+    assert!(shown.contains("the freeze is left in place"), "{shown}");
+    assert!(shown.contains("must be frozen and disabled now"), "{shown}");
+    let events = s.events();
+    assert!(
+        events.contains(&"old: systemctl freeze".to_owned()),
+        "{events:?}"
+    );
+    assert!(
+        !events.contains(&"old: systemctl thaw".to_owned()),
+        "{events:?}"
+    );
+    assert!(s.world.systemd.lock().is_ok_and(|unit| unit.freezing));
     let state = State::load(&s.opts.state_dir).ok_or("no state")?;
     assert_eq!(state.cutover, Cutover::Moved);
 
@@ -1871,6 +1932,50 @@ fn a_recorded_start_never_ends_with_both_instances_running() -> TestResult {
         !shown.contains("Make sure nothing of the old one runs here"),
         "{shown}"
     );
+    Ok(())
+}
+
+#[test]
+fn a_recorded_start_waits_for_a_new_host_that_cannot_be_reached() -> TestResult {
+    // The run that ordered the start had added the key: a new host that does not answer now is
+    // not a key to add again. Nothing is decided and nothing is touched, whatever the old unit
+    // does, and the run does not end as if all were well.
+    for frozen in [true, false] {
+        let mut s = killed_while_starting()?;
+        if let Ok(mut unit) = s.world.systemd.lock() {
+            unit.frozen = frozen;
+        }
+        s.remote.down = true;
+        assert_eq!(s.run()?, 1, "{}", s.shown());
+        let shown = s.shown();
+        assert!(shown.contains("cannot be reached"), "{shown}");
+        assert!(shown.contains("Connection timed out"), "{shown}");
+        assert!(
+            shown.contains("run the command again when the new host answers"),
+            "{shown}"
+        );
+        assert!(
+            !shown.contains("add this line") && !shown.contains("Signing in"),
+            "{shown}"
+        );
+        assert!(!shown.contains("--abort` goes back"), "{shown}");
+        assert!(s.events().is_empty(), "{:?}", s.events());
+        assert_eq!(s.old_unit(), (frozen, false));
+        let state = State::load(&s.opts.state_dir).ok_or("no state")?;
+        assert_eq!(state.cutover, Cutover::Starting);
+        // It answers again: the same command decides from the new instance's state.
+        s.remote.down = false;
+        assert_eq!(s.run()?, 0, "{}", s.shown());
+        assert_eq!(s.old_unit(), (true, true));
+    }
+
+    // A key the new host refuses is another matter: it is added again through a sign-in, as
+    // in a plan, and the run goes on.
+    let mut s = killed_while_starting()?;
+    s.remote.key = false;
+    assert_eq!(s.run()?, 0, "{}", s.shown());
+    assert!(s.shown().contains("made and added to"), "{}", s.shown());
+    assert_eq!(s.old_unit(), (true, true));
     Ok(())
 }
 

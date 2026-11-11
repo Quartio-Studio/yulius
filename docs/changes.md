@@ -11,9 +11,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   frozen behind "is not running any more": the unit is thawed and the line says what systemd
   said. A run that goes on from a recorded start never ends with both instances running: an old
   unit that runs unfrozen beside a new instance that reports the build is frozen again and
-  disabled (a `FAIL` line with the reason when it cannot be), and a new host that does not answer
-  is told from a new instance that does not run ("run the command again when the new host
-  answers", not `--abort`). A finish that was done but not recorded is found done by the key it
+  disabled (a `FAIL` line with the reason when it cannot be; nothing is thawed there, a slow
+  freeze is left on its way), and a new host that cannot be reached or does not answer is told
+  from a new instance that does not run ("run the command again when the new host answers", not
+  `--abort`, and no second request for the key). A finish that was done but not recorded is found done by the key it
   deleted, instead of "Run the command again" on every run. `yulius instance export` leaves a
   `.yulius-limits-adapt` out and neither host counts it, so a move from a host that still holds
   that mark proves its copy. The operations guide §7 says which run ignores Ctrl-C, and the
