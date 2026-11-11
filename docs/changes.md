@@ -6,6 +6,19 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-11
 
+- The restart of a running task on a newer Claude Code loses nothing a person left in the
+  session and tells nobody twice (SPEC-468, task #452: the two minors and seven nits the last
+  review of SPEC-461 left open). A prompt-mode session in which a person set a goal of their
+  own (`/goal …`) keeps its version while that goal is open, where it used to lose the goal
+  silently; so does a session with a draft in its prompt box (typed since its last prompt was
+  sent), not only one typed into in the last minute. An idle session that is restarted reads
+  "Continuing" and then as before, with no "Working" in between and no second "Your turn"
+  notification. Two turn ends that decide at once make one restart, and the breaker watches
+  it. While running tasks are no longer moved to a version, the card and a task's info promise
+  it only at the task's next start, and the card says when the binary in use could not be read
+  for its models. The version and the model a transcript names are capped. The gate's block
+  case of the move has its test. Older code, reported as #1182: a move to another subscription
+  still drops a goal a person set in a prompt-mode session.
 - Sandboxes never run a Claude Code that does not know Yulius's default model (SPEC-461, task
   #443, ADR-0293). On production the default model (Fable 5.2) had outrun the Claude Code that
   npm's `stable` offered (2.1.311), so a session's own model picker and its `fable` alias meant
