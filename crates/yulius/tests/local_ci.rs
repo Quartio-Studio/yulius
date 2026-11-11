@@ -1468,6 +1468,17 @@ command = 'while [ ! -f "{release}" ]; do sleep 0.05; done'
         ],
     )
     .await?;
+    // Only this run holds jobs: every other run passed, so none competes with it for the job
+    // slots and none was ended by its time limit (#1079).
+    let overview = f.get("/api/sandboxes/s1/ci").await?;
+    assert!(
+        overview["runs"]
+            .as_array()
+            .ok_or("runs")?
+            .iter()
+            .all(|r| r["sha"] == first.as_str() || r["state"] == "passed"),
+        "another run holds job slots or was ended by its time limit: {overview}"
+    );
     // GitHub hears of the failed scan at once, while the tests run (review round 1).
     let deadline = tokio::time::Instant::now() + WAIT;
     while f.last_status(&first).map(|(_, d, _)| d)
