@@ -146,10 +146,30 @@ impl FakeState {
                 None => self.fields_probe(session),
             },
         };
+        let focus = self.focus(session);
         if let Some(object) = answer.as_object_mut() {
             object.entry("origin").or_insert(json!(origin));
+            object.entry("focus").or_insert(focus);
         }
         answer
+    }
+
+    /// Where typed text goes: the focused field, a password field with its value or other.
+    fn focus(&mut self, session: Option<&str>) -> Value {
+        let password = self.password_fields.clone();
+        let Some(page) = self.page(session) else {
+            return json!({"kind": "none"});
+        };
+        if !password.contains(&page.focused) {
+            return json!({"kind": "other"});
+        }
+        let value = page
+            .fields
+            .iter()
+            .find(|(selector, _)| *selector == page.focused)
+            .map(|(_, value)| value.clone())
+            .unwrap_or_default();
+        json!({"kind": "password", "value": value})
     }
 
     fn fields_probe(&mut self, session: Option<&str>) -> Value {

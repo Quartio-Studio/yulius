@@ -95,8 +95,9 @@ const SECRET_PROBE_WORLD: &str = "yulius-secret-probe";
 
 /// Reads what a page can show (SPEC-450 SSC-003): the text of its documents (all but `head`),
 /// open shadow roots and same-origin frames, objects and embeds, and the values and
-/// placeholders of fields drawn as text (`shown`), and the values of password fields (`masked`);
-/// `over` past 4 000 000 characters. It takes nothing in: Yulius compares the typed
+/// placeholders of fields drawn as text (`shown`), the values of password fields (`masked`), and
+/// where typed text goes (`focus`: a password field and its value, a frame it cannot read,
+/// other); `over` past 4 000 000 characters. It takes nothing in: Yulius compares the typed
 /// values, which never reach the page. The marker comment names it for the fake.
 const SECRET_PROBE_EXPRESSION: &str = "(() => {
   // yulius:secret-probe
@@ -106,12 +107,14 @@ const SECRET_PROBE_EXPRESSION: &str = "(() => {
   const kindOf = getter(Node.prototype, 'nodeType');
   const inDocument = Document.prototype.querySelectorAll;
   const inFragment = DocumentFragment.prototype.querySelectorAll;
+  const textOf = getter(Node.prototype, 'textContent');
   const shown = [], masked = [];
   let size = 0, over = false;
-  const add = (list, text) => {
+  const add = (list, value) => {
+    const text = value == null ? '' : String(value);
     if (!text) return;
     size += text.length;
-    if (size > 4000000) over = true; else list.push(String(text));
+    if (size > 4000000) over = true; else list.push(text);
   };
   const walk = (root) => {
     const all = (kindOf.call(root) === 9 ? inDocument : inFragment).call(root, '*');
@@ -122,7 +125,7 @@ const SECRET_PROBE_EXPRESSION: &str = "(() => {
         if (type === 'password') add(masked, el.value); else if (type !== 'hidden') add(shown, el.value);
         add(shown, el.placeholder);
       } else if (name === 'textarea') { add(shown, el.value); add(shown, el.placeholder); }
-      if (el.shadowRoot) { add(shown, el.shadowRoot.textContent); walk(el.shadowRoot); }
+      if (el.shadowRoot) { add(shown, textOf.call(el.shadowRoot)); walk(el.shadowRoot); }
       if (name === 'iframe' || name === 'frame' || name === 'object' || name === 'embed') {
         let doc = null;
         try { doc = el.contentDocument || (el.getSVGDocument ? el.getSVGDocument() : null); } catch (_) {}
@@ -133,11 +136,29 @@ const SECRET_PROBE_EXPRESSION: &str = "(() => {
   const text = (doc) => {
     const top = rootOf.call(doc);
     if (!top) return;
-    for (const child of top.children) if (String(child.localName).toLowerCase() !== 'head') add(shown, child.textContent);
+    for (const child of top.children) if (String(child.localName).toLowerCase() !== 'head') add(shown, textOf.call(child));
+  };
+  // Where typed text goes: the focused element, through open shadow roots and same-origin frames.
+  const focus = () => {
+    let el = document.activeElement;
+    for (;;) {
+      if (!el) return { kind: 'none' };
+      if (el.shadowRoot && el.shadowRoot.activeElement) { el = el.shadowRoot.activeElement; continue; }
+      const name = String(el.localName).toLowerCase();
+      if (name === 'iframe' || name === 'frame') {
+        let inner = null;
+        try { inner = el.contentDocument; } catch (_) {}
+        if (!inner) return { kind: 'frame' };
+        el = inner.activeElement;
+        continue;
+      }
+      if (name === 'input' && String(el.type).toLowerCase() === 'password') return { kind: 'password', value: String(el.value) };
+      return { kind: 'other' };
+    }
   };
   text(document);
   walk(document);
-  return { shown, masked, over };
+  return { shown, masked, over, focus: focus() };
 })()";
 
 const TEXT_FALLBACK_EXPRESSION: &str =
@@ -768,6 +789,9 @@ struct PageText {
     shown: Vec<Zeroizing<String>>,
     /// The values of password fields (drawn as dots).
     masked: Vec<Zeroizing<String>>,
+    /// The value of the focused element when it is a password field (`None`: it is not, or it
+    /// is a frame the probe cannot read).
+    focused_password: Option<Zeroizing<String>>,
 }
 
 impl PageText {
@@ -783,9 +807,15 @@ impl PageText {
         if value.get("over").and_then(Value::as_bool) != Some(false) {
             return None;
         }
+        let focus = value.get("focus");
+        let focused_password = focus
+            .filter(|focus| focus.get("kind").and_then(Value::as_str) == Some("password"))
+            .and_then(|focus| focus.get("value").and_then(Value::as_str))
+            .map(|text| Zeroizing::new(text.to_owned()));
         Some(Self {
             shown: strings("shown")?,
             masked: strings("masked")?,
+            focused_password,
         })
     }
 
@@ -796,6 +826,15 @@ impl PageText {
     /// Whether `value` is whole in a password field and shown nowhere.
     fn confines(&self, value: &str) -> bool {
         self.masked.iter().any(|text| text.contains(value)) && !self.shows(value)
+    }
+
+    /// Whether `value`, just typed, went into the focused password field whole and is shown
+    /// nowhere: another password field holding it says nothing of where this typing went.
+    fn received(&self, value: &str) -> bool {
+        self.focused_password
+            .as_ref()
+            .is_some_and(|text| text.contains(value))
+            && !self.shows(value)
     }
 }
 
@@ -2550,7 +2589,7 @@ impl BrowserInstance {
         // the one it was typed into and the one shown since.
         if !page
             .as_ref()
-            .is_some_and(|page| page.confines(&params.text))
+            .is_some_and(|page| page.received(&params.text))
         {
             let after_host = after.as_ref().and_then(|d| d.host.as_ref());
             for host in before.host.iter().chain(after_host) {
@@ -2566,7 +2605,8 @@ impl BrowserInstance {
     /// Before other typing (`browser_type`, a user name): the secrets typed into this document
     /// that are whole in a password field now, which the typing may edit (a character into the
     /// middle of one); `None` when there are none. A document that cannot be told, with secrets
-    /// typed in this browser, refuses every screenshot.
+    /// typed in this browser, refuses every screenshot; a page that cannot be read, or that shows
+    /// one of them (a password revealed), exposes its host, since an edit would go unseen.
     async fn watched_values(&self, session: &str) -> Option<(Document, Vec<Zeroizing<String>>)> {
         if self.secrets.lock().documents.is_empty() {
             return None;
@@ -2579,7 +2619,14 @@ impl BrowserInstance {
         if values.is_empty() {
             return None;
         }
-        let page = self.read_page(session, &document.frame).await?;
+        let Some(page) = self.read_page(session, &document.frame).await else {
+            self.secrets.lock().expose(document.host.as_deref());
+            return None;
+        };
+        if values.iter().any(|value| page.shows(value)) {
+            self.secrets.lock().expose(document.host.as_deref());
+            return None;
+        }
         let values: Vec<_> = values
             .into_iter()
             .filter(|value| page.confines(value))
