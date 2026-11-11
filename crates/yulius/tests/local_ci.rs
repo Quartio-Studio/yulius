@@ -1474,6 +1474,17 @@ command = 'while [ ! -f "{release}" ]; do sleep 0.05; done'
     // The scan fails at once; quality and e2e are still running when it does.
     let first = f.push_feature("fail-security", Some("x\n"))?;
     f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    // Only this run will hold jobs: every other run has passed, so none competes with it for the
+    // job slots (#1079).
+    let overview = f.get("/api/sandboxes/s1/ci").await?;
+    assert!(
+        overview["runs"]
+            .as_array()
+            .ok_or("runs")?
+            .iter()
+            .all(|r| r["sha"] == first.as_str() || r["state"] == "passed"),
+        "every other run must have passed before this one holds its jobs: {overview}"
+    );
     f.until_jobs(
         &first,
         &[
@@ -1483,17 +1494,6 @@ command = 'while [ ! -f "{release}" ]; do sleep 0.05; done'
         ],
     )
     .await?;
-    // Only this run holds jobs: every other run passed, so none competes with it for the job
-    // slots and none was ended by its time limit (#1079).
-    let overview = f.get("/api/sandboxes/s1/ci").await?;
-    assert!(
-        overview["runs"]
-            .as_array()
-            .ok_or("runs")?
-            .iter()
-            .all(|r| r["sha"] == first.as_str() || r["state"] == "passed"),
-        "another run holds job slots or was ended by its time limit: {overview}"
-    );
     // GitHub hears of the failed scan at once, while the tests run (review round 1).
     let deadline = tokio::time::Instant::now() + WAIT;
     while f.last_status(&first).map(|(_, d, _)| d)
