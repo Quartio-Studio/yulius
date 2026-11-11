@@ -555,7 +555,10 @@ test('the navigation drawer rows fit a 320 px phone with task and pull request n
   await expect(browser.locator('.task-list .task-row:has-text("Improve the code") .tl-pr-chip')).toHaveCount(1);
   const rows = await browser.evaluate(() => [...document.querySelectorAll('.task-list .task-link')].map((link) => {
     const box = link.getBoundingClientRect();
-    const right = Math.max(...[...link.children].map((el) => el.getBoundingClientRect().right));
+    // Only the parts that are drawn: one that is not (the time, the chip on a narrow row) measures
+    // as zeros, which is right of every row while the drawer still slides in from the left.
+    const drawn = [...link.children].filter((el) => el.getClientRects().length > 0);
+    const right = Math.max(...drawn.map((el) => el.getBoundingClientRect().right));
     return {
       text: link.querySelector('.task-title')!.textContent,
       spills: right > box.right - parseFloat(getComputedStyle(link).paddingRight) + 1,
