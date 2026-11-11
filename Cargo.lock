@@ -3268,6 +3268,7 @@ dependencies = [
  "x11rb",
  "yulius-contracts",
  "yulius-domain",
+ "zeroize",
 ]
 
 [[package]]

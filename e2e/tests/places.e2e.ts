@@ -93,7 +93,7 @@ const agentMarked = (browser: Browser) => browser.evaluate(() => [...document.qu
 
 test('each sandbox comes back with its own tool panel and the same Superagent session', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12'));
-  // In studio first: a Superagent opened before the page has its sandbox is the Global one.
+  // In studio first: a Superagent opened before the page has its sandbox waits for it (SPEC-450).
   await firstShown(heading(screen), '#12 Checkout API');
   await openSuperagent(browser, screen);
   await expect(browser.locator('.agent-term .xterm-rows').first()).toHaveText(/Welcome to Claude Code/);
@@ -281,7 +281,7 @@ test('leaving a CI run by Back does not rewrite the new address', async ({ app, 
 
 test('a removed sandbox’s tool views go with it', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12'));
-  // In studio first: a Superagent opened before the page has its sandbox is the Global one.
+  // In studio first: a Superagent opened before the page has its sandbox waits for it (SPEC-450).
   await firstShown(heading(screen), '#12 Checkout API');
   await openSuperagent(browser, screen);
   await expect(browser.locator('.agent-term .xterm-rows').first()).toHaveText(/Welcome to Claude Code/);
