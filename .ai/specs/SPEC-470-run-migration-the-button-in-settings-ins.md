@@ -206,7 +206,7 @@ Settings → Instance
 ## Plan
 
 - [x] Spec SPEC-470 and ADR-0305
-- [ ] The request's contract and field rules, shared by the server and the helper
+- [x] The request's contract and field rules, shared by the server and the helper
 - [ ] `yulius migrate-helper`: owner checks, one request once, never during an update, runs the command, reports, stops a run on an abort
 - [ ] Units in `deploy/systemd`, carried by a move and enabled on the new host as on the old one
 - [ ] The command tells readers the key line and the new URL, and the finished checklist travels to the new host

@@ -91,28 +91,9 @@ pub trait Remote {
     }
 }
 
-/// Whether `destination` is `[user@]host` and nothing `ssh` could read as an option.
-#[must_use]
-pub fn destination_ok(destination: &str) -> bool {
-    let name = |s: &str| {
-        !s.is_empty()
-            && !s.starts_with('-')
-            && s.chars()
-                .all(|c| c.is_ascii_alphanumeric() || "._-:[]".contains(c))
-    };
-    match destination.split_once('@') {
-        Some((user, host)) => name(user) && name(host) && !user.contains([':', '[', ']']),
-        None => name(destination),
-    }
-}
-
-/// The host of a destination, without its user.
-#[must_use]
-pub fn host_part(destination: &str) -> &str {
-    destination
-        .split_once('@')
-        .map_or(destination, |(_, host)| host)
-}
+// `[user@]host` and nothing `ssh` could read as an option, and its host: the rules a request from
+// Settings → Instance is held to as well (SPEC-470 MVB-002), so they live with those.
+pub use yulius_app::migration::rules::{destination_ok, host_part};
 
 /// The reply in a step's output: its last [`REPLY`] line. The lines before are what the step's
 /// commands printed.
