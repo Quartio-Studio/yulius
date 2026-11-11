@@ -17,8 +17,9 @@ use yulius_contracts::update::HostOutcome;
 /// The instance's answer: the facts, `None` without a GitHub App, or why it could not be asked.
 pub type Asked = Result<Option<GitHubCallback>, String>;
 
-/// How long the instance may take for each step of its answer: it asks GitHub, within 10 s.
-const LIMIT: Duration = Duration::from_secs(20);
+/// How long the instance may take for each step of its answer: it asks GitHub within 10 s, after
+/// a check that may be on its way (10 s more).
+const LIMIT: Duration = Duration::from_secs(30);
 
 /// Asks the instance whose data directory is `data_dir`, at its loopback listener `address`,
 /// whether GitHub accepts the callback of `public_url` (its own without one).

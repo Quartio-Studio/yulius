@@ -18,6 +18,11 @@ use crate::ports::github::GitHubAppConfig;
 
 /// An answer that is not "registered" is asked for again when it is read this long after.
 const RECHECK_MS: i64 = 30_000;
+/// So many answers in a row that say the same are asked for again after [`RECHECK_MS`]: someone
+/// is adding the callback on GitHub and watches the page.
+const QUICK_RECHECKS: u32 = 10;
+/// After them the wait doubles with every such answer, this often at most (32 minutes).
+const MAX_DOUBLINGS: u32 = 6;
 /// A sign-in start reuses an answer this young, so visitors cannot make the instance ask GitHub
 /// more often.
 const REUSE_MS: i64 = 5_000;
@@ -59,11 +64,43 @@ pub struct AddressView {
     pub moved: Option<MoveReport>,
 }
 
+/// GitHub's last answer about the instance's own callback.
+#[derive(Debug, Clone)]
+struct Kept {
+    state: CallbackState,
+    /// When GitHub gave it.
+    at: Timestamp,
+    /// Which answer it is, so a demand that waited for another knows a new one from an old one.
+    number: u64,
+    /// How many answers before it said the same and were asked for by a read, not by a person.
+    same: u32,
+}
+
+/// How long an answer that is not "registered" is kept before a read asks GitHub again: half a
+/// minute while it is new, then ever longer, so a page left open does not make the instance ask
+/// GitHub twice a minute for as long as nobody adds the callback.
+fn recheck_after(same: u32) -> i64 {
+    RECHECK_MS << same.saturating_sub(QUICK_RECHECKS).min(MAX_DOUBLINGS)
+}
+
+impl Kept {
+    /// Whether a read at `now` asks GitHub again.
+    fn stale(&self, now: Timestamp) -> bool {
+        self.state != CallbackState::Registered
+            && now.0.saturating_sub(self.at.0) >= recheck_after(self.same)
+    }
+
+    /// Whether `state` says the same as this answer (an unknown answer for whatever reason).
+    fn says(&self, state: &CallbackState) -> bool {
+        std::mem::discriminant(&self.state) == std::mem::discriminant(state)
+    }
+}
+
 /// The kept answer for the instance's own callback.
 #[derive(Debug, Default)]
 pub(crate) struct CallbackKept {
-    /// The last answer, when it was given, and its number.
-    answer: Mutex<Option<(CallbackState, Timestamp, u64)>>,
+    /// The last answer.
+    answer: Mutex<Option<Kept>>,
     /// One check at a time.
     asking: tokio::sync::Mutex<()>,
     /// A background check is on its way.
@@ -92,14 +129,12 @@ pub fn public_url_ok(url: &str) -> bool {
 }
 
 /// The App's settings page: an organization's or a person's. Names GitHub would not have given
-/// lead to the list of the person's Apps instead of into a made-up address.
+/// (it gives letters, digits and hyphens) lead to the list of the person's Apps instead of into a
+/// made-up address.
 #[must_use]
 pub fn settings_url(owner_kind: Option<&str>, owner_login: Option<&str>, slug: &str) -> String {
     let plain = |name: &str| {
-        !name.is_empty()
-            && name
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
+        !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
     };
     match (owner_kind, owner_login) {
         _ if !plain(slug) => "https://github.com/settings/apps".to_owned(),
@@ -144,7 +179,7 @@ impl App {
         Ok(Some((app, settings)))
     }
 
-    fn kept_answer(&self) -> Option<(CallbackState, Timestamp, u64)> {
+    fn kept_answer(&self) -> Option<Kept> {
         self.github_callback
             .answer
             .lock()
@@ -165,8 +200,19 @@ impl App {
         public_url: Option<&str>,
         reuse_ms: i64,
     ) -> AppResult<Option<CallbackFacts>> {
+        self.ask_github(public_url, reuse_ms, false).await
+    }
+
+    /// [`App::check_github_callback`]; `by_a_read` when no person or command demanded it, which
+    /// counts towards asking less often ([`recheck_after`]).
+    async fn ask_github(
+        &self,
+        public_url: Option<&str>,
+        reuse_ms: i64,
+        by_a_read: bool,
+    ) -> AppResult<Option<CallbackFacts>> {
         // Read before anything is awaited: an answer given from here on is news to this demand.
-        let before = self.kept_answer().map(|(.., number)| number);
+        let before = self.kept_answer().map(|kept| kept.number);
         if public_url.is_some_and(|url| !public_url_ok(url)) {
             return Err(AppError::Invalid(
                 "public_url must be `https://host`".into(),
@@ -179,10 +225,10 @@ impl App {
         let url = public_url.unwrap_or(&self.config.public_url);
         let _one = self.github_callback.asking.lock().await;
         if own
-            && let Some((state, at, number)) = self.kept_answer()
-            && (Some(number) != before || self.now().0.saturating_sub(at.0) < reuse_ms)
+            && let Some(kept) = self.kept_answer()
+            && (Some(kept.number) != before || self.now().0.saturating_sub(kept.at.0) < reuse_ms)
         {
-            return Ok(Some(facts(url, settings, state, Some(at))));
+            return Ok(Some(facts(url, settings, kept.state, Some(kept.at))));
         }
         let asked = self
             .deps
@@ -196,24 +242,33 @@ impl App {
         };
         let at = self.now();
         if own && let Ok(mut kept) = self.github_callback.answer.lock() {
-            if kept.as_ref().map(|(was, ..)| was) != Some(&state) {
+            let was = kept.as_ref();
+            if was.map(|was| &was.state) != Some(&state) {
                 tracing::info!(state = ?state, "GitHub's answer about the sign-in callback");
             }
-            let number = kept.as_ref().map_or(0, |(.., number)| *number);
-            *kept = Some((state.clone(), at, number.wrapping_add(1)));
+            *kept = Some(Kept {
+                number: was.map_or(1, |was| was.number.wrapping_add(1)),
+                // A demand means someone is here: the next reads ask quickly again.
+                same: match was {
+                    Some(was) if by_a_read && was.says(&state) => was.same.saturating_add(1),
+                    _ => 0,
+                },
+                state: state.clone(),
+                at,
+            });
         }
         Ok(Some(facts(url, settings, state, Some(at))))
     }
 
-    /// Asks GitHub in the background, unless a background check is already on its way: at start
-    /// and when the App was stored (SPEC-466 MVC-003).
+    /// Asks GitHub in the background, unless a background check is already on its way: at start,
+    /// when the App was stored and when a read finds the answer due (SPEC-466 MVC-003).
     pub fn start_github_callback_check(self: &Arc<Self>) {
         if self.github_callback.refreshing.swap(true, Ordering::SeqCst) {
             return;
         }
         let app = Arc::clone(self);
         tokio::spawn(async move {
-            if let Err(err) = app.check_github_callback(None, REUSE_MS).await {
+            if let Err(err) = app.ask_github(None, REUSE_MS, true).await {
                 tracing::warn!(error = %err, "could not ask GitHub about the sign-in callback");
             }
             app.github_callback
@@ -222,19 +277,14 @@ impl App {
         });
     }
 
-    /// The kept answer. Reading one that is not "registered" and older than [`RECHECK_MS`] (or
-    /// none at all) asks GitHub again in the background: re-checked while someone looks.
+    /// The kept answer. Reading one that is not "registered" and due ([`Kept::stale`]), or none
+    /// at all, asks GitHub again in the background: re-checked while someone looks.
     fn kept_callback(self: &Arc<Self>) -> Option<(CallbackState, Timestamp)> {
         let kept = self.kept_answer();
-        let stale = match &kept {
-            None => true,
-            Some((CallbackState::Registered, ..)) => false,
-            Some((_, at, _)) => self.now().0.saturating_sub(at.0) >= RECHECK_MS,
-        };
-        if stale {
+        if kept.as_ref().is_none_or(|kept| kept.stale(self.now())) {
             self.start_github_callback_check();
         }
-        kept.map(|(state, at, _)| (state, at))
+        kept.map(|kept| (kept.state, kept.at))
     }
 
     /// Whether GitHub is known to refuse the instance's callback, for the sign-in page (SPEC-466
@@ -249,8 +299,7 @@ impl App {
     /// never blocks sign-in.
     pub async fn github_sign_in_blocked(&self) -> bool {
         let missing = |state: &CallbackState| *state == CallbackState::Missing;
-        self.kept_answer()
-            .is_some_and(|(state, ..)| missing(&state))
+        self.kept_answer().is_some_and(|kept| missing(&kept.state))
             && self
                 .check_github_callback(None, REUSE_MS)
                 .await
@@ -300,7 +349,48 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::{callback_url, public_url_ok, settings_url};
+    use yulius_domain::time::Timestamp;
+
+    use super::{CallbackState, Kept, callback_url, public_url_ok, recheck_after, settings_url};
+
+    /// SPEC-466 MVC-003: an answer that is not "registered" is asked for again when it is read
+    /// 30 s later, and ever less often once it stayed the same for a while: a page left open
+    /// does not make the instance ask GitHub twice a minute for ever.
+    #[test]
+    fn a_standing_answer_is_asked_for_again_ever_less_often() {
+        for same in 0..=10 {
+            assert_eq!(recheck_after(same), 30_000, "{same}");
+        }
+        assert_eq!(recheck_after(11), 60_000);
+        assert_eq!(recheck_after(12), 120_000);
+        assert_eq!(recheck_after(16), 1_920_000);
+        // About half an hour at most, however long it stands.
+        assert_eq!(recheck_after(17), 1_920_000);
+        assert_eq!(recheck_after(u32::MAX), 1_920_000);
+
+        let kept = |state: CallbackState, same| Kept {
+            state,
+            at: Timestamp(1_000_000),
+            number: 1,
+            same,
+        };
+        let at = |ms: i64| Timestamp(1_000_000 + ms);
+        for state in [
+            CallbackState::Missing,
+            CallbackState::Unknown("GitHub: timed out".into()),
+        ] {
+            assert!(!kept(state.clone(), 0).stale(at(29_999)));
+            assert!(kept(state.clone(), 0).stale(at(30_000)));
+            assert!(!kept(state.clone(), 11).stale(at(59_999)));
+            assert!(kept(state.clone(), 11).stale(at(60_000)));
+            assert!(!kept(state.clone(), 400).stale(at(1_919_999)));
+            assert!(kept(state, 400).stale(at(1_920_000)));
+        }
+        // "Registered" is kept until the next start or demand.
+        assert!(!kept(CallbackState::Registered, 0).stale(at(86_400_000)));
+        // A clock that went back asks nothing.
+        assert!(!kept(CallbackState::Missing, 0).stale(Timestamp(0)));
+    }
 
     #[test]
     fn the_settings_page_is_the_organization_s_or_the_person_s() {
@@ -325,6 +415,18 @@ mod tests {
             settings_url(Some("org"), Some("acme"), "x/../../y?z"),
             "https://github.com/settings/apps"
         );
+        for odd in ["..", ".", "a.b", "a_b", ""] {
+            assert_eq!(
+                settings_url(Some("org"), Some(odd), "yulius"),
+                "https://github.com/settings/apps/yulius",
+                "{odd:?}"
+            );
+            assert_eq!(
+                settings_url(Some("org"), Some("acme"), odd),
+                "https://github.com/settings/apps",
+                "{odd:?}"
+            );
+        }
     }
 
     #[test]

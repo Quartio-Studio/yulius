@@ -204,7 +204,18 @@ impl GitHubPort for GitHubAdapter {
         self.client(app)?
             .callback_registered(redirect_uri)
             .await
-            .map_err(map_err)
+            .map_err(|err| match err {
+                // What a superadmin reads as the reason: GitHub's own code, and what it means
+                // for the one a broken App gives.
+                GitHubError::OAuth(code) if code == "incorrect_client_credentials" => {
+                    AppError::Upstream(format!(
+                        "GitHub answered `{code}`: it does not accept the App's client id and \
+                         secret"
+                    ))
+                }
+                GitHubError::OAuth(code) => AppError::Upstream(format!("GitHub answered `{code}`")),
+                other => map_err(other),
+            })
     }
 
     async fn refresh_token(

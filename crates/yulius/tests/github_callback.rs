@@ -508,7 +508,8 @@ async fn the_adapter_asks_the_fake_github() -> TestResult {
         .ok_or("a wrong secret was accepted")?;
     assert_eq!(
         refused.to_string(),
-        "GitHub: GitHub OAuth error: incorrect_client_credentials"
+        "GitHub answered `incorrect_client_credentials`: it does not accept the App's client id \
+         and secret"
     );
     fake.shutdown().await;
     Ok(())
@@ -557,5 +558,54 @@ async fn the_move_s_question_is_answered_by_the_running_server() -> TestResult {
             .unwrap_or_default(),
         ["https://new.example/api/auth/github/callback", CALLBACK]
     );
+    Ok(())
+}
+
+/// Reads the address until GitHub has been asked `count` times: a background check has ended.
+async fn until_asked(h: &Harness, admin: &Creds, count: usize) -> TestResult {
+    for _ in 0..500 {
+        if asked(h) >= count {
+            return Ok(());
+        }
+        github(h, admin).await?;
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    Err(format!("GitHub was asked {} times, not {count}", asked(h)).into())
+}
+
+/// MVC-003: a missing callback that nobody fixes is asked for ever less often while it is read,
+/// and a person's demand makes the next looks quick again.
+#[tokio::test]
+async fn a_callback_that_stays_missing_is_asked_for_less_often_until_someone_demands() -> TestResult
+{
+    let h = harness()?;
+    let admin = setup_superadmin_creds(&h).await?;
+    configure_github_app(&h).await?;
+    register(&h, &[]);
+    h.app.start_github_callback_check();
+    until_state(&h, &admin, "missing").await?;
+    assert_eq!(asked(&h), 1);
+
+    // Someone watches the page: every 30 s for the first eleven looks.
+    for look in 0..11 {
+        later(&h, 30_000);
+        until_asked(&h, &admin, look + 2).await?;
+    }
+    assert_eq!(asked(&h), 12);
+    // From then on the wait doubles: 60 s.
+    later(&h, 60_000);
+    until_asked(&h, &admin, 13).await?;
+    // And again: 120 s.
+    later(&h, 120_000);
+    until_asked(&h, &admin, 14).await?;
+    assert_eq!(asked(&h), 14);
+
+    // "Check again": a person is here, so the next looks are 30 s apart again.
+    let checked = call(&h.router, Method::POST, CHECK, Some(json!({})), &admin).await?;
+    assert_eq!(checked.body["github"]["state"], "missing");
+    assert_eq!(asked(&h), 15);
+    later(&h, 30_000);
+    until_asked(&h, &admin, 16).await?;
+    assert_eq!(asked(&h), 16);
     Ok(())
 }
