@@ -1437,8 +1437,6 @@ impl Fixture {
 /// the scan; both run to the end and report. Fail-fast among the other jobs stays.
 #[tokio::test]
 async fn the_security_job_and_the_others_never_cancel_each_other() -> TestResult {
-    // Only the test ends a held job: the fixture's 8 s limit ended the jobs before a slow host
-    // had shown them running (#1079).
     let f = fixture_tuned(
         false,
         |data| {
@@ -1459,6 +1457,8 @@ command = 'while [ ! -f "{release}" ]; do sleep 0.05; done'
             )
         },
         None,
+        // Only the test ends a held job: the fixture's 8 s limit ended the jobs before a slow
+        // host had shown them running (#1079).
         |config| config.ci.job_timeout = Duration::from_secs(3600),
     )
     .await?;
