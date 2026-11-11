@@ -121,9 +121,9 @@ fn skipped(name: &str) -> bool {
 /// Whether a profile in `text` attaches to `/usr/bin/bwrap`: a header at the top level
 /// (`profile name /path flags=(…) {`, or `/path {`) whose path is bwrap's, plain or as the
 /// alternations Ubuntu's own profiles spell it. The header's brace may open the profile on the
-/// same line, before a comment or on the next line, and the path may be a variable set to
-/// bwrap's (`@{prog} = /usr/bin/bwrap`). A rule that only names bwrap (`/usr/bin/bwrap mr,`)
-/// and a profile inside another one are none.
+/// same line, before a comment or on the next line (with its `flags = (…)`), and the path may
+/// be a variable set to bwrap's (`@{prog} = /usr/bin/bwrap`, with or without the spaces). A
+/// rule that only names bwrap (`/usr/bin/bwrap mr,`) and a profile inside another one are none.
 fn attaches_bwrap(text: &str) -> bool {
     const PATHS: [&str; 4] = [
         "/usr/bin/bwrap",
@@ -143,9 +143,9 @@ fn attaches_bwrap(text: &str) -> bool {
             .take_while(|w| !w.starts_with('#'))
             .collect();
         // A variable's line ends without a comma and is no header.
-        if depth == 0 && matches!(words.get(1), Some(&("=" | "+="))) {
-            let bwrap = |w: &&str| PATHS.contains(&w.trim_matches('"'));
-            if let Some(var) = words.first().filter(|_| words.iter().skip(2).any(bwrap)) {
+        if let Some((var, values)) = assignment(line).filter(|_| depth == 0) {
+            let mut values = values.split_whitespace().take_while(|w| !w.starts_with('#'));
+            if values.any(|w| PATHS.contains(&w.trim_matches('"'))) {
                 vars.push(var);
             }
             continue;
@@ -186,6 +186,19 @@ fn attaches_bwrap(text: &str) -> bool {
         }
     }
     false
+}
+
+/// A variable's line (`@{name} = values`, `@{name}+=values`, `${flag} = true`): its name and
+/// values. A header that starts with a variable (`@{bin}/bwrap flags=(…) {`) is none.
+fn assignment(line: &str) -> Option<(&str, &str)> {
+    let line = line.trim_start();
+    if !line.starts_with(['@', '$']) {
+        return None;
+    }
+    let (name, rest) = line.split_at(line.find('}')? + 1);
+    let rest = rest.trim_start();
+    let values = rest.strip_prefix("+=").or_else(|| rest.strip_prefix('='))?;
+    Some((name, values))
 }
 
 /// What a person does about a profile of theirs that keeps bwrap from working.
@@ -344,8 +357,11 @@ impl Run<'_> {
             Mode::DryRun => return self.changed(ITEM, "", &plan.steps(false)),
             Mode::Check => {
                 let state = match &first {
+                    // Setup's steps alone do not let bwrap in past a kernel limit.
                     Proof::Fails(why) => {
-                        format!("bwrap cannot start a user namespace as {user} ({why})")
+                        let limits: String =
+                            self.limits().iter().map(|l| format!("; {l}")).collect();
+                        format!("bwrap cannot start a user namespace as {user} ({why}{limits})")
                     }
                     Proof::Works | Proof::NotRun(_) => {
                         "the AppArmor rules for bwrap are not what setup leaves".to_owned()
@@ -472,7 +488,8 @@ impl Run<'_> {
     /// What else keeps bwrap from a namespace, where the host says so.
     fn cause(&self, facts: &Facts) -> String {
         let mut causes = self.limits();
-        if facts.enabled && facts.ours_disabled {
+        // Beside a person's profile Yulius's is never loaded: its link is no cause then.
+        if facts.enabled && facts.ours_disabled && facts.foreign.is_empty() {
             causes.push(format!(
                 "{DIR}/disable/{PROFILE_NAME} keeps Yulius's profile from loading (remove that \
                  link, then run `sudo yulius host setup` again)"
@@ -649,6 +666,11 @@ mod tests {
             "profile bwrap /usr/bin/bwrap {userns,}\n",
             "/usr/bin/bwrap {}\n",
             "@{prog} = /usr/bin/bwrap\nprofile b @{prog} {\n  userns,\n}\n",
+            "@{prog}=/usr/bin/bwrap\nprofile b @{prog} {\n  userns,\n}\n",
+            "@{prog} += \"/usr/bin/bwrap\" # theirs\nprofile b @{prog} {\n}\n",
+            "profile bwrap /usr/bin/bwrap\nflags = (unconfined) {\n  userns,\n}\n",
+            "profile bwrap /usr/bin/bwrap flags = (attach_disconnected, unconfined) {\n}\n",
+            "@{bin}/bwrap flags=(unconfined) {\n  userns,\n}\n",
         ] {
             assert!(attaches_bwrap(whole), "{whole}");
         }
@@ -660,6 +682,8 @@ mod tests {
             "profile x /usr/bin/x { # /usr/bin/bwrap {\n}\n",
             "@{prog} = /usr/bin/bwrap\nprofile x /usr/bin/x {\n  userns,\n}\n",
             "profile x /usr/bin/x {userns,}\n/usr/bin/bwrap mr,\n",
+            "@{prog}=/usr/bin/x\nprofile x @{prog} {\n  userns,\n}\n",
+            "${flag} = true\nprofile x /usr/bin/x flags = (unconfined) {\n}\n",
         ] {
             assert!(!attaches_bwrap(other), "{other}");
         }

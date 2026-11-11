@@ -722,6 +722,42 @@ fn a_namespace_limit_is_named() {
     );
     assert_eq!(fake.text(HAND_WRITTEN), Some(HAND_WRITTEN_TEXT));
 
+    // Nor is a link that disables Yulius's profile: beside theirs it is never loaded.
+    fake.links.insert(
+        PathBuf::from("/etc/apparmor.d/disable/yulius-bwrap"),
+        PathBuf::from(PROFILE_FILE),
+    );
+    let lines = run(&mut fake, Mode::Setup);
+    let (outcome, detail) = item(&lines);
+    assert_eq!(outcome, HostOutcome::Failed);
+    assert!(
+        detail.contains("; user.max_user_namespaces is 0 (") && !detail.contains("that link"),
+        "{detail}"
+    );
+
+    // A check names the limit too: setup's steps alone would not let bwrap in.
+    let mut fake = noble();
+    let switches: Vec<_> = [ENABLED, RESTRICTED]
+        .into_iter()
+        .filter_map(|path| fake.files.remove_entry(Path::new(path)))
+        .collect();
+    let mut fake = set_up(fake);
+    fake.files.extend(switches);
+    fake.file("/proc/sys/user/max_user_namespaces", "0\n");
+    let lines = run(&mut fake, Mode::Check);
+    let (outcome, detail) = item(&lines);
+    assert_eq!(outcome, HostOutcome::Failed);
+    assert!(
+        detail.starts_with(
+            "bwrap cannot start a user namespace as yulius (bwrap: Creating new namespace \
+             failed: No space left on device; user.max_user_namespaces is 0 (no user namespaces \
+             at all: raise it in /etc/sysctl.d)): setup would write and load \
+             /etc/apparmor.d/yulius-bwrap"
+        ),
+        "{detail}"
+    );
+    assert!(!touched(&fake));
+
     let mut fake = set_up(noble());
     fake.links.insert(
         PathBuf::from("/etc/apparmor.d/disable/yulius-bwrap"),
