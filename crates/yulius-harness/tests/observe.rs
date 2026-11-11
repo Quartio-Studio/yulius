@@ -3,7 +3,7 @@
 
 use yulius_domain::task::GoalOutcome;
 use yulius_domain::time::Timestamp;
-use yulius_domain::usage::TokenUsage;
+use yulius_domain::usage::{LimitScope, TokenUsage};
 use yulius_harness::claude;
 use yulius_harness::observe::{LimitSignal, Observed, UsageAccumulator};
 
@@ -114,6 +114,7 @@ fn claude_limit_with_epoch_reset() {
             resets_at: Some(Timestamp(1_791_380_000_000)),
             message: "Claude AI usage limit reached".into(),
             window_minutes: None,
+            scope: LimitScope::Account,
             // When the record was written (SPEC-074 SUP-002).
             at: Some(Timestamp(1_791_360_001_000)),
         }]
@@ -151,6 +152,7 @@ fn claude_limit_without_parseable_time_and_model_text_is_not_a_limit() {
             resets_at: None,
             message: "5-hour limit reached ∙ resets 3pm".into(),
             window_minutes: Some(300),
+            scope: LimitScope::Account,
             at: Some(Timestamp(1_791_360_003_000)),
         }]
     );

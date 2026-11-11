@@ -1403,6 +1403,7 @@ impl App {
 mod tests {
     use super::*;
     use yulius_domain::time::Timestamp;
+    use yulius_domain::usage::LimitScope;
 
     fn reduce(observations: &[Observation]) -> TranscriptFacts {
         let mut facts = TranscriptFacts::default();
@@ -1642,6 +1643,7 @@ mod tests {
             resets_at: None,
             message: "limit".into(),
             window_minutes: None,
+            scope: LimitScope::Account,
             at: None,
         }]);
         // A limit changes no turn fact; it is only pending (SPEC-072 LRS-001).
@@ -1957,6 +1959,7 @@ mod tests {
             resets_at: None,
             message: "limit".into(),
             window_minutes: None,
+            scope: LimitScope::Account,
             at: None,
         };
         assert!(reduce(&[PROMPT, limit.clone()]).limit_pending);

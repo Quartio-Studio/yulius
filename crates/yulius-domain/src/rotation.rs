@@ -672,6 +672,68 @@ mod tests {
         Ok(())
     }
 
+    /// SPEC-464 (production 2026-11-11): a subscription whose Fable allowance is used up takes no
+    /// Fable task until the allowance resets, though its 5-hour and weekly windows have the most
+    /// room, and still takes a task of another model. When every subscription is out, the task
+    /// waits for the first allowance to reset.
+    #[test]
+    fn a_fable_allowance_binds_only_fable_tasks() -> Result<(), IdError> {
+        let out = |resets_in_hours: i64| -> AccountUsage {
+            let mut usage = usage(0.0, 61.0, Some(100));
+            usage.record_limit(
+                crate::usage::ReportedLimit {
+                    scope: crate::usage::LimitScope::Model(Some(ModelFamily::Fable)),
+                    window_minutes: Some(crate::usage::WEEKLY_WINDOW_MINUTES),
+                    resets_at: Some(NOW.plus_millis(resets_in_hours * HOUR)),
+                },
+                ModelFamily::Fable,
+                NOW,
+            );
+            usage
+        };
+        let busy = account("busy", usage(41.0, 80.0, Some(100)))?;
+        let mut rotation = input(None, vec![account("out", out(40))?, busy.clone()])?;
+        // Another model's task goes where the windows have the most room.
+        assert_eq!(
+            switched_to(&decide(&rotation, Trigger::Start).0),
+            Some("out")
+        );
+        rotation.family = ModelFamily::of(Some("claude-fable-5-2"));
+        assert_eq!(rotation.family, ModelFamily::Fable);
+        assert_eq!(
+            switched_to(&decide(&rotation, Trigger::Start).0),
+            Some("busy")
+        );
+        // A Fable task on it moves at its turn boundary, as at 98 % of any window.
+        rotation.current = Some(id("out")?);
+        assert_eq!(
+            switched_to(&decide(&rotation, Trigger::Proactive).0),
+            Some("busy")
+        );
+        // Every subscription out: the wait ends at the first reset, and the subscription is
+        // usable from that moment.
+        let mut all_out = input(
+            Some("out"),
+            vec![account("out", out(40))?, account("later", out(90))?],
+        )?;
+        all_out.family = ModelFamily::Fable;
+        assert_eq!(
+            decide(&all_out, Trigger::LimitReached),
+            (
+                Decision::Wait {
+                    until: Some(NOW.plus_millis(40 * HOUR))
+                },
+                DecisionReason::NoCapacity
+            )
+        );
+        all_out.now = NOW.plus_millis(40 * HOUR);
+        assert_eq!(
+            decide(&all_out, Trigger::Proactive),
+            (Decision::Stay, DecisionReason::CurrentUsable)
+        );
+        Ok(())
+    }
+
     #[test]
     fn limit_reached_always_moves_off_current() -> Result<(), IdError> {
         let rotation = input(
