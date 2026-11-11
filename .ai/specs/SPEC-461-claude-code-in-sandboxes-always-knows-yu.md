@@ -1,6 +1,6 @@
 ---
 yulius-task: 63aa8551-e6b8-4a74-bf89-2c12155c2ed0
-status: in-progress
+status: done
 ---
 
 # SPEC-461: Claude Code in sandboxes always knows the models Yulius offers
@@ -91,7 +91,7 @@ an older one.
 - [x] Operations guide, API reference, architecture and changes updated
 - [x] Independent review round 1 answered, every finding fixed with its test
 - [x] Independent review round 2 answered, every finding fixed with its test
-- [ ] A session resumed with nothing typed names its Claude Code with its first record
+- [x] A session resumed with nothing typed names its Claude Code with its first record
 
 ## Acceptance criteria
 
@@ -420,6 +420,11 @@ an older one.
   810, and at the same line twice.
 - Seen failing first: `wiring::harness::tests::a_run_resumed_with_nothing_typed_names_its_claude_code_at_once`
   read `None` after the resumed run's first record.
+- `scripts/dev ci` at 768f2c38 (that fix, on `dev` at eb2e8a4e): exit 0, nextest 3533 passed /
+  16 skipped, and every other step as above. The commit after it changes this file only.
+  Mutations, each caught by a test and reverted: the watcher ignoring a line's version; the
+  recount ignoring it; a sub-agent's record naming the session's version; the assumed version
+  replacing the transcript's.
 - `yulius security-scan`: "Security scan disabled: Vidoc is turned off in Yulius" (exit 0):
   disabled, not passed.
 - Not tested: the updater inside a deployed, isolated instance (its download, checks and
