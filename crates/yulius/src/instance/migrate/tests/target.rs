@@ -430,7 +430,11 @@ fn the_plan_says_which_packages_fit_the_new_release() {
          oldtool"
     );
     // Nothing installed, and an option look-alike never reaches apt.
-    assert!(!host.ran("apt-get") && !host.log.iter().any(|l| l.contains("--purge")));
+    assert!(
+        host.ran("apt-get update")
+            && !host.ran("apt-get install")
+            && !host.log.iter().any(|l| l.contains("--purge"))
+    );
 }
 
 #[test]
@@ -448,7 +452,7 @@ fn packages_are_installed_in_one_transaction_and_only_once() {
     let (outcome, detail) = only(&reply);
     assert_eq!(outcome, HostOutcome::Changed, "{detail}");
     assert_eq!(
-        host.runs("apt-get"),
+        host.runs("apt-get install"),
         ["apt-get install -y -o Dpkg::Options::=--force-confdef -o \
           Dpkg::Options::=--force-confold -- caddy libicu78"]
     );
@@ -465,7 +469,7 @@ fn packages_are_installed_in_one_transaction_and_only_once() {
         },
     );
     assert_eq!(only(&reply).0, HostOutcome::Ok);
-    assert!(!host.ran("apt-get"));
+    assert!(!host.ran("apt-get install"));
 
     host.says(&["dpkg-query", "-W"], "");
     host.fails(&["apt-get", "install"], "E: Unable to correct problems");

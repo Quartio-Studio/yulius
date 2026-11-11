@@ -802,6 +802,8 @@ fn packages(host: &mut dyn Host, names: &[String], install: bool, l: &mut Lines)
         .iter()
         .filter(|n| package_name(n))
         .partition(|n| profile::host_package(n));
+    // A fresh host knows only part of its release until its package lists are read.
+    let lists = run(host, &long(&["apt-get", "update"], 15 * 60));
     let mut argv = vec!["apt-cache", "policy", "--"];
     argv.extend(wanted.iter().map(|n| n.as_str()));
     let policy = run(host, &long(&argv, 5 * 60));
@@ -847,6 +849,12 @@ fn packages(host: &mut dyn Host, names: &[String], install: bool, l: &mut Lines)
         detail.push_str(&format!(
             "; {} left to this machine (kernel, boot, network)",
             machine.len()
+        ));
+    }
+    if !lists.ok() {
+        detail.push_str(&format!(
+            "; `apt-get update` failed ({}), so this is from older lists",
+            lists.why()
         ));
     }
     let lacking = (!missing.is_empty()).then(|| {

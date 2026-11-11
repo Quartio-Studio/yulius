@@ -713,7 +713,7 @@ fn the_plan_alone_changes_nothing() -> TestResult {
     assert!(line(&status, "downtime").is_some() && line(&status, "settings").is_some());
     // On the new host: the flow's own files and questions only.
     let new = &s.remote.host;
-    assert!(!new.ran("apt-get") && !new.ran("systemctl enable") && !new.ran("install "));
+    assert!(!new.ran("apt-get install") && !new.ran("systemctl enable") && !new.ran("install "));
     assert!(new.runs("write").is_empty(), "{:?}", new.runs("write"));
     assert_eq!(s.old_unit(), (false, false));
     assert!(s.remote.sent.is_empty());

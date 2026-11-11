@@ -672,7 +672,10 @@ impl Profile {
                 .filter(Out::ok)
                 .and_then(|out| out.stdout.split_whitespace().next()?.parse().ok())
                 .unwrap_or(0);
-            self.trees.push(Tree { path, bytes });
+            // An empty directory (containerd's in /opt) is nothing to carry.
+            if bytes > 0 {
+                self.trees.push(Tree { path, bytes });
+            }
         }
     }
 

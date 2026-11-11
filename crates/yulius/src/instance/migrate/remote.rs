@@ -57,6 +57,11 @@ pub trait Remote {
     /// # Errors
     /// The step did not run or did not answer.
     fn call(&mut self, request: &Request) -> Result<Reply, String>;
+    /// [`Remote::call`] for a step that may not be runnable yet (no build there): what it
+    /// says, without its complaint.
+    fn try_call(&mut self, request: &Request) -> Option<Reply> {
+        self.call(request).ok()
+    }
     /// Sends files and directories of this host as they are; they land at the same paths.
     ///
     /// # Errors
@@ -172,13 +177,40 @@ impl Ssh {
     }
 
     fn spawn(&self, command: &str, stdin: Stdio, stdout: Stdio) -> Result<Child, String> {
+        self.spawn_with(command, stdin, stdout, Stdio::inherit())
+    }
+
+    fn spawn_with(
+        &self,
+        command: &str,
+        stdin: Stdio,
+        stdout: Stdio,
+        stderr: Stdio,
+    ) -> Result<Child, String> {
         Command::new("ssh")
             .args(self.args(true, command))
             .stdin(stdin)
             .stdout(stdout)
-            .stderr(Stdio::inherit())
+            .stderr(stderr)
             .spawn()
             .map_err(|e| format!("cannot run ssh: {e}"))
+    }
+
+    fn step(&self, request: &Request, stderr: Stdio) -> Result<Reply, String> {
+        let json = serde_json::to_vec(request).map_err(|e| e.to_string())?;
+        let mut child = self.spawn_with(STEP, Stdio::piped(), Stdio::piped(), stderr)?;
+        let sent = child
+            .stdin
+            .take()
+            .map_or(Ok(()), |mut stdin| stdin.write_all(&json));
+        let reply = child.stdout.take().and_then(follow);
+        let end = ended("the step on the new host", &mut child);
+        match (reply, sent, end) {
+            (Some(reply), _, _) => Ok(reply),
+            (None, Err(e), _) => Err(format!("the new host did not take the request: {e}")),
+            (None, _, Err(why)) => Err(why),
+            (None, _, Ok(())) => Err("the new host answered nothing".into()),
+        }
     }
 }
 
@@ -264,20 +296,11 @@ impl Remote for Ssh {
     }
 
     fn call(&mut self, request: &Request) -> Result<Reply, String> {
-        let json = serde_json::to_vec(request).map_err(|e| e.to_string())?;
-        let mut child = self.spawn(STEP, Stdio::piped(), Stdio::piped())?;
-        let sent = child
-            .stdin
-            .take()
-            .map_or(Ok(()), |mut stdin| stdin.write_all(&json));
-        let reply = child.stdout.take().and_then(follow);
-        let end = ended("the step on the new host", &mut child);
-        match (reply, sent, end) {
-            (Some(reply), _, _) => Ok(reply),
-            (None, Err(e), _) => Err(format!("the new host did not take the request: {e}")),
-            (None, _, Err(why)) => Err(why),
-            (None, _, Ok(())) => Err("the new host answered nothing".into()),
-        }
+        self.step(request, Stdio::inherit())
+    }
+
+    fn try_call(&mut self, request: &Request) -> Option<Reply> {
+        self.step(request, Stdio::null()).ok()
     }
 
     fn send_paths(&mut self, paths: &[PathBuf]) -> Result<(), String> {

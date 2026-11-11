@@ -542,7 +542,7 @@ impl<'a> Move<'a> {
             facts.build == *build && facts.version == env!("CARGO_PKG_VERSION")
         };
         let build = self.world.build();
-        let staged = self.remote.call(&request).ok().and_then(|r| r.facts);
+        let staged = self.remote.try_call(&request).and_then(|r| r.facts);
         if let Some(facts) = staged.filter(|facts| same(facts, &build)) {
             self.ok(ITEM, "the new host holds this build");
             return Ok(facts);
