@@ -353,7 +353,7 @@ document only.
 
 - `scripts/dev ci`: exit 0; nextest 3466 tests run, 3466 passed, 16 skipped; doctests and docs
   built (also green before the merge of `dev`, at `45031ebc`: 3388 passed).
-- `cargo test -p yulius --lib instance::`: the move's unit and flow tests (85 in
+- `cargo test -p yulius --lib instance::`: the move's unit and flow tests (83 in
   `instance::migrate`, 9 in `instance::inventory`, the export, import, walk, extract and freeze
   tests): all pass. `cargo test -p yulius --test main host_move::`: 3 passed.
   `cargo test -p yulius --test main cli::instance_migrate`: 1 passed.
