@@ -1171,6 +1171,67 @@ async fn a_fill_into_an_unreadable_frame_exposes_the_framed_site() -> TestResult
     Ok(())
 }
 
+/// SPEC-450 (final review): fails closed where a fill cannot be placed. A fill that names no
+/// host (an opaque page) and a fill into a frame whose targets cannot be listed refuse every
+/// screenshot; a frame with an opaque origin (sandboxed) is one the probe cannot read.
+#[tokio::test]
+async fn fills_that_cannot_be_placed_refuse_every_screenshot() -> TestResult {
+    // On the opening about:blank tab: no host to expose.
+    let (_fake, instance, tab) = setup().await?;
+    instance
+        .tool_type_secret(&fill(&tab, "#q", "api-key-5521-qrs"))
+        .await?;
+    instance
+        .tool_navigate(&to(&tab, "https://z.example/"))
+        .await?;
+    assert!(refused(
+        instance.tool_screenshot_within(&shot(&tab), 100_000).await
+    ));
+
+    // Into a frame, while its targets cannot be listed.
+    let (fake, instance, tab) = setup().await?;
+    instance
+        .tool_navigate(&to(&tab, "https://bound.example/login"))
+        .await?;
+    fake.set_secret_probe(Some(
+        json!({"shown": ["Fake page text"], "masked": [], "over": false, "focus": {"kind": "frame"}}),
+    ));
+    let listed = fake.calls_for("Target.getTargets").len();
+    fake.fail_nth("Target.getTargets", listed + 1, -32000, "no targets");
+    instance
+        .tool_type_secret(&TypeParams {
+            tab_id: tab.clone(),
+            text: "pw-secret-4471".into(),
+            selector: None,
+        })
+        .await?;
+    fake.set_secret_probe(None);
+    instance
+        .tool_navigate(&to(&tab, "https://elsewhere.example/"))
+        .await?;
+    assert!(refused(
+        instance.tool_screenshot_within(&shot(&tab), 100_000).await
+    ));
+
+    // A sandboxed frame of the filled host (opaque origin) is not readable.
+    let (fake, instance, tab) = setup().await?;
+    instance
+        .tool_navigate(&to(&tab, "https://m.example/login"))
+        .await?;
+    fake.set_password_field("#pw", true);
+    instance
+        .tool_type_secret(&fill(&tab, "#pw", "pw-secret-4471"))
+        .await?;
+    instance
+        .tool_navigate(&to(&tab, "https://m.example/home"))
+        .await?;
+    fake.set_sandboxed_child_frames(&["https://m.example/settings"]);
+    assert!(refused(
+        instance.tool_screenshot_within(&shot(&tab), 100_000).await
+    ));
+    Ok(())
+}
+
 /// SPEC-450 (review round 6): a probe failing before typing because a navigation committed
 /// meanwhile does not expose the site: the typing goes into the next document.
 #[tokio::test]
@@ -1195,6 +1256,43 @@ async fn a_navigation_during_the_look_before_typing_exposes_nothing() -> TestRes
     instance
         .tool_screenshot_within(&shot(&tab), 100_000)
         .await?;
+    Ok(())
+}
+
+/// SPEC-450 (final review): a look before typing that fails because the page went back to a
+/// document a value went into (restored from the back/forward cache, with its loader id) watches
+/// it as that document: unseen, its site is exposed.
+#[tokio::test]
+async fn a_restored_filled_page_during_the_look_exposes_its_site() -> TestResult {
+    let (fake, instance, tab) = setup().await?;
+    fake.set_password_field("#pw", true);
+    instance
+        .tool_navigate(&to(&tab, "https://ab.example/one"))
+        .await?;
+    instance
+        .tool_type_secret(&fill(&tab, "#pw", "pw-secret-1111"))
+        .await?;
+    instance
+        .tool_navigate(&to(&tab, "https://ab.example/two"))
+        .await?;
+    instance
+        .tool_type_secret(&fill(&tab, "#pw", "pw-secret-2222"))
+        .await?;
+    let worlds = fake.calls_for("Page.createIsolatedWorld").len();
+    fake.fail_nth(
+        "Page.createIsolatedWorld",
+        worlds + 1,
+        -32000,
+        "context destroyed",
+    );
+    fake.go_back_during_nth("Page.createIsolatedWorld", worlds + 1);
+    instance.tool_type(&fill(&tab, "#q", "x")).await?;
+    instance
+        .tool_navigate(&to(&tab, "https://ab.example/three"))
+        .await?;
+    assert!(refused(
+        instance.tool_screenshot_within(&shot(&tab), 100_000).await
+    ));
     Ok(())
 }
 

@@ -75,6 +75,18 @@ struct FakePage {
     fields: Vec<(String, String)>,
     focused: String,
     loader: u64,
+    /// Loaders of the documents it showed before, for a history navigation back.
+    previous: Vec<u64>,
+}
+
+impl FakePage {
+    /// Shows another document (form state is not modelled).
+    fn move_to(&mut self, loader: u64) {
+        self.previous.push(self.loader);
+        self.fields.clear();
+        self.focused.clear();
+        self.loader = loader;
+    }
 }
 
 struct Connection {
@@ -103,10 +115,12 @@ struct FakeState {
     secret_probe_queue: VecDeque<Value>,
     secret_probe_delay: Duration,
     child_frames: Vec<String>,
+    sandboxed_frames: bool,
     frame_targets: Vec<Value>,
     enter_submits: bool,
     failing_after: HashMap<String, (usize, i64, String)>,
     navigating_after: HashMap<String, usize>,
+    going_back_after: HashMap<String, usize>,
     loaders: u64,
     connections: Vec<Arc<Connection>>,
 }
@@ -283,10 +297,12 @@ impl FakeCdpServer {
                 secret_probe_queue: VecDeque::new(),
                 secret_probe_delay: Duration::ZERO,
                 child_frames: Vec::new(),
+                sandboxed_frames: false,
                 frame_targets: Vec::new(),
                 enter_submits: false,
                 failing_after: HashMap::new(),
                 navigating_after: HashMap::new(),
+                going_back_after: HashMap::new(),
                 loaders: 0,
                 connections: Vec::new(),
             }),
@@ -455,7 +471,15 @@ impl FakeCdpServer {
 
     /// The URLs of the frames every page holds (`Page.getFrameTree` child frames).
     pub fn set_child_frames(&self, urls: &[&str]) {
-        lock(&self.shared.state).child_frames = urls.iter().map(|url| (*url).to_owned()).collect();
+        let mut state = lock(&self.shared.state);
+        state.child_frames = urls.iter().map(|url| (*url).to_owned()).collect();
+        state.sandboxed_frames = false;
+    }
+
+    /// As [`Self::set_child_frames`], sandboxed: their origin is opaque (`"null"`).
+    pub fn set_sandboxed_child_frames(&self, urls: &[&str]) {
+        self.set_child_frames(urls);
+        lock(&self.shared.state).sandboxed_frames = true;
     }
 
     /// Whether pressing Enter submits the page's form: a new document, as a sign-in form does.
@@ -490,6 +514,14 @@ impl FakeCdpServer {
     pub fn navigate_during_nth(&self, method: &str, nth: usize) {
         lock(&self.shared.state)
             .navigating_after
+            .insert(method.to_owned(), nth);
+    }
+
+    /// While the `nth` request of `method` runs, the page of its session goes back to the document
+    /// it showed before, with its loader id, as a restore from the back/forward cache does.
+    pub fn go_back_during_nth(&self, method: &str, nth: usize) {
+        lock(&self.shared.state)
+            .going_back_after
             .insert(method.to_owned(), nth);
     }
 
@@ -742,10 +774,16 @@ async fn handle_request(shared: &Arc<Shared>, connection: &Arc<Connection>, text
         if state.navigating_after.get(&method) == Some(&seen) {
             let loader = state.next_loader();
             if let Some(page) = state.page(session_id.as_deref()) {
-                page.fields.clear();
-                page.focused.clear();
-                page.loader = loader;
+                page.move_to(loader);
             }
+        }
+        if state.going_back_after.get(&method) == Some(&seen)
+            && let Some(page) = state.page(session_id.as_deref())
+            && let Some(back) = page.previous.pop()
+        {
+            page.fields.clear();
+            page.focused.clear();
+            page.loader = back;
         }
         (
             state.muted.contains(&method),
@@ -919,9 +957,7 @@ fn respond(
             }
             let loader = state.next_loader();
             if let Some(page) = state.page(session_id) {
-                page.fields.clear();
-                page.focused.clear();
-                page.loader = loader;
+                page.move_to(loader);
             }
             if state.emit_load_events {
                 after.push(
@@ -954,8 +990,13 @@ fn respond(
                 .iter()
                 .enumerate()
                 .map(|(n, child)| {
+                    let origin = if state.sandboxed_frames {
+                        "null".to_owned()
+                    } else {
+                        origin_of(child)
+                    };
                     json!({"frame": {"id": format!("child-{n}"), "loaderId": format!("child-loader-{n}"),
-                        "url": child, "securityOrigin": origin_of(child)}})
+                        "url": child, "securityOrigin": origin}})
                 })
                 .collect();
             let loader = state.page(session_id).map_or(0, |page| page.loader);
@@ -1030,9 +1071,7 @@ fn respond(
             if state.enter_submits && text("type") == "keyDown" && text("key") == "Enter" {
                 let loader = state.next_loader();
                 if let Some(page) = state.page(session_id) {
-                    page.fields.clear();
-                    page.focused.clear();
-                    page.loader = loader;
+                    page.move_to(loader);
                 }
             }
             Ok(json!({}))
@@ -1042,9 +1081,7 @@ fn respond(
             let mut state = lock(&shared.state);
             let loader = state.next_loader();
             if let Some(page) = state.page(session_id) {
-                page.fields.clear();
-                page.focused.clear();
-                page.loader = loader;
+                page.move_to(loader);
             }
             Ok(json!({}))
         }
