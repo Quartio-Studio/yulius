@@ -81,7 +81,8 @@ fn the_unit_texts_say_what_the_layout_needs() {
         "Slice=yulius.slice\n",
         "User=yulius\n",
         "ExecStartPre=+/usr/bin/chown yulius /sys/fs/cgroup/yulius.slice/cgroup.procs\n",
-        "ExecStart=/usr/bin/sleep infinity\n",
+        // The keeper is root's: nothing of the service user can end it, and with it every session.
+        "ExecStart=+/usr/bin/sleep infinity\n",
         "Delegate=yes\n",
         "DelegateSubgroup=keeper\n",
         "OOMScoreAdjust=-1000\n",
@@ -161,6 +162,56 @@ fn a_check_reports_it_and_a_dry_run_says_what_it_would_write() {
     assert!(item.detail.starts_with("would write"), "{}", item.detail);
     assert!(!fake.has(SESSIONS) && !fake.has(ADOPT) && !fake.has(DROP_IN));
     assert!(!fake.ran("systemctl start"), "{:#?}", fake.log);
+}
+
+/// Units that are there but not what this build writes (another build's, or an operator's own):
+/// the check must not say that sessions live in the server's group.
+#[test]
+fn a_check_says_when_the_units_only_differ() {
+    let mut fake = Fake::set_up();
+    if let Some(unit) = fake.files.get_mut(Path::new(SESSIONS)) {
+        unit.0.push_str("# edited\n");
+    }
+    let lines = run(&mut fake, Mode::Check);
+    let item = line(&lines, ITEM);
+    assert_eq!(item.outcome, HostOutcome::Failed, "{lines:#?}");
+    assert!(
+        item.detail.contains(SESSIONS) && item.detail.contains("differs"),
+        "{}",
+        item.detail
+    );
+    assert!(!item.detail.contains("own group"), "{}", item.detail);
+    assert!(
+        item.detail.contains("sudo yulius host setup"),
+        "{}",
+        item.detail
+    );
+}
+
+/// The first restart on a host with systemd 258 or later needs the units before the new binary
+/// is installed (docs/operations.md §8): `deploy/systemd` holds them as the setup writes them.
+#[test]
+fn the_deploy_examples_are_what_the_setup_writes() {
+    assert_eq!(
+        include_str!("../../../../../deploy/systemd/yulius-sandboxes.service"),
+        sessions_unit_text("yulius.service", "yulius", "yulius.slice")
+    );
+    assert_eq!(
+        include_str!("../../../../../deploy/systemd/yulius-adopt.service"),
+        adopt_unit_text(
+            "yulius.service",
+            "yulius-sandboxes.service",
+            Path::new("/usr/local/bin/yulius")
+        )
+    );
+    assert_eq!(
+        include_str!("../../../../../deploy/systemd/yulius.service.d/20-yulius-sessions.conf"),
+        drop_in_text(
+            "yulius-sandboxes.service",
+            "yulius-adopt.service",
+            "yulius.slice"
+        )
+    );
 }
 
 #[test]

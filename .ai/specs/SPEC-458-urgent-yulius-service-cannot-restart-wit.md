@@ -88,11 +88,13 @@ Two defects made it unusable meanwhile:
 ### Layout (ADR-0298)
 
 - **LAY-001** Sessions unit: `<stem>-sandboxes.service` for the server unit `<stem>.service`
-  runs one keeper (`/usr/bin/sleep infinity`) as the service user with `Delegate=yes`,
-  `DelegateSubgroup=keeper`, `OOMScoreAdjust=-1000`, in the slice `<name>.slice`, where `<name>`
-  is the stem with every character but a letter or a digit replaced by `_` (a dash would nest
-  the slice). Its `ExecStartPre=+` gives the slice's `cgroup.procs` to the service user. It keeps
-  the default `KillMode`: stopping it ends every session, deliberately.
+  runs one keeper (`ExecStart=+/usr/bin/sleep infinity`) with `User=` the service user,
+  `Delegate=yes`, `DelegateSubgroup=keeper`, `OOMScoreAdjust=-1000`, in the slice `<name>.slice`,
+  where `<name>` is the stem with every character but a letter or a digit replaced by `_` (a dash
+  would nest the slice). `User=` names who the group is delegated to; the `+` makes the keeper
+  root's, so nothing of the service user can signal it (its end would end every session; shown
+  on systemd 255 and 259). Its `ExecStartPre=+` gives the slice's `cgroup.procs` to the service
+  user. It keeps the default `KillMode`: stopping it ends every session, deliberately.
 - **LAY-002** `cgroup::detect` prefers the sessions unit: for a server in
   `<slice>/<stem>.service/<leaf>` it returns `<slice>/<stem>-sandboxes.service` when that
   directory, its `cgroup.procs` and `cgroup.subtree_control` and the slice's `cgroup.procs` are
@@ -120,7 +122,10 @@ Two defects made it unusable meanwhile:
   reloads systemd and starts the sessions unit; a running server is not restarted, and a manual
   line says the next restart moves the sessions and keeps them. The item is unsafe: `host check`
   only reports it (failed, "run `sudo yulius host setup`"), since the update helper cannot write
-  unit files.
+  unit files: that sessions live in the server's own group when a file is missing, and only
+  which files differ when all are there. `deploy/systemd` holds the three files as the setup
+  writes them for `yulius.service`, the user `yulius` and `/usr/local/bin/yulius` (pinned by a
+  test), for the first restart on a host that has no binary with this change yet.
 - **HST-002** `yulius doctor` has a line "restart with sessions": ok with the sessions unit in
   use; a warning naming `sudo yulius host setup` when sessions live in the server's unit, which
   says that a restart fails while sessions run when systemd is 258 or later.

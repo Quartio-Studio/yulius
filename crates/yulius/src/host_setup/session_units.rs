@@ -27,18 +27,21 @@ const ENGINE_WAIT: Duration = Duration::from_secs(10);
 /// How long systemd may take to remove the server unit's emptied old group.
 const RELEASE_WAIT: Duration = Duration::from_secs(5);
 
-/// The sessions unit of the server unit `service`, run as `user` in `slice`. It keeps the default
-/// `KillMode`: a unit that kept processes after its stop could not start again on systemd 258.
+/// The sessions unit of the server unit `service`, delegated to `user` in `slice`. It keeps the
+/// default `KillMode`: a unit that kept processes after its stop could not start again on systemd
+/// 258. Its keeper is root's (`+`), while `User=` still names who the group is delegated to: the
+/// service user, whose kill would end every session with it, cannot signal it.
 #[must_use]
 pub fn sessions_unit_text(service: &str, user: &str, slice: &str) -> String {
     format!(
         "# Written by `yulius host setup` (docs/operations.md §3, ADR-0298): the group every \
          session and\n# sandbox of {service} lives in. Restarting {service} never touches it; \
-         stopping this unit\n# ends every session.\n\
+         stopping this unit\n# ends every session. Its one process is root's, so nothing of \
+         {user} can end it.\n\
          [Unit]\nDescription=Yulius sessions and sandboxes ({service})\n\n\
          [Service]\nSlice={slice}\nUser={user}\n\
          ExecStartPre=+/usr/bin/chown {user} /sys/fs/cgroup/{slice}/cgroup.procs\n\
-         ExecStart=/usr/bin/sleep infinity\nDelegate=yes\nDelegateSubgroup=keeper\n\
+         ExecStart=+/usr/bin/sleep infinity\nDelegate=yes\nDelegateSubgroup=keeper\n\
          OOMScoreAdjust=-1000\n"
     )
 }
@@ -124,20 +127,25 @@ impl Run<'_> {
                 format!("sessions live in {sessions}: a restart of {service} keeps them"),
             );
         }
-        if self.mode == Mode::Check {
-            return self.needs_setup(
-                ITEM,
-                &format!(
-                    "sessions live in {service}'s own group, where systemd 258 and later cannot \
-                     start the unit again while one runs"
-                ),
-            );
-        }
         let files = stale
             .iter()
             .map(|(path, _)| path.display().to_string())
             .collect::<Vec<_>>()
             .join(", ");
+        if self.mode == Mode::Check {
+            // Files that are all there but differ are another build's or the operator's own: the
+            // layout may well be in use, so only the difference is said.
+            let missing = stale.iter().any(|(path, _)| self.host.read(path).is_none());
+            let why = if missing {
+                format!(
+                    "sessions live in {service}'s own group, where systemd 258 and later cannot \
+                     start the unit again while one runs"
+                )
+            } else {
+                format!("{files} differs from what this version writes")
+            };
+            return self.needs_setup(ITEM, &why);
+        }
         if self.may(false) {
             for (path, text) in stale {
                 if let Err(why) = self.host.write(path, text, 0o644) {
