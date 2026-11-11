@@ -4571,7 +4571,8 @@ route('GET', '/api/admin/limits', ({ db }) => { superadminOnly(db); return limit
 route('PUT', `/api/admin/limits/${ID}`, ({ db, body, p }) => {
   superadminOnly(db);
   const l = limitOf(p[0]);
-  const value = body.value === null || body.value === undefined ? null : Number(body.value);
+  if (!body || body.value === undefined) fail(422, 'invalid', 'missing field `value`');
+  const value = body.value === null ? null : Number(body.value);
   if (value !== null && !(Number.isInteger(value) && value >= l.min && value <= l.max)) fail(422, 'invalid', `${l.label} must be between ${l.min} and ${l.max}${l.suffix ? ` ${l.suffix}` : ''}`);
   db.limits.settings[l.key] = { value, by: db.me.user.login, at: new Date().toISOString() };
   return limitsView(db);

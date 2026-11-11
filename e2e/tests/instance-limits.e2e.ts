@@ -50,6 +50,35 @@ test('a saved number wins, a refused one says its range, and the setting can be 
   expect(await axeViolations(browser)).toEqual([]);
 });
 
+test('a number that is not a whole one is refused at its field without a request', async ({ app, browser, screen }) => {
+  await app.open(mock('/admin/instance'));
+  const input = screen.getByRole('spinbutton', 'Live sessions');
+  await expect(input).toBeVisible();
+  for (const typed of ['1.5', '-3']) {
+    await input.fill(typed);
+    await screen.getByRole('button', 'Save Live sessions').click();
+    await expect(screen.getByText(/Live sessions must be a whole number between 1 and 1024/)).toBeVisible();
+    // The message belongs to the field: a screen reader reads it with the input.
+    const field = await browser.evaluate(() => {
+      const el = document.querySelector<HTMLInputElement>('[data-limit="max_sessions"] input');
+      const said = el ? document.getElementById(el.getAttribute('aria-describedby') || '') : null;
+      return { invalid: el ? el.getAttribute('aria-invalid') : null, said: said ? said.textContent : null, typed: el ? el.value : null };
+    });
+    expect(field.invalid).toBe('true');
+    expect(field.said).toMatch(/whole number/);
+    expect(field.typed).toBe(typed);
+    expect(await row(browser, 'max_sessions')).toMatch(/Live sessions 34 host-sized/);
+  }
+  expect(await axeViolations(browser)).toEqual([]);
+});
+
+test('limits that could not be loaded say so with a way to try again', async ({ app, screen }) => {
+  await app.open(mock('/admin/instance', '&fail=/api/admin/limits'));
+  const card = screen.getByRole('region', 'Resource limits');
+  await expect(card.getByText(/Couldn’t load the resource limits/)).toBeVisible();
+  await expect(card.getByRole('button', 'Try again')).toBeVisible();
+});
+
 test('a changed sandbox memory says it applies at the next restart', async ({ app, browser, screen }) => {
   await app.open(mock('/admin/instance'));
   await screen.getByRole('spinbutton', 'Sandbox memory').fill('100');

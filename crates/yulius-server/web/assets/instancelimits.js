@@ -5,7 +5,7 @@
 // notice that takes the host-sized values or keeps them.
 
 import { enc } from './api.js';
-import { h, icon, setChildren, toast, errorToast, badge, skeleton } from './dom.js';
+import { h, icon, setChildren, toast, errorToast, badge, skeleton, loadError } from './dom.js';
 import { relLong, plural } from './format.js';
 
 const API = '/api/admin/limits';
@@ -94,9 +94,12 @@ export function limitsCard(ctx) {
   }
 
   function limitRow(l) {
+    const error = refused.get(l.key);
+    const errorId = `limit-error-${l.key}`;
     const input = h('input', {
       class: 'input limit-input', type: 'number', inputmode: 'numeric', min: String(l.min), max: String(l.max), step: '1',
       value: typed.has(l.key) ? typed.get(l.key) : String(l.value), 'aria-label': l.label,
+      'aria-invalid': error ? 'true' : null, 'aria-describedby': error ? errorId : null,
     });
     const save = h('button', { type: 'submit', class: 'btn btn-sm btn-primary', 'aria-label': `Save ${l.label}` }, 'Save');
     const unchanged = () => input.value.trim() === '' || (Number(input.value) === l.value && l.source === 'settings');
@@ -115,9 +118,15 @@ export function limitsCard(ctx) {
       event.preventDefault();
       if (input.value.trim() === '') return;
       const value = Number(input.value);
+      // The server takes whole numbers only: anything else is said here, at the field.
+      if (!Number.isInteger(value) || value < 0) {
+        typed.set(l.key, input.value);
+        refused.set(l.key, `${l.label} must be a whole number between ${l.min} and ${l.max}${l.suffix ? ` ${l.suffix}` : ''}`);
+        render();
+        return;
+      }
       change(() => ctx.api.put(`${API}/${enc(l.key)}`, { value }), `${l.label} saved${l.live ? ': in force now' : ': it applies at the next restart'}.`, l.key);
     });
-    const error = refused.get(l.key);
     return h('li', { class: 'limit', 'data-limit': l.key },
       h('div', { class: 'row limit-head' },
         h('h3', { class: 'limit-name' }, l.label),
@@ -125,7 +134,7 @@ export function limitsCard(ctx) {
         badge(SOURCES[l.source] || l.source, l.stale ? 'warn' : '', SOURCE_TITLES[l.source])),
       h('p', { class: 'muted xs limit-note' }, limitNote(l)),
       form,
-      error ? h('div', { class: 'field-error', role: 'alert' }, error) : null);
+      error ? h('div', { class: 'field-error', role: 'alert', id: errorId }, error) : null);
   }
 
   function render() {
@@ -140,7 +149,7 @@ export function limitsCard(ctx) {
     try {
       view = await ctx.api.get(API);
     } catch (error) {
-      setChildren(body, h('div', { class: 'banner banner-danger', role: 'alert' }, icon('warn'), h('span', { class: 'banner-text' }, `Couldn’t load the resource limits: ${error.message}`)));
+      if (card.isConnected) setChildren(body, loadError(`Couldn’t load the resource limits: ${error.message}`, load));
       return;
     }
     if (card.isConnected) render();
