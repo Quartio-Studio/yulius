@@ -221,6 +221,12 @@ impl Move<'_> {
     /// changes leaves a freeze short enough, or the bound cannot be met.
     pub(super) fn warm(&mut self, p: &Profile, facts: &Facts) -> Result<(), Stop> {
         self.phase("Copy");
+        // Recorded before the first stream: an abort names the copy on the new host also when
+        // this host has dropped what it knew of it.
+        if !self.state.copied {
+            self.state.copied = true;
+            self.save_state()?;
+        }
         let zstd = self.zstd(facts);
         let mut deltas = 0;
         for _ in 0..MAX_DELTA_PASSES + 2 {

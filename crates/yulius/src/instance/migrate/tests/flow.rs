@@ -2910,3 +2910,40 @@ fn a_clock_set_back_before_the_freeze_copies_nothing_while_frozen() -> TestResul
     assert_eq!(content(&s.remote.copy_dir)?, content(&s.opts.data_dir)?);
     Ok(())
 }
+
+#[test]
+fn an_abort_names_the_copy_on_the_new_host_also_when_this_host_dropped_what_it_knew_of_it()
+-> TestResult {
+    // The proof differed: this host forgot the staged copy, which is on the new host still,
+    // with master.key and every secret, until a next run removes it. There is none.
+    let mut s = setup()?;
+    s.remote.tamper = Some(|copy| {
+        let _ = fs::write(copy.join("sysroots/sb/upper/tool"), vec![1u8; 1499]);
+    });
+    assert_eq!(s.run()?, 1);
+    assert!(!s.opts.state_dir.join("copy").exists());
+    assert!(Mark::read(&s.remote.copy_dir).is_some());
+    let looks = |s: &Setup| s.events().iter().filter(|e| *e == "new: stage").count();
+    let before = looks(&s);
+    assert_eq!(s.abort()?, 0, "{}", s.shown());
+    let status = s.status()?;
+    let left = line(&status, "new host").ok_or("no line of the new host")?;
+    assert_eq!(left.outcome, HostOutcome::Manual);
+    assert!(
+        left.detail
+            .contains("still holds master.key and every secret"),
+        "{}",
+        left.detail
+    );
+    // A stream the new host may still be taking in is closed before the key goes.
+    assert_eq!(looks(&s), before + 1);
+
+    // A move that never copied anything leaves nothing to name.
+    let mut s = setup()?;
+    s.remote.no_base = true;
+    assert_eq!(s.run()?, 1);
+    assert_eq!(s.status()?.phase, "Prepare");
+    assert_eq!(s.abort()?, 0, "{}", s.shown());
+    assert!(line(&s.status()?, "new host").is_none());
+    Ok(())
+}

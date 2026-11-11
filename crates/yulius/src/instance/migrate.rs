@@ -108,6 +108,10 @@ pub struct State {
     /// The instance the move is of, for `--abort` without options.
     #[serde(default)]
     pub instance: Option<Recorded>,
+    /// A copy was begun on the new host: its data directory may hold the instance's files and
+    /// secrets, whatever this host still knows of them (SPEC-465 WCP-015).
+    #[serde(default)]
+    pub copied: bool,
 }
 
 /// The instance a move is of.
@@ -2072,8 +2076,9 @@ impl<'a> Move<'a> {
             // Not back yet: the key stays, so the same abort can go on through it.
             return self.end_abort(false);
         }
+        let copied = self.state.copied || self.stage.id().is_some();
         if reachable {
-            if self.stage.id().is_some() {
+            if copied {
                 // A stream the new host is still taking in is closed before its files go.
                 let _ = self.remote.call(&Request::Stage {
                     data_dir: self.opts.data_dir.clone(),
@@ -2087,7 +2092,7 @@ impl<'a> Move<'a> {
                 },
             );
         }
-        if started || self.stage.id().is_some() {
+        if started || copied {
             self.manual(
                 "new host",
                 format!(
