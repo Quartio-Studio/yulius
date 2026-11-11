@@ -68,7 +68,8 @@ struct FakeTarget {
 }
 
 /// What a fake page holds: the fields text was typed into (by selector, `""` for the page's
-/// focused element), the focused one and its document's loader (a navigation starts a new one).
+/// focused element), the focused one and its document's loader id (a navigation starts a new
+/// document).
 #[derive(Debug, Default)]
 struct FakePage {
     fields: Vec<(String, String)>,
@@ -99,13 +100,31 @@ struct FakeState {
     pages: HashMap<String, FakePage>,
     password_fields: HashSet<String>,
     secret_probe: Option<Value>,
+    secret_probe_delay: Duration,
+    loaders: u64,
     connections: Vec<Arc<Connection>>,
 }
 
 impl FakeState {
     fn page(&mut self, session: Option<&str>) -> Option<&mut FakePage> {
         let target = session.and_then(|s| self.sessions.get(s))?.clone();
-        Some(self.pages.entry(target).or_default())
+        if !self.pages.contains_key(&target) {
+            let loader = self.next_loader();
+            self.pages.insert(
+                target.clone(),
+                FakePage {
+                    loader,
+                    ..FakePage::default()
+                },
+            );
+        }
+        self.pages.get_mut(&target)
+    }
+
+    /// Loader ids are unique in the browser, as Chromium's are.
+    fn next_loader(&mut self) -> u64 {
+        self.loaders += 1;
+        self.loaders
     }
 
     /// The answer to the secret probe: field values split into readable and password ones,
@@ -220,6 +239,8 @@ impl FakeCdpServer {
                 pages: HashMap::new(),
                 password_fields: HashSet::new(),
                 secret_probe: None,
+                secret_probe_delay: Duration::ZERO,
+                loaders: 0,
                 connections: Vec::new(),
             }),
             calls_seen: watch::channel(0).0,
@@ -382,6 +403,12 @@ impl FakeCdpServer {
     /// The raw value the secret probe answers with (`None`: what the pages' fields hold).
     pub fn set_secret_probe(&self, answer: Option<Value>) {
         lock(&self.shared.state).secret_probe = answer;
+    }
+
+    /// How long the secret probe takes to answer (default none): widens the window between a
+    /// screenshot's look at the page and its capture, for ordering tests.
+    pub fn set_secret_probe_delay(&self, delay: Duration) {
+        lock(&self.shared.state).secret_probe_delay = delay;
     }
 
     /// A page opens a new page (a link to a new tab or `window.open`): a target with an
@@ -592,11 +619,21 @@ async fn handle_request(shared: &Arc<Shared>, connection: &Arc<Connection>, text
             session_id: session_id.clone(),
         },
     );
-    let (muted, failure) = {
+    let (muted, failure, delay) = {
         let state = lock(&shared.state);
+        let probe = method == "Runtime.evaluate"
+            && params
+                .get("expression")
+                .and_then(Value::as_str)
+                .is_some_and(|e| e.contains(SECRET_PROBE_MARKER));
         (
             state.muted.contains(&method),
             state.failing.get(&method).cloned(),
+            if probe {
+                state.secret_probe_delay
+            } else {
+                Duration::ZERO
+            },
         )
     };
     if muted {
@@ -610,13 +647,33 @@ async fn handle_request(shared: &Arc<Shared>, connection: &Arc<Connection>, text
         send(connection, &reply).await;
         return;
     }
+    if delay.is_zero() {
+        reply(shared, connection, id, &method, &params, session_id).await;
+    } else {
+        // Answered later, as Chromium answers a slow call, while other requests go on.
+        let (shared, connection) = (Arc::clone(shared), Arc::clone(connection));
+        tokio::spawn(async move {
+            tokio::time::sleep(delay).await;
+            reply(&shared, &connection, id, &method, &params, session_id).await;
+        });
+    }
+}
+
+async fn reply(
+    shared: &Arc<Shared>,
+    connection: &Arc<Connection>,
+    id: Value,
+    method: &str,
+    params: &Value,
+    session_id: Option<String>,
+) {
     let mut after: Vec<Value> = Vec::new();
     let mut before: Vec<Value> = Vec::new();
     let result = respond(
         shared,
         connection,
-        &method,
-        &params,
+        method,
+        params,
         session_id.as_deref(),
         &mut before,
         &mut after,
@@ -738,10 +795,11 @@ fn respond(
                 target.title = format!("Title of {url}");
                 after.push(target_event("Target.targetInfoChanged", target));
             }
+            let loader = state.next_loader();
             if let Some(page) = state.page(session_id) {
                 page.fields.clear();
                 page.focused.clear();
-                page.loader += 1;
+                page.loader = loader;
             }
             if state.emit_load_events {
                 after.push(
@@ -831,8 +889,13 @@ fn respond(
             Ok(json!({"data": data}))
         }
         "Accessibility.getFullAXTree" => Ok(json!({"nodes": lock(&shared.state).ax_nodes.clone()})),
+        "Page.createIsolatedWorld" => Ok(json!({"executionContextId": 7})),
         "Runtime.evaluate" => {
             let expression = text("expression");
+            if expression.contains(SECRET_PROBE_MARKER) {
+                let answer = lock(&shared.state).probe(session_id);
+                return Ok(json!({"result": {"type": "object", "value": answer}}));
+            }
             if expression.contains("getSelection") {
                 let selection = lock(&shared.state).selection.clone();
                 return Ok(json!({"result": {"type": "string", "value": selection}}));
@@ -854,10 +917,6 @@ fn respond(
                 .and_then(Value::as_str)
                 .unwrap_or_default();
             let function = text("functionDeclaration");
-            if function.contains(SECRET_PROBE_MARKER) {
-                let answer = lock(&shared.state).probe(session_id);
-                return Ok(json!({"result": {"type": "object", "value": answer}}));
-            }
             if selector.starts_with("!!") {
                 return Ok(json!({"result": {"type": "object"}, "exceptionDetails": {
                     "text": "Uncaught", "exception": {"description": "SyntaxError: not a valid selector"}}}));

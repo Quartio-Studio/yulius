@@ -761,112 +761,212 @@ async fn bounded_screenshots_shrink_until_they_fit_the_budget() -> TestResult {
     Ok(())
 }
 
-/// SPEC-450 SSC-003/004: a secret the page shows nowhere right after typing (a cross-origin frame)
-/// refuses screenshots of that document, and of any while its document cannot be told; an
-/// unreadable page refuses them; a value that comes back after navigation refuses them again; a
-/// tab remembers a bounded number of secrets; text typed with `tool_type` guards nothing.
+fn refused<T>(result: Result<T, BrowserError>) -> bool {
+    matches!(result, Err(BrowserError::SecretOnPage))
+}
+
+fn probe(shown: &[&str], masked: &[&str]) -> Option<Value> {
+    Some(json!({"shown": shown, "masked": masked, "over": false}))
+}
+
+/// SPEC-450 SSC-003/004: in the document a secret was typed into, a screenshot needs it whole and
+/// only in password fields (unseen in a cross-origin frame, edited, revealed: refused); another
+/// document is refused while it shows the value, in any tab, also once the filled tab closed; an
+/// unreadable page is refused; text typed with `tool_type` guards nothing.
 #[tokio::test]
-async fn typed_secrets_refuse_screenshots_while_the_page_may_show_them() -> TestResult {
+async fn typed_secrets_refuse_screenshots_while_a_page_may_show_them() -> TestResult {
+    const VALUE: &str = "frame-secret-8812";
     let (fake, instance, tab) = setup().await?;
-    let shot = ScreenshotParams {
+    let shot = |tab: &TabId| ScreenshotParams {
         tab_id: tab.clone(),
     };
-    let secret = |text: &str| TypeParams {
+    let fill = |selector: &str, text: &str| TypeParams {
         tab_id: tab.clone(),
         text: text.to_owned(),
-        selector: Some("#frame-field".into()),
+        selector: Some(selector.to_owned()),
     };
     let navigate = |url: &str| NavigateParams {
         tab_id: tab.clone(),
         url: url.to_owned(),
     };
-    fn refused<T>(result: Result<T, BrowserError>) -> bool {
-        matches!(result, Err(BrowserError::SecretOnPage))
-    }
 
-    instance.tool_type(&secret("plain text")).await?;
-    instance.tool_screenshot_within(&shot, 100_000).await?;
-
-    // Typed where the probe cannot see it: no pixels of this document, and none captured.
-    fake.set_secret_probe(Some(
-        json!({"shown": ["Fake page text"], "masked": [], "over": false}),
-    ));
+    instance.tool_type(&fill("#q", "plain text")).await?;
     instance
-        .tool_type_secret(&secret("frame-secret-8812"))
+        .tool_screenshot_within(&shot(&tab), 100_000)
+        .await?;
+
+    // Typed where the probe cannot see it (a cross-origin frame): no pixels of this document,
+    // and none captured.
+    fake.set_secret_probe(probe(&["Fake page text"], &[]));
+    instance
+        .tool_type_secret(&fill("#frame-field", VALUE))
         .await?;
     let captures = fake.calls_for("Page.captureScreenshot").len();
     assert!(refused(
-        instance.tool_screenshot_within(&shot, 100_000).await
+        instance.tool_screenshot_within(&shot(&tab), 100_000).await
     ));
-    assert!(refused(instance.tool_screenshot(&shot).await));
+    assert!(refused(instance.tool_screenshot(&shot(&tab)).await));
     assert_eq!(fake.calls_for("Page.captureScreenshot").len(), captures);
-    // Another document: captured again.
+    // Another document: captured again, unless it shows the value (history restored the field,
+    // the page echoes it) or cannot be read.
     instance
         .tool_navigate(&navigate("https://example.com/next"))
         .await?;
-    instance.tool_screenshot_within(&shot, 100_000).await?;
-
-    // A page read over its bound, or not as expected, is not captured.
+    instance
+        .tool_screenshot_within(&shot(&tab), 100_000)
+        .await?;
+    fake.set_secret_probe(probe(&["key: frame-secret-8812!"], &[]));
+    assert!(refused(
+        instance.tool_screenshot_within(&shot(&tab), 100_000).await
+    ));
     fake.set_secret_probe(Some(json!({"shown": [], "masked": [], "over": true})));
     assert!(refused(
-        instance.tool_screenshot_within(&shot, 100_000).await
+        instance.tool_screenshot_within(&shot(&tab), 100_000).await
     ));
-    fake.set_secret_probe(Some(
-        json!({"shown": "frame-secret-8812", "masked": [], "over": false}),
-    ));
+    fake.set_secret_probe(Some(json!({"shown": VALUE, "masked": [], "over": false})));
     assert!(refused(
-        instance.tool_screenshot_within(&shot, 100_000).await
-    ));
-    // The value comes back (history navigation restored the field): refused again.
-    fake.set_secret_probe(Some(
-        json!({"shown": ["key: frame-secret-8812!"], "masked": [], "over": false}),
-    ));
-    assert!(refused(
-        instance.tool_screenshot_within(&shot, 100_000).await
+        instance.tool_screenshot_within(&shot(&tab), 100_000).await
     ));
     fake.set_secret_probe(None);
-    instance.tool_screenshot_within(&shot, 100_000).await?;
+    instance
+        .tool_screenshot_within(&shot(&tab), 100_000)
+        .await?;
 
-    // At most 32 secrets per tab; one more is refused before it is typed.
-    for n in 1..32 {
+    // A password field keeps screenshots; the same value edited in it (a character typed in the
+    // middle) is not the value typed any more, so the document is refused.
+    fake.set_password_field("#pw", true);
+    instance
+        .tool_type_secret(&fill("#pw", "pw-secret-4471"))
+        .await?;
+    instance
+        .tool_screenshot_within(&shot(&tab), 100_000)
+        .await?;
+    fake.set_secret_probe(probe(&["Fake page text"], &["pw-sec ret-4471"]));
+    assert!(refused(
+        instance.tool_screenshot_within(&shot(&tab), 100_000).await
+    ));
+    fake.set_secret_probe(None);
+
+    // Any tab of the browser: a page that shows a value typed elsewhere, also after that tab
+    // closed.
+    let other = instance
+        .tool_open(&OpenParams {
+            url: "https://example.com/settings".into(),
+        })
+        .await?
+        .tab
+        .id;
+    instance
+        .tool_screenshot_within(&shot(&other), 100_000)
+        .await?;
+    instance.close(&tab).await?;
+    fake.set_secret_probe(probe(&["Your key: pw-secret-4471"], &[]));
+    assert!(refused(
         instance
-            .tool_type_secret(&secret(&format!("secret-{n:02}-xyz")))
+            .tool_screenshot_within(&shot(&other), 100_000)
+            .await
+    ));
+    fake.set_secret_probe(None);
+
+    // At most 32 secrets per browser; one more is refused before it is typed.
+    for n in 3..=32 {
+        instance
+            .tool_type_secret(&TypeParams {
+                tab_id: other.clone(),
+                text: format!("secret-{n:02}-xyz"),
+                selector: Some("#pw".into()),
+            })
             .await?;
     }
-    instance.tool_type_secret(&secret("secret-01-xyz")).await?;
     let typed = fake.calls_for("Input.insertText").len();
     assert!(matches!(
-        instance.tool_type_secret(&secret("one-too-many")).await,
+        instance
+            .tool_type_secret(&TypeParams {
+                tab_id: other.clone(),
+                text: "one-too-many".into(),
+                selector: Some("#pw".into()),
+            })
+            .await,
         Err(BrowserError::InvalidInput(_))
     ));
     assert_eq!(fake.calls_for("Input.insertText").len(), typed);
 
-    // When the document cannot be told, an unseen secret refuses every screenshot.
-    instance
-        .tool_navigate(&navigate("https://example.com/other"))
-        .await?;
+    // A probe that fails is refused.
+    fake.fail("Page.createIsolatedWorld", -32000, "no world");
+    assert!(refused(
+        instance
+            .tool_screenshot_within(&shot(&other), 100_000)
+            .await
+    ));
+    Ok(())
+}
+
+/// SPEC-450: a secret is typed only into a document that can be told apart, and a page whose
+/// document cannot be told is not captured once one was typed.
+#[tokio::test]
+async fn a_secret_needs_a_known_document() -> TestResult {
     let (fake, instance, tab) = setup().await?;
-    let shot = ScreenshotParams {
+    let params = TypeParams {
         tab_id: tab.clone(),
+        text: "frame-secret-8812".into(),
+        selector: None,
     };
+    instance.tool_type_secret(&params).await?;
     fake.fail("Page.getFrameTree", -32000, "no frame tree");
-    fake.set_secret_probe(Some(json!({"shown": [], "masked": [], "over": false})));
+    assert!(refused(
+        instance
+            .tool_screenshot_within(&ScreenshotParams { tab_id: tab }, 100_000)
+            .await
+    ));
+    let typed = fake.calls_for("Input.insertText").len();
+    assert!(matches!(
+        instance.tool_type_secret(&params).await,
+        Err(BrowserError::InvalidInput(_))
+    ));
+    assert_eq!(fake.calls_for("Input.insertText").len(), typed);
+    Ok(())
+}
+
+/// SPEC-450: input waits while a screenshot looks at the page and captures it, so a click that
+/// reveals a password cannot land between the two.
+#[tokio::test]
+async fn input_waits_for_a_screenshot_to_capture() -> TestResult {
+    let (fake, instance, tab) = setup().await?;
+    fake.set_password_field("#pw", true);
     instance
         .tool_type_secret(&TypeParams {
             tab_id: tab.clone(),
-            text: "frame-secret-8812".into(),
-            selector: None,
+            text: "pw-secret-4471".into(),
+            selector: Some("#pw".into()),
         })
         .await?;
+    fake.set_secret_probe_delay(Duration::from_millis(300));
+    let worlds = fake.calls_for("Page.createIsolatedWorld").len();
+    let shooting = {
+        let instance = Arc::clone(&instance);
+        let params = ScreenshotParams {
+            tab_id: tab.clone(),
+        };
+        tokio::spawn(async move { instance.tool_screenshot_within(&params, 100_000).await })
+    };
+    assert!(
+        fake.wait_for_calls("Page.createIsolatedWorld", worlds + 1, WAIT)
+            .await
+    );
     instance
-        .tool_navigate(&NavigateParams {
+        .tool_click(&ClickParams {
             tab_id: tab,
-            url: "https://example.com/next".into(),
+            selector: None,
+            x: Some(10.0),
+            y: Some(10.0),
         })
         .await?;
-    assert!(refused(
-        instance.tool_screenshot_within(&shot, 100_000).await
-    ));
+    shooting.await??;
+    let calls = fake.calls();
+    let position = |method: &str| calls.iter().rposition(|c| c.method == method);
+    let captured = position("Page.captureScreenshot").ok_or("no capture")?;
+    let clicked = position("Input.dispatchMouseEvent").ok_or("no click")?;
+    assert!(captured < clicked, "the click went in before the capture");
     Ok(())
 }
 

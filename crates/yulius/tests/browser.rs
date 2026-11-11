@@ -656,10 +656,11 @@ async fn agents_type_secrets_only_into_pages_of_their_hosts() -> TestResult {
     .await
 }
 
-/// SPEC-450 SSC-001..004 (#1113): pixels cannot be redacted, so a screenshot of a page that
-/// shows a secret typed with `browser_fill_secret` (a plain-text field) is refused, pointing to
-/// `browser_snapshot`; a password field keeps screenshots until the page reveals it, and a
-/// navigated tab no longer holds the secret.
+/// SPEC-450 SSC-001..006 (#1113): pixels cannot be redacted, so a screenshot of a page that may
+/// show a secret typed with `browser_fill_secret` (a plain-text field, edited in place, echoed
+/// in another tab) is refused, pointing to `browser_snapshot`; a password field keeps
+/// screenshots until the page reveals it, a navigated tab no longer holds the secret, and a user
+/// name is not a secret.
 #[tokio::test]
 async fn a_screenshot_never_shows_a_secret_typed_into_a_page() -> TestResult {
     const VALUE: &str = "docs-api-key-5521-qrs";
@@ -669,7 +670,8 @@ async fn a_screenshot_never_shows_a_secret_typed_into_a_page() -> TestResult {
             axum::http::Method::POST,
             "/api/sandboxes/s1/agent-secrets",
             Some(json!({"name": "DOCS_KEY", "description": "Docs API key",
-                "hosts": ["docs.example"], "injection": "bearer", "value": VALUE})),
+                "hosts": ["docs.example"], "injection": "basic", "username": "alice-docs",
+                "value": VALUE})),
             &f.writer,
         )
         .await?;
@@ -698,14 +700,16 @@ async fn a_screenshot_never_shows_a_secret_typed_into_a_page() -> TestResult {
                     .as_str()
                     .is_some_and(|t| t.contains("browser_snapshot"))
         };
-        let fill = |selector: &'static str| {
+        let fill_field = |selector: &'static str, field: &'static str| {
             mcp_tool(
                 &f.h,
                 TOKEN,
                 "browser_fill_secret",
-                json!({"tab_id": tab, "secret": "DOCS_KEY", "selector": selector}),
+                json!({"tab_id": tab, "secret": "DOCS_KEY", "selector": selector,
+                    "field": field}),
             )
         };
+        let fill = |selector: &'static str| fill_field(selector, "value");
 
         // A plain-text field (an API-key input) shows the value: no pixels.
         let filled = fill("#api-key").await?;
@@ -723,6 +727,13 @@ async fn a_screenshot_never_shows_a_secret_typed_into_a_page() -> TestResult {
         .await?;
         assert_eq!(typed["isError"], false, "{typed}");
         assert!(refused(&screenshot().await?), "the key is still shown");
+        // A character typed into the middle of it: no longer the value as typed, still refused.
+        f.fake.set_secret_probe(Some(
+            json!({"shown": ["docs-api-key- 5521-qrs"], "masked": [],
+                "over": false}),
+        ));
+        assert!(refused(&screenshot().await?), "an edited key");
+        f.fake.set_secret_probe(None);
 
         // Another document no longer holds it: screenshots work again.
         mcp_tool(
@@ -735,6 +746,32 @@ async fn a_screenshot_never_shows_a_secret_typed_into_a_page() -> TestResult {
         let shot = screenshot().await?;
         assert_eq!(shot["isError"], false, "{shot}");
         assert_eq!(shot["content"][0]["type"], "image");
+        // A user name is not a secret: typed into a text field, screenshots go on.
+        let user = fill_field("#user", "username").await?;
+        assert_eq!(user["isError"], false, "{user}");
+        let shot = screenshot().await?;
+        assert_eq!(shot["isError"], false, "{shot}");
+
+        // Another tab showing the stored key (a settings page) is refused too.
+        let other = tool_text(
+            &mcp_tool(
+                &f.h,
+                TOKEN,
+                "browser_open",
+                json!({"url": "https://docs.example/keys"}),
+            )
+            .await?,
+        )["tab"]["id"]
+            .as_str()
+            .ok_or("tab id")?
+            .to_owned();
+        let other_shot = || mcp_tool(&f.h, TOKEN, "browser_screenshot", json!({"tab_id": other}));
+        assert_eq!(other_shot().await?["isError"], false);
+        f.fake.set_secret_probe(Some(
+            json!({"shown": [format!("Your key: {VALUE}")], "masked": [], "over": false}),
+        ));
+        assert!(refused(&other_shot().await?), "a page echoing the key");
+        f.fake.set_secret_probe(None);
 
         // A password field is drawn as dots: screenshots keep working, until the page reveals it.
         f.fake.set_password_field("#password", true);
