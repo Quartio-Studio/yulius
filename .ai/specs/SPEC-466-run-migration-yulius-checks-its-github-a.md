@@ -1,11 +1,11 @@
 ---
 yulius-task: 25decd3b-ed8e-4fcf-ab8e-a49ca9c2b1c2
-status: in-progress
+status: done
 ---
 
 # SPEC-466: Run migration: Yulius checks its GitHub App callback, Settings → Instance shows the move, the remote CLI follows it
 
-Status: in-progress
+Status: done
 Date: 2026-11-11
 Owner: Yulius task #446 (slice C of #442)
 Scope authorization: task #446, asked by the project's owner: "After a move changes the public
@@ -192,7 +192,7 @@ Remote clients
 - [x] Operations guide §5 and §7, remote control, API, architecture, product summary, changes
 - [x] Gates green and the independent review answered
 - [x] The first review's findings fixed, each with a test that fails without it
-- [ ] The second review's findings fixed: the saved token goes nowhere without being typed
+- [x] The second review's findings fixed: the saved token goes nowhere without being typed
 
 ## Acceptance criteria
 
@@ -290,19 +290,21 @@ Remote clients
 
 ## Evidence
 
-Head of the gates: `c84185d3` (2026-11-11), which holds `dev` up to `4b59bce3` (#1173); the
+Head of the gates: `afdc1a2b` (2026-11-11), which holds `dev` up to `4b59bce3` (#1173); the
 commits after it change this document only.
 
-- `scripts/dev ci`: exit 0; nextest 3681 tests run, 3681 passed, 16 skipped; clippy,
+- `scripts/dev ci`: exit 0; nextest 3682 tests run, 3682 passed, 16 skipped; clippy,
   doctests, docs and the repository check.
 - e2e: the whole suite (`cd e2e && npx e2e run`) at `8e687075`: 79 files passed, 1 skipped; 940
-  tests passed, 1 skipped. At the gates' head, where only a comment of the sign-in page changed
-  since: `sign-in`, `instance-address`, `instance-limits` and `claude-code`, 36 tests passed.
+  tests passed, 1 skipped. At `c84185d3`, where only a comment of the sign-in page had changed
+  since (and no file of the web UI changed after it): `sign-in`, `instance-address`,
+  `instance-limits` and `claude-code`, 36 tests passed.
   New: `instance-address.e2e.ts` (8) and three in `sign-in.e2e.ts`.
 - The tests of this change, by requirement:
   - MVC-001: `yulius-github` `tests/client.rs`
-    `a_callback_url_is_registered_missing_or_not_known` (with the control question and a GitHub
-    that takes every URL), `a_callback_question_ends_when_github_does_not_answer`; through the
+    `a_callback_url_is_registered_missing_or_not_known` (with the control question, a GitHub
+    that takes every URL and a control question that fails),
+    `a_callback_question_ends_when_github_does_not_answer`; through the
     production adapter, `github_callback::the_adapter_asks_the_fake_github`.
   - MVC-002, MVC-003, MVC-010, MVC-012, MVC-013, MVC-020: `crates/yulius/tests/github_callback.rs`
     (19 tests) and `yulius-app` `github_callback::tests` (3, the schedule of re-checks among
@@ -311,19 +313,24 @@ commits after it change this document only.
   - MVC-021, MVC-022: `instance::migrate::tests::github` (8), four flow tests
     (`a_callback_github_accepts_is_ok_in_the_plan_and_at_the_finish` and the three after it),
     `github_callback::the_move_s_question_is_answered_by_the_running_server`.
-  - MVC-030 to MVC-032: `yulius-import` `remote::tests` (3), `token_store::tests` (4 new), and
-    with the `yulius` binary against real servers `remote_mcp::the_cli_follows_an_instance_that_moved`,
+  - MVC-030 to MVC-032: `yulius-import` `remote::tests` (3), `token_store::tests` (4 new),
+    `remote_cli::tests` (1), and with the `yulius` binary against real servers
+    `remote_mcp::the_cli_follows_an_instance_that_moved`,
     `the_cli_does_not_follow_a_move_onto_another_sign_in` and
-    `the_cli_finds_its_way_back_after_a_move_that_was_undone`.
+    `the_cli_finds_its_way_back_after_a_move_that_was_undone` (two laptops: a sign-in without a
+    token, with the token that followed, with another one).
 - Each behaviour's test was seen to fail without it: before its code was written, or by a
-  mutation of it (73 mutations of the kept answer and its schedule, the routes, the pages, the
+  mutation of it (86 mutations of the kept answer and its schedule, the routes, the pages, the
   move's question and line, the client's control question and the remote client with its
   store). Two survived at first and got their tests (a URL that is not a host reaching the
   request line; the count of equal answers not reset by a changed one), a third was an
   equivalent change. The first review found a fourth that no mutation had been tried on: the
   schedule's test asked only "is GitHub asked by then", never "not before". It now reads at
   29 999 ms and at each longer wait minus one, and ten mutations of the schedule, run against
-  the integration tests alone, are all caught.
+  the integration tests alone, are all caught. The 13 mutations of the second review's fixes
+  (an empty token taking the saved one, the store taking a sign-in back for any token or for
+  none, a control question that fails read as "registered", the hint, the hidden characters)
+  are all caught.
 - `yulius security-scan`: "Security scan disabled" (Vidoc is off for this project): disabled, not
   passed.
 - Real runs (2026-11-11):
@@ -353,7 +360,18 @@ commits after it change this document only.
     without looking at which URL was asked about) and seven nits. All are answered in code with
     a test each, or in the documents; the control question came from its remark that the
     checklist now turns to `ok` on an answer measured only with an OAuth app.
-  - Round 2: asked for the head that holds this section. The merge (`delivery_merge`) is
+  - Round 2 at `d663fb46`: changes requested. One major, in the first round's own fix: `yulius
+    remote login <old URL>` with an empty stdin took the token that had followed a move, sent it
+    to whatever answers at the old name and rewrote the file. Two minors (a sign-in at a URL
+    that had moved forgot the other sign-in whatever the token; no test for a control question
+    that fails) and four nits. Answered: a sign-in always needs its token typed, and without one
+    contacts nobody and leaves the file byte for byte; the store takes a sign-in back only for
+    the token that followed; the fake GitHub can fail the second request of a call; the hint
+    singles out no one of several old names; the line drops the soft hyphen and tag characters
+    and turns line and paragraph separators into spaces. Kept as it is:
+    `github_callback_check_running` stays public, as `finish.rs` has such a window for tests
+    that live in another crate.
+  - Round 3: asked for the head that holds this section. The merge (`delivery_merge`) is
     refused without its approval of the exact head and records its verdict.
 
 Changed while it was built, and why:
@@ -365,6 +383,11 @@ Changed while it was built, and why:
   believed only after the control question.
 - Reads asked GitHub again every 30 s for as long as a page stayed open; the wait now doubles
   after eleven equal answers, up to 4 minutes.
+- After a move that was undone, `yulius remote login <old URL>` first took the token that had
+  followed the move when none was typed (tokens are shown once). No saved token is reused now:
+  an empty stdin is no person's act, and the old name may be someone else's by then. A person
+  without the token makes a new one, and the CLI names the command that forgets the sign-in
+  left behind.
 
 Not tested here:
 
