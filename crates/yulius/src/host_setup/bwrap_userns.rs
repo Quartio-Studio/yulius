@@ -330,7 +330,7 @@ impl Variables<'_> {
         let named = (0..header.len())
             .find(|&at| attribute(header[at], header.get(at + 1).copied()))
             .map_or(header, |at| &header[..at]);
-        let keyword = named.iter().rposition(|w| *w == "profile");
+        let keyword = named.iter().position(|w| *w == "profile");
         match keyword.map_or(named, |at| &named[at + 1..]) {
             [name] => self.is_bwrap(name, true),
             [_, attachment] => self.is_bwrap(attachment, false),
@@ -1002,6 +1002,8 @@ mod tests {
             "@{d} = /usr/bin/\nprofile @{d}/bwrap {\n}\n",
             // In a policy namespace: seen rather than missed.
             "profile :ns:b /usr/bin/bwrap {\n}\n",
+            // A profile called `profile`: its attachment is no name, so `//` parts nothing.
+            "profile profile /usr/bin//bwrap {\n}\n",
         ] {
             assert!(attaches_bwrap(whole), "{whole}");
         }
