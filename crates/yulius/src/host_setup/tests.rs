@@ -84,6 +84,8 @@ struct Profile {
     unconfined: bool,
     /// It allows `userns`.
     userns: bool,
+    /// It attaches by a glob for many programs: AppArmor prefers a profile that names the path.
+    broad: bool,
 }
 
 /// The profiles a file declares, read as the measurements need them (not the item's own parser).
@@ -93,7 +95,11 @@ fn profiles_in(text: &str) -> Vec<(String, Profile)> {
         .map(|header| {
             let name = header.split(' ').next().unwrap_or_default().to_owned();
             let profile = Profile {
-                bwrap: header.contains(" /usr/bin/bwrap "),
+                // The last two are spellings the item's own reading does not know.
+                bwrap: [" /usr/bin/bwrap ", " /{usr,}/bin/bwrap ", " /usr/bin/* "]
+                    .iter()
+                    .any(|path| header.contains(path)),
+                broad: header.contains(" /usr/bin/* "),
                 unconfined: header.contains("flags=(unconfined)"),
                 userns: ["  userns,\n", "  allow userns,\n", "{ userns, }"]
                     .iter()
@@ -229,6 +235,11 @@ impl Fake {
         }
         // AppArmor's unit loads every file of its directory that no `disable/` link names.
         self.profiles.clear();
+        self.load_directory();
+    }
+
+    /// `apparmor_parser -r /etc/apparmor.d`: what a boot loads.
+    fn load_directory(&mut self) {
         let enabled: Vec<PathBuf> = self
             .files
             .keys()
@@ -269,6 +280,9 @@ impl Fake {
             "1",
         );
         let attached: Vec<&Profile> = self.profiles.values().filter(|p| p.bwrap).collect();
+        // A profile that names the path outweighs a glob for many programs.
+        let named: Vec<&Profile> = attached.iter().copied().filter(|p| !p.broad).collect();
+        let attached = if named.is_empty() { attached } else { named };
         match attached.as_slice() {
             // Its children run under a profile that denies every capability.
             [one] if !one.unconfined => Err("mount: /tmp: permission denied."),
@@ -711,6 +725,14 @@ impl Host for Fake {
                 match self.bwrap_proof() {
                     Ok(()) => ok(""),
                     Err(why) => fail(1, why),
+                }
+            }
+            ["/usr/sbin/apparmor_parser", "-r", APPARMOR_D] => {
+                if self.parser_fails {
+                    fail(1, "AppArmor parser error: Could not open 'abi/4.0'")
+                } else {
+                    self.load_directory();
+                    ok("")
                 }
             }
             ["/usr/sbin/apparmor_parser", "-r", file] => {
