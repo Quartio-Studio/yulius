@@ -187,9 +187,20 @@ the watcher has no entry of its own.
      missing. Answered: the message now says so, and the test plan names the case.
   2. Own code, nit: the prompt test proves nothing when the watcher applied the prompt before the
      Stop read the task (it only errs toward passing; already in the test plan). No change asked.
-  3. Pre-existing, minor: `turn_interrupted` and `settle_unanswered_turn` stamp the last Stop
-     without the turn order (not in this diff; no failure reproduced). In Decisions and on #1066.
+  3. Pre-existing, minor: `settle_unanswered_turn` stamps the last Stop without the turn order,
+     and a failed Stop reaches it from the hook's task (`turn_interrupted` stamps it too, but only
+     from the watcher's own loop, so it cannot meet the watcher's prompt). Not in this diff; no
+     failure reproduced. The failed Stop's settle is in Decisions; both are in the #1066 comment
+     posted after the reviews.
   4. Pre-existing, nit: the watcher's prompt resets `turn_moved_ms`, the armed retry and the
-     achieved goal before its last-Stop check (unchanged lines). Noted on #1066.
-  The head delivered adds to the reviewed one only clean merges of dev, the reworded assertion
-  message and this spec; a second review covers it (in the pull request).
+     achieved goal before its last-Stop check (unchanged lines). In the same #1066 comment.
+- **Review round 2** (another fresh session) of `66b301a1` (dev merged in, the reworded assertion
+  message, the decisions index put in order, this spec): approve. It ran the full gate on that
+  head (exit 0, 3289 tests run, 3289 passed, 16 skipped), each new test 8 times with all 16 at
+  once (16 of 16 passed), and the fix removed whole in a copy (both tests fail as above). Its
+  findings, both own code and both in this section: (minor) it said notes 3 and 4 were on #1066
+  before they were, and only half of note 3 is in Decisions; (nit) it left the index reorder
+  out of what the head adds. Answered: the notes are posted on #1066 and the text above says
+  where each is.
+- The head delivered adds to `66b301a1` a clean merge of dev and this section's rewording; a
+  third review covers it (in the pull request).
