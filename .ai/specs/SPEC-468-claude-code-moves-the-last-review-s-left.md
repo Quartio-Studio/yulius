@@ -86,9 +86,9 @@ The question of direction: the restart waits only while a person typed in the la
 ## Plan
 
 - [x] Spec SPEC-468 written and validated
-- [ ] A person's own goal keeps a prompt-mode session, and the gate's block case is tested (findings 1 and 2)
-- [ ] Two turn ends that decide at once make one watched restart, and the start test no longer depends on speed (findings 4 and 6)
-- [ ] A draft typed since the last prompt keeps the session (the question of direction)
+- [x] A person's own goal keeps a prompt-mode session, and the gate's block case is tested (findings 1 and 2)
+- [x] Two turn ends that decide at once make one watched restart, and the start test no longer depends on speed (findings 4 and 6)
+- [x] A draft typed since the last prompt keeps the session (the question of direction)
 - [ ] The version and the model name a transcript names are capped (finding 5)
 - [ ] The card and task info promise only the next start while moves are stopped, and the card says when the binary could not be read (findings 3 and 7)
 - [ ] An idle restart never reads Working and notifies nobody again (finding 8)
