@@ -11,8 +11,9 @@
 //!
 //! The request made for such a pause says "the task does not go on by itself". It ends when that
 //! stops being true (SPEC-469, ADR-0304): once the session's agent works again, whatever woke it
-//! (Claude Code's own wake-up, a prompt Yulius typed, a session Yulius restarted). A prompt alone
-//! ends nothing: the API may refuse it again, and then the person still has to act.
+//! (Claude Code's own wake-up, a prompt Yulius typed, a session Yulius restarted, or no prompt
+//! anyone sees). A prompt alone ends nothing: the API may refuse it again, and then the person
+//! still has to act.
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -80,7 +81,7 @@ impl App {
     ///
     /// # Errors
     /// The store's.
-    pub(crate) async fn end_goal_retry_request(&self, task_id: &TaskId) -> AppResult<bool> {
+    async fn end_goal_retry_request(&self, task_id: &TaskId) -> AppResult<bool> {
         let ended = self
             .deps
             .store

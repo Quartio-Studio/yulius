@@ -95,7 +95,8 @@ pub struct TranscriptFacts {
     /// (SPEC-146 GWR-003).
     pub goal_recorded: bool,
     /// The last word after a turn an error ended is Claude Code's goal notice (SPEC-333), until a
-    /// prompt, agent work or an interrupt; an armed retry also ends with the goal.
+    /// prompt, agent work or an interrupt; an armed retry also ends with the goal, and spent
+    /// retries with the session's own answer (SPEC-469).
     pub goal_retry: Option<GoalRetryFact>,
     /// When the session's agent first worked (a line of the model's own, or its answer) after
     /// Claude Code last stopped retrying the goal, or first worked at all when what was read holds
