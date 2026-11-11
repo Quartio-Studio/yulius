@@ -601,14 +601,11 @@ impl Document {
                 .iter()
                 .find_map(|field| frame.get(*field).and_then(Value::as_str).and_then(host_of))
         };
-        // A frame of another origin (another host, port or scheme) is one the probe cannot read.
-        let origin = |frame: &Value| {
-            ["securityOrigin", "url"].iter().find_map(|field| {
-                frame
-                    .get(*field)
-                    .and_then(Value::as_str)
-                    .and_then(origin_of)
-            })
+        // A frame of another origin (another host, port or scheme) is one the probe cannot read,
+        // and so is one whose own origin is opaque (sandboxed), whatever its address.
+        let origin = |frame: &Value| match frame.get("securityOrigin").and_then(Value::as_str) {
+            Some(own) => origin_of(own),
+            None => frame.get("url").and_then(Value::as_str).and_then(origin_of),
         };
         let own = host(main);
         let own_origin = origin(main);
@@ -2664,9 +2661,15 @@ impl BrowserInstance {
         }
         let Some(page) = self.read_page(session, &document.frame).await else {
             // A navigation committing meanwhile (its context gone): the typing goes into the
-            // next document, which holds none of them.
+            // next document, which holds none of them, unless it is one a value went into (a
+            // page restored from the back/forward cache keeps its loader id).
             match self.document(session).await {
-                Some(now) if now.loader != document.loader => {}
+                Some(now) if now.loader != document.loader => {
+                    let mut secrets = self.secrets.lock();
+                    if !secrets.typed_into(&now).is_empty() {
+                        secrets.expose(now.host.as_deref());
+                    }
+                }
                 Some(_) => self.secrets.lock().expose(document.host.as_deref()),
                 None => self.secrets.lock().expose(None),
             }
