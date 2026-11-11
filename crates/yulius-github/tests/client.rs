@@ -102,26 +102,50 @@ async fn a_callback_url_is_registered_missing_or_not_known() -> TestResult {
     let new = "https://new.example/api/auth/github/callback";
     fake.set_callback_urls(&[old]);
 
-    assert_eq!(client.callback_registered(old).await, Ok(true));
-    assert_eq!(client.callback_registered(new).await, Ok(false));
+    assert_eq!(client.callback_registered(old).await, Ok(Some(true)));
+    assert_eq!(client.callback_registered(new).await, Ok(Some(false)));
     // An App takes several callbacks: the new one beside the old.
     fake.set_callback_urls(&[old, new]);
-    assert_eq!(client.callback_registered(new).await, Ok(true));
-    assert_eq!(client.callback_registered(old).await, Ok(true));
+    assert_eq!(client.callback_registered(new).await, Ok(Some(true)));
+    assert_eq!(client.callback_registered(old).await, Ok(Some(true)));
 
-    // One request each, with the App's client and no token of anyone.
+    // With the App's client and no token of anyone. A URL GitHub refuses is asked about once; one
+    // it accepts is followed by the control question: a URL that cannot be registered, which
+    // GitHub must refuse for "accepted" to mean anything.
     let asked: Vec<_> = fake
         .requests()
         .into_iter()
         .filter(|r| r.web && r.path == "/login/oauth/access_token")
         .collect();
-    assert_eq!(asked.len(), 4);
     assert!(asked.iter().all(|r| r.header("authorization").is_none()));
-    assert!(asked[1].body.contains("client_id=Iv1.fakeyuliusapp"));
     assert!(
-        asked[1]
-            .body
-            .contains("redirect_uri=https%3A%2F%2Fnew.example%2Fapi%2Fauth%2Fgithub%2Fcallback")
+        asked
+            .iter()
+            .all(|r| r.body.contains("client_id=Iv1.fakeyuliusapp"))
+    );
+    let uri =
+        |host: &str| format!("redirect_uri=https%3A%2F%2F{host}%2Fapi%2Fauth%2Fgithub%2Fcallback");
+    let order: Vec<&str> = asked
+        .iter()
+        .map(|r| {
+            ["old.example", "new.example", "callback-check.invalid"]
+                .into_iter()
+                .find(|host| r.body.contains(&uri(host)))
+                .unwrap_or("?")
+        })
+        .collect();
+    assert_eq!(asked.len(), 7, "{order:?}");
+    assert_eq!(
+        order,
+        [
+            "old.example",
+            "callback-check.invalid",
+            "new.example",
+            "new.example",
+            "callback-check.invalid",
+            "old.example",
+            "callback-check.invalid"
+        ]
     );
 
     // A real sign-in meets the same rule, before its code is looked at.
@@ -169,6 +193,14 @@ async fn a_callback_url_is_registered_missing_or_not_known() -> TestResult {
         Err(GitHubError::NotConfigured)
     );
     fake.shutdown().await;
+
+    // A GitHub that takes any redirect URI (it does not compare them for this App) does not say
+    // whether one is registered: no answer, never "registered".
+    let open = FakeGitHub::start().await?;
+    let client = GitHubClient::new(open.config())?;
+    assert_eq!(client.callback_registered(new).await, Ok(None));
+    assert_eq!(open.count("POST", "/login/oauth/access_token"), 2);
+    open.shutdown().await;
     Ok(())
 }
 

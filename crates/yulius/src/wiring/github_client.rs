@@ -201,7 +201,8 @@ impl GitHubPort for GitHubAdapter {
         app: &GitHubAppConfig,
         redirect_uri: &str,
     ) -> AppResult<bool> {
-        self.client(app)?
+        let told = self
+            .client(app)?
             .callback_registered(redirect_uri)
             .await
             .map_err(|err| match err {
@@ -215,7 +216,14 @@ impl GitHubPort for GitHubAdapter {
                 }
                 GitHubError::OAuth(code) => AppError::Upstream(format!("GitHub answered `{code}`")),
                 other => map_err(other),
-            })
+            })?;
+        told.ok_or_else(|| {
+            AppError::Upstream(
+                "GitHub does not say whether a callback URL is registered for this App: it \
+                 takes one that cannot be registered too"
+                    .into(),
+            )
+        })
     }
 
     async fn refresh_token(

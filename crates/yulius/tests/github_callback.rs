@@ -501,6 +501,7 @@ async fn the_adapter_asks_the_fake_github() -> TestResult {
     fake.set_callback_urls(&["https://old.example/api/auth/github/callback", CALLBACK]);
     assert!(adapter.callback_registered(&app, CALLBACK).await?);
 
+    let told = app.clone();
     let wrong = GitHubAppConfig {
         app_id: app.app_id + 1,
         client_secret: "not-the-secret-0123456789".into(),
@@ -517,6 +518,21 @@ async fn the_adapter_asks_the_fake_github() -> TestResult {
          and secret"
     );
     fake.shutdown().await;
+
+    // A GitHub that takes any callback URL does not say whether this one is registered: the
+    // reason a superadmin reads, never "registered".
+    let open = yulius_github::fake::FakeGitHub::start().await?;
+    let untold = GitHubAdapter::new(open.config())?
+        .callback_registered(&told, CALLBACK)
+        .await
+        .err()
+        .ok_or("an answer")?;
+    assert_eq!(
+        untold.to_string(),
+        "GitHub does not say whether a callback URL is registered for this App: it takes one \
+         that cannot be registered too"
+    );
+    open.shutdown().await;
     Ok(())
 }
 

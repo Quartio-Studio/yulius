@@ -18,8 +18,9 @@ use yulius_contracts::update::HostOutcome;
 pub type Asked = Result<Option<GitHubCallback>, String>;
 
 /// How long the instance may take to connect, to take the request and to answer: it asks GitHub
-/// within 10 s, after a check that may be on its way (10 s more).
-const LIMIT: Duration = Duration::from_secs(30);
+/// one or two questions of at most 10 s each, after a check that may be on its way (as much
+/// again).
+const LIMIT: Duration = Duration::from_secs(45);
 /// An answer is a few hundred bytes.
 const MAX_ANSWER: usize = 64 * 1024;
 

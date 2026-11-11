@@ -256,7 +256,8 @@ struct FakeState {
     refresh_tokens: HashMap<String, String>,
     oauth_codes: HashMap<String, String>,
     manifest_codes: HashSet<String>,
-    /// The App's registered callback URLs; `None` takes every redirect URI.
+    /// The App's registered callback URLs; `None` takes every redirect URI (a GitHub that does
+    /// not compare them, so it does not say whether one is registered).
     callback_urls: Option<HashSet<String>>,
     installations: BTreeMap<u64, (String, OwnerKind)>,
     installation_tokens: HashMap<String, u64>,
