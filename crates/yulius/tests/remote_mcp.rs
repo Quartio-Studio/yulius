@@ -3772,6 +3772,7 @@ async fn the_cli_finds_its_way_back_after_a_move_that_was_undone() -> TestResult
     assert_eq!(code, Some(0), "{out}{err}");
     assert!(out.contains("as alice (operate token)"), "{out}");
     assert!(!out.contains("is kept"), "nothing stayed behind: {out}");
+    assert!(old.hits() > hits, "a sign-in there is seen by the count");
     let file: Value = serde_json::from_slice(&std::fs::read(&stored)?)?;
     assert_eq!(file["servers"][&old_url]["token"], token.as_str());
     assert_eq!(file["servers"][&new_url], Value::Null);

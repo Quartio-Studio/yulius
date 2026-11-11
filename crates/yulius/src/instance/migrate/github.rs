@@ -108,19 +108,22 @@ pub(crate) fn ask(address: &str, key: &str, public_url: Option<&str>, limit: Dur
     }
 }
 
-/// Characters that reorder or hide text (bidirectional controls, zero-width marks, the soft
-/// hyphen, tag characters): a line is read by a person, and must read as it is written.
+/// Characters that reorder or hide text, or ride along unseen (bidirectional controls,
+/// zero-width and invisible marks, the soft hyphen, variation selectors, annotation and tag
+/// characters): a line is read by a person, and must read as it is written.
 fn hidden(c: char) -> bool {
     matches!(
         c,
         '\u{ad}'
             | '\u{061c}'
+            | '\u{180e}'
             | '\u{200b}'..='\u{200f}'
             | '\u{202a}'..='\u{202e}'
-            | '\u{2060}'..='\u{2064}'
-            | '\u{2066}'..='\u{2069}'
+            | '\u{2060}'..='\u{206f}'
+            | '\u{fe00}'..='\u{fe0f}'
             | '\u{feff}'
-            | '\u{e0000}'..='\u{e007f}'
+            | '\u{fff9}'..='\u{fffb}'
+            | '\u{e0000}'..='\u{e0fff}'
     )
 }
 
