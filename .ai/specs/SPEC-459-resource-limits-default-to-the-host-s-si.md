@@ -97,7 +97,7 @@ host-sized one, by the migration flow itself.
 - [x] Spec, ADR-0294 and the failing formula tests
 - [x] Host-sized formulas, precedence and the pinned-on-another-host rule in the domain
 - [x] The limits record in the store (migration 0051) and the start-up load that records unit pins with their host
-- [ ] Sessions, CI lanes and the CD run disk read the live limits, and CI job slots resize while jobs run
+- [x] Sessions, CI lanes and the CD run disk read the live limits, and CI job slots resize while jobs run
 - [ ] The sandbox disk quota changes live, and memory and disk settings reach the isolation at start
 - [x] Superadmin API: read, set, host-sized, remove, adapt and keep, audited
 - [ ] `instance import` marks the copy and the first start adapts the limits by itself
