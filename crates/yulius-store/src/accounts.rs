@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 use rusqlite::{OptionalExtension, Row, params};
 use yulius_app::error::AppResult;
-use yulius_app::model::{AccountRecord, AccountStatus, Sealed};
+use yulius_app::model::{AccountChange, AccountRecord, AccountStatus, Sealed};
 use yulius_app::ports::store::AccountStore;
 use yulius_domain::harness::Provider;
 use yulius_domain::ids::AccountId;
@@ -91,15 +91,45 @@ impl AccountStore for SqliteStore {
         .await
     }
 
-    async fn update_account(&self, id: &AccountId, label: &str, at: Timestamp) -> AppResult<()> {
-        let (id, label) = (id.as_str().to_owned(), label.to_owned());
+    async fn update_account(
+        &self,
+        id: &AccountId,
+        change: &AccountChange,
+        at: Timestamp,
+    ) -> AppResult<()> {
+        let (id, change) = (id.as_str().to_owned(), change.clone());
         self.call(move |c| {
-            c.execute(
-                "UPDATE accounts SET label = ?1, updated_at = ?2 WHERE id = ?3",
-                params![label, at.0, id],
-            )
-            .map_err(db)?;
-            Ok(())
+            let tx = c.transaction().map_err(db)?;
+            if let Some(label) = &change.label {
+                tx.execute(
+                    "UPDATE accounts SET label = ?1, updated_at = ?2 WHERE id = ?3",
+                    params![label, at.0, id],
+                )
+                .map_err(db)?;
+            }
+            match &change.email {
+                // Typed: the person's from now on. Whether Claude answered for this sign-in
+                // (`email_checked_at`) is left as it is.
+                Some(Some(email)) => {
+                    tx.execute(
+                        "UPDATE accounts SET email = ?1, email_typed = 1, updated_at = ?2 \
+                         WHERE id = ?3",
+                        params![email, at.0, id],
+                    )
+                    .map_err(db)?;
+                }
+                // Removed: Claude's again, and never answered, so the background round asks.
+                Some(None) => {
+                    tx.execute(
+                        "UPDATE accounts SET email = NULL, email_typed = 0, \
+                         email_checked_at = NULL, updated_at = ?1 WHERE id = ?2",
+                        params![at.0, id],
+                    )
+                    .map_err(db)?;
+                }
+                None => {}
+            }
+            tx.commit().map_err(db)
         })
         .await
     }
@@ -120,8 +150,8 @@ impl AccountStore for SqliteStore {
         self.call(move |c| {
             let changed = c
                 .execute(
-                    "UPDATE accounts SET email = ?1, email_checked_at = ?2, updated_at = ?3 \
-                     WHERE id = ?4 AND credential = ?5",
+                    "UPDATE accounts SET email = CASE WHEN email_typed = 1 THEN email ELSE ?1 END, \
+                     email_checked_at = ?2, updated_at = ?3 WHERE id = ?4 AND credential = ?5",
                     params![email, checked_at.map(|t| t.0), at.0, id, cred],
                 )
                 .map_err(db)?;
@@ -140,7 +170,8 @@ impl AccountStore for SqliteStore {
         let (id, cred) = (id.as_str().to_owned(), credential.0.clone());
         self.call(move |c| {
             c.execute(
-                "UPDATE accounts SET credential = ?1, status = ?2, last_error = NULL, email = NULL, \
+                "UPDATE accounts SET credential = ?1, status = ?2, last_error = NULL, \
+                 email = CASE WHEN email_typed = 1 THEN email ELSE NULL END, \
                  email_checked_at = NULL, updated_at = ?3 WHERE id = ?4",
                 params![cred, status.as_str(), at.0, id],
             )

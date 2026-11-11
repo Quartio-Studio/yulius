@@ -535,6 +535,16 @@ impl AccountStatus {
     }
 }
 
+/// What a person changes on an account (`PATCH /api/admin/accounts/{id}`); `None` leaves a
+/// field as it is.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AccountChange {
+    /// The new name.
+    pub label: Option<String>,
+    /// The email the person typed for it (SPEC-463); `Some(None)` removes it.
+    pub email: Option<Option<String>>,
+}
+
 /// A connected provider account.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccountRecord {
@@ -552,8 +562,9 @@ pub struct AccountRecord {
     pub usage_json: Option<String>,
     /// Last error.
     pub last_error: Option<String>,
-    /// Email of the Claude account behind the credential, read from Claude's profile at sign-in
-    /// (SPEC-244 SUB-003); `None` while unknown.
+    /// Email of the Claude account behind the credential: the one a person typed for it
+    /// (SPEC-463), else the one read from Claude's profile at sign-in (SPEC-244 SUB-003); `None`
+    /// while unknown.
     pub email: Option<String>,
     /// When Claude last answered the email request definitely (an email or a refusal) for the
     /// current sign-in; `None` while it was never answered, so the background round asks.

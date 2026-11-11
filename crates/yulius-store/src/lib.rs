@@ -125,6 +125,10 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0048_ci_job_limit_and_wait.sql"),
     // Schema version 49 (SPEC-440).
     include_str!("migrations/0049_vault_copy_requests.sql"),
+    // Schema version 50 (SPEC-463). The file is 0052, the number `record_number` gave this
+    // task (0050 and 0051 went to other reservations); a version is a migration's place in
+    // this list.
+    include_str!("migrations/0052_account_email_typed.sql"),
 ];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
@@ -1044,6 +1048,68 @@ mod tests {
         };
         assert_eq!(origin("added").await?, Some(McpOrigin::Person));
         assert_eq!(origin("imported").await?, Some(McpOrigin::McpJson));
+        Ok(())
+    }
+
+    /// An email stored before a person could type one is Claude's (SPEC-463 EML-004): after the
+    /// upgrade it is still shown, and the next sign-in still drops it (SPEC-244 SUB-003).
+    #[tokio::test]
+    async fn emails_stored_before_one_could_be_typed_stay_claudes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use yulius_app::model::{AccountStatus, Sealed};
+        use yulius_app::ports::store::AccountStore as _;
+        use yulius_domain::ids::AccountId;
+        use yulius_domain::time::Timestamp;
+        let before = MIGRATIONS
+            .iter()
+            .position(|sql| sql.contains("ADD COLUMN email_typed"))
+            .ok_or("the migration that adds email_typed")?;
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("before.db");
+        {
+            let conn = Connection::open(&path)?;
+            for sql in &MIGRATIONS[..before] {
+                conn.execute_batch(sql)?;
+            }
+            conn.pragma_update(None, "user_version", i64::try_from(before)?)?;
+            conn.execute_batch(
+                "INSERT INTO accounts (id, provider, label, credential, status, email, email_checked_at, created_at, updated_at) VALUES
+                   ('known', 'anthropic', 'work Max', x'01', 'ok', 'pawel@example.com', 5, 1, 5),
+                   ('unknown', 'anthropic', 'personal', x'02', 'ok', NULL, NULL, 1, 1);",
+            )?;
+        }
+        let store = SqliteStore::open(&path)?;
+        let known = AccountId::parse("known")?;
+        let kept = store.account(&known).await?.ok_or("account")?;
+        assert_eq!(kept.email.as_deref(), Some("pawel@example.com"));
+        assert_eq!(kept.email_checked_at, Some(Timestamp(5)));
+        store
+            .set_account_credential(&known, &Sealed(vec![3]), AccountStatus::Ok, Timestamp(6))
+            .await?;
+        let signed_in = store.account(&known).await?.ok_or("account")?;
+        assert_eq!((signed_in.email, signed_in.email_checked_at), (None, None));
+        // Claude's answer for a subscription without one is stored as before.
+        let unknown = AccountId::parse("unknown")?;
+        assert!(
+            store
+                .set_account_email(
+                    &unknown,
+                    &Sealed(vec![2]),
+                    Some("p@example.com"),
+                    Some(Timestamp(7)),
+                    Timestamp(7),
+                )
+                .await?
+        );
+        assert_eq!(
+            store
+                .account(&unknown)
+                .await?
+                .ok_or("account")?
+                .email
+                .as_deref(),
+            Some("p@example.com")
+        );
         Ok(())
     }
 
