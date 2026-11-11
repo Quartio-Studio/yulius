@@ -267,7 +267,7 @@ pub fn xattrs(path: &Path) -> io::Result<Vec<(Vec<u8>, Vec<u8>)>> {
 ///
 /// # Errors
 /// A listed attribute that cannot be read.
-pub fn xattrs_of(file: &std::fs::File) -> io::Result<Vec<(Vec<u8>, Vec<u8>)>> {
+pub fn xattrs_of(file: &impl std::os::fd::AsFd) -> io::Result<Vec<(Vec<u8>, Vec<u8>)>> {
     read_xattrs(
         &mut |names| rustix::fs::flistxattr(file, names),
         &mut |name, value| rustix::fs::fgetxattr(file, name, value),

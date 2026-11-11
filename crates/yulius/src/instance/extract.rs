@@ -2,13 +2,17 @@
 //! way is opened with `O_NOFOLLOW` from the data directory's handle, so no link, whether the
 //! archive's or one already there, takes a write elsewhere; owners are remapped to this host's
 //! service user and its subordinate range, and nothing ends up owned by root or a foreign id.
+//!
+//! A pass of a move installs onto a staged copy ([`Onto`], SPEC-465 WCP-008, WCP-009): an entry
+//! replaces what is at its path, a link may name a file of an earlier pass, a directory that
+//! is not sent keeps its time, and only the frozen pass removes.
 
-use std::collections::HashSet;
-use std::ffi::OsStr;
+use std::collections::{HashMap, HashSet};
+use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io::{self, Read, Write as _};
 use std::os::fd::{AsFd, OwnedFd};
-use std::os::unix::ffi::OsStrExt as _;
+use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
 use std::path::Path;
 
 use rustix::fs::{
@@ -120,17 +124,48 @@ pub fn components(path: &[u8]) -> io::Result<Vec<&[u8]>> {
     Ok(rest)
 }
 
+/// What entries are installed onto.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Onto {
+    /// A new copy: nothing of an earlier stream is there, and a directory where the copy has a
+    /// file is an error.
+    New,
+    /// A move's staged copy, from a pass read while the instance ran: nothing is removed. An
+    /// entry that would need a directory removed is left out ([`Extractor::deferred`]).
+    Warm,
+    /// A staged copy, from the frozen pass: a directory in an entry's way goes with everything
+    /// below it, and [`Extractor::prune`] removes what the old host no longer holds.
+    Frozen,
+}
+
+/// Whether an entry's place is free.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Way {
+    /// Nothing is there (any more).
+    Clear,
+    /// A directory is there and stays.
+    Dir,
+    /// A directory is there, and a warm pass removes none.
+    Blocked,
+}
+
 /// Installs entries below a data directory.
 pub struct Extractor {
     root: OwnedFd,
     map: IdMap,
     chown: bool,
+    onto: Onto,
     /// The last parent directory opened, by its components.
     parent: Option<(Vec<Vec<u8>>, OwnedFd)>,
     /// Directories' times, set at the end (their entries change them).
     dirs: Vec<(Vec<u8>, i64)>,
     /// Digests of the regular files' paths written so far: a hard link must name one of them.
     files: HashSet<[u8; 16]>,
+    /// The times of the staged copy's directories something was written or removed in: they
+    /// get them back at the end unless they were sent themselves.
+    touched: HashMap<Vec<u8>, Timestamps>,
+    /// The entries (by number) a warm pass left out.
+    deferred: Vec<u64>,
     report: Report,
 }
 
@@ -164,16 +199,57 @@ impl Extractor {
     /// # Errors
     /// `root` cannot be opened as a directory (a link is refused).
     pub fn new(root: &Path, map: IdMap, chown: bool) -> io::Result<Self> {
+        Self::onto(root, map, chown, Onto::New)
+    }
+
+    /// [`Extractor::new`] onto a new copy or a move's staged one.
+    ///
+    /// # Errors
+    /// As [`Extractor::new`].
+    pub fn onto(root: &Path, map: IdMap, chown: bool, onto: Onto) -> io::Result<Self> {
         let root = rustix::fs::openat(CWD, root, dir_flags(), Mode::empty())?;
         Ok(Self {
             root,
             map,
             chown,
+            onto,
             parent: None,
             dirs: Vec::new(),
             files: HashSet::new(),
+            touched: HashMap::new(),
+            deferred: Vec::new(),
             report: Report::default(),
         })
+    }
+
+    /// The entries (numbered from 0 in the order they were put) that were not installed: they
+    /// would need a directory removed, which only the frozen pass does.
+    #[must_use]
+    pub fn deferred(&self) -> &[u64] {
+        &self.deferred
+    }
+
+    /// Remembers the time of the staged copy's directory `comps` before something in it
+    /// changes.
+    fn touch(&mut self, comps: &[&[u8]], fd: &OwnedFd) -> io::Result<()> {
+        if self.onto == Onto::New {
+            return Ok(());
+        }
+        let path = [&[ROOT][..], comps].concat().join(&b'/');
+        if let std::collections::hash_map::Entry::Vacant(slot) = self.touched.entry(path) {
+            let st = rustix::fs::fstat(fd)?;
+            slot.insert(Timestamps {
+                last_access: Timespec {
+                    tv_sec: st.st_atime,
+                    tv_nsec: st.st_atime_nsec as _,
+                },
+                last_modification: Timespec {
+                    tv_sec: st.st_mtime,
+                    tv_nsec: st.st_mtime_nsec as _,
+                },
+            });
+        }
+        Ok(())
     }
 
     /// Opens the directory of `comps` below the root without following any link.
@@ -202,31 +278,81 @@ impl Extractor {
             return fd.try_clone();
         }
         let fd = self.open_dir(comps)?;
+        self.touch(comps, &fd)?;
         self.parent = Some((key, fd.try_clone()?));
         Ok(fd)
     }
 
-    /// Removes what is at `name` unless it is a directory and `keep_dir`; `true` when a directory
-    /// is kept.
-    fn clear(dir: &OwnedFd, name: &OsStr, keep_dir: bool) -> io::Result<bool> {
+    /// Makes room at `name` for an entry: what is there goes, unless it is a directory and
+    /// `keep_dir`. A directory in a file's way is an error in a new copy, stays in a warm pass
+    /// and goes with everything below it in the frozen one.
+    fn clear(&self, dir: &OwnedFd, name: &OsStr, keep_dir: bool) -> io::Result<Way> {
         match rustix::fs::statat(dir, name, AtFlags::SYMLINK_NOFOLLOW) {
             Ok(st) if FileType::from_raw_mode(st.st_mode) == FileType::Directory => {
-                if keep_dir {
-                    Ok(true)
-                } else {
-                    Err(io::Error::other(format!(
+                match (keep_dir, self.onto) {
+                    (true, _) => Ok(Way::Dir),
+                    (false, Onto::Warm) => Ok(Way::Blocked),
+                    (false, Onto::Frozen) => remove_tree(dir, name).map(|_| Way::Clear),
+                    (false, Onto::New) => Err(io::Error::other(format!(
                         "{} is a directory where the copy has a file",
                         name.to_string_lossy()
-                    )))
+                    ))),
                 }
             }
             Ok(_) => {
                 rustix::fs::unlinkat(dir, name, AtFlags::empty())?;
-                Ok(false)
+                Ok(Way::Clear)
             }
-            Err(rustix::io::Errno::NOENT) => Ok(false),
+            Err(rustix::io::Errno::NOENT) => Ok(Way::Clear),
             Err(e) => Err(e.into()),
         }
+    }
+
+    /// Whether a hard link may name `target` although this stream did not write it: a file of
+    /// the staged copy that an earlier pass brought.
+    fn staged(&self, target: &[u8]) -> bool {
+        self.onto != Onto::New
+            && components(target)
+                .ok()
+                .and_then(|comps| comps.first().copied())
+                .is_some_and(super::walk::copied)
+    }
+
+    /// The directory and name of the file the hard link `e` names; `None` when a warm pass
+    /// left that file out (a directory is in its way), so the link waits with it.
+    fn link_target(&self, e: &Entry, target: &[u8]) -> io::Result<Option<(OwnedFd, OsString)>> {
+        if !self.files.contains(&path_hash(target)) && !self.staged(target) {
+            return Err(refuse(&e.path, "a hard link to a file not in the copy"));
+        }
+        let tcomps = components(target)?;
+        let Some((tlast, tparents)) = tcomps.split_last() else {
+            return Err(refuse(&e.path, "a hard link to the data directory"));
+        };
+        let tparent = self.open_dir(tparents)?;
+        let tname = OsStr::from_bytes(tlast).to_owned();
+        let st = rustix::fs::statat(&tparent, &tname, AtFlags::SYMLINK_NOFOLLOW)
+            .map_err(|_| refuse(&e.path, "a hard link to a file not in the copy"))?;
+        if FileType::from_raw_mode(st.st_mode) == FileType::RegularFile {
+            return Ok(Some((tparent, tname)));
+        }
+        if self.onto == Onto::Warm {
+            return Ok(None);
+        }
+        Err(refuse(
+            &e.path,
+            "a hard link to something other than a file",
+        ))
+    }
+
+    /// A directory that was there before takes the entry's attributes and no others: what the
+    /// old host removed since is removed here.
+    fn drop_xattrs(fd: &OwnedFd, e: &Entry) -> io::Result<()> {
+        for (name, _) in super::walk::xattrs_of(fd)? {
+            if restorable(&name) && !e.xattrs.iter().any(|(kept, _)| *kept == name) {
+                rustix::fs::fremovexattr(fd, OsStr::from_bytes(&name))?;
+            }
+        }
+        Ok(())
     }
 
     /// The owner and mode `e` gets here.
@@ -278,6 +404,7 @@ impl Extractor {
     /// not a file of the copy, or an I/O error.
     pub fn put(&mut self, e: &Entry, data: &mut dyn Read) -> io::Result<()> {
         let comps = components(&e.path)?;
+        let number = self.report.entries;
         self.report.entries += 1;
         let Some((last, parents)) = comps.split_last() else {
             if e.kind != Kind::Dir {
@@ -285,21 +412,42 @@ impl Extractor {
             }
             let root = self.root.try_clone()?;
             self.dirs.push((e.path.clone(), e.mtime));
+            if self.onto != Onto::New {
+                Self::drop_xattrs(&root, e)?;
+            }
             return self.finish_fd(&root, e, false);
         };
         let parent = self.parent_of(parents)?;
         let name = OsStr::from_bytes(last);
+        // A link's file is looked at before anything makes room for the link.
+        let linked = match &e.kind {
+            Kind::HardLink { target } => match self.link_target(e, target)? {
+                Some(file) => Some(file),
+                None => {
+                    self.deferred.push(number);
+                    return Ok(());
+                }
+            },
+            _ => None,
+        };
+        let way = self.clear(&parent, name, e.kind == Kind::Dir)?;
+        if way == Way::Blocked {
+            self.deferred.push(number);
+            return Ok(());
+        }
         match &e.kind {
             Kind::Dir => {
-                if !Self::clear(&parent, name, true)? {
+                if way == Way::Clear {
                     rustix::fs::mkdirat(&parent, name, mode_bits(0o700))?;
                 }
                 let fd = rustix::fs::openat(&parent, name, dir_flags(), Mode::empty())?;
                 self.dirs.push((e.path.clone(), e.mtime));
+                if way == Way::Dir && self.onto != Onto::New {
+                    Self::drop_xattrs(&fd, e)?;
+                }
                 self.finish_fd(&fd, e, false)
             }
             Kind::File { size } => {
-                Self::clear(&parent, name, false)?;
                 let fd = rustix::fs::openat(
                     &parent,
                     name,
@@ -324,7 +472,6 @@ impl Extractor {
                 self.finish_fd(&fd, e, true)
             }
             Kind::Symlink { target } => {
-                Self::clear(&parent, name, false)?;
                 rustix::fs::symlinkat(OsStr::from_bytes(target), &parent, name)?;
                 let (uid, gid, _) = self.owner(e);
                 if self.chown {
@@ -340,30 +487,13 @@ impl Extractor {
                 rustix::fs::utimensat(&parent, name, &times(e.mtime), AtFlags::SYMLINK_NOFOLLOW)?;
                 Ok(())
             }
-            Kind::HardLink { target } => {
-                if !self.files.contains(&path_hash(target)) {
-                    return Err(refuse(&e.path, "a hard link to a file not in the copy"));
+            Kind::HardLink { .. } => {
+                if let Some((tparent, tname)) = linked {
+                    rustix::fs::linkat(&tparent, &tname, &parent, name, AtFlags::empty())?;
                 }
-                let tcomps = components(target)?;
-                let Some((tlast, tparents)) = tcomps.split_last() else {
-                    return Err(refuse(&e.path, "a hard link to the data directory"));
-                };
-                let tparent = self.open_dir(tparents)?;
-                let tname = OsStr::from_bytes(tlast);
-                let st = rustix::fs::statat(&tparent, tname, AtFlags::SYMLINK_NOFOLLOW)
-                    .map_err(|_| refuse(&e.path, "a hard link to a file not in the copy"))?;
-                if FileType::from_raw_mode(st.st_mode) != FileType::RegularFile {
-                    return Err(refuse(
-                        &e.path,
-                        "a hard link to something other than a file",
-                    ));
-                }
-                Self::clear(&parent, name, false)?;
-                rustix::fs::linkat(&tparent, tname, &parent, name, AtFlags::empty())?;
                 Ok(())
             }
             Kind::Whiteout => {
-                Self::clear(&parent, name, false)?;
                 let (uid, gid, mode) = self.owner(e);
                 whiteout(&parent, name, mode)?;
                 if self.chown {
@@ -381,12 +511,64 @@ impl Extractor {
         }
     }
 
+    /// Removes from the staged copy what the old host no longer holds (SPEC-465 WCP-008):
+    /// every path whose digest is not in `kept` (sorted), with everything below it. The
+    /// top-level names `spared` accepts are this host's own and stay. Returns how many entries
+    /// went.
+    ///
+    /// # Errors
+    /// A directory that cannot be read or an entry that cannot be removed.
+    pub fn prune(&mut self, kept: &[[u8; 16]], spared: &dyn Fn(&[u8]) -> bool) -> io::Result<u64> {
+        self.parent = None;
+        let root = self.root.try_clone()?;
+        self.prune_in(&root, &mut Vec::new(), kept, spared)
+    }
+
+    fn prune_in(
+        &mut self,
+        dir: &OwnedFd,
+        comps: &mut Vec<Vec<u8>>,
+        kept: &[[u8; 16]],
+        spared: &dyn Fn(&[u8]) -> bool,
+    ) -> io::Result<u64> {
+        let mut removed = 0;
+        for (name, is_dir) in list(dir)? {
+            let bytes = name.as_bytes();
+            if comps.is_empty() && spared(bytes) {
+                continue;
+            }
+            comps.push(bytes.to_vec());
+            let path = [&[ROOT.to_vec()][..], comps.as_slice()]
+                .concat()
+                .join(&b'/');
+            if kept.binary_search(&path_hash(&path)).is_err() {
+                let parents: Vec<&[u8]> =
+                    comps[..comps.len() - 1].iter().map(Vec::as_slice).collect();
+                self.touch(&parents, dir)?;
+                removed += remove_tree(dir, &name)?;
+            } else if is_dir {
+                let fd = rustix::fs::openat(dir, &name, dir_flags(), Mode::empty())?;
+                removed += self.prune_in(&fd, comps, kept, spared)?;
+            }
+            comps.pop();
+        }
+        Ok(removed)
+    }
+
     /// Sets the directories' times and returns what changed from the archive.
     ///
     /// # Errors
     /// A directory that can no longer be opened.
     pub fn finish(mut self) -> io::Result<Report> {
         self.parent = None;
+        // A directory that was not sent keeps its time, whatever was written below it; one
+        // that is gone by now has none to keep.
+        for (path, was) in std::mem::take(&mut self.touched) {
+            let fd = components(&path).and_then(|comps| self.open_dir(&comps));
+            if let Ok(fd) = fd {
+                rustix::fs::futimens(fd.as_fd(), &was)?;
+            }
+        }
         for (path, mtime) in std::mem::take(&mut self.dirs) {
             let comps = components(&path)?;
             let fd = self.open_dir(&comps)?;
@@ -394,6 +576,50 @@ impl Extractor {
         }
         Ok(self.report)
     }
+}
+
+/// The names in `dir`, and whether each is a directory (not a link to one).
+fn list(dir: &OwnedFd) -> io::Result<Vec<(OsString, bool)>> {
+    let mut names = Vec::new();
+    for entry in rustix::fs::Dir::read_from(dir)? {
+        let entry = entry?;
+        let name = entry.file_name().to_bytes();
+        if name == b"." || name == b".." {
+            continue;
+        }
+        let name = OsString::from_vec(name.to_vec());
+        let is_dir = match entry.file_type() {
+            FileType::Directory => true,
+            FileType::Unknown => {
+                let st = rustix::fs::statat(dir, &name, AtFlags::SYMLINK_NOFOLLOW)?;
+                FileType::from_raw_mode(st.st_mode) == FileType::Directory
+            }
+            _ => false,
+        };
+        names.push((name, is_dir));
+    }
+    Ok(names)
+}
+
+/// Removes `name` in `parent` with everything below it, never through a link; how many
+/// entries went.
+fn remove_tree(parent: &OwnedFd, name: &OsStr) -> io::Result<u64> {
+    let st = match rustix::fs::statat(parent, name, AtFlags::SYMLINK_NOFOLLOW) {
+        Ok(st) => st,
+        Err(rustix::io::Errno::NOENT) => return Ok(0),
+        Err(e) => return Err(e.into()),
+    };
+    if FileType::from_raw_mode(st.st_mode) != FileType::Directory {
+        rustix::fs::unlinkat(parent, name, AtFlags::empty())?;
+        return Ok(1);
+    }
+    let dir = rustix::fs::openat(parent, name, dir_flags(), Mode::empty())?;
+    let mut removed = 1;
+    for (child, _) in list(&dir)? {
+        removed += remove_tree(&dir, &child)?;
+    }
+    rustix::fs::unlinkat(parent, name, AtFlags::REMOVEDIR)?;
+    Ok(removed)
 }
 
 #[cfg(test)]
