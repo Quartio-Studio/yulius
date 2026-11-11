@@ -164,6 +164,9 @@ pub struct Profile {
     pub trees: Vec<Tree>,
     /// `apt-mark showmanual`.
     pub packages: Vec<String>,
+    /// Those of them that come from a carried third-party source: the new host knows them only
+    /// once that source is added.
+    pub third_party: Vec<String>,
     /// Global npm packages (`name@version`) outside the copied trees.
     pub npm: Vec<String>,
     /// Pinned limits, `NAME=value`.
@@ -256,6 +259,15 @@ pub fn key_paths(source: &str) -> Vec<PathBuf> {
         }
     }
     paths
+}
+
+/// The URLs an apt source's text names.
+#[must_use]
+pub fn source_urls(source: &str) -> Vec<&str> {
+    source
+        .split_whitespace()
+        .filter(|word| word.starts_with("http://") || word.starts_with("https://"))
+        .collect()
 }
 
 /// `text` with the word `old` replaced by `new` (a release codename in an apt source: a suite
@@ -471,6 +483,7 @@ impl Profile {
             .map(|text| text.lines().map(|l| l.trim().to_owned()).collect())
             .unwrap_or_default();
         p.packages.retain(|name| !name.is_empty());
+        p.read_origins(host);
         p.read_trees(host);
         p.read_npm(host);
         p.read_proxy(host);
@@ -600,6 +613,37 @@ impl Profile {
                 }
             }
             self.sources.push(file);
+        }
+    }
+
+    /// Which manual packages a carried source provides, from where apt has them here.
+    fn read_origins(&mut self, host: &mut dyn Host) {
+        let sources: Vec<String> = self
+            .sources
+            .iter()
+            .flat_map(|file| source_urls(&file.content))
+            .map(|url| url.trim_end_matches('/').to_owned())
+            .collect();
+        if sources.is_empty() || self.packages.is_empty() {
+            return;
+        }
+        let mut argv = vec!["apt-cache", "policy", "--"];
+        argv.extend(self.packages.iter().map(String::as_str));
+        let cmd = Cmd {
+            timeout: Duration::from_secs(5 * 60),
+            ..Cmd::new(&argv)
+        };
+        let policy = host.run(&cmd).map(|out| out.stdout).unwrap_or_default();
+        let mut name = None;
+        for line in policy.lines() {
+            if !line.starts_with(' ') {
+                name = line.strip_suffix(':');
+            } else if let Some(package) = name
+                && sources.iter().any(|url| line.contains(url.as_str()))
+            {
+                self.third_party.push(package.to_owned());
+                name = None;
+            }
         }
     }
 

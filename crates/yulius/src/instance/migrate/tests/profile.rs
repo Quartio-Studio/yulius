@@ -101,6 +101,8 @@ fn the_old_hosts_profile_names_everything_a_move_carries() -> Result<(), String>
     // npm's packages are inside /usr/local: copied with it, not installed again.
     assert!(p.npm.is_empty());
     assert_eq!(p.packages.len(), 8);
+    // Known on the new host only once their sources are there.
+    assert_eq!(p.third_party, ["docker-ce", "gh"]);
     Ok(())
 }
 

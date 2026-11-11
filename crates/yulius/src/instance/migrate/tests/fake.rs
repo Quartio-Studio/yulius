@@ -302,6 +302,18 @@ pub fn old_host() -> FakeHost {
         &["apt-mark", "showmanual"],
         "caddy\ndocker-ce\ngh\nlibicu74\nlinux-image-6.8.0-87-generic\nufw\nxvfb\nzstd\n",
     );
+    h.says(
+        &["apt-cache", "policy"],
+        "caddy:\n  Installed: 2.6.2\n  Candidate: 2.6.2\n  Version table:\n *** 2.6.2 500\n        \
+         500 http://archive.ubuntu.com/ubuntu noble/universe amd64 Packages\n\
+         docker-ce:\n  Installed: 5:28.0\n  Candidate: 5:28.0\n  Version table:\n *** 5:28.0 500\n\
+         \x20       500 https://download.docker.com/linux/ubuntu noble/stable amd64 Packages\n\
+         gh:\n  Installed: 2.83.0\n  Candidate: 2.83.0\n  Version table:\n *** 2.83.0 500\n\
+         \x20       500 https://cli.github.com/packages stable/main amd64 Packages\n\
+         \x20       100 /var/lib/dpkg/status\n\
+         libicu74:\n  Installed: 74.2\n  Candidate: 74.2\n  Version table:\n *** 74.2 500\n\
+         \x20       500 http://archive.ubuntu.com/ubuntu noble/main amd64 Packages\n",
+    );
     // Software outside apt.
     h.dir("/usr/local/lib/node_modules/@anthropic-ai/claude-code");
     h.dir("/opt/openvscode-server");

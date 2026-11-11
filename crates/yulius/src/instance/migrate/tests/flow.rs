@@ -353,6 +353,18 @@ fn move_script(host: &mut FakeHost, argv: &[String]) -> Option<Out> {
              ufw installed\nxvfb installed\nzstd installed\n",
         ),
         "ls" if host.is_file(gnu) => said("ls (GNU coreutils) 9.7\n"),
+        // Docker's and GitHub's packages are known once their sources are there.
+        "apt-cache" if argv[1] == "policy" => {
+            let mut names = vec!["caddy", "ufw", "xvfb", "zstd", "coreutils-from-gnu"];
+            if host.is_file(Path::new("/etc/apt/sources.list.d/docker.list")) {
+                names.extend(["docker-ce", "gh"]);
+            }
+            let mut policy = String::from("libicu74:\n  Installed: (none)\n  Candidate: (none)\n");
+            for name in names.iter().filter(|n| argv.iter().any(|a| a == *n)) {
+                policy.push_str(&format!("{name}:\n  Installed: (none)\n  Candidate: 1.0\n"));
+            }
+            said(&policy)
+        }
         _ => None,
     }
 }
@@ -361,20 +373,6 @@ fn target_host() -> FakeHost {
     let mut host = new_host();
     host.files.remove(Path::new(STAGED_BUILD));
     host.script = Some(move_script);
-    let mut policy = String::new();
-    for name in [
-        "caddy",
-        "docker-ce",
-        "gh",
-        "ufw",
-        "xvfb",
-        "zstd",
-        "coreutils-from-gnu",
-    ] {
-        policy.push_str(&format!("{name}:\n  Installed: (none)\n  Candidate: 1.0\n"));
-    }
-    policy.push_str("libicu74:\n  Installed: (none)\n  Candidate: (none)\n");
-    host.says(&["apt-cache", "policy"], &policy);
     host.says(
         &["apt-cache", "--names-only", "search"],
         "libicu78 - International Components for Unicode\n",
@@ -693,6 +691,15 @@ fn the_plan_alone_changes_nothing() -> TestResult {
         packages.detail.contains("libicu74 → libicu78"),
         "{}",
         packages.detail
+    );
+    // Docker's and GitHub's packages are not asked for before their sources are there.
+    assert_eq!(packages.outcome, HostOutcome::Ok, "{}", packages.detail);
+    let sources = line(&status, "apt sources").ok_or("no sources line")?;
+    assert!(
+        sources.detail.starts_with("2 third-party sources")
+            && sources.detail.contains("2 of the packages"),
+        "{}",
+        sources.detail
     );
     assert!(line(&status, "downtime").is_some() && line(&status, "settings").is_some());
     // On the new host: the flow's own files and questions only.

@@ -158,16 +158,9 @@ impl Ssh {
             "ServerAliveCountMax=8".into(),
         ];
         if key {
-            for option in [
-                "IdentitiesOnly=yes".to_owned(),
-                "BatchMode=yes".to_owned(),
-                "ConnectTimeout=20".to_owned(),
-                "ControlMaster=auto".to_owned(),
-                format!("ControlPath={dir}/ssh-%C"),
-                "ControlPersist=600".to_owned(),
-            ] {
+            for option in ["IdentitiesOnly=yes", "BatchMode=yes", "ConnectTimeout=20"] {
                 args.push("-o".into());
-                args.push(option);
+                args.push(option.into());
             }
             args.push("-i".into());
             args.push(self.key_file().display().to_string());
@@ -374,13 +367,6 @@ impl Remote for Ssh {
     }
 
     fn forget(&mut self) {
-        let _ = Command::new("ssh")
-            .args(["-O", "exit"])
-            .args(self.args(true, HELLO))
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
         for name in ["key", "key.pub", "known_hosts", "known_hosts.old"] {
             let _ = std::fs::remove_file(self.dir.join(name));
         }

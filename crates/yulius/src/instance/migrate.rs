@@ -632,13 +632,31 @@ impl<'a> Move<'a> {
             }
         }
         self.url(p, &address)?;
+        // What a third-party source provides is known there only once the source is added.
+        let names: Vec<String> = p
+            .packages
+            .iter()
+            .filter(|name| !p.third_party.contains(name))
+            .cloned()
+            .collect();
         self.call(
             "packages",
             &Request::Packages {
-                names: p.packages.clone(),
+                names,
                 install: false,
             },
         )?;
+        if !p.sources.is_empty() {
+            self.ok(
+                "apt sources",
+                format!(
+                    "{} third-party sources are added while preparing; {} of the packages come \
+                     from them",
+                    p.sources.len(),
+                    p.third_party.len()
+                ),
+            );
+        }
         self.carried(p);
         Ok(facts)
     }
@@ -999,7 +1017,11 @@ impl<'a> Move<'a> {
         let plan = export::plan_observed(&opts.data_dir, &mut |e| counter.add(e))
             .map_err(|e| self.fail("copy", format!("planning failed: {e}")))?;
         let old = counter.finish();
-        let zstd = facts.zstd && said(self.local, &["zstd", "--version"]).contains("zstd");
+        let zstd = facts.zstd
+            && self
+                .local
+                .run(&Cmd::new(&["zstd", "--version"]))
+                .is_ok_and(|out| out.ok());
         self.call(
             "copy",
             &Request::Expect(Expect {

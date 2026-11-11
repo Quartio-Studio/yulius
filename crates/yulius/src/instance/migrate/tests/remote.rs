@@ -48,13 +48,14 @@ fn every_remote_command_is_a_constant_and_values_stay_out_of_it() {
         "IdentitiesOnly=yes",
         "StrictHostKeyChecking=accept-new",
         "UserKnownHostsFile=/var/lib/yulius-migrate/known_hosts",
-        "ControlPath=/var/lib/yulius-migrate/ssh-%C",
     ] {
         assert!(
             args.iter().any(|a| a == option),
             "{option} missing: {args:?}"
         );
     }
+    // Every call is a connection of its own: no shared master that outlives a step.
+    assert!(!args.iter().any(|a| a.starts_with("Control")), "{args:?}");
     let key = args
         .iter()
         .position(|a| a == "-i")

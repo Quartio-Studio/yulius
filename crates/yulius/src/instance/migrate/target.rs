@@ -664,14 +664,6 @@ fn disk(host: &mut dyn Host, setup: &Setup, disks: &[String], l: &mut Lines) {
     }
 }
 
-/// The URLs an apt source's text names.
-fn urls(source: &str) -> Vec<&str> {
-    source
-        .split_whitespace()
-        .filter(|word| word.starts_with("http://") || word.starts_with("https://"))
-        .collect()
-}
-
 fn sources(host: &mut dyn Host, files: &[SourceFile], l: &mut Lines) {
     const ITEM: &str = "apt sources";
     let mut wrote = 0;
@@ -699,7 +691,7 @@ fn sources(host: &mut dyn Host, files: &[SourceFile], l: &mut Lines) {
         files
             .iter()
             .filter(|s| {
-                urls(&s.file.content)
+                profile::source_urls(&s.file.content)
                     .iter()
                     .any(|url| errors.iter().any(|e| e.contains(url.trim_end_matches('/'))))
             })
@@ -1181,6 +1173,8 @@ fn proxy(host: &mut dyn Host, changed: bool, l: &mut Lines) {
     if was && !changed {
         return l.ok(ITEM, "Caddy runs with the carried configuration");
     }
+    // Its drop-ins were carried as files.
+    sh(host, &["systemctl", "daemon-reload"]);
     let enabled = sh(host, &["systemctl", "enable", "caddy"]);
     let started = sh(host, &["systemctl", "reload-or-restart", "caddy"]);
     if !enabled.ok() || !started.ok() {
@@ -1299,13 +1293,15 @@ fn start(
         return l.failed(ITEM, "not started: the host is not ready (see above)");
     }
     let service = setup.service.as_str();
-    for verb in ["enable", "start"] {
-        let out = sh(host, &["systemctl", verb, service]);
+    // Units carried as files (the helper's, a drop-in) are known only after a reload.
+    for argv in [
+        &["systemctl", "daemon-reload"][..],
+        &["systemctl", "enable", service][..],
+        &["systemctl", "start", service][..],
+    ] {
+        let out = sh(host, argv);
         if !out.ok() {
-            return l.failed(
-                ITEM,
-                format!("`systemctl {verb} {service}` failed: {}", out.why()),
-            );
+            return l.failed(ITEM, format!("`{}` failed: {}", argv.join(" "), out.why()));
         }
     }
     let mut waited = Duration::ZERO;

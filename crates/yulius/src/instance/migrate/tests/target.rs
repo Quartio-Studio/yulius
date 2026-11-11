@@ -865,6 +865,7 @@ fn a_started_instance_must_report_the_old_hosts_build() {
     assert_eq!(
         host.runs("systemctl"),
         [
+            "systemctl daemon-reload",
             "systemctl enable yulius.service",
             "systemctl start yulius.service",
             "systemctl enable --now yulius-update.path",
