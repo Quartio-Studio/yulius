@@ -10,6 +10,7 @@
 //! AppArmor's `disable/` link. A profile a person wrote is never changed and never joined by
 //! ours: two profiles for one program cancel each other.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use yulius_sandbox::userns::{HOLDER_NAMESPACE, PROOF_COMMAND};
@@ -122,8 +123,9 @@ fn skipped(name: &str) -> bool {
 /// (`profile name /path flags=(…) {`, or `/path {`) whose path is bwrap's, plain or as the
 /// alternations Ubuntu's own profiles spell it. The header's brace may open the profile on the
 /// same line, before a comment or on the next line (with its `flags = (…)`), and the path may
-/// be a variable set to bwrap's (`@{prog} = /usr/bin/bwrap`, with or without the spaces). A
-/// rule that only names bwrap (`/usr/bin/bwrap mr,`) and a profile inside another one are none.
+/// use variables the file sets (`@{prog} = /usr/bin/bwrap`, `@{dir}/bwrap`). A rule that only
+/// names bwrap (`/usr/bin/bwrap mr,`), a header's attributes and a profile inside another one
+/// are none.
 fn attaches_bwrap(text: &str) -> bool {
     const PATHS: [&str; 4] = [
         "/usr/bin/bwrap",
@@ -135,27 +137,17 @@ fn attaches_bwrap(text: &str) -> bool {
     let mut depth = 0_usize;
     let mut header: Vec<&str> = Vec::new();
     let mut in_list = false;
-    // The variables that stand for bwrap's path.
-    let mut vars: Vec<&str> = Vec::new();
+    let mut vars: Vars = Vars::new();
     for line in text.lines() {
-        let words: Vec<&str> = line
-            .split_whitespace()
-            .take_while(|w| !w.starts_with('#'))
-            .collect();
         // A variable's line ends without a comma and is no header.
-        if let Some((var, values)) = assignment(line).filter(|_| depth == 0) {
-            let mut values = values
-                .split_whitespace()
-                .take_while(|w| !w.starts_with('#'));
-            if values.any(|w| PATHS.contains(&w.trim_matches('"'))) {
-                vars.push(var);
-            }
+        if let Some((name, values)) = assignment(line) {
+            let values = words(values).map(|w| w.trim_matches('"'));
+            vars.entry(name).or_default().extend(values);
             continue;
         }
         // A brace that starts a word opens a block (`{userns,}`); an alternation's
         // (`/{usr/,}bin`, `@{bin}`) is inside its word and closes there.
-        let words = words
-            .into_iter()
+        let words = words(line)
             .flat_map(|w| w.strip_prefix('{').map_or([w, ""], |rest| ["{", rest]))
             .filter(|w| !w.is_empty());
         for word in words {
@@ -163,11 +155,13 @@ fn attaches_bwrap(text: &str) -> bool {
             let closes = word.matches('}').count();
             if opens > closes {
                 header.push(word.trim_end_matches('{'));
-                let attaches = header
+                let named = (0..header.len())
+                    .find(|&at| attribute(header[at], header.get(at + 1).copied()))
+                    .map_or(&header[..], |at| &header[..at]);
+                let mut budget = 256;
+                let attaches = named
                     .iter()
-                    .take_while(|w| !w.starts_with("flags="))
-                    .map(|w| w.trim_matches('"'))
-                    .any(|w| PATHS.contains(&w) || vars.contains(&w));
+                    .any(|w| stands_for(w.trim_matches('"'), &PATHS, &vars, &mut budget));
                 if depth == 0 && attaches {
                     return true;
                 }
@@ -190,17 +184,61 @@ fn attaches_bwrap(text: &str) -> bool {
     false
 }
 
-/// A variable's line (`@{name} = values`, `@{name}+=values`, `${flag} = true`): its name and
-/// values. A header that starts with a variable (`@{bin}/bwrap flags=(…) {`) is none.
+/// A line's words before its comment.
+fn words(text: &str) -> impl Iterator<Item = &str> {
+    text.split_whitespace().take_while(|w| !w.starts_with('#'))
+}
+
+/// A file's variables: each name (as used in `@{name}`) with its values.
+type Vars<'a> = BTreeMap<&'a str, Vec<&'a str>>;
+
+/// A variable's line (`@{name} = values`, `@{name}+=values`, `@name = values`): its name and
+/// values. A header that starts with a variable (`@{bin}/bwrap {`, which AppArmor itself
+/// refuses) is none.
 fn assignment(line: &str) -> Option<(&str, &str)> {
-    let line = line.trim_start();
-    if !line.starts_with(['@', '$']) {
-        return None;
-    }
-    let (name, rest) = line.split_at(line.find('}')? + 1);
+    let line = line.trim_start().strip_prefix('@')?;
+    let (name, rest) = line.split_at(line.find(|c: char| c.is_whitespace() || "+=".contains(c))?);
+    let name = name
+        .strip_prefix('{')
+        .map_or(Some(name), |name| name.strip_suffix('}'))?;
     let rest = rest.trim_start();
     let values = rest.strip_prefix("+=").or_else(|| rest.strip_prefix('='))?;
-    Some((name, values))
+    let plain = !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_');
+    plain.then_some((name, values))
+}
+
+/// Whether a header's word starts its attributes (`flags=(…)`, `xattrs = (…)`): what follows
+/// names no program. A profile may be called `flags`.
+fn attribute(word: &str, next: Option<&str>) -> bool {
+    ["flags", "xattrs"].iter().any(|key| {
+        word.strip_prefix(key).is_some_and(|rest| {
+            rest.starts_with('=') || (rest.is_empty() && next.is_some_and(|n| n.starts_with('=')))
+        })
+    })
+}
+
+/// Whether a header's word stands for one of `paths`, each variable the file sets replaced by
+/// each of its values in turn; one it does not set (`@{bin}`) stays as written. `budget` ends
+/// a variable that names itself.
+fn stands_for(word: &str, paths: &[&str], vars: &Vars, budget: &mut u32) -> bool {
+    let mut from = 0;
+    while let Some(at) = word[from..].find("@{").map(|at| at + from) {
+        let Some(end) = word[at..].find('}').map(|end| end + at) else {
+            break;
+        };
+        let Some(values) = vars.get(&word[at + 2..end]) else {
+            from = end + 1;
+            continue;
+        };
+        return values.iter().any(|value| {
+            let left = *budget > 0;
+            *budget = budget.saturating_sub(1);
+            let word = format!("{}{value}{}", &word[..at], &word[end + 1..]);
+            left && stands_for(&word, paths, vars, budget)
+        });
+    }
+    // AppArmor reads `/usr/bin//bwrap` as one slash.
+    paths.contains(&word.replace("//", "/").as_str())
 }
 
 /// What a person does about a profile of theirs that keeps bwrap from working.
@@ -354,24 +392,26 @@ impl Run<'_> {
                 }
             };
         }
-        match self.mode {
-            Mode::Setup => {}
-            Mode::DryRun => return self.changed(ITEM, "", &plan.steps(false)),
-            Mode::Check => {
-                let state = match &first {
-                    // Setup's steps alone do not let bwrap in past a kernel limit.
-                    Proof::Fails(why) => {
-                        let limits: String =
-                            self.limits().iter().map(|l| format!("; {l}")).collect();
-                        format!("bwrap cannot start a user namespace as {user} ({why}{limits})")
-                    }
-                    Proof::Works | Proof::NotRun(_) => {
-                        "the AppArmor rules for bwrap are not what setup leaves".to_owned()
-                    }
-                };
-                return self
-                    .needs_setup(ITEM, &format!("{state}: setup would {}", plan.steps(false)));
+        if self.mode != Mode::Setup {
+            // Setup's steps alone do not let bwrap in past a kernel limit.
+            let limits: String = match first {
+                Proof::Fails(_) => self.limits().iter().map(|l| format!("; {l}")).collect(),
+                Proof::Works | Proof::NotRun(_) => String::new(),
+            };
+            let steps = plan.steps(false);
+            if self.mode == Mode::DryRun {
+                return self.changed(ITEM, "", &format!("{steps}{limits}"));
             }
+            let state = match &first {
+                Proof::Fails(why) => {
+                    format!("bwrap cannot start a user namespace as {user} ({why})")
+                }
+                Proof::Works | Proof::NotRun(_) => {
+                    "the AppArmor rules for bwrap are not what setup leaves".to_owned()
+                }
+            };
+            let then = if limits.is_empty() { ":" } else { ";" };
+            return self.needs_setup(ITEM, &format!("{state}{limits}{then} setup would {steps}"));
         }
         if let Err(why) = self.apply(&plan) {
             return self.failed(ITEM, why);
@@ -673,6 +713,12 @@ mod tests {
             "profile bwrap /usr/bin/bwrap\nflags = (unconfined) {\n  userns,\n}\n",
             "profile bwrap /usr/bin/bwrap flags = (attach_disconnected, unconfined) {\n}\n",
             "@{bin}/bwrap flags=(unconfined) {\n  userns,\n}\n",
+            "@prog = /usr/bin/bwrap\nprofile b @{prog} {\n  userns,\n}\n",
+            "@{dir} = /usr/bin\nprofile b @{dir}/bwrap {\n}\n",
+            "@{a} = /usr/bin/bwrap\n@{b} = @{a}\nprofile b @{b} {\n}\n",
+            "@{dirs} = /opt /usr\nprofile b @{dirs}/bin/bwrap {\n}\n",
+            "@{dir} = /usr/bin/\nprofile b @{dir}/bwrap {\n}\n",
+            "profile flags /usr/bin/bwrap {\n}\n",
         ] {
             assert!(attaches_bwrap(whole), "{whole}");
         }
@@ -685,7 +731,10 @@ mod tests {
             "@{prog} = /usr/bin/bwrap\nprofile x /usr/bin/x {\n  userns,\n}\n",
             "profile x /usr/bin/x {userns,}\n/usr/bin/bwrap mr,\n",
             "@{prog}=/usr/bin/x\nprofile x @{prog} {\n  userns,\n}\n",
-            "${flag} = true\nprofile x /usr/bin/x flags = (unconfined) {\n}\n",
+            "abi <abi/4.0>,\n@prog = /usr/bin/bwrap\nprofile x /usr/bin/x {\n  @{prog} mr,\n}\n",
+            "@{dir} = /usr/bin\nprofile x @{dir}/x {\n}\n",
+            "@{a} = @{a}/bwrap\nprofile x @{a} {\n}\n",
+            "profile x /usr/bin/x xattrs = (user.t = /usr/bin/bwrap ) {\n}\n",
         ] {
             assert!(!attaches_bwrap(other), "{other}");
         }

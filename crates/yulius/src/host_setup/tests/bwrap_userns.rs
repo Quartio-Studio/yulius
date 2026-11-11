@@ -735,7 +735,8 @@ fn a_namespace_limit_is_named() {
         "{detail}"
     );
 
-    // A check names the limit too: setup's steps alone would not let bwrap in.
+    // A check and a dry run name every limit too, each as its own clause: setup's steps alone
+    // would not let bwrap in.
     let mut fake = noble();
     let switches: Vec<_> = [ENABLED, RESTRICTED]
         .into_iter()
@@ -745,16 +746,38 @@ fn a_namespace_limit_is_named() {
     fake.files.extend(switches);
     fake.file("/proc/sys/user/max_user_namespaces", "0\n");
     let lines = run(&mut fake, Mode::Check);
-    let (outcome, detail) = item(&lines);
-    assert_eq!(outcome, HostOutcome::Failed);
-    assert!(
-        detail.starts_with(
+    assert_eq!(
+        item(&lines),
+        (
+            HostOutcome::Failed,
             "bwrap cannot start a user namespace as yulius (bwrap: Creating new namespace \
-             failed: No space left on device; user.max_user_namespaces is 0 (no user namespaces \
-             at all: raise it in /etc/sysctl.d)): setup would write and load \
-             /etc/apparmor.d/yulius-bwrap"
-        ),
-        "{detail}"
+             failed: No space left on device); user.max_user_namespaces is 0 (no user namespaces \
+             at all: raise it in /etc/sysctl.d); setup would write and load \
+             /etc/apparmor.d/yulius-bwrap; run `sudo yulius host setup`"
+        )
+    );
+    let lines = run(&mut fake, Mode::DryRun);
+    assert_eq!(
+        item(&lines),
+        (
+            HostOutcome::Changed,
+            "would write and load /etc/apparmor.d/yulius-bwrap; user.max_user_namespaces is 0 \
+             (no user namespaces at all: raise it in /etc/sysctl.d)"
+        )
+    );
+    fake.file("/proc/sys/kernel/unprivileged_userns_clone", "0\n");
+    let lines = run(&mut fake, Mode::Check);
+    assert_eq!(
+        item(&lines),
+        (
+            HostOutcome::Failed,
+            "bwrap cannot start a user namespace as yulius (bwrap: Creating new namespace \
+             failed: No space left on device); kernel.unprivileged_userns_clone is 0 \
+             (unprivileged user namespaces are off: set it to 1 in /etc/sysctl.d); \
+             user.max_user_namespaces is 0 (no user namespaces at all: raise it in \
+             /etc/sysctl.d); setup would write and load /etc/apparmor.d/yulius-bwrap; run `sudo \
+             yulius host setup`"
+        )
     );
     assert!(!touched(&fake));
 
