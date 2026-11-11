@@ -1,6 +1,6 @@
 ---
 yulius-task: 63aa8551-e6b8-4a74-bf89-2c12155c2ed0
-status: done
+status: in-progress
 ---
 
 # SPEC-461: Claude Code in sandboxes always knows the models Yulius offers
@@ -75,7 +75,7 @@ an older one.
 | CCM-008 | **Instance page.** Settings, Instance has a "Claude Code" card (superadmin): the channel and where it is set, the version in use and where it comes from, the host's version, npm's `latest` and `stable` at the last check, when it was checked and what it did; a danger banner with the fix while the version in use does not know the default model; a warning for another unknown offered model, a refused release and a failed check; "Check now"; the channel as a choice of Latest, Stable and Off; and the tasks that still run an older Claude Code (CCM-013). |
 | CCM-009 | **Channel in Settings.** `PUT /api/admin/claude-code/channel {"channel": "latest"\|"stable"\|"off"\|null}` (superadmin) stores the channel in the database (`null`: back to `YULIUS_CLAUDE_UPDATES`; a body without the field is refused, 422). A stored channel wins over the unit's. It applies at once, without a restart: the next check runs now, runs started from then on bind as the channel says (`off`: the host's install), and it is audited `claude_code.channel`. An unknown channel is refused (422). |
 | CCM-010 | **Check now.** `POST /api/admin/claude-code/check` (superadmin) starts a check at once and answers 202 with the view saying it runs; one check runs at a time (a second request joins the running one). The hourly check and the first check 2 minutes after a start stay. `GET /api/admin/claude-code` answers the view. |
-| CCM-011 | **Sessions record what ran.** Each session of a task records the Claude Code version its transcript's prompt records name (`metrics.cli_version`), beside the model that answered (kept already), as soon as a line names it. |
+| CCM-011 | **Sessions record what ran.** Each session of a task records the Claude Code version the records of its own thread in its transcript name (`metrics.cli_version`; Claude Code writes its version on every record, and a sub-agent's names nothing for the session), beside the model that answered (kept already), as soon as a line names it: a session resumed with nothing typed names it with the first record it writes, not with its next prompt. |
 | CCM-012 | **Task info.** A task's info shows the model it asks for with its effort (marked "default" when the task names none), the models that answered, and the Claude Code version of its latest session, with "moves to X when its turn ends, or at its next start" while its running session is on an older one; each row of its Sessions table shows what that session ran on (its Claude Code version and model). `GET /api/tasks/{tid}` carries them (`model`, `model_default`, `effort`, `cli_version`, `cli_moves_to`; per attempt `model`, `cli_version`). |
 | CCM-013 | **A running task moves.** When a turn of a running task ends and its session runs an older Claude Code than runs get now, Yulius restarts the session on the newer one in the same Claude session (`claude --resume`, same subscription, the path a subscription move takes at a turn boundary) and says so in one line in its terminal. A session that works on after the turn (a gate's block, a goal that is set and not yet achieved) moves at that turn's Stop hook and gets the gate's reasons, and its goal again, as after a subscription move; a goal task that is Done keeps its session at a follow-up's end (its goal would be typed again); a prompt-mode session that goes idle moves once the turn has settled (its pull request opened, chains advanced), with nothing typed, and is idle again. Not while its background shells, agents or monitors run, a shell that only runs `yulius wait` included (its news would never arrive), not while a person typed into it in the last minute or paused it, not while an instance update holds the runs, not within ten minutes of a refused subscription switch or of a refused restart, and once per version per task. Deciding takes at most 3.5 s of the Stop hook's 5 s (one wait for the turn's lines, one look at the session's processes); a decision that would take longer is left to a later turn's end. A restart that cannot start now (its subscription at its limit, a sandbox that cannot be joined) says nothing, is no switch decision, keeps no subscription switch waiting (it has its own ten-minute wait) and is tried at a later turn's end. A version a session could not continue on gets no other running session, and the card names the task and what happened: the restart could not be launched, the restarted session ended by itself before it started (its SessionStart hook), or it did not start within two minutes (that session is left as it is, for its person). A newer version, or a restart of the server, lifts it. A task that is idle keeps its version until its next turn ends or its next start, and so does a run without hooks. The Superagent, shells and CI jobs get the newer version when they next start, as before. A restart for a newer Claude Code is no subscription switch in the task's info. |
 
@@ -91,6 +91,7 @@ an older one.
 - [x] Operations guide, API reference, architecture and changes updated
 - [x] Independent review round 1 answered, every finding fixed with its test
 - [x] Independent review round 2 answered, every finding fixed with its test
+- [ ] A session resumed with nothing typed names its Claude Code with its first record
 
 ## Acceptance criteria
 
@@ -135,8 +136,11 @@ an older one.
   AC9). `crates/yulius-domain/src/harness.rs`: the offered list starts with the default.
 - Unit, `crates/yulius/src/wiring/claude_models.rs`: the streaming model scan (ids across chunk
   boundaries, at the end of the file, followed by a digit, a letter or a hyphen, absent) and its
-  per-file memory. `crates/yulius-harness/tests/observe.rs`: the run's CLI version is its latest
-  prompt record's, never a sub-agent's.
+  per-file memory. `crates/yulius-harness/tests/observe.rs`: the run's CLI version is the latest
+  one a record of its own thread names (a resume's meta record, a tool result, an attachment,
+  an answer), never a sub-agent's. `crates/yulius/src/wiring/harness.rs`: a run resumed with
+  nothing typed names its version at its first record, never the earlier run's, and a recount
+  says the same.
 - Integration, `crates/yulius/tests/claude_updates.rs` (the registry stub of SPEC-421, whose
   binary stand-in now embeds the offered model ids): AC1, AC3, AC4, the status file and the
   in-memory record after each outcome, AC5 (the doctor's level and text), the composer's list
@@ -155,10 +159,11 @@ an older one.
   idle state after a person's move of an idle task (the defect met on the way).
 - e2e, `e2e/tests/claude-code.e2e.ts` (mock): AC7, AC8's task info rows, and a channel change
   and a check the server refuses.
-- Not testable here: a real download from npm and a real 340 MB binary in CI (the stub's stand-in
-  is small; the scan was run by hand against the installed 2.1.322, see Evidence); the move of a
-  real Claude Code session (the fake agent stands in for it), including what a real release
-  that cannot resume a session looks like (the fake agent exits or stays silent at its start).
+- Not testable in CI, done by hand (see Evidence): a real download from npm with the real
+  340 MB binaries, and what real sessions resumed on a newer Claude Code write. Not testable
+  here: the move of a real Claude Code session by Yulius (the fake agent stands in for it),
+  including what a real release that cannot resume a session looks like (the fake agent exits
+  or stays silent at its start).
 
 ## Decisions
 
@@ -282,6 +287,30 @@ an older one.
   verdict. Left as it is: `version_for_new_runs` reads a link and the host's small manifest on
   each task detail and turn end, as every sandbox join does; a cache would have to notice the
   host's own `npm install`, which only those reads show.
+- **After the merge, checked against real artifacts (2026-11-11), which found one defect.**
+  PR #1167 merged at e9e11c0a. Two things its Evidence named as untested were then checked
+  with what this sandbox holds: npm's real registry, and the transcripts of real sessions that
+  were restarted on newer Claude Code releases that day.
+  - *The registry.* The production updater against registry.npmjs.org replayed the incident
+    with the real releases and found nothing to fix (Evidence).
+  - *The transcripts.* Seven real sessions name two or three Claude Code versions in one
+    transcript (2.1.292, 2.1.311, 2.1.322): a resumed process writes into the session's file
+    and every record of the session's thread carries its version. The observer took the
+    version from prompt records only. A session resumed with nothing typed (it redoes its
+    interrupted turn by itself) writes a meta record, attachments and answers, and no prompt
+    record until someone or something prompts it: in one real session the first prompt record
+    on 2.1.322 came 3 h 2 min and 1,950 lines after the restart. For that time its run named no
+    version, so task info showed the previous session's (2.1.311 for a session on 2.1.322) and
+    its Sessions row none. Now every record of the session's own thread names the version
+    (`claude::observe_versioned`, one parse per line as before), for the watcher and the
+    recount; over those seven transcripts each of the nine restarts is seen at the first
+    record the resumed process wrote.
+  - *The restart's own word.* A session Yulius restarts is taken to run the version it was
+    restarted on until its transcript names one (review round 1, finding 11). With the version
+    named at the first record, that write could come second and replace the transcript's word
+    (a release installed during the restart), and the watcher would not write again. It is one
+    conditional statement in the store now (`assume_run_cli_version`): a version the transcript
+    named stays, and one it names later replaces the assumption.
 - **Migration `0050_claude_code.sql` is schema version 51.** Its number was reserved first, but
   SPEC-459's `0051_instance_limits.sql` merged first as version 50; a version is a migration's
   place in the list, so this one goes after it.
@@ -369,13 +398,35 @@ an older one.
   change does not touch: `agent-panel` and `queued-messages` (one keyboard-focus test each) passed
   when rerun alone; `places` "the editor keeps open files…" was the load flake of #1157.
 - Review: round 1 (fresh session, at beb8fca9) and round 2 (fresh session, at aadf7b98)
-  requested changes, both answered above; round 3 is made on the head that holds this section,
-  and its verdict goes with the merge.
+  requested changes, both answered above; round 3 (fresh session, at e9e11c0a) approved with
+  two minors and seven nits, which task #452 fixes (SPEC-468). PR #1167 merged at that head.
+- After the merge, the real registry (2026-11-11 20:37 UTC, `ClaudeUpdater::new`, a host
+  stand-in of version 2.1.300, channel `stable`; a test written for the run and not kept):
+  1. The host knows the default model: npm's `stable` 2.1.311 was downloaded, read and refused
+     in 13.9 s ("2.1.311 does not know claude-fable-5-2 (Yulius's default model)"); nothing
+     installed, nothing left but `status.json`; the doctor warns and names the refusal.
+  2. The host does not know it (the incident): the doctor fails with the fix. The next check
+     took `latest`'s 2.1.322 in 17.0 s without downloading 2.1.311 again; `current` points at
+     it, the doctor is `ok` ("2.1.322, kept current by Yulius … (the host has 2.1.300)"), and
+     the status file says `installed`, `in_use` 2.1.322, nothing missing.
+  3. The next check: up to date in 0.2 s.
+  4. The installed `claude.exe` is byte for byte the one `npm install -g` left on this host
+     (341,914,128 bytes, sha256 `bfb3703a…4c478`, mode 755). Nothing was run.
+- After the merge, real transcripts: seven sessions of this sandbox that were restarted on a
+  newer Claude Code, read by the observer before and after the fix (a test written for the run
+  and not kept). The first run of each names its version three to six lines earlier; the
+  restarts are seen at lines 708 and 1198 instead of 739 and 3148 (session 3b93b554), 2159
+  instead of 2163, 481 instead of 489, 450 and 4546 instead of 491 and 4553, 809 instead of
+  810, and at the same line twice.
+- Seen failing first: `wiring::harness::tests::a_run_resumed_with_nothing_typed_names_its_claude_code_at_once`
+  read `None` after the resumed run's first record.
 - `yulius security-scan`: "Security scan disabled: Vidoc is turned off in Yulius" (exit 0):
   disabled, not passed.
-- Not tested: a real download and switch on a deployed instance; the move of a real Claude Code
-  session (the fake agent stands in), including what a real `--resume` writes as its version
-  and how a real release that cannot resume a session fails (the fake agent exits or stays
-  silent at its start); a session's own `/loop` schedule, which a restart ends (Yulius does not
-  know it); a Claude Code whose binary no longer names its models as plain text (the check
-  would refuse every release, which the card and the doctor would say).
+- Not tested: the updater inside a deployed, isolated instance (its download, checks and
+  switch ran here against the real registry, outside a server); a restart of a real Claude
+  Code session made by Yulius (the fake agent stands in; what real restarted sessions write
+  was read from their transcripts), and how a real release that cannot resume a session fails
+  (the fake agent exits or stays silent at its start); the card against a real server (the
+  mock, and the API over a fake adapter); a session's own `/loop` schedule, which a restart
+  ends (Yulius does not know it); a Claude Code whose binary no longer names its models as
+  plain text (the check would refuse every release, which the card and the doctor would say).

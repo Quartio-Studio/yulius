@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-11
 
+- A session resumed with nothing typed shows the Claude Code it runs at once (SPEC-461, task
+  #443). Yulius read a session's Claude Code version from its prompt records only, and a
+  session that redoes an interrupted turn by itself writes none for hours: task info showed the
+  previous session's version meanwhile. Every record of the session's own thread names the
+  version now. Found by reading real restarted sessions' transcripts after the merge; the
+  updater was also run against npm's real registry (2.1.311 refused, 2.1.322 installed).
 - Sandboxes never run a Claude Code that does not know Yulius's default model (SPEC-461, task
   #443, ADR-0293). On production the default model (Fable 5.2) had outrun the Claude Code that
   npm's `stable` offered (2.1.311), so a session's own model picker and its `fable` alias meant
