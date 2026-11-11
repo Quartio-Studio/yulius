@@ -70,6 +70,32 @@ test('a task shows its subscription and a person runs it on another (SPEC-447 MO
   await expect(chip).toHaveText('Claude #4');
 });
 
+// Review round 2 of SPEC-464: the task's model is in its details, which the task view reads after
+// it drew the chip. A person who opens the menu before that read answered (or whose read failed)
+// still gets the subscriptions judged for the task's model: the menu reads what it needs itself.
+test('"Run #N on…" knows the task\'s model before the task view has its details (SPEC-464)', async ({ app, browser, screen }) => {
+  type Holding = { __yuliusMock: { holdDetail?: Promise<void> | null; detailReads?: Record<string, number> }; __releaseDetail?: () => void };
+  await app.open(mock('/s/studio', '&ambient=0'));
+  // The view's own read of the task waits on its way, as on a slow connection.
+  await browser.evaluate(() => {
+    const w = window as unknown as Holding;
+    w.__yuliusMock.holdDetail = new Promise<void>((resolve) => { w.__releaseDetail = resolve; });
+    location.hash = '#/s/studio/t/12';
+  });
+  await expect.poll(() => browser.evaluate(() => {
+    const db = (window as unknown as Holding).__yuliusMock;
+    return Boolean(db.detailReads?.tsk_studio_12) && !db.holdDetail;
+  }), { message: 'the view never read the task' }).toBe(true);
+  const chip = browser.locator('.taskview .stepstrip-main button.account-chip');
+  await expect(chip).toHaveText('Claude #2');
+  await chip.click();
+  await expect(screen.getByText('Run #12 on…')).toBeVisible();
+  // Task #12 runs Opus: a subscription that is only out of the default model's usage credits can take it.
+  await expect(screen.getByRole('menuitem', /^Claude #5\s*5 h 100% · week 71%/)).toBeVisible();
+  await expect(screen.getByRole('menuitem', /^Claude #3\s*Needs a new sign-in/)).toHaveAttribute('aria-disabled', 'true');
+  await browser.evaluate(() => (window as unknown as Holding).__releaseDetail?.());
+});
+
 test('"Run #N on…" judges a subscription by the windows that bind the task\'s model (unit, in the page; SPEC-464)', async ({ app, browser }) => {
   await app.open(mock('/s/studio'));
   const reasons = await browser.evaluate(async () => {
