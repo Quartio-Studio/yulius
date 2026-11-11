@@ -273,3 +273,46 @@ fn a_link_that_is_a_file_by_the_time_it_is_read_is_gone() -> TestResult {
     )));
     Ok(())
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_live_walk_stays_in_the_directories_it_opened() -> TestResult {
+    // A directory that is renamed away under a walk, with a link to somewhere else under its
+    // name: the walk goes on in the directory it opened and never follows the name.
+    let dir = tempfile::tempdir()?;
+    let (root, outside) = (dir.path().join("data"), dir.path().join("outside"));
+    fs::create_dir_all(root.join("sb/dir/sub"))?;
+    fs::write(root.join("sb/dir/a"), b"a")?;
+    fs::write(root.join("sb/dir/sub/inner"), b"inner")?;
+    std::os::unix::fs::symlink("a", root.join("sb/dir/z-link"))?;
+    fs::create_dir_all(outside.join("sub"))?;
+    fs::write(outside.join("sub/planted"), b"planted")?;
+    fs::write(outside.join("planted"), b"planted")?;
+    let mut paths = Vec::new();
+    let skipped = walk_seen(&root, true, &copied, &mut |seen| {
+        let path = String::from_utf8_lossy(&seen.entry.path).into_owned();
+        if path == "data/sb/dir/a" {
+            fs::rename(root.join("sb/dir"), root.join("sb/aside"))?;
+            std::os::unix::fs::symlink(&outside, root.join("sb/dir"))?;
+        }
+        // What the walk shows can be looked at and opened where it is.
+        let meta = fs::symlink_metadata(seen.disk)?;
+        assert_eq!((meta.ino(), meta.dev()), (seen.ino, seen.dev), "{path}");
+        paths.push(path);
+        Ok(true)
+    })?;
+    assert_eq!(
+        paths,
+        [
+            "data",
+            "data/sb",
+            "data/sb/dir",
+            "data/sb/dir/a",
+            "data/sb/dir/sub",
+            "data/sb/dir/sub/inner",
+            "data/sb/dir/z-link",
+        ]
+    );
+    assert_eq!(skipped, Skipped::default());
+    Ok(())
+}

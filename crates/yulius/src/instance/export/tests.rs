@@ -736,3 +736,153 @@ fn syncing_the_data_directory_s_filesystem_works_on_a_directory() -> TestResult 
     assert!(sync(&dir.path().join("missing")).is_err());
     Ok(())
 }
+
+/// A ledger that changes the tree when the pass asks about one path: what a process of a
+/// sandbox may do between two looks of a walk over a running instance.
+struct Meddler<'a> {
+    book: Book,
+    at: Digest,
+    act: std::cell::RefCell<Option<Box<dyn FnOnce() + 'a>>>,
+}
+
+impl<'a> Meddler<'a> {
+    fn at(path: &str, act: impl FnOnce() + 'a) -> Self {
+        Self {
+            book: Book::default(),
+            at: path_digest(path.as_bytes()),
+            act: std::cell::RefCell::new(Some(Box::new(act))),
+        }
+    }
+
+    fn acted(&self) -> bool {
+        self.act.borrow().is_none()
+    }
+}
+
+impl Ledger for Meddler<'_> {
+    fn held(&self, path: &Digest, state: &Digest) -> bool {
+        if *path == self.at
+            && let Some(act) = self.act.borrow_mut().take()
+        {
+            act();
+        }
+        self.book.held(path, state)
+    }
+
+    fn sending(&mut self, path: Digest, check: [u8; 8]) -> io::Result<()> {
+        self.book.sending(path, check)
+    }
+
+    fn earned(&mut self, state: Digest) -> io::Result<()> {
+        self.book.earned(state)
+    }
+
+    fn kept(&mut self, path: Digest, state: Digest) -> io::Result<()> {
+        self.book.kept(path, state)
+    }
+
+    fn seal(&mut self) -> io::Result<()> {
+        self.book.seal()
+    }
+}
+
+/// A sandbox's directory `sandboxes/sb/dir` with the files `a` and `b`, and, outside the data
+/// directory, a directory that is not the instance's: the files `a`, `b` and `secret` and the
+/// directory `deep` with one more.
+fn beside_a_secret() -> Result<(tempfile::TempDir, PathBuf, PathBuf), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let (root, outside) = (dir.path().join("data"), dir.path().join("outside"));
+    fs::create_dir_all(root.join("sandboxes/sb/dir"))?;
+    fs::write(root.join("sandboxes/sb/dir/a"), b"inside a")?;
+    fs::write(root.join("sandboxes/sb/dir/b"), b"inside b")?;
+    fs::create_dir_all(outside.join("deep"))?;
+    for name in ["a", "b", "secret", "deep/more"] {
+        fs::write(outside.join(name), b"SECRET of the host")?;
+    }
+    Ok((dir, root, outside))
+}
+
+/// The sandbox's directory goes aside and a link to `outside` takes its name.
+fn swap_for_a_link(root: &Path, outside: &Path) {
+    let dir = root.join("sandboxes/sb/dir");
+    fs::rename(&dir, root.join("sandboxes/sb/dir.aside")).expect("rename");
+    std::os::unix::fs::symlink(outside, &dir).expect("symlink");
+}
+
+fn nothing_of_the_host(stream: &Stream) {
+    for (path, _, content) in &stream.entries {
+        assert!(
+            !content.windows(6).any(|w| w == b"SECRET"),
+            "{path} carries a file from outside the data directory"
+        );
+    }
+    assert!(
+        !stream
+            .paths()
+            .iter()
+            .any(|p| p.ends_with("secret") || p.contains("deep")),
+        "{:?}",
+        stream.paths()
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_directory_that_became_a_link_during_a_warm_pass_is_not_entered() -> TestResult {
+    // After the walk looked at the directory and before it lists it.
+    let (_dir, root, outside) = beside_a_secret()?;
+    let mut meddler = Meddler::at("data/sandboxes/sb/dir", || swap_for_a_link(&root, &outside));
+    let mut out = Vec::new();
+    let sent = send_live(
+        &root,
+        &pass(true),
+        &mut out,
+        &mut meddler,
+        later(),
+        &mut |_| {},
+    )?;
+    assert!(meddler.acted());
+    let stream = read(&out)?;
+    nothing_of_the_host(&stream);
+    assert_eq!(sent.vanished, 1, "{:?}", stream.paths());
+    assert!(
+        !stream
+            .paths()
+            .iter()
+            .any(|p| p.starts_with("data/sandboxes/sb/dir/"))
+    );
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_file_is_read_in_the_directory_the_walk_listed_whatever_its_name_leads_to_now() -> TestResult {
+    // After the walk looked at the file `a` and before the pass opens it; `b` is looked at
+    // only afterwards.
+    let (_dir, root, outside) = beside_a_secret()?;
+    let mut meddler = Meddler::at("data/sandboxes/sb/dir/a", || {
+        swap_for_a_link(&root, &outside);
+    });
+    let mut out = Vec::new();
+    send_live(
+        &root,
+        &pass(true),
+        &mut out,
+        &mut meddler,
+        later(),
+        &mut |_| {},
+    )?;
+    assert!(meddler.acted());
+    let stream = read(&out)?;
+    nothing_of_the_host(&stream);
+    // What the walk listed is what it read: the directory it holds, not the name.
+    assert_eq!(
+        stream.content("data/sandboxes/sb/dir/a"),
+        Some(&b"inside a"[..])
+    );
+    assert_eq!(
+        stream.content("data/sandboxes/sb/dir/b"),
+        Some(&b"inside b"[..])
+    );
+    Ok(())
+}

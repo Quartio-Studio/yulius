@@ -2,6 +2,11 @@
 //! names sorted bytewise, links kept as links, hard links pointing at their first path. The
 //! export walks twice, once to plan the exact length and once to stream, so nothing is held in
 //! memory but the hard-linked files' first paths; the instance is frozen, so both walks agree.
+//!
+//! A move also walks while the instance runs (SPEC-465). Such a walk holds every directory it
+//! is in open and names its entries through that, so a directory that is renamed or replaced by
+//! a link meanwhile cannot lead it anywhere else: what a sandbox's processes do to their own
+//! files never makes a walk that runs as root read outside the data directory.
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -42,7 +47,8 @@ pub struct Skipped {
 pub struct Seen<'a> {
     /// The entry.
     pub entry: &'a Entry,
-    /// Its path on disk.
+    /// A path to it on disk, good while it is shown: in a live walk it goes through the open
+    /// directory that holds the entry, so only its last name is looked up (never follow it).
     pub disk: &'a Path,
     /// Its inode number.
     pub ino: u64,
@@ -104,7 +110,10 @@ pub fn walk_top(
 /// [`walk`] showing `visit` each entry's inode and change time. `visit` answers whether the
 /// entry is there: `false` leaves out what is below it and lets no hard link name it. A `live`
 /// walk is of a directory that changes meanwhile: a path that is gone when it is looked at is
-/// left out and counted, not an error.
+/// left out and counted, not an error, and so is a directory that is no longer the one that was
+/// looked at when it is opened. It never follows a link, also not one that took the place of a
+/// directory above an entry: every directory is opened in the one that holds it and stays open
+/// while the walk is in it (one open file for each level).
 ///
 /// # Errors
 /// As [`walk`].
@@ -127,11 +136,27 @@ pub fn walk_seen(
     if !visit(&seen(&top, root, &meta))? {
         return Ok(skipped);
     }
-    let mut stack: Vec<(PathBuf, Vec<u8>, Vec<OsString>)> =
-        vec![(root.to_path_buf(), ROOT.to_vec(), children(root)?)];
+    let Some((pin, dir)) = enter(root, &meta, live)? else {
+        return Err(io::Error::other(format!(
+            "{} is not the directory it was",
+            root.display()
+        )));
+    };
+    let mut stack = vec![Level {
+        names: children(&dir)?,
+        through: dir,
+        archived: ROOT.to_vec(),
+        _pin: pin,
+    }];
     loop {
         let top_level = stack.len() == 1;
-        let Some((dir, archived, names)) = stack.last_mut() else {
+        let Some(Level {
+            through: dir,
+            archived,
+            names,
+            ..
+        }) = stack.last_mut()
+        else {
             break;
         };
         let Some(name) = names.pop() else {
@@ -194,18 +219,65 @@ pub fn walk_seen(
             continue;
         }
         if e.kind == Kind::Dir {
-            let names = match children(&disk) {
-                Ok(names) => names,
-                Err(err) if live && gone(&err) => {
-                    skipped.vanished += 1;
-                    continue;
-                }
+            let opened = enter(&disk, &meta, live).and_then(|entered| match entered {
+                Some((pin, through)) => Ok(Some(Level {
+                    names: children(&through)?,
+                    through,
+                    archived: path,
+                    _pin: pin,
+                })),
+                None => Ok(None),
+            });
+            match opened {
+                Ok(Some(level)) => stack.push(level),
+                // Something else took the directory's place since the walk looked at it.
+                Ok(None) => skipped.vanished += 1,
+                Err(err) if live && gone(&err) => skipped.vanished += 1,
                 Err(err) => return Err(err),
-            };
-            stack.push((disk, path, names));
+            }
         }
     }
     Ok(skipped)
+}
+
+/// A directory the walk is in.
+struct Level {
+    /// The path its entries are named through.
+    through: PathBuf,
+    /// Its archive path.
+    archived: Vec<u8>,
+    /// Its names not looked at yet, the next one last.
+    names: Vec<OsString>,
+    /// What keeps it open during a live walk.
+    _pin: Option<std::fs::File>,
+}
+
+/// The directory at `disk`, which the walk saw as `meta`, as the walk reads it: what keeps it
+/// open and the path its entries are named through. A live walk on Linux opens it without
+/// following a link (a link there now is gone, [`gone`]) and names its entries through the open
+/// directory, so nothing that happens to `disk` afterwards changes where they are; `None` when
+/// another directory is there now. Otherwise the directory is read by its path: the instance is
+/// frozen, or nothing else writes there.
+fn enter(
+    disk: &Path,
+    meta: &std::fs::Metadata,
+    live: bool,
+) -> io::Result<Option<(Option<std::fs::File>, PathBuf)>> {
+    if !(live && cfg!(target_os = "linux")) {
+        return Ok(Some((None, disk.to_path_buf())));
+    }
+    use std::os::fd::AsRawFd as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let dir = std::fs::File::options()
+        .read(true)
+        .custom_flags((nix::fcntl::OFlag::O_DIRECTORY | nix::fcntl::OFlag::O_NOFOLLOW).bits())
+        .open(disk)?;
+    let now = dir.metadata()?;
+    if (now.dev(), now.ino()) != (meta.dev(), meta.ino()) {
+        return Ok(None);
+    }
+    let through = PathBuf::from(format!("/proc/self/fd/{}", dir.as_raw_fd()));
+    Ok(Some((Some(dir), through)))
 }
 
 /// A link's text. A path that is no link any more (it was one when it was looked at) is
