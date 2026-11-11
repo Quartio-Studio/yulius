@@ -101,7 +101,8 @@ with `browser_fill_secret`. A password field, drawn as dots, keeps screenshots w
 - [x] ADR-0291, architecture, API and changes describe the guard
 - [x] Review round 1: filled values guarded per browser and per document, probe and capture under one lock
 - [x] Review round 2: exposed origins, the redactor's check and a second look after the capture
-- [ ] Independent review and its answers
+- [x] Independent review rounds 1 and 2 answered
+- [ ] Independent review round 3 approves the head
 - [ ] Gates green with evidence
 
 ## Acceptance criteria

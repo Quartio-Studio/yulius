@@ -123,7 +123,7 @@ pub enum BrowserError {
     /// The page may show a secret (typed with [`crate::BrowserInstance::tool_type_secret`] or
     /// one Yulius hides), or cannot be read to tell, so no screenshot is taken (SPEC-450).
     #[error(
-        "no screenshot: this tab's page may show an agent secret (it shows one, it is on the site a secret was typed into outside a password field, or Yulius cannot read it); read it with browser_snapshot, which shows secrets as [secret:NAME]"
+        "no screenshot: this tab's page may show an agent secret (it shows one, it is on a site a secret was typed into outside a password field, it frames a site a secret was typed into, or Yulius cannot read it); read it with browser_snapshot, which shows secrets as [secret:NAME]"
     )]
     SecretOnPage,
     /// The process could not be reaped after SIGKILL; it may still be running.

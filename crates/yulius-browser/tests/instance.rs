@@ -969,6 +969,122 @@ async fn a_fill_outside_a_password_field_exposes_its_site() -> TestResult {
     Ok(())
 }
 
+/// SPEC-450 (review round 3): typing into a document a secret went into, though into a password
+/// field, can edit it (a character into its middle): unless it stays whole there, the site is
+/// exposed at once, so its next page (showing the edited copy it stored) is refused.
+#[tokio::test]
+async fn typing_into_a_filled_password_field_can_expose_its_site() -> TestResult {
+    let (fake, instance, tab) = setup().await?;
+    instance
+        .tool_navigate(&to(&tab, "https://l.example/settings"))
+        .await?;
+    fake.set_password_field("#pw", true);
+    instance
+        .tool_type_secret(&fill(&tab, "#pw", "pw-secret-4471"))
+        .await?;
+    instance
+        .tool_screenshot_within(&shot(&tab), 100_000)
+        .await?;
+    // Typed elsewhere, the value stays whole: nothing changes.
+    instance.tool_type(&fill(&tab, "#note", "a note")).await?;
+    instance
+        .tool_screenshot_within(&shot(&tab), 100_000)
+        .await?;
+    // Typed into its middle (the probe sees the edit), then saved: the next page is refused.
+    fake.set_secret_probe(probe(&["Fake page text"], &["pw-sec ret-4471"]));
+    instance.tool_type(&fill(&tab, "#pw", " ")).await?;
+    fake.set_secret_probe(None);
+    instance
+        .tool_navigate(&to(&tab, "https://l.example/saved"))
+        .await?;
+    fake.set_secret_probe(probe(&["Current key: pw-sec ret-4471"], &[]));
+    assert!(refused(
+        instance.tool_screenshot_within(&shot(&tab), 100_000).await
+    ));
+    Ok(())
+}
+
+/// SPEC-450 (review round 3): a page framing a site a secret was typed into is refused, as the
+/// frame is out of the probe's reach (an agent's own page framing the bound site); other frames
+/// are not.
+#[tokio::test]
+async fn a_page_framing_a_filled_site_is_not_captured() -> TestResult {
+    let (fake, instance, tab) = setup().await?;
+    instance
+        .tool_navigate(&to(&tab, "https://m.example/login"))
+        .await?;
+    fake.set_password_field("#pw", true);
+    instance
+        .tool_type_secret(&fill(&tab, "#pw", "pw-secret-4471"))
+        .await?;
+    instance
+        .tool_navigate(&to(&tab, "http://localhost:20101/"))
+        .await?;
+    fake.set_child_frames(&["https://ads.example/banner"]);
+    instance
+        .tool_screenshot_within(&shot(&tab), 100_000)
+        .await?;
+    fake.set_child_frames(&[
+        "https://ads.example/banner",
+        "https://M.example:443/settings",
+    ]);
+    assert!(refused(
+        instance.tool_screenshot_within(&shot(&tab), 100_000).await
+    ));
+    fake.set_child_frames(&[]);
+    instance
+        .tool_screenshot_within(&shot(&tab), 100_000)
+        .await?;
+    // Out of process, the frame is a target of its own: of this tab, of no tab said, of another.
+    fake.set_frame_targets(&[(Some(tab.as_str()), "https://m.example/settings")]);
+    assert!(refused(
+        instance.tool_screenshot_within(&shot(&tab), 100_000).await
+    ));
+    fake.set_frame_targets(&[(None, "https://m.example/settings")]);
+    assert!(refused(
+        instance.tool_screenshot_within(&shot(&tab), 100_000).await
+    ));
+    fake.set_frame_targets(&[(Some("OTHER-TAB"), "https://m.example/settings")]);
+    instance
+        .tool_screenshot_within(&shot(&tab), 100_000)
+        .await?;
+    Ok(())
+}
+
+/// SPEC-450 (review round 3): a long multi-line key fits (its lines are bounded apart from the
+/// 32 secrets), and its PEM armour lines are not secrets.
+#[tokio::test]
+async fn a_long_key_fits_and_its_armour_is_not_a_secret() -> TestResult {
+    let (fake, instance, tab) = setup().await?;
+    instance
+        .tool_navigate(&to(&tab, "https://n.example/keys"))
+        .await?;
+    let body: Vec<String> = (0..52)
+        .map(|n| format!("{n:02}key-line-abcdefghijklmnop"))
+        .collect();
+    let pem = format!(
+        "-----BEGIN PRIVATE KEY-----\n{}\n-----END PRIVATE KEY-----",
+        body.join("\n")
+    );
+    fake.set_password_field("#key", true);
+    instance.tool_type_secret(&fill(&tab, "#key", &pem)).await?;
+    instance
+        .tool_navigate(&to(&tab, "https://docs.example/pem"))
+        .await?;
+    fake.set_secret_probe(probe(
+        &["A key starts with -----BEGIN PRIVATE KEY-----"],
+        &[],
+    ));
+    instance
+        .tool_screenshot_within(&shot(&tab), 100_000)
+        .await?;
+    fake.set_secret_probe(probe(&["Line: 07key-line-abcdefghijklmnop"], &[]));
+    assert!(refused(
+        instance.tool_screenshot_within(&shot(&tab), 100_000).await
+    ));
+    Ok(())
+}
+
 /// SPEC-450: each line of a multi-line secret (typed line by line) is matched on its own.
 #[tokio::test]
 async fn a_multi_line_secret_is_matched_line_by_line() -> TestResult {
@@ -994,7 +1110,7 @@ async fn a_multi_line_secret_is_matched_line_by_line() -> TestResult {
 
 /// SPEC-450: a secret is typed only into a document that can be told apart; one whose document
 /// is lost after typing refuses every screenshot; a page whose document cannot be told is not
-/// captured once one was typed; at most 256 documents are remembered.
+/// captured once one was typed; past 256 documents every screenshot is refused.
 #[tokio::test]
 async fn a_secret_needs_a_known_document() -> TestResult {
     let (fake, instance, tab) = setup().await?;
@@ -1016,14 +1132,15 @@ async fn a_secret_needs_a_known_document() -> TestResult {
     instance
         .tool_navigate(&to(&tab, "https://h.example/last"))
         .await?;
-    let typed = fake.calls_for("Input.insertText").len();
-    assert!(matches!(
-        instance
-            .tool_type_secret(&fill(&tab, "#pw", "pw-cap-secret-1"))
-            .await,
-        Err(BrowserError::InvalidInput(_))
+    instance
+        .tool_type_secret(&fill(&tab, "#pw", "pw-cap-secret-1"))
+        .await?;
+    instance
+        .tool_navigate(&to(&tab, "https://other.example/"))
+        .await?;
+    assert!(refused(
+        instance.tool_screenshot_within(&shot(&tab), 100_000).await
     ));
-    assert_eq!(fake.calls_for("Input.insertText").len(), typed);
 
     let (fake, instance, tab) = setup().await?;
     instance

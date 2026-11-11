@@ -27,14 +27,23 @@ const PAGE: &str = "<!doctype html><html><head><title>Yulius test page</title></
 <input id=\"pw\" type=\"password\" aria-label=\"Password\">\
 <button id=\"show\" onclick=\"document.getElementById('pw').type='text'\">Show</button></body></html>";
 
-async fn serve(listener: TcpListener) {
+/// Serves [`PAGE`], or at `/frame` a page framing `framed`.
+async fn serve(listener: TcpListener, framed: String) {
     while let Ok((mut stream, _)) = listener.accept().await {
+        let framed = framed.clone();
         tokio::spawn(async move {
             let mut request = [0_u8; 4096];
             let _ = stream.read(&mut request).await;
+            let page = if request.starts_with(b"GET /frame") {
+                format!(
+                    "<!doctype html><html><body><p>Framing</p><iframe src=\"{framed}\"></iframe></body></html>"
+                )
+            } else {
+                PAGE.to_owned()
+            };
             let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{PAGE}",
-                PAGE.len()
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{page}",
+                page.len()
             );
             let _ = stream.write_all(response.as_bytes()).await;
         });
@@ -102,8 +111,14 @@ async fn drives_a_real_chromium_when_configured() -> TestResult {
         return Ok(());
     };
     let listener = TcpListener::bind("127.0.0.1:0").await?;
-    let page_url = format!("http://127.0.0.1:{}/", listener.local_addr()?.port());
-    let server = tokio::spawn(serve(listener));
+    let port = listener.local_addr()?.port();
+    let page_url = format!("http://127.0.0.1:{port}/");
+    let framed = format!("http://localhost:{port}/");
+    let server = tokio::spawn(serve(listener, framed.clone()));
+    // A third site on the loopback network, framing the second (SPEC-450).
+    let framing = TcpListener::bind("127.0.0.2:0").await?;
+    let framing_url = format!("http://127.0.0.2:{}/", framing.local_addr()?.port());
+    let framing_server = tokio::spawn(serve(framing, framed));
     let dir = tempfile::tempdir()?;
     let config = BrowserConfig {
         startup_timeout: Duration::from_secs(60),
@@ -244,6 +259,19 @@ async fn drives_a_real_chromium_when_configured() -> TestResult {
         browser.tool_screenshot_within(&shot_params, 1 << 20).await,
         Err(BrowserError::SecretOnPage)
     ));
+    // A page of another site is captured, unless it frames the site the secret went into
+    // (out of the probe's reach, so the frame tree tells).
+    browser.navigate(&tab, &framing_url).await?;
+    browser
+        .tool_screenshot_within(&shot_params, 1 << 20)
+        .await?;
+    browser
+        .navigate(&tab, &format!("{framing_url}frame"))
+        .await?;
+    assert!(matches!(
+        browser.tool_screenshot_within(&shot_params, 1 << 20).await,
+        Err(BrowserError::SecretOnPage)
+    ));
 
     let mut frames = browser.subscribe_frames(&tab).await?;
     browser.navigate(&tab, &format!("{page_url}?again")).await?;
@@ -264,5 +292,6 @@ async fn drives_a_real_chromium_when_configured() -> TestResult {
         "Chromium is reaped after shutdown"
     );
     server.abort();
+    framing_server.abort();
     Ok(())
 }

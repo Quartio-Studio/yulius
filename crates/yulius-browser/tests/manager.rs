@@ -16,6 +16,7 @@ use yulius_browser::fake::{
 use yulius_browser::{
     BrowserConfig, BrowserError, BrowserManager, CdpError, PIPE_URL, StopTimeouts,
 };
+use yulius_contracts::browser::{NavigateParams, ScreenshotParams, TabId, TypeParams};
 use yulius_domain::ids::SandboxId;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -174,6 +175,63 @@ async fn crash_is_detected_and_the_next_use_restarts() -> TestResult {
     let third = manager.ensure(&sandbox, &profile).await?;
     assert!(third.is_alive());
     assert!(!pid_alive(pid_second));
+    assert!(manager.shutdown(&sandbox).await?);
+    Ok(())
+}
+
+/// SPEC-450 (review round 3): what a sandbox's browser remembers about typed secrets outlives
+/// it (stopped idle, crashed), as the site keeps what was typed: a site exposed by a fill into a
+/// text field stays refused in the next browser, another site is captured.
+#[tokio::test]
+async fn typed_secrets_outlive_the_browser() -> TestResult {
+    let fake = FakeCdpServer::start().await?;
+    let dir = tempfile::tempdir()?;
+    let exe = write_fake_chromium(
+        dir.path(),
+        "fake-chromium",
+        FakeChromium::Ready {
+            port: fake.pipe_port(),
+        },
+    )?;
+    let manager = BrowserManager::new(config(exe, dir.path()));
+    let sandbox = SandboxId::parse("sbx-secrets")?;
+    let profile = manager.default_profile_dir(&sandbox);
+    let navigate = |tab: &TabId, url: &str| NavigateParams {
+        tab_id: tab.clone(),
+        url: url.to_owned(),
+    };
+
+    let first = manager.ensure(&sandbox, &profile).await?;
+    let tab = first.tabs().first().ok_or("no tab")?.id.clone();
+    first
+        .tool_navigate(&navigate(&tab, "https://p.example/form"))
+        .await?;
+    first
+        .tool_type_secret(&TypeParams {
+            tab_id: tab.clone(),
+            text: "api-key-5521-qrs".into(),
+            selector: Some("#api-key".into()),
+        })
+        .await?;
+    assert!(manager.shutdown(&sandbox).await?);
+
+    let second = manager.ensure(&sandbox, &profile).await?;
+    assert!(!Arc::ptr_eq(&first, &second));
+    let tab = second.tabs().first().ok_or("no tab")?.id.clone();
+    let shot = ScreenshotParams {
+        tab_id: tab.clone(),
+    };
+    second
+        .tool_navigate(&navigate(&tab, "https://q.example/"))
+        .await?;
+    second.tool_screenshot_within(&shot, 100_000).await?;
+    second
+        .tool_navigate(&navigate(&tab, "https://p.example/keys"))
+        .await?;
+    assert!(matches!(
+        second.tool_screenshot_within(&shot, 100_000).await,
+        Err(BrowserError::SecretOnPage)
+    ));
     assert!(manager.shutdown(&sandbox).await?);
     Ok(())
 }

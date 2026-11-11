@@ -102,6 +102,8 @@ struct FakeState {
     secret_probe: Option<Value>,
     secret_probe_queue: VecDeque<Value>,
     secret_probe_delay: Duration,
+    child_frames: Vec<String>,
+    frame_targets: Vec<Value>,
     failing_after: HashMap<String, (usize, i64, String)>,
     loaders: u64,
     connections: Vec<Arc<Connection>>,
@@ -258,6 +260,8 @@ impl FakeCdpServer {
                 secret_probe: None,
                 secret_probe_queue: VecDeque::new(),
                 secret_probe_delay: Duration::ZERO,
+                child_frames: Vec::new(),
+                frame_targets: Vec::new(),
                 failing_after: HashMap::new(),
                 loaders: 0,
                 connections: Vec::new(),
@@ -423,6 +427,28 @@ impl FakeCdpServer {
     /// object without `origin` gets the page's.
     pub fn set_secret_probe(&self, answer: Option<Value>) {
         lock(&self.shared.state).secret_probe = answer;
+    }
+
+    /// The URLs of the frames every page holds (`Page.getFrameTree` child frames).
+    pub fn set_child_frames(&self, urls: &[&str]) {
+        lock(&self.shared.state).child_frames = urls.iter().map(|url| (*url).to_owned()).collect();
+    }
+
+    /// Out-of-process frames: `iframe` targets (`Target.getTargets`) at `url` whose parent frame
+    /// is `parent` (a page target id, or `None` when not said).
+    pub fn set_frame_targets(&self, frames: &[(Option<&str>, &str)]) {
+        lock(&self.shared.state).frame_targets = frames
+            .iter()
+            .enumerate()
+            .map(|(n, (parent, url))| {
+                let mut info = json!({"targetId": format!("IFRAME-{n}"), "type": "iframe",
+                    "title": url, "url": url, "attached": false});
+                if let Some(parent) = parent {
+                    info["parentFrameId"] = json!(parent);
+                }
+                info
+            })
+            .collect();
     }
 
     /// Answers the next secret probes with `answers`, in order, before the set one.
@@ -783,7 +809,8 @@ fn respond(
         }
         "Target.getTargets" => {
             let state = lock(&shared.state);
-            let infos: Vec<Value> = state.targets.iter().map(target_info).collect();
+            let mut infos: Vec<Value> = state.targets.iter().map(target_info).collect();
+            infos.extend(state.frame_targets.iter().cloned());
             Ok(json!({"targetInfos": infos}))
         }
         "Target.createTarget" => {
@@ -871,11 +898,25 @@ fn respond(
                 {"id": 8, "url": url, "title": "Current"}]}))
         }
         "Page.getFrameTree" => {
-            let loader = lock(&shared.state)
-                .page(session_id)
-                .map_or(0, |page| page.loader);
+            let mut state = lock(&shared.state);
+            let url = session_id
+                .and_then(|s| state.sessions.get(s))
+                .and_then(|target| state.targets.iter().find(|t| &t.id == target))
+                .map(|t| t.url.clone())
+                .unwrap_or_default();
+            let children: Vec<Value> = state
+                .child_frames
+                .iter()
+                .enumerate()
+                .map(|(n, child)| {
+                    json!({"frame": {"id": format!("child-{n}"), "loaderId": format!("child-loader-{n}"),
+                        "url": child, "securityOrigin": origin_of(child)}})
+                })
+                .collect();
+            let loader = state.page(session_id).map_or(0, |page| page.loader);
             Ok(
-                json!({"frameTree": {"frame": {"id": "frame-1", "loaderId": format!("loader-{loader}")}}}),
+                json!({"frameTree": {"frame": {"id": "frame-1", "loaderId": format!("loader-{loader}"),
+                "url": url, "securityOrigin": origin_of(&url)}, "childFrames": children}}),
             )
         }
         "Input.insertText" => {
@@ -939,6 +980,17 @@ fn respond(
             Ok(json!({"data": data}))
         }
         "Accessibility.getFullAXTree" => Ok(json!({"nodes": lock(&shared.state).ax_nodes.clone()})),
+        "Page.navigateToHistoryEntry" | "Page.reload" => {
+            // Another document, as Chromium loads one (form state is not modelled).
+            let mut state = lock(&shared.state);
+            let loader = state.next_loader();
+            if let Some(page) = state.page(session_id) {
+                page.fields.clear();
+                page.focused.clear();
+                page.loader = loader;
+            }
+            Ok(json!({}))
+        }
         "Page.createIsolatedWorld" => Ok(json!({"executionContextId": 7})),
         "Runtime.evaluate" => {
             let expression = text("expression");
@@ -993,8 +1045,6 @@ fn respond(
         | "Emulation.setDeviceMetricsOverride"
         | "Input.dispatchMouseEvent"
         | "Input.dispatchKeyEvent"
-        | "Page.navigateToHistoryEntry"
-        | "Page.reload"
         | "Browser.close" => Ok(json!({})),
         other => Err((-32601, format!("'{other}' wasn't found"))),
     }
