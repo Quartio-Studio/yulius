@@ -206,7 +206,9 @@ test('switching to a sandbox whose Superagent starts keeps the keyboard on the p
 test('the Superagent chosen while its sandbox’s page loads is that sandbox’s own', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12', '&hold=/api/sandboxes/sb_studio/tasks'));
   await expect(screen.getByRole('navigation', 'Sandboxes').getByRole('link', /^studio\b/)).toHaveAttribute('aria-current', 'page');
-  await openSuperagent(browser, screen);
+  // Not `openSuperagent`: it waits for the page, and this one is chosen before the page is there.
+  await screen.getByRole('button', /^Show tools/).click();
+  await screen.getByRole('navigation', 'Tools').getByRole('button', 'Superagent').click();
   await expect(screen.getByRole('navigation', 'Tools').getByRole('button', 'Superagent')).toHaveAttribute('aria-pressed', 'true');
   await expect(screen.getByRole('region', 'Tool panel')).toBeHidden();
 
