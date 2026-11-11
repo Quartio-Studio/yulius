@@ -16,6 +16,7 @@ use yulius_app::ports::isolation::{
 };
 use yulius_domain::agent_cli::Channel;
 use yulius_domain::ids::SandboxId;
+use yulius_domain::limits::Limit;
 use yulius_sandbox::cgroup::Limits;
 use yulius_sandbox::manager::{
     IdleConfig, IsolationConfig, Joined, Manager, PrepareError, SandboxRequest, TICK,
@@ -53,6 +54,11 @@ pub enum DockerMode {
     Off,
 }
 
+/// A sandbox's soft disk quota in bytes for `gb` GB; `None` for 0: no quota.
+fn disk_quota(gb: u64) -> Option<u64> {
+    (gb > 0).then(|| gb.saturating_mul(1_000_000_000))
+}
+
 /// Isolation settings of `yulius serve` (environment variables in `docs/operations.md`).
 #[derive(Debug, Clone, Args)]
 pub struct IsolationArgs {
@@ -74,13 +80,10 @@ pub struct IsolationArgs {
     /// quarters of the service's limit too, also above an explicit value.
     #[arg(long = "sandbox-pids", env = "YULIUS_SANDBOX_PIDS")]
     pub pids: Option<u64>,
-    /// Soft disk quota per sandbox in GB (sandbox directory plus installed packages); 0: none.
-    #[arg(
-        long = "sandbox-disk-gb",
-        env = "YULIUS_SANDBOX_DISK_GB",
-        default_value_t = 100
-    )]
-    pub disk_gb: u64,
+    /// Soft disk quota per sandbox in GB (sandbox directory plus installed packages); 0: none
+    /// (default: a quarter of the data disk, at least 100 GB, SPEC-459).
+    #[arg(long = "sandbox-disk-gb", env = "YULIUS_SANDBOX_DISK_GB")]
+    pub disk_gb: Option<u64>,
     /// Extra host loopback ports reachable from inside every sandbox at the same port
     /// (comma-separated), for example a loopback MCP server.
     #[arg(
@@ -124,7 +127,7 @@ impl Default for IsolationArgs {
             memory_gb: None,
             cpus: None,
             pids: None,
-            disk_gb: 100,
+            disk_gb: None,
             forward: Vec::new(),
             idle_minutes: 5,
             docker: DockerMode::On,
@@ -235,7 +238,7 @@ pub fn resolve(
         gid,
         delegation: None,
         limits,
-        disk_max: (args.disk_gb > 0).then(|| args.disk_gb.saturating_mul(1_000_000_000)),
+        disk_max: disk_quota(args.disk_gb.unwrap_or(Limit::SandboxDisk.fixed())),
         forwards,
         sudo_shim: yulius_app::identity::SUDO_SHIM.to_owned(),
         idle: IdleConfig {
@@ -414,6 +417,10 @@ impl SandboxIsolation for NamespaceIsolation {
     async fn measure_disk(&self, sandbox: &SandboxRef) -> Option<DiskUsage> {
         let (used, limit) = self.manager.measure_disk(&request_of(sandbox)).await?;
         Some(DiskUsage { used, limit })
+    }
+
+    fn set_disk_quota(&self, quota: Option<u64>) {
+        self.manager.set_disk_quota(quota);
     }
 
     async fn largest(&self, sandbox: &SandboxRef) -> Vec<(String, u64)> {
