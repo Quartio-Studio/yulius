@@ -1022,8 +1022,11 @@ mod moves {
         Ok(())
     }
 
-    /// CCM-013: a restarted session that started in time shows that the version works: when its
-    /// time to start passed, nothing is stopped, also after the session ended later.
+    /// CCM-013: a restarted session that started shows that the version works: its start takes
+    /// the restart off the breaker's watch, so nothing is stopped whenever its time to start
+    /// passes, also after the session ended later. The start is seen at its race point and the
+    /// time to start is an hour, so the test does not depend on how fast a session starts
+    /// (SPEC-468 CCF-004).
     #[test]
     fn a_restarted_session_that_starts_in_time_stops_nothing() -> TestResult {
         let (_dir, data) = data_dir()?;
@@ -1036,21 +1039,25 @@ mod moves {
                 hooked(),
                 TaskMode::Prompt,
                 "2.1.311",
-                // Long enough for a session to start on a loaded machine.
-                |config| config.claude_code_start_ms = 10_000,
+                // Never reached here: what counts is the session's start, not the clock.
+                |config| config.claude_code_start_ms = 3_600_000,
             )
             .await?;
             turn_that_stays(&s, "one").await?;
             release(&s, &version, "2.1.322")?;
-            let judged = reached(Point::ClaudeMoveStartJudged, &s.id);
+            let started = reached(Point::ClaudeMoveStarted, &s.id);
             turn(&s, "two").await?;
             second_run_live(&s).await?;
             wait_for(
-                "its time to start to pass",
+                "the restarted session's start",
                 Duration::from_secs(60),
-                || async { judged.load(Ordering::SeqCst) },
+                || async { started.load(Ordering::SeqCst) },
             )
             .await?;
+            assert!(
+                !s.app.claude_code_start_watched(&s.id),
+                "a session that started is off the watch"
+            );
             let ctx = s.ctx().await?;
             assert_eq!(s.app.claude_code_view(&ctx).await?.moves_stopped, None);
             // Its later end, by itself, says nothing about the version either.
@@ -1063,6 +1070,91 @@ mod moves {
             .await?;
             assert_eq!(s.app.claude_code_view(&ctx).await?.moves_stopped, None);
             Ok::<_, Box<dyn std::error::Error>>(())
+        })?;
+        rt.shutdown_timeout(Duration::from_secs(5));
+        Ok(())
+    }
+
+    /// SPEC-468 CCF-006 (review round 3, nit 6): two turn ends of one task that decide at once.
+    /// Both find the session due; one restarts it and the other leaves it to that one, so the
+    /// restart stays on the breaker's watch: its session, which never starts here, stops
+    /// further restarts on that version. The second used to register an equal start, be
+    /// refused its switch, and take the first's start off the watch with its own.
+    #[test]
+    fn two_turn_ends_that_decide_at_once_make_one_watched_restart() -> TestResult {
+        let (_dir, data) = data_dir()?;
+        let version = data.join("claude-version");
+        let stuck = data.join("stuck-at-start");
+        let rt = runtime()?;
+        rt.block_on(async {
+            let options = FakeAgentOptions {
+                stuck_at_start_file: Some(stuck.clone()),
+                ..hooked()
+            };
+            let s = server_with(
+                &data,
+                &version,
+                options,
+                TaskMode::Prompt,
+                "2.1.311",
+                |config| config.claude_code_start_ms = 2_000,
+            )
+            .await?;
+            turn_that_stays(&s, "one").await?;
+            release(&s, &version, "2.1.322")?;
+            std::fs::write(&stuck, "")?;
+            // The first turn's end, its look at the session made, waits until the second's
+            // got as far: from there both decide at once.
+            let first_there = Arc::new(AtomicBool::new(false));
+            let both_there = Arc::new(AtomicBool::new(false));
+            let (second_tx, second_rx) = std::sync::mpsc::channel::<()>();
+            let (there, both) = (Arc::clone(&first_there), Arc::clone(&both_there));
+            let task = Path::new(s.id.as_str());
+            race::on(Point::ClaudeMoveProbed, task, move || {
+                there.store(true, Ordering::SeqCst);
+                let second =
+                    tokio::task::block_in_place(|| second_rx.recv_timeout(Duration::from_secs(60)));
+                both.store(second.is_ok(), Ordering::SeqCst);
+            });
+            race::on(Point::ClaudeMoveProbed, task, move || {
+                let _ = second_tx.send(());
+            });
+            let (one, other) = (decided(&s.id), decided(&s.id));
+            let judged = reached(Point::ClaudeMoveStartJudged, &s.id);
+            turn(&s, "two").await?;
+            wait_for(
+                "the first turn's end to look at the session",
+                Duration::from_secs(60),
+                || async { first_there.load(Ordering::SeqCst) },
+            )
+            .await?;
+            turn(&s, "three").await?;
+            until_decided(&one).await?;
+            until_decided(&other).await?;
+            assert!(
+                both_there.load(Ordering::SeqCst),
+                "both turn ends found the session due before either restarted it"
+            );
+            // One restart, and it is watched: the session that never starts is noticed.
+            second_run_live(&s).await?;
+            wait_for(
+                "its time to start to pass",
+                Duration::from_secs(60),
+                || async { judged.load(Ordering::SeqCst) },
+            )
+            .await?;
+            let view = s.app.claude_code_view(&s.ctx().await?).await?;
+            let stopped = view.moves_stopped.unwrap_or_default();
+            assert!(
+                stopped.starts_with(
+                    "Running tasks are no longer moved to 2.1.322: the session of task #1 did \
+                     not start on it within 2 s."
+                ),
+                "the restart was not watched: {stopped:?}"
+            );
+            assert_eq!(runs(&s).await, 2, "one restart");
+            std::fs::remove_file(&stuck)?;
+            stop(&s.app, &s.id).await
         })?;
         rt.shutdown_timeout(Duration::from_secs(5));
         Ok(())

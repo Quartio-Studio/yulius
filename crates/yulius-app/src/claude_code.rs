@@ -6,8 +6,9 @@
 //! next run binds as it says and a check runs now. Without an adapter (sandboxes are not
 //! isolated here) runs use the host's Claude Code as it is and nothing is kept current.
 
-use std::collections::HashMap;
-use std::sync::atomic::Ordering;
+use std::collections::{HashMap, HashSet};
+use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -43,6 +44,9 @@ pub const MOVE_REASON: &str = "claude_code";
 /// A restart on a newer Claude Code whose session has not shown yet that it started there.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct MoveStart {
+    /// Its own identity: turn ends that decide at once for one task name the same version and
+    /// run, and a start is only ever taken off the watch as itself (SPEC-468 CCF-006).
+    id: u64,
     /// The version the session was restarted on.
     version: Version,
     /// The run that was ended for it: the task's run after that one is the restarted session.
@@ -76,6 +80,35 @@ pub struct AgentCliServices {
     /// Restarts whose session has not started on the new version yet (its SessionStart hook):
     /// one that ends by itself, or stays silent, before that stops further restarts on it.
     starting: Mutex<HashMap<TaskId, MoveStart>>,
+    /// The tasks whose session is being restarted right now ([`Moving`]): one restart of a
+    /// task at a time.
+    moving: Mutex<HashSet<TaskId>>,
+    /// The identity of the next restart.
+    next_start: AtomicU64,
+}
+
+/// The one restart of a task's session that may be under way: until it is dropped, no other
+/// turn end restarts that session (SPEC-468 CCF-006).
+struct Moving<'a> {
+    services: &'a AgentCliServices,
+    task: &'a TaskId,
+}
+
+impl<'a> Moving<'a> {
+    /// Takes the restart of `task`; `None` while another is under way.
+    fn begin(services: &'a AgentCliServices, task: &'a TaskId) -> Option<Self> {
+        let free = services.moving.lock().ok()?.insert(task.clone());
+        // Made only when the restart is this one's: dropping it gives the restart up.
+        free.then(|| Self { services, task })
+    }
+}
+
+impl Drop for Moving<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut moving) = self.services.moving.lock() {
+            moving.remove(self.task);
+        }
+    }
 }
 
 /// The sentence about what the last check did.
@@ -136,6 +169,8 @@ impl App {
                 moved: Mutex::default(),
                 stopped: Mutex::default(),
                 starting: Mutex::default(),
+                moving: Mutex::default(),
+                next_start: AtomicU64::new(0),
             })
             .is_ok()
     }
@@ -332,7 +367,7 @@ impl App {
             .ok()?;
         crate::race::reached(
             crate::race::Point::ClaudeMoveProbed,
-            std::path::Path::new(task_id.as_str()),
+            Path::new(task_id.as_str()),
         );
         // That took a moment: a person may have started a draft or paused the task, an update
         // of the instance begun to hold the runs, another session failed on this version.
@@ -346,7 +381,9 @@ impl App {
     /// same Claude session, on its subscription `account` (SPEC-461 CCM-013): the switch a
     /// subscription move makes, with `prompt` typed into the resumed session. The restarted
     /// session then has [`crate::context::AppConfig::claude_code_start_ms`] to start: a version
-    /// a session cannot continue on gets no further sessions.
+    /// a session cannot continue on gets no further sessions. One restart of a task is made at
+    /// a time: a turn end that decided while another's restart is under way leaves the session
+    /// to that one, and one that comes after it finds the session sent (SPEC-468 CCF-006).
     pub(crate) async fn move_to_claude_code(
         self: &Arc<Self>,
         task_id: &TaskId,
@@ -357,8 +394,22 @@ impl App {
         let Some(services) = self.agent_cli.get() else {
             return;
         };
+        // Turn ends that decide at once name the same version and run: the second would
+        // replace the first's start on the watch and be refused its switch, or make the
+        // restart a second time.
+        let Some(_moving) = Moving::begin(services, task_id) else {
+            return;
+        };
+        let sent = services
+            .moved
+            .lock()
+            .is_ok_and(|moved| moved.get(task_id) == Some(&version));
+        if sent {
+            return;
+        }
         // Known before the old run ends: the restarted session's run may end at once.
         let start = MoveStart {
+            id: services.next_start.fetch_add(1, Ordering::SeqCst),
             version,
             from: from.clone(),
         };
@@ -448,7 +499,7 @@ impl App {
     }
 
     /// The session of `attempt` started (its SessionStart hook): a restart on a newer Claude
-    /// Code that got this far works.
+    /// Code that got this far works, and is no longer watched.
     pub(crate) fn claude_code_run_started(&self, task_id: &TaskId, attempt: &AttemptId) {
         if let Some(services) = self.agent_cli.get()
             && let Ok(mut starting) = services.starting.lock()
@@ -458,6 +509,23 @@ impl App {
         {
             starting.remove(task_id);
         }
+        crate::race::reached(
+            crate::race::Point::ClaudeMoveStarted,
+            Path::new(task_id.as_str()),
+        );
+    }
+
+    /// Whether a restart of the task's session on a newer Claude Code is still watched for
+    /// its session's start. Public for tests, which see that start at
+    /// [`crate::race::Point::ClaudeMoveStarted`] instead of waiting for its time to pass.
+    #[must_use]
+    pub fn claude_code_start_watched(&self, task_id: &TaskId) -> bool {
+        self.agent_cli.get().is_some_and(|services| {
+            services
+                .starting
+                .lock()
+                .is_ok_and(|starting| starting.contains_key(task_id))
+        })
     }
 
     /// The run `attempt` of `task_id` ended; `started` says its session had started,
@@ -514,7 +582,7 @@ impl App {
         }
         crate::race::reached(
             crate::race::Point::ClaudeMoveStartJudged,
-            std::path::Path::new(task_id.as_str()),
+            Path::new(task_id.as_str()),
         );
     }
 
@@ -535,7 +603,7 @@ impl App {
         self.move_idle_session(task_id).await;
         crate::race::reached(
             crate::race::Point::ClaudeMoveSettled,
-            std::path::Path::new(task_id.as_str()),
+            Path::new(task_id.as_str()),
         );
     }
 
