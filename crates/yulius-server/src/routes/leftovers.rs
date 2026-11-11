@@ -33,7 +33,7 @@ pub async fn delete(
 }
 
 /// The CLI's key from `Authorization: Bearer <key>`, checked against the server's.
-fn cli_key(app: &AppState, headers: &HeaderMap) -> Result<(), AppError> {
+pub(crate) fn cli_key(app: &AppState, headers: &HeaderMap) -> Result<(), AppError> {
     let presented = headers
         .get(AUTHORIZATION)
         .and_then(|v| v.to_str().ok())

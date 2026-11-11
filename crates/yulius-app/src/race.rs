@@ -129,6 +129,10 @@ pub enum Point {
     /// A turn's end decided to restart its session on a newer Claude Code (SPEC-468); the
     /// restart is not registered or asked for yet. The path is the task id.
     ClaudeMoveDecided,
+    /// A restart on a newer Claude Code (SPEC-461) launched the session's new run; the version
+    /// that run is taken to run until its transcript names one is not written yet. The path is
+    /// the task id.
+    ClaudeMoveRestarted,
     /// A session's start was noticed (its SessionStart hook; SPEC-468): a restart on a newer
     /// Claude Code that waited for it is off the breaker's watch. The path is the task id.
     ClaudeMoveStarted,

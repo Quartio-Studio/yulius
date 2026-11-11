@@ -155,6 +155,18 @@ async fn old_runs_get_their_transcripts_figures_once() -> TestResult {
         ..HarnessOptions::default()
     })?;
     transcripts(&h, &data)?;
+    // A restart took `a1` to run this version; its lines, which no live watch read, name
+    // another: the recount's word replaces the assumption (SPEC-461 CCM-011).
+    {
+        use yulius_app::ports::store::TaskStore as _;
+        let (run, task) = (
+            yulius_domain::ids::AttemptId::parse("a1")?,
+            yulius_domain::ids::TaskId::parse("t1")?,
+        );
+        h.store
+            .assume_run_cli_version(&run, &task, "2.1.200", yulius_domain::time::Timestamp(1))
+            .await?;
+    }
 
     let tally = h.app.recount_old_metrics().await?;
     assert_eq!(
@@ -193,6 +205,24 @@ async fn old_runs_get_their_transcripts_figures_once() -> TestResult {
         (gone.output_tokens, gone.turns, gone.active_ms),
         (Some(77), Some(2), Some(1_000)),
         "a run whose transcript is gone keeps its figures"
+    );
+    // The Claude Code a run's lines name is recorded with its figures (SPEC-461 CCM-011): no
+    // live watch read these runs. A run whose window holds no line names none.
+    let ran_on: Vec<(String, String)> = {
+        use yulius_app::ports::store::TaskStore as _;
+        let task = yulius_domain::ids::TaskId::parse("t1")?;
+        let facts = h.store.task_run_facts(&task).await?;
+        facts
+            .into_iter()
+            .filter_map(|facts| Some((facts.attempt.as_str().to_owned(), facts.cli_version?)))
+            .collect()
+    };
+    assert_eq!(
+        ran_on,
+        [
+            ("a1".to_owned(), "2.1.292".to_owned()),
+            ("a2".to_owned(), "2.1.292".to_owned()),
+        ]
     );
     let rows = recounts(&db)?;
     let outcomes: Vec<_> = rows

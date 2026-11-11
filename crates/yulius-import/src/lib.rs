@@ -68,6 +68,6 @@ pub use states::{
     state_entry,
 };
 pub use time::format_rfc3339;
-pub use token_store::{TokenStore, TokenStoreError};
+pub use token_store::{Relocated, TokenStore, TokenStoreError};
 pub use ui::{PlainUi, TerminalUi, Tone, Ui, Unit, human_bytes, parse_selection, set_colors};
 pub use upload::{UploadError, Uploader};

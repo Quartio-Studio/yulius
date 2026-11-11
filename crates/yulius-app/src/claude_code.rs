@@ -487,15 +487,20 @@ impl App {
             moved.retain(|_, sent| *sent == version);
             moved.insert(task_id.clone(), version);
         }
-        // The new run names its Claude Code with its first prompt: until then it is the one it
-        // was restarted on.
+        crate::race::reached(
+            crate::race::Point::ClaudeMoveRestarted,
+            std::path::Path::new(task_id.as_str()),
+        );
+        // The new run names its Claude Code with the first record it writes, which an idle
+        // session resumed with nothing typed does at its next prompt: until then it is the one
+        // it was restarted on. What its transcript said already stays.
         if let Ok(Some(run)) = self.deps.store.live_attempt(task_id).await
             && run.id != from
         {
             let _ = self
                 .deps
                 .store
-                .set_run_cli_version(&run.id, task_id, &version.to_string(), self.now())
+                .assume_run_cli_version(&run.id, task_id, &version.to_string(), self.now())
                 .await;
         }
         // A session that neither starts nor ends in time sits at something it cannot pass.

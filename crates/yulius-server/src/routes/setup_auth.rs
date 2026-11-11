@@ -36,9 +36,11 @@ fn with_cookie(app: &AppState, session: NewSession, status: StatusCode) -> Respo
 }
 
 pub async fn setup_status(State(app): State<AppState>) -> ApiResult<Json<SetupStatus>> {
+    let github_configured = app.github_configured().await?;
     Ok(Json(SetupStatus {
         setup_required: app.setup_required().await?,
-        github_configured: app.github_configured().await?,
+        github_configured,
+        github_callback_missing: github_configured && app.github_callback_missing(),
     }))
 }
 
@@ -90,6 +92,8 @@ pub async fn github_start(State(app): State<AppState>, Query(q): Query<StartQuer
             return sign_in_refused("failed", next, None);
         }
     }
+    // Never stopped by what the instance knows of its callback, and no question to GitHub:
+    // GitHub decides, and a sign-in that completes proves the callback (SPEC-466 MVC-013).
     match app
         .github_sign_in_url(next.unwrap_or("/"), select_account)
         .await
