@@ -108,6 +108,20 @@ pub struct ReportedLimit {
     pub resets_at: Option<Timestamp>,
 }
 
+/// The furthest ahead a limit's reset is believed: a week and a day. No window lasts longer, and
+/// the reset comes from the session's transcript, which is the agent's own file (a session's
+/// reading is bounded the same way, SPEC-398 VSH-005).
+pub const LIMIT_RESET_MAX_MS: i64 = 8 * 24 * 3_600_000;
+
+impl ReportedLimit {
+    /// When the limit resets, if the report says so believably: at most
+    /// [`LIMIT_RESET_MAX_MS`] ahead of `now`.
+    #[must_use]
+    pub fn believed_reset(&self, _now: Timestamp) -> Option<Timestamp> {
+        self.resets_at
+    }
+}
+
 /// An account's latest usage snapshot. `Default` is "nothing known".
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct AccountUsage {
@@ -520,21 +534,103 @@ mod tests {
         assert!(unnamed.weekly_opus.is_some() && unnamed.weekly_fable.is_none());
         assert!(!unnamed.limit_reached);
 
-        // No reset time, or a family without a window of its own: a limit of the subscription
-        // with what is known, which the next reading ends.
+        // No reset time: still the model's own window, full until a provider's reading ends it
+        // (it keeps no window without a reset), so other models run on the subscription.
         let mut no_reset = AccountUsage::default();
         no_reset.record_limit(
             model_limit(Some(ModelFamily::Fable), None),
             ModelFamily::Fable,
             NOW,
         );
-        assert_eq!(no_reset.weekly_fable, None);
-        assert!(no_reset.limit_in_effect(Timestamp(i64::MAX)));
+        assert_eq!(
+            no_reset.weekly_fable,
+            Some(UsageWindow {
+                used_percent: Some(100.0),
+                window_minutes: Some(WEEKLY_WINDOW_MINUTES),
+                resets_at: None,
+            })
+        );
+        assert!(!no_reset.limit_reached, "not the whole subscription's");
         assert_eq!(no_reset.secondary, None, "never the week");
+        assert!(no_reset.exhausted_for(Timestamp(i64::MAX), 98.0, ModelFamily::Fable));
+        assert!(!no_reset.exhausted_for(NOW, 98.0, ModelFamily::Opus));
+        assert_eq!(
+            no_reset.available_at_for(NOW, 98.0, ModelFamily::Fable),
+            None
+        );
+        let read = AccountUsage::default().keeping_unread(&no_reset, NOW);
+        assert_eq!(read.weekly_fable, None, "a provider's reading ends it");
+        // A family without a window of its own: a limit of the subscription, its windows
+        // untouched.
         let mut no_window = AccountUsage::default();
         no_window.record_limit(model_limit(None, Some(5_000_000)), ModelFamily::Any, NOW);
         assert!(no_window.limit_in_effect(NOW) && !no_window.limit_in_effect(Timestamp(5_000_000)));
         assert_eq!(no_window.secondary, None);
+    }
+
+    /// SPEC-464 (review round 1): a limit's reset comes from the session's transcript, which is
+    /// the agent's own file. A reset further ahead than any window lasts is not believed (a week
+    /// and a day, as for a session's reading, SPEC-398 VSH-005): the limit is recorded without a
+    /// reset, and a provider's reading ends it. A forged reset in 2286 kept a model off a
+    /// subscription for good, across every reading.
+    #[test]
+    fn a_limits_reset_is_believed_only_as_far_as_a_window_lasts() {
+        let far = Timestamp(NOW.0 + LIMIT_RESET_MAX_MS + 1);
+        let edge = Timestamp(NOW.0 + LIMIT_RESET_MAX_MS);
+        let full = |resets_at: Option<Timestamp>| UsageWindow {
+            used_percent: Some(100.0),
+            window_minutes: Some(WEEKLY_WINDOW_MINUTES),
+            resets_at,
+        };
+        let reading = AccountUsage {
+            secondary: Some(window(Some(61.0), Some(9_000_000))),
+            ..AccountUsage::default()
+        };
+        let fable = ModelFamily::Fable;
+
+        let mut forged = AccountUsage::default();
+        forged.record_limit(model_limit(Some(fable), Some(far.0)), fable, NOW);
+        assert_eq!(forged.weekly_fable, Some(full(None)), "no reset is kept");
+        assert_eq!(reading.keeping_unread(&forged, NOW).weekly_fable, None);
+        assert_eq!(
+            model_limit(Some(fable), Some(far.0)).believed_reset(NOW),
+            None
+        );
+
+        let mut real = AccountUsage::default();
+        real.record_limit(model_limit(Some(fable), Some(edge.0)), fable, NOW);
+        assert_eq!(real.weekly_fable, Some(full(Some(edge))));
+        assert_eq!(
+            reading.keeping_unread(&real, NOW).weekly_fable,
+            Some(full(Some(edge)))
+        );
+        // A reset that passed is believed: the window it ends counts no longer.
+        assert_eq!(
+            model_limit(Some(fable), Some(NOW.0 - 1)).believed_reset(NOW),
+            Some(Timestamp(NOW.0 - 1))
+        );
+
+        // A window stored with such a reset (before this bound) is not kept by a reading.
+        let stored = AccountUsage {
+            weekly_fable: Some(full(Some(far))),
+            ..AccountUsage::default()
+        };
+        assert_eq!(reading.keeping_unread(&stored, NOW).weekly_fable, None);
+
+        // The subscription's own limit: its window and the limit carry no reset either.
+        let mut account = AccountUsage::default();
+        account.record_limit(
+            ReportedLimit {
+                scope: LimitScope::Account,
+                window_minutes: Some(WEEKLY_WINDOW_MINUTES),
+                resets_at: Some(far),
+            },
+            ModelFamily::Any,
+            NOW,
+        );
+        assert!(account.limit_reached);
+        assert_eq!(account.limit_resets_at, None);
+        assert_eq!(account.secondary, Some(full(None)));
     }
 
     /// A limit of the subscription fills its 5-hour or weekly window, as it always did.
