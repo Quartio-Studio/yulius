@@ -837,12 +837,14 @@ const needClaude = (db) => {
 route('GET', '/api/me', ({ db }) => ({ ...db.me, instance: { ...db.me.instance, claude_connected: claudeUsable(db), vidoc: Boolean(db.vidoc.key || db.vidoc.config) && !db.vidoc.offAt } }));
 // Superadmin recovery (ACC-011): a code is set, three attempts left. A test can hold the answers
 // (`__yuliusMock.holdRecovery = promise`; `recoveryWaiting` counts the reads waiting there), so a
-// page that asked can be left before it answers (#581).
+// page that asked can be left before it answers (#581). `recoveryAnswered` counts the answers: a
+// read asked earlier (`asked`) and still on its way would wait at a hold set now.
 route('GET', '/api/auth/recovery', async ({ db }) => {
   if (db.holdRecovery) {
     db.recoveryWaiting = (db.recoveryWaiting || 0) + 1;
     try { await db.holdRecovery; } finally { db.recoveryWaiting -= 1; }
   }
+  db.recoveryAnswered = (db.recoveryAnswered || 0) + 1;
   return clone(db.recovery);
 });
 route('POST', '/api/auth/recover', ({ db, body }) => {
