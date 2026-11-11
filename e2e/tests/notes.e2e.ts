@@ -461,7 +461,7 @@ test('an undo after a lost answer is not Saved until the server is checked', asy
 // it focuses the notepad.
 test('Notes beside a task does not take the keyboard when another task opens', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12'));
-  // Task #12's page first: a tool opened before the page has its sandbox opens without one.
+  // Task #12's page first: a tool opened before the page has its sandbox waits for it (SPEC-450).
   await firstShown(screen.getByRole('heading', { level: 1 }), '#12 Checkout API');
   await openNotes(screen, null);
   const notes = screen.getByRole('textbox', 'Team notes');

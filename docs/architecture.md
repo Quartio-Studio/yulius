@@ -341,7 +341,18 @@ sandbox Superagent its own sandbox's browser, the Global Superagent the browser 
 names (`GLOBAL_ONLY_TOOLS`, `Action::Work` per call), both as a `SecretUser`, which says the
 sandbox, whose agent secrets `browser_fill_secret` resolves, the audit actor and the cursor label
 ([SPEC-437](../.ai/specs/SPEC-437-add-browser-use-for-superagents.md),
-[decision 0281](decisions/0281-the-superagents-use-the-project-browser.md)).
+[decision 0281](decisions/0281-the-superagents-use-the-project-browser.md)). Pixels cannot be
+redacted, so the `BrowserManager` keeps per sandbox, across browser restarts, each value
+`browser_fill_secret` typed, the hosts and documents it went into and the hosts it reached outside
+a password field. Before and after a capture the browser instance reads the page's text and
+fields with a probe in an isolated world and its frames (frame tree, `iframe` targets, and how
+many frames of its own origin the probe read), and searches them in Yulius, also with the
+redactor's matcher, holding the input lock throughout:
+`browser_screenshot` is refused while the page shows an agent secret, is on an exposed host
+(a value went outside a password field, or was edited as typed), frames a host a secret went
+into, or cannot be read; password sign-ins keep screenshots
+([SPEC-450](../.ai/specs/SPEC-450-browser-screenshot-never-shows-a-secret.md),
+[decision 0291](decisions/0291-a-screenshot-of-a-page-showing-a-filled-secret-is-refused.md)).
 
 ```mermaid
 flowchart LR
@@ -350,6 +361,7 @@ flowchart LR
   G["Global Superagent (gs_)"] -->|"browser_* with project"| Y
   V["Viewer"] -->|"viewer WebSocket"| Y
   Y -->|"fd 3: requests"| C["Sandbox Chromium"]
+  Y -->|"after a fill: probe page text before a screenshot"| C
   C -->|"fd 4: responses, events"| Y
   O["Other local process"] -. "no DevTools port to connect to" .-x C
 ```
@@ -2455,7 +2467,9 @@ each sandbox and on each sandbox page, including the filters pages keep in their
 Tasks and Git back links) go back there, and a link to where the person already is opens the plain
 path. The tool panel (`panels.js`) keeps each sandbox's open tool, and the Superagent, Browser,
 Editor and Shell views of the 3 sandboxes used last stay alive, hidden; the editor of a sandbox in
-the background keeps its files' text without Monaco models. Sign-out and an expired session forget
+the background keeps its files' text without Monaco models. A tool chosen while a sandbox's page
+loads and no sandbox is the panel's context yet waits, shown pressed, and opens in that sandbox
+([SPEC-450](../.ai/specs/SPEC-450-browser-screenshot-never-shows-a-secret.md) SSC-007). Sign-out and an expired session forget
 the places. The editor loads Monaco once and makes its editor only when all of `editor.main` has
 run: Monaco's main chunk sets `window.monaco` before the chunk that registers some of its services,
 and an editor made earlier lacks them (decision 0122). Monaco ends a worker it no longer needs (the

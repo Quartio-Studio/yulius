@@ -865,7 +865,13 @@ impl App {
             text: text.to_string(),
             selector: args.selector.clone(),
         };
-        browser.tool_type(&params).await?;
+        if matches!(field, "username" | "totp") {
+            // Not what the redactor hides: a user name is in the description and a code expires.
+            browser.tool_type(&params).await?;
+        } else {
+            // Screenshots that may show it are refused from now on (SPEC-450).
+            browser.tool_type_secret(&params).await?;
+        }
         browser.agent_activity(&args.tab_id, None, "type", &user.label());
         self.note_agent_use(
             (&user.run(), &user.actor()),

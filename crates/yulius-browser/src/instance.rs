@@ -24,6 +24,7 @@ use yulius_contracts::browser::{
     ViewerClientMsg,
 };
 use yulius_domain::ids::{SandboxId, TaskId};
+use zeroize::Zeroizing;
 
 use crate::cdp::{CdpClient, CdpConfig, CdpEvent, FrameSink, ScreencastFrame, wait_closed};
 use crate::display::VirtualDisplay;
@@ -81,6 +82,94 @@ const FOCUS_FUNCTION: &str = "function (selector) {
   element.focus();
   return { found: true };
 }";
+
+/// Distinct secrets a sandbox's browser remembers (SPEC-450); typing another one is refused.
+const TYPED_SECRETS_MAX: usize = 32;
+/// Lines of multi-line secrets remembered, each matched on its own.
+const TYPED_LINES_MAX: usize = 1024;
+/// Documents, and hosts, with a typed secret remembered; past the bound every screenshot is
+/// refused.
+const TYPED_DOCUMENTS_MAX: usize = 256;
+/// Name of the isolated world the secret probe runs in, out of reach of the page's scripts.
+const SECRET_PROBE_WORLD: &str = "yulius-secret-probe";
+
+/// Reads what a page can show (SPEC-450 SSC-003): the text of its documents (all but `head`),
+/// open shadow roots and same-origin frames, objects and embeds, and the values and
+/// placeholders of fields drawn as text (`shown`), the values of password fields (`masked`),
+/// where typed text goes (`focus`: a password field and its value, a frame it cannot read,
+/// other), and how many frame documents at addresses of the page's own origin it read, PDFs
+/// apart (`frames`); `over` past 4 000 000 characters. It takes nothing in: Yulius compares the
+/// typed values, which never reach the page. The marker comment names it for the fake.
+const SECRET_PROBE_EXPRESSION: &str = "(() => {
+  // yulius:secret-probe
+  // Read through the prototypes: a page's named elements override a document's own properties.
+  const getter = (proto, name) => Object.getOwnPropertyDescriptor(proto, name).get;
+  const rootOf = getter(Document.prototype, 'documentElement');
+  const kindOf = getter(Node.prototype, 'nodeType');
+  const inDocument = Document.prototype.querySelectorAll;
+  const inFragment = DocumentFragment.prototype.querySelectorAll;
+  const textOf = getter(Node.prototype, 'textContent');
+  const addressOf = getter(Document.prototype, 'URL');
+  const typeOf = getter(Document.prototype, 'contentType');
+  const shown = [], masked = [];
+  let size = 0, over = false, frames = 0;
+  const add = (list, value) => {
+    const text = value == null ? '' : String(value);
+    if (!text) return;
+    size += text.length;
+    if (size > 4000000) over = true; else list.push(text);
+  };
+  const walk = (root) => {
+    const all = (kindOf.call(root) === 9 ? inDocument : inFragment).call(root, '*');
+    for (const el of all) {
+      const name = String(el.localName).toLowerCase();
+      if (name === 'input') {
+        const type = String(el.type).toLowerCase();
+        if (type === 'password') add(masked, el.value); else if (type !== 'hidden') add(shown, el.value);
+        add(shown, el.placeholder);
+      } else if (name === 'textarea') { add(shown, el.value); add(shown, el.placeholder); }
+      if (el.shadowRoot) { add(shown, textOf.call(el.shadowRoot)); walk(el.shadowRoot); }
+      if (name === 'iframe' || name === 'frame' || name === 'object' || name === 'embed') {
+        let doc = null;
+        try { doc = el.contentDocument || (el.getSVGDocument ? el.getSVGDocument() : null); } catch (_) {}
+        if (doc) { if (own(doc)) frames += 1; text(doc); walk(doc); }
+      }
+    }
+  };
+  // A frame document at an address of the page's own origin, as the frame tree lists it; not
+  // one that holds a PDF, which has no page text.
+  const own = (doc) => {
+    try {
+      return typeOf.call(doc) !== 'application/pdf' && new URL(addressOf.call(doc)).origin === location.origin;
+    } catch (_) { return false; }
+  };
+  const text = (doc) => {
+    const top = rootOf.call(doc);
+    if (!top) return;
+    for (const child of top.children) if (String(child.localName).toLowerCase() !== 'head') add(shown, textOf.call(child));
+  };
+  // Where typed text goes: the focused element, through open shadow roots and same-origin frames.
+  const focus = () => {
+    let el = document.activeElement;
+    for (;;) {
+      if (!el) return { kind: 'none' };
+      if (el.shadowRoot && el.shadowRoot.activeElement) { el = el.shadowRoot.activeElement; continue; }
+      const name = String(el.localName).toLowerCase();
+      if (name === 'iframe' || name === 'frame') {
+        let inner = null;
+        try { inner = el.contentDocument; } catch (_) {}
+        if (!inner) return { kind: 'frame' };
+        el = inner.activeElement;
+        continue;
+      }
+      if (name === 'input' && String(el.type).toLowerCase() === 'password') return { kind: 'password', value: String(el.value) };
+      return { kind: 'other' };
+    }
+  };
+  text(document);
+  walk(document);
+  return { shown, masked, over, focus: focus(), frames };
+})()";
 
 const TEXT_FALLBACK_EXPRESSION: &str =
     "(document.body ? document.body.innerText : '').slice(0, 70000)";
@@ -403,6 +492,433 @@ impl Pointer {
     }
 }
 
+/// Tells whether a text holds a secret Yulius hides (the redactor's matcher), for
+/// [`BrowserInstance::tool_screenshot_guarded`].
+pub type SecretCheck<'a> = &'a (dyn Fn(&str) -> bool + Send + Sync + 'a);
+
+/// What a sandbox's browsers remember about secrets typed with
+/// [`BrowserInstance::tool_type_secret`] (SPEC-450). The [`crate::BrowserManager`] keeps it per
+/// sandbox, so it outlives a browser that stops (idle, crash) while the site keeps what was typed.
+#[derive(Clone, Default)]
+pub struct SecretMemory(Arc<Mutex<TypedSecrets>>);
+
+impl std::fmt::Debug for SecretMemory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SecretMemory").finish_non_exhaustive()
+    }
+}
+
+impl SecretMemory {
+    fn lock(&self) -> MutexGuard<'_, TypedSecrets> {
+        lock(&self.0)
+    }
+
+    /// For a new browser: documents (loader ids) belong to the old one.
+    fn restart(&self) {
+        self.lock().documents.clear();
+    }
+}
+
+#[derive(Clone, Default)]
+struct TypedSecrets {
+    /// Distinct values, at most [`TYPED_SECRETS_MAX`].
+    values: Vec<Zeroizing<String>>,
+    /// Lines of multi-line values (typed one by one, each may be echoed alone), at most
+    /// [`TYPED_LINES_MAX`].
+    lines: Vec<Zeroizing<String>>,
+    /// Each document (main-frame loader id) a value was typed into, with that value.
+    documents: Vec<(String, Zeroizing<String>)>,
+    /// Hosts a value was typed into: a page framing one is refused (its frame is unreadable).
+    hosts: Vec<String>,
+    /// Hosts where a value went outside a password field or was found shown or edited: every
+    /// page of them is refused (the site may show an edited copy anywhere).
+    exposed: Vec<String>,
+    /// A value went where a browser could not tell the page, or a bound was passed: every
+    /// screenshot is refused (until Yulius restarts).
+    everywhere: bool,
+}
+
+/// The lines of a multi-line `value` worth matching alone: at least 8 characters, and not a
+/// PEM armour line (`-----BEGIN …-----`), which documentation shows too.
+fn lines_of(value: &str) -> Vec<&str> {
+    if !value.contains('\n') {
+        return Vec::new();
+    }
+    value
+        .split('\n')
+        .map(|line| line.strip_suffix('\r').unwrap_or(line))
+        .filter(|line| line.chars().count() >= 8 && !line.starts_with("-----"))
+        .collect()
+}
+
+/// Adds `item` to `list` unless there; `false` when the list is at `max` (not added).
+fn remember(list: &mut Vec<String>, item: &str, max: usize) -> bool {
+    if list.iter().any(|known| known == item) {
+        return true;
+    }
+    if list.len() >= max {
+        return false;
+    }
+    list.push(item.to_owned());
+    true
+}
+
+/// The host of an origin or URL (`scheme://host[:port]…`); `None` for opaque ones
+/// (`about:blank`, `null`).
+fn host_of(origin: &str) -> Option<String> {
+    let (_, rest) = origin.split_once("://")?;
+    let authority = rest.split(['/', '?', '#']).next()?;
+    let authority = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host);
+    let host = match authority.strip_prefix('[') {
+        Some(v6) => v6.split(']').next()?,
+        None => authority.split(':').next()?,
+    };
+    (!host.is_empty()).then(|| host.to_ascii_lowercase())
+}
+
+/// `scheme://host[:port]` of an origin or URL, lowercased; `None` for opaque ones.
+fn origin_of(text: &str) -> Option<String> {
+    let (scheme, rest) = text.split_once("://")?;
+    let authority = rest.split(['/', '?', '#']).next()?;
+    let authority = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host);
+    (!scheme.is_empty() && !authority.is_empty())
+        .then(|| format!("{scheme}://{authority}").to_ascii_lowercase())
+}
+
+/// The address of Chrome's and Chromium's PDF viewer, a built-in extension: it shows a PDF in a
+/// frame of its own at the PDF's address.
+const PDF_VIEWER: &str = "chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai/";
+
+/// The document a tab's main frame shows, from `Page.getFrameTree`.
+struct Document {
+    frame: String,
+    loader: String,
+    /// Its host; `None` for an opaque origin.
+    host: Option<String>,
+    /// Hosts of its frames the probe cannot read: those of another origin in the frame tree,
+    /// the `iframe` targets of out-of-process frames ([`Document::add_frame_targets`]), which
+    /// the tree may list without their address or not at all, and its own host when the probe
+    /// did not read every frame of its own origin ([`Document::add_unread_frames`]).
+    framed: Vec<String>,
+    /// Its frames at addresses of its own origin, those holding a PDF apart (no page text). The
+    /// frame tree says the origin of a frame's address, sandboxed or not, so only the probe tells
+    /// whether it read them.
+    own_frames: usize,
+    /// Ids of its frames, the main one included.
+    frames: Vec<String>,
+}
+
+impl Document {
+    fn parse(tree: &Value) -> Option<Self> {
+        let main = tree.pointer("/frameTree/frame")?;
+        let host = |frame: &Value| {
+            ["securityOrigin", "url"]
+                .iter()
+                .find_map(|field| frame.get(*field).and_then(Value::as_str).and_then(host_of))
+        };
+        // A frame of another origin (another host, port or scheme) is one the probe cannot read,
+        // and so is one the tree calls opaque (sandboxed), whatever its address and whatever the
+        // page's own origin: two opaque origins are never the same one.
+        let origin = |frame: &Value| match frame.get("securityOrigin").and_then(Value::as_str) {
+            Some(own) => origin_of(own),
+            None => frame.get("url").and_then(Value::as_str).and_then(origin_of),
+        };
+        let own = host(main);
+        let own_origin = origin(main);
+        let mut framed = Vec::new();
+        let mut own_frames = 0;
+        let mut frames = Vec::new();
+        let mut stack: Vec<&Value> = tree
+            .pointer("/frameTree/childFrames")
+            .and_then(Value::as_array)
+            .map(|children| children.iter().collect())
+            .unwrap_or_default();
+        while let Some(child) = stack.pop() {
+            if let Some(id) = child.pointer("/frame/id").and_then(Value::as_str) {
+                frames.push(id.to_owned());
+            }
+            let child_origin = child.get("frame").and_then(origin);
+            if child_origin.is_some() && child_origin == own_origin {
+                let pdf = child.pointer("/frame/mimeType").and_then(Value::as_str)
+                    == Some("application/pdf");
+                own_frames += usize::from(!pdf);
+            } else if let Some(child_host) = child.get("frame").and_then(host)
+                && !framed.contains(&child_host)
+            {
+                framed.push(child_host);
+            }
+            if let Some(children) = child.get("childFrames").and_then(Value::as_array) {
+                stack.extend(children);
+            }
+        }
+        let frame = main.get("id")?.as_str()?.to_owned();
+        frames.push(frame.clone());
+        Some(Self {
+            frame,
+            loader: main.get("loaderId")?.as_str()?.to_owned(),
+            host: own,
+            framed,
+            own_frames,
+            frames,
+        })
+    }
+
+    /// Adds the hosts of the out-of-process frames among `targets` (`Target.getTargets`) that
+    /// belong to the tab `tab`: `iframe` targets whose parent frame is one of its frames, nested
+    /// ones too, and, failing closed, any whose parent is not said or is no target listed (a
+    /// frame inside another out-of-process frame). Also on the page's own host: the probe reads
+    /// no frame in another process (Chrome runs a sandboxed frame in one). Not the PDF viewer's
+    /// frames: a PDF is pixels, as an image is, with no page text.
+    fn add_frame_targets(&mut self, tab: &TabId, targets: &Value) {
+        let iframes: Vec<&Value> = targets
+            .get("targetInfos")
+            .and_then(Value::as_array)
+            .map(|infos| {
+                infos
+                    .iter()
+                    .filter(|info| info.get("type").and_then(Value::as_str) == Some("iframe"))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let listed: Vec<&str> = targets
+            .get("targetInfos")
+            .and_then(Value::as_array)
+            .map(|infos| {
+                infos
+                    .iter()
+                    .filter_map(|info| info.get("targetId").and_then(Value::as_str))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut ours: Vec<String> = self.frames.clone();
+        ours.push(tab.as_str().to_owned());
+        let mut viewers: Vec<&str> = Vec::new();
+        let mut taken = vec![false; iframes.len()];
+        let mut grew = true;
+        while grew {
+            grew = false;
+            for (index, info) in iframes.iter().enumerate() {
+                if taken[index] {
+                    continue;
+                }
+                let parent = ["parentFrameId", "parentId"]
+                    .iter()
+                    .find_map(|field| info.get(*field).and_then(Value::as_str));
+                if parent.is_some_and(|parent| {
+                    !ours.iter().any(|id| id == parent) && listed.contains(&parent)
+                }) {
+                    continue;
+                }
+                taken[index] = true;
+                grew = true;
+                let id = info.get("targetId").and_then(Value::as_str);
+                if let Some(id) = id {
+                    ours.push(id.to_owned());
+                }
+                let url = info.get("url").and_then(Value::as_str).unwrap_or_default();
+                if url.starts_with(PDF_VIEWER) {
+                    viewers.extend(id);
+                    continue;
+                }
+                // The viewer's frame at the PDF's address.
+                if parent.is_some_and(|parent| viewers.contains(&parent)) {
+                    continue;
+                }
+                if let Some(host) = host_of(url)
+                    && !self.framed.contains(&host)
+                {
+                    self.framed.push(host);
+                }
+            }
+        }
+    }
+
+    /// Adds the page's own host when `page`'s probe read fewer frames of the page's origin than
+    /// the frame tree lists: one of them is out of its reach (sandboxed, or the page is).
+    fn add_unread_frames(&mut self, page: &PageText) {
+        if page.frames < self.own_frames
+            && let Some(host) = &self.host
+            && !self.framed.contains(host)
+        {
+            self.framed.push(host.clone());
+        }
+    }
+}
+
+impl TypedSecrets {
+    fn any(&self) -> bool {
+        !self.values.is_empty() || !self.exposed.is_empty() || self.everywhere
+    }
+
+    /// Room for `value`, before it is typed.
+    fn room_for(&self, value: &str) -> bool {
+        let known =
+            |list: &[Zeroizing<String>], text: &str| list.iter().any(|v| v.as_str() == text);
+        let lines = lines_of(value)
+            .into_iter()
+            .filter(|line| !known(&self.lines, line))
+            .count();
+        (known(&self.values, value) || self.values.len() < TYPED_SECRETS_MAX)
+            && self.lines.len() + lines <= TYPED_LINES_MAX
+    }
+
+    /// Records `value` as typed into `document` (`None`: a document that could not be told).
+    fn record(&mut self, document: Option<&Document>, value: &str) {
+        if !self.values.iter().any(|v| v.as_str() == value) {
+            self.values.push(Zeroizing::new(value.to_owned()));
+        }
+        for line in lines_of(value) {
+            if !self.lines.iter().any(|v| v.as_str() == line) {
+                self.lines.push(Zeroizing::new(line.to_owned()));
+            }
+        }
+        let Some(document) = document else {
+            self.everywhere = true;
+            return;
+        };
+        if !self
+            .documents
+            .iter()
+            .any(|(d, v)| *d == document.loader && v.as_str() == value)
+        {
+            if self.documents.len() < TYPED_DOCUMENTS_MAX {
+                self.documents
+                    .push((document.loader.clone(), Zeroizing::new(value.to_owned())));
+            } else {
+                self.everywhere = true;
+            }
+        }
+        if let Some(host) = &document.host
+            && !remember(&mut self.hosts, host, TYPED_DOCUMENTS_MAX)
+        {
+            self.everywhere = true;
+        }
+    }
+
+    /// Refuses every page of `host` from now on (`None`: every page of this browser).
+    fn expose(&mut self, host: Option<&str>) {
+        match host {
+            Some(host) if remember(&mut self.exposed, host, TYPED_DOCUMENTS_MAX) => {}
+            _ => self.everywhere = true,
+        }
+    }
+
+    /// The values typed into `document`.
+    fn typed_into(&self, document: &Document) -> Vec<Zeroizing<String>> {
+        self.documents
+            .iter()
+            .filter(|(d, _)| *d == document.loader)
+            .map(|(_, value)| value.clone())
+            .collect()
+    }
+
+    /// Whether a screenshot of `page`, read from `document`, may show a secret, and whether its
+    /// host is to be refused from now on. It may: on an exposed host; framing a host a value was
+    /// typed into; when its text or text fields hold a typed value or line (exposing it) or, by
+    /// `vault`, any secret Yulius hides; when the document or the page is unknown. A value gone
+    /// from a page (a single-page sign-in) is no edit: edits are caught as they are typed
+    /// ([`BrowserInstance::type_text`]).
+    fn judge(
+        &self,
+        document: Option<&Document>,
+        page: Option<&PageText>,
+        vault: bool,
+    ) -> (bool, bool) {
+        let (Some(document), Some(page)) = (document, page) else {
+            return (true, false);
+        };
+        let exposed = |host: &String| self.exposed.contains(host);
+        if self.everywhere
+            || document.host.as_ref().is_some_and(exposed)
+            || document
+                .framed
+                .iter()
+                .any(|host| exposed(host) || self.hosts.contains(host))
+        {
+            return (true, false);
+        }
+        let typed = self
+            .values
+            .iter()
+            .chain(&self.lines)
+            .any(|value| page.shows(value));
+        (typed || vault, typed)
+    }
+}
+
+/// What a page can show, as [`SECRET_PROBE_EXPRESSION`] read it.
+struct PageText {
+    /// Text and the values of fields drawn as text.
+    shown: Vec<Zeroizing<String>>,
+    /// The values of password fields (drawn as dots).
+    masked: Vec<Zeroizing<String>>,
+    /// The value of the focused element when it is a password field (`None`: it is not, or it
+    /// is a frame the probe cannot read).
+    focused_password: Option<Zeroizing<String>>,
+    /// The focused element is a frame the probe cannot read.
+    focused_frame: bool,
+    /// The frame documents at addresses of the page's own origin it read; none when not said.
+    frames: usize,
+}
+
+impl PageText {
+    fn parse(value: &Value) -> Option<Self> {
+        let strings = |name: &str| -> Option<Vec<Zeroizing<String>>> {
+            value
+                .get(name)?
+                .as_array()?
+                .iter()
+                .map(|item| item.as_str().map(|text| Zeroizing::new(text.to_owned())))
+                .collect()
+        };
+        if value.get("over").and_then(Value::as_bool) != Some(false) {
+            return None;
+        }
+        let focus = value.get("focus");
+        let focused_password = focus
+            .filter(|focus| focus.get("kind").and_then(Value::as_str) == Some("password"))
+            .and_then(|focus| focus.get("value").and_then(Value::as_str))
+            .map(|text| Zeroizing::new(text.to_owned()));
+        let focused_frame = focus
+            .and_then(|focus| focus.get("kind"))
+            .and_then(Value::as_str)
+            == Some("frame");
+        let frames = value
+            .get("frames")
+            .and_then(Value::as_u64)
+            .map_or(0, |frames| usize::try_from(frames).unwrap_or(usize::MAX));
+        Some(Self {
+            shown: strings("shown")?,
+            masked: strings("masked")?,
+            focused_password,
+            focused_frame,
+            frames,
+        })
+    }
+
+    fn shows(&self, value: &str) -> bool {
+        self.shown.iter().any(|text| text.contains(value))
+    }
+
+    /// Whether `value` is whole in a password field and shown nowhere.
+    fn confines(&self, value: &str) -> bool {
+        self.masked.iter().any(|text| text.contains(value)) && !self.shows(value)
+    }
+
+    /// Whether `value`, just typed, went into the focused password field whole and is shown
+    /// nowhere: another password field holding it says nothing of where this typing went.
+    fn received(&self, value: &str) -> bool {
+        self.focused_password
+            .as_ref()
+            .is_some_and(|text| text.contains(value))
+            && !self.shows(value)
+    }
+}
+
 struct State {
     tabs: Vec<TabEntry>,
     active: Option<TabId>,
@@ -487,6 +1003,8 @@ pub struct BrowserInstance {
     wheel: WheelDispatcher,
     config: InstanceConfig,
     state: Mutex<State>,
+    /// Secrets typed into this sandbox's browsers (SPEC-450).
+    secrets: SecretMemory,
     tabs_tx: watch::Sender<Vec<TabInfo>>,
     events_tx: broadcast::Sender<BrowserEvent>,
     control_tx: mpsc::Sender<TabId>,
@@ -618,17 +1136,20 @@ impl BrowserInstance {
         config: InstanceConfig,
     ) -> Result<Arc<Self>, BrowserError> {
         let cdp = CdpClient::connect(ws_url, config.cdp).await?;
-        Self::attach_on(sandbox, cdp, config, None).await
+        Self::attach_on(sandbox, cdp, config, None, SecretMemory::default()).await
     }
 
     /// Attaches over a connected client to a browser running on `display` (the instance owns
-    /// the display and stops it after the browser, or at once when attaching fails).
+    /// the display and stops it after the browser, or at once when attaching fails), with what
+    /// the sandbox's earlier browsers remember about typed secrets.
     pub(crate) async fn attach_on(
         sandbox: SandboxId,
         cdp: CdpClient,
         config: InstanceConfig,
         display: Option<VirtualDisplay>,
+        secrets: SecretMemory,
     ) -> Result<Arc<Self>, BrowserError> {
+        secrets.restart();
         let viewport = match &display {
             Some(display) => display.config().css_size(display.size()),
             None => config.viewport,
@@ -678,6 +1199,7 @@ impl BrowserInstance {
             event_task: Mutex::new(None),
             display,
             keyboard: Mutex::new(Keyboard::default()),
+            secrets,
             new_tab_url: Mutex::new(None),
             deny: Mutex::new(UrlDenyList::default()),
         });
@@ -2082,6 +2604,25 @@ impl BrowserInstance {
     /// # Errors
     /// Parameter errors, [`BrowserError::ElementNotFound`], tab or CDP failures.
     pub async fn tool_type(&self, params: &TypeParams) -> Result<TypeResult, BrowserError> {
+        self.type_text(params, false).await
+    }
+
+    /// `browser_fill_secret`'s typing: as [`Self::tool_type`], and the browser remembers the
+    /// text and the document it went into, so that a screenshot that may show it is refused
+    /// (SPEC-450).
+    ///
+    /// # Errors
+    /// As [`Self::tool_type`]; [`BrowserError::InvalidInput`] when the tab's document cannot be
+    /// told or the browser remembers too many secrets or documents already (nothing is typed).
+    pub async fn tool_type_secret(&self, params: &TypeParams) -> Result<TypeResult, BrowserError> {
+        self.type_text(params, true).await
+    }
+
+    async fn type_text(
+        &self,
+        params: &TypeParams,
+        secret: bool,
+    ) -> Result<TypeResult, BrowserError> {
         self.touch();
         params.validate()?;
         let session = self.session(&params.tab_id).await?;
@@ -2093,18 +2634,267 @@ impl BrowserInstance {
                 return Err(BrowserError::ElementNotFound);
             }
         }
+        // Screenshots hold the same lock from their look at the page to the capture.
         let _input = self.input_lock.lock().await;
+        if !secret {
+            let watched = self.watched_values(&session).await;
+            return self.type_lines(&session, params, watched.as_ref()).await;
+        }
+        let Some(before) = self.document(&session).await else {
+            return Err(BrowserError::InvalidInput(
+                "the tab's page cannot be identified, so the secret was not typed; try again"
+                    .into(),
+            ));
+        };
+        {
+            let mut typed = self.secrets.lock();
+            if !typed.room_for(&params.text) {
+                return Err(BrowserError::InvalidInput(format!(
+                    "this browser holds {TYPED_SECRETS_MAX} secrets typed already; it forgets them when Yulius restarts"
+                )));
+            }
+            typed.record(Some(&before), &params.text);
+        }
+        let typed = self.type_lines(&session, params, None).await;
+        let mut after = self.document(&session).await;
+        let page = match &after {
+            Some(document) => self.read_page(&session, &document.frame).await,
+            None => None,
+        };
+        // Typed into a frame the probe cannot read: the frames' hosts are where it went.
+        let into_frame = page.as_ref().is_some_and(|page| page.focused_frame);
+        let mut frames_known = true;
+        if into_frame && let Some(document) = after.as_mut() {
+            match self.cdp.call("Target.getTargets", json!({})).await {
+                Ok(targets) => document.add_frame_targets(&params.tab_id, &targets),
+                Err(_) => frames_known = false,
+            }
+        }
+        let mut secrets = self.secrets.lock();
+        // A navigation meanwhile may have put it into the next document.
+        if after.as_ref().map(|d| d.loader.as_str()) != Some(before.loader.as_str()) {
+            secrets.record(after.as_ref(), &params.text);
+        }
+        // Only a password field keeps it out of the pixels: anywhere else exposes the site,
+        // the one it was typed into and the one shown since.
+        if !page
+            .as_ref()
+            .is_some_and(|page| page.received(&params.text))
+        {
+            let after_host = after.as_ref().and_then(|d| d.host.as_ref());
+            let framed: &[String] = match (&after, into_frame) {
+                (Some(document), true) => &document.framed,
+                _ => &[],
+            };
+            let mut exposed = false;
+            for host in before.host.iter().chain(after_host).chain(framed) {
+                secrets.expose(Some(host));
+                exposed = true;
+            }
+            if page.is_none() || !exposed || !frames_known {
+                secrets.expose(None);
+            }
+        }
+        typed
+    }
+
+    /// Before other typing (`browser_type`, a user name): the secrets typed into this document
+    /// that are whole in a password field now, which the typing may edit (a character into the
+    /// middle of one); `None` when there are none. A document that cannot be told, with secrets
+    /// typed in this browser, refuses every screenshot; a page that cannot be read, or that shows
+    /// one of them (a password revealed), exposes its host, since an edit would go unseen.
+    async fn watched_values(&self, session: &str) -> Option<(Document, Vec<Zeroizing<String>>)> {
+        if self.secrets.lock().documents.is_empty() {
+            return None;
+        }
+        let Some(document) = self.document(session).await else {
+            self.secrets.lock().expose(None);
+            return None;
+        };
+        let values = self.secrets.lock().typed_into(&document);
+        if values.is_empty() {
+            return None;
+        }
+        let Some(page) = self.read_page(session, &document.frame).await else {
+            // A navigation committing meanwhile (its context gone): the typing goes into the
+            // next document, which holds none of them, unless it is one a value went into (a
+            // page restored from the back/forward cache keeps its loader id).
+            match self.document(session).await {
+                Some(now) if now.loader != document.loader => {
+                    let mut secrets = self.secrets.lock();
+                    if !secrets.typed_into(&now).is_empty() {
+                        secrets.expose(now.host.as_deref());
+                    }
+                }
+                Some(_) => self.secrets.lock().expose(document.host.as_deref()),
+                None => self.secrets.lock().expose(None),
+            }
+            return None;
+        };
+        if values.iter().any(|value| page.shows(value)) {
+            self.secrets.lock().expose(document.host.as_deref());
+            return None;
+        }
+        let values: Vec<_> = values
+            .into_iter()
+            .filter(|value| page.confines(value))
+            .collect();
+        (!values.is_empty()).then_some((document, values))
+    }
+
+    /// After a line typed into `watched`'s document: a value no longer whole in a password field
+    /// was edited, so its host is exposed.
+    async fn check_edits(&self, session: &str, watched: &(Document, Vec<Zeroizing<String>>)) {
+        let (document, values) = watched;
+        let page = self.read_page(session, &document.frame).await;
+        if !page
+            .as_ref()
+            .is_some_and(|page| values.iter().all(|value| page.confines(value)))
+        {
+            self.secrets.lock().expose(document.host.as_deref());
+        }
+    }
+
+    /// The document the tab's main frame shows; `None` when unknown.
+    async fn document(&self, session: &str) -> Option<Document> {
+        let tree = self
+            .cdp
+            .call_session(session, "Page.getFrameTree", json!({}))
+            .await
+            .ok()?;
+        Document::parse(&tree)
+    }
+
+    /// What the page in `frame` can show ([`SECRET_PROBE_EXPRESSION`], in an isolated world);
+    /// `None` when it cannot be read.
+    async fn read_page(&self, session: &str, frame: &str) -> Option<PageText> {
+        let read = async {
+            let world = self
+                .cdp
+                .call_session(
+                    session,
+                    "Page.createIsolatedWorld",
+                    json!({"frameId": frame, "worldName": SECRET_PROBE_WORLD}),
+                )
+                .await?;
+            let context = world
+                .get("executionContextId")
+                .and_then(Value::as_i64)
+                .ok_or_else(|| {
+                    malformed("Page.createIsolatedWorld", "missing executionContextId")
+                })?;
+            let result = self
+                .cdp
+                .call_session(
+                    session,
+                    "Runtime.evaluate",
+                    json!({"expression": SECRET_PROBE_EXPRESSION, "contextId": context,
+                           "returnByValue": true}),
+                )
+                .await?;
+            if result.get("exceptionDetails").is_some() {
+                return Err(malformed("Runtime.evaluate", "the secret probe threw"));
+            }
+            Ok::<_, BrowserError>(result.pointer("/result/value").and_then(PageText::parse))
+        };
+        match read.await {
+            Ok(page) => page,
+            Err(error) => {
+                debug!(%error, "reading the page for typed secrets failed");
+                None
+            }
+        }
+    }
+
+    /// Refuses a screenshot while the tab's page may show a secret (SPEC-450,
+    /// [`TypedSecrets::judge`]); the caller holds `input_lock` until it has captured. `Ok(None)`:
+    /// nothing to check; else the loader id of the document checked.
+    async fn check_page(
+        &self,
+        tab: &TabId,
+        session: &str,
+        vault: Option<SecretCheck<'_>>,
+    ) -> Result<Option<String>, BrowserError> {
+        if vault.is_none() && !self.secrets.lock().any() {
+            return Ok(None);
+        }
+        let mut document = self.document(session).await;
+        // Out-of-process frames are targets of their own; unknown, the document is unknown.
+        if let Some(found) = document.as_mut() {
+            match self.cdp.call("Target.getTargets", json!({})).await {
+                Ok(targets) => found.add_frame_targets(tab, &targets),
+                Err(error) => {
+                    debug!(%error, "listing frame targets failed");
+                    document = None;
+                }
+            }
+        }
+        let page = match &document {
+            Some(document) => self.read_page(session, &document.frame).await,
+            None => None,
+        };
+        if let (Some(document), Some(page)) = (document.as_mut(), page.as_ref()) {
+            document.add_unread_frames(page);
+        }
+        // Searched outside the memory's lock: a page holds up to 4 000 000 characters.
+        let shows_vault = page
+            .as_ref()
+            .zip(vault)
+            .is_some_and(|(page, vault)| page.shown.iter().any(|text| vault(text)));
+        let snapshot = self.secrets.lock().clone();
+        let (refuse, expose) = snapshot.judge(document.as_ref(), page.as_ref(), shows_vault);
+        if expose {
+            self.secrets
+                .lock()
+                .expose(document.as_ref().and_then(|d| d.host.as_deref()));
+        }
+        if refuse {
+            return Err(BrowserError::SecretOnPage);
+        }
+        Ok(document.map(|document| document.loader))
+    }
+
+    /// After a capture of a page [`Self::check_page`] passed: the same document must still pass
+    /// (a navigation or a page script may have changed it meanwhile), else the image is dropped.
+    async fn check_again(
+        &self,
+        tab: &TabId,
+        session: &str,
+        vault: Option<SecretCheck<'_>>,
+        checked: Option<String>,
+    ) -> Result<(), BrowserError> {
+        if let Some(loader) = checked
+            && self.check_page(tab, session, vault).await? != Some(loader)
+        {
+            return Err(BrowserError::SecretOnPage);
+        }
+        Ok(())
+    }
+
+    /// Inserts `params.text`, pressing Enter for each `\n`; with `watched`, checks for edits
+    /// after each line, before its Enter may submit the form ([`Self::check_edits`]).
+    async fn type_lines(
+        &self,
+        session: &str,
+        params: &TypeParams,
+        watched: Option<&(Document, Vec<Zeroizing<String>>)>,
+    ) -> Result<TypeResult, BrowserError> {
         let mut chars = 0;
         for (index, line) in params.text.split('\n').enumerate() {
             if index > 0 {
-                self.press_enter(&session).await?;
+                self.press_enter(session).await?;
                 chars += 1;
             }
             let line = line.strip_suffix('\r').unwrap_or(line);
             if !line.is_empty() {
-                self.cdp
-                    .call_session(&session, "Input.insertText", json!({"text": line}))
-                    .await?;
+                let inserted = self
+                    .cdp
+                    .call_session(session, "Input.insertText", json!({"text": line}))
+                    .await;
+                if let Some(watched) = watched {
+                    self.check_edits(session, watched).await;
+                }
+                inserted?;
                 chars += line.chars().count();
             }
         }
@@ -2176,13 +2966,16 @@ impl BrowserInstance {
     /// [`SCREENSHOT_MAX_BASE64_BYTES`].
     ///
     /// # Errors
-    /// [`BrowserError::ResultTooLarge`], tab or CDP failures.
+    /// [`BrowserError::SecretOnPage`] while the page may show a secret typed with
+    /// [`Self::tool_type_secret`]; [`BrowserError::ResultTooLarge`], tab or CDP failures.
     pub async fn tool_screenshot(
         &self,
         params: &ScreenshotParams,
     ) -> Result<ScreenshotResult, BrowserError> {
         self.touch();
         let session = self.session(&params.tab_id).await?;
+        let _input = self.input_lock.lock().await;
+        let checked = self.check_page(&params.tab_id, &session, None).await?;
         let shot = self
             .cdp
             .call_session(&session, "Page.captureScreenshot", json!({"format": "png"}))
@@ -2196,9 +2989,12 @@ impl BrowserInstance {
                 limit: SCREENSHOT_MAX_BASE64_BYTES,
             });
         }
+        let data = data.to_owned();
+        self.check_again(&params.tab_id, &session, None, checked)
+            .await?;
         Ok(ScreenshotResult {
             mime_type: "image/png".to_owned(),
-            data_base64: data.to_owned(),
+            data_base64: data,
         })
     }
 
@@ -2208,15 +3004,34 @@ impl BrowserInstance {
     /// callers can map coordinates of a downscaled image back to the viewport.
     ///
     /// # Errors
-    /// [`BrowserError::ResultTooLarge`] when even the smallest step exceeds the budget; tab or
-    /// CDP failures.
+    /// [`BrowserError::SecretOnPage`] while the page may show a secret typed with
+    /// [`Self::tool_type_secret`]; [`BrowserError::ResultTooLarge`] when even the smallest step
+    /// exceeds the budget; tab or CDP failures.
     pub async fn tool_screenshot_within(
         &self,
         params: &ScreenshotParams,
         max_base64_bytes: usize,
     ) -> Result<BoundedScreenshot, BrowserError> {
+        self.tool_screenshot_guarded(params, max_base64_bytes, None)
+            .await
+    }
+
+    /// [`Self::tool_screenshot_within`], refused also while the page shows a text `vault` says
+    /// holds a secret Yulius hides (every agent secret of the sandbox, typed or not, SPEC-450).
+    ///
+    /// # Errors
+    /// As [`Self::tool_screenshot_within`].
+    pub async fn tool_screenshot_guarded(
+        &self,
+        params: &ScreenshotParams,
+        max_base64_bytes: usize,
+        vault: Option<SecretCheck<'_>>,
+    ) -> Result<BoundedScreenshot, BrowserError> {
         self.touch();
         let session = self.session(&params.tab_id).await?;
+        // Held to the last capture: no agent input reveals a secret after the look at the page.
+        let _input = self.input_lock.lock().await;
+        let checked = self.check_page(&params.tab_id, &session, vault).await?;
         let viewport = lock(&self.state).viewport;
         let limit = max_base64_bytes.min(SCREENSHOT_MAX_BASE64_BYTES);
         for step in BOUNDED_SCREENSHOT_STEPS {
@@ -2242,10 +3057,13 @@ impl BrowserInstance {
                 } else {
                     "image/png"
                 };
+                let data = data.to_owned();
+                self.check_again(&params.tab_id, &session, vault, checked)
+                    .await?;
                 return Ok(BoundedScreenshot {
                     result: ScreenshotResult {
                         mime_type: mime_type.to_owned(),
-                        data_base64: data.to_owned(),
+                        data_base64: data,
                     },
                     quality: step.quality,
                     scale: step.scale,

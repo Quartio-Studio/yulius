@@ -15,7 +15,7 @@ use crate::cdp::{CdpClient, CdpConfig};
 use crate::discovery::resolve_executable;
 use crate::display::{DisplayMode, VirtualDisplay};
 use crate::error::{BrowserError, CdpError};
-use crate::instance::{BrowserInstance, InstanceConfig, ScreencastConfig};
+use crate::instance::{BrowserInstance, InstanceConfig, ScreencastConfig, SecretMemory};
 use crate::process::{StopTimeouts, Supervised, passed_env};
 use crate::url_policy::UrlDenyList;
 use serde_json::json;
@@ -160,6 +160,8 @@ type Slot = Arc<tokio::sync::Mutex<Option<Arc<BrowserInstance>>>>;
 pub struct BrowserManager {
     config: BrowserConfig,
     slots: Mutex<HashMap<SandboxId, Slot>>,
+    /// What each sandbox's browsers remember about typed secrets, across restarts (SPEC-450).
+    secrets: Mutex<HashMap<SandboxId, SecretMemory>>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -207,6 +209,7 @@ impl BrowserManager {
         Self {
             config,
             slots: Mutex::new(HashMap::new()),
+            secrets: Mutex::new(HashMap::new()),
         }
     }
 
@@ -318,11 +321,16 @@ impl BrowserManager {
             return Err(error);
         }
         let display_name = display.as_ref().map(VirtualDisplay::name);
+        let secrets = lock(&self.secrets)
+            .entry(sandbox.clone())
+            .or_default()
+            .clone();
         match BrowserInstance::attach_on(
             sandbox.clone(),
             cdp,
             self.config.instance_config(),
             display,
+            secrets,
         )
         .await
         {

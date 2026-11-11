@@ -24,6 +24,22 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   live run was refused only after its status had changed, so the task ended as "failed" beside a
   running agent that no button reached. A start is now refused before anything changes, a run
   that no server holds is settled first, and Stop ends a run that is still on record.
+- `browser_screenshot` never shows an agent secret typed with `browser_fill_secret` (SPEC-450,
+  task #432, ADR-0291, #1113). Yulius reads each page before and after capturing it and refuses
+  the screenshot, pointing to `browser_snapshot`, while the page shows any agent secret or cannot
+  be read, or frames a site a value was filled into. A value filled anywhere but a password field
+  (a text field, a cross-origin frame, a field that cuts it), or edited as it is typed there, also
+  refuses every page of that site until Yulius restarts; a revealed password is refused. Password
+  sign-ins keep screenshots working. This covers a task's agent and both Superagents. An edit in
+  place already defeats the text redactor in `browser_snapshot` (on `dev` before; reported on
+  #1113).
+- A tool chosen while its sandbox's page loads opens in that sandbox (SPEC-450 SSC-007, task
+  #432). The Shell, Superagent or another tool opened before a task's page had its sandbox opened
+  for no sandbox: a Shell saying "Open a sandbox first." without the keyboard, or the Global
+  Superagent. It now waits, shown pressed, and opens there; choosing it again, hiding the tools
+  or leaving that sandbox cancels it. Found by the `e2e` job on the faster host, together with
+  three test-only races (production protection, the left-composer onboarding test, the phone
+  drawer's row measurement).
 - `yulius host setup` lets bwrap create user namespaces (SPEC-456, task #438, ADR-0296). Ubuntu
   since 24.04 allows them only to programs with an AppArmor rule, and production ran on one
   written by hand. The new item "bwrap namespaces" starts bwrap as the service user and, where

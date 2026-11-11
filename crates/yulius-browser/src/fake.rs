@@ -18,7 +18,7 @@
 //! configuration, then frames with a keyframe every few frames) through the real video hub.
 //! Synthetic data only; nothing here talks to a real browser or X server.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -42,6 +42,8 @@ use crate::video::{
     VideoFrame,
 };
 
+/// The comment that marks the secret probe's expression (`Runtime.evaluate`).
+const SECRET_PROBE_MARKER: &str = "// yulius:secret-probe";
 /// Maximum recorded requests; older entries are discarded.
 const MAX_RECORDED: usize = 10_000;
 /// Screencast frames Chromium keeps unacknowledged.
@@ -65,6 +67,28 @@ struct FakeTarget {
     title: String,
 }
 
+/// What a fake page holds: the fields text was typed into (by selector, `""` for the page's
+/// focused element), the focused one and its document's loader id (a navigation starts a new
+/// document).
+#[derive(Debug, Default)]
+struct FakePage {
+    fields: Vec<(String, String)>,
+    focused: String,
+    loader: u64,
+    /// Loaders of the documents it showed before, for a history navigation back.
+    previous: Vec<u64>,
+}
+
+impl FakePage {
+    /// Shows another document (form state is not modelled).
+    fn move_to(&mut self, loader: u64) {
+        self.previous.push(self.loader);
+        self.fields.clear();
+        self.focused.clear();
+        self.loader = loader;
+    }
+}
+
 struct Connection {
     outgoing: mpsc::Sender<String>,
     in_flight: Arc<(AtomicU64, Notify)>,
@@ -85,7 +109,113 @@ struct FakeState {
     ax_nodes: Value,
     emit_load_events: bool,
     selection: String,
+    pages: HashMap<String, FakePage>,
+    password_fields: HashSet<String>,
+    secret_probe: Option<Value>,
+    secret_probe_queue: VecDeque<Value>,
+    secret_probe_delay: Duration,
+    child_frames: Vec<String>,
+    sandboxed_frames: bool,
+    sandboxed_document: bool,
+    opaque_origins: bool,
+    frame_targets: Vec<Value>,
+    enter_submits: bool,
+    failing_after: HashMap<String, (usize, i64, String)>,
+    navigating_after: HashMap<String, usize>,
+    going_back_after: HashMap<String, usize>,
+    loaders: u64,
     connections: Vec<Arc<Connection>>,
+}
+
+impl FakeState {
+    fn page(&mut self, session: Option<&str>) -> Option<&mut FakePage> {
+        let target = session.and_then(|s| self.sessions.get(s))?.clone();
+        if !self.pages.contains_key(&target) {
+            let loader = self.next_loader();
+            self.pages.insert(
+                target.clone(),
+                FakePage {
+                    loader,
+                    ..FakePage::default()
+                },
+            );
+        }
+        self.pages.get_mut(&target)
+    }
+
+    /// Loader ids are unique in the browser, as Chromium's are.
+    fn next_loader(&mut self) -> u64 {
+        self.loaders += 1;
+        self.loaders
+    }
+
+    /// The answer to the secret probe: field values split into readable and password ones,
+    /// plus the page text, and the page's origin and the frames of that origin it read (added to
+    /// a set answer that has none).
+    fn probe(&mut self, session: Option<&str>) -> Value {
+        let origin = session
+            .and_then(|s| self.sessions.get(s))
+            .and_then(|target| self.targets.iter().find(|t| &t.id == target))
+            .map_or_else(|| "null".to_owned(), |t| origin_of(&t.url));
+        let mut answer = match self.secret_probe_queue.pop_front() {
+            Some(answer) => answer,
+            None => match &self.secret_probe {
+                Some(answer) => answer.clone(),
+                None => self.fields_probe(session),
+            },
+        };
+        let focus = self.focus(session);
+        // A sandboxed frame, and every frame of a sandboxed page, is out of the probe's reach;
+        // a frame that holds a PDF is not one it counts.
+        let frames = if self.sandboxed_frames || self.sandboxed_document {
+            0
+        } else {
+            self.child_frames
+                .iter()
+                .filter(|url| origin_of(url) == origin && mime_of(url) != PDF)
+                .count()
+        };
+        if let Some(object) = answer.as_object_mut() {
+            object.entry("origin").or_insert(json!(origin));
+            object.entry("focus").or_insert(focus);
+            object.entry("frames").or_insert(json!(frames));
+        }
+        answer
+    }
+
+    /// Where typed text goes: the focused field, a password field with its value or other.
+    fn focus(&mut self, session: Option<&str>) -> Value {
+        let password = self.password_fields.clone();
+        let Some(page) = self.page(session) else {
+            return json!({"kind": "none"});
+        };
+        if !password.contains(&page.focused) {
+            return json!({"kind": "other"});
+        }
+        let value = page
+            .fields
+            .iter()
+            .find(|(selector, _)| *selector == page.focused)
+            .map(|(_, value)| value.clone())
+            .unwrap_or_default();
+        json!({"kind": "password", "value": value})
+    }
+
+    fn fields_probe(&mut self, session: Option<&str>) -> Value {
+        let password = self.password_fields.clone();
+        let mut shown = vec![json!("Fake page text")];
+        let mut masked = Vec::new();
+        if let Some(page) = self.page(session) {
+            for (selector, value) in &page.fields {
+                if password.contains(selector) {
+                    masked.push(json!(value));
+                } else {
+                    shown.push(json!(value));
+                }
+            }
+        }
+        json!({"shown": shown, "masked": masked, "over": false})
+    }
 }
 
 struct Shared {
@@ -175,6 +305,21 @@ impl FakeCdpServer {
                 ax_nodes: default_ax_nodes(),
                 emit_load_events: true,
                 selection: String::new(),
+                pages: HashMap::new(),
+                password_fields: HashSet::new(),
+                secret_probe: None,
+                secret_probe_queue: VecDeque::new(),
+                secret_probe_delay: Duration::ZERO,
+                child_frames: Vec::new(),
+                sandboxed_frames: false,
+                sandboxed_document: false,
+                opaque_origins: false,
+                frame_targets: Vec::new(),
+                enter_submits: false,
+                failing_after: HashMap::new(),
+                navigating_after: HashMap::new(),
+                going_back_after: HashMap::new(),
+                loaders: 0,
                 connections: Vec::new(),
             }),
             calls_seen: watch::channel(0).0,
@@ -322,6 +467,108 @@ impl FakeCdpServer {
         text.clone_into(&mut lock(&self.shared.state).selection);
     }
 
+    /// Whether the field `selector` is a password field (`input[type=password]`, drawn as
+    /// dots), now and for text typed into it later; `false` turns it back into a text field (a
+    /// page's "show password").
+    pub fn set_password_field(&self, selector: &str, password: bool) {
+        let mut state = lock(&self.shared.state);
+        if password {
+            state.password_fields.insert(selector.to_owned());
+        } else {
+            state.password_fields.remove(selector);
+        }
+    }
+
+    /// The raw value the secret probe answers with (`None`: what the pages' fields hold); an
+    /// object without `origin` gets the page's.
+    pub fn set_secret_probe(&self, answer: Option<Value>) {
+        lock(&self.shared.state).secret_probe = answer;
+    }
+
+    /// The URLs of the frames every page holds in its own process (`Page.getFrameTree` child
+    /// frames); the probe reads those of the page's origin. A `.pdf` address holds a PDF.
+    pub fn set_child_frames(&self, urls: &[&str]) {
+        let mut state = lock(&self.shared.state);
+        state.child_frames = urls.iter().map(|url| (*url).to_owned()).collect();
+        state.sandboxed_frames = false;
+    }
+
+    /// As [`Self::set_child_frames`], sandboxed: the probe reads none of them. Chrome's default
+    /// runs a sandboxed frame in a process of its own instead ([`Self::set_frame_targets`]).
+    pub fn set_sandboxed_child_frames(&self, urls: &[&str]) {
+        self.set_child_frames(urls);
+        lock(&self.shared.state).sandboxed_frames = true;
+    }
+
+    /// Whether every page's own document is sandboxed (`Content-Security-Policy: sandbox`): its
+    /// probe reads none of its frames.
+    pub fn set_sandboxed_document(&self, sandboxed: bool) {
+        lock(&self.shared.state).sandboxed_document = sandboxed;
+    }
+
+    /// Whether the frame tree says the real, opaque origin (`"null"`) of a sandboxed frame or
+    /// document. Chrome (157) says the origin of its address, the default here.
+    pub fn set_opaque_origins(&self, opaque: bool) {
+        lock(&self.shared.state).opaque_origins = opaque;
+    }
+
+    /// Whether pressing Enter submits the page's form: a new document, as a sign-in form does.
+    pub fn set_enter_submits(&self, submits: bool) {
+        lock(&self.shared.state).enter_submits = submits;
+    }
+
+    /// Out-of-process frames: `iframe` targets (`Target.getTargets`) at `url` whose parent frame
+    /// is `parent` (a page target id, or `None` when not said).
+    pub fn set_frame_targets(&self, frames: &[(Option<&str>, &str)]) {
+        lock(&self.shared.state).frame_targets = frames
+            .iter()
+            .enumerate()
+            .map(|(n, (parent, url))| {
+                let mut info = json!({"targetId": format!("IFRAME-{n}"), "type": "iframe",
+                    "title": url, "url": url, "attached": false});
+                if let Some(parent) = parent {
+                    info["parentFrameId"] = json!(parent);
+                }
+                info
+            })
+            .collect();
+    }
+
+    /// Answers the next secret probes with `answers`, in order, before the set one.
+    pub fn queue_secret_probes(&self, answers: Vec<Value>) {
+        lock(&self.shared.state).secret_probe_queue.extend(answers);
+    }
+
+    /// While the `nth` request of `method` runs (counting from 1), the page of its session moves
+    /// to another document, as a navigation committing meanwhile does.
+    pub fn navigate_during_nth(&self, method: &str, nth: usize) {
+        lock(&self.shared.state)
+            .navigating_after
+            .insert(method.to_owned(), nth);
+    }
+
+    /// While the `nth` request of `method` runs, the page of its session goes back to the document
+    /// it showed before, with its loader id, as a restore from the back/forward cache does.
+    pub fn go_back_during_nth(&self, method: &str, nth: usize) {
+        lock(&self.shared.state)
+            .going_back_after
+            .insert(method.to_owned(), nth);
+    }
+
+    /// Answer the `nth` request of `method` (counting from 1, all received so far included) with
+    /// a JSON-RPC error, and only that one.
+    pub fn fail_nth(&self, method: &str, nth: usize, code: i64, message: &str) {
+        lock(&self.shared.state)
+            .failing_after
+            .insert(method.to_owned(), (nth, code, message.to_owned()));
+    }
+
+    /// How long the secret probe takes to answer (default none): widens the window between a
+    /// screenshot's look at the page and its capture, for ordering tests.
+    pub fn set_secret_probe_delay(&self, delay: Duration) {
+        lock(&self.shared.state).secret_probe_delay = delay;
+    }
+
     /// A page opens a new page (a link to a new tab or `window.open`): a target with an
     /// `openerId` appears. Returns its id.
     pub async fn open_from_page(&self, opener: &str, url: &str) -> String {
@@ -409,6 +656,29 @@ fn target_info(target: &FakeTarget) -> Value {
 
 fn target_event(method: &str, target: &FakeTarget) -> Value {
     json!({"method": method, "params": {"targetInfo": target_info(target)}})
+}
+
+const PDF: &str = "application/pdf";
+
+/// What a frame at `url` holds, as `Page.getFrameTree` says it: a PDF at a `.pdf` address.
+fn mime_of(url: &str) -> &'static str {
+    let path = url.split(['?', '#']).next().unwrap_or_default();
+    if path.ends_with(".pdf") {
+        PDF
+    } else {
+        "text/html"
+    }
+}
+
+/// `scheme://host[:port]` of `url`, as `location.origin` says it (`"null"` for other URLs).
+fn origin_of(url: &str) -> String {
+    match url.split_once("://") {
+        Some((scheme, rest)) if scheme == "http" || scheme == "https" => {
+            let host = rest.split(['/', '?', '#']).next().unwrap_or_default();
+            format!("{scheme}://{host}")
+        }
+        _ => "null".to_owned(),
+    }
 }
 
 /// A tiny valid 1×1 PNG.
@@ -530,11 +800,41 @@ async fn handle_request(shared: &Arc<Shared>, connection: &Arc<Connection>, text
             session_id: session_id.clone(),
         },
     );
-    let (muted, failure) = {
-        let state = lock(&shared.state);
+    let (muted, failure, delay) = {
+        let mut state = lock(&shared.state);
+        let probe = method == "Runtime.evaluate"
+            && params
+                .get("expression")
+                .and_then(Value::as_str)
+                .is_some_and(|e| e.contains(SECRET_PROBE_MARKER));
+        let seen = state.calls.iter().filter(|c| c.method == method).count();
+        let late = state
+            .failing_after
+            .get(&method)
+            .filter(|(nth, _, _)| seen == *nth)
+            .map(|(_, code, message)| (*code, message.clone()));
+        if state.navigating_after.get(&method) == Some(&seen) {
+            let loader = state.next_loader();
+            if let Some(page) = state.page(session_id.as_deref()) {
+                page.move_to(loader);
+            }
+        }
+        if state.going_back_after.get(&method) == Some(&seen)
+            && let Some(page) = state.page(session_id.as_deref())
+            && let Some(back) = page.previous.pop()
+        {
+            page.fields.clear();
+            page.focused.clear();
+            page.loader = back;
+        }
         (
             state.muted.contains(&method),
-            state.failing.get(&method).cloned(),
+            state.failing.get(&method).cloned().or(late),
+            if probe {
+                state.secret_probe_delay
+            } else {
+                Duration::ZERO
+            },
         )
     };
     if muted {
@@ -548,13 +848,33 @@ async fn handle_request(shared: &Arc<Shared>, connection: &Arc<Connection>, text
         send(connection, &reply).await;
         return;
     }
+    if delay.is_zero() {
+        reply(shared, connection, id, &method, &params, session_id).await;
+    } else {
+        // Answered later, as Chromium answers a slow call, while other requests go on.
+        let (shared, connection) = (Arc::clone(shared), Arc::clone(connection));
+        tokio::spawn(async move {
+            tokio::time::sleep(delay).await;
+            reply(&shared, &connection, id, &method, &params, session_id).await;
+        });
+    }
+}
+
+async fn reply(
+    shared: &Arc<Shared>,
+    connection: &Arc<Connection>,
+    id: Value,
+    method: &str,
+    params: &Value,
+    session_id: Option<String>,
+) {
     let mut after: Vec<Value> = Vec::new();
     let mut before: Vec<Value> = Vec::new();
     let result = respond(
         shared,
         connection,
-        &method,
-        &params,
+        method,
+        params,
         session_id.as_deref(),
         &mut before,
         &mut after,
@@ -614,7 +934,8 @@ fn respond(
         }
         "Target.getTargets" => {
             let state = lock(&shared.state);
-            let infos: Vec<Value> = state.targets.iter().map(target_info).collect();
+            let mut infos: Vec<Value> = state.targets.iter().map(target_info).collect();
+            infos.extend(state.frame_targets.iter().cloned());
             Ok(json!({"targetInfos": infos}))
         }
         "Target.createTarget" => {
@@ -676,6 +997,10 @@ fn respond(
                 target.title = format!("Title of {url}");
                 after.push(target_event("Target.targetInfoChanged", target));
             }
+            let loader = state.next_loader();
+            if let Some(page) = state.page(session_id) {
+                page.move_to(loader);
+            }
             if state.emit_load_events {
                 after.push(
                     json!({"method": "Page.loadEventFired", "params": {"timestamp": 1.0},
@@ -694,6 +1019,54 @@ fn respond(
             Ok(json!({"currentIndex": 1, "entries": [
                 {"id": 7, "url": "https://previous.example/", "title": "Previous"},
                 {"id": 8, "url": url, "title": "Current"}]}))
+        }
+        "Page.getFrameTree" => {
+            let mut state = lock(&shared.state);
+            let url = session_id
+                .and_then(|s| state.sessions.get(s))
+                .and_then(|target| state.targets.iter().find(|t| &t.id == target))
+                .map(|t| t.url.clone())
+                .unwrap_or_default();
+            let children: Vec<Value> = state
+                .child_frames
+                .iter()
+                .enumerate()
+                .map(|(n, child)| {
+                    let origin = if state.sandboxed_frames && state.opaque_origins {
+                        "null".to_owned()
+                    } else {
+                        origin_of(child)
+                    };
+                    json!({"frame": {"id": format!("child-{n}"), "loaderId": format!("child-loader-{n}"),
+                        "url": child, "securityOrigin": origin, "mimeType": mime_of(child)}})
+                })
+                .collect();
+            let loader = state.page(session_id).map_or(0, |page| page.loader);
+            let origin = if state.sandboxed_document && state.opaque_origins {
+                "null".to_owned()
+            } else {
+                origin_of(&url)
+            };
+            Ok(
+                json!({"frameTree": {"frame": {"id": "frame-1", "loaderId": format!("loader-{loader}"),
+                "url": url, "securityOrigin": origin, "mimeType": mime_of(&url)},
+                "childFrames": children}}),
+            )
+        }
+        "Input.insertText" => {
+            let typed = text("text");
+            if let Some(page) = lock(&shared.state).page(session_id) {
+                let focused = page.focused.clone();
+                match page
+                    .fields
+                    .iter_mut()
+                    .find(|(selector, _)| *selector == focused)
+                {
+                    Some((_, value)) => value.push_str(&typed),
+                    None => page.fields.push((focused, typed)),
+                }
+            }
+            Ok(json!({}))
         }
         "Page.startScreencast" => {
             let Some(session) = session_id else {
@@ -741,8 +1114,32 @@ fn respond(
             Ok(json!({"data": data}))
         }
         "Accessibility.getFullAXTree" => Ok(json!({"nodes": lock(&shared.state).ax_nodes.clone()})),
+        "Input.dispatchKeyEvent" => {
+            let mut state = lock(&shared.state);
+            if state.enter_submits && text("type") == "keyDown" && text("key") == "Enter" {
+                let loader = state.next_loader();
+                if let Some(page) = state.page(session_id) {
+                    page.move_to(loader);
+                }
+            }
+            Ok(json!({}))
+        }
+        "Page.navigateToHistoryEntry" | "Page.reload" => {
+            // Another document, as Chromium loads one (form state is not modelled).
+            let mut state = lock(&shared.state);
+            let loader = state.next_loader();
+            if let Some(page) = state.page(session_id) {
+                page.move_to(loader);
+            }
+            Ok(json!({}))
+        }
+        "Page.createIsolatedWorld" => Ok(json!({"executionContextId": 7})),
         "Runtime.evaluate" => {
             let expression = text("expression");
+            if expression.contains(SECRET_PROBE_MARKER) {
+                let answer = lock(&shared.state).probe(session_id);
+                return Ok(json!({"result": {"type": "object", "value": answer}}));
+            }
             if expression.contains("getSelection") {
                 let selection = lock(&shared.state).selection.clone();
                 return Ok(json!({"result": {"type": "string", "value": selection}}));
@@ -763,9 +1160,15 @@ fn respond(
                 .and_then(|a| a.get("value"))
                 .and_then(Value::as_str)
                 .unwrap_or_default();
+            let function = text("functionDeclaration");
             if selector.starts_with("!!") {
                 return Ok(json!({"result": {"type": "object"}, "exceptionDetails": {
                     "text": "Uncaught", "exception": {"description": "SyntaxError: not a valid selector"}}}));
+            }
+            if function.contains(".focus()")
+                && let Some(page) = lock(&shared.state).page(session_id)
+            {
+                selector.clone_into(&mut page.focused);
             }
             let value = match selector {
                 "#missing" => json!({"found": false}),
@@ -783,10 +1186,6 @@ fn respond(
         | "Runtime.releaseObject"
         | "Emulation.setDeviceMetricsOverride"
         | "Input.dispatchMouseEvent"
-        | "Input.dispatchKeyEvent"
-        | "Input.insertText"
-        | "Page.navigateToHistoryEntry"
-        | "Page.reload"
         | "Browser.close" => Ok(json!({})),
         other => Err((-32601, format!("'{other}' wasn't found"))),
     }
