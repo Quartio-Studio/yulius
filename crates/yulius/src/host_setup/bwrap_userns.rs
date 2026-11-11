@@ -144,7 +144,9 @@ fn attaches_bwrap(text: &str) -> bool {
             .collect();
         // A variable's line ends without a comma and is no header.
         if let Some((var, values)) = assignment(line).filter(|_| depth == 0) {
-            let mut values = values.split_whitespace().take_while(|w| !w.starts_with('#'));
+            let mut values = values
+                .split_whitespace()
+                .take_while(|w| !w.starts_with('#'));
             if values.any(|w| PATHS.contains(&w.trim_matches('"'))) {
                 vars.push(var);
             }

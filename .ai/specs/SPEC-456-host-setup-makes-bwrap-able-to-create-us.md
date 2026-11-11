@@ -117,6 +117,7 @@ the fix. Nobody writes an AppArmor rule by hand again.
 - [x] Operations guide, architecture and changes describe the rule
 - [x] Proof on real Ubuntu 24.04, Ubuntu 26.04 and Debian hosts
 - [x] Gates and independent review
+- [x] After the merge: the review's last nits (issue #1165) and Settings → Instance in a browser
 
 ## Acceptance criteria
 
@@ -272,8 +273,29 @@ container: at `b74138b1` for the first runs, at `39c85810` for the runs after re
   head that carries this section.
 - **Not tested**: a release upgrade from 24.04 to 26.04 itself (its end state, both profiles
   enabled, was made by hand on 26.04); a host whose AppArmor cannot parse a `userns` rule (fake
-  host; on 26.04 a missing `abi/4.0` stood in for it); the production hosts themselves; Settings → Instance in a browser against such a host (it shows the host check's
-  lines unchanged, and the check's lines are proven above).
+  host; on 26.04 a missing `abi/4.0` stood in for it); the production hosts themselves (not
+  reachable from the task's sandbox; the operator's own probe on the 26.04 production host gave
+  the same result as the 26.04 guest: denied with the shipped profile, working with it disabled
+  and an unconfined profile with `userns`).
+- **After the merge** (#1164 merged at `00caba17`; the branch continues from `dev`):
+  - Round 3's nits, issue #1165, fixed test-first on the fake host: a check names a kernel limit
+    (`user.max_user_namespaces`, `kernel.unprivileged_userns_clone` set to 0) in its line like
+    setup does; the link that disables Yulius's profile is no cause beside a person's profile;
+    a variable set without spaces (`@{prog}=/usr/bin/bwrap`) and a header whose `flags = (…) {`
+    stands apart or on its own line count as attaching to bwrap; ADR-0296 says an earlier file
+    gets its text back. Both new cases failed first, and the check's case fails again with the
+    fix taken out.
+  - Settings → Instance in a browser against a failing host: `yulius host check --json
+    --update-state …` (binary `ce389689`) as root in a throwaway `ubuntu:26.04` container on the
+    sandbox's 26.04 kernel (AppArmor on, `apparmor_restrict_unprivileged_userns = 1`, bubblewrap
+    and the service user present) exits 1 and keeps its report; a real `yulius serve` pointed at
+    that state directory, opened in the Yulius browser as its superadmin at `/admin/instance`,
+    lists under "The last host check … found that sandboxes may have lost Docker": "bwrap
+    namespaces: bwrap cannot start a user namespace as yulius (bwrap: No permissions to create a
+    new namespace, …): setup would write and load /etc/apparmor.d/yulius-bwrap; run `sudo yulius
+    host setup`". (A container, not a booted host: its other items fail for lack of systemd.)
+  - Outside this task, reported: issue #1166 (the import refusal's `chown user:` under uutils
+    coreutils, and `build-essential` on 26.04).
 - **Met on the way, outside this change**: on every fresh host with cgroup delegation the first
   `host setup` ends with `FAIL Docker smoke test` in the step "a sandbox without Docker answers
   why" (a live engine answers the Docker-off run; a later `doctor --docker-smoke` passes): issue
