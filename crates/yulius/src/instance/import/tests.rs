@@ -1037,3 +1037,33 @@ fn a_stream_is_marked_before_its_first_entry_so_a_receive_that_dies_says_so() ->
     assert_eq!(h.mark()?.acked, 3);
     Ok(())
 }
+
+#[test]
+fn a_frozen_pass_that_removed_a_tree_and_broke_leaves_nothing_known() -> TestResult {
+    let mut h = hosts()?;
+    fs::create_dir(h.old.join("aaa"))?;
+    fs::write(h.old.join("aaa/below"), b"b")?;
+    arrived(h.warm()?)?;
+    // A directory became a file: the frozen pass removes what was below it on the new host,
+    // which the old host never sent as a removal. Then the link breaks, inside the database.
+    fs::remove_dir_all(h.old.join("aaa"))?;
+    fs::write(h.old.join("aaa"), b"now a file")?;
+    fs::write(h.old.join("yulius.db"), vec![8u8; 3000])?;
+    h.cut = Some(10_900);
+    let (landed, _) = h.frozen()?;
+    failed(landed)?;
+    assert_eq!(fs::read(h.new.join("aaa"))?, b"now a file");
+    let last = h.last()?;
+    assert!(!last.complete && last.unknown, "{last:?}");
+    assert_eq!(last.entries, 2);
+    // Nothing the old host knew holds any more: everything is sent again, into the same stage.
+    let found = h.reconcile()?;
+    assert_eq!((found.fresh, h.stage.receipts()), (false, 0));
+    arrived(h.warm()?)?;
+    assert_eq!(h.sent()?.len(), 14);
+    let (landed, old) = h.frozen()?;
+    arrived(landed)?;
+    let new = of_copy(&h.new, &ids(), &old)?;
+    assert_eq!(crate::instance::inventory::difference(&old, &new), None);
+    Ok(())
+}
