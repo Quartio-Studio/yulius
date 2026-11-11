@@ -5,15 +5,16 @@
 //! load, title from target events, accessibility snapshot, type, click by selector, PNG
 //! screenshot, the secret probe (SPEC-450: a password field keeps screenshots, a revealed one or
 //! a text field refuses them, and so does a frame the probe cannot read: of another site, or
-//! sandboxed), screencast frames, URL policy, and kill-and-reap on shutdown. DevTools runs over
+//! sandboxed; a PDF keeps them), screencast frames, URL policy, and kill-and-reap on shutdown. DevTools runs over
 //! the pipe: the browser writes no `DevToolsActivePort` and (Linux) listens on no TCP port.
 
 use std::time::Duration;
 
 use base64::Engine as _;
+use serde_json::json;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::TcpListener;
-use yulius_browser::{BrowserConfig, BrowserError, BrowserManager};
+use yulius_browser::{BrowserConfig, BrowserError, BrowserInstance, BrowserManager};
 use yulius_contracts::browser::{
     ClickParams, NavigateParams, OpenParams, ScreenshotParams, SnapshotParams, TypeParams,
 };
@@ -29,9 +30,45 @@ const PAGE: &str = "<!doctype html><html><head><title>Yulius test page</title></
 <button id=\"show\" onclick=\"document.getElementById('pw').type='text'\">Show</button>\
 <form name=\"documentElement\"></form><img name=\"querySelectorAll\" alt=\"\"></body></html>";
 
+/// A one-page PDF.
+const PDF: &str = "%PDF-1.4\n\
+1 0 obj\n\
+<< /Type /Catalog /Pages 2 0 R >>\n\
+endobj\n\
+2 0 obj\n\
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>\n\
+endobj\n\
+3 0 obj\n\
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>\n\
+endobj\n\
+4 0 obj\n\
+<< /Length 46 >>\n\
+stream\n\
+BT /F1 18 Tf 20 100 Td (Yulius test PDF) Tj ET\n\
+endstream\n\
+endobj\n\
+5 0 obj\n\
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\n\
+endobj\n\
+xref\n\
+0 6\n\
+0000000000 65535 f \n\
+0000000009 00000 n \n\
+0000000058 00000 n \n\
+0000000115 00000 n \n\
+0000000241 00000 n \n\
+0000000337 00000 n \n\
+trailer\n\
+<< /Size 6 /Root 1 0 R >>\n\
+startxref\n\
+407\n\
+%%EOF\n";
+
 /// Serves [`PAGE`]; at `/frame` a page framing `framed`; at `/own-frame`, `/sandboxed-frame` and
 /// `/sandboxed-page` a page framing this server's own `/`: plainly, in a sandboxed frame, and
-/// from a page that is sandboxed itself (`Content-Security-Policy: sandbox`).
+/// from a page that is sandboxed itself (`Content-Security-Policy: sandbox`); at `/doc.pdf`
+/// [`PDF`], at `/pdf-frame` a page framing it, and at `/pdf-and-embed` one that also holds `/`
+/// in an `embed`, which the probe does not read.
 async fn serve(listener: TcpListener, framed: String) {
     while let Ok((mut stream, _)) = listener.accept().await {
         let framed = framed.clone();
@@ -42,7 +79,15 @@ async fn serve(listener: TcpListener, framed: String) {
                 format!("<!doctype html><html><body><p>Framing</p>{frame}</body></html>")
             };
             let mut policy = "";
-            let page = if request.starts_with(b"GET /frame") {
+            let mut kind = "text/html; charset=utf-8";
+            let page = if request.starts_with(b"GET /doc.pdf") {
+                kind = "application/pdf";
+                PDF.to_owned()
+            } else if request.starts_with(b"GET /pdf-frame") {
+                framing("<iframe src=\"/doc.pdf\"></iframe>")
+            } else if request.starts_with(b"GET /pdf-and-embed") {
+                framing("<iframe src=\"/doc.pdf\"></iframe><embed src=\"/\" type=\"text/html\">")
+            } else if request.starts_with(b"GET /frame") {
                 framing(&format!("<iframe src=\"{framed}\"></iframe>"))
             } else if request.starts_with(b"GET /own-frame") {
                 framing("<iframe src=\"/\"></iframe>")
@@ -55,12 +100,38 @@ async fn serve(listener: TcpListener, framed: String) {
                 PAGE.to_owned()
             };
             let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n{policy}Content-Length: {}\r\nConnection: close\r\n\r\n{page}",
+                "HTTP/1.1 200 OK\r\nContent-Type: {kind}\r\n{policy}Content-Length: {}\r\nConnection: close\r\n\r\n{page}",
                 page.len()
             );
             let _ = stream.write_all(response.as_bytes()).await;
         });
     }
+}
+
+/// Waits until Chrome's PDF viewer shows `wanted` PDFs: it makes its frames, one of them at the
+/// PDF's address, after the page's load.
+async fn pdf_frames(browser: &BrowserInstance, wanted: usize) -> TestResult {
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            let targets = browser.cdp().call("Target.getTargets", json!({})).await?;
+            let shown = targets["targetInfos"].as_array().map_or(0, |infos| {
+                infos
+                    .iter()
+                    .filter(|info| {
+                        info["type"] == "iframe"
+                            && info["url"]
+                                .as_str()
+                                .is_some_and(|url| url.ends_with("/doc.pdf"))
+                    })
+                    .count()
+            });
+            if shown == wanted {
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await?
 }
 
 /// The process group of `pid` (Linux `/proc/<pid>/stat`: the third field after the command).
@@ -322,6 +393,33 @@ async fn drives_a_real_chromium_when_configured() -> TestResult {
             "{unreadable}"
         );
     }
+    // A PDF of that site is pixels, as an image is: Chrome's viewer shows it in frames of its
+    // own, one of them at the PDF's address, and it keeps its screenshots as the page and in a
+    // frame. The probe counts no PDF: beside one, an `embed` of the site's own page, which it
+    // does not read, still refuses.
+    for pdf in ["doc.pdf", "pdf-frame"] {
+        browser
+            .tool_navigate(&load(format!("{framing_url}{pdf}")))
+            .await?;
+        pdf_frames(&browser, 1).await?;
+        assert!(
+            browser
+                .tool_screenshot_within(&shot_params, 1 << 20)
+                .await
+                .is_ok(),
+            "{pdf}"
+        );
+        browser.tool_navigate(&load(framing_url.clone())).await?;
+        pdf_frames(&browser, 0).await?;
+    }
+    browser
+        .tool_navigate(&load(format!("{framing_url}pdf-and-embed")))
+        .await?;
+    pdf_frames(&browser, 1).await?;
+    assert!(matches!(
+        browser.tool_screenshot_within(&shot_params, 1 << 20).await,
+        Err(BrowserError::SecretOnPage)
+    ));
 
     let mut frames = browser.subscribe_frames(&tab).await?;
     browser.navigate(&tab, &format!("{page_url}?again")).await?;

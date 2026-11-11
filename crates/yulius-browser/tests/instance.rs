@@ -1322,6 +1322,68 @@ async fn a_frame_the_tree_calls_opaque_is_not_readable() -> TestResult {
     Ok(())
 }
 
+/// SPEC-450 (final review, as Chrome 157 answers): a PDF is pixels, as an image is. Chrome's
+/// viewer shows it in frames of its own (the viewer's extension frame and, under it, a frame at
+/// the PDF's address), and a frame that holds a PDF has no page text: neither costs a site signed
+/// in to its screenshots. A frame beside the viewer, or under another extension's frame, does.
+#[tokio::test]
+async fn a_pdf_of_a_site_signed_in_to_keeps_its_screenshots() -> TestResult {
+    const VIEWER: &str = "chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai/index.html";
+    const INVOICE: &str = "https://m.example/invoice.pdf";
+    let (fake, instance, tab) = setup().await?;
+    instance
+        .tool_navigate(&to(&tab, "https://m.example/login"))
+        .await?;
+    fake.set_password_field("#pw", true);
+    instance
+        .tool_type_secret(&fill(&tab, "#pw", "pw-secret-4471"))
+        .await?;
+    // The PDF as the page.
+    instance.tool_navigate(&to(&tab, INVOICE)).await?;
+    fake.set_frame_targets(&[(Some(tab.as_str()), VIEWER), (Some("IFRAME-0"), INVOICE)]);
+    instance
+        .tool_screenshot_within(&shot(&tab), 100_000)
+        .await?;
+    // In a frame of a page: the frame holds the PDF, the viewer is under it; the probe does not
+    // count it, read (an `iframe`) or not (an `embed`).
+    instance
+        .tool_navigate(&to(&tab, "https://m.example/home"))
+        .await?;
+    fake.set_child_frames(&[INVOICE]);
+    fake.set_frame_targets(&[(Some("child-0"), VIEWER), (Some("IFRAME-0"), INVOICE)]);
+    instance
+        .tool_screenshot_within(&shot(&tab), 100_000)
+        .await?;
+    fake.set_secret_probe(Some(
+        json!({"shown": ["Fake page text"], "masked": [], "over": false, "frames": 0}),
+    ));
+    instance
+        .tool_screenshot_within(&shot(&tab), 100_000)
+        .await?;
+    fake.set_secret_probe(None);
+    // A frame of the site beside the viewer is still one the probe cannot read.
+    fake.set_frame_targets(&[
+        (Some("child-0"), VIEWER),
+        (Some("IFRAME-0"), INVOICE),
+        (Some(tab.as_str()), "https://m.example/settings"),
+    ]);
+    assert!(refused(
+        instance.tool_screenshot_within(&shot(&tab), 100_000).await
+    ));
+    // And so is one under another extension's frame.
+    fake.set_frame_targets(&[
+        (
+            Some("child-0"),
+            "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/index.html",
+        ),
+        (Some("IFRAME-0"), INVOICE),
+    ]);
+    assert!(refused(
+        instance.tool_screenshot_within(&shot(&tab), 100_000).await
+    ));
+    Ok(())
+}
+
 /// SPEC-450 (review round 6): a probe failing before typing because a navigation committed
 /// meanwhile does not expose the site: the typing goes into the next document.
 #[tokio::test]

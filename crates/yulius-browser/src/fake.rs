@@ -165,13 +165,14 @@ impl FakeState {
             },
         };
         let focus = self.focus(session);
-        // A sandboxed frame, and every frame of a sandboxed page, is out of the probe's reach.
+        // A sandboxed frame, and every frame of a sandboxed page, is out of the probe's reach;
+        // a frame that holds a PDF is not one it counts.
         let frames = if self.sandboxed_frames || self.sandboxed_document {
             0
         } else {
             self.child_frames
                 .iter()
-                .filter(|url| origin_of(url) == origin)
+                .filter(|url| origin_of(url) == origin && mime_of(url) != PDF)
                 .count()
         };
         if let Some(object) = answer.as_object_mut() {
@@ -485,7 +486,7 @@ impl FakeCdpServer {
     }
 
     /// The URLs of the frames every page holds in its own process (`Page.getFrameTree` child
-    /// frames); the probe reads those of the page's origin.
+    /// frames); the probe reads those of the page's origin. A `.pdf` address holds a PDF.
     pub fn set_child_frames(&self, urls: &[&str]) {
         let mut state = lock(&self.shared.state);
         state.child_frames = urls.iter().map(|url| (*url).to_owned()).collect();
@@ -655,6 +656,18 @@ fn target_info(target: &FakeTarget) -> Value {
 
 fn target_event(method: &str, target: &FakeTarget) -> Value {
     json!({"method": method, "params": {"targetInfo": target_info(target)}})
+}
+
+const PDF: &str = "application/pdf";
+
+/// What a frame at `url` holds, as `Page.getFrameTree` says it: a PDF at a `.pdf` address.
+fn mime_of(url: &str) -> &'static str {
+    let path = url.split(['?', '#']).next().unwrap_or_default();
+    if path.ends_with(".pdf") {
+        PDF
+    } else {
+        "text/html"
+    }
 }
 
 /// `scheme://host[:port]` of `url`, as `location.origin` says it (`"null"` for other URLs).
@@ -1025,7 +1038,7 @@ fn respond(
                         origin_of(child)
                     };
                     json!({"frame": {"id": format!("child-{n}"), "loaderId": format!("child-loader-{n}"),
-                        "url": child, "securityOrigin": origin}})
+                        "url": child, "securityOrigin": origin, "mimeType": mime_of(child)}})
                 })
                 .collect();
             let loader = state.page(session_id).map_or(0, |page| page.loader);
@@ -1036,7 +1049,8 @@ fn respond(
             };
             Ok(
                 json!({"frameTree": {"frame": {"id": "frame-1", "loaderId": format!("loader-{loader}"),
-                "url": url, "securityOrigin": origin}, "childFrames": children}}),
+                "url": url, "securityOrigin": origin, "mimeType": mime_of(&url)},
+                "childFrames": children}}),
             )
         }
         "Input.insertText" => {
