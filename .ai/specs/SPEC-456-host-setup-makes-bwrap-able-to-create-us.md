@@ -310,9 +310,10 @@ container: at `b74138b1` for the first runs, at `39c85810` for the runs after re
     failed: … (ENOSPC)); user.max_user_namespaces is 0 (no user namespaces at all: raise it in
     /etc/sysctl.d); setup would …; run `sudo yulius host setup`" and the dry run "would …;
     user.max_user_namespaces is 0 (…)"; with the limit lifted the check is ok again.
-  - Gates at the head that carries this section: `cargo fmt --all -- --check`,
+  - Gates at the head that carries this section, `dev` merged in (`78f0f019`):
+    `cargo check --workspace --all-targets`, `cargo fmt --all -- --check`,
     `cargo clippy -p yulius --all-targets -- -D warnings`, `cargo test -p yulius --lib`
-    (359 pass), `python3 scripts/check_repository.py` and `spec_check` here; the whole gate
+    (433 pass), `python3 scripts/check_repository.py` and `spec_check` here; the whole gate
     (`scripts/dev ci`) and e2e are Yulius CI's run on the pull request's head. The security
     scan is turned off for this project (Vidoc): nothing was scanned.
   - Yulius CI on #1168 at `05d79655` failed once in e2e alone, in `onboarding.e2e.ts` "a
