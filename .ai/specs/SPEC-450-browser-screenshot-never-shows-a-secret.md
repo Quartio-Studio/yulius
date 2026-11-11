@@ -55,35 +55,51 @@ with `browser_fill_secret`. A password field, drawn as dots, keeps screenshots w
   committing, a script revealing a key) was not seen. And the remembered values went with a
   browser that stopped (idle for 30 minutes, a Yulius restart), while the signed-in profile and
   the pages that show a stored key stayed.
+- **Review round 3.** A value in a password field could still be edited in place (`browser_click`
+  into it, `browser_type`), saved and shown edited on the next page, with no screenshot in between
+  to expose the site. The memory of a stopped browser (stopped by the agent's own idleness) went
+  with it, while edited copies stayed on the site. And an agent's own page could frame the bound
+  site: in Chromium an out-of-process frame is out of the probe's reach, listed by
+  `Page.getFrameTree` without its address or not at all, and only its own `iframe` target
+  (`Target.getTargets`, `parentFrameId`) says where it is (seen on Google Chrome).
 
 ## Requirements
 
-- **SSC-001 The browser remembers what was filled.** `browser_fill_secret` of field
-  `value`/`password` types through `tool_type_secret`. The browser instance remembers each value,
-  and each line of at least 8 characters of a multi-line one (at most 32 texts), and each document
-  it went into (the main frame's loader id from `Page.getFrameTree`, read before and after typing;
-  at most 256), until the browser stops, whatever its tabs do. A user name is not a secret (it is
-  in the description) and a TOTP code expires, so those are typed as `browser_type` types,
-  unguarded, as the redactor treats them. A fill whose document cannot be told, or beyond the
-  bounds, is refused before anything is typed.
+- **SSC-001 The sandbox's browser remembers what was filled.** `browser_fill_secret` of field
+  `value`/`password` types through `tool_type_secret`. A user name is not a secret (it is in the
+  description) and a TOTP code expires, so those are typed as `browser_type` types, unguarded, as
+  the redactor treats them. The browser remembers each value (at most 32) and each line of at
+  least 8 characters of a multi-line one, PEM armour lines aside (at most 1024). It also remembers
+  each document a value went into (the main frame's loader id from `Page.getFrameTree`, read
+  before and after typing) and each host (at most 256 each). The `BrowserManager` keeps this per
+  sandbox, so a restarted browser (idle, crash) starts with it; only documents, which belong to
+  the old process, are forgotten. A fill whose document cannot be told, or beyond 32 values, is
+  refused before anything is typed.
 - **SSC-002 Only a password field keeps a value out of the pixels.** Right after typing, the page
-  is read. Unless the value is whole in a password field and nowhere in `shown`, its origin
-  (`location.origin`) is exposed: every page of it is refused until the browser stops. In a
+  is read. Unless the value is whole in a password field and nowhere in `shown`, its host (before
+  and after a navigation meanwhile) is exposed: every page of it is refused from then on. In a
   document a value was typed into, a screenshot also needs that value whole in a password field
-  and nowhere in `shown`. A value edited in place, cut or reformatted, typed into a cross-origin
-  frame or revealed is therefore refused, and a page failing this exposes its origin. When the
-  page after typing cannot be read, or its document is lost, every screenshot is refused.
-- **SSC-003 Any page showing a secret is refused.** Before capturing any tab, once a value was
-  typed or the sandbox has agent secrets, a probe reads the page: `shown` is the `textContent` of
-  its body (or root element), open shadow roots and same-origin frames, plus the values and
-  placeholders of fields drawn as text; `masked` is the password field values. A page whose
-  `shown` holds a remembered value is refused, and its origin exposed. A page whose `shown` holds
-  any agent secret the redactor hides for the sandbox (its matcher, which covers values, their
-  encodings and lines) is refused too: that covers a stored key after a browser restart.
-- **SSC-004 Fail closed.** No screenshot when the document cannot be told, when the probe fails,
-  throws, answers malformed or reads over 4 000 000 characters, or when the agent secrets cannot be
-  loaded. The refusal is a tool error (`SecretOnPage`) pointing to `browser_snapshot` and names no
-  value.
+  and nowhere in `shown`, and any other typing there (`browser_type`, a user name) checks the same
+  at once, exposing the host when it fails. A value edited in place, cut or reformatted, typed into
+  a cross-origin frame or revealed is therefore refused, and so is every page of its site. When
+  the page after typing cannot be read, or its document is lost, or a bound is passed, every
+  screenshot of that browser is refused.
+- **SSC-003 Any page that may show a secret is refused.** Before capturing any tab, once a value
+  was typed or the sandbox has agent secrets, a probe reads the page. `shown` is the `textContent`
+  of its documents (all but `head`), open shadow roots, same-origin frames, objects and embeds,
+  plus the values and placeholders of fields drawn as text; `masked` is the password field values.
+  The screenshot is refused when:
+  - the page's host is exposed;
+  - it frames a host a value was typed into, or an exposed one, in a frame the probe cannot read
+    (other hosts from the frame tree, and the `iframe` targets whose parent frame is the tab's, or
+    is not said);
+  - its `shown` holds a remembered value or line, which also exposes its host;
+  - its `shown` holds any agent secret the redactor hides for the sandbox (its matcher: values,
+    their encodings and lines). That also covers a stored key nobody filled.
+- **SSC-004 Fail closed.** No screenshot when the document or the frame targets cannot be read,
+  when the probe fails, throws, answers malformed or reads over 4 000 000 characters, or when the
+  agent secrets cannot be loaded. The refusal is a tool error (`SecretOnPage`) pointing to
+  `browser_snapshot` and names no value.
 - **SSC-005 Nothing slips between look and capture.** A screenshot holds the instance's input lock
   from its look at the page to its last capture, and the agent's typing and clicks and the
   viewer's CDP input take the same lock. After the capture the page is read again: unless the same
@@ -102,7 +118,8 @@ with `browser_fill_secret`. A password field, drawn as dots, keeps screenshots w
 - [x] Review round 1: filled values guarded per browser and per document, probe and capture under one lock
 - [x] Review round 2: exposed origins, the redactor's check and a second look after the capture
 - [x] Independent review rounds 1 and 2 answered
-- [ ] Independent review round 3 approves the head
+- [x] Review round 3: edits in filled documents, memory across browser restarts, framed sites
+- [ ] Independent review round 4 approves the head
 - [ ] Gates green with evidence
 
 ## Acceptance criteria
@@ -139,7 +156,8 @@ with `browser_fill_secret`. A password field, drawn as dots, keeps screenshots w
   `superagent_browser.rs` covers the Global Superagent's refusal.
 - `crates/yulius-browser/tests/real_chromium.rs` (opt-in, `YULIUS_TEST_CHROMIUM`): on a real page
   a password fill keeps screenshots, its reveal and a text-field fill on another origin refuse
-  them, so the probe expression, the isolated world and the frame tree work in Chromium.
+  them, and a third site framing the filled one is refused, so the probe expression, the isolated
+  world, the frame tree and the `iframe` targets work in Chromium.
 - `crates/yulius-browser/tests/instance.rs`:
   - `typed_secrets_refuse_screenshots_while_a_page_may_show_them`: an unseen fill and its origin,
     the isolated world's frame and context, another origin echoing the value, probe answers over
@@ -152,6 +170,10 @@ with `browser_fill_secret`. A password field, drawn as dots, keeps screenshots w
     unknown document.
   - `nothing_slips_between_the_look_and_the_capture`: input waits, a page changed during the
     capture drops the image.
+  - `typing_into_a_filled_password_field_can_expose_its_site`.
+  - `a_page_framing_a_filled_site_is_not_captured`: frame tree and `iframe` targets.
+  - `a_long_key_fits_and_its_armour_is_not_a_secret`.
+- `crates/yulius-browser/tests/manager.rs` `typed_secrets_outlive_the_browser`.
   - `a_page_showing_any_hidden_secret_is_not_captured`.
 
 ## Decisions
@@ -166,10 +188,14 @@ with `browser_fill_secret`. A password field, drawn as dots, keeps screenshots w
   that went anywhere else exposes its whole origin, since the site may show an edited copy on any
   of its pages. That costs screenshots of that site until the browser stops (30 minutes idle), not
   the sign-in with a password.
-- **Per browser, not per tab, plus the redactor's matcher.** Tabs are the agent's to open and
-  close; values and documents stay until the browser stops (bounded, a fill beyond is refused).
-  After that, the matcher the MCP results are redacted with refuses a page showing any agent
-  secret of the sandbox, so a screenshot hides what a snapshot hides.
+- **Per sandbox, not per tab or per browser, plus the redactor's matcher.** Tabs are the agent's
+  to open and close, and a browser stops when the agent leaves it idle; values and exposed hosts
+  stay with the sandbox until Yulius restarts (bounded). The matcher the MCP results are redacted
+  with refuses a page showing any agent secret of the sandbox, so a screenshot hides what a
+  snapshot hides, also after a Yulius restart.
+- **A framed site is judged by its host.** The frame cannot be read, so a page framing a host a
+  secret was typed into is refused whatever the frame shows; a frame of another site (an ad, a
+  captcha) is not.
 - **Compare in Yulius, read in an isolated world, look again after the capture.** Sending the
   value into the page would hand it to whatever origin the tab shows by then; the isolated world
   keeps page scripts from spoofing the probe; the second look catches a page that changed by
@@ -181,5 +207,7 @@ with `browser_fill_secret`. A password field, drawn as dots, keeps screenshots w
   (XTest mouse and keys, which do not pass through the instance's lock): the person may see what
   they allowed.
 - A value drawn in a canvas or an image, or shown through CSS (`content: attr(…)`); an edited copy
-  on a page of another origin than the one it was typed into.
+  on another site than the one it was typed into; an edited copy kept by the site past a Yulius
+  restart (the memory is in the server process); a never-filled agent secret inside a frame of
+  another site.
 - A page changing and changing back between the two looks of one screenshot.
