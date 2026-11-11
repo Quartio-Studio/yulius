@@ -1562,6 +1562,7 @@ impl App {
             exit_reason: None,
         };
         store.insert_attempt(&attempt).await?;
+        crate::race::reached(crate::race::Point::RunRecorded, Path::new(task.id.as_str()));
         // Removed since it was chosen (SPEC-447 MOV-003): the removal looked for runs on it before
         // this one was recorded, so this launch never starts on it and chooses again.
         if store.account(&account.id).await?.is_none() {
@@ -2423,8 +2424,17 @@ impl App {
         Ok(())
     }
 
-    /// Whether this server holds the task's run: attached, watched or its end being recorded.
+    /// Whether this server holds the task's run: attached, watched, its end being recorded, or
+    /// being launched (between the run's record and its attach it is none of the first three).
     async fn holds_run(&self, task_id: &TaskId) -> bool {
+        let launching = self
+            .supervisor
+            .launching
+            .lock()
+            .is_ok_and(|launching| launching.as_ref() == Some(task_id));
+        if launching {
+            return true;
+        }
         let runtime = self.runtime(task_id);
         runtime.has_run().await
             || runtime.watcher_alive.load(Ordering::SeqCst)
@@ -3892,6 +3902,7 @@ impl App {
                 }
             }
         }
+        crate::race::reached(crate::race::Point::ReconcileSweep, &self.config.data_dir);
         // Tasks that claim to be starting/switching/stopping without a live attempt: those the
         // dead server left so. One whose run this server holds again, or which it is launching,
         // is this server's: its own code moves it on.
