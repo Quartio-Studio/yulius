@@ -6,6 +6,20 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-11
 
+- A subscription out of usage credits for its model no longer stops tasks while other
+  subscriptions have capacity (SPEC-464, task #449, ADR-0301, #1172). Fable 5.2, the default
+  model since 2026-11-10, runs on a weekly allowance of usage credits beside the 5-hour and weekly
+  windows. When it ran out, Claude Code said "You're out of usage credits. /model to switch
+  models." and paused the goal; Yulius did not read that as a usage limit, left the task there
+  and asked a person to send "continue". It is now a usage limit of that model: the task moves to
+  a subscription that can run it, in the same session, or waits and resumes at the reset by
+  itself. The limit is kept as the model's own ("Fable this week" on the subscription's card)
+  until the reset Claude named; it used to be stored as the week at 100 %, and the next usage
+  reading wiped it, so the pool sent tasks back to the exhausted subscription. A subscription
+  reads "Limit reached" while the default model cannot run on it. The goal pause that follows a
+  usage limit opens no Needs you, unless the move past the limit is refused and the session
+  stays there. A limit a person lifts early (bought credits) stays until its reset for now; the
+  Subscriptions page's manual refresh is task #451.
 - `browser_screenshot` never shows an agent secret typed with `browser_fill_secret` (SPEC-450,
   task #432, ADR-0291, #1113). Yulius reads each page before and after capturing it and refuses
   the screenshot, pointing to `browser_snapshot`, while the page shows any agent secret or cannot

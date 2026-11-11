@@ -72,26 +72,26 @@ Parallel work: PR #1167 (task #443) touches `observe.rs`, `ports/harness.rs`, `w
 
 | ID | Requirement | Evidence |
 | --- | --- | --- |
-| UCL-001 | `observe_line` reads an API error record with `apiError: "model_requires_usage_credits"` as `LimitReached`, with or without `rate_limit_info`. Its reset is `resetsAt` only when `rateLimitType` is `seven_day_overage_included` (another claim's reset is not the allowance's). A record with only the text ("out of usage credits", "requires usage credits", "out of extra usage") is read the same way. | `claude::tests::a_usage_credits_refusal_is_a_usage_limit` (the two recorded lines, ids replaced) |
+| UCL-001 | `observe_line` reads an API error record with `apiError: "model_requires_usage_credits"` as `LimitReached`, with or without `rate_limit_info`. Its reset is `resetsAt` only when `rateLimitType` is `seven_day_overage_included` (another claim's reset is not the allowance's). A record with only the text ("out of usage credits", "requires usage credits", "out of extra usage") is read the same way. The transcript step back removes the refusal, the goal's pause notice and the record closing that turn. | `claude::tests::a_usage_credits_refusal_is_a_usage_limit` (the two recorded lines, ids replaced), `step_back::tests::step_back_removes_a_usage_credits_refusal` |
 | UCL-002 | A limit says what it binds (`LimitScope`): the subscription (`five_hour`, `seven_day`, an unknown kind), or one model family (`seven_day_opus`, `seven_day_sonnet`, `seven_day_overage_included` = Fable; a credits refusal that names no window = the model the session runs). | same test; `structured_limit_record_with_reset_time` |
 | UCL-003 | `ModelFamily::Fable` (a model name containing "fable") has its own weekly window, `AccountUsage::weekly_fable`, which binds only Fable tasks. A model's limit with a known reset is stored as that family's window at 100 % until the reset; the 5-hour and weekly windows and `limit_reached` are left as they are. A model's limit without a reset, or for a family without a window, is stored as before (`limit_reached`, no reset: in effect until the next usage reading). | `usage::tests::a_models_limit_is_its_own_window`, `rotation::tests::a_fable_allowance_binds_only_fable_tasks` |
 | UCL-004 | A usage reading from the provider replaces the windows it carries and keeps the per-model windows it does not carry while their reset is ahead; a per-model window whose reset passed is dropped at the next stored reading. | `usage::tests::a_reading_keeps_the_model_windows_it_cannot_see`; `usage_credits::a_subscription_out_of_usage_credits_gets_no_task_until_they_reset` |
-| UCL-005 | A subscription reads `limited` while the default model cannot run on it: a limit Claude reported is in effect or a window binding the default model is at 100 %. The capacity view's "available" counts subscriptions for the default model. | `usage_credits` (status after the limit and after the reading); `account_usage.rs` |
+| UCL-005 | A subscription reads `limited` while the default model cannot run on it: a limit Claude reported is in effect or a window binding the default model is at 100 %. The capacity view's "available" counts subscriptions for the default model. | `usage_credits::a_subscription_out_of_usage_credits_gets_no_task_until_they_reset` (status after the limit and after the reading); `account_usage::a_reading_keeps_a_models_limit_and_the_status_follows_the_windows` |
 | UCL-006 | A task refused for usage credits moves to a subscription that can run its model, in the same session, past the refused turn (transcript stepped back, nothing typed). With no such subscription it waits in a `limit` pause and resumes at the reset by itself, with no usage reading and no message. The pool places no task of that model on the subscription before the reset. | `usage_credits::a_task_out_of_usage_credits_moves_on_by_itself`, `…gets_no_task_until_they_reset`, `…resumes_at_their_reset_by_itself` |
-| UCL-007 | A goal pause Claude Code makes at a usage limit or a refused subscription (its notice follows the limit record of the same turn) opens no Needs you and writes no `task.goal_retries_spent`, live and in the replay after a restart. A goal pause with no limit before it is unchanged (ADR-0225). | the three `usage_credits` tests (`needs_nobody`); `finish::tests::a_goal_pause_at_a_usage_limit_is_the_limits`; `task_done.rs` goal-retry tests unchanged |
-| UCL-008 | The Superagent's limit path takes the same record: it records the limit with what it binds and moves as for any usage limit. | `cockpit.rs` |
-| UCL-009 | `GET /api/admin/accounts`, `/api/status` and `/api/capacity` carry `usage.weekly_fable`; the subscription card shows it as "Fable this week", like the Opus and Sonnet rows. | `ui_contract.rs`, e2e `subscriptions` |
+| UCL-007 | A goal pause Claude Code makes at a usage limit or a refused subscription (its notice follows the limit record of the same turn) opens no Needs you and writes no `task.goal_retries_spent` while Yulius takes the task on (moves it or pauses it), live and in the replay after a restart. Its notice is held: when the switch past the limit is refused before it ends the session (ROT-014), the session stays at the refusal and nothing goes on by itself, so the pause opens the Needs you after all, once, whichever of the two came first; a later move past the limit ends that request by itself. A goal pause with no limit before it is unchanged (ADR-0225). | `usage_credits::a_task_out_of_usage_credits_moves_on_by_itself`, `…gets_no_task_until_they_reset`, `…resumes_at_their_reset_by_itself` (`needs_nobody`); `usage_credits::a_refused_move_at_a_usage_credits_limit_still_asks_a_person`, `usage_credits::a_usage_credits_refusal_written_while_yulius_was_down_is_read_at_restart`; `finish::tests::a_goal_pause_at_a_usage_limit_is_the_limits`, `goal_retry::tests::a_goal_pause_at_a_limit_asks_a_person_only_when_the_move_is_refused`; `task_done.rs` goal-retry tests unchanged |
+| UCL-008 | The Superagent's limit path takes the same record: it records the limit with what it binds and moves as for any usage limit. | `cockpit::a_superagent_out_of_usage_credits_moves_to_another_subscription` |
+| UCL-009 | `GET /api/admin/accounts`, `/api/status` and `/api/capacity` carry `usage.weekly_fable` (one `usage_view`); the subscription card shows it as "Fable this week", like the Opus and Sonnet rows. | `account_usage::a_reading_keeps_a_models_limit_and_the_status_follows_the_windows`, `accounts::tests::unknown_usage_stays_null`; e2e `subscriptions.e2e.ts` "a subscription out of its model's usage credits shows that model's week beside its own" |
 
 ## Plan
 
 - [x] Reproduce the defect and find its root cause
-- [ ] Spec, issue #1172 and the regression tests that fail
-- [ ] The harness reads the usage-credits refusal as a usage limit with what it binds
-- [ ] A model's limit is stored on its own weekly window and binds only that model's tasks
-- [ ] A usage reading keeps the limits it cannot see and the subscription reads Limit reached
-- [ ] A goal pause at a usage limit opens no Needs you, live and after a restart
-- [ ] The Subscriptions card and the API show the model's weekly window
-- [ ] Docs, ADR-0301, changes and the chained task for the page's manual refresh
+- [x] Spec, issue #1172 and the regression tests that fail
+- [x] The harness reads the usage-credits refusal as a usage limit with what it binds
+- [x] A model's limit is stored on its own weekly window and binds only that model's tasks
+- [x] A usage reading keeps the limits it cannot see and the subscription reads Limit reached
+- [x] A goal pause at a usage limit opens no Needs you, live and after a restart
+- [x] The Subscriptions card and the API show the model's weekly window
+- [x] Docs, ADR-0301, changes and the chained task for the page's manual refresh
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green on the reviewed head
 
@@ -108,6 +108,10 @@ Parallel work: PR #1167 (task #443) touches `observe.rs`, `ports/harness.rs`, `w
   reset, with no reading and no message.
 - A goal pause "the request was rate limited" with no limit record before it still opens Needs
   you.
+- When the move past the limit is refused (the other subscription's credential cannot be
+  opened), the task stays on its subscription with the Needs you "Goal paused · the request was
+  rate limited."; a person's move to a working subscription then continues the turn and ends
+  that request.
 
 ## Test plan
 
@@ -123,7 +127,10 @@ Parallel work: PR #1167 (task #443) touches `observe.rs`, `ports/harness.rs`, `w
   trip with `weekly_fable`.
 - Integration (`usage_credits.rs`, real ptyhost and fake agent): the three scenarios of UCL-006,
   each asserting no Needs you. They fail before the fix: the 2.1.311 one never moves, the
-  2.1.322 ones open the Needs you and store the week as full.
+  2.1.322 ones open the Needs you and store the week as full. Two more for UCL-007: a move
+  refused in preflight opens the Needs you and a person's move ends it; a refusal written while
+  Yulius was down (the fake agent's turn outlasts the first server) is read by the restart's
+  replay.
 - Existing suites that cover the paths touched: `pool_supervision`, `subscription_moves`,
   `subscription_pool`, `account_usage`, `accounts`, `cockpit`, `task_done`, `ui_contract`.
 - e2e (`cd e2e && npx e2e run`): the Subscriptions page shows the Fable row.
@@ -157,10 +164,21 @@ Parallel work: PR #1167 (task #443) touches `observe.rs`, `ports/harness.rs`, `w
   acted on (`goal_retry_observed`, `TranscriptFacts::fold`), by the limit the same turn recorded,
   not by wording: the notice "the request was rate limited" also follows refusals nobody else
   handles, and those still need a person.
+- **The pause is held, not dropped** (`LimitGoalPause`). A switch past the limit can be refused
+  before it ends the session (another subscription's credential cannot be opened, ROT-014); the
+  session then sits at Claude Code's refusal, and unlike a usage limit of a window Claude Code
+  does not continue it at a reset. The held pause asks a person then. The move runs beside the
+  transcript's reading, so the notice and the refusal leave their word for each other in one
+  lock. Rejected: dropping the pause (a task nobody is told about), and a `limit` pause for a
+  refused switch (ADR-0058 rejected it: the resume loop would retry a refused switch every
+  round).
+- **Known limit: the capacity card's "Left this week"** still sums the subscriptions' own weeks;
+  only "Available now" counts for the default model. A subscription out of Fable's allowance
+  keeps its week's headroom in that figure.
 - **Split by concern.** The person's first extra requirement (a manual refresh per subscription
   and for all, each card saying how old its reading is and which window is used up) is a page and
   probe feature of its own: it needs a probe request on the limited model to re-read "limit state
   now" (Claude's `anthropic-ratelimit-unified-7d_oi-*` headers) and a state computed when the page
-  is shown. It is a chained task after this one, with its brief. Their second requirement (reset
+  is shown. It is task #451, chained after this one, with its brief. Their second requirement (reset
   times known and used, tasks resume at the reset by themselves) is this change: UCL-003, UCL-004
   and UCL-006.

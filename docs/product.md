@@ -223,7 +223,11 @@ watching, steering and unblocking.
   run it on another from the task ("Run #N on…"); removing a subscription moves its tasks, and a
   subscription Claude refuses (cancelled, downgraded) is taken out of the pool and says why. A
   task that moved for either reason says so in its terminal, and one with nothing usable left is
-  under Needs you. Its Capacity card says what
+  under Needs you. A subscription out of a model's usage credits (the default model, Fable, runs
+  on a weekly allowance of them) is at that model's limit: its tasks of that model move on or
+  wait for the reset by themselves, the pool sends it no such task until then whatever its
+  5-hour and weekly usage read, and nobody is asked to send "continue"; its card shows the
+  allowance as "Fable this week" (SPEC-464). Its Capacity card says what
   is left, how fast it burns, the tokens it used and what they would cost at Claude API list
   prices, with a 7-day chart for each. Administrators rename each subscription in place ("work
   Max", "personal") and see the email of its Claude account wherever it is named. Connecting one

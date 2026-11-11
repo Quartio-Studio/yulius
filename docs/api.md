@@ -1514,13 +1514,18 @@ Account = {"id","provider","label",
   "status":"pending_login|ok|relogin|error|limited",
   "usage":{"primary":{"used_percent":42.0,"resets_at":"…","window_minutes":300}|null,
            "secondary":{…}|null,"weekly_opus":{…}|null,"weekly_sonnet":{…}|null,
+           "weekly_fable":{…}|null,
            "observed_at":"…|null"},
   "last_error":"…|null","in_use_by":0,
   "email":"…|null","plan":"Pro|Max 5x|Max 20x|…|null"}
 ```
 
 `primary` is the 5-hour window, `secondary` the weekly one, `weekly_opus` / `weekly_sonnet` the
-per-model weekly caps when the plan has them. Unknown usage is `null`, never zero. Credentials are
+per-model weekly caps when the plan has them. `weekly_fable` is the weekly allowance of usage
+credits the Fable models run on: no reading shows it, so it is `null` until Claude reports it used
+up, then at 100 until its `resets_at` (SPEC-464). `status` is `limited` while the default model
+cannot run on the subscription: a limit Claude reported is in effect, or a window that binds that
+model is at 100. Unknown usage is `null`, never zero. Credentials are
 never returned. `email` is the email of the Claude account behind the subscription (SPEC-244,
 ADR-0185). After a sign-in stores a credential, Yulius reads it from Claude's profile
 (`GET /api/oauth/profile`, `account.email`) with that credential. The background usage round

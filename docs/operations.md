@@ -910,6 +910,12 @@ Vidoc off, it also says `Vidoc scans are switched off for the instance`.
    A subscription Claude refuses (a cancelled or downgraded plan) is marked "Sign in again" with
    Claude's words and its tasks move on; Remove works while tasks use it and moves them; a person
    runs a task on the subscription they choose from the task's subscription button (SPEC-447).
+   A subscription out of a model's usage credits (the default model, Fable, runs on a weekly
+   allowance of them beside the 5-hour and weekly windows) is at that model's limit: its card
+   reads "Limit reached" with "Fable this week" at 100 % until the reset Claude named, its tasks
+   of that model move on or wait for the reset by themselves, and tasks of other models still
+   run on it. A usage reading does not end that limit, so one lifted early (credits bought)
+   holds until its reset (SPEC-464).
    Do this before importing: until a Claude account is usable, Yulius refuses every agent start a
    person asks for, Start onboarding included (SPEC-246, ADR-0190).
 6. Import or create projects (sandboxes). Product and Studio are detected and get the `product` and
