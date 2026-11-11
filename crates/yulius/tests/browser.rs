@@ -813,6 +813,71 @@ async fn a_screenshot_never_shows_a_secret_typed_into_a_page() -> TestResult {
     .await
 }
 
+/// SPEC-450 SSC-004: when the agent secrets cannot be loaded to check the page, no screenshot is
+/// taken (as a result that could not be checked is withheld).
+#[tokio::test]
+async fn a_screenshot_is_refused_when_the_secrets_cannot_be_checked() -> TestResult {
+    use yulius_app::ports::vault::VaultStore as _;
+    with_fixture(|f| async move {
+        let created = support::call(
+            &f.h.router,
+            axum::http::Method::POST,
+            "/api/sandboxes/s1/agent-secrets",
+            Some(json!({"name": "DOCS_KEY", "hosts": ["docs.example"],
+                "value": "docs-api-key-5521-qrs"})),
+            &f.writer,
+        )
+        .await?;
+        assert_eq!(
+            created.status,
+            axum::http::StatusCode::CREATED,
+            "{}",
+            created.body
+        );
+        // Its sealed payload no longer opens (a key-encryption key nobody has).
+        let sandbox = SandboxId::parse("s1")?;
+        let records = f.h.store.vault_agent_in(&sandbox).await?;
+        let seen = records
+            .iter()
+            .find(|r| r.name == "DOCS_KEY")
+            .ok_or("no secret")?
+            .clone();
+        let mut broken = seen.clone();
+        broken.envelope.kek_id = 9_999;
+        assert!(f.h.store.vault_update(&broken, &seen).await?);
+
+        mcp_tool(
+            &f.h,
+            TOKEN,
+            "browser_open",
+            json!({"url": "https://docs.example/"}),
+        )
+        .await?;
+        let browser =
+            f.h.app
+                .browser_session(&sandbox)
+                .await
+                .map_err(|e| e.to_string())?;
+        let tab = browser.tabs().last().ok_or("no tab")?.id.clone();
+        let shot = mcp_tool(
+            &f.h,
+            TOKEN,
+            "browser_screenshot",
+            json!({"tab_id": tab.as_str()}),
+        )
+        .await?;
+        assert_eq!(shot["isError"], true, "{shot}");
+        assert!(
+            tool_text(&shot)
+                .as_str()
+                .is_some_and(|t| t.contains("could not check the page for agent secrets")),
+            "{shot}"
+        );
+        Ok(())
+    })
+    .await
+}
+
 /// SPEC-405 VEV-001 (#710): a production secret (`cd_prod`) is never typed into a page, not even
 /// one of the hosts it kept from before production secrets became exclusive (SPEC-308 R2).
 #[tokio::test]

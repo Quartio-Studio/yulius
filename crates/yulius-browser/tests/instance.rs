@@ -1028,6 +1028,89 @@ async fn typing_into_a_filled_password_field_can_expose_its_site() -> TestResult
     Ok(())
 }
 
+/// SPEC-450 (review round 5): a fill is judged by where it went, not by any password field: a
+/// second fill into a cross-origin frame's text box or into a field that cuts it exposes the
+/// site, though the first fill still holds the value in a password field.
+#[tokio::test]
+async fn a_fill_is_judged_by_the_field_it_went_into() -> TestResult {
+    const VALUE: &str = "pw-secret-4471";
+    for (host, focus, shown) in [
+        (
+            "https://t.example/login",
+            json!({"kind": "frame"}),
+            "Fake page text",
+        ),
+        (
+            "https://u.example/login",
+            json!({"kind": "other"}),
+            "pw-secr",
+        ),
+    ] {
+        let (fake, instance, tab) = setup().await?;
+        instance.tool_navigate(&to(&tab, host)).await?;
+        fake.set_password_field("#pw", true);
+        instance.tool_type_secret(&fill(&tab, "#pw", VALUE)).await?;
+        instance
+            .tool_screenshot_within(&shot(&tab), 100_000)
+            .await?;
+        fake.set_secret_probe(Some(
+            json!({"shown": [shown], "masked": [VALUE], "over": false, "focus": focus}),
+        ));
+        instance
+            .tool_type_secret(&TypeParams {
+                tab_id: tab.clone(),
+                text: VALUE.into(),
+                selector: None,
+            })
+            .await?;
+        fake.set_secret_probe(Some(
+            json!({"shown": ["Fake page text"], "masked": [VALUE], "over": false}),
+        ));
+        assert!(
+            refused(instance.tool_screenshot_within(&shot(&tab), 100_000).await),
+            "{host}"
+        );
+    }
+    Ok(())
+}
+
+/// SPEC-450 (review round 5): before typing into a filled document, a password revealed there
+/// (an edit would go unseen) or a page that cannot be read exposes the site.
+#[tokio::test]
+async fn typing_where_an_edit_cannot_be_seen_exposes_the_site() -> TestResult {
+    const VALUE: &str = "pw-secret-4471";
+    // Revealed ("show password"), then edited: the edited copy is not the value any more.
+    let (fake, instance, tab) = setup().await?;
+    instance
+        .tool_navigate(&to(&tab, "https://v.example/login"))
+        .await?;
+    fake.set_password_field("#pw", true);
+    instance.tool_type_secret(&fill(&tab, "#pw", VALUE)).await?;
+    fake.set_password_field("#pw", false);
+    instance.tool_type(&fill(&tab, "#pw", "x")).await?;
+    fake.set_secret_probe(probe(&["pw-sec x ret-4471"], &[]));
+    assert!(refused(
+        instance.tool_screenshot_within(&shot(&tab), 100_000).await
+    ));
+
+    // A page that cannot be read before the typing.
+    let (fake, instance, tab) = setup().await?;
+    instance
+        .tool_navigate(&to(&tab, "https://w.example/login"))
+        .await?;
+    fake.set_password_field("#pw", true);
+    instance.tool_type_secret(&fill(&tab, "#pw", VALUE)).await?;
+    fake.queue_secret_probes(vec![json!({"shown": [], "masked": [], "over": true})]);
+    instance.tool_type(&fill(&tab, "#pw", "x")).await?;
+    instance
+        .tool_navigate(&to(&tab, "https://w.example/saved"))
+        .await?;
+    assert!(refused(
+        instance.tool_screenshot_within(&shot(&tab), 100_000).await
+    ));
+    Ok(())
+}
+
 /// SPEC-450 (review round 4): a sign-in on a single-page app keeps screenshots. The password field
 /// goes away while the document stays (`pushState`); the page then shows the value nowhere, which
 /// is not an edit, and typing on the dashboard is not one either.
