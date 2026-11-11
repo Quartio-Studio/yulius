@@ -1369,7 +1369,8 @@ restorable attributes. Only when they are equal is the copy marked and the new i
 (`host setup`'s remaining items, `systemctl enable` and `start`, then it must report the old
 host's build). Until that start any failure, Ctrl-C or SIGTERM thaws the old instance, which runs
 on as before, and the copy on the new host stays marked unfinished (the next run removes it and
-copies again). Once the start is ordered nothing thaws the old instance by itself, not a signal
+copies again); a unit that systemd no longer reports frozen right after the freeze is thawed
+too, before anything is copied, and the line says what systemd said. Once the start is ordered nothing thaws the old instance by itself, not a signal
 and not a lost terminal. If the new instance does not come up, it is stopped and disabled, and
 only then is the old one thawed; the copy there was started and must be removed (`rm -rf` the
 data directory on the new host) before the next run. If the new host stops answering at that
@@ -1387,7 +1388,9 @@ admitting the old host itself on the SSH port the move used; make sure the carri
 you in on the new host's SSH port), deletes the key on the old host and lists what is left for
 people: the GitHub App and the DNS record if still
 open, `yulius remote login <new URL>` and `claude mcp add` for laptops, and that the old host
-still holds a frozen copy with `master.key` and every secret.
+still holds a frozen copy with `master.key` and every secret. A later run that finds the key
+already deleted on the old host (the finish was done and only its record was lost) records the
+finish and says so; it does not wait for the new host.
 
 **Abort.** `sudo yulius instance migrate --abort` on the old host stops and disables the new
 instance (through the key while the move is not finished; afterwards the key is gone: stop it
@@ -1397,10 +1400,23 @@ the old proxy configuration back, thaws and enables the old unit and removes the
 state. The copy on the new host, with `master.key` and every secret, stays there until you remove it.
 It never leaves both running. Work done on the new host after the move is not copied back.
 
-A run that hangs after the start was ordered ignores Ctrl-C on purpose (it must not thaw the old
-instance beside a new one). End it with `kill -9`, then run the same command again (it decides
-from the new instance's state) or `--abort`: a start still in flight on the new host finds the
-abort's stop and starts nothing.
+The run that ordered the start ignores Ctrl-C, SIGTERM and a lost terminal from then on, on
+purpose (it must not thaw the old instance beside a new one). If it hangs, end it with `kill -9`,
+then run the same command again or `--abort`: a start still in flight on the new host finds the
+abort's stop and starts nothing. A run that goes on from a recorded start froze nothing itself
+and watches no signal: Ctrl-C ends it at once and thaws nothing, and the same command goes on
+again.
+
+The same command after a run that ended there plans and copies nothing; the new instance's state
+decides. With the old unit still frozen it orders the start again and goes on as above. With the
+old unit no longer frozen it starts nothing and only asks the new instance. When that reports the
+build, the move stands: an old unit that runs (thawed by hand, or started by a restart of the old
+host) is frozen again and disabled, and the checklist says that it ran beside the new instance
+(what its agents did meanwhile is on the old host only); if it cannot be frozen that is a `FAIL`
+line with the reason and the two commands to run. An old unit that does not run is named for you
+to make sure nothing of it is left. When the new instance answers and does not run, `--abort` is
+the way back; when the new host does not answer, nothing is touched and the same command asks
+again once it does.
 
 Not part of a move: packages installed inside sandboxes keep their files; on another release the
 checklist names those sandboxes. The sandbox base is built for the new host while preparing, so

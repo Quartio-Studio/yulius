@@ -6,6 +6,18 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-11
 
+- The instance move's last review findings are fixed (SPEC-467, task #450; the command is
+  SPEC-460's). A `systemctl show` that fails right after the freeze no longer leaves the old unit
+  frozen behind "is not running any more": the unit is thawed and the line says what systemd
+  said. A run that goes on from a recorded start never ends with both instances running: an old
+  unit that runs unfrozen beside a new instance that reports the build is frozen again and
+  disabled (a `FAIL` line with the reason when it cannot be), and a new host that does not answer
+  is told from a new instance that does not run ("run the command again when the new host
+  answers", not `--abort`). A finish that was done but not recorded is found done by the key it
+  deleted, instead of "Run the command again" on every run. `yulius instance export` leaves a
+  `.yulius-limits-adapt` out and neither host counts it, so a move from a host that still holds
+  that mark proves its copy. The operations guide §7 says which run ignores Ctrl-C, and the
+  decisions index lists 0297 in its place and 0219 once.
 - One command moves the instance to another host (SPEC-460, task #442, ADR-0297): `sudo yulius
   instance migrate root@new-host` on the old host. It plans first and asks people only there (the
   SSH sign-in, a DNS record, the GitHub App's callback, blank disks to use), then sets up the new
