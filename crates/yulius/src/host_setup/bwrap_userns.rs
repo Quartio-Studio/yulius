@@ -121,8 +121,9 @@ fn skipped(name: &str) -> bool {
 /// Whether a profile in `text` attaches to `/usr/bin/bwrap`: a header at the top level
 /// (`profile name /path flags=(…) {`, or `/path {`) whose path is bwrap's, plain or as the
 /// alternations Ubuntu's own profiles spell it. The header's brace may open the profile on the
-/// same line, before a comment or on the next line. A rule that only names bwrap
-/// (`/usr/bin/bwrap mr,`) and a profile inside another one are none.
+/// same line, before a comment or on the next line, and the path may be a variable set to
+/// bwrap's (`@{prog} = /usr/bin/bwrap`). A rule that only names bwrap (`/usr/bin/bwrap mr,`)
+/// and a profile inside another one are none.
 fn attaches_bwrap(text: &str) -> bool {
     const PATHS: [&str; 4] = [
         "/usr/bin/bwrap",
@@ -134,34 +135,53 @@ fn attaches_bwrap(text: &str) -> bool {
     let mut depth = 0_usize;
     let mut header: Vec<&str> = Vec::new();
     let mut in_list = false;
-    let words = text
-        .lines()
-        .flat_map(|l| l.split_whitespace().take_while(|w| !w.starts_with('#')));
-    for word in words {
-        // An alternation (`/{usr/,}bin`, `@{bin}`) closes its own brace.
-        let opens = word.matches('{').count();
-        let closes = word.matches('}').count();
-        if opens > closes {
-            header.push(word.trim_end_matches('{'));
-            let attaches = header
-                .iter()
-                .take_while(|w| !w.starts_with("flags="))
-                .any(|w| PATHS.contains(&w.trim_matches('"')));
-            if depth == 0 && attaches {
-                return true;
+    // The variables that stand for bwrap's path.
+    let mut vars: Vec<&str> = Vec::new();
+    for line in text.lines() {
+        let words: Vec<&str> = line
+            .split_whitespace()
+            .take_while(|w| !w.starts_with('#'))
+            .collect();
+        // A variable's line ends without a comma and is no header.
+        if depth == 0 && matches!(words.get(1), Some(&("=" | "+="))) {
+            let bwrap = |w: &&str| PATHS.contains(&w.trim_matches('"'));
+            if let Some(var) = words.first().filter(|_| words.iter().skip(2).any(bwrap)) {
+                vars.push(var);
             }
-            depth += 1;
-            header.clear();
-        } else if closes > opens {
-            depth = depth.saturating_sub(1);
-            header.clear();
-        } else if depth == 0 {
-            // `flags=(a, b)`: a comma inside a list ends no rule.
-            in_list = (in_list || word.contains('(')) && !word.contains(')');
-            if word.ends_with(',') && !in_list {
+            continue;
+        }
+        // A brace that starts a word opens a block (`{userns,}`); an alternation's
+        // (`/{usr/,}bin`, `@{bin}`) is inside its word and closes there.
+        let words = words
+            .into_iter()
+            .flat_map(|w| w.strip_prefix('{').map_or([w, ""], |rest| ["{", rest]))
+            .filter(|w| !w.is_empty());
+        for word in words {
+            let opens = word.matches('{').count();
+            let closes = word.matches('}').count();
+            if opens > closes {
+                header.push(word.trim_end_matches('{'));
+                let attaches = header
+                    .iter()
+                    .take_while(|w| !w.starts_with("flags="))
+                    .map(|w| w.trim_matches('"'))
+                    .any(|w| PATHS.contains(&w) || vars.contains(&w));
+                if depth == 0 && attaches {
+                    return true;
+                }
+                depth += 1;
                 header.clear();
-            } else {
-                header.push(word);
+            } else if closes > opens {
+                depth = depth.saturating_sub(1);
+                header.clear();
+            } else if depth == 0 {
+                // `flags=(a, b)`: a comma inside a list ends no rule.
+                in_list = (in_list || word.contains('(')) && !word.contains(')');
+                if word.ends_with(',') && !in_list {
+                    header.clear();
+                } else {
+                    header.push(word);
+                }
             }
         }
     }
@@ -346,7 +366,8 @@ impl Run<'_> {
                 "",
             ),
             Proof::NotRun(why) => self.changed(ITEM, &format!("{done}; not proven: {why}"), ""),
-            Proof::Fails(why) if !facts.foreign.is_empty() => {
+            // A limit keeps bwrap out whatever the profile says: theirs is not to blame.
+            Proof::Fails(why) if !facts.foreign.is_empty() && self.limits().is_empty() => {
                 let files = facts.foreign_files();
                 self.failed(
                     ITEM,
@@ -421,7 +442,7 @@ impl Run<'_> {
             .filter(|s| s.uid.is_some())
             .map(|s| s.name.clone())
         else {
-            return Proof::NotRun("the service user does not exist yet");
+            return Proof::NotRun("the service user is not set up yet");
         };
         if !self.installed("bubblewrap") {
             return Proof::NotRun("bubblewrap is not installed yet");
@@ -450,6 +471,22 @@ impl Run<'_> {
 
     /// What else keeps bwrap from a namespace, where the host says so.
     fn cause(&self, facts: &Facts) -> String {
+        let mut causes = self.limits();
+        if facts.enabled && facts.ours_disabled {
+            causes.push(format!(
+                "{DIR}/disable/{PROFILE_NAME} keeps Yulius's profile from loading (remove that \
+                 link, then run `sudo yulius host setup` again)"
+            ));
+        }
+        if causes.is_empty() {
+            String::new()
+        } else {
+            format!("; {}", causes.join("; "))
+        }
+    }
+
+    /// The kernel's own limits on user namespaces, where one allows none.
+    fn limits(&self) -> Vec<String> {
         let zero = |path: &str| {
             self.host
                 .read(Path::new(path))
@@ -470,17 +507,7 @@ impl Run<'_> {
                     .to_owned(),
             );
         }
-        if facts.enabled && facts.ours_disabled {
-            causes.push(format!(
-                "{DIR}/disable/{PROFILE_NAME} keeps Yulius's profile from loading (remove that \
-                 link, then run `sudo yulius host setup` again)"
-            ));
-        }
-        if causes.is_empty() {
-            String::new()
-        } else {
-            format!("; {}", causes.join("; "))
-        }
+        causes
     }
 
     fn must(&mut self, argv: &[&str]) -> Result<(), String> {
@@ -495,6 +522,7 @@ impl Run<'_> {
     /// Ours is written before anything is unloaded, so a failed write leaves the host as it
     /// was; a later step that fails is undone and the line says so.
     fn apply(&mut self, plan: &Plan) -> Result<(), String> {
+        let earlier = self.host.read(Path::new(PROFILE_FILE));
         if plan.write {
             self.host
                 .write(Path::new(PROFILE_FILE), PROFILE, 0o644)
@@ -506,15 +534,22 @@ impl Run<'_> {
             // A file AppArmor does not hold, or cannot read, would change or fail its next
             // boot.
             if plan.write {
-                let removed = self.run_cmd(&Cmd::new(&["rm", "-f", PROFILE_FILE])).ok();
-                undone += &format!(
-                    "; {PROFILE_FILE} {}",
-                    if removed {
-                        "was removed again"
-                    } else {
-                        "could not be removed again"
-                    }
-                );
+                let (back, done, not) = match &earlier {
+                    // AppArmor still holds what this text loaded.
+                    Some(text) => (
+                        self.host
+                            .write(Path::new(PROFILE_FILE), text, 0o644)
+                            .is_ok(),
+                        "has its earlier text again",
+                        "keeps the text AppArmor did not load",
+                    ),
+                    None => (
+                        self.run_cmd(&Cmd::new(&["rm", "-f", PROFILE_FILE])).ok(),
+                        "was removed again",
+                        "could not be removed again",
+                    ),
+                };
+                undone += &format!("; {PROFILE_FILE} {}", if back { done } else { not });
             }
             if linked {
                 let link = format!("{DIR}/disable/{SHIPPED}");
@@ -611,6 +646,9 @@ mod tests {
             "profile bwrap /usr/bin/bwrap flags=(unconfined, attach_disconnected) {\n}\n",
             "/usr/bin/bwrap{\n  userns,\n}\n",
             "profile x /usr/bin/x {\n  userns,\n}\nprofile b /usr/bin/bwrap {\n}\n",
+            "profile bwrap /usr/bin/bwrap {userns,}\n",
+            "/usr/bin/bwrap {}\n",
+            "@{prog} = /usr/bin/bwrap\nprofile b @{prog} {\n  userns,\n}\n",
         ] {
             assert!(attaches_bwrap(whole), "{whole}");
         }
@@ -620,6 +658,8 @@ mod tests {
             "profile x /usr/bin/x { /usr/bin/bwrap Px -> bwrap, }\n",
             "profile x /usr/bin/x flags=(unconfined) /usr/bin/bwrap {\n}\n",
             "profile x /usr/bin/x { # /usr/bin/bwrap {\n}\n",
+            "@{prog} = /usr/bin/bwrap\nprofile x /usr/bin/x {\n  userns,\n}\n",
+            "profile x /usr/bin/x {userns,}\n/usr/bin/bwrap mr,\n",
         ] {
             assert!(!attaches_bwrap(other), "{other}");
         }

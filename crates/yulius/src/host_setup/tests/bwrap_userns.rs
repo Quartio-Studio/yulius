@@ -586,6 +586,27 @@ fn a_failed_step_is_undone_and_named() {
         )),
         "{detail}"
     );
+
+    // A profile of Yulius's that was there before the run (an older text, loaded and working)
+    // gets its text back: removing it would leave the next boot without a rule.
+    let older = PROFILE.replace("# Written by", "# Once written by");
+    let mut fake = noble();
+    fake.file(PROFILE_FILE, &older);
+    fake.reboot();
+    fake.failing
+        .push((LOAD, Some(1), "Could not open 'abi/4.0'"));
+    let before = state(&fake);
+    let lines = run(&mut fake, Mode::Setup);
+    assert_eq!(
+        item(&lines),
+        (
+            HostOutcome::Failed,
+            "unsupported: this host's AppArmor cannot load Yulius's profile (Could not open \
+             'abi/4.0'); /etc/apparmor.d/yulius-bwrap has its earlier text again"
+        )
+    );
+    assert_eq!(fake.text(PROFILE_FILE), Some(older.as_str()));
+    assert!(state(&fake) == before, "{:#?}", fake.log);
 }
 
 /// BNS-005: a link alone does not unload the shipped profile (a person's link, an unload that
@@ -682,6 +703,24 @@ fn a_namespace_limit_is_named() {
             && detail.contains("; user.max_user_namespaces is 0 ("),
         "{detail}"
     );
+
+    // A person's profile is not blamed for a limit: no commands that would disable a good rule.
+    let mut fake = noble();
+    fake.file(HAND_WRITTEN, HAND_WRITTEN_TEXT);
+    fake.reboot();
+    fake.file("/proc/sys/user/max_user_namespaces", "0\n");
+    let lines = run(&mut fake, Mode::Setup);
+    assert_eq!(
+        item(&lines),
+        (
+            HostOutcome::Failed,
+            "loaded /etc/apparmor.d/bwrap again, but bwrap still cannot start a user namespace \
+             as yulius: bwrap: Creating new namespace failed: No space left on device; \
+             user.max_user_namespaces is 0 (no user namespaces at all: raise it in \
+             /etc/sysctl.d)"
+        )
+    );
+    assert_eq!(fake.text(HAND_WRITTEN), Some(HAND_WRITTEN_TEXT));
 
     let mut fake = set_up(noble());
     fake.links.insert(
@@ -837,8 +876,8 @@ fn a_dry_run_says_what_it_would_do() {
         item(&lines),
         (
             HostOutcome::Ok,
-            "AppArmor does not restrict user namespaces here; not proven: the service user does \
-             not exist yet"
+            "AppArmor does not restrict user namespaces here; not proven: the service user is \
+             not set up yet"
         )
     );
     // The user exists, bubblewrap does not: still nothing to start.
@@ -866,7 +905,7 @@ fn a_dry_run_says_what_it_would_do() {
         (
             HostOutcome::Ok,
             "/etc/apparmor.d/disable/yulius-bwrap keeps Yulius's profile from loading; not \
-             proven: the service user does not exist yet"
+             proven: the service user is not set up yet"
         )
     );
     // A host without `runuser` proves nothing either way.
