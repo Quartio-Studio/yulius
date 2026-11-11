@@ -1,6 +1,6 @@
 ---
 yulius-task: bec4e78a-38ca-448b-965f-c05492cbe528
-status: in-progress
+status: done
 ---
 
 # SPEC-456: Host setup makes bwrap able to create user namespaces (AppArmor)
@@ -123,7 +123,7 @@ the fix. Nobody writes an AppArmor rule by hand again.
 - [x] After the merge: the review's last nits (issue #1165) and Settings → Instance in a browser
 - [x] The follow-up's reviews answered for the kernel limit: its own clause in a check and a dry run, also where nothing could be started yet
 - [x] After three review rounds the follow-up is split: this pull request carries the kernel limit, the reader's rewrite follows on its own
-- [ ] A profile for bwrap that Yulius does not read is found by what it does: proven beside the whole directory, Yulius's own taken back where bwrap does not start
+- [x] A profile for bwrap that Yulius does not read is found by what it does: proven beside the whole directory, Yulius's own taken back where bwrap does not start
 
 ## Acceptance criteria
 
@@ -354,6 +354,77 @@ container: at `b74138b1` for the first runs, at `39c85810` for the runs after re
   - Outside this task, reported: issue #1166 (the import refusal's `chown user:` under uutils
     coreutils, and `build-essential` on 26.04) and issue #1177 (the forms of a person's
     profile the reader does not read).
+- **A profile Yulius does not read (BNS-012)**, the third pull request of this task. #1168 left
+  open that a person's profile for bwrap in a spelling the item does not read got Yulius's
+  profile beside it (issue #1165, point 3; issue #1177). It is closed without reading more:
+  - Test-first on the fake host, whose AppArmor gained the directory's load
+    (`apparmor_parser -r /etc/apparmor.d`), a spelling the item does not read and a catch-all
+    that gives way. `an_unread_rule_is_found_by_what_it_does`,
+    `an_unread_rule_that_fails_gets_no_second_profile` and `a_catch_all_profile_gives_way`
+    failed first: on `dev` the item wrote its profile beside such a rule ("wrote and loaded
+    /etc/apparmor.d/yulius-bwrap: bwrap starts …", two profiles after the next boot) and left
+    it there when bwrap did not start. `a_broken_profile_of_someone_elses_does_not_stop_the_item`
+    holds that the directory's load may fail. The lines of the other tests gained the new step.
+  - 15 mutations, each taking one rule out, each fail a test
+    (`target/evidence/boot/mutate.log`, not in the repository): no load of the directory, that
+    load made a must, the step unsaid, no taking back, taking back beside a kernel limit or of
+    an earlier run's profile, taking back from the file only, the earlier file not loaded
+    again, no proof or no heed of it after the taking back, the shipped profile left disabled
+    after a failure or forgotten in the adopted line, the word on how either profile goes
+    missing, given beside a kernel limit, or naming Yulius's where it is gone.
+  - On real hosts: two QEMU guests from the stock cloud images, Ubuntu 24.04.5 (kernel
+    6.8.0-147, AppArmor 4.0.1) and Ubuntu 26.04.1 (kernel 7.0.0-38, AppArmor 5.0.2). The fresh
+    host with the binary of `deceaaa4`, everything after it with the binary of `e2bc4b4b` (the
+    same code but for two wordings). Scripts and logs in `target/evidence/boot` (`guest.sh`,
+    `guest2.sh`, `noble.log`, `noble2.log`, `resolute.log`, `resolute2.log`), not in the
+    repository. The same on both, 26.04 with the shipped profile's steps in front:
+    - a fresh host: "wrote and loaded /etc/apparmor.d/yulius-bwrap, loaded the other profiles
+      of /etc/apparmor.d as a boot does: bwrap starts a user namespace as yulius"; a second
+      run and a check are ok. By hand, `apparmor_parser -r /etc/apparmor.d` takes 547 ms on
+      24.04 (109 entries) and 751 ms on 26.04 (161), under emulation;
+    - a person's unconfined rule with `userns`, written and never loaded, in five spellings
+      the item does not read (`/{usr,}/bin/bwrap`; `/usr/bin/bwra?`; an `alias` from
+      `/opt/bin/`; a variable set in an included file; `@{prog}=/usr/bin/bwrap` with
+      `flags = (unconfined) {` on its own line, the two layouts of #1165): the dry run says
+      "would write and load /etc/apparmor.d/yulius-bwrap, load the other profiles of
+      /etc/apparmor.d as a boot does"; setup ends "loaded the profiles of /etc/apparmor.d as
+      a boot does: bwrap starts a user namespace as yulius with a profile that Yulius did not
+      write; Yulius's own, which AppArmor does not apply beside it, was taken back"; no
+      `yulius-bwrap` is left on disk or in AppArmor, the person's file is unchanged, bwrap
+      runs as `theirs (unconfined)`, a second run and a check say "allowed by a rule Yulius
+      did not write", and after a reboot the check is ok with only `theirs` loaded. On 26.04
+      with the shipped profile enabled as before any setup, the line starts "disabled Ubuntu's
+      AppArmor profile bwrap-userns-restrict (…)" and the link stays;
+    - such a rule that does not let bwrap in (confined, no `userns`), loaded: FAIL "wrote and
+      loaded /etc/apparmor.d/yulius-bwrap, loaded the other profiles of /etc/apparmor.d as a
+      boot does, but bwrap still cannot start a user namespace as yulius: bwrap: loopback:
+      Failed RTM_NEWADDR: No child processes; /etc/apparmor.d/yulius-bwrap was removed again;
+      where another profile of /etc/apparmor.d is for /usr/bin/bwrap, AppArmor applies neither
+      it nor Yulius's: disable that profile (…), then run `sudo yulius host setup` again"; no
+      `yulius-bwrap` is left, the person's file is unchanged and still loaded;
+    - Yulius's profile from an earlier run with such a rule loaded beside it (the state the
+      merged #1164 could leave): the check says setup would load Yulius's profile, setup
+      fails with the same words and "or take Yulius's away (`sudo /usr/sbin/apparmor_parser -R
+      /etc/apparmor.d/yulius-bwrap && sudo rm /etc/apparmor.d/yulius-bwrap`)"; with that done,
+      the next run adopts theirs;
+    - a person's confined profile for `/usr/bin/bw*`, loaded, with which bwrap does not start:
+      "wrote and loaded /etc/apparmor.d/yulius-bwrap, loaded the other profiles of
+      /etc/apparmor.d as a boot does: bwrap starts a user namespace as yulius"; both stay
+      loaded and bwrap runs as `yulius-bwrap (unconfined)`;
+    - someone else's profile that AppArmor refuses (24.04): `apparmor_parser -r
+      /etc/apparmor.d` exits 1 and the item ends as on a fresh host.
+  - The kernel's "conflicting profile attachments" message, seen in the earlier guest run, was
+    in neither guest's log this time (`kauditd_printk_skb: … callbacks suppressed`): the
+    line does not promise it, and the guide says the log may show it.
+  - Gates at the head that carries this section: `cargo check --workspace --all-targets`,
+    `cargo fmt --all -- --check`, `cargo clippy -p yulius --all-targets -- -D warnings`,
+    `cargo test -p yulius --lib` (437 pass), `python3 scripts/check_repository.py` and
+    `spec_check` here; the whole gate (`scripts/dev ci`) and e2e are Yulius CI's run on the
+    pull request's head. The security scan is turned off for this project (Vidoc): nothing was
+    scanned.
+  - Not tested: a profile for bwrap that lives outside `/etc/apparmor.d` (snapd's directory,
+    one loaded by hand): the proof sees it only while it is loaded. A host whose
+    `/etc/apparmor.d` takes long to load (the two guests took under a second).
 - **Met on the way, outside this change**: on every fresh host with cgroup delegation the first
   `host setup` ends with `FAIL Docker smoke test` in the step "a sandbox without Docker answers
   why" (a live engine answers the Docker-off run; a later `doctor --docker-smoke` passes): issue
