@@ -144,10 +144,12 @@ mod moves {
     use async_trait::async_trait;
     use yulius_app::auth::AuthContext;
     use yulius_app::context::{App, AppConfig};
+    use yulius_app::events::Envelope;
     use yulius_app::hub::HubFrame;
     use yulius_app::model::{LaunchKind, TaskMode};
     use yulius_app::ports::agent_cli::{AgentCli, AgentCliStatus, CliSource};
     use yulius_app::race::{self, Point};
+    use yulius_contracts::events::UiEvent;
     use yulius_domain::agent_cli::{Channel, Version};
     use yulius_domain::ids::{SandboxId, TaskId, UserId};
     use yulius_domain::task::{Activity, AttemptState, StopReason, TaskStatus};
@@ -383,6 +385,31 @@ mod moves {
         out
     }
 
+    /// What the task `id` read (its status and activity) in each update published to the UI on
+    /// `events` so far, oldest first.
+    fn published(
+        events: &mut tokio::sync::broadcast::Receiver<Envelope>,
+        id: &TaskId,
+    ) -> Result<Vec<(String, Option<String>)>, Box<dyn std::error::Error>> {
+        use tokio::sync::broadcast::error::TryRecvError;
+        let mut read = Vec::new();
+        loop {
+            match events.try_recv() {
+                Ok(envelope) => {
+                    if let UiEvent::TaskUpdated { task } = envelope.event
+                        && task.id == id.as_str()
+                    {
+                        read.push((task.status.clone(), task.activity.clone()));
+                    }
+                }
+                Err(TryRecvError::Lagged(lost)) => {
+                    return Err(format!("{lost} updates were lost").into());
+                }
+                Err(_) => return Ok(read),
+            }
+        }
+    }
+
     /// Set once the next settled turn of `id` decided whether its session moves (and started
     /// the restart if so): what a test waits for instead of a pause.
     fn decided(id: &TaskId) -> Arc<AtomicBool> {
@@ -443,6 +470,7 @@ mod moves {
 
             // Its next turn ends: the session restarts on the new Claude Code.
             let mut watch = s.app.runtime(&s.id).hub.subscribe().rx;
+            let mut events = s.app.events.subscribe();
             let restarted = decided(&s.id);
             turn(&s, "two").await?;
             second_run_live(&s).await?;
@@ -456,6 +484,27 @@ mod moves {
             );
             assert_eq!(attempts[0].account_id, attempts[1].account_id);
             settled(&s, Activity::Waiting).await?;
+            // The restart is no news (SPEC-468 CCF-008): the task was its person's turn, read
+            // "continuing" while it restarted, and is their turn again. It never read Working
+            // in between, which viewers took for work and a notification for a new "Your turn".
+            let read = published(&mut events, &s.id)?;
+            let restart = read.iter().position(|(status, _)| status == "switching");
+            let from_restart: Vec<(&str, Option<&str>)> = read
+                [restart.ok_or("it read switching")?..]
+                .iter()
+                .map(|(status, activity)| (status.as_str(), activity.as_deref()))
+                .collect();
+            assert!(
+                from_restart
+                    .iter()
+                    .all(|(_, activity)| *activity != Some("working")),
+                "{from_restart:?}"
+            );
+            assert_eq!(
+                from_restart.last(),
+                Some(&("running", Some("waiting"))),
+                "{from_restart:?}"
+            );
             // One line, about Claude Code, and none about subscriptions.
             let notices = said(&mut watch);
             assert_eq!(
@@ -907,6 +956,43 @@ mod moves {
             assert!(
                 screen(&s.app, &s.id).contains("STOP BLOCKED"),
                 "the gate blocks as it would without a newer Claude Code"
+            );
+            stop(&s.app, &s.id).await
+        })?;
+        rt.shutdown_timeout(Duration::from_secs(5));
+        Ok(())
+    }
+
+    /// SPEC-468 CCF-008: a prompt-mode session whose person's goal failed is their turn, with
+    /// work left (SPEC-429), and reads so after its idle restart too: what Claude Code last
+    /// recorded of the goal is what the agent left, in the same session with nothing typed. It
+    /// used to be forgotten with the old run, so the task read "Answered" from then on, which
+    /// its person was notified of.
+    #[test]
+    fn a_goal_that_failed_is_still_unfinished_after_an_idle_restart() -> TestResult {
+        let (_dir, data) = data_dir()?;
+        let version = data.join("claude-version");
+        let rt = runtime()?;
+        rt.block_on(async {
+            let options = FakeAgentOptions {
+                goal_verdict: Some("failed"),
+                ..hooked()
+            };
+            let s = server(&data, &version, options, TaskMode::Prompt, "2.1.322").await?;
+            std::fs::write(&version, "2.1.322\n")?;
+            let ctx = s.ctx().await?;
+            // Its person sets a goal of their own; the evaluator says it cannot be met, which
+            // ends the goal, and the settled turn restarts the idle session.
+            let restarted = decided(&s.id);
+            s.app.send_input(&s.id, b"/goal make it rain\r").await?;
+            until_decided(&restarted).await?;
+            second_run_live(&s).await?;
+            settled(&s, Activity::Waiting).await?;
+            assert!(!s.app.goal_is_open(&s.id), "the goal ended");
+            let detail = s.app.task_detail(&ctx, s.id.as_str()).await?;
+            assert!(
+                detail.summary.goal_unfinished,
+                "the work the goal left is still unfinished"
             );
             stop(&s.app, &s.id).await
         })?;

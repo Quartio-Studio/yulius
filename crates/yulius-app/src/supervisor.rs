@@ -520,6 +520,22 @@ pub enum RunStart {
     AfterLimit,
 }
 
+/// What an idle session is after a switch that types nothing into it (a person's move of an idle
+/// task, SPEC-447 MOV-002; a restart on a newer Claude Code, SPEC-461 CCM-013): its launch gives
+/// the task this back, so it never reads Working, which viewers would take for work and a
+/// person's notifications for news (SPEC-468 CCF-008).
+#[derive(Debug, Clone, Copy)]
+struct IdleRest {
+    /// What the task read: waiting, or done.
+    activity: Activity,
+    /// When the old run's last turn began: anything else at the launch is a turn of the new
+    /// run (a prompt someone sent at once), which is work.
+    turn_began: i64,
+    /// Whether Claude Code last recorded the session's goal as unfinished (SPEC-429): in the
+    /// same session, with nothing typed, that is still what its agent left.
+    goal_unfinished: bool,
+}
+
 /// Supervisor-owned per-process state.
 #[derive(Default)]
 pub struct SupervisorState {
@@ -1132,20 +1148,22 @@ impl App {
         account: Option<AccountId>,
     ) -> BoxFuture<'a, AppResult<()>> {
         Box::pin(async move {
-            self.start_run_if(task_id, start, account, None)
+            self.start_run_if(task_id, start, account, None, None)
                 .await
                 .map(|_| ())
         })
     }
 
     /// [`App::start_run`], only while the task still has the status `only` (when given), checked
-    /// under the launch lock: `false` when it no longer has it, so nothing was done.
+    /// under the launch lock: `false` when it no longer has it, so nothing was done. With
+    /// `rest`, the run's task is idle again from its launch on ([`IdleRest`]).
     fn start_run_if<'a>(
         self: &'a Arc<Self>,
         task_id: &'a TaskId,
         start: RunStart,
         account: Option<AccountId>,
         only: Option<TaskStatus>,
+        rest: Option<IdleRest>,
     ) -> BoxFuture<'a, AppResult<bool>> {
         Box::pin(async move {
             let guard = self.supervisor.launch.lock().await;
@@ -1207,7 +1225,7 @@ impl App {
                 }
                 return Ok(true);
             }
-            let result = self.launch_attempt(&task, start, account).await;
+            let result = self.launch_attempt(&task, start, account, rest).await;
             drop(guard);
             if let Err(err) = &result {
                 let reason = crate::account_gate::fail_reason(err);
@@ -1242,6 +1260,7 @@ impl App {
         task: &TaskRecord,
         start: RunStart,
         requested: Option<AccountId>,
+        rest: Option<IdleRest>,
     ) -> AppResult<()> {
         let store = &self.deps.store;
         let relaunch = start.clone();
@@ -1550,7 +1569,7 @@ impl App {
             store
                 .transition_attempt(&attempt_id, AttemptState::Exited, &update)
                 .await?;
-            return Box::pin(self.launch_attempt(&task, relaunch, None)).await;
+            return Box::pin(self.launch_attempt(&task, relaunch, None, rest)).await;
         }
         // Before the spawn, so the first prompt's hook always finds it (SPEC-068).
         if typed_opening.is_some()
@@ -1628,13 +1647,18 @@ impl App {
         } else {
             TaskEvent::Spawned
         };
+        // A run works from its launch on, except a session that was idle and got nothing typed:
+        // it is idle again, unless a turn began in it meanwhile (SPEC-468 CCF-008).
+        let rest =
+            rest.filter(|rest| runtime.turn_began_ms.load(Ordering::SeqCst) == rest.turn_began);
+        let activity = rest.map_or(Activity::Working, |rest| rest.activity);
         if let Ok(next) = current.status.apply(event) {
             store
                 .transition_task(
                     &task.id,
                     Some(current.status),
                     next,
-                    Some(Activity::Working),
+                    Some(activity),
                     self.now(),
                 )
                 .await?;
@@ -1648,6 +1672,13 @@ impl App {
         let typed_before = runtime.typed_at_ms.load(Ordering::SeqCst);
         runtime.box_emptied_ms.store(self.now().0, Ordering::SeqCst);
         self.attach_run(&task.id, &attempt, &host_token).await?;
+        // The new run learns its goal from its own lines, and an idle one writes none: what the
+        // old run read of the goal still says what the agent left.
+        if let Some(rest) = rest {
+            runtime
+                .goal_unfinished
+                .store(rest.goal_unfinished, Ordering::SeqCst);
+        }
         runtime.hub.state_changed();
         self.publish_task(&task.id).await;
         // Control passed during the launch, after this run took its owner's personal MCP servers
@@ -2830,7 +2861,7 @@ impl App {
             // Only while it is still queued, checked under the launch lock: a task stopped or
             // started meanwhile is not resumed here.
             if let Err(err) = self
-                .start_run_if(&task.id, start, None, Some(TaskStatus::Queued))
+                .start_run_if(&task.id, start, None, Some(TaskStatus::Queued), None)
                 .await
             {
                 tracing::warn!(error = %err, task = %task.id, "queued task failed to start");
@@ -3397,9 +3428,9 @@ impl App {
             Path::new(task_id.as_str()),
         );
         // A prompt-mode session that was idle and gets nothing typed is idle again once it
-        // runs (SPEC-447 MOV-002; a restart on a newer Claude Code, SPEC-461 CCM-013): the
-        // launch marks every run working, and no turn would end to say otherwise.
-        let rests_as = task
+        // runs (SPEC-447 MOV-002; a restart on a newer Claude Code, SPEC-461 CCM-013): no turn
+        // would end to say so, and it reads as it did, from its launch on (SPEC-468 CCF-008).
+        let rest = task
             .activity
             .filter(|activity| {
                 activity.is_idle()
@@ -3407,8 +3438,13 @@ impl App {
                     && task.mode == TaskMode::Prompt
                     && matches!(start, RunStart::Resume { prompt: None })
             })
-            .map(|activity| (activity, runtime.turn_began_ms.load(Ordering::SeqCst)));
-        match self.start_run_if(task_id, start, account, Some(from)).await {
+            .map(|activity| IdleRest {
+                activity,
+                turn_began: runtime.turn_began_ms.load(Ordering::SeqCst),
+                goal_unfinished: runtime.goal_unfinished.load(Ordering::SeqCst),
+            });
+        let started = self.start_run_if(task_id, start, account, Some(from), rest);
+        match started.await {
             // Another start (the capacity loop's) ran the paused task first: it won, the switch
             // is made.
             Ok(false)
@@ -3434,10 +3470,6 @@ impl App {
                         runtime.claude_move_refused_ms.store(0, Ordering::SeqCst);
                     } else {
                         runtime.switch_refused_ms.store(0, Ordering::SeqCst);
-                    }
-                    if let Some((activity, turn_began)) = rests_as {
-                        self.rest_after_idle_switch(task_id, activity, turn_began)
-                            .await;
                     }
                     if !for_claude_code {
                         runtime.hub.notice(if fresh {
@@ -3473,32 +3505,6 @@ impl App {
                 Err(err)
             }
         }
-    }
-
-    /// Puts a session that was idle before a switch that typed nothing back to `activity`,
-    /// unless a turn began in the new run meanwhile (a prompt someone sent at once).
-    async fn rest_after_idle_switch(&self, task_id: &TaskId, activity: Activity, turn_began: i64) {
-        let runtime = self.runtime(task_id);
-        let Ok(Some(task)) = self.deps.store.task(task_id).await else {
-            return;
-        };
-        // The new run's watch resets the turn's start; anything else is a turn of the new run.
-        let began = runtime.turn_began_ms.load(Ordering::SeqCst);
-        if task.status != TaskStatus::Running
-            || task.activity != Some(Activity::Working)
-            || (began != 0 && began != turn_began)
-        {
-            return;
-        }
-        if let Err(err) = self
-            .deps
-            .store
-            .set_activity(task_id, Some(activity), self.now())
-            .await
-        {
-            tracing::warn!(error = %err, task = %task_id, "the moved task was not put back to idle");
-        }
-        self.publish_task(task_id).await;
     }
 
     /// The status a switch goes on from: still `Switching`, or paused for capacity meanwhile (a
