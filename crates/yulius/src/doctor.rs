@@ -278,15 +278,25 @@ fn isolation_checks(data_dir: &Path) -> Vec<Check> {
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("yulius"));
     let mut checks = Vec::new();
     match resolve(&IsolationArgs::default(), data_dir, &exe, 8081) {
-        Ok(config) => checks.push(check(
-            "sandbox isolation",
-            Level::Ok,
-            format!(
-                "namespace holder available (ids {}–{} mapped, egress through slirp4netns)",
-                config.uid.sub_start,
-                config.uid.sub_start + config.uid.count - 1
-            ),
-        )),
+        Ok(config) => {
+            checks.push(check(
+                "sandbox isolation",
+                Level::Ok,
+                format!(
+                    "namespace holder available (ids {}–{} mapped, egress through slirp4netns)",
+                    config.uid.sub_start,
+                    config.uid.sub_start + config.uid.count - 1
+                ),
+            ));
+            let mapper = yulius_sandbox::userns::Mapper {
+                bwrap: config.bwrap,
+                newuidmap: config.newuidmap,
+                newgidmap: config.newgidmap,
+                uid: config.uid,
+                gid: config.gid,
+            };
+            checks.push(namespaces_check(mapper.probe()));
+        }
         Err(missing) => checks.push(check(
             "sandbox isolation",
             Level::Warn,
@@ -345,6 +355,36 @@ fn isolation_checks(data_dir: &Path) -> Vec<Check> {
         &yulius_sandbox::docker_status::own_engines(data_dir),
     ));
     checks
+}
+
+/// Whether a sandbox's namespace starts here (SPEC-456 BNS-009): the programs being installed
+/// does not say so where AppArmor restricts user namespaces (Ubuntu since 24.04).
+fn namespaces_check(proof: std::io::Result<()>) -> Check {
+    const NAME: &str = "sandbox namespaces";
+    match proof {
+        Ok(()) => check(
+            NAME,
+            Level::Ok,
+            "bwrap starts a user namespace with mapped ids and mounts in it",
+        ),
+        Err(error) => {
+            let error = error.to_string();
+            let said: Vec<&str> = error
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .collect();
+            check(
+                NAME,
+                Level::Fail,
+                format!(
+                    "sandboxes cannot start: {}. Run `sudo yulius host setup`: its item \"bwrap \
+                     namespaces\" writes the AppArmor rule bwrap needs, or names the cause",
+                    said.join("; ")
+                ),
+            )
+        }
+    }
 }
 
 /// The "sandbox Docker" verdict (SPEC-203 HST-013, one function for the doctor, the host setup
@@ -595,8 +635,8 @@ pub fn doctor(
 #[cfg(test)]
 mod tests {
     use super::{
-        GH_INSTALL_URL, Level, docker_checks, github_cli_check, proxy_secret_check, restart_check,
-        run_checks, version_of, visible_when_contained,
+        GH_INSTALL_URL, Level, docker_checks, github_cli_check, namespaces_check,
+        proxy_secret_check, restart_check, run_checks, version_of, visible_when_contained,
     };
     use crate::restart_safety::Facts;
     use std::path::{Path, PathBuf};
@@ -646,6 +686,31 @@ mod tests {
             "{first}"
         );
         assert!(restart_check("yulius.service", &Facts::default()).is_none());
+    }
+
+    #[test]
+    fn a_namespace_that_starts_is_ok_and_one_that_does_not_fails_with_the_fix() {
+        let works = namespaces_check(Ok(()));
+        assert_eq!(works.name, "sandbox namespaces");
+        assert_eq!(works.level, Level::Ok, "{}", works.detail);
+        assert_eq!(
+            works.detail,
+            "bwrap starts a user namespace with mapped ids and mounts in it"
+        );
+        // What Ubuntu 24.04 says without the AppArmor rule (SPEC-456): two lines from bwrap.
+        let denied = namespaces_check(Err(std::io::Error::other(
+            "bwrap did not start its namespace: bwrap: setting up uid map: Permission denied\n\
+             bwrap: read from sync pipe failed",
+        )));
+        assert_eq!(denied.name, "sandbox namespaces");
+        assert_eq!(denied.level, Level::Fail);
+        assert_eq!(
+            denied.detail,
+            "sandboxes cannot start: bwrap did not start its namespace: bwrap: setting up uid \
+             map: Permission denied; bwrap: read from sync pipe failed. Run `sudo yulius host \
+             setup`: its item \"bwrap namespaces\" writes the AppArmor rule bwrap needs, or \
+             names the cause"
+        );
     }
 
     #[test]

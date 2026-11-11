@@ -24,6 +24,16 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   live run was refused only after its status had changed, so the task ended as "failed" beside a
   running agent that no button reached. A start is now refused before anything changes, a run
   that no server holds is settled first, and Stop ends a run that is still on record.
+- `yulius host setup` lets bwrap create user namespaces (SPEC-456, task #438, ADR-0296). Ubuntu
+  since 24.04 allows them only to programs with an AppArmor rule, and production ran on one
+  written by hand. The new item "bwrap namespaces" starts bwrap as the service user and, where
+  that fails, writes and loads `/etc/apparmor.d/yulius-bwrap`; on Ubuntu 26.04 it first disables
+  the package's `bwrap-userns-restrict` with a link, never editing its file. A hand-written rule
+  that works is adopted and left alone; Debian and hosts without AppArmor get nothing. `yulius
+  host check` (the update helper's re-check, Settings → Instance) and `yulius doctor --contained`
+  ("sandbox namespaces") report a host where bwrap cannot start a sandbox, with the fix, by
+  starting one, and `yulius instance import` names the step. Run `sudo yulius host setup` again
+  after a release upgrade from 24.04 to 26.04.
 - Resource limits are sized from the host (SPEC-459, task #441, ADR-0294). Live sessions, CI
   jobs, CI runs per sandbox, the sandbox disk quota and the CD run disk no longer have fixed
   defaults (8, 4, 2, 100 GB, 20 GB): like the sandbox memory they follow the host's CPUs, memory
