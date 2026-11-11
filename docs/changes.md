@@ -15,6 +15,20 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   first work after the pause, whatever woke the session, and the task reads Working. A woken turn
   the API refuses again keeps the request, and a request the agent made itself stays. Tasks an
   older Yulius left in that state lose the request at the first start with this change.
+- Yulius knows whether GitHub accepts its sign-in address, and laptops follow a move (SPEC-466,
+  task #446, ADR-0302; slice C of the move). After a move to another URL GitHub sign-in fails until
+  a person adds the new callback URL to the GitHub App, which GitHub offers no API for. The
+  instance now asks GitHub, with its own App credentials and a made-up code, whether its callback
+  is registered: at start, on demand, and while someone looks at an answer that is not
+  "registered". Settings → Instance has the card **Address**: when the callback is missing, one
+  link to the App's settings and the two values to paste, read again until GitHub accepts it; after
+  a move, where the instance came from, when, and what its first start did with the tasks. The
+  sign-in page says why GitHub sign-in cannot complete and opens the password. `yulius instance
+  migrate` asks the running instance over its loopback listener, so its plan checks the new URL's
+  callback before the cutover (`ok` when registered, else the exact link and values) and its last
+  checklist asks the new instance again. `yulius remote` on a laptop follows the old URL's
+  redirect: it moves the saved sign-in to the new URL, says so in one line and repeats the call;
+  no other redirect is followed. Claude Code's own MCP connection still has to be added again.
 - A restart of the server keeps its sessions on systemd 258 and later (SPEC-458, task #440,
   ADR-0298). On Ubuntu 26.04 (systemd 259) `yulius.service` could be stopped but not started
   again while one session ran, so a restart or an update took the instance down until every
@@ -87,7 +101,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   host check` (the update helper's re-check, Settings → Instance) and `yulius doctor --contained`
   ("sandbox namespaces") report a host where bwrap cannot start a sandbox, with the fix, by
   starting one, and `yulius instance import` names the step. Run `sudo yulius host setup` again
-  after a release upgrade from 24.04 to 26.04.
+  after a release upgrade from 24.04 to 26.04. A follow-up (#1165) makes the check and the
+  dry run name a kernel limit on user namespaces (`user.max_user_namespaces` or
+  `kernel.unprivileged_userns_clone` set to 0) like setup does.
 - Resource limits are sized from the host (SPEC-459, task #441, ADR-0294). Live sessions, CI
   jobs, CI runs per sandbox, the sandbox disk quota and the CD run disk no longer have fixed
   defaults (8, 4, 2, 100 GB, 20 GB): like the sandbox memory they follow the host's CPUs, memory

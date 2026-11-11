@@ -11,6 +11,11 @@ pub struct SetupStatus {
     /// sign-in (SPEC-422). Absent from servers before it, read as false.
     #[serde(default)]
     pub github_configured: bool,
+    /// GitHub is known to refuse this instance's sign-in callback (after a move to another URL,
+    /// until the GitHub App holds the new one): GitHub sign-in cannot complete, the superadmin's
+    /// password works (SPEC-466 MVC-012).
+    #[serde(default)]
+    pub github_callback_missing: bool,
 }
 
 /// `POST /api/setup`.

@@ -306,6 +306,21 @@ pub trait GitHubPort: Send + Sync {
         code: &str,
         redirect_uri: &str,
     ) -> AppResult<GhUserToken>;
+    /// Whether GitHub accepts `redirect_uri` as one of the App's callback URLs (SPEC-466
+    /// MVC-001): one bounded request with the App's own credentials, nobody's token.
+    ///
+    /// # Errors
+    /// GitHub gave neither answer (down, a refused secret, a timeout): not known.
+    async fn callback_registered(
+        &self,
+        app: &GitHubAppConfig,
+        redirect_uri: &str,
+    ) -> AppResult<bool> {
+        let _ = (app, redirect_uri);
+        Err(crate::error::AppError::Upstream(
+            "asking GitHub about a callback URL is not available".into(),
+        ))
+    }
     /// Refreshes a user token.
     async fn refresh_token(
         &self,
