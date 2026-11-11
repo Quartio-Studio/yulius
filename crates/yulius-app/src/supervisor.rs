@@ -137,6 +137,9 @@ pub struct TaskRuntime {
     /// The goal pause Claude Code wrote at that limit, held for the limit path, or that path's
     /// word that the session stays there (SPEC-464 UCL-007).
     pub(crate) limit_goal_pause: Mutex<crate::goal_retry::LimitGoalPause>,
+    /// When Claude Code recorded that limit (ms, 0 = unknown): a request made at or after it is
+    /// this limit's (SPEC-464 UCL-007).
+    pub(crate) limit_at_ms: AtomicI64,
     /// When the current turn started (ms, 0 = no turn in progress). Active agent time comes
     /// from the transcript (SPEC-087 MET-001), not from this.
     turn_started_ms: AtomicI64,
@@ -392,6 +395,7 @@ impl TaskRuntime {
             limit_resets_at: AtomicI64::new(0),
             at_limit: AtomicBool::new(false),
             limit_goal_pause: Mutex::new(crate::goal_retry::LimitGoalPause::None),
+            limit_at_ms: AtomicI64::new(0),
             turn_started_ms: AtomicI64::new(0),
             auto_pr_head: Mutex::new(None),
             merged_covers: Mutex::new(None),
@@ -496,12 +500,14 @@ impl TaskRuntime {
         self.turn_started_ms.store(0, Ordering::SeqCst);
     }
 
-    /// A usage limit or a refused subscription cut the run's turn: the run is at its limit, and
-    /// nothing is known yet of a goal pause written there (SPEC-464 UCL-007).
-    pub(crate) fn limit_cut_the_turn(&self) {
+    /// A usage limit or a refused subscription, recorded `at`, cut the run's turn: the run is at
+    /// its limit, and nothing is known yet of a goal pause written there (SPEC-464 UCL-007).
+    pub(crate) fn limit_cut_the_turn(&self, at: Option<Timestamp>) {
         if let Ok(mut pause) = self.limit_goal_pause.lock() {
             *pause = crate::goal_retry::LimitGoalPause::None;
         }
+        self.limit_at_ms
+            .store(at.map_or(0, |at| at.0), Ordering::SeqCst);
         self.at_limit.store(true, Ordering::SeqCst);
     }
 }
@@ -4258,11 +4264,11 @@ impl App {
                 message,
                 window_minutes,
                 scope,
-                ..
+                at,
             } => {
                 tracing::info!(task = %task_id, %message, ?scope, "usage limit reached");
                 runtime.end_turn(self.now());
-                runtime.limit_cut_the_turn();
+                runtime.limit_cut_the_turn(at);
                 if let Some(account) = &attempt.account_id {
                     let limit = ReportedLimit {
                         scope,
@@ -4280,14 +4286,14 @@ impl App {
                 let account = attempt.account_id.clone();
                 tokio::spawn(async move { app.rotate(&tid, account, Trigger::LimitReached).await });
             }
-            Observation::AccessLost { message, .. } => {
+            Observation::AccessLost { message, at } => {
                 // The subscription no longer works (cancelled, downgraded, revoked): it needs a
                 // new sign-in, so nothing is placed on it again and its usage is no longer read
                 // back to `ok`. The cut turn then moves on like a limit's, to the next working
                 // subscription, or the task waits for one.
                 tracing::warn!(task = %task_id, %message, "subscription access refused");
                 runtime.end_turn(self.now());
-                runtime.limit_cut_the_turn();
+                runtime.limit_cut_the_turn(at);
                 runtime.limit_resets_at.store(0, Ordering::SeqCst);
                 let mut refused = None;
                 if let Some(account) = &attempt.account_id {

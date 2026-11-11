@@ -150,15 +150,24 @@ impl App {
         }
     }
 
-    /// The goal pause written at the limit where `task`'s session stays needs a person. A task
-    /// already under Needs you was told: a restart reads the same pause again and says nothing
-    /// new. One that a prompt set working since (Yulius's own, which ends no request) is under
-    /// Needs you again, its open request kept.
+    /// The goal pause written at the limit where `task`'s session stays needs a person: asked
+    /// and audited once per limit. While the request made for this limit is open (it was asked
+    /// at or after Claude Code recorded the limit), reading the same pause again says nothing
+    /// new: a restart replays it, and the task may read otherwise meanwhile (the replay settles
+    /// the closed turn as Your turn, which can land after the request). The task is only put
+    /// back under Needs you. A refusal after a later prompt (Yulius's own, which ends no
+    /// request) is a new limit: it is audited, and the open request is kept.
     async fn limit_goal_pause_needs_a_person(&self, task: &TaskRecord, notice: &str) {
-        if task.activity == Some(Activity::NeedsAttention) {
-            return;
+        let limit_at = self.runtime(&task.id).limit_at_ms.load(Ordering::SeqCst);
+        let asked = matches!(
+            self.deps.store.task_needs_you(&task.id).await,
+            Ok(Some(open)) if open.action == RETRY_ACTION && open.at >= limit_at
+        );
+        if !asked {
+            self.goal_retries_spent(task, notice).await;
+        } else if let Err(err) = self.set_task_activity(task, Activity::NeedsAttention).await {
+            tracing::warn!(task = %task.id, error = %err, "could not flag a goal pause at a limit again");
         }
-        self.goal_retries_spent(task, notice).await;
     }
 
     /// The session goes on past the limit that cut its turn, with nothing typed: a request to
