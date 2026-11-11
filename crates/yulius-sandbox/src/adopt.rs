@@ -204,10 +204,29 @@ fn mirror(
     move_all(&from, &to, done);
     for child in subgroups(&from) {
         if let Ok(below) = child.strip_prefix(old) {
-            mirror(old, sessions, below, owner, engine_wait, done)?;
+            mirror_or_report(old, sessions, below, owner, engine_wait, done);
         }
     }
     Ok(())
+}
+
+/// [`mirror`], with a group that cannot be made or filled reported instead of ending the whole
+/// move: the other sandboxes still move, since every session left behind keeps the server from
+/// starting on systemd 258.
+fn mirror_or_report(
+    old: &Path,
+    sessions: &Path,
+    relative: &Path,
+    owner: (u32, u32),
+    engine_wait: Duration,
+    done: &mut Adopted,
+) {
+    if let Err(error) = mirror(old, sessions, relative, owner, engine_wait, done) {
+        done.left.push(format!(
+            "{}: not moved: {error}",
+            old.join(relative).display()
+        ));
+    }
 }
 
 /// Rebuilds the groups of the server unit `old` inside the sessions unit `sessions` and moves
@@ -218,8 +237,9 @@ fn mirror(
 /// `engine_wait` for each.
 ///
 /// # Errors
-/// The sessions unit cannot be read or written. Groups that keep processes are not an error:
-/// they are named in [`Adopted::left`].
+/// The sessions unit cannot be read or written. Groups that keep processes, or that could not
+/// be made in the sessions unit, are not an error: they are named in [`Adopted::left`] and the
+/// others still move.
 pub fn adopt(
     old: &Path,
     sessions: &Path,
@@ -244,7 +264,7 @@ pub fn adopt(
     pass_controllers(old, sessions)?;
     for child in &children {
         if let Ok(relative) = child.strip_prefix(old) {
-            mirror(old, sessions, relative, owner, engine_wait, &mut done)?;
+            mirror_or_report(old, sessions, relative, owner, engine_wait, &mut done);
         }
     }
     if stray_server {
@@ -536,6 +556,36 @@ mod tests {
             &|| Some("/yulius.slice/yulius.service".to_owned()),
             Duration::ZERO
         ));
+        Ok(())
+    }
+
+    /// One sandbox whose group cannot be made in the sessions unit must not cost the others
+    /// their move: every session left behind keeps the server from starting on systemd 258.
+    #[test]
+    fn a_sandbox_that_cannot_be_moved_does_not_stop_the_others() -> TestResult {
+        let root = tempfile::tempdir()?;
+        let (old, sessions) = old_layout(root.path())?;
+        group(
+            &old.join("sandboxes/s2/agents"),
+            &[("cgroup.procs", "51\n52\n")],
+        )?;
+        // Something that is no group stands where s1's group would go.
+        group(&sessions.join("sandboxes"), &[("cgroup.procs", "")])?;
+        std::fs::write(sessions.join("sandboxes/s1"), "in the way")?;
+        let done = adopt(&old, &sessions, false, WAIT)?;
+        assert_eq!(
+            std::fs::read_to_string(sessions.join("sandboxes/s2/agents/cgroup.procs"))?,
+            "52",
+            "s2 moved (a fake cgroup.procs keeps the last write)"
+        );
+        assert_eq!(done.processes, 2, "{done:?}");
+        assert!(
+            done.left
+                .iter()
+                .any(|line| line.contains("sandboxes/s1") && line.contains("not moved")),
+            "{:?}",
+            done.left
+        );
         Ok(())
     }
 
