@@ -524,16 +524,24 @@ pub enum RunStart {
 /// task, SPEC-447 MOV-002; a restart on a newer Claude Code, SPEC-461 CCM-013): its launch gives
 /// the task this back, so it never reads Working, which viewers would take for work and a
 /// person's notifications for news (SPEC-468 CCF-008).
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct IdleRest {
     /// What the task read: waiting, or done.
     activity: Activity,
-    /// When the old run's last turn began: anything else at the launch is a turn of the new
-    /// run (a prompt someone sent at once), which is work.
+    /// When the old run's last turn began (ms, 0 = none).
     turn_began: i64,
     /// Whether Claude Code last recorded the session's goal as unfinished (SPEC-429): in the
     /// same session, with nothing typed, that is still what its agent left.
     goal_unfinished: bool,
+}
+
+impl IdleRest {
+    /// The rest a launch gives its task, the task's last turn having begun at `turn_began_now`:
+    /// none once that is no longer the old run's last turn, since a turn began in the new run
+    /// meanwhile (a prompt someone sent at once), which is work.
+    fn at_launch(rest: Option<Self>, turn_began_now: i64) -> Option<Self> {
+        rest.filter(|rest| rest.turn_began == turn_began_now)
+    }
 }
 
 /// Supervisor-owned per-process state.
@@ -1649,8 +1657,7 @@ impl App {
         };
         // A run works from its launch on, except a session that was idle and got nothing typed:
         // it is idle again, unless a turn began in it meanwhile (SPEC-468 CCF-008).
-        let rest =
-            rest.filter(|rest| runtime.turn_began_ms.load(Ordering::SeqCst) == rest.turn_began);
+        let rest = IdleRest::at_launch(rest, runtime.turn_began_ms.load(Ordering::SeqCst));
         let activity = rest.map_or(Activity::Working, |rest| rest.activity);
         if let Ok(next) = current.status.apply(event) {
             store
@@ -4543,6 +4550,36 @@ fn interrupts_first(reason: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// SPEC-468 CCF-008: an idle session that got nothing typed is idle again from its launch
+    /// on, unless a turn began in the new run before the launch got that far.
+    #[test]
+    fn an_idle_rest_holds_until_a_turn_begins_in_the_new_run() {
+        use super::IdleRest;
+        use yulius_domain::task::Activity;
+        let rest = IdleRest {
+            activity: Activity::Waiting,
+            turn_began: 1_000,
+            goal_unfinished: true,
+        };
+        assert_eq!(IdleRest::at_launch(Some(rest), 1_000), Some(rest));
+        // A session that never had a turn rests too.
+        let fresh = IdleRest {
+            turn_began: 0,
+            ..rest
+        };
+        assert_eq!(IdleRest::at_launch(Some(fresh), 0), Some(fresh));
+        assert_eq!(
+            IdleRest::at_launch(Some(rest), 2_000),
+            None,
+            "a prompt was sent at once"
+        );
+        assert_eq!(
+            IdleRest::at_launch(None, 1_000),
+            None,
+            "it worked, or works on"
+        );
+    }
+
     /// Review of SPEC-332 (round 3): a person's switch and a hand-over may come mid-turn, so they
     /// interrupt the turn first (the transcript keeps it); automatic switches, made while the agent
     /// is idle, terminate without an interrupt.

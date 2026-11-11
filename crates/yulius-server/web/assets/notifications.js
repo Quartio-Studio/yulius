@@ -184,6 +184,11 @@ export function createNotificationCenter(ctx) {
     // The rule every view uses (status.js taskInfo): a tested pull request is Done, failing checks
     // need the user.
     const info = taskInfo(task, ctx.store.state.actionRequests, ctx.store.pullsOf(task.sandbox_id).get(task.id));
+    // A switch is under the hood: the session goes on with another subscription, or restarts on
+    // a newer Claude Code, and the task reads "Continuing" meanwhile. What it read before is
+    // remembered through it, so a task that reads afterwards as it did (an idle session that
+    // got nothing typed) is no news; one that reads differently is (SPEC-468 CCF-008).
+    if (info.tone === 'switching') return;
     const previous = taskTones.get(task.id);
     taskTones.set(task.id, info.tone);
     if (previous === info.tone || !(info.tone in TASK_TONES) || watching(task.id)) return;
