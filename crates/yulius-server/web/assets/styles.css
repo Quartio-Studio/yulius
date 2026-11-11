@@ -2843,6 +2843,17 @@ a.update-text:hover { text-decoration: underline; text-underline-offset: 2px; }
 .jev-status { display: flex; align-items: center; gap: 8px; }
 .jev-status.jev-on .icon { color: var(--ok); }
 .jev-form { display: flex; flex-direction: column; gap: 8px; max-width: 520px; }
+/* The Claude Code card (SPEC-461): the check's line, the channel choice, tasks on an older version. */
+.claude-check { margin: 0; }
+.claude-check .spinner { display: inline-block; width: 12px; height: 12px; vertical-align: -2px; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent; animation: spin var(--duration-spin) linear infinite; }
+.claude-unmanaged { margin: 0; overflow-wrap: anywhere; }
+.claude-notes { margin: 0; padding-left: 16px; }
+.claude-channel { display: flex; flex-direction: column; gap: 6px; border-top: 1px solid var(--border); padding-top: 12px; }
+.claude-channel .select { flex: none; width: 220px; max-width: 100%; }
+.claude-channel p { margin: 0; }
+.claude-behind { border-top: 1px solid var(--border); padding-top: 12px; }
+.claude-behind h3, .claude-behind p { margin: 0; }
+.claude-behind-list { margin: 0; padding-left: 16px; }
 /* The Vidoc card's projects, each with its switch (SPEC-338 VOF-005). */
 .vidoc-instance { display: flex; flex-direction: column; gap: 4px; border-top: 1px solid var(--border); padding-top: 12px; max-width: 520px; }
 .vidoc-instance p { margin: 0; }

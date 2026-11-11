@@ -444,6 +444,15 @@ pub trait UpdateStore: Send + Sync {
     /// # Errors
     /// `Conflict` while the instance is not set up: there is no row to keep it.
     async fn set_limits(&self, doc: &str) -> AppResult<()>;
+    /// The Claude Code release channel chosen in Settings, with when and by whom (SPEC-461
+    /// CCM-009); `None` while the server's configuration is followed.
+    async fn claude_channel(&self) -> AppResult<Option<crate::claude_code::ChosenChannel>>;
+    /// Stores the channel `by` chose (`Some((channel, by))`), or forgets it (`None`).
+    async fn set_claude_channel(
+        &self,
+        channel: Option<(&str, &str)>,
+        at: Timestamp,
+    ) -> AppResult<()>;
 }
 
 /// Yulius-run CI (SPEC-001 DLV-006, SPEC-002 ADR-21, tables `ci_runs` and `ci_jobs`).
