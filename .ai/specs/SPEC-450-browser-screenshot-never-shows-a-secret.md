@@ -1,6 +1,6 @@
 ---
 yulius-task: 82e50053-d61d-4639-b3a6-6950286a81d3
-status: in-progress
+status: done
 ---
 
 # SPEC-450: browser_screenshot never shows a secret typed with browser_fill_secret
@@ -196,7 +196,7 @@ with `browser_fill_secret`. A password field, drawn as dots, keeps screenshots w
 - [x] Final review: untested fail-closed branches, sandboxed frames, restored pages
 - [x] A tool chosen while its sandbox's page loads opens in that sandbox
 - [x] The e2e job's other failures: production protection and the #1087 editor test
-- [ ] Independent review of the final head
+- [x] Independent review of the final head
 
 ## Acceptance criteria
 
@@ -481,9 +481,11 @@ with `browser_fill_secret`. A password field, drawn as dots, keeps screenshots w
   64832478 with minors, fixed in `e8fa42d2`/`3d3a06cf`; the review of 0e4ffd03 found two of those
   fail-closed branches untested (now pinned by tests that fail without them, checked by removing
   each), a sandboxed frame counted as readable and a restored page left unwatched, fixed
-  test-first; the final head is reviewed again before the merge. Pre-existing findings, reported
-  on #1113 (this task creates no issues): the redactor's exact matching lets an edit in place
-  through `browser_snapshot`; `browser_fill_secret` checks only the main frame's URL, so a focused
+  test-first. The final head then had rounds of its own: 65ca08d7, d8d0a527 and 2f836f70 each
+  requested changes, answered above, and the reviewer confirms the head that holds this record
+  before `delivery_merge` is called with it. Pre-existing findings, reported on #1113 (this task
+  creates no issues): the redactor's exact matching lets an edit in place through
+  `browser_snapshot`; `browser_fill_secret` checks only the main frame's URL, so a focused
   cross-origin frame receives the value.
 - **Not tested here.** macOS at run time (the gate only compiles for it), a person's display input,
   and real sites (single-page sign-ins, framing with cookies) beyond the fake server and the local
