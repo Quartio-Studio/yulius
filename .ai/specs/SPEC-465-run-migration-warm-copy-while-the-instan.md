@@ -174,7 +174,7 @@ Resume and bound
 - [x] Extraction onto a staged copy: replace, link to earlier files, keep directory times, defer or delete
 - [x] The import of a pass: stage marker, acknowledged prefix, deletions, sync
 - [x] The move: warm passes, estimate and --max-downtime, the frozen delta, resume
-- [ ] Operations guide §7, architecture, product summary, changes, SPEC-460's pointer
+- [x] Operations guide §7, architecture, product summary, changes, SPEC-460's pointer
 - [ ] A real move between two hosts (QEMU guests) with changes during the copy
 - [ ] Independent review answered, gates green
 
