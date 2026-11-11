@@ -107,18 +107,21 @@ exec "$real" "$@"
 }
 
 /// The `yulius` command of agent runs (SPEC-011): `yulius wait`, which blocks until the checks
-/// at the agent's head finish, its delivery moves or an armed merge is decided, and
-/// `yulius security-scan`, Vidoc's scan of the repository (SPEC-195).
+/// at the agent's head finish, its delivery moves or an armed merge is decided, `yulius tool`,
+/// a Yulius tool called from the shell (SPEC-432), `yulius security-scan`, Vidoc's scan of the
+/// repository (SPEC-195), and `yulius remove`, for the task's own files (SPEC-192). Every
+/// subcommand documented "In a task's session" must be in its `case` (SPEC-451).
 #[must_use]
 pub fn agent_yulius_shim(exe: &Path) -> String {
     let exe = exe.to_string_lossy().replace('\'', "'\\''");
     format!(
         r#"#!/bin/sh
-# Yulius agent commands: `yulius wait [--minutes N]` (start it with run_in_background) and
-# `yulius security-scan [--all]` (Vidoc's scan of this repository).
+# Yulius agent commands: `yulius wait [--minutes N]` (start it with run_in_background),
+# `yulius tool <name> [<json>]` (a Yulius tool from the shell), `yulius security-scan [--all]`
+# (Vidoc's scan of this repository) and `yulius remove <paths>` (this task's own files).
 case "${{1:-}}" in
-  wait|security-scan) exec '{exe}' "$@" ;;
-  *) echo "In a task's session yulius offers: yulius wait [--minutes N], yulius security-scan [--all]" >&2; exit 2 ;;
+  wait|tool|security-scan|remove) exec '{exe}' "$@" ;;
+  *) echo "In a task's session yulius offers: yulius wait [--minutes N], yulius tool <name> [<json>], yulius security-scan [--all], yulius remove <paths>" >&2; exit 2 ;;
 esac
 "#
     )
@@ -851,10 +854,10 @@ mod tests {
         Ok(exe)
     }
 
-    /// SPEC-195 VSC-001: the agent's `yulius` offers `wait` and `security-scan`, passing their
-    /// arguments through, and nothing else.
+    /// SPEC-195 VSC-001, SPEC-451 WRP-001: the agent's `yulius` offers `wait`, `tool`,
+    /// `security-scan` and `remove`, passing their arguments through, and nothing else.
     #[test]
-    fn the_agent_yulius_shim_offers_wait_and_the_security_scan() -> TestResult {
+    fn the_agent_yulius_shim_offers_the_session_commands() -> TestResult {
         let exe = fake_exe(r#"echo "ran $*"; exit 3"#)?;
         let dir = unique_dir("yulius-agent-shim");
         std::fs::create_dir_all(&dir)?;
@@ -880,9 +883,21 @@ mod tests {
             run(&["security-scan", "--all", "--report", "r.json"])?,
             (3, "ran security-scan --all --report r.json\n".into())
         );
+        assert_eq!(
+            run(&["tool", "steps_get", "{}"])?,
+            (3, "ran tool steps_get {}\n".into())
+        );
+        assert_eq!(run(&["remove", "a", "b"])?, (3, "ran remove a b\n".into()));
         let (code, text) = run(&["serve"])?;
         assert_eq!(code, 2);
-        assert!(text.contains("yulius security-scan"), "{text}");
+        for usage in [
+            "yulius wait [--minutes N]",
+            "yulius tool <name> [<json>]",
+            "yulius security-scan [--all]",
+            "yulius remove <paths>",
+        ] {
+            assert!(text.contains(usage), "{text}");
+        }
         let _ = std::fs::remove_dir_all(&dir);
         Ok(())
     }

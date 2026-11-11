@@ -130,6 +130,8 @@ test('read access explains why the Superagent is not available', async ({ app, b
 // Review round 1: New task from a task page hands the keyboard to the composer, not the Superagent.
 test('New task from the Superagent beside a task focuses the composer', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12'));
+  // Task #12's page first: a tool opened before the page has its sandbox opens without one.
+  await firstShown(screen.getByRole('heading', { level: 1 }), '#12 Checkout API');
   await openSuperagent(browser, screen);
   await expect(browser.locator(agentTerminal)).toHaveText(/Welcome to Claude Code/);
   await screen.getByRole('note', 'About the Superagent').getByRole('link', 'New task').click();

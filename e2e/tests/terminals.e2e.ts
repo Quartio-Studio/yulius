@@ -8,6 +8,8 @@ failOnPageErrors();
 // terminal at once, without a button; "+" opens more, each in its own tab.
 
 async function openShellPanel(screen: Screen): Promise<void> {
+  // Task #12's page first: a tool opened before the page has its sandbox opens without one.
+  await firstShown(screen.getByRole('heading', { level: 1 }), '#12 Checkout API');
   await screen.getByRole('button', /^Show tools/).click();
   await screen.getByRole('button', 'Shell').click();
 }

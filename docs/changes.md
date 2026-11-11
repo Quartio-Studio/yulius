@@ -15,6 +15,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   sign-ins keep screenshots working. This covers a task's agent and both Superagents. An edit in
   place already defeats the text redactor in `browser_snapshot` (on `dev` before; reported on
   #1113).
+- `yulius tool` and `yulius remove` work in task sessions (SPEC-451, task #433, #1109). The
+  `/yulius/bin/yulius` wrapper first on a session's `PATH` passed only `wait` and `security-scan`,
+  so both commands the briefing names printed its usage line and exited 2. It now passes them too,
+  its usage line lists all four, and a test fails when a new "In a task's session" subcommand is
+  left out of it. Running sessions see the new wrapper once the updated server starts any run.
 
 ## 2026-11-10
 
