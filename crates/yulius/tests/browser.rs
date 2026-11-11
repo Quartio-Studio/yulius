@@ -656,6 +656,103 @@ async fn agents_type_secrets_only_into_pages_of_their_hosts() -> TestResult {
     .await
 }
 
+/// SPEC-450 SSC-001..004 (#1113): pixels cannot be redacted, so a screenshot of a page that
+/// shows a secret typed with `browser_fill_secret` (a plain-text field) is refused, pointing to
+/// `browser_snapshot`; a password field keeps screenshots until the page reveals it, and a
+/// navigated tab no longer holds the secret.
+#[tokio::test]
+async fn a_screenshot_never_shows_a_secret_typed_into_a_page() -> TestResult {
+    const VALUE: &str = "docs-api-key-5521-qrs";
+    with_fixture(|f| async move {
+        let created = support::call(
+            &f.h.router,
+            axum::http::Method::POST,
+            "/api/sandboxes/s1/agent-secrets",
+            Some(json!({"name": "DOCS_KEY", "description": "Docs API key",
+                "hosts": ["docs.example"], "injection": "bearer", "value": VALUE})),
+            &f.writer,
+        )
+        .await?;
+        assert_eq!(created.status, axum::http::StatusCode::CREATED, "{}", created.body);
+        let opened = mcp_tool(
+            &f.h,
+            TOKEN,
+            "browser_open",
+            json!({"url": "https://docs.example/settings"}),
+        )
+        .await?;
+        let tab = tool_text(&opened)["tab"]["id"]
+            .as_str()
+            .ok_or("tab id")?
+            .to_owned();
+        let screenshot = || mcp_tool(&f.h, TOKEN, "browser_screenshot", json!({"tab_id": tab}));
+        let refused = |shot: &Value| {
+            shot["isError"] == true
+                && shot["content"][0]["type"] == "text"
+                && tool_text(shot)
+                    .as_str()
+                    .is_some_and(|t| t.contains("browser_snapshot"))
+        };
+        let fill = |selector: &'static str| {
+            mcp_tool(
+                &f.h,
+                TOKEN,
+                "browser_fill_secret",
+                json!({"tab_id": tab, "secret": "DOCS_KEY", "selector": selector}),
+            )
+        };
+
+        // A plain-text field (an API-key input) shows the value: no pixels.
+        let filled = fill("#api-key").await?;
+        assert_eq!(filled["isError"], false, "{filled}");
+        let shot = screenshot().await?;
+        assert!(refused(&shot), "{shot}");
+        assert!(!shot.to_string().contains(VALUE), "{shot}");
+        // What the agent types itself is its own: browser_type guards nothing.
+        let typed = mcp_tool(
+            &f.h,
+            TOKEN,
+            "browser_type",
+            json!({"tab_id": tab, "text": "visible note", "selector": "#note"}),
+        )
+        .await?;
+        assert_eq!(typed["isError"], false, "{typed}");
+        assert!(refused(&screenshot().await?), "the key is still shown");
+
+        // Another document no longer holds it: screenshots work again.
+        mcp_tool(
+            &f.h,
+            TOKEN,
+            "browser_navigate",
+            json!({"tab_id": tab, "url": "https://docs.example/login"}),
+        )
+        .await?;
+        let shot = screenshot().await?;
+        assert_eq!(shot["isError"], false, "{shot}");
+        assert_eq!(shot["content"][0]["type"], "image");
+
+        // A password field is drawn as dots: screenshots keep working, until the page reveals it.
+        f.fake.set_password_field("#password", true);
+        let filled = fill("#password").await?;
+        assert_eq!(filled["isError"], false, "{filled}");
+        let shot = screenshot().await?;
+        assert_eq!(shot["isError"], false, "{shot}");
+        assert_eq!(shot["content"][0]["type"], "image");
+        f.fake.set_password_field("#password", false);
+        assert!(refused(&screenshot().await?), "a revealed password is shown");
+        f.fake.set_password_field("#password", true);
+
+        // A page that cannot be read is not captured (fail closed).
+        f.fake.set_secret_probe(Some(json!("not an answer")));
+        assert!(refused(&screenshot().await?), "an unreadable page");
+        f.fake.set_secret_probe(None);
+        let shot = screenshot().await?;
+        assert_eq!(shot["isError"], false, "{shot}");
+        Ok(())
+    })
+    .await
+}
+
 /// SPEC-405 VEV-001 (#710): a production secret (`cd_prod`) is never typed into a page, not even
 /// one of the hosts it kept from before production secrets became exclusive (SPEC-308 R2).
 #[tokio::test]

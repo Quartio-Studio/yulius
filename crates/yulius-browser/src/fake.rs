@@ -42,6 +42,8 @@ use crate::video::{
     VideoFrame,
 };
 
+/// The comment that marks the secret probe's function (`Runtime.callFunctionOn`).
+const SECRET_PROBE_MARKER: &str = "yulius:secret-probe";
 /// Maximum recorded requests; older entries are discarded.
 const MAX_RECORDED: usize = 10_000;
 /// Screencast frames Chromium keeps unacknowledged.
@@ -65,6 +67,15 @@ struct FakeTarget {
     title: String,
 }
 
+/// What a fake page holds: the fields text was typed into (by selector, `""` for the page's
+/// focused element), the focused one and its document's loader (a navigation starts a new one).
+#[derive(Debug, Default)]
+struct FakePage {
+    fields: Vec<(String, String)>,
+    focused: String,
+    loader: u64,
+}
+
 struct Connection {
     outgoing: mpsc::Sender<String>,
     in_flight: Arc<(AtomicU64, Notify)>,
@@ -85,7 +96,38 @@ struct FakeState {
     ax_nodes: Value,
     emit_load_events: bool,
     selection: String,
+    pages: HashMap<String, FakePage>,
+    password_fields: HashSet<String>,
+    secret_probe: Option<Value>,
     connections: Vec<Arc<Connection>>,
+}
+
+impl FakeState {
+    fn page(&mut self, session: Option<&str>) -> Option<&mut FakePage> {
+        let target = session.and_then(|s| self.sessions.get(s))?.clone();
+        Some(self.pages.entry(target).or_default())
+    }
+
+    /// The answer to the secret probe: field values split into readable and password ones,
+    /// plus the page text.
+    fn probe(&mut self, session: Option<&str>) -> Value {
+        if let Some(answer) = &self.secret_probe {
+            return answer.clone();
+        }
+        let password = self.password_fields.clone();
+        let mut shown = vec![json!("Fake page text")];
+        let mut masked = Vec::new();
+        if let Some(page) = self.page(session) {
+            for (selector, value) in &page.fields {
+                if password.contains(selector) {
+                    masked.push(json!(value));
+                } else {
+                    shown.push(json!(value));
+                }
+            }
+        }
+        json!({"shown": shown, "masked": masked})
+    }
 }
 
 struct Shared {
@@ -175,6 +217,9 @@ impl FakeCdpServer {
                 ax_nodes: default_ax_nodes(),
                 emit_load_events: true,
                 selection: String::new(),
+                pages: HashMap::new(),
+                password_fields: HashSet::new(),
+                secret_probe: None,
                 connections: Vec::new(),
             }),
             calls_seen: watch::channel(0).0,
@@ -320,6 +365,23 @@ impl FakeCdpServer {
     /// The text pages report as the user's selection (the copy expression's result).
     pub fn set_selection(&self, text: &str) {
         text.clone_into(&mut lock(&self.shared.state).selection);
+    }
+
+    /// Whether the field `selector` is a password field (`input[type=password]`, drawn as
+    /// dots), now and for text typed into it later; `false` turns it back into a text field (a
+    /// page's "show password").
+    pub fn set_password_field(&self, selector: &str, password: bool) {
+        let mut state = lock(&self.shared.state);
+        if password {
+            state.password_fields.insert(selector.to_owned());
+        } else {
+            state.password_fields.remove(selector);
+        }
+    }
+
+    /// The raw value the secret probe answers with (`None`: what the pages' fields hold).
+    pub fn set_secret_probe(&self, answer: Option<Value>) {
+        lock(&self.shared.state).secret_probe = answer;
     }
 
     /// A page opens a new page (a link to a new tab or `window.open`): a target with an
@@ -676,6 +738,11 @@ fn respond(
                 target.title = format!("Title of {url}");
                 after.push(target_event("Target.targetInfoChanged", target));
             }
+            if let Some(page) = state.page(session_id) {
+                page.fields.clear();
+                page.focused.clear();
+                page.loader += 1;
+            }
             if state.emit_load_events {
                 after.push(
                     json!({"method": "Page.loadEventFired", "params": {"timestamp": 1.0},
@@ -694,6 +761,23 @@ fn respond(
             Ok(json!({"currentIndex": 1, "entries": [
                 {"id": 7, "url": "https://previous.example/", "title": "Previous"},
                 {"id": 8, "url": url, "title": "Current"}]}))
+        }
+        "Page.getFrameTree" => {
+            let loader = lock(&shared.state)
+                .page(session_id)
+                .map_or(0, |page| page.loader);
+            Ok(json!({"frameTree": {"frame": {"id": "frame-1", "loaderId": format!("loader-{loader}")}}}))
+        }
+        "Input.insertText" => {
+            let typed = text("text");
+            if let Some(page) = lock(&shared.state).page(session_id) {
+                let focused = page.focused.clone();
+                match page.fields.iter_mut().find(|(selector, _)| *selector == focused) {
+                    Some((_, value)) => value.push_str(&typed),
+                    None => page.fields.push((focused, typed)),
+                }
+            }
+            Ok(json!({}))
         }
         "Page.startScreencast" => {
             let Some(session) = session_id else {
@@ -763,9 +847,19 @@ fn respond(
                 .and_then(|a| a.get("value"))
                 .and_then(Value::as_str)
                 .unwrap_or_default();
+            let function = text("functionDeclaration");
+            if function.contains(SECRET_PROBE_MARKER) {
+                let answer = lock(&shared.state).probe(session_id);
+                return Ok(json!({"result": {"type": "object", "value": answer}}));
+            }
             if selector.starts_with("!!") {
                 return Ok(json!({"result": {"type": "object"}, "exceptionDetails": {
                     "text": "Uncaught", "exception": {"description": "SyntaxError: not a valid selector"}}}));
+            }
+            if function.contains(".focus()")
+                && let Some(page) = lock(&shared.state).page(session_id)
+            {
+                selector.clone_into(&mut page.focused);
             }
             let value = match selector {
                 "#missing" => json!({"found": false}),
@@ -784,7 +878,6 @@ fn respond(
         | "Emulation.setDeviceMetricsOverride"
         | "Input.dispatchMouseEvent"
         | "Input.dispatchKeyEvent"
-        | "Input.insertText"
         | "Page.navigateToHistoryEntry"
         | "Page.reload"
         | "Browser.close" => Ok(json!({})),
