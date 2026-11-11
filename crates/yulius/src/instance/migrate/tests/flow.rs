@@ -1694,7 +1694,16 @@ fn one_run_at_a_time_holds_the_state_directory() -> TestResult {
     let second = crate::instance::migrate::lock(dir.path());
     assert!(second.is_err_and(|why| why.contains("another `yulius instance migrate` runs")));
     drop(held);
-    crate::instance::migrate::lock(dir.path())?;
+    // Free once its last descriptor is closed. A test beside this one that starts a process
+    // holds a copy between its fork and its exec, so the lock is waited for, with a bound.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        match crate::instance::migrate::lock(dir.path()) {
+            Ok(_) => break,
+            Err(why) if std::time::Instant::now() >= deadline => return Err(why.into()),
+            Err(_) => std::thread::yield_now(),
+        }
+    }
     Ok(())
 }
 
@@ -1771,6 +1780,8 @@ fn a_finish_that_was_done_but_not_recorded_is_found_done() -> TestResult {
             "{shown}"
         );
         assert!(!shown.contains("Run the command again"), "{shown}");
+        // Nothing is deleted a second time.
+        assert!(!shown.contains("one-time key (old host)"), "{shown}");
         let state = State::load(&s.opts.state_dir).ok_or("no state")?;
         assert!(state.finished);
         assert_eq!(s.old_unit(), (true, true));
