@@ -107,18 +107,21 @@ exec "$real" "$@"
 }
 
 /// The `yulius` command of agent runs (SPEC-011): `yulius wait`, which blocks until the checks
-/// at the agent's head finish, its delivery moves or an armed merge is decided, and
-/// `yulius security-scan`, Vidoc's scan of the repository (SPEC-195).
+/// at the agent's head finish, its delivery moves or an armed merge is decided, `yulius tool`,
+/// a Yulius tool called from the shell (SPEC-432), `yulius security-scan`, Vidoc's scan of the
+/// repository (SPEC-195), and `yulius remove`, for the task's own files (SPEC-192). Every
+/// subcommand documented "In a task's session" must be in its `case` (SPEC-451).
 #[must_use]
 pub fn agent_yulius_shim(exe: &Path) -> String {
     let exe = exe.to_string_lossy().replace('\'', "'\\''");
     format!(
         r#"#!/bin/sh
-# Yulius agent commands: `yulius wait [--minutes N]` (start it with run_in_background) and
-# `yulius security-scan [--all]` (Vidoc's scan of this repository).
+# Yulius agent commands: `yulius wait [--minutes N]` (start it with run_in_background),
+# `yulius tool <name> [<json>]` (a Yulius tool from the shell), `yulius security-scan [--all]`
+# (Vidoc's scan of this repository) and `yulius remove <paths>` (this task's own files).
 case "${{1:-}}" in
-  wait|security-scan) exec '{exe}' "$@" ;;
-  *) echo "In a task's session yulius offers: yulius wait [--minutes N], yulius security-scan [--all]" >&2; exit 2 ;;
+  wait|tool|security-scan|remove) exec '{exe}' "$@" ;;
+  *) echo "In a task's session yulius offers: yulius wait [--minutes N], yulius tool <name> [<json>], yulius security-scan [--all], yulius remove <paths>" >&2; exit 2 ;;
 esac
 "#
     )
