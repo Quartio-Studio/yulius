@@ -155,6 +155,8 @@ test('the editor keeps open files and unsaved text across a sandbox switch, with
   await editorShown(browser);
   const content = screen.getByRole('textbox', 'Editor content');
   await expect(content).toBeAttached();
+  // README.md's text is in the editor: typed earlier it goes into Monaco's placeholder model (#1087).
+  await expect.poll(async () => (await modelTexts(browser)).some((text) => text.includes('storefront'))).toBe(true);
   // The text saves itself (SPEC-411): its saves are held so it stays unsaved across the switch.
   await browser.evaluate(() => { (window as unknown as { __yuliusMock: { live: { holdSaves: boolean } } }).__yuliusMock.live.holdSaves = true; });
   await content.focus();
