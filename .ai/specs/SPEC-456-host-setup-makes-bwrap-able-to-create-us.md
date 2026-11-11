@@ -5,7 +5,7 @@ status: in-progress
 
 # SPEC-456: Host setup makes bwrap able to create user namespaces (AppArmor)
 
-Status: proposed
+Status: implemented
 Date: 2026-11-11
 Owner: Yulius task #438
 Scope authorization: the owner's request (task #438): "Make the AppArmor rule that lets bubblewrap
@@ -114,7 +114,7 @@ the fix. Nobody writes an AppArmor rule by hand again.
 - [x] The contained doctor proves a mapped user namespace
 - [x] Instance import names the step when the host lacks it
 - [x] Operations guide, architecture and changes describe the rule
-- [ ] Proof on real Ubuntu 24.04, Ubuntu 26.04 and Debian hosts
+- [x] Proof on real Ubuntu 24.04, Ubuntu 26.04 and Debian hosts
 - [ ] Gates and independent review
 
 ## Acceptance criteria
@@ -163,3 +163,59 @@ the fix. Nobody writes an AppArmor rule by hand again.
 - **Not done:** setting `kernel.apparmor_restrict_unprivileged_userns=0` (weakens every program on
   the host), a private copy of bwrap (sandboxes exec `/usr/bin/bwrap` inside too), a `local/`
   override of the shipped profile (26.04 only, keeps its stacking).
+
+## Evidence
+
+2026-11-11. Real hosts are throwaway QEMU guests (TCG) booted from the distributions' cloud images
+in the task's sandbox, fresh for these runs: Ubuntu 24.04.5 (kernel 6.8.0-147), Ubuntu 26.04.1
+(kernel 7.0.0-38), Debian 13 and Debian 12. The binary is this branch at `b74138b1` built in a
+`debian:12` container (the later commits change documents and one error text).
+
+- **Fresh host, `sudo yulius host setup --public-url …`** (base build, contained doctor, Docker
+  smoke):
+  - 24.04: `changed bwrap namespaces wrote and loaded /etc/apparmor.d/yulius-bwrap: bwrap starts a
+    user namespace as yulius`; "sandbox namespaces" ok, contained doctor passed.
+  - 26.04: `changed bwrap namespaces disabled Ubuntu's AppArmor profile bwrap-userns-restrict (a
+    link in /etc/apparmor.d/disable; its file is untouched), wrote and loaded
+    /etc/apparmor.d/yulius-bwrap`; the sandbox base built (apt inside the namespace), contained
+    doctor passed, and the Docker smoke ran hello-world, a build and compose in sandboxes.
+  - Debian 13 and 12: `ok bwrap namespaces … AppArmor does not restrict user namespaces here`,
+    nothing written; contained doctor passed.
+  - Before setup, `--dry-run` said "would write and load" (24.04), "would disable …, write and
+    load" (26.04) and ok (Debian), changing nothing.
+- **Second run, `host check`, the helper's hardening, the doctor** (all four hosts): the item is
+  ok and names what allows it; `yulius host check` under `systemd-run -p NoNewPrivileges=yes -p
+  ProtectSystem=strict -p PrivateTmp=yes` with the helper's `PATH` (no `sbin`) gives the same line;
+  `yulius doctor --contained` as the service user: `ok sandbox namespaces`.
+- **A host that lacks it** (24.04 and 26.04, Yulius's profile unloaded; 26.04 also with the shipped
+  profile enabled again as a release upgrade leaves it): `host check` and the helper-style check
+  exit 1 with `FAIL bwrap namespaces bwrap cannot start a user namespace as yulius (…): setup would
+  [disable Ubuntu's AppArmor profile bwrap-userns-restrict …,] load /etc/apparmor.d/yulius-bwrap;
+  run `sudo yulius host setup``, changing nothing; the doctor exits 1 with `FAIL sandbox
+  namespaces sandboxes cannot start: …`. `host setup` repairs both (changed), then all are ok.
+- **Persistence**: after a reboot of each host the profile state is the same, `host check` and the
+  doctor are ok. On 26.04 after `apt-get install --reinstall -y apparmor` the shipped file is
+  unchanged (`dpkg -V apparmor` clean), the link stays, the shipped profile stays unloaded and both
+  checks are ok.
+- **Hand-written rule** (24.04, the production file `/etc/apparmor.d/bwrap`, no profile of
+  Yulius's): `ok bwrap namespaces … allowed by /etc/apparmor.d/bwrap (not written by Yulius, left
+  as it is)`, file unchanged, nothing written. With its `userns,` line removed: FAIL naming the
+  file and the two commands that disable it, file unchanged; after those commands setup writes and
+  loads Yulius's profile.
+- **Import** (an export of the 24.04 host imported on another fresh 24.04 host, bubblewrap not yet
+  installed): step 1 of "Next:" reads "(lets bwrap start the user namespaces sandboxes run in,
+  which this host does not allow yet; writes yulius.service, …)"; the `host setup` that follows
+  writes and loads the profile.
+- **Tests**: `cargo nextest run -p yulius -p yulius-sandbox` filters `bwrap_userns`, `host_setup`,
+  `doctor`, `import`, `userns`: pass; each new test was seen failing first, and every mutation of
+  the plan rule and its execution tried by hand was caught. `cargo clippy --all-targets -- -D
+  warnings` clean for both crates.
+- **Not tested**: a release upgrade from 24.04 to 26.04 itself (its end state, both profiles
+  enabled, was made by hand on 26.04); a host whose AppArmor cannot parse a `userns` rule (fake
+  host only); Settings → Instance in a browser against such a host (it shows the host check's
+  lines unchanged, and the check's lines are proven above).
+- **Met on the way, outside this change**: on every fresh host with cgroup delegation the first
+  `host setup` ends with `FAIL Docker smoke test` in the step "a sandbox without Docker answers
+  why" (a live engine answers the Docker-off run; a later `doctor --docker-smoke` passes): issue
+  #1160. Debian 12's systemd 252 does not know `DelegateSubgroup=`, so sandboxes there have no
+  limits and no Docker (the guide already asks for systemd 254).
