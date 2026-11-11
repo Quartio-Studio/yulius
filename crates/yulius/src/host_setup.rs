@@ -12,6 +12,7 @@
 //! (`yulius_sandbox::docker_status`), the doctor's words.
 
 mod bwrap_userns;
+pub mod session_units;
 pub mod system;
 #[cfg(test)]
 mod tests;
@@ -201,17 +202,23 @@ pub const NEEDRESTART_RULE_FILE: &str = "/etc/needrestart/conf.d/yulius.conf";
 /// class) is escaped: it matches the name literally whatever `service_name_ok` accepts (#678).
 #[must_use]
 pub fn needrestart_rule(service: &str) -> String {
-    let pattern: String = service
-        .chars()
-        .flat_map(|c| match c {
-            c if c.is_ascii_alphanumeric() || matches!(c, '_' | '-') => vec![c],
-            c => vec!['\\', c],
-        })
-        .collect();
+    let pattern = |unit: &str| -> String {
+        unit.chars()
+            .flat_map(|c| match c {
+                c if c.is_ascii_alphanumeric() || matches!(c, '_' | '-') => vec![c],
+                c => vec!['\\', c],
+            })
+            .collect()
+    };
+    // Its sessions unit too (SPEC-458 LAY-006): a restart of that one ends every session.
+    let sessions = yulius_sandbox::units::sessions_unit(service)
+        .map(|unit| format!("$nrconf{{override_rc}}{{qr(^{}$)}} = 0;\n", pattern(&unit)))
+        .unwrap_or_default();
     format!(
         "# Written by `yulius host setup`: package installs never restart Yulius behind the \
          operator's\n# back. Its update flow pauses tasks before a restart (docs/operations.md, \
-         \"Upgrades\").\n$nrconf{{override_rc}}{{qr(^{pattern}$)}} = 0;\n"
+         \"Upgrades\").\n$nrconf{{override_rc}}{{qr(^{}$)}} = 0;\n{sessions}",
+        pattern(service)
     )
 }
 
@@ -534,8 +541,10 @@ impl<'a> Run<'a> {
 
     fn instance_part(&mut self) {
         self.service_unit();
-        self.helper_unit();
+        // Before the sessions unit: its adopt unit runs this binary as root (SPEC-458 HST-003).
         self.binary();
+        self.session_units();
+        self.helper_unit();
         self.base();
     }
 
@@ -1404,6 +1413,107 @@ impl<'a> Run<'a> {
         );
     }
 
+    /// Whether the service user, or anyone, may write the directory `dir`: it owns it, a group
+    /// it is in may write it, or everyone may. Whoever may write a directory may replace what is
+    /// in it.
+    fn dir_open_to_service(&self, dir: &Path) -> bool {
+        let Some((owner, mode)) = self.host.stat(dir) else {
+            return false;
+        };
+        let service_uid = self
+            .service
+            .as_ref()
+            .and_then(|s| s.uid)
+            .unwrap_or(u32::MAX);
+        if owner == service_uid || mode & 0o002 != 0 {
+            return true;
+        }
+        mode & 0o020 != 0
+            && self.host.gid(dir).is_some_and(|gid| {
+                self.service.as_ref().is_some_and(|s| {
+                    groups_of(
+                        &self.host.read(Path::new("/etc/passwd")).unwrap_or_default(),
+                        &self.host.read(Path::new("/etc/group")).unwrap_or_default(),
+                        &s.name,
+                    )
+                    .contains(&gid)
+                })
+            })
+    }
+
+    /// Why the binary at `path`, which a unit would run as root, is not root's alone, or `None`
+    /// (SPEC-458 HST-003).
+    ///
+    /// The path is judged as the unit names it, walked from the root without following a link:
+    /// every directory on the way must be a directory that is root's and not open to the service
+    /// user ([`Run::dir_open_to_service`]), and the file itself a regular file that only root may
+    /// write. What only root can change cannot change between this look and the unit's start,
+    /// so there is nothing to race. A link anywhere is refused: what it leads to would have to
+    /// be judged again whenever it changes, and a second look at a path is what a swap needs.
+    /// In a dry run the file's owner is not judged: the "yulius binary" item only says what it
+    /// would fix.
+    pub(super) fn not_roots_alone(&self, path: &Path) -> Option<String> {
+        use std::path::Component;
+        const KIND: u32 = 0o170_000;
+        const DIRECTORY: u32 = 0o040_000;
+        const LINK: u32 = 0o120_000;
+        const REGULAR: u32 = 0o100_000;
+        let shown = path.display();
+        let mut names = Vec::new();
+        for part in path.components() {
+            match part {
+                Component::RootDir => {}
+                Component::Normal(name) if path.is_absolute() => names.push(name),
+                _ => return Some(format!("{shown} is not a plain absolute path")),
+            }
+        }
+        let Some(file) = names.pop() else {
+            return Some(format!("{shown} names no file"));
+        };
+        let mut dir = PathBuf::from("/");
+        let mut names = names.into_iter();
+        loop {
+            match self.host.stat(&dir) {
+                None => return Some(format!("{} cannot be inspected", dir.display())),
+                Some((_, mode)) if mode & KIND == LINK => {
+                    return Some(format!("{} is a link", dir.display()));
+                }
+                Some((_, mode)) if mode & KIND != DIRECTORY => {
+                    return Some(format!("{} is not a directory", dir.display()));
+                }
+                Some((owner, _)) if owner != 0 || self.dir_open_to_service(&dir) => {
+                    return Some(format!(
+                        "{shown} is under {}, which is not root's alone to write",
+                        dir.display()
+                    ));
+                }
+                Some(_) => {}
+            }
+            match names.next() {
+                Some(name) => dir.push(name),
+                None => break,
+            }
+        }
+        let service_uid = self
+            .service
+            .as_ref()
+            .and_then(|s| s.uid)
+            .unwrap_or(u32::MAX);
+        match self.host.stat(&dir.join(file)) {
+            None => Some(format!("{shown} cannot be inspected")),
+            Some((_, mode)) if mode & KIND == LINK => Some(format!(
+                "{shown} is a link, and what it leads to can change: name the file itself in \
+                 the server unit's ExecStart="
+            )),
+            Some((_, mode)) if mode & KIND != REGULAR => {
+                Some(format!("{shown} is not a regular file"))
+            }
+            Some(_) if self.mode == Mode::DryRun => None,
+            Some((0, mode)) if !exe_writable(0, mode, service_uid) => None,
+            Some(_) => Some(format!("{shown} is not root's alone to write")),
+        }
+    }
+
     /// The binaries Yulius runs: owned by root, writable by root alone (HST-010).
     fn binary(&mut self) {
         const ITEM: &str = "yulius binary";
@@ -1418,13 +1528,6 @@ impl<'a> Run<'a> {
             .as_ref()
             .and_then(|s| s.uid)
             .unwrap_or(u32::MAX);
-        let service_groups = self.service.as_ref().map_or_else(Vec::new, |s| {
-            groups_of(
-                &self.host.read(Path::new("/etc/passwd")).unwrap_or_default(),
-                &self.host.read(Path::new("/etc/group")).unwrap_or_default(),
-                &s.name,
-            )
-        });
         let mut fixed = Vec::new();
         let mut fine = Vec::new();
         // A link is judged, and fixed, at its target, as the server and the doctor judge it.
@@ -1442,15 +1545,7 @@ impl<'a> Run<'a> {
             // Fixing the file is pointless where the service user may replace it: a directory
             // it owns, one writable by a group it is in, or by anyone.
             if let Some(dir) = path.parent()
-                && self.host.stat(dir).is_some_and(|(owner, mode)| {
-                    owner == service_uid
-                        || mode & 0o002 != 0
-                        || (mode & 0o020 != 0
-                            && self
-                                .host
-                                .gid(dir)
-                                .is_some_and(|gid| service_groups.contains(&gid)))
-                })
+                && self.dir_open_to_service(dir)
             {
                 return self.failed(
                     ITEM,

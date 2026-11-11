@@ -9,6 +9,7 @@ pub mod leftovers_cli;
 pub mod mcp_bridge;
 pub mod remote_cli;
 pub mod remove_cli;
+pub mod restart_safety;
 pub mod sandbox_cli;
 pub mod security_scan;
 pub mod serve;

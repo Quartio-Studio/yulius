@@ -93,4 +93,9 @@ pub trait UpdateHelper: Send + Sync {
     fn host_check(&self) -> Option<HostCheckReport> {
         None
     }
+    /// Why stopping the server now would leave it down (SPEC-458 RST-003): its unit could not
+    /// start again while its sessions run. `None` when a restart comes back. May block briefly.
+    fn restart_blocker(&self) -> Option<String> {
+        None
+    }
 }

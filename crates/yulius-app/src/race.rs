@@ -116,6 +116,12 @@ pub enum Point {
     /// `launch_attempt` (SPEC-447): a subscription was chosen and its credential opened; the run's
     /// attempt is not recorded yet. The path is the task id.
     AccountChosen,
+    /// `launch_attempt` (SPEC-458): the run's attempt is recorded; its host is not started or
+    /// attached yet. The path is the task id.
+    RunRecorded,
+    /// The start-up reconciliation (SPEC-458): every run on record was gone through; the sweep
+    /// of tasks without a run has not begun. The path is the data directory.
+    ReconcileSweep,
     /// A turn's end (SPEC-461) looked at the background work of a session on an older Claude
     /// Code, whatever it found; who typed and what pauses it are not read again yet. The path is
     /// the task id.
