@@ -438,6 +438,7 @@ mod moves {
             assert_eq!(behind[0].sandbox, "pool");
             let detail = s.app.task_detail(&ctx, s.id.as_str()).await?;
             assert_eq!(detail.cli_moves_to.as_deref(), Some("2.1.322"));
+            assert!(!detail.cli_moves_stopped, "it moves when its turn ends");
             assert_eq!(runs(&s).await, 1, "an idle session is left alone");
 
             // Its next turn ends: the session restarts on the new Claude Code.
@@ -1032,6 +1033,12 @@ mod moves {
         turn_of(&s.app, &other, "hello").await?;
         until_decided(&flag).await?;
         assert_eq!(runs_of(&s.app, &other).await, 1, "not sent to that version");
+        // Its info promises that version at its next start only (SPEC-468 CCF-003).
+        let detail = s.app.task_detail(&s.ctx().await?, other.as_str()).await?;
+        assert_eq!(
+            (detail.cli_moves_to.as_deref(), detail.cli_moves_stopped),
+            (Some("2.1.322"), true)
+        );
         let behind = s.app.claude_code_view(&s.ctx().await?).await?.behind;
         assert!(
             behind

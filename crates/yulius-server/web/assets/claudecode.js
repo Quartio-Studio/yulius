@@ -30,7 +30,9 @@ function models(ids) {
 
 /** The version sandboxes run, where it comes from and what it knows. */
 function versionLine(view) {
-  const knows = !view.models_read ? null
+  // A binary that could not be read says nothing about the models it knows (SPEC-468 CCF-007).
+  const knows = view.models_unread ? badge('models not read', 'warn')
+    : !view.models_read ? null
     : view.problem ? badge('default model unknown', 'danger')
       : view.unknown_models.length ? badge('an offered model unknown', 'warn')
         : badge('knows every offered model', 'ok');
@@ -64,6 +66,7 @@ function checkLine(view) {
 /** The warnings below the danger banner: another gap, a refused release, a failed check. */
 function warnings(view) {
   const items = [];
+  if (view.models_unread) items.push(view.models_unread);
   const others = view.unknown_models.filter((id) => id !== view.default_model);
   if (!view.problem && others.length) {
     items.push(`Claude Code ${view.version} does not know ${models(others)}, which the composer offers: a task that asks for it still gets it by id, but a session cannot pick it by itself.`);
@@ -75,12 +78,17 @@ function warnings(view) {
     h('div', { class: 'banner-text' }, items.length === 1 ? items[0] : h('ul', { class: 'claude-notes' }, items.map((text) => h('li', null, text)))));
 }
 
-/** The tasks whose running session still runs an older Claude Code (CCM-013). */
+/**
+ * The tasks whose running session still runs an older Claude Code (CCM-013). While running tasks
+ * are no longer moved to that version, only their next start is promised (SPEC-468 CCF-003).
+ */
 function behind(view) {
   if (!view.behind.length) return null;
+  const when = view.moves_stopped ? `Each gets ${view.version} at its next start.`
+    : `Each moves to ${view.version} when its turn ends, in the same session, or at its next start. A session waits while it has background work, a draft in its prompt box or a goal its person set.`;
   return h('div', { class: 'stack-sm claude-behind' },
     h('h3', { class: 'small', id: 'claude-behind-title' }, `Still on an older Claude Code (${view.behind.length})`),
-    h('p', { class: 'muted xs' }, `Each moves to ${view.version} when its turn ends, in the same session, or at its next start. A session with background work waits for it.`),
+    h('p', { class: 'muted xs' }, when),
     h('ul', { class: 'small claude-behind-list', 'aria-labelledby': 'claude-behind-title' }, view.behind.map((task) => {
       const route = `/s/${encodeURIComponent(task.sandbox)}/t/${task.number}`;
       return h('li', null, h('a', { href: route, dataset: { route } }, `#${task.number} ${task.title}`), ' ',

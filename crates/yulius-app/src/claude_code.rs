@@ -520,6 +520,17 @@ impl App {
             .is_ok_and(|mut starts| starts.take(task_id, start))
     }
 
+    /// Whether running tasks are no longer moved to `version` (a session could not continue on
+    /// it): a task on an older one gets it at its next start only (SPEC-468 CCF-003).
+    pub(crate) fn claude_moves_stopped_for(&self, version: Version) -> bool {
+        self.agent_cli.get().is_some_and(|services| {
+            services
+                .stopped
+                .lock()
+                .is_ok_and(|stopped| matches!(*stopped, Some((no_more, _)) if no_more == version))
+        })
+    }
+
     /// No other session is restarted on `version`: `why` is said on the Instance page.
     fn stop_moves(services: &AgentCliServices, version: Version, why: String) {
         tracing::error!(%version, %why, "running tasks are no longer moved to this Claude Code");
@@ -738,6 +749,17 @@ impl App {
     }
 }
 
+/// What the card says when the binary runs get could not be read for the models it knows
+/// (SPEC-468 CCF-007), as `yulius doctor` warns: nothing is claimed about the default model.
+fn models_unread_text(version: Option<&str>) -> String {
+    let named = version.map_or_else(|| "Claude Code".to_owned(), |v| format!("Claude Code {v}"));
+    format!(
+        "The binary of {named} could not be read for the models it knows, so whether it knows \
+         {DEFAULT_CLAUDE_MODEL}, Yulius's default model, is not known. It is read again whenever \
+         this page is opened; `yulius doctor --contained` names the install."
+    )
+}
+
 /// The view of `status` at `now`, with the channel's origin.
 fn view_of(
     status: &AgentCliStatus,
@@ -796,6 +818,8 @@ fn view_of(
     } else {
         (None, None)
     };
+    let models_unread = (status.unmanaged.is_none() && status.missing.is_none())
+        .then(|| models_unread_text(version.as_deref()));
     ClaudeCodeView {
         managed: status.unmanaged.is_none(),
         unmanaged: status.unmanaged.clone(),
@@ -826,6 +850,7 @@ fn view_of(
         result_text,
         default_model: DEFAULT_CLAUDE_MODEL.into(),
         models_read: status.missing.is_some(),
+        models_unread,
         unknown_models: unknown,
         problem,
         fix,
