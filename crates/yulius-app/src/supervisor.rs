@@ -163,7 +163,9 @@ pub struct TaskRuntime {
     pub(crate) turn_end_ms: AtomicI64,
     /// Orders a prompt's turn start with a later turn end: a prompt holds it from its
     /// [`Self::turn_end_ms`] check until it set Working, and a Stop or verdict takes it to move
-    /// `turn_end_ms`, so their settling never lands before a prompt that passed the check.
+    /// `turn_end_ms`, so their settling never lands before a prompt that passed the check. The
+    /// same for a prompt read from the transcript and its [`Self::last_stop_ms`] check, which a
+    /// clean Stop moves under it (SPEC-453 TPO-001).
     pub(crate) turn_order: tokio::sync::Mutex<()>,
     /// Claude Code's SessionStart hook arrived for the current attempt: its prompt box reads
     /// input (typing before it is lost or left unsubmitted, F 2026-10-12).
@@ -4176,7 +4178,10 @@ impl App {
                 if !wake {
                     runtime.goal_achieved.store(false, Ordering::SeqCst);
                 }
-                // A prompt of a turn whose clean Stop already came is not a new turn.
+                // A prompt of a turn whose clean Stop already came is not a new turn. Held until
+                // Working is set, so a clean Stop arriving meanwhile opens its verdict wait, or
+                // settles, after this prompt started its turn (SPEC-453 TPO-001).
+                let _order = runtime.turn_order.lock().await;
                 if at.is_some_and(|at| at.0 <= runtime.last_stop_ms.load(Ordering::SeqCst)) {
                     return;
                 }
