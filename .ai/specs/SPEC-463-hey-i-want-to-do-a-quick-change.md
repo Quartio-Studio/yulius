@@ -256,14 +256,17 @@ Confirmed against `dev` at dbec951d.
     keyboard was not on the email's pencil after the held 0 ms timer ran; one change had been
     sent while the mouse button was still down; the Remove dialog did not open from a refused
     field.
-- **`scripts/dev ci` at 23a11eab** exited 0: repository contracts, 152 script tests, check, fmt,
-  clippy (Linux and macOS), nextest 3535 passed and 16 skipped, doctests, deny, shear, doc. That
-  head has `dev` eb2e8a4e merged in, with its two conflicts resolved: the store port's imports,
-  and the migrations list, where this change's migration goes after `dev`'s two as schema
-  version 52. The head after it adds this record only.
-- **Whole e2e suite at 23a11eab** (`cd e2e && npx e2e run`): 942 passed, 1 skipped, exit 0, at a
-  load average of 50 to 60. Earlier whole runs: 935 passed at 4eeaedfc, where the two
-  subscription specs (37 tests) also passed 6 runs of 6 alone; 929 passed at 1bd025b0; 916 passed
+- **`scripts/dev ci` at 7aacc0e8** exited 0: repository contracts, 152 script tests, check, fmt,
+  clippy (Linux and macOS), nextest 3639 passed and 16 skipped, doctests, deny, shear, doc. That
+  head has `dev` 4b59bce3 merged in (no conflict). The two commits after it are a merge of `dev`
+  63819769 (no conflict; `cargo check` of the workspace, the repository check, the 99 store
+  tests and the 18 account tests passed on it) and this record. The gate also passed at
+  23a11eab (3535 tests), where `dev` eb2e8a4e was merged with its two conflicts resolved: the
+  store port's imports, and the migrations list, where this change's migration goes after
+  `dev`'s two as schema version 52.
+- **Whole e2e suite at 7aacc0e8** (`cd e2e && npx e2e run`): 947 passed, 1 skipped, exit 0, at a
+  load average of 45 to 50. The two subscription specs (42 tests) also passed 8 runs of 8 beside
+  each other. Earlier whole runs: 942 passed at 23a11eab; 935 at 4eeaedfc; 929 at 1bd025b0; 916
   at 377e9336 with the one `cd.e2e.ts` failure of #1171. The logs are in the worktree's ignored
   `target/`.
 - **`yulius security-scan --base origin/dev`**: "Security scan disabled" (Vidoc is switched off
