@@ -18,6 +18,7 @@ type Mock = {
     accounts: { id: string; label: string; email: string | null; email_typed?: boolean }[];
     eventSockets: Set<{ push: (data: string) => void }>;
     sent?: Record<string, number>;
+    asked?: Record<string, number>;
     holdPath: string | null;
     held: Promise<void> | null;
     release: () => void;
@@ -46,6 +47,17 @@ const renamedElsewhere = (browser: Browser, from: string, to: string) => browser
   account.label = now;
   for (const socket of db.eventSockets) socket.push(JSON.stringify({ type: 'account.updated', account }));
 }, [from, to]);
+
+/** From now on the list's reads wait, as on a slow connection, until `__yuliusMock.release()`. */
+const holdListReads = (browser: Browser) => browser.evaluate(() => {
+  const db = (window as unknown as Mock).__yuliusMock;
+  db.holdPath = '/api/admin/accounts';
+  db.released = false;
+  db.held = new Promise<void>((resolve) => { db.release = () => { db.released = true; resolve(); }; });
+});
+
+/** How often the page has read the list (counted as it asks). */
+const listReads = (browser: Browser) => browser.evaluate(() => (window as unknown as Mock).__yuliusMock.asked?.['/api/admin/accounts'] ?? 0);
 
 /** What the mock's server holds for the subscription named `label`. */
 const stored = (browser: Browser, label: string) => browser.evaluate((name) => {
@@ -240,13 +252,7 @@ const refreshWaits = (browser: Browser) => browser.locator('main [data-refresh="
 
 test('a field opened while the list is read again is neither closed nor saved by that read', async ({ app, browser, screen }) => {
   await openSubscriptions(app, browser);
-  // From now on the list's reads wait, as on a slow connection.
-  await browser.evaluate(() => {
-    const db = (window as unknown as Mock).__yuliusMock;
-    db.holdPath = '/api/admin/accounts';
-    db.released = false;
-    db.held = new Promise<void>((resolve) => { db.release = () => { db.released = true; resolve(); }; });
-  });
+  await holdListReads(browser);
 
   // The email is saved; its update makes the page read the list again. (Claude #4's usage was
   // read minutes ago, so the page asks for none that could answer while its field is open.)
@@ -461,6 +467,200 @@ test('a refresh that waited for an open field is read when the field closes with
   await expect(refreshWaits(browser)).toHaveCount(0);
   await expect(screen.getByRole('button', 'Rename Claude #4')).toBeFocused();
   expect(await sentFor(browser, 'acc_x1')).toBe(0);
+});
+
+test('a refresh that waited is read when its field is left as it was: by a click, by Tab, emptied', async ({ app, browser, screen }) => {
+  await openSubscriptions(app, browser);
+  await eventsConnected(browser);
+  const names = async () => (await cards(browser)).map((c) => c.name);
+
+  // Left by a click outside the list, unchanged.
+  await screen.getByRole('button', 'Change the email of Claude #4').click();
+  await expect(screen.getByRole('textbox', 'Email of Claude #4')).toBeFocused();
+  await renamedElsewhere(browser, 'Claude #2', 'renamed elsewhere');
+  await expect(refreshWaits(browser)).toHaveCount(1);
+  await browser.locator('main h1').click();
+  await expect.poll(names).toContain('renamed elsewhere');
+  await expect(refreshWaits(browser)).toHaveCount(0);
+
+  // Left with Tab, unchanged: the keyboard goes on to the email's pencil and stays there.
+  await screen.getByRole('button', 'Rename Claude #4').click();
+  const name = screen.getByRole('textbox', 'New name for Claude #4');
+  await expect(name).toBeFocused();
+  await renamedElsewhere(browser, 'Claude #1', 'also renamed');
+  await expect(refreshWaits(browser)).toHaveCount(1);
+  await name.press('Tab');
+  await expect.poll(names).toContain('also renamed');
+  await expect(refreshWaits(browser)).toHaveCount(0);
+  await expect(screen.getByRole('button', 'Change the email of Claude #4')).toBeFocused();
+
+  // Emptied and left: nothing is removed (EML-002), and the list is read again all the same.
+  await browser.keyboard.press('Enter');
+  const email = screen.getByRole('textbox', 'Email of Claude #4');
+  await expect(email).toBeFocused();
+  await email.fill('');
+  await renamedElsewhere(browser, 'Claude #5', 'third rename');
+  await expect(refreshWaits(browser)).toHaveCount(1);
+  await browser.locator('main h1').click();
+  await expect.poll(names).toContain('third rename');
+  await expect(refreshWaits(browser)).toHaveCount(0);
+  expect(await stored(browser, 'Claude #4')).toEqual({ email: 'pawel@example.com', typed: false });
+  expect(await sentFor(browser, 'acc_x1')).toBe(0);
+});
+
+test("the list read after a subscription was removed does not redraw a field opened meanwhile", async ({ app, browser, screen }) => {
+  await openSubscriptions(app, browser);
+  await holdListReads(browser);
+  // The person removes Claude #5: the page reads the list again, and that read is slow.
+  await browser.locator('main .card:has-text("studio@example.com") button:has-text("Remove")').click();
+  await screen.getByRole('dialog', 'Remove Claude #5?').getByRole('button', 'Remove').click();
+  await expect(screen.getByText('Subscription Claude #5 removed.')).toBeVisible();
+  await expect.poll(() => listReads(browser)).toBe(2);
+  // Meanwhile they start on another subscription's email.
+  await screen.getByRole('button', 'Change the email of Claude spare').click();
+  const email = screen.getByRole('textbox', 'Email of Claude spare');
+  await expect(email).toBeFocused();
+  await email.fill('agent@exam');
+  // The read lands: the half-typed address is neither drawn away nor saved.
+  await browser.evaluate(() => (window as unknown as Mock).__yuliusMock.release());
+  await expect(refreshWaits(browser)).toHaveCount(1);
+  await expect(email).toBeFocused();
+  await expect(email).toHaveValue('agent@exam');
+  expect(await sentFor(browser, 'acc_x3')).toBe(0);
+  expect(await stored(browser, 'Claude spare')).toEqual({ email: null, typed: false });
+  // Finished: saved once, and the list shows the removal.
+  await email.fill('agent@example.com');
+  await email.press('Enter');
+  await expect(screen.getByText('Email of Claude spare is now agent@example.com.')).toBeVisible();
+  await expect.poll(async () => (await cards(browser)).map((c) => c.name)).not.toContain('Claude #5');
+  await expect(refreshWaits(browser)).toHaveCount(0);
+  expect(await stored(browser, 'Claude spare')).toEqual({ email: 'agent@example.com', typed: true });
+  expect(await sentFor(browser, 'acc_x3')).toBe(1);
+});
+
+test('a press on a control is delivered before the field it leaves does its work', async ({ app, browser, screen }) => {
+  await openSubscriptions(app, browser);
+  await screen.getByRole('button', 'Rename Claude #4').click();
+  const name = screen.getByRole('textbox', 'New name for Claude #4');
+  await expect(name).toBeFocused();
+  await name.fill('Agent TEAM');
+  const pencil = await browser.evaluate(() => {
+    const control = document.querySelector('main [data-focus-key="account:acc_x1:email"]');
+    // The click on the name's pencil scrolled only that pencil into view; this one is a line lower.
+    control?.scrollIntoView({ block: 'center' });
+    const box = control?.getBoundingClientRect();
+    return box ? { x: box.left + box.width / 2, y: box.top + box.height / 2 } : null;
+  });
+  if (!pencil) throw new Error("Claude #4's email pencil is not on the page");
+  // What is under the pointer: the control (by its key) or, failing that, the element.
+  const under = () => browser.evaluate(([x, y]) => {
+    const el = document.elementFromPoint(x, y);
+    const keyed = el?.closest('[data-focus-key]');
+    return keyed ? keyed.getAttribute('data-focus-key') : `${el?.tagName ?? 'nothing'}.${el?.className ?? ''} "${(el?.textContent ?? '').trim().slice(0, 40)}"`;
+  }, [pencil.x, pencil.y]);
+  await browser.mouse.move(pencil.x, pencil.y);
+  expect(await under()).toBe('account:acc_x1:email');
+  // The button goes down on the email's pencil and stays down, as it does for a tenth of a
+  // second in a person's click. The name's field has lost the keyboard, but it neither saves
+  // nor closes yet: what it does then (a refusal's line, the list read again after a save)
+  // could move or replace the control under the pointer, and the click would be lost.
+  await browser.mouse.down();
+  await expect.poll(() => browser.evaluate(() => document.activeElement?.getAttribute('data-focus-key') ?? null)).toBe('account:acc_x1:email');
+  expect(await sentFor(browser, 'acc_x1')).toBe(0);
+  await expect(name).toBeVisible();
+  expect(await under()).toBe('account:acc_x1:email');
+  await browser.mouse.up();
+  // The click arrived: the email's field is open. Then the name is saved.
+  const email = screen.getByRole('textbox', /^Email of /);
+  await expect(email).toBeFocused();
+  await expect(screen.getByText('Subscription renamed to Agent TEAM.')).toBeVisible();
+  await expect(email).toBeFocused();
+  await expect(refreshWaits(browser)).toHaveCount(1);
+  await email.fill('agent@example.com');
+  await email.press('Enter');
+  await expect(screen.getByText('Email of Agent TEAM is now agent@example.com.')).toBeVisible();
+  await expect.poll(async () => (await cards(browser))[0] ?? null).toEqual({ name: 'Agent TEAM', email: 'agent@example.com' });
+  await expect(refreshWaits(browser)).toHaveCount(0);
+  expect(await sentFor(browser, 'acc_x1')).toBe(2);
+});
+
+test("a click on a card's button arrives although leaving a field shows or removes its refusal (#1174)", async ({ app, browser, screen }) => {
+  await openSubscriptions(app, browser);
+  const remove = browser.locator('main .card:has-text("pawel@example.com") button:has-text("Remove")');
+  const dialog = screen.getByRole('dialog', 'Remove Claude #4?');
+
+  // The name emptied, then Remove: the refusal's line appears under the field as it is left,
+  // and the button is where it was when the click ends.
+  await screen.getByRole('button', 'Rename Claude #4').click();
+  const name = screen.getByRole('textbox', 'New name for Claude #4');
+  await expect(name).toBeFocused();
+  await name.fill('   ');
+  await remove.click();
+  await expect(dialog).toBeVisible();
+  await expect(screen.getByText('Give the subscription a name.')).toBeVisible();
+  await browser.keyboard.press('Escape');
+  await expect(dialog).toBeHidden();
+  await expect(name).toBeVisible();
+
+  // The other way round: the field shows a refusal and is left with its value as it was, so it
+  // closes and the refusal's line goes.
+  await name.fill('Claude #4');
+  await remove.click();
+  await expect(dialog).toBeVisible();
+  await browser.keyboard.press('Escape');
+  await expect(dialog).toBeHidden();
+  await expect(name).toBeHidden();
+  await expect(screen.getByText('Give the subscription a name.')).toBeHidden();
+  await expect(browser.locator('main .account-card:has-text("pawel@example.com") .account-name strong')).toHaveText('Claude #4');
+
+  // The same under the email: what is not an address is refused as the field is left.
+  await screen.getByRole('button', 'Change the email of Claude #4').click();
+  const email = screen.getByRole('textbox', 'Email of Claude #4');
+  await expect(email).toBeFocused();
+  await email.fill('not an address');
+  await browser.locator('main .card:has-text("Claude #4") button:has-text("Remove")').click();
+  await expect(dialog).toBeVisible();
+  await expect(screen.getByText('Type an address like name@example.com.')).toBeVisible();
+  await browser.keyboard.press('Escape');
+  await expect(dialog).toBeHidden();
+  await expect(email).toBeVisible();
+  // Nothing was sent or removed by any of it.
+  expect(await sentFor(browser, 'acc_x1')).toBe(0);
+  expect((await cards(browser)).length).toBe(6);
+});
+
+test("a field's late claim on the keyboard does not take it back from where Tab went", async ({ app, browser, screen }) => {
+  // The name's save waits here until the test lets it go.
+  await app.open(mock('/admin/accounts', '&ambient=0&holdpost=/api/admin/accounts/acc_x1'));
+  await firstShown(browser.locator('main .account-card').first());
+  // A field takes the keyboard a moment after it opens (a 0 ms timer). On a busy page that
+  // moment can come after the person's first keys: hold such timers back until asked.
+  type Timers = { __heldTimers: (() => void)[]; __holdTimers: boolean };
+  await browser.evaluate(() => {
+    const page = window as unknown as Timers;
+    const real = window.setTimeout.bind(window);
+    page.__heldTimers = [];
+    page.__holdTimers = true;
+    window.setTimeout = ((run: (...args: unknown[]) => void, ms?: number, ...args: unknown[]) => {
+      if (page.__holdTimers && !ms) { page.__heldTimers.push(() => run(...args)); return 0; }
+      return real(run, ms, ...args);
+    }) as typeof window.setTimeout;
+  });
+  await screen.getByRole('button', 'Rename Claude #4').click();
+  const name = screen.getByRole('textbox', 'New name for Claude #4');
+  await expect(name).toBeVisible();
+  await browser.evaluate(() => { (window as unknown as Timers).__holdTimers = false; });
+  // The person is faster: the name and Tab, which starts the save (held) and moves on.
+  await name.fill('Agent TEAM');
+  await name.press('Tab');
+  await expect(screen.getByRole('button', 'Change the email of Claude #4')).toBeFocused();
+  // Now the field's moment comes, while its save is on its way: the keyboard stays.
+  await browser.evaluate(() => { (window as unknown as Timers).__heldTimers.splice(0).forEach((run) => run()); });
+  await expect(screen.getByRole('button', 'Change the email of Claude #4')).toBeFocused();
+  await browser.evaluate(() => (window as unknown as Mock).__yuliusMock.release());
+  await expect(screen.getByText('Subscription renamed to Agent TEAM.')).toBeVisible();
+  await expect.poll(async () => (await cards(browser))[0]?.name ?? null).toBe('Agent TEAM');
+  await expect(screen.getByRole('button', 'Change the email of Agent TEAM')).toBeFocused();
 });
 
 test('an email saved by leaving its field is drawn from the server: the initials follow it', async ({ app, browser, screen }) => {

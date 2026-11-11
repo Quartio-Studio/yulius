@@ -128,9 +128,9 @@ export function dataTable(columns, rows, { onRowClick, empty = 'Nothing here yet
  * "Couldn’t load the users: …").
  * Returns a reload function. Concurrent reloads keep only the latest result. `reload({ quiet })`
  * refreshes in place for live pages: no dimming, and a failure keeps what is shown. `hold()`
- * says, when a quiet refresh's data arrives, that the page must not be redrawn now (a field a
- * person types in): what is shown stays and the data is dropped, so the page that holds reloads
- * once it lets go. A reload that is not quiet (the person's own action) always redraws.
+ * says, when a read's answer arrives over what is shown, that the page must not be redrawn now
+ * (a field a person types in): what is shown stays and the answer is dropped, an error too, so
+ * the page that holds reloads once it lets go.
  */
 export function loader(container, what, fetcher, render, { shape = 'lines', hold = null } = {}) {
   let generation = 0;
@@ -143,13 +143,14 @@ export function loader(container, what, fetcher, render, { shape = 'lines', hold
     try {
       const data = await fetcher();
       if (mine !== generation) return;
-      if (quiet && hasContent && hold && hold()) return;
+      if (hasContent && hold && hold()) return;
       // A reload after an action (a switch, Run now) keeps keyboard focus on the same control.
       keepFocus(container, () => setChildren(container, render(data)));
       hasContent = true;
     } catch (error) {
       if (mine !== generation) return;
       if (quiet && hasContent) return;
+      if (hasContent && hold && hold()) return;
       // Say it inline with a way out, like the Git page (UX2-07).
       setChildren(container, loadError(`Couldn’t load ${what}: ${error.message || String(error)}`, () => reload()));
       hasContent = false;

@@ -492,12 +492,54 @@ function accountInitials(account) {
   return (parts.length > 1 ? parts[0][0] + parts[1][0] : parts[0].slice(0, 2)).toUpperCase();
 }
 
+// Whether the main mouse button is down, and what waits for it to come up.
+let pressed = false;
+let watchingPresses = false;
+const afterPressRuns = [];
+
+/** The press is over: what waited for it runs once the click that the release ends is delivered. */
+function pressOver() {
+  if (!pressed) return;
+  pressed = false;
+  const runs = afterPressRuns.splice(0);
+  if (runs.length) setTimeout(() => { for (const run of runs) run(); }, 0);
+}
+
+/**
+ * Follows the main mouse button from now on (once per page). A release may come anywhere, and a
+ * press can end where no release is seen (a drag, a context menu, the window losing the
+ * pointer): the next move of a pointer whose button is up says so too, so nothing waits on a
+ * press that is over.
+ */
+function watchPresses() {
+  if (watchingPresses) return;
+  watchingPresses = true;
+  document.addEventListener('pointerdown', (event) => { if (event.button === 0) pressed = true; }, true);
+  for (const type of ['pointerup', 'pointercancel', 'dragend', 'contextmenu']) document.addEventListener(type, pressOver, true);
+  document.addEventListener('pointermove', (event) => { if (pressed && !(event.buttons & 1)) pressOver(); }, true);
+  window.addEventListener('blur', pressOver);
+}
+
+/**
+ * Runs `run` now, or, while the mouse button is down, once the press has ended and its click is
+ * delivered. A field that is left by a press on a control does its work then: a refusal's line
+ * or a saved value drawn at once would move or replace that control before the button comes up,
+ * and the click would be lost (#1174).
+ */
+function afterPress(run) {
+  if (pressed) afterPressRuns.push(run);
+  else run();
+}
+
 /**
  * One line of a subscription's head that its manager edits in place: the name (SPEC-244 SUB-001)
  * or the email under it (SPEC-463 EML-001). The pencil (or a click on the text) turns the line
  * into a field; Enter or leaving the field saves through `save`, Escape cancels. A refused value
  * keeps the field open with the message; focus returns to the field only after Enter, never when
- * it was left, and to the pencil once editing ends.
+ * it was left, and to the pencil once editing ends. A field left by a press on a control saves,
+ * refuses or closes only once that press has ended (`afterPress`), so the control is clicked. A
+ * field that closes says so (the bubbling event `yulius:edit-closed`), whatever ended the edit:
+ * a page that kept a refresh from drawing over it reads it then.
  *
  * `line` says what differs: `holder` and `pencil` (classes), `key` (which line of which
  * subscription: the pencil and the field carry it as `data-focus-key`, so a list drawn again
@@ -509,6 +551,7 @@ function accountInitials(account) {
  * as it was) and `failed` (what to say when a failed save gives no message).
  */
 function editableLine(line, save) {
+  watchPresses();
   const holder = h('span', { class: line.holder });
   const show = (focus = false) => {
     const pencil = iconButton('pencil', line.action(), edit, { class: line.pencil, dataset: { focusKey: line.key } });
@@ -527,9 +570,16 @@ function editableLine(line, save) {
     // save what Escape cancelled.
     let busy = false;
     let closed = false;
+    // `left` once the keyboard has been in the field and gone on: the field's own claim on it
+    // (the timer below) must not take it back from where the person went.
+    let left = false;
     // Focus goes back to the pencil only when a key ended the edit: a person who clicked
     // elsewhere (another subscription's pencil among them) keeps their focus there.
-    const close = (focus) => { closed = true; show(focus); };
+    const close = (focus) => {
+      closed = true;
+      show(focus);
+      holder.dispatchEvent(new CustomEvent('yulius:edit-closed', { bubbles: true }));
+    };
     const finish = async (keep, fromKey) => {
       if (busy || closed) return;
       const value = input.value.trim();
@@ -556,9 +606,9 @@ function editableLine(line, save) {
       if (event.key === 'Enter') { event.preventDefault(); finish(true, true); }
       else if (event.key === 'Escape') { event.preventDefault(); finish(false, true); }
     });
-    input.addEventListener('blur', () => finish(true, false));
+    input.addEventListener('blur', () => { left = true; afterPress(() => finish(true, false)); });
     setChildren(holder, input, error);
-    setTimeout(() => { input.focus(); input.select(); }, 0);
+    setTimeout(() => { if (!left && !closed) { input.focus(); input.select(); } }, 0);
   }
   show();
   return holder;
