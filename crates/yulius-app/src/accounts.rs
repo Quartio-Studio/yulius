@@ -1553,8 +1553,25 @@ impl App {
     async fn store_credential(&self, account: &AccountId, secret: &Secret) -> AppResult<()> {
         let sealed = self.deps.crypto.seal(secret.expose().as_bytes())?;
         let store = &self.deps.store;
-        if store.account(account).await?.is_none() {
+        let Some(record) = store.account(account).await? else {
             return Err(AppError::NotFound);
+        };
+        // A model's limit Claude reported to the previous sign-in is not this one's (it may be
+        // another Claude account, or the same one with credits again), and no usage reading
+        // would end it before its reset (SPEC-464 UCL-004). Dropped before the credential is
+        // stored, so the new sign-in is never seen with the old one's limit.
+        let usage = account_usage(&record);
+        let known = usage.without_model_windows();
+        if known != usage {
+            store
+                .set_account_state(
+                    account,
+                    record.status,
+                    Some(&usage_json::to_json(&known)),
+                    record.last_error.as_deref(),
+                    self.now(),
+                )
+                .await?;
         }
         store
             .set_account_credential(account, &sealed, AccountStatus::Ok, self.now())

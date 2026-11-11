@@ -439,7 +439,8 @@ A model's limit fills that family's own weekly window in the stored usage (`week
 window only for tasks of that family, so other models still run on the subscription, and the
 subscription is usable for the model again the moment the window resets. No usage reading shows
 these windows: a reading replaces the 5-hour and weekly windows and keeps the per-model ones
-until their reset. A model's limit without a reset is kept as a limit of the subscription that
+until their reset, and a new sign-in of the subscription drops them (they were the previous
+sign-in's). A model's limit without a reset is kept as a limit of the subscription that
 the next reading ends. A subscription reads `limited` while the default model cannot run on it.
 
 ```mermaid

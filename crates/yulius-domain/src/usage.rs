@@ -229,6 +229,18 @@ impl AccountUsage {
         self
     }
 
+    /// Without the per-model windows: they are what Claude told one sign-in, and a new sign-in
+    /// of the subscription knows nothing of them (SPEC-464).
+    #[must_use]
+    pub fn without_model_windows(mut self) -> Self {
+        for family in ModelFamily::WITH_WINDOW {
+            if let Some(slot) = self.model_slot(family) {
+                *slot = None;
+            }
+        }
+        self
+    }
+
     /// Without the per-model windows whose reset has passed: a new window began, and nothing is
     /// known about it yet.
     #[must_use]
@@ -621,6 +633,14 @@ mod tests {
             stored.without_reset_model_windows(NOW).weekly_fable,
             stored.weekly_fable
         );
+        // A new sign-in knows none of them, whatever their reset; the rest stays.
+        let fresh = stored.without_model_windows();
+        assert_eq!(
+            (fresh.weekly_fable, fresh.weekly_opus, fresh.weekly_sonnet),
+            (None, None, None)
+        );
+        assert_eq!(fresh.secondary, stored.secondary);
+        assert!(fresh.limit_reached);
         let later = stored.without_reset_model_windows(Timestamp(5_000_000));
         assert_eq!((later.weekly_fable, later.weekly_opus), (None, None));
         assert_eq!(

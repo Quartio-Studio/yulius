@@ -44,6 +44,8 @@ wrong:
 - **A reading keeps what it cannot see.** A provider reading replaces the windows it carries and
   keeps the per-model windows it does not carry while their reset is ahead. A per-model window
   whose reset passed is dropped at the next stored reading: nothing is known about the new one.
+  A new sign-in of the subscription drops the per-model windows: they are what Claude told the
+  previous sign-in, which may have been another Claude account.
 - **A model's limit without a reset stays a limit of the subscription**, with no reset, as every
   limit without one was: the next usage reading ends it.
 - **A subscription reads `limited` while the default model cannot run on it**: a limit Claude
@@ -89,8 +91,9 @@ wrong:
   whole week full, and they survive a reading from response headers, which never carried them.
 - The stored usage (`accounts.usage_json`) and the API's `usage` gain `weekly_fable`; older rows
   read without one. No migration.
-- A limit a person lifts before its reset (bought credits) stays until the reset: there is no
-  way yet to ask Claude again. The chained task adds one.
+- A limit a person lifts before its reset (bought credits) stays until the reset, or until the
+  subscription is signed in again: there is no way yet to ask Claude again. The chained task
+  adds one.
 - A subscription on which the model can never run (credits off, no allowance) is tried again
   after each usage reading, about every five minutes while tasks need a place.
 - The match follows Claude Code 2.1.311 and 2.1.322. A CLI that rewords the refusal and drops its

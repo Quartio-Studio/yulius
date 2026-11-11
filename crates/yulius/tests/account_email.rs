@@ -327,6 +327,67 @@ async fn a_sign_in_stores_the_email_of_its_claude_account() -> TestResult {
     Ok(())
 }
 
+/// SPEC-464 UCL-004: a model's limit Claude reported to a sign-in is that sign-in's. No usage
+/// reading ends it before its reset, so a new sign-in of the subscription (another Claude
+/// account, or the same one with credits again) drops it; the subscription's own 5-hour and
+/// weekly readings stay until the next reading replaces them.
+#[tokio::test]
+async fn a_new_sign_in_drops_the_models_limit_of_the_previous_one() -> TestResult {
+    let host = Arc::new(SignInHost::default());
+    if let Ok(mut tokens) = host.tokens.lock() {
+        tokens.push(REFUSED);
+    }
+    let h = harness_with(HarnessOptions {
+        session_host: Some(host.clone()),
+        usage: Some(Arc::new(FakeProfile::default())),
+        ..HarnessOptions::default()
+    })?;
+    let admin = setup_superadmin_creds(&h).await?;
+    signed_in_account(&h, "a-out", "old-refused", None).await?;
+    let id = AccountId::parse("a-out")?;
+    let stored = json!({
+        "secondary": {"used_percent": 61.0, "window_minutes": 10_080, "resets_at": 4_000_000_000_000_i64},
+        "weekly_fable": {"used_percent": 100.0, "window_minutes": 10_080, "resets_at": 4_100_000_000_000_i64},
+        "weekly_opus": {"used_percent": 100.0, "window_minutes": 10_080, "resets_at": 4_100_000_000_000_i64},
+    });
+    h.store
+        .set_account_state(
+            &id,
+            AccountStatus::Limited,
+            Some(&stored.to_string()),
+            None,
+            Timestamp(2),
+        )
+        .await?;
+
+    let relogin = call(
+        &h.router,
+        Method::POST,
+        "/api/admin/accounts/a-out/relogin",
+        None,
+        &admin,
+    )
+    .await?;
+    assert_eq!(relogin.status, StatusCode::OK, "{}", relogin.body);
+    let wait = async {
+        loop {
+            let record = h.store.account(&id).await?.ok_or("account")?;
+            let credential = record.credential.as_ref().ok_or("credential")?;
+            if h.app.deps.crypto.open(credential)? == REFUSED.as_bytes() {
+                return Ok::<_, Box<dyn std::error::Error>>(record);
+            }
+            tokio::task::yield_now().await;
+        }
+    };
+    let record = tokio::time::timeout(Duration::from_secs(10), wait).await??;
+    let usage: Value = serde_json::from_str(record.usage_json.as_deref().ok_or("usage")?)?;
+    assert!(usage["weekly_fable"].is_null(), "{usage}");
+    assert!(usage["weekly_opus"].is_null(), "{usage}");
+    assert_eq!(usage["secondary"]["used_percent"], 61.0, "{usage}");
+    assert_eq!(record.status, AccountStatus::Ok);
+    Ok(())
+}
+
 /// SUB-004: subscriptions signed in before emails were read get theirs once from the background
 /// round. A definite answer (an email, none, a refusal, something that is not an address) is not
 /// asked again; a temporary failure is, after its back-off; a known email is left alone.
