@@ -151,7 +151,7 @@ pub enum Request {
     /// Count the installed copy and name the sandboxes built on another release.
     Inventory {
         /// The copy's manifest (its ids).
-        manifest: Manifest,
+        manifest: Box<Manifest>,
         /// The old host's inventory.
         old: Inventory,
         /// The old host's release.

@@ -260,8 +260,12 @@ impl Stage {
 
     fn save(&self) -> Result<(), String> {
         let json = serde_json::to_vec(&self.meta).map_err(|e| e.to_string())?;
-        write_atomic(&self.dir.join("stage.json"), &json, 0o600)
-            .map_err(|e| format!("cannot write {}: {e}", self.dir.join("stage.json").display()))
+        write_atomic(&self.dir.join("stage.json"), &json, 0o600).map_err(|e| {
+            format!(
+                "cannot write {}: {e}",
+                self.dir.join("stage.json").display()
+            )
+        })
     }
 
     /// Forgets the staged copy: no receipts, no stage.
@@ -354,7 +358,11 @@ impl Stage {
         let sum = move |at: u64| {
             let mut check = [0u8; 8];
             (at < count)
-                .then(|| file.as_ref()?.read_exact_at(&mut check, at * SENT as u64).ok())
+                .then(|| {
+                    file.as_ref()?
+                        .read_exact_at(&mut check, at * SENT as u64)
+                        .ok()
+                })
                 .flatten()
                 .map(|()| hex::encode(check))
         };

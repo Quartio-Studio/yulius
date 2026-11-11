@@ -762,10 +762,10 @@ fn inventory_of(entries: u64) -> Inventory {
 
 fn inventory_request() -> Request {
     Request::Inventory {
-        manifest: Manifest {
+        manifest: Box::new(Manifest {
             data_dir: "/var/lib/yulius".into(),
             ..Manifest::default()
-        },
+        }),
         old: inventory_of(6_388_083),
         release: Release::parse("ID=ubuntu\nVERSION_ID=\"24.04\"\nVERSION_CODENAME=noble\n"),
     }

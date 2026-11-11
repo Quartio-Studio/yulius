@@ -1229,7 +1229,7 @@ impl<'a> Move<'a> {
             .call(
                 "copy proven",
                 &Request::Inventory {
-                    manifest,
+                    manifest: Box::new(manifest),
                     old: old.clone(),
                     release: p.release.clone(),
                 },

@@ -152,8 +152,8 @@ Resume and bound
 ## Plan
 
 - [x] Spec SPEC-465 and ADR-0303 for the warm copy
-- [ ] Receipts on the old host: the map of what the new host holds, the journal of a stream, adoption
-- [ ] Passes in the export: a live walk that tolerates change, an exact delta with the kept paths
+- [x] Receipts on the old host: the map of what the new host holds, the journal of a stream, adoption
+- [x] Passes in the export: a live walk that tolerates change, an exact delta with the kept paths
 - [ ] Extraction onto a staged copy: replace, link to earlier files, keep directory times, defer or delete
 - [ ] The import of a pass: stage marker, acknowledged prefix, deletions, sync
 - [ ] The move: warm passes, estimate and --max-downtime, the frozen delta, resume
