@@ -325,7 +325,7 @@ impl Variables<'_> {
     /// Whether a top-level header gives bwrap as its profile's program: its attachment where
     /// it has one (`profile name /path`, `/name /path`), else its name (`profile /path`,
     /// `/path`). A person's profile is rather seen than missed: one in a policy namespace
-    /// (`:ns:name /path`) counts, and in a layout not known here any word may be the program.
+    /// (`:ns:name /path`) counts.
     fn header_attaches(&self, header: &[&str]) -> bool {
         let named = (0..header.len())
             .find(|&at| attribute(header[at], header.get(at + 1).copied()))
@@ -334,7 +334,7 @@ impl Variables<'_> {
         match keyword.map_or(named, |at| &named[at + 1..]) {
             [name] => self.is_bwrap(name, true),
             [_, attachment] => self.is_bwrap(attachment, false),
-            words => words.iter().any(|word| self.is_bwrap(word, false)),
+            _ => false,
         }
     }
 
@@ -361,7 +361,7 @@ impl Variables<'_> {
         let mut text = word.to_owned();
         while let Some((at, end)) = variable(&text) {
             let (before, after) = (&text[..at], &text[end + 1..]);
-            let values = self.values(&text[at + 2..end], &mut Vec::new())?;
+            let values = self.values(&text[at + 2..end], 0)?;
             let leads = before.ends_with('/') && before.contains(|c| c != '/');
             let trimmed: Vec<&str> = values
                 .iter()
@@ -397,9 +397,10 @@ impl Variables<'_> {
     /// A variable's values as AppArmor holds them: a set, the variables inside a value
     /// replaced by each of theirs in turn. One the file does not set comes from a file it
     /// includes: `@{bin}` is then taken for bwrap's directory, any other for no path. `None`
-    /// where a variable names itself (`seen`: the ones being read).
-    fn values(&self, name: &str, seen: &mut Vec<String>) -> Option<BTreeSet<String>> {
-        if seen.len() >= DEEPEST || seen.iter().any(|s| s == name) {
+    /// where variables stand deeper one in another (`depth`) than any profile's do, as one
+    /// that names itself does.
+    fn values(&self, name: &str, depth: usize) -> Option<BTreeSet<String>> {
+        if depth >= DEEPEST {
             return None;
         }
         let var = self.vars.get(name);
@@ -411,21 +412,19 @@ impl Variables<'_> {
         if !var.is_some_and(|var| var.declared) {
             raw.push(if name == "bin" { "/usr/bin" } else { UNKNOWN }.to_owned());
         }
-        seen.push(name.to_owned());
         let mut done = BTreeSet::new();
         while let Some(value) = raw.pop() {
             let Some((at, end)) = variable(&value) else {
                 done.insert(value);
                 continue;
             };
-            for inner in self.values(&value[at + 2..end], seen)? {
+            for inner in self.values(&value[at + 2..end], depth + 1)? {
                 if !self.spend(value.len() + inner.len()) {
                     return None;
                 }
                 raw.push(format!("{}{inner}{}", &value[..at], &value[end + 1..]));
             }
         }
-        seen.pop();
         Some(done)
     }
 
@@ -1052,6 +1051,8 @@ mod tests {
         assert!(!attaches_bwrap(circle));
         let forks = format!("profile b /usr/bin/bwrap{}x {{\n}}\n", "{,}".repeat(40));
         assert!(!attaches_bwrap(&forks));
+        // A value that opens a variable the header's own brace closes, over and over.
+        assert!(!attaches_bwrap("@{a} = ! @{a\nprofile b @{a}}{ {\n}\n"));
 
         let dirs: String = (0..2000).map(|n| format!(" /opt/{n}")).collect();
         assert!(attaches_bwrap(&format!(
