@@ -6,8 +6,8 @@
 //! migrate` (SPEC-460): its plan, the move, or its abort. The helper reports in
 //! [`MoveHelperStatus`] at `<state>/helper.json`; the command keeps its own checklist in
 //! `<state>/status.json`. A finished move leaves the checklist on the new host as
-//! [`MoveChecklist`] in `<data>/move-checklist.json`. No file holds a secret value: a request
-//! has no field for one.
+//! [`MoveChecklist`] in `<state>/arrived.json`. No file holds a secret value: a request has no
+//! field for one.
 
 use serde::{Deserialize, Serialize};
 
@@ -36,8 +36,10 @@ pub const REQUEST_FILE: &str = "request.json";
 pub const HELPER_STATUS_FILE: &str = "helper.json";
 /// The command's status (its phase and checklist) in the state directory.
 pub const STATUS_FILE: &str = "status.json";
-/// The finished checklist a move leaves at the top of the new host's data directory.
-pub const CHECKLIST_FILE: &str = "move-checklist.json";
+/// The finished checklist a move leaves in the state directory of the new host, for its
+/// server: root's file in root's directory, so nothing is written where the service user could
+/// redirect it.
+pub const ARRIVED_FILE: &str = "arrived.json";
 /// Longest target, and longest public URL.
 pub const MAX_TARGET_BYTES: usize = 255;
 /// Longest name of a data disk.
@@ -177,8 +179,8 @@ pub struct MoveHelperStatus {
     pub ended_at: Option<i64>,
 }
 
-/// `<data>/move-checklist.json` on the new host: the checklist of the move that brought the
-/// instance there (SPEC-470 MVB-011).
+/// `<state>/arrived.json` on the new host: the checklist of the move that brought the instance
+/// there (SPEC-470 MVB-011).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MoveChecklist {
     /// [`VERSION`].

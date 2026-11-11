@@ -1652,3 +1652,130 @@ fn a_unit_the_old_host_names_is_enabled() {
         assert!(!host.ran("systemctl"), "{unit:?}");
     }
 }
+
+/// SPEC-470 MVB-011: the checklist staged by the old host is completed with the Finish step's
+/// own lines and left for the new instance's server in root's own directory: nothing is written
+/// into the data directory, which the running instance's user owns.
+#[test]
+fn the_finish_leaves_the_staged_checklist_for_the_new_instance() -> Result<(), String> {
+    use yulius_contracts::migrate::MoveChecklist;
+    let was = |name: &str| HostLine {
+        name: name.into(),
+        outcome: HostOutcome::Ok,
+        detail: "as it was".into(),
+    };
+    let carry = Request::Carry(Carried {
+        checklist: MoveChecklist {
+            version: 1,
+            id: "abcd1234".into(),
+            target: "root@new.example".into(),
+            from: Some("https://old.example".into()),
+            to: Some("https://new.example".into()),
+            lines: vec![was("old host"), was("copy proven")],
+            finished_at: 1_800_000_000,
+        },
+        then: vec![was("one-time key (old host)"), was("old host")],
+    });
+    let finish = Request::Finish {
+        key: "yulius-migrate-abcd1234".into(),
+        firewall: true,
+    };
+    let mode = |host: &FakeHost, path: &str| {
+        host.stat(std::path::Path::new(path))
+            .map(|(_, mode)| mode & 0o7777)
+    };
+    let mut host = new_host();
+    host.file_as(
+        "/root/.ssh/authorized_keys",
+        "ssh-ed25519 AAAA admin@laptop\nssh-ed25519 BBBB yulius-migrate-abcd1234\n",
+        0,
+        0o600,
+    );
+    // Staged where only root reads; nothing is said about it, and nothing is left yet.
+    let staged = step(&mut host, &carry);
+    assert!(staged.lines.is_empty(), "{:?}", staged.lines);
+    assert_eq!(mode(&host, CARRY_FILE), Some(0o600));
+    assert!(host.text(ARRIVED).is_none());
+
+    let reply = step(&mut host, &finish);
+    let own: Vec<&str> = reply.lines.iter().map(|l| l.name.as_str()).collect();
+    assert_eq!(own, ["one-time key", "firewall"]);
+    // For the server, which is not root.
+    assert_eq!(mode(&host, ARRIVED), Some(0o644));
+    let text = host.text(ARRIVED).ok_or("no checklist was left")?;
+    let list: MoveChecklist = serde_json::from_str(text).map_err(|e| e.to_string())?;
+    let names: Vec<&str> = list.lines.iter().map(|l| l.name.as_str()).collect();
+    assert_eq!(
+        names,
+        [
+            "old host",
+            "copy proven",
+            "one-time key",
+            "firewall",
+            "one-time key (old host)",
+            "old host"
+        ]
+    );
+    assert_eq!(list.lines[2..4], reply.lines[..]);
+    assert_eq!(
+        (list.id.as_str(), list.finished_at),
+        ("abcd1234", 1_800_000_000)
+    );
+    // The flow's other files are gone, the staged copy among them, and nothing of the move
+    // was written into the data directory or given to anyone.
+    let left: Vec<&std::path::PathBuf> = host
+        .files
+        .keys()
+        .filter(|path| path.starts_with(STATE_DIR))
+        .collect();
+    assert_eq!(left, [std::path::Path::new(ARRIVED)]);
+    assert!(!host.ran("chown"));
+    assert!(
+        !host
+            .log
+            .iter()
+            .any(|l| l.starts_with("write /var/lib/yulius/"))
+    );
+
+    // Without a staged checklist (an abort's finish) nothing is left.
+    let mut host = new_host();
+    step(&mut host, &finish);
+    assert!(host.text(ARRIVED).is_none());
+    assert!(!host.files.keys().any(|path| path.starts_with(STATE_DIR)));
+
+    // A checklist an earlier move left there is replaced by this move's, or goes with a
+    // finish that brings none.
+    let mut host = new_host();
+    host.file(ARRIVED, "{\"id\":\"earlier\"}");
+    step(&mut host, &carry);
+    step(&mut host, &finish);
+    assert!(
+        host.text(ARRIVED)
+            .is_some_and(|text| text.contains("abcd1234"))
+    );
+    let mut host = new_host();
+    host.file(ARRIVED, "{\"id\":\"earlier\"}");
+    step(&mut host, &finish);
+    assert!(host.text(ARRIVED).is_none());
+
+    // A staged file that is not a checklist, or a directory that cannot be written, is said,
+    // and the finish does its work.
+    let mut host = new_host();
+    host.file(CARRY_FILE, "{");
+    let reply = step(&mut host, &finish);
+    let said = reply.lines.iter().find(|l| l.name == "checklist");
+    assert_eq!(said.map(|l| l.outcome), Some(HostOutcome::Manual));
+    assert!(host.text(STAGED_BUILD).is_none() && host.text(ARRIVED).is_none());
+
+    let mut host = new_host();
+    host.read_only.insert(ARRIVED.into());
+    step(&mut host, &carry);
+    let reply = step(&mut host, &finish);
+    let said = reply.lines.iter().find(|l| l.name == "checklist");
+    assert_eq!(said.map(|l| l.outcome), Some(HostOutcome::Manual));
+    assert!(
+        said.is_some_and(|l| l.detail.contains("--status")),
+        "{said:?}"
+    );
+    Ok(())
+}

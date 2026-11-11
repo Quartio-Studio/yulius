@@ -19,6 +19,11 @@ use crate::instance::inventory::Inventory;
 pub const STATE_DIR: &str = "/var/lib/yulius-migrate";
 /// The build the old host copied to the new one.
 pub const STAGED: &str = "/var/lib/yulius-migrate/yulius";
+/// The finished checklist between the step that brings it and the Finish ([`Carried`]).
+pub const CARRY_FILE: &str = "/var/lib/yulius-migrate/checklist.json";
+/// The finished checklist as the Finish leaves it for the new instance's server
+/// (`yulius_contracts::migrate::ARRIVED_FILE` in the state directory).
+pub const ARRIVED: &str = "/var/lib/yulius-migrate/arrived.json";
 /// What the next copy is to be installed as ([`Expect`]).
 pub const EXPECT_FILE: &str = "/var/lib/yulius-migrate/expect.json";
 /// Written by [`Request::Stop`]: this copy was stopped by the move. A Start that is still
@@ -70,6 +75,16 @@ pub struct Expect {
     pub data_dir: PathBuf,
     /// The stream is compressed with zstd.
     pub zstd: bool,
+}
+
+/// The finished checklist on its way to the new instance (SPEC-470 MVB-011); kept in
+/// [`CARRY_FILE`] between the step that brings it and the Finish that completes it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Carried {
+    /// The move and its lines up to the Finish step.
+    pub checklist: yulius_contracts::migrate::MoveChecklist,
+    /// The lines the old host adds after the Finish step.
+    pub then: Vec<HostLine>,
 }
 
 /// One step for the new host.
@@ -206,6 +221,9 @@ pub enum Request {
         /// The instance's public URL, for the note when it cannot be asked.
         public_url: String,
     },
+    /// Stage the finished checklist for the new instance's page; the Finish step completes it
+    /// and leaves it in this directory as [`ARRIVED`] (SPEC-470 MVB-011).
+    Carry(Carried),
     /// Enable a unit the old host had enabled, once the instance runs: the move helper's path
     /// unit (SPEC-470 MVB-008).
     Enable {
@@ -1749,6 +1767,8 @@ fn finish(host: &mut dyn Host, env: &Env<'_>, key: &str, firewall: bool, l: &mut
             );
         }
     }
+    // Read before the flow's files go, left after: what an earlier move left goes with them.
+    let staged = host.read(Path::new(CARRY_FILE));
     if host.is_file(Path::new(STOPPED)) {
         // A Start may still be in flight: what tells it not to start the unit stays.
         for name in host.list(Path::new(STATE_DIR)) {
@@ -1759,6 +1779,55 @@ fn finish(host: &mut dyn Host, env: &Env<'_>, key: &str, firewall: bool, l: &mut
         }
     } else {
         sh(host, &["rm", "-rf", "--", STATE_DIR]);
+    }
+    if let Some(staged) = staged {
+        leave_checklist(host, &staged, l);
+    }
+}
+
+/// Keeps the checklist the old host brings until the Finish (SPEC-470 MVB-011).
+fn carry(host: &mut dyn Host, carried: &Carried, l: &mut Lines) {
+    let kept = serde_json::to_string(carried)
+        .map_err(|e| e.to_string())
+        .and_then(|json| host.write(Path::new(CARRY_FILE), &json, 0o600));
+    if let Err(why) = kept {
+        l.manual("checklist", not_left(&why));
+    }
+}
+
+fn not_left(why: &str) -> String {
+    format!(
+        "could not be left for Settings → Instance on the new host ({why}); `yulius instance \
+         migrate --status` on the old host has it"
+    )
+}
+
+/// Completes the staged checklist with this step's own lines and leaves it for the new
+/// instance's server (SPEC-470 MVB-011), in root's own directory: the data directory belongs
+/// to the user of an instance that already runs, and root writes nothing there on its word.
+fn leave_checklist(host: &mut dyn Host, staged: &str, l: &mut Lines) {
+    const ITEM: &str = "checklist";
+    let Carried {
+        mut checklist,
+        then,
+    } = match serde_json::from_str(staged) {
+        Ok(carried) => carried,
+        Err(e) => {
+            return l.manual(
+                ITEM,
+                not_left(&format!("what the old host brought is not one: {e}")),
+            );
+        }
+    };
+    checklist
+        .lines
+        .extend(l.0.iter().cloned().map(super::shown));
+    checklist.lines.extend(then);
+    let left = serde_json::to_string(&checklist)
+        .map_err(|e| e.to_string())
+        .and_then(|json| host.write(Path::new(ARRIVED), &json, 0o644));
+    if let Err(why) = left {
+        l.manual(ITEM, not_left(&format!("cannot write {ARRIVED}: {why}")));
     }
 }
 
@@ -1832,6 +1901,7 @@ pub fn handle(host: &mut dyn Host, env: &mut Env<'_>, request: &Request) -> Repl
             let (outcome, detail) = super::github::line(asked, public_url);
             l.push("GitHub App", outcome, detail);
         }
+        Request::Carry(carried) => carry(host, carried, &mut l),
         Request::Enable { name, unit } => enable(host, name, unit, &mut l),
         Request::Finish { key, firewall } => finish(host, env, key, *firewall, &mut l),
     }

@@ -39,10 +39,12 @@ D of [0297](0297-one-root-command-moves-an-instance-and-drives-the-new-host-over
   command's `status.json` are read on every request; a request the helper took, or an old one,
   is removed. Nothing about a move is in the database, so nothing about it is copied as if the
   new host were moving.
-- **The checklist travels with the Finish step.** The old host sends the lines so far and the
-  lines it will add after the step; the new host's step adds its own and writes
-  `<data>/move-checklist.json` for its server. The page on the old address notices the redirect
-  (a fetch that does not follow redirects) and links to the same page at the new URL.
+- **The checklist travels with the Finish step.** The old host brings the lines so far and the
+  lines it will add after the step; the new host's Finish adds its own and leaves the whole as
+  `arrived.json` in the flow's directory there, root's and readable, where its server reads it.
+  Nothing is written into the data directory, which the running instance's user owns. The page
+  on the old address notices the redirect (a fetch that does not follow redirects) and links to
+  the same page at the new URL.
 - **A move needs a plan shown for the same values**, at most an hour old, without a failed line
   and without a key still to add; a move that stopped is continued with the same values.
 

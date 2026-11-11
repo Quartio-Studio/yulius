@@ -132,6 +132,13 @@ pub struct Status {
     pub lines: Vec<HostLine>,
     /// Seconds since the epoch.
     pub updated_at: u64,
+    /// The one-time key's public line, while a person has to add it to root's
+    /// `authorized_keys` on the new host (SPEC-470 MVB-010).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public_key: Option<String>,
+    /// The new public URL, once the plan decided it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new_url: Option<String>,
 }
 
 impl State {
@@ -345,6 +352,8 @@ pub struct Move<'a> {
     state: State,
     phase: &'static str,
     lines: Vec<HostLine>,
+    /// The one-time key's public line, while a person has to add it (SPEC-470 MVB-010).
+    key_line: Option<String>,
 }
 
 impl<'a> Move<'a> {
@@ -364,6 +373,7 @@ impl<'a> Move<'a> {
             state,
             phase: "Plan",
             lines: Vec::new(),
+            key_line: None,
         }
     }
 
@@ -375,6 +385,8 @@ impl<'a> Move<'a> {
             phase: self.phase.to_owned(),
             lines: self.lines.clone(),
             updated_at: now_secs(),
+            public_key: self.key_line.clone(),
+            new_url: self.state.new_url.clone(),
         };
         if let Ok(json) = serde_json::to_vec(&status) {
             let _ = write_atomic(&self.opts.state_dir.join("status.json"), &json, 0o644);
@@ -690,6 +702,8 @@ impl<'a> Move<'a> {
             }
             Err(why) => {
                 let seen = self.host_key_note();
+                // For readers of the status (Settings → Instance shows it with a copy button).
+                self.key_line = Some(public.clone());
                 self.manual(
                     ITEM,
                     format!(
@@ -1903,6 +1917,10 @@ impl<'a> Move<'a> {
             .and_then(Result::ok)
             .map(|reply| reply.lines)
             .filter(|lines| !lines.is_empty());
+        // What this host says after the new host's Finish is known now, so the whole checklist
+        // can travel while the key still signs in (SPEC-470 MVB-011).
+        let mut then = self.after_finish(&new, moved_url, github);
+        self.carry_checklist(p, &new, &then);
         let finish = Request::Finish {
             key: self.state.key_comment(),
             firewall: p.firewall == Carried::Yes,
@@ -1943,14 +1961,37 @@ impl<'a> Move<'a> {
             }
         }
         self.remote.forget();
-        self.changed("one-time key (old host)", "deleted");
+        // The key's line first; the rest once the move is recorded as finished.
+        let rest = then.split_off(1);
+        then.into_iter().for_each(|line| self.push(line));
         // Without the key nothing more can be done from here: what failed above is a person's.
         self.state.finished = true;
         let _ = self.save_state();
+        rest.into_iter().for_each(|line| self.push(line));
+    }
+
+    /// What this host says once the new host's Finish is done: its key deleted, then what is
+    /// left for people. Known before that step, so it can travel with it.
+    fn after_finish(
+        &self,
+        new: &str,
+        moved_url: bool,
+        github: Option<Vec<HostLine>>,
+    ) -> Vec<HostLine> {
+        let line = |name: &str, outcome, detail: String| HostLine {
+            name: name.to_owned(),
+            outcome,
+            detail,
+        };
+        let mut then = vec![line(
+            "one-time key (old host)",
+            HostOutcome::Changed,
+            "deleted".into(),
+        )];
         if moved_url {
             match github {
-                Some(lines) => lines.into_iter().for_each(|line| self.push(shown(line))),
-                None => self.manual("GitHub App", github_note(&new)),
+                Some(lines) => then.extend(lines.into_iter().map(shown)),
+                None => then.push(line("GitHub App", HostOutcome::Manual, github_note(new))),
             }
             // The old URL's redirect leads `yulius remote` to the new one (SPEC-466 MVC-030).
             let cli = if self.state.redirected {
@@ -1960,24 +2001,50 @@ impl<'a> Move<'a> {
             } else {
                 format!("`yulius remote login {new}` keeps the token")
             };
-            self.manual(
+            then.push(line(
                 "remote clients",
+                HostOutcome::Manual,
                 format!(
                     "laptops point at the old URL: {cli}; in Claude Code `claude mcp remove \
                      yulius`, then `claude mcp add --transport http yulius {new}/mcp --header \
                      \"Authorization: Bearer <token>\"`"
                 ),
-            );
+            ));
         }
-        self.manual(
+        then.push(line(
             "old host",
+            HostOutcome::Manual,
             format!(
                 "it keeps a frozen copy with master.key and every secret. `sudo yulius instance \
                  migrate --abort` here goes back, once the new instance is stopped on the new \
                  host. When the new instance has proven itself, wipe {} or retire the disk",
                 self.opts.data_dir.display()
             ),
-        );
+        ));
+        then
+    }
+
+    /// Brings the new host the checklist so far and the lines that follow its Finish, which
+    /// leaves the whole for the new instance's page (SPEC-470 MVB-011). A new host that does
+    /// not take it is said by the Finish that follows.
+    fn carry_checklist(&mut self, p: &Profile, new: &str, then: &[HostLine]) {
+        let carried = target::Carried {
+            checklist: yulius_contracts::migrate::MoveChecklist {
+                version: yulius_contracts::migrate::VERSION,
+                id: self.state.id.clone(),
+                target: self.state.target.clone(),
+                from: p.public_url.clone(),
+                to: Some(new.to_owned()).filter(|url| !url.is_empty()),
+                lines: self.lines.clone(),
+                finished_at: now_secs(),
+            },
+            then: then.to_vec(),
+        };
+        if let Ok(reply) = self.remote.call(&Request::Carry(carried)) {
+            for line in reply.lines {
+                self.push(shown(line));
+            }
+        }
     }
 
     /// `--abort`: back to the old host, never with both instances running.

@@ -105,10 +105,11 @@ The command, for readers
 
 - MVB-010 **Status for the page.** `status.json` also holds `public_key` (the one-time key's
   public line, while a person has to add it) and `new_url` (once the plan decided it).
-- MVB-011 **The checklist travels.** The move's Finish gives the new host the finished
-  checklist as `<data>/move-checklist.json` (0600, the service user's): the lines so far, the
-  new host's own Finish lines, and the lines the old host adds after it. A copy that is marked
-  for its first start drops a checklist an earlier move left in it.
+- MVB-011 **The checklist travels.** The move's Finish leaves the finished checklist on the new
+  host as `/var/lib/yulius-migrate/arrived.json` (0644, root's file in the flow's own
+  directory): the lines so far, the new host's own Finish lines, and the lines the old host
+  adds after it. Nothing is written into the data directory for it: that belongs to the user of
+  an instance that already runs. A later Finish replaces it, or removes it when it brings none.
 
 Application and API
 
@@ -119,7 +120,7 @@ Application and API
   `lost` when a running helper's heartbeat is more than 60 s old); `move` (the command's status:
   id, target, phase, lines, `public_key`, `new_url`, `updated_at`, and `by_command` when it was
   written after the helper's last run ended, that is by a run started on the host); `arrived`
-  (the checklist that came with a move to this host, MVB-011); and `can` (`plan`, `move`,
+  (the checklist a move to this host left, MVB-011); and `can` (`plan`, `move`,
   `abort`: what would be accepted now). A request the helper took, or one older than 15
   minutes, is removed, so it is never copied to a new host as a pending one.
 - MVB-021 **Ask.** `POST /api/admin/instance/migration` with `action`, `target`, `ssh_port`,
@@ -171,8 +172,8 @@ Settings → Instance
 ## Design
 
 - **Contracts** (`yulius-contracts::migrate`): `MoveRequest` (`deny_unknown_fields`),
-  `MoveAction`, `MoveHelperStatus`, `MoveHelperState`, `ArrivedMove`, the limits and the request
-  directory's name. The API views live in `yulius-contracts::api::migration`.
+  `MoveAction`, `MoveHelperStatus`, `MoveHelperState`, `MoveChecklist`, the limits and the files'
+  names. The API views live in `yulius-contracts::api::migration`.
 - **Rules** (`yulius-app::migration::rules`): `check_request` (MVB-002) with
   `destination_ok`, moved there from `instance/migrate/remote.rs`, which keeps the name by
   re-export, and `public_url_ok`. Used by the application before it writes and by the helper
@@ -196,8 +197,10 @@ Settings → Instance
   `lost` when its heartbeat stops, after which the person continues or aborts), `ended`,
   `refused`, `lost` (terminal; the next request replaces them).
 - **Command** (`instance/migrate.rs`, `target.rs`, `profile.rs`): `Status` gets the two fields;
-  `Request::Finish` carries the checklist (`Carried`: the data directory, its owner, the status
-  so far and the lines that follow), written by the new host's Finish step; a new
+  a new step `Request::Carry` brings the checklist (`Carried`: the lines so far and the lines
+  that follow the Finish) and stages it in the flow's directory, as `Expect` is staged for the
+  copy; the new host's Finish step adds its own lines and leaves the whole as `arrived.json`
+  after it removed the flow's other files. `Request::Finish` keeps its shape. A new
   `Request::Enable` enables the helper's path unit after the start; `Profile` reads the helper's
   units (`units::migrate_unit`) and whether its path unit is enabled.
 - **Page** (`web/assets/instancemove.js`): one card module; the view decides what is shown, the
@@ -209,7 +212,7 @@ Settings → Instance
 - [x] The request's contract and field rules, shared by the server and the helper
 - [x] `yulius migrate-helper`: owner checks, one request once, never during an update, runs the command, reports, stops a run on an abort
 - [x] Units in `deploy/systemd`, carried by a move and enabled on the new host as on the old one
-- [ ] The command tells readers the key line and the new URL, and the finished checklist travels to the new host
+- [x] The command tells readers the key line and the new URL, and the finished checklist travels to the new host
 - [ ] Application and API: the view, plan, move and abort for the superadmin, audited, updates and moves refuse each other
 - [ ] The card "Move to another host": form, plan with the key line, typed confirmation, live checklist, abort, on the mock with e2e
 - [ ] Frozen and moved: the card keeps trying, follows the old URL's redirect, and the new instance shows the finished checklist
@@ -240,9 +243,11 @@ Settings → Instance
   checklist says there is none.
 - A plan without a way to add the key ends with `public_key` in `status.json`, equal to the
   key's public line; a run that signs in has none. After the plan's URL step `new_url` is there.
-- After a finished move the new host's `<data>/move-checklist.json` belongs to the service
-  user, is 0600 and holds the same lines, in the same order, as the old host's final
-  `status.json`; a copy marked for a start no longer holds an earlier one.
+- After a finished move the new host's `/var/lib/yulius-migrate/arrived.json` is 0644 and holds
+  the same lines, in the same order, as the old host's final `status.json`; nothing else of the
+  flow is left there and nothing was written into the data directory; a Finish that brings no
+  checklist removes an earlier one; a new host that cannot keep it says so (`manual`) and the
+  move ends all the same.
 - `GET` and `POST /api/admin/instance/migration`: a member gets 403; a POST without the CSRF
   header 403; a superadmin's plan writes one request with the given values and audits
   `migration.planned`; a second plan while the first waits is 409; after the helper's report the
@@ -290,6 +295,12 @@ Settings → Instance
   move, so only its proxy could serve the status, to anyone who asks; the new instance shows
   what the Finish step brought. The lines the old host adds after that step are known before it
   (the key deleted here, GitHub's answer, the notes for people), so they travel with it.
+- **The checklist is left in root's directory, not in the data directory.** At the Finish the
+  new instance already runs, and its user owns the data directory: a file root wrote and gave
+  away there could be redirected by that user between the two steps. The server reads the
+  flow's directory anyway (the helper's report, the command's status), so the checklist is
+  left there, readable and root's. It also does not travel on with the next move, which brings
+  its own.
 - **The page's abort never passes `--yes`.** That flag answers "is the new instance stopped?"
   for the person. It is needed only when the new host cannot be reached after its instance was
   started; the checklist then names the command to run on the host.

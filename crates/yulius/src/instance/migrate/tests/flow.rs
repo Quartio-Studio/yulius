@@ -2376,3 +2376,116 @@ fn the_move_helper_travels_and_is_enabled_as_on_the_old_host() -> TestResult {
     assert!(s.state()?.finished);
     Ok(())
 }
+
+/// SPEC-470 MVB-010: `status.json` gives its readers the key line while a person has to add it,
+/// and the new URL once the plan decided it.
+#[test]
+fn the_status_names_the_key_to_add_and_the_new_url() -> TestResult {
+    let mut s = setup()?;
+    s.remote.signs_in = false;
+    s.opts.yes = false;
+    assert_eq!(s.run()?, 0);
+    let status = s.status()?;
+    let key = status.public_key.clone().ok_or("no key in the status")?;
+    assert_eq!(
+        key,
+        format!("ssh-ed25519 AAAAC3FAKE yulius-migrate-{}", status.id)
+    );
+    assert!(line(&status, "one-time key").is_some_and(|l| l.detail.ends_with(&key)));
+    assert_eq!(
+        status.new_url, None,
+        "the plan ended before it decided the URL"
+    );
+    let written = fs::read_to_string(s.opts.state_dir.join("status.json"))?;
+    assert!(
+        written.contains(r#""public_key":"ssh-ed25519 "#),
+        "{written}"
+    );
+
+    // Added by hand on the new host: the same plan goes on and asks for no key.
+    s.remote.key = true;
+    assert_eq!(s.run()?, 0, "{}", s.shown());
+    let status = s.status()?;
+    assert_eq!(status.phase, "Plan");
+    assert_eq!(status.public_key, None);
+    assert_eq!(status.new_url.as_deref(), Some(NEW_URL));
+    let written = fs::read_to_string(s.opts.state_dir.join("status.json"))?;
+    assert!(!written.contains("public_key"), "{written}");
+    Ok(())
+}
+
+/// SPEC-470 MVB-011: the finished checklist travels to the new host with the Finish step, for
+/// the new instance's page: the same lines, in the same order, as the old host's own.
+#[test]
+fn the_finished_checklist_travels_to_the_new_host() -> TestResult {
+    use yulius_contracts::migrate::MoveChecklist;
+    let carried = |s: &Setup| -> Result<MoveChecklist, Box<dyn std::error::Error>> {
+        let (text, _, mode) = s
+            .remote
+            .host
+            .files
+            .get(Path::new(target::ARRIVED))
+            .ok_or("no checklist on the new host")?;
+        assert_eq!(mode & 0o7777, 0o644);
+        Ok(serde_json::from_str(text)?)
+    };
+    let mut s = setup()?;
+    assert_eq!(s.run()?, 0, "{}", s.shown());
+    let status = s.status()?;
+    assert_eq!(status.phase, "done");
+    let list = carried(&s)?;
+    assert_eq!(list.lines, status.lines);
+    // The lines of the Finish itself and what the old host said after it are there.
+    let names: Vec<&str> = list.lines.iter().map(|l| l.name.as_str()).collect();
+    for name in [
+        "one-time key",
+        "one-time key (old host)",
+        "GitHub App",
+        "remote clients",
+        "old host",
+    ] {
+        assert!(names.contains(&name), "{name} is missing: {names:?}");
+    }
+    assert_eq!(names.last(), Some(&"old host"));
+    assert_eq!(
+        (list.version, list.id.as_str(), list.target.as_str()),
+        (1, status.id.as_str(), "root@185.189.47.160")
+    );
+    assert_eq!(list.from.as_deref(), Some(super::fake::OLD_URL));
+    assert_eq!(list.to.as_deref(), Some(NEW_URL));
+    assert!(list.finished_at > 0);
+    // Nothing else of the flow stays there, and the data directory got nothing from it.
+    let left: Vec<&PathBuf> = s
+        .remote
+        .host
+        .files
+        .keys()
+        .filter(|path| path.starts_with(target::STATE_DIR))
+        .collect();
+    assert_eq!(left, [Path::new(target::ARRIVED)]);
+    // Brought while the key still signed in, before the step that removes it.
+    let events = s.events();
+    let at = |what: &str| events.iter().position(|e| e == what);
+    assert!(at("new: carry") < at("new: finish"), "{events:?}");
+
+    // A Finish that did not reach the new host leaves no checklist; the run that finishes does,
+    // with its own lines.
+    let mut s = setup()?;
+    s.remote.refuse = vec!["finish"];
+    assert_eq!(s.run()?, 1);
+    assert!(carried(&s).is_err());
+    assert_eq!(s.run()?, 0, "{}", s.shown());
+    let status = s.status()?;
+    assert_eq!(carried(&s)?.lines, status.lines);
+
+    // A new host that cannot keep it says so, and the move ends all the same.
+    let mut s = setup()?;
+    s.remote.host.read_only.insert(target::ARRIVED.into());
+    assert_eq!(s.run()?, 0, "{}", s.shown());
+    let status = s.status()?;
+    let said = line(&status, "checklist").ok_or("nothing said")?;
+    assert_eq!(said.outcome, HostOutcome::Manual);
+    assert!(said.detail.contains("--status"), "{}", said.detail);
+    assert!(s.state()?.finished);
+    Ok(())
+}
