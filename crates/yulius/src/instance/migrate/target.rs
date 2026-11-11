@@ -196,6 +196,16 @@ pub enum Request {
         /// How long to wait for it.
         wait_secs: u64,
     },
+    /// Whether GitHub accepts the running instance's sign-in callback, as one "GitHub App" line
+    /// (SPEC-466 MVC-022).
+    Callback {
+        /// The data directory, for the server's key.
+        data_dir: PathBuf,
+        /// The address of its internal listener.
+        address: String,
+        /// The instance's public URL, for the note when it cannot be asked.
+        public_url: String,
+    },
     /// Remove the one-time key and the flow's files; enable the firewall.
     Finish {
         /// The key's comment in `authorized_keys`.
@@ -1775,6 +1785,16 @@ pub fn handle(host: &mut dyn Host, env: &mut Env<'_>, request: &Request) -> Repl
             data_dir,
             wait_secs,
         } => tasks(host, env, data_dir, *wait_secs, &mut l),
+        Request::Callback {
+            data_dir,
+            address,
+            public_url,
+        } => {
+            // The server of this host answers, over its loopback listener.
+            let asked = super::github::asked_instance(data_dir, address, None);
+            let (outcome, detail) = super::github::line(asked, public_url);
+            l.push("GitHub App", outcome, detail);
+        }
         Request::Finish { key, firewall } => finish(host, env, key, *firewall, &mut l),
     }
     reply.lines = l.0;

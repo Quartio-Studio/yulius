@@ -22,6 +22,20 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   operations guide §7 says which run ignores Ctrl-C, and the decisions index lists 0297 in its
   place and 0219 once. Two things the review found that were there before are issues #1178 and
   #1179.
+- Yulius knows whether GitHub accepts its sign-in address, and laptops follow a move (SPEC-466,
+  task #446, ADR-0302; slice C of the move). After a move to another URL GitHub sign-in fails until
+  a person adds the new callback URL to the GitHub App, which GitHub offers no API for. The
+  instance now asks GitHub, with its own App credentials and a made-up code, whether its callback
+  is registered: at start, on demand, and while someone looks at an answer that is not
+  "registered". Settings → Instance has the card **Address**: when the callback is missing, one
+  link to the App's settings and the two values to paste, read again until GitHub accepts it; after
+  a move, where the instance came from, when, and what its first start did with the tasks. The
+  sign-in page says why GitHub sign-in cannot complete and opens the password. `yulius instance
+  migrate` asks the running instance over its loopback listener, so its plan checks the new URL's
+  callback before the cutover (`ok` when registered, else the exact link and values) and its last
+  checklist asks the new instance again. `yulius remote` on a laptop follows the old URL's
+  redirect: it moves the saved sign-in to the new URL, says so in one line and repeats the call;
+  no other redirect is followed. Claude Code's own MCP connection still has to be added again.
 - A restart of the server keeps its sessions on systemd 258 and later (SPEC-458, task #440,
   ADR-0298). On Ubuntu 26.04 (systemd 259) `yulius.service` could be stopped but not started
   again while one session ran, so a restart or an update took the instance down until every

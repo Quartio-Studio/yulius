@@ -3,6 +3,7 @@
 //! finish. Every step reads the facts and acts only if needed, so running the command again
 //! continues a move; only its identity and how far the cutover got are stored.
 
+pub mod github;
 pub mod profile;
 pub mod remote;
 pub mod target;
@@ -254,6 +255,9 @@ pub trait World {
     fn exe(&self) -> PathBuf;
     /// This build's commit.
     fn build(&self) -> Option<String>;
+    /// Asks the instance of `data_dir`, at its loopback listener `address`, whether GitHub
+    /// accepts the sign-in callback of `public_url` (SPEC-466 MVC-021).
+    fn github(&mut self, data_dir: &Path, address: &str, public_url: &str) -> github::Asked;
     /// Prints a line for the person.
     fn show(&mut self, text: &str);
 }
@@ -344,15 +348,10 @@ fn said(host: &mut dyn Host, argv: &[&str]) -> String {
 }
 
 /// A new public URL as the person gave it: `https://host`, nothing after it (the proxy
-/// serves it on 443; a port would not survive the host's rewrite in the carried files).
+/// serves it on 443; a port would not survive the host's rewrite in the carried files). The
+/// rule the running instance applies to the URL it is asked about (SPEC-466 MVC-020).
 fn url_ok(url: &str) -> bool {
-    url.strip_prefix("https://").is_some_and(|rest| {
-        !rest.is_empty()
-            && !rest.starts_with(['-', '.'])
-            && rest
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || ".-".contains(c))
-    })
+    yulius_app::github_callback::public_url_ok(url)
 }
 
 /// One move, from the old host.
@@ -1034,7 +1033,12 @@ impl<'a> Move<'a> {
             );
         }
         if old.as_ref().is_some_and(|old| *old != new) {
-            self.manual("GitHub App", github_note(&new));
+            // The old instance runs: it knows its App and asks GitHub about the new callback,
+            // so what a person has to register is exact, and said before anything freezes.
+            let address = self.health_address(p);
+            let asked = self.world.github(&self.opts.data_dir, &address, &new);
+            let (outcome, detail) = github::line(asked, &new);
+            self.line("GitHub App", outcome, detail);
         }
         if self.state.new_url.as_ref() != Some(&new) {
             self.state.new_url = Some(new);
@@ -2017,17 +2021,33 @@ impl<'a> Move<'a> {
 
     fn finish(&mut self, p: &Profile) {
         self.phase("Finish");
+        let new = self.state.new_url.clone().unwrap_or_default();
+        let moved_url = p.public_url.as_deref().is_some_and(|old| old != new);
+        // Asked before any step: over a key that does not sign in nothing is tried.
+        let key = self.remote.reachable().err();
+        // Deleted here, which only a finish does, once the new host's finish answered: that
+        // run's record did not survive. Nothing is sent over a key that is gone, and nothing
+        // is waited for.
+        let deleted_before = key
+            .as_deref()
+            .is_some_and(|why| why.contains(remote::NO_KEY));
+        // Asked while the key still signs in: the new instance knows its App, and whether the
+        // callback was registered meanwhile (SPEC-466 MVC-022).
+        let github = (moved_url && key.is_none())
+            .then(|| {
+                self.remote.call(&Request::Callback {
+                    data_dir: self.opts.data_dir.clone(),
+                    address: self.health_address(p),
+                    public_url: new.clone(),
+                })
+            })
+            .and_then(Result::ok)
+            .map(|reply| reply.lines)
+            .filter(|lines| !lines.is_empty());
         let finish = Request::Finish {
             key: self.state.key_comment(),
             firewall: p.firewall == Carried::Yes,
         };
-        // Deleted here, which only a finish does, once the new host's finish answered: that
-        // run's record did not survive. Asked before the step, which could only fail on it, and
-        // nothing is waited for.
-        let deleted_before = self
-            .remote
-            .reachable()
-            .is_err_and(|why| why.contains(remote::NO_KEY));
         if deleted_before {
             self.manual(
                 "one-time key",
@@ -2086,15 +2106,25 @@ impl<'a> Move<'a> {
         // Without the key nothing more can be done from here: what failed above is a person's.
         self.state.finished = true;
         let _ = self.save_state();
-        let new = self.state.new_url.clone().unwrap_or_default();
-        if p.public_url.as_deref().is_some_and(|old| old != new) {
-            self.manual("GitHub App", github_note(&new));
+        if moved_url {
+            match github {
+                Some(lines) => lines.into_iter().for_each(|line| self.push(shown(line))),
+                None => self.manual("GitHub App", github_note(&new)),
+            }
+            // The old URL's redirect leads `yulius remote` to the new one (SPEC-466 MVC-030).
+            let cli = if self.state.redirected {
+                "`yulius remote` follows the old URL's redirect by itself while the old host \
+                 answers"
+                    .to_owned()
+            } else {
+                format!("`yulius remote login {new}` keeps the token")
+            };
             self.manual(
                 "remote clients",
                 format!(
-                    "laptops point at the old URL: `yulius remote login {new}` keeps the token; \
-                     in Claude Code `claude mcp remove yulius`, then `claude mcp add --transport \
-                     http yulius {new}/mcp --header \"Authorization: Bearer <token>\"`"
+                    "laptops point at the old URL: {cli}; in Claude Code `claude mcp remove \
+                     yulius`, then `claude mcp add --transport http yulius {new}/mcp --header \
+                     \"Authorization: Bearer <token>\"`"
                 ),
             );
         }
@@ -2439,6 +2469,10 @@ impl World for RealWorld {
 
     fn build(&self) -> Option<String> {
         crate::serve::build_commit()
+    }
+
+    fn github(&mut self, data_dir: &Path, address: &str, public_url: &str) -> github::Asked {
+        github::asked_instance(data_dir, address, Some(public_url))
     }
 
     fn show(&mut self, text: &str) {

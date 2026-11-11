@@ -39,6 +39,7 @@ mod first_message;
 mod fixture_hygiene;
 mod git_adapter;
 mod github_admin;
+mod github_callback;
 mod github_checks;
 mod global_superagent;
 mod host_move;
