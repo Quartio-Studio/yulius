@@ -1039,7 +1039,9 @@ Vidoc off, it also says `Vidoc scans are switched off for the instance`.
    (skippable, see step 5).
 3. User menu → Administration → GitHub connection: create the GitHub App with the manifest flow for the owner account or
    organization, then install it on the repositories Yulius may use. The App's callback URLs point
-   at `YULIUS_PUBLIC_URL`. The manifest requests the permissions below.
+   at `YULIUS_PUBLIC_URL`; when that URL changes later, see
+   [the App after the public URL changes](#the-app-after-the-public-url-changes). The manifest
+   requests the permissions below.
 4. User menu → Administration → Users: admit GitHub logins; they sign in with GitHub. Repository access in
    Yulius mirrors their GitHub permissions (read / write / admin). The superadmin owns the
    instance and sees every sandbox with admin access without GitHub (SPEC-001 ACC-012); pull
@@ -1150,6 +1152,43 @@ then onboards it as any other repository.
    Configure. Until someone accepts, the old permissions apply.
 4. New tokens carry the new permission. Installation tokens are cached for up to an hour; restart
    Yulius (`systemctl restart yulius`) to use the new permission at once.
+
+### The App after the public URL changes
+
+GitHub signs people in only from a callback URL the App holds: `<public URL>/api/auth/github/callback`.
+After the instance's public URL changes (a move to another host, a new domain) GitHub refuses every
+sign-in from the new address ("redirect_uri is not associated with this application") until a
+person adds that URL in the App's settings. GitHub has no API for an App's callback URLs or
+homepage, and Yulius never uses a person's GitHub session, so this one step is yours
+([SPEC-466](../.ai/specs/SPEC-466-run-migration-yulius-checks-its-github-a.md),
+[ADR-0302](decisions/0302-the-instance-asks-github-about-its-own-callback-and-clients-follow-only-a-moves-redirect.md)).
+Yulius notices and says exactly what to do:
+
+- **Settings → Instance → Address** (superadmin). The instance asks GitHub whether it accepts its
+  callback: at every start, when you press **Check again**, and by itself while the page shows an
+  answer that is not "registered". When the callback is missing the card has one link, **Open the
+  App's settings on GitHub**
+  (`https://github.com/organizations/<owner>/settings/apps/<slug>`, or
+  `https://github.com/settings/apps/<slug>` for a person's App), and the two values with copy
+  buttons: the **callback URL** to add (an App takes several, so the old one may stay until the old
+  host is retired) and the **homepage URL** to replace. Save on GitHub; the card says "GitHub
+  accepts this address for sign-in" at once when you come back to the page or press Check again,
+  and by itself within about 40 seconds while you watch it (a page left open for long asks GitHub
+  less often, every four minutes at the least), or as soon as someone signs in with GitHub. When
+  GitHub gave no answer (it is down, the server has no route to it, it refuses the App's client id
+  and secret) the card says why; sign-in is not affected by that.
+- **The sign-in page** says that GitHub does not know this address and opens the superadmin
+  password, which keeps working. "Sign in with GitHub" stays and leads to GitHub as always (until
+  the callback is saved GitHub shows its own error there); the first sign-in that completes tells
+  the instance that the callback is there, and the sentence goes.
+- **`yulius instance migrate`** checks the new URL's callback in its plan, before anything is
+  moved, with the same link and values ([Move the instance](#move-the-instance-to-another-host)).
+
+The check sends GitHub's token endpoint the App's own client id and secret, a made-up code and
+the callback URL; GitHub answers whether the URL is registered. A URL it accepts is followed by
+a control question about one that cannot be registered: only when GitHub refuses that one does
+"accepted" mean anything, otherwise the card says that GitHub does not say. No sign-in happens
+and nothing is changed at GitHub.
 
 ### CI on this machine
 
@@ -1479,10 +1518,14 @@ and nothing is frozen). Everything a person has to do is asked for here:
 - The new public URL: `--public-url`, else the old URL, else for an address-made URL
   (`1-2-3-4.sslip.io`) the same form for the new address. A name that does not lead to the new
   host yet is named: change its DNS record when the checklist says the new instance runs.
-- When the URL changes, the GitHub App: add the callback URL `<new URL>/api/auth/github/callback`
-  and set the homepage in the App's settings before the cutover (an App accepts several callback
-  URLs, so the old one keeps working). GitHub has no API for this and Yulius never uses a person's
-  GitHub session. Until it is done GitHub sign-in fails at the new URL; password sign-in works.
+- When the URL changes, the GitHub App. The command asks the running instance, which asks GitHub
+  whether it accepts the new URL's callback: `ok` when it does; else `manual` with the link to the
+  App's settings and the two values: add the callback URL `<new URL>/api/auth/github/callback`
+  and set the homepage, before the cutover (an App accepts several callback URLs, so the old one
+  keeps working). GitHub has no API for this and Yulius never uses a person's GitHub session. Until
+  it is done GitHub sign-in fails at the new URL; password sign-in works. When the instance cannot
+  be asked (an older server is running, GitHub does not answer) the line says why and where the
+  settings are in general ([the App after the public URL changes](#the-app-after-the-public-url-changes)).
 - What is not carried: another reverse proxy than Caddy, another firewall than ufw, packages
   without a candidate on the new release.
 
@@ -1532,9 +1575,15 @@ proxied to Yulius by a temporary redirect (307) to the same path at the new URL,
 It then removes its key from the new host, enables ufw there with the old host's rules (first
 admitting the old host itself on the SSH port the move used; make sure the carried rules let
 you in on the new host's SSH port), deletes the key on the old host and lists what is left for
-people: the GitHub App and the DNS record if still
-open, `yulius remote login <new URL>` and `claude mcp add` for laptops, and that the old host
-still holds a frozen copy with `master.key` and every secret.
+people: the DNS record if still open; the GitHub App, which the new instance is asked about once
+more (`ok` when GitHub accepts the callback by now, else the link and the values again); laptops
+(`yulius remote` follows the old URL's redirect by itself and keeps its sign-in under the new URL,
+[remote control](remote-control.md#2-connect-your-agent); Claude Code's own connection needs
+`claude mcp remove yulius` and `claude mcp add` with the new URL); and that the old host
+still holds a frozen copy with `master.key` and every secret. On the new instance, Settings →
+Instance → Address then shows where it came from, when, what its first start did with the tasks,
+and whether GitHub accepts the new address (the note about the move is read from
+`<data>/moved.json`; remove the file to drop it).
 
 **Abort.** `sudo yulius instance migrate --abort` on the old host stops and disables the new
 instance (through the key while the move is not finished; afterwards the key is gone: stop it
@@ -1544,6 +1593,9 @@ still answers and otherwise asks you to confirm that it is stopped, `--yes` answ
 the old proxy configuration back, thaws and enables the old unit and removes the key and the
 state. The copy on the new host, with `master.key` and every secret, stays there until you remove it.
 It never leaves both running. Work done on the new host after the move is not copied back.
+Laptops whose `yulius remote` had already followed the move point at the stopped instance: their
+commands say where the sign-in came from, and `yulius remote login <old URL>` signs in there
+again, with a token ([remote control](remote-control.md#2-connect-your-agent)).
 
 A run that hangs after the start was ordered ignores Ctrl-C on purpose (it must not thaw the old
 instance beside a new one). End it with `kill -9`, then run the same command again (it decides

@@ -295,6 +295,8 @@ pub struct App {
     pub(crate) upkeeps: Mutex<std::collections::HashSet<yulius_domain::ids::SandboxId>>,
     /// The egress proxy's and the sandbox relays' open connection troubles (SPEC-361).
     pub(crate) connection_health: Arc<yulius_domain::connection_health::ConnectionHealth>,
+    /// GitHub's last answer about the instance's sign-in callback (SPEC-466).
+    pub(crate) github_callback: crate::github_callback::CallbackKept,
 }
 
 impl App {
@@ -353,6 +355,7 @@ impl App {
             purging: Mutex::default(),
             upkeeps: Mutex::default(),
             connection_health,
+            github_callback: crate::github_callback::CallbackKept::default(),
         })
     }
 
