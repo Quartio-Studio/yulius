@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
+use std::sync::Mutex;
 
 use std::sync::atomic::AtomicU8;
 
@@ -22,6 +23,26 @@ struct Fake {
     codes: HashMap<String, i32>,
     /// `is-active` answers for the update helper; the last one repeats.
     helper: Rc<RefCell<VecDeque<String>>>,
+    /// `systemctl show` answers for the sessions unit (the last one repeats); none: the host
+    /// has no such unit.
+    sessions: Rc<RefCell<VecDeque<String>>>,
+}
+
+const SESSIONS: &str = "yulius-sandboxes.service";
+const SESSIONS_CGROUP: &str = "/yulius.slice/yulius-sandboxes.service";
+
+/// The units a signal thaws.
+fn held(units: &[&str]) -> Mutex<Vec<String>> {
+    Mutex::new(units.iter().map(|unit| (*unit).to_owned()).collect())
+}
+
+fn next(queue: &RefCell<VecDeque<String>>) -> Option<String> {
+    let mut queue = queue.borrow_mut();
+    if queue.len() > 1 {
+        queue.pop_front()
+    } else {
+        queue.front().cloned()
+    }
 }
 
 impl Fake {
@@ -34,6 +55,16 @@ impl Fake {
             ));
         }
         fake
+    }
+
+    /// The same host with a sessions unit that answers `shows`.
+    fn with_sessions(self, shows: &[(&str, &str)]) -> Self {
+        for (active, freezer) in shows {
+            self.sessions.borrow_mut().push_back(format!(
+                "LoadState=loaded\nActiveState={active}\nFreezerState={freezer}\nControlGroup={SESSIONS_CGROUP}\n"
+            ));
+        }
+        self
     }
 
     fn calls(&self) -> Vec<String> {
@@ -52,15 +83,11 @@ impl Host for Fake {
         self.log.borrow_mut().push(call.clone());
         let code = self.codes.get(args[0]).copied().unwrap_or(0);
         match args[0] {
-            "show" => {
-                let mut shows = self.shows.borrow_mut();
-                let out = if shows.len() > 1 {
-                    shows.pop_front().unwrap_or_default()
-                } else {
-                    shows.front().cloned().unwrap_or_default()
-                };
-                Ok((0, out))
-            }
+            "show" if args.last() == Some(&SESSIONS) => Ok((
+                0,
+                next(&self.sessions).unwrap_or_else(|| "LoadState=not-found\n".into()),
+            )),
+            "show" => Ok((0, next(&self.shows).unwrap_or_default())),
             "is-active" => {
                 let mut answers = self.helper.borrow_mut();
                 let out = if answers.len() > 1 {
@@ -256,7 +283,10 @@ fn a_signal_thaws_only_a_freeze_the_export_holds() {
     use std::sync::atomic::Ordering::SeqCst;
     let state = AtomicU8::new(THAW);
     let mut fake = Fake::new(&[]);
-    assert_eq!(on_signal(&state, &mut fake, UNIT), Signal::Exit(None));
+    assert_eq!(
+        on_signal(&state, &mut fake, &held(&[UNIT])),
+        Signal::Exit(None)
+    );
     assert_eq!(fake.calls(), ["thaw yulius.service"]);
     assert_eq!(
         state.load(SeqCst),
@@ -266,13 +296,19 @@ fn a_signal_thaws_only_a_freeze_the_export_holds() {
 
     let mut fake = Fake::new(&[]);
     state.store(LEAVE, SeqCst);
-    assert_eq!(on_signal(&state, &mut fake, UNIT), Signal::Exit(None));
+    assert_eq!(
+        on_signal(&state, &mut fake, &held(&[UNIT])),
+        Signal::Exit(None)
+    );
     assert!(fake.calls().is_empty());
 
     // Still taking the freeze when the wait ends: no thaw that could come before the freeze.
     let mut fake = Fake::new(&[]);
     state.store(ARMING, SeqCst);
-    assert_eq!(on_signal(&state, &mut fake, UNIT), Signal::Exit(None));
+    assert_eq!(
+        on_signal(&state, &mut fake, &held(&[UNIT])),
+        Signal::Exit(None)
+    );
     assert!(fake.calls().is_empty());
 }
 
@@ -280,7 +316,10 @@ fn a_signal_thaws_only_a_freeze_the_export_holds() {
 fn a_signal_during_a_refused_freeze_leaves_the_exit_to_the_refusal() {
     let state = AtomicU8::new(REFUSED);
     let mut fake = Fake::new(&[]);
-    assert_eq!(on_signal(&state, &mut fake, UNIT), Signal::LeaveToMain);
+    assert_eq!(
+        on_signal(&state, &mut fake, &held(&[UNIT])),
+        Signal::LeaveToMain
+    );
     assert!(fake.calls().is_empty());
 }
 
@@ -292,19 +331,25 @@ fn the_export_and_a_signal_never_both_own_the_end() {
     let state = AtomicU8::new(THAW);
     assert!(claim_end(&state));
     let mut fake = Fake::new(&[]);
-    assert_eq!(on_signal(&state, &mut fake, UNIT), Signal::LeaveToMain);
+    assert_eq!(
+        on_signal(&state, &mut fake, &held(&[UNIT])),
+        Signal::LeaveToMain
+    );
     assert!(fake.calls().is_empty());
     // The signal claims first: the export must not report a move or a thaw of its own.
     let state = AtomicU8::new(THAW);
     let mut fake = Fake::new(&[]);
-    let _ = on_signal(&state, &mut fake, UNIT);
+    let _ = on_signal(&state, &mut fake, &held(&[UNIT]));
     assert!(!claim_end(&state));
     // Not the export's freeze: the export still ends it itself once it claimed the end.
     let state = AtomicU8::new(LEAVE);
     assert!(claim_end(&state));
     assert_eq!(state.load(SeqCst), ENDING);
     let mut fake = Fake::new(&[]);
-    assert_eq!(on_signal(&state, &mut fake, UNIT), Signal::LeaveToMain);
+    assert_eq!(
+        on_signal(&state, &mut fake, &held(&[UNIT])),
+        Signal::LeaveToMain
+    );
 }
 
 #[test]
@@ -312,8 +357,167 @@ fn a_failed_thaw_on_a_signal_says_to_run_it_by_hand() {
     let state = AtomicU8::new(THAW);
     let mut fake = Fake::new(&[]);
     fake.codes.insert("thaw".into(), 1);
-    let Signal::Exit(Some(why)) = on_signal(&state, &mut fake, UNIT) else {
+    let Signal::Exit(Some(why)) = on_signal(&state, &mut fake, &held(&[UNIT])) else {
         panic!("expected a failed thaw");
     };
     assert!(why.contains("run it by hand"), "{why}");
+}
+
+/// SPEC-458 EXP-001: the sessions unit is frozen after the server's and thawed before it.
+#[test]
+fn the_sessions_unit_is_frozen_with_the_server_and_thawed_first() -> TestResult {
+    let fake = Fake::new(&[("active", "running"), ("active", "frozen")]).with_sessions(&[
+        ("active", "running"),
+        ("active", "freezing"),
+        ("active", "frozen"),
+    ]);
+    let held = run(&fake)?;
+    assert!(held.ours());
+    assert_eq!(held.covered(), [UNIT, SESSIONS]);
+    assert_eq!(held.frozen(), [SESSIONS, UNIT]);
+    let said = held.describe();
+    assert!(
+        said.contains("Frozen yulius.service and yulius-sandboxes.service: every Yulius process"),
+        "{said}"
+    );
+    assert!(
+        said.contains(
+            "thaw them with `sudo systemctl thaw yulius-sandboxes.service yulius.service`"
+        ),
+        "{said}"
+    );
+    held.release()?;
+    assert_eq!(
+        fake.calls(),
+        [
+            "freeze yulius.service",
+            "freeze yulius-sandboxes.service",
+            "thaw yulius-sandboxes.service",
+            "thaw yulius.service"
+        ]
+    );
+    Ok(())
+}
+
+/// SPEC-458 EXP-001: a stopped server whose sessions still run is exported with them frozen.
+#[test]
+fn a_stopped_server_with_live_sessions_freezes_the_sessions_unit() -> TestResult {
+    let mut fake = Fake::new(&[("inactive", "running")])
+        .with_sessions(&[("active", "running"), ("active", "frozen")]);
+    fake.files.insert(
+        "/sys/fs/cgroup/system.slice/yulius.service/cgroup.events".into(),
+        "populated 0\nfrozen 0\n".into(),
+    );
+    let held = run(&fake)?;
+    assert!(held.ours());
+    assert_eq!(held.covered(), [SESSIONS]);
+    assert!(
+        held.describe()
+            .starts_with("Frozen yulius-sandboxes.service: ")
+    );
+    assert!(held.describe().contains("thaw it with"));
+    drop(held);
+    assert_eq!(
+        fake.calls(),
+        [
+            "freeze yulius-sandboxes.service",
+            "thaw yulius-sandboxes.service"
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn a_move_keeps_both_units_frozen_and_disables_the_server() -> TestResult {
+    let fake = Fake::new(&[("active", "running"), ("active", "frozen")])
+        .with_sessions(&[("active", "running"), ("active", "frozen")]);
+    run(&fake)?.keep_for_move()?;
+    assert_eq!(
+        fake.calls(),
+        [
+            "freeze yulius.service",
+            "freeze yulius-sandboxes.service",
+            "disable yulius.service"
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn a_sessions_unit_that_never_freezes_thaws_the_server_too() -> TestResult {
+    let fake = Fake::new(&[("active", "running"), ("active", "frozen")])
+        .with_sessions(&[("active", "running"), ("active", "freezing")]);
+    let why = run(&fake).err().ok_or("expected a refusal")?;
+    assert!(
+        why.contains("yulius-sandboxes.service did not freeze within 60 s"),
+        "{why}"
+    );
+    assert_eq!(
+        fake.calls(),
+        [
+            "freeze yulius.service",
+            "freeze yulius-sandboxes.service",
+            "thaw yulius-sandboxes.service",
+            "thaw yulius.service"
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn an_export_inside_the_sessions_unit_is_refused_before_anything() -> TestResult {
+    let mut fake = Fake::new(&[("active", "running")]).with_sessions(&[("active", "running")]);
+    fake.files.insert(
+        "/proc/self/cgroup".into(),
+        format!("0::{SESSIONS_CGROUP}/sandboxes/x/agents\n"),
+    );
+    let why = run(&fake).err().ok_or("expected a refusal")?;
+    assert!(
+        why.contains("runs inside yulius-sandboxes.service"),
+        "{why}"
+    );
+    assert!(fake.calls().is_empty(), "{:?}", fake.calls());
+    Ok(())
+}
+
+#[test]
+fn only_what_the_export_froze_is_thawed() -> TestResult {
+    // The sessions unit was frozen before; a loaded one that does not run is left alone.
+    let fake = Fake::new(&[("active", "running"), ("active", "frozen")])
+        .with_sessions(&[("active", "frozen")]);
+    let held = run(&fake)?;
+    assert_eq!(held.frozen(), [UNIT]);
+    assert_eq!(held.covered(), [UNIT, SESSIONS]);
+    held.release()?;
+    assert_eq!(
+        fake.calls(),
+        ["freeze yulius.service", "thaw yulius.service"]
+    );
+
+    let fake = Fake::new(&[("active", "running"), ("active", "frozen")])
+        .with_sessions(&[("inactive", "running")]);
+    let held = run(&fake)?;
+    assert_eq!(held.covered(), [UNIT]);
+    drop(held);
+    assert_eq!(
+        fake.calls(),
+        ["freeze yulius.service", "thaw yulius.service"]
+    );
+    Ok(())
+}
+
+#[test]
+fn a_signal_thaws_every_unit_the_export_froze() {
+    let state = AtomicU8::new(THAW);
+    let mut fake = Fake::new(&[]);
+    fake.codes.insert("thaw".into(), 1);
+    let Signal::Exit(Some(why)) = on_signal(&state, &mut fake, &held(&[SESSIONS, UNIT])) else {
+        panic!("expected failed thaws");
+    };
+    assert_eq!(
+        fake.calls(),
+        ["thaw yulius-sandboxes.service", "thaw yulius.service"],
+        "the second is tried although the first failed"
+    );
+    assert!(why.contains("thaw yulius-sandboxes.service") && why.contains("thaw yulius.service"));
 }

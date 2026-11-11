@@ -6,8 +6,8 @@ use std::io::{self, BufWriter, IsTerminal as _, Write};
 use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::{Arc, Mutex};
 
 use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
 use signal_hook::iterator::Signals;
@@ -215,13 +215,14 @@ pub fn main(opts: &ExportOptions) -> ExitCode {
         Ok(signals) => signals,
         Err(e) => return refused(&format!("cannot watch signals: {e}")),
     };
-    let (watched, unit) = (Arc::clone(&state), opts.service.clone());
+    let frozen = Arc::new(Mutex::new(Vec::new()));
+    let (watched, thawed) = (Arc::clone(&state), Arc::clone(&frozen));
     std::thread::spawn(move || {
         if let Some(signal) = signals.forever().next() {
             eprintln!(
                 "\nyulius instance export: stopped by signal {signal}; the copy is incomplete"
             );
-            match freeze::on_signal(&watched, &mut freeze::System, &unit) {
+            match freeze::on_signal(&watched, &mut freeze::System, &thawed) {
                 freeze::Signal::LeaveToMain => {}
                 freeze::Signal::Exit(why) => {
                     if let Some(why) = why {
@@ -243,6 +244,9 @@ pub fn main(opts: &ExportOptions) -> ExitCode {
             return refused(&why);
         }
     };
+    if let Ok(mut units) = frozen.lock() {
+        *units = held.frozen();
+    }
     let ours = if held.ours() {
         freeze::THAW
     } else {
@@ -257,12 +261,17 @@ pub fn main(opts: &ExportOptions) -> ExitCode {
             std::thread::park();
         }
     }
+    let thaw = if held.covered().is_empty() {
+        opts.service.clone()
+    } else {
+        held.covered().join(" ")
+    };
     match (result, opts.move_out) {
         (Ok(()), true) => match held.keep_for_move() {
             Ok(()) => {
                 eprintln!(
                     "{unit} stays frozen and is disabled, so it does not start beside the new \
-                     instance. To run it here again: `sudo systemctl thaw {unit} && sudo \
+                     instance. To run it here again: `sudo systemctl thaw {thaw} && sudo \
                      systemctl enable {unit}`.",
                     unit = opts.service
                 );
