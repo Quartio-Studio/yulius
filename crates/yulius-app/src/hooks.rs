@@ -455,6 +455,8 @@ impl App {
             .session_started
             .store(true, Ordering::SeqCst);
         crate::supervisor::mark_session_started(Path::new(&ctx.attempt.run_dir));
+        // A session restarted on a newer Claude Code that got here runs on it (SPEC-461).
+        self.claude_code_run_started(&ctx.task.id, &ctx.attempt.id);
         let briefing = self.briefing(&ctx.task, ctx.attempt.harness).await?;
         Ok(HookOutput::additional_context(
             events::SESSION_START,
@@ -814,9 +816,10 @@ impl App {
         {
             let continuation = gate_continues.then(|| reasons.join("\n\n"));
             let app = Arc::clone(self);
-            let (task_id, account) = (task.id.clone(), current.clone());
+            let task_id = task.id.clone();
+            let run = (ctx.attempt.id.clone(), current.clone());
             tokio::spawn(async move {
-                app.move_to_claude_code(&task_id, account, version, continuation)
+                app.move_to_claude_code(&task_id, run, version, continuation)
                     .await;
             });
             return Ok(self.hold_for(&task.id));

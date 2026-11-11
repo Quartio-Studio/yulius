@@ -1346,20 +1346,24 @@ impl App {
         self.background_work_now(task_id).await == Some(true)
     }
 
+    /// Whether the task's last turn end waits for background agents, or its transcript names
+    /// live Monitors or agents launched or resumable and not ended (BGW-004, BGW-006).
+    fn background_agents_now(&self, task_id: &TaskId) -> bool {
+        self.existing_runtime(task_id)
+            .is_some_and(|runtime| runtime.background_agents.load(Ordering::SeqCst) > 0)
+            || {
+                let live = self.live_launches_of(task_id);
+                live.monitors > 0 || live.agents_pending > 0
+            }
+    }
+
     /// Whether anything of the task's agent runs in the background right now: background agents
     /// its last turn end said it waits for, live Monitors, agents launched or resumable and not
     /// ended (BGW-004, BGW-006), or shells a fresh probe finds (`yulius wait` alone does not
     /// count, DSK-102). `None` when the probe gives no answer; a task without a live agent
     /// process has none.
     pub(crate) async fn background_work_now(&self, task_id: &TaskId) -> Option<bool> {
-        if self
-            .existing_runtime(task_id)
-            .is_some_and(|runtime| runtime.background_agents.load(Ordering::SeqCst) > 0)
-            || {
-                let live = self.live_launches_of(task_id);
-                live.monitors > 0 || live.agents_pending > 0
-            }
-        {
+        if self.background_agents_now(task_id) {
             return Some(true);
         }
         let attempt = self.deps.store.live_attempt(task_id).await.ok()?;
@@ -1376,10 +1380,10 @@ impl App {
 
     /// [`Self::background_work_now`], counting also a shell that only runs `yulius wait`: the
     /// agent waits there for Yulius's news (its checks, a deploy, an armed merge) and would never
-    /// hear it if its session were restarted (SPEC-461 CCM-013). `None` when the probe gives no
-    /// answer.
+    /// hear it if its session were restarted (SPEC-461 CCM-013). One look at the processes;
+    /// `None` when it gives no answer.
     pub(crate) async fn background_or_wait_now(&self, task_id: &TaskId) -> Option<bool> {
-        if self.background_work_now(task_id).await? {
+        if self.background_agents_now(task_id) {
             return Some(true);
         }
         let attempt = self.deps.store.live_attempt(task_id).await.ok()?;
@@ -1412,6 +1416,15 @@ impl App {
     pub(crate) fn agent_waits_on_yulius(&self, task_id: &TaskId) -> bool {
         self.existing_runtime(task_id)
             .is_some_and(|runtime| runtime.background_waits.load(Ordering::SeqCst) > 0)
+    }
+
+    /// Whether Claude Code last recorded the task's goal as set or not met yet, as its transcript
+    /// was read so far: the goal is open, and its session works on after a clean Stop. Public
+    /// for tests, which hold a goal turn until the goal was read.
+    #[must_use]
+    pub fn goal_is_open(&self, task_id: &TaskId) -> bool {
+        self.existing_runtime(task_id)
+            .is_some_and(|runtime| runtime.goal_open.load(Ordering::SeqCst))
     }
 
     /// Whether Claude Code last recorded the task's goal as set, not met or failed (SPEC-429

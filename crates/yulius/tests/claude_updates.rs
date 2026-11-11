@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -44,9 +44,38 @@ struct Stub {
     releases: Mutex<HashMap<String, Release>>,
     requests: AtomicUsize,
     downloads: AtomicUsize,
+    /// The registry answers nothing but 503.
+    down: AtomicBool,
+    /// How many reads of the dist-tags arrived.
+    tag_reads: AtomicUsize,
+    /// Each read of the dist-tags waits for a pass ([`Stub::pass`]): a test steps the checks.
+    stepped: AtomicBool,
+    passes: AtomicUsize,
 }
 
+/// Where npm's registry serves the package's dist-tags.
+const TAGS: &str = "/-/package/@anthropic-ai%2Fclaude-code/dist-tags";
+
 impl Stub {
+    /// Lets one read of the dist-tags through.
+    fn pass(&self) {
+        self.passes.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn take_pass(&self) -> bool {
+        self.passes
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .is_ok()
+    }
+
+    /// A read of the dist-tags arrived: it goes on at once, or with a pass when stepped.
+    async fn tags_read(&self) {
+        self.tag_reads.fetch_add(1, Ordering::SeqCst);
+        while self.stepped.load(Ordering::SeqCst) && !self.take_pass() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
+
     fn tag(&self, tag: &str, version: &str) {
         if let Ok(mut tags) = self.tags.lock() {
             tags.insert(tag.into(), version.into());
@@ -143,7 +172,12 @@ async fn serve(stub: Arc<Stub>) -> Result<String, Box<dyn std::error::Error>> {
     let router = Router::new().fallback(move |uri: Uri| {
         let stub = Arc::clone(&stub);
         let origin = origin.clone();
-        async move { answer(&stub, &origin, uri.path()) }
+        async move {
+            if uri.path() == TAGS {
+                stub.tags_read().await;
+            }
+            answer(&stub, &origin, uri.path())
+        }
     });
     tokio::spawn(async move {
         let _ = axum::serve(listener, router).await;
@@ -153,7 +187,10 @@ async fn serve(stub: Arc<Stub>) -> Result<String, Box<dyn std::error::Error>> {
 
 fn answer(stub: &Stub, origin: &str, path: &str) -> Response {
     stub.requests.fetch_add(1, Ordering::SeqCst);
-    if path == "/-/package/@anthropic-ai%2Fclaude-code/dist-tags" {
+    if stub.down.load(Ordering::SeqCst) {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    }
+    if path == TAGS {
         let Ok(tags) = stub.tags.lock().map(|t| t.clone()) else {
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         };
@@ -1262,5 +1299,96 @@ async fn the_doctor_says_when_no_release_knows_the_default_model() -> TestResult
     let (health, text) = doctor_line(&s.root, Some(&s.host), Channel::Latest);
     assert_eq!(health, Health::Ok, "{text}");
     assert!(!text.contains("refused"), "{text}");
+    Ok(())
+}
+
+/// Review round 2 (major 1): "no release knows it yet" is said only from a fresh read of npm's
+/// registry on a channel that reads it: not after a check that failed, not with updates off, and
+/// not from a read of hours ago, whatever `latest` the server remembers.
+#[tokio::test]
+async fn a_remembered_latest_is_not_called_the_newest_release() -> TestResult {
+    const NONE_YET: &str = "No Claude Code release knows it yet";
+    const NEXT_CHECK: &str = "Fix: Yulius installs a release that knows it at its next check";
+    let s = setup("2.1.322").await?;
+    host_knows(&s.host, "2.1.322", &OFFERED[1..])?;
+    s.stub.tag("latest", "2.1.322");
+    s.stub.tag("stable", "2.1.311");
+    let service = ClaudeCode::new(updater_of(&s)?, Channel::Latest, true);
+    let up_to_date = Some(CheckResult::UpToDate(v("2.1.322")));
+    assert_eq!(service.check().await, up_to_date);
+    let (_, text) = doctor_line(&s.root, Some(&s.host), Channel::Latest);
+    assert!(text.contains(NONE_YET), "{text}");
+
+    // The registry does not answer: what it said before is not known to hold.
+    s.stub.down.store(true, Ordering::SeqCst);
+    assert!(matches!(
+        service.check().await,
+        Some(CheckResult::Failed(_))
+    ));
+    let (health, text) = doctor_line(&s.root, Some(&s.host), Channel::Latest);
+    assert_eq!(health, Health::Fail, "{text}");
+    assert!(!text.contains(NONE_YET), "{text}");
+    assert!(text.contains(NEXT_CHECK), "{text}");
+    assert!(text.contains(HOST_INSTALL), "{text}");
+    s.stub.down.store(false, Ordering::SeqCst);
+
+    // Updates are off: nobody reads the registry.
+    service.set_channel(Channel::Off, true);
+    assert_eq!(service.check().await, None);
+    let (health, text) = doctor_line(&s.root, Some(&s.host), Channel::Latest);
+    assert_eq!(health, Health::Fail, "{text}");
+    assert!(!text.contains(NONE_YET), "{text}");
+    assert!(
+        text.contains("Fix: Claude Code updates are off: choose Latest"),
+        "{text}"
+    );
+    assert!(text.contains(HOST_INSTALL), "{text}");
+
+    // Read again, it is said again; three hours later it is not: releases come more often.
+    service.set_channel(Channel::Latest, true);
+    assert_eq!(service.check().await, up_to_date);
+    let (_, text) = doctor_line(&s.root, Some(&s.host), Channel::Latest);
+    assert!(text.contains(NONE_YET), "{text}");
+    let path = s.root.join("status.json");
+    let mut file: serde_json::Value = serde_json::from_slice(&std::fs::read(&path)?)?;
+    let read_at = file["checked_at_ms"].as_i64().ok_or("when it was read")?;
+    file["checked_at_ms"] = (read_at - 3 * 60 * 60 * 1000).into();
+    std::fs::write(&path, serde_json::to_vec(&file)?)?;
+    let (health, text) = doctor_line(&s.root, Some(&s.host), Channel::Latest);
+    assert_eq!(health, Health::Fail, "{text}");
+    assert!(!text.contains(NONE_YET), "{text}");
+    assert!(text.contains(NEXT_CHECK), "{text}");
+    Ok(())
+}
+
+/// Review round 2: requests made while a check runs (a channel changed twice) are answered by
+/// one more check, and nothing is left over that starts another: each read of the registry needs
+/// the test's pass here, so a check nobody asked for would never end.
+#[tokio::test]
+async fn requests_made_while_a_check_runs_are_answered_by_one_more_check() -> TestResult {
+    let s = setup("2.1.322").await?;
+    s.stub.tag("latest", "2.1.322");
+    s.stub.tag("stable", "2.1.322");
+    let service = ClaudeCode::new(updater_of(&s)?, Channel::Latest, false);
+    let looping = service.start_every(Duration::from_secs(3600), Duration::from_secs(3600));
+    let reads = || s.stub.tag_reads.load(Ordering::SeqCst);
+    s.stub.stepped.store(true, Ordering::SeqCst);
+    service.check_now();
+    until("the check reads the registry", || reads() == 1).await;
+    // Meanwhile the channel changes, twice.
+    service.set_channel(Channel::Stable, true);
+    service.set_channel(Channel::Latest, true);
+    s.stub.pass();
+    until("the check that answers them", || reads() == 2).await;
+    s.stub.pass();
+    until("the checks ended", || !service.is_checking()).await;
+    assert_eq!(reads(), 2);
+    // The next request is one check.
+    service.check_now();
+    until("the check asked for", || reads() == 3).await;
+    s.stub.pass();
+    until("it ended", || !service.is_checking()).await;
+    assert_eq!(reads(), 3);
+    looping.abort();
     Ok(())
 }

@@ -77,7 +77,10 @@ impl AgentCli for FakeCli {
     }
 }
 
-/// Runs get Yulius's 2.1.322, which knows every offered model; npm was read a moment ago.
+/// A minute before the harness's clock starts.
+const READ_AT: i64 = 1_791_331_200_000 - 60_000;
+
+/// Runs get Yulius's 2.1.322, which knows every offered model; npm was read a minute ago.
 fn healthy() -> AgentCliStatus {
     AgentCliStatus {
         unmanaged: None,
@@ -88,7 +91,7 @@ fn healthy() -> AgentCliStatus {
         missing: Some(Vec::new()),
         latest: Some(v("2.1.322")),
         stable: Some(v("2.1.311")),
-        checked_at: Some(Timestamp(1_800_000_000_000)),
+        checked_at: Some(Timestamp(READ_AT)),
         checking: false,
         result: Some(CheckResult::Installed(v("2.1.322"))),
     }
@@ -399,6 +402,31 @@ async fn check_now_starts_a_check_and_the_view_says_what_is_wrong() -> TestResul
     let fix = view.body["fix"].as_str().ok_or("a fix")?;
     assert!(fix.contains("2.1.322, the newest, does not"), "{fix}");
     assert!(!fix.contains(HOST_INSTALL), "{fix}");
+
+    // Review round 2 (major 1): that is said only from a fresh read of npm on a channel that
+    // reads it. With updates off nobody reads it, whatever `latest` is remembered.
+    if let Ok(mut status) = cli.status.lock() {
+        status.channel = Channel::Off;
+        status.result = None;
+    }
+    let view = call(&i.h.router, Method::GET, VIEW, None, &i.admin).await?;
+    let fix = view.body["fix"].as_str().ok_or("a fix")?;
+    assert!(
+        fix.starts_with("Claude Code updates are off: choose Latest") && fix.contains(HOST_INSTALL),
+        "{fix}"
+    );
+    // A read of three hours ago is no news either: releases come more often than that.
+    if let Ok(mut status) = cli.status.lock() {
+        status.channel = Channel::Latest;
+        status.result = Some(CheckResult::UpToDate(v("2.1.322")));
+    }
+    i.h.clock.0.fetch_add(3 * 60 * 60 * 1000, Ordering::SeqCst);
+    let view = call(&i.h.router, Method::GET, VIEW, None, &i.admin).await?;
+    let fix = view.body["fix"].as_str().ok_or("a fix")?;
+    assert!(
+        fix.contains("at its next check") && fix.contains(HOST_INSTALL),
+        "{fix}"
+    );
 
     let check = call(&i.h.router, Method::POST, CHECK, None, &i.admin).await?;
     assert_eq!(check.status, StatusCode::ACCEPTED, "{}", check.body);

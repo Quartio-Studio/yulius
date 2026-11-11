@@ -3,12 +3,16 @@
 //! a start, every hour, at a channel change and on demand, one at a time); what the last check
 //! did; and which offered models the version in use knows.
 //!
+//! Requests for a check are a count the loop watches (`asked`), with the count its last check
+//! answered beside it (`answered`): one made while a check runs gets one more check after it,
+//! and "checking" is true from a request until the check that answers it ended.
+//!
 //! The state is also written to `<data>/claude-code/status.json` after every check and channel
 //! change, for `yulius doctor`, which opens no database ([`doctor_line`]). The file is derived:
 //! the channel a person chose lives in the database.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
@@ -17,7 +21,8 @@ use serde::{Deserialize, Serialize};
 use yulius_app::ports::agent_cli::{AgentCli, AgentCliStatus, CheckResult, CliSource};
 use yulius_app::ports::session::Bind;
 use yulius_domain::agent_cli::{
-    Channel, Version, default_model_fix, default_model_problem, gap_text, lacks_default,
+    Channel, NewestFacts, RegistryRead, Version, default_model_fix, default_model_problem,
+    gap_text, lacks_default, newest_lacking_default,
 };
 use yulius_domain::time::Timestamp;
 
@@ -96,6 +101,19 @@ impl StatusFile {
         })
     }
 
+    /// What the recorded check showed about npm's releases.
+    fn registry_read(&self) -> RegistryRead {
+        match self.result.as_deref() {
+            Some("installed" | "up_to_date") => RegistryRead::Read,
+            Some("refused") => self
+                .refused
+                .last()
+                .and_then(|release| Version::parse(&release.version))
+                .map_or(RegistryRead::Unknown, RegistryRead::Refused),
+            _ => RegistryRead::Unknown,
+        }
+    }
+
     fn result(&self) -> Option<CheckResult> {
         let version = || self.version.as_deref().and_then(Version::parse);
         match self.result.as_deref()? {
@@ -130,12 +148,14 @@ pub struct ClaudeCode {
     last: Mutex<Last>,
     /// One check at a time.
     one: tokio::sync::Mutex<()>,
-    /// A check runs, or was asked for and is about to.
-    checking: AtomicBool,
-    /// Another check was asked for while one ran (a channel change): it follows at once.
-    again: AtomicBool,
-    /// Wakes the loop for a check now.
-    wake: tokio::sync::Notify,
+    /// A check runs.
+    running: AtomicBool,
+    /// How many checks were asked for (`check_now`, a channel change). The loop watches the
+    /// count, so a request made while a check runs is neither lost nor answered twice.
+    asked: tokio::sync::watch::Sender<u64>,
+    /// The count the loop's last check answered: while it differs from `asked`, a check is
+    /// about to run.
+    answered: AtomicU64,
 }
 
 impl ClaudeCode {
@@ -154,9 +174,9 @@ impl ClaudeCode {
             channel: RwLock::new((channel, chosen)),
             last: Mutex::new(last),
             one: tokio::sync::Mutex::new(()),
-            checking: AtomicBool::new(false),
-            again: AtomicBool::new(false),
-            wake: tokio::sync::Notify::new(),
+            running: AtomicBool::new(false),
+            asked: tokio::sync::watch::Sender::new(0),
+            answered: AtomicU64::new(0),
         })
     }
 
@@ -171,7 +191,17 @@ impl ClaudeCode {
     /// Whether a check runs, or was asked for and is about to.
     #[must_use]
     pub fn is_checking(&self) -> bool {
-        self.checking.load(Ordering::SeqCst)
+        self.running.load(Ordering::SeqCst) || self.pending()
+    }
+
+    /// Whether a check was asked for that the loop has not answered yet.
+    fn pending(&self) -> bool {
+        *self.asked.borrow() != self.answered.load(Ordering::SeqCst)
+    }
+
+    /// Asks the loop for a check now.
+    fn ask(&self) {
+        self.asked.send_modify(|asked| *asked += 1);
     }
 
     /// The read-only bind of the agent CLI for a run starting now, at the host package's path
@@ -195,20 +225,29 @@ impl ClaudeCode {
         every: Duration,
     ) -> tokio::task::JoinHandle<()> {
         let service = Arc::clone(self);
+        // Watched from before the first wait: a request made meanwhile is seen.
+        let mut asked = self.asked.subscribe();
         tokio::spawn(async move {
             // What runs get now is known and said before the first check (CCM-005).
             service.report().await;
             let mut wait = first;
             loop {
-                tokio::select! {
-                    () = tokio::time::sleep(wait) => {}
-                    () = service.wake.notified() => {}
+                if !service.pending() {
+                    tokio::select! {
+                        () = tokio::time::sleep(wait) => {}
+                        // The service holds the sender for as long as this loop holds it.
+                        _ = asked.changed() => {}
+                    }
                 }
                 // Each request and the download have their own deadline. A check asked for
-                // while one ran (a channel change) follows here, whatever became of its wake-up.
-                service.check().await;
-                while service.again.swap(false, Ordering::SeqCst) {
+                // while one ran (a channel change) is answered by one more check, here.
+                loop {
+                    let answers = *asked.borrow_and_update();
                     service.check().await;
+                    service.answered.store(answers, Ordering::SeqCst);
+                    if *asked.borrow() == answers {
+                        break;
+                    }
                 }
                 wait = every;
             }
@@ -218,7 +257,7 @@ impl ClaudeCode {
     /// One check of the channel in effect, recorded and written to the status file.
     pub async fn check(&self) -> Option<CheckResult> {
         let _one = self.one.lock().await;
-        self.checking.store(true, Ordering::SeqCst);
+        self.running.store(true, Ordering::SeqCst);
         let (channel, _) = self.channel();
         let checked = self.updater.check_tagged(channel).await;
         let result = match &checked.result {
@@ -256,11 +295,9 @@ impl ClaudeCode {
             last.result.clone_from(&result);
         }
         self.report().await;
-        // A check asked for meanwhile follows at once (the loop runs it): the page keeps saying
-        // it checks until that one ended.
-        if !self.again.load(Ordering::SeqCst) {
-            self.checking.store(false, Ordering::SeqCst);
-        }
+        // A check asked for meanwhile follows at once (the loop runs it): until that one
+        // ended, the request itself keeps the page saying that it checks.
+        self.running.store(false, Ordering::SeqCst);
         result
     }
 
@@ -364,15 +401,15 @@ impl AgentCli for ClaudeCode {
             latest: last.latest,
             stable: last.stable,
             checked_at: last.checked_at_ms.map(Timestamp),
-            checking: self.checking.load(Ordering::SeqCst),
+            checking: self.is_checking(),
             result: last.result,
         }
     }
 
     fn check_now(&self) {
-        // A check that runs is the check asked for.
-        if !self.checking.swap(true, Ordering::SeqCst) {
-            self.wake.notify_one();
+        // A check that runs, or is about to, is the check asked for.
+        if !self.is_checking() {
+            self.ask();
         }
     }
 
@@ -381,11 +418,8 @@ impl AgentCli for ClaudeCode {
             *now = (channel, chosen);
         }
         tracing::info!(channel = channel.as_str(), chosen, "Claude Code channel");
-        // Checked on the new channel at once, also after a check that runs now.
-        if self.checking.swap(true, Ordering::SeqCst) {
-            self.again.store(true, Ordering::SeqCst);
-        }
-        self.wake.notify_one();
+        // Checked on the new channel at once: a check that runs now read the old one.
+        self.ask();
     }
 
     fn version_for_new_runs(&self) -> Option<Version> {
@@ -446,20 +480,26 @@ pub fn doctor_line(root: &Path, host_dir: Option<&Path>, configured: Channel) ->
         .filter(|release| Version::parse(&release.version) > runs)
         .collect();
     if lacks_default(&missing) {
-        // npm's newest release does not know the default model either: it was refused, or it is
-        // what runs get. Then no release knows it yet.
-        let latest = file.as_ref().and_then(|f| f.latest.as_deref());
-        let newest = refused
-            .last()
-            .filter(|r| latest == Some(r.version.as_str()))
-            .map(|r| r.version.as_str())
-            .or_else(|| latest.filter(|latest| runs.is_some() && runs >= Version::parse(latest)));
+        // Whether npm's newest release does not know the default model either: only a fresh
+        // read of the registry by the server says so (`newest_lacking_default`).
+        let newest = file
+            .as_ref()
+            .and_then(|file| {
+                newest_lacking_default(&NewestFacts {
+                    channel,
+                    read: file.registry_read(),
+                    read_ms_ago: file.checked_at_ms.map(|at| now_ms().saturating_sub(at)),
+                    latest: file.latest.as_deref().and_then(Version::parse),
+                    runs,
+                })
+            })
+            .map(|newest| newest.to_string());
         return (
             Health::Fail,
             format!(
                 "{base}. {}. Fix: {}.",
                 default_model_problem(version),
-                default_model_fix(channel, newest)
+                default_model_fix(channel, newest.as_deref())
             ),
         );
     }

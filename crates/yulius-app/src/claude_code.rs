@@ -9,11 +9,12 @@
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use yulius_contracts::api::updates::{ClaudeCodeBehind, ClaudeCodeRefused, ClaudeCodeView};
 use yulius_domain::agent_cli::{
-    Channel, MoveFacts, Version, default_model_fix, default_model_problem, gap_text, lacks_default,
-    moves_now,
+    Channel, MoveFacts, NewestFacts, RegistryRead, Version, default_model_fix,
+    default_model_problem, gap_text, lacks_default, moves_now, newest_lacking_default,
 };
 use yulius_domain::harness::DEFAULT_CLAUDE_MODEL;
 use yulius_domain::ids::{AccountId, AttemptId, TaskId};
@@ -39,6 +40,15 @@ pub const NOT_ISOLATED: &str = "sandboxes are not isolated on this server, so th
 /// subscription stays, so it is no subscription switch in a task's info.
 pub const MOVE_REASON: &str = "claude_code";
 
+/// A restart on a newer Claude Code whose session has not shown yet that it started there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MoveStart {
+    /// The version the session was restarted on.
+    version: Version,
+    /// The run that was ended for it: the task's run after that one is the restarted session.
+    from: AttemptId,
+}
+
 /// The channel a superadmin chose in Settings, as the store keeps it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChosenChannel {
@@ -63,6 +73,9 @@ pub struct AgentCliServices {
     /// A version a session could not continue on, and what happened: no other session is sent
     /// to it (a newer version, or a restart of the server, lifts it).
     stopped: Mutex<Option<(Version, String)>>,
+    /// Restarts whose session has not started on the new version yet (its SessionStart hook):
+    /// one that ends by itself, or stays silent, before that stops further restarts on it.
+    starting: Mutex<HashMap<TaskId, MoveStart>>,
 }
 
 /// The sentence about what the last check did.
@@ -122,6 +135,7 @@ impl App {
                 changing: tokio::sync::Mutex::new(()),
                 moved: Mutex::default(),
                 stopped: Mutex::default(),
+                starting: Mutex::default(),
             })
             .is_ok()
     }
@@ -163,12 +177,25 @@ impl App {
         };
         let status = services.adapter.status().await;
         let chosen = self.deps.store.claude_channel().await?;
-        let mut view = view_of(&status, services.config_channel, chosen.as_ref());
+        let mut view = view_of(
+            &status,
+            services.config_channel,
+            chosen.as_ref(),
+            self.now(),
+        );
         view.behind = self.tasks_behind(status.version).await?;
+        // Said while it is the version runs get: a newer one is tried again.
         view.moves_stopped = services.stopped.lock().ok().and_then(|stopped| {
-            stopped.as_ref().map(|(version, why)| {
-                format!("Running tasks are no longer moved to {version}: {why}.")
-            })
+            stopped
+                .as_ref()
+                .filter(|(version, _)| Some(*version) == status.version)
+                .map(|(version, why)| {
+                    format!(
+                        "Running tasks are no longer moved to {version}: {why}. Sessions that \
+                         start or continue still get it; choose Off to run the host's Claude \
+                         Code instead."
+                    )
+                })
         });
         Ok(view)
     }
@@ -228,11 +255,43 @@ impl App {
         (typed > 0).then(|| self.now().0.saturating_sub(typed))
     }
 
+    /// What a turn's end knows about restarting the task's session, which runs `runs`, on
+    /// `target`. All of it is cheap to read, so it is read again after the looks that take
+    /// seconds; `background` is what those looks found.
+    async fn move_facts(
+        &self,
+        services: &AgentCliServices,
+        task_id: &TaskId,
+        (runs, target): (Version, Version),
+        background: Option<bool>,
+    ) -> Option<MoveFacts> {
+        let sent_to = services.moved.lock().ok()?.get(task_id).copied();
+        let stopped_for = services
+            .stopped
+            .lock()
+            .ok()?
+            .as_ref()
+            .map(|(version, _)| *version);
+        Some(MoveFacts {
+            runs,
+            target,
+            sent_to,
+            stopped_for,
+            typed_ms_ago: self.typed_ms_ago(task_id),
+            switch_refused: self.switch_cooling(task_id) || self.claude_move_cooling(task_id),
+            paused: self.is_paused_by_person(task_id).await,
+            update_holds: self.update_holds_starts(),
+            background,
+        })
+    }
+
     /// The newer Claude Code the session of `attempt` moves to now, at its turn's end (SPEC-461
     /// CCM-013); `None` when it stays: it runs the version runs get (or names none), it was
     /// sent to that version before, a session could not continue on that version, a person
-    /// typed into it in the last minute, a switch was refused moments ago, or it has background
-    /// shells, agents or monitors, which a restart would end.
+    /// typed into it in the last minute or paused it, an update of the instance holds the runs,
+    /// a switch was refused moments ago, it has background shells (a `yulius wait` included),
+    /// agents or monitors, which a restart would end, or that could not be told within
+    /// [`crate::context::AppConfig::claude_code_decision_ms`].
     pub(crate) async fn claude_code_move_due(
         self: &Arc<Self>,
         task_id: &TaskId,
@@ -240,101 +299,223 @@ impl App {
     ) -> Option<Version> {
         let services = self.agent_cli.get()?;
         let target = services.adapter.version_for_new_runs()?;
+        let deadline = tokio::time::Instant::now()
+            + Duration::from_millis(self.config.claude_code_decision_ms);
+        let mut lines_read = false;
         let runs = match self.run_cli_version(task_id, attempt).await {
             Some(runs) => runs?,
             // The lines of this turn name it: they are read first.
             None => {
-                self.await_transcript_read(task_id).await;
+                tokio::time::timeout_at(deadline, self.await_transcript_read(task_id))
+                    .await
+                    .ok()?;
+                lines_read = true;
                 self.run_cli_version(task_id, attempt).await??
             }
         };
-        let mut facts = MoveFacts {
-            runs,
-            target,
-            sent_to: services.moved.lock().ok()?.get(task_id).copied(),
-            stopped_for: services
-                .stopped
-                .lock()
-                .ok()?
-                .as_ref()
-                .map(|(version, _)| *version),
-            typed_ms_ago: self.typed_ms_ago(task_id),
-            switch_refused: self.switch_cooling(task_id),
-            // Asked last: it reads the turn's lines and probes the session's processes.
-            background: Some(false),
-        };
-        if !moves_now(&facts) {
+        // What costs nothing first: most turns end on the version runs get.
+        let cheap = self
+            .move_facts(services, task_id, (runs, target), Some(false))
+            .await?;
+        if !moves_now(&cheap) {
             return None;
         }
         // Background work started in this turn is known from its lines (SPEC-079 BGW-004); a
         // shell that only runs `yulius wait` counts: its news would never arrive.
-        self.await_transcript_read(task_id).await;
-        facts.background = self.background_or_wait_now(task_id).await;
+        if !lines_read {
+            tokio::time::timeout_at(deadline, self.await_transcript_read(task_id))
+                .await
+                .ok()?;
+        }
+        let background = tokio::time::timeout_at(deadline, self.background_or_wait_now(task_id))
+            .await
+            .ok()?;
         crate::race::reached(
             crate::race::Point::ClaudeMoveProbed,
             std::path::Path::new(task_id.as_str()),
         );
-        // That took seconds: a person may have started a draft, paused the task, or an update
-        // of the instance begun to freeze its runs meanwhile.
-        facts.typed_ms_ago = self.typed_ms_ago(task_id);
-        if self.is_paused_by_person(task_id).await || self.update_holds_starts() {
-            return None;
-        }
+        // That took a moment: a person may have started a draft or paused the task, an update
+        // of the instance begun to hold the runs, another session failed on this version.
+        let facts = self
+            .move_facts(services, task_id, (runs, target), background)
+            .await?;
         moves_now(&facts).then_some(target)
     }
 
-    /// Restarts the session of `task_id` on Claude Code `version` in the same Claude session, on
-    /// its subscription `account` (SPEC-461 CCM-013): the switch a subscription move makes, with
-    /// `prompt` typed into the resumed session. A version a session could not continue on gets
-    /// no further sessions.
+    /// Restarts the session of `task_id`, whose run is `from`, on Claude Code `version` in the
+    /// same Claude session, on its subscription `account` (SPEC-461 CCM-013): the switch a
+    /// subscription move makes, with `prompt` typed into the resumed session. The restarted
+    /// session then has [`crate::context::AppConfig::claude_code_start_ms`] to start: a version
+    /// a session cannot continue on gets no further sessions.
     pub(crate) async fn move_to_claude_code(
         self: &Arc<Self>,
         task_id: &TaskId,
-        account: Option<AccountId>,
+        (from, account): (AttemptId, Option<AccountId>),
         version: Version,
         prompt: Option<String>,
     ) {
         let Some(services) = self.agent_cli.get() else {
             return;
         };
-        let Err(err) = self
+        // Known before the old run ends: the restarted session's run may end at once.
+        let start = MoveStart {
+            version,
+            from: from.clone(),
+        };
+        if let Ok(mut starting) = services.starting.lock() {
+            starting.insert(task_id.clone(), start.clone());
+        }
+        if let Err(err) = self
             .switch_task_now(task_id, account, MOVE_REASON, prompt)
             .await
-        else {
-            // Sent once: a session that still names the old version is not restarted again.
-            // What was sent to older versions is of no use any more.
-            if let Ok(mut moved) = services.moved.lock() {
-                moved.retain(|_, sent| *sent == version);
-                moved.insert(task_id.clone(), version);
-            }
-            // The new run names its Claude Code with its first prompt: until then it is the
-            // one it was restarted on.
-            if let Ok(Some(run)) = self.deps.store.live_attempt(task_id).await {
-                let _ = self
-                    .deps
-                    .store
-                    .set_run_cli_version(&run.id, task_id, &version.to_string(), self.now())
-                    .await;
-            }
-            return;
-        };
-        tracing::warn!(error = %err, task = %task_id, %version, "the session did not move to the new Claude Code");
-        // The old run ended and the new one did not start: the version is not given another
-        // session. A refusal before the old run ended, or a stop that overtook the move, says
-        // nothing about the version.
-        if let Ok(Some(task)) = self.deps.store.task(task_id).await
-            && task.status == TaskStatus::Stopped(StopReason::SwitchFailed)
-            && let Ok(mut stopped) = services.stopped.lock()
         {
-            *stopped = Some((
-                version,
-                format!(
+            tracing::warn!(error = %err, task = %task_id, %version, "the session did not move to the new Claude Code");
+            self.take_move_start(services, task_id, &start);
+            // The old run ended and the new one did not start: the version is not given
+            // another session. A refusal before the old run ended, or a stop that overtook the
+            // move, says nothing about the version.
+            if let Ok(Some(task)) = self.deps.store.task(task_id).await
+                && task.status == TaskStatus::Stopped(StopReason::SwitchFailed)
+            {
+                let why = format!(
                     "task #{} could not continue on it ({})",
                     task.number,
                     err.public_message()
-                ),
-            ));
+                );
+                Self::stop_moves(services, version, why);
+            }
+            return;
         }
+        // Sent once: a session that still names the old version is not restarted again. What
+        // was sent to older versions is of no use any more.
+        if let Ok(mut moved) = services.moved.lock() {
+            moved.retain(|_, sent| *sent == version);
+            moved.insert(task_id.clone(), version);
+        }
+        // The new run names its Claude Code with its first prompt: until then it is the one it
+        // was restarted on.
+        if let Ok(Some(run)) = self.deps.store.live_attempt(task_id).await
+            && run.id != from
+        {
+            let _ = self
+                .deps
+                .store
+                .set_run_cli_version(&run.id, task_id, &version.to_string(), self.now())
+                .await;
+        }
+        // A session that neither starts nor ends in time sits at something it cannot pass.
+        let app = Arc::clone(self);
+        let task_id = task_id.clone();
+        let wait = Duration::from_millis(self.config.claude_code_start_ms);
+        tokio::spawn(async move {
+            tokio::time::sleep(wait).await;
+            app.claude_code_start_overdue(&task_id, &start, wait).await;
+        });
+    }
+
+    /// Takes the restart `start` of `task_id` out of the ones still starting; whether it was
+    /// there.
+    fn take_move_start(
+        &self,
+        services: &AgentCliServices,
+        task_id: &TaskId,
+        start: &MoveStart,
+    ) -> bool {
+        let Ok(mut starting) = services.starting.lock() else {
+            return false;
+        };
+        if starting.get(task_id) == Some(start) {
+            starting.remove(task_id);
+            return true;
+        }
+        false
+    }
+
+    /// No other session is restarted on `version`: `why` is said on the Instance page.
+    fn stop_moves(services: &AgentCliServices, version: Version, why: String) {
+        tracing::error!(%version, %why, "running tasks are no longer moved to this Claude Code");
+        if let Ok(mut stopped) = services.stopped.lock() {
+            *stopped = Some((version, why));
+        }
+    }
+
+    /// "task #3", for the Instance page.
+    async fn task_name(&self, task_id: &TaskId) -> String {
+        match self.deps.store.task(task_id).await {
+            Ok(Some(task)) => format!("task #{}", task.number),
+            _ => "a task".to_owned(),
+        }
+    }
+
+    /// The session of `attempt` started (its SessionStart hook): a restart on a newer Claude
+    /// Code that got this far works.
+    pub(crate) fn claude_code_run_started(&self, task_id: &TaskId, attempt: &AttemptId) {
+        if let Some(services) = self.agent_cli.get()
+            && let Ok(mut starting) = services.starting.lock()
+            && starting
+                .get(task_id)
+                .is_some_and(|start| start.from != *attempt)
+        {
+            starting.remove(task_id);
+        }
+    }
+
+    /// The run `attempt` of `task_id` ended; `started` says its session had started,
+    /// `by_itself` that neither Yulius nor a person ended it. The session of a restart on a
+    /// newer Claude Code that ends by itself before it started there cannot run on that
+    /// version: it gets no other session (SPEC-461 CCM-013).
+    pub(crate) async fn claude_code_run_ended(
+        &self,
+        task_id: &TaskId,
+        attempt: &AttemptId,
+        started: bool,
+        by_itself: bool,
+    ) {
+        let Some(services) = self.agent_cli.get() else {
+            return;
+        };
+        let ended = {
+            let Ok(mut starting) = services.starting.lock() else {
+                return;
+            };
+            match starting.get(task_id) {
+                // The run that was ended for the restart: the restarted session is to come.
+                Some(start) if start.from == *attempt => return,
+                Some(_) => starting.remove(task_id),
+                None => return,
+            }
+        };
+        if let Some(start) = ended
+            && !started
+            && by_itself
+        {
+            let why = format!(
+                "the session of {} ended as it restarted on it",
+                self.task_name(task_id).await
+            );
+            Self::stop_moves(services, start.version, why);
+        }
+    }
+
+    /// `wait` after the restart `start`: a session that has neither started nor ended sits at
+    /// something it cannot pass (a dialog a new release shows first). It is left as it is, for
+    /// its person to look at, and the version gets no other session.
+    async fn claude_code_start_overdue(&self, task_id: &TaskId, start: &MoveStart, wait: Duration) {
+        let Some(services) = self.agent_cli.get() else {
+            return;
+        };
+        if self.take_move_start(services, task_id, start) {
+            let why = format!(
+                "the session of {} did not start on it within {} s",
+                self.task_name(task_id).await,
+                wait.as_secs()
+            );
+            Self::stop_moves(services, start.version, why);
+        }
+        crate::race::reached(
+            crate::race::Point::ClaudeMoveStartJudged,
+            std::path::Path::new(task_id.as_str()),
+        );
     }
 
     /// An idle prompt-mode session whose turn just settled restarts on the Claude Code runs get
@@ -351,11 +532,6 @@ impl App {
 
     async fn move_idle_session(self: &Arc<Self>, task_id: &TaskId) {
         if self.agent_cli.get().is_none() {
-            return;
-        }
-        // A session a person paused, or one an instance update is about to freeze, is left as
-        // it is: the restart would end the pause (SPEC-191 PER-005) or outrun the update.
-        if self.is_paused_by_person(task_id).await || self.update_holds_starts() {
             return;
         }
         let store = &self.deps.store;
@@ -377,7 +553,7 @@ impl App {
         if !matches!(store.task(task_id).await, Ok(Some(task)) if idle(&task)) {
             return;
         }
-        self.move_to_claude_code(task_id, attempt.account_id, version, None)
+        self.move_to_claude_code(task_id, (attempt.id, attempt.account_id), version, None)
             .await;
     }
 
@@ -444,11 +620,12 @@ impl App {
     }
 }
 
-/// The view of `status`, with the channel's origin.
+/// The view of `status` at `now`, with the channel's origin.
 fn view_of(
     status: &AgentCliStatus,
     config_channel: Channel,
     chosen: Option<&ChosenChannel>,
+    now: Timestamp,
 ) -> ClaudeCodeView {
     let version = status.version.map(|v| v.to_string());
     let (result, result_text) = status
@@ -468,22 +645,26 @@ fn view_of(
             .collect(),
         _ => Vec::new(),
     };
-    // The newest release does not know the default model either: it was refused, or it is what
-    // runs get. Then no release knows it yet.
-    let newest_refused = match &status.result {
+    // Whether npm's newest release does not know the default model either: only a fresh read
+    // of the registry says so (a remembered `latest` does not, nor does anything with updates
+    // off).
+    let read = match &status.result {
+        Some(CheckResult::Installed(_) | CheckResult::UpToDate(_)) => RegistryRead::Read,
         Some(CheckResult::Refused(refused)) => refused
             .last()
-            .filter(|(version, _)| Some(*version) == status.latest)
-            .map(|(version, _)| version.to_string()),
-        _ => None,
+            .map_or(RegistryRead::Unknown, |(version, _)| {
+                RegistryRead::Refused(*version)
+            }),
+        Some(CheckResult::Failed(_)) | None => RegistryRead::Unknown,
     };
-    let newest_lacks = newest_refused.or_else(|| {
-        status
-            .version
-            .zip(status.latest)
-            .filter(|(runs, latest)| runs >= latest)
-            .map(|(runs, _)| runs.to_string())
-    });
+    let newest_lacks = newest_lacking_default(&NewestFacts {
+        channel: status.channel,
+        read,
+        read_ms_ago: status.checked_at.map(|at| now.millis_since(at)),
+        latest: status.latest,
+        runs: status.version,
+    })
+    .map(|version| version.to_string());
     let unknown = status.missing.clone().unwrap_or_default();
     let (problem, fix) = if lacks_default(&unknown) {
         let named = version.as_deref().unwrap_or("in use");

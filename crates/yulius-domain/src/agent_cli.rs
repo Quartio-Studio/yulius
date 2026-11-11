@@ -124,10 +124,15 @@ pub struct MoveFacts {
     pub stopped_for: Option<Version>,
     /// How long ago a person typed into the session, when one did.
     pub typed_ms_ago: Option<i64>,
-    /// A switch of this task was refused moments ago.
+    /// A switch of this task, or an earlier restart for a newer Claude Code, was refused moments
+    /// ago.
     pub switch_refused: bool,
-    /// Whether background shells, agents or monitors of the session run now; `None` when that
-    /// could not be told.
+    /// A person paused the task: a restart would end their pause.
+    pub paused: bool,
+    /// An update of the instance holds the runs: a restart would outrun it.
+    pub update_holds: bool,
+    /// Whether background shells (one that only waits for Yulius included), agents or monitors of
+    /// the session run now; `None` when that could not be told.
     pub background: Option<bool>,
 }
 
@@ -138,8 +143,9 @@ pub const TYPED_RECENTLY_MS: i64 = 60_000;
 /// Whether the session is restarted on `target` now: it runs an older version, was not sent to
 /// `target` before (a session that still names the old one afterwards is not restarted at every
 /// turn's end), no session failed to continue on `target`, nobody typed into it in the last
-/// minute, no switch was just refused, and nothing of it runs in the background, which a
-/// restart would end (unknown counts as running).
+/// minute or paused it, no update of the instance holds the runs, no switch was just refused,
+/// and nothing of it runs in the background, which a restart would end (unknown counts as
+/// running).
 #[must_use]
 pub fn moves_now(facts: &MoveFacts) -> bool {
     facts.runs < facts.target
@@ -149,6 +155,8 @@ pub fn moves_now(facts: &MoveFacts) -> bool {
             .typed_ms_ago
             .is_none_or(|ago| ago >= TYPED_RECENTLY_MS)
         && !facts.switch_refused
+        && !facts.paused
+        && !facts.update_holds
         && facts.background == Some(false)
 }
 
@@ -191,10 +199,64 @@ pub fn default_model_problem(version: &str) -> String {
     )
 }
 
+/// What the last check of the registry showed about npm's releases.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegistryRead {
+    /// None ran, or it failed: what npm offers now is not known.
+    Unknown,
+    /// It read npm's tags, and installed a release or found runs up to date.
+    Read,
+    /// It read npm's tags and refused this release, the last one it tried, for the default
+    /// model.
+    Refused(Version),
+}
+
+/// What is known about npm's newest release while runs get a Claude Code that does not know the
+/// default model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NewestFacts {
+    /// The channel in effect.
+    pub channel: Channel,
+    /// What the last check showed.
+    pub read: RegistryRead,
+    /// How long ago that check was made, when one was.
+    pub read_ms_ago: Option<i64>,
+    /// npm's `latest` as that check read it.
+    pub latest: Option<Version>,
+    /// The version runs get.
+    pub runs: Option<Version>,
+}
+
+/// How old a read of the registry may be and still say what npm's newest release is: two rounds
+/// of the hourly check.
+pub const NEWEST_KNOWN_FOR_MS: i64 = 2 * 60 * 60 * 1000;
+
+/// npm's newest release, when the last check shows that it does not know the default model
+/// either: that check refused it, or it is what runs get. Then no release knows the model yet,
+/// and neither a check nor the host's install helps. `None` whenever that is not known: with
+/// updates off (nothing reads the registry), after a failed check, or when the last read is
+/// older than [`NEWEST_KNOWN_FOR_MS`]; a `latest` remembered from an earlier day says nothing
+/// about today, and the channel's own fix is the one to give.
+#[must_use]
+pub fn newest_lacking_default(facts: &NewestFacts) -> Option<Version> {
+    if facts.channel == Channel::Off {
+        return None;
+    }
+    let fresh = facts
+        .read_ms_ago
+        .is_some_and(|ago| (0..=NEWEST_KNOWN_FOR_MS).contains(&ago));
+    let latest = facts.latest.filter(|_| fresh)?;
+    match facts.read {
+        RegistryRead::Unknown => None,
+        RegistryRead::Refused(refused) if refused == latest => Some(latest),
+        RegistryRead::Refused(_) | RegistryRead::Read => facts.runs.filter(|runs| *runs >= latest),
+    }
+}
+
 /// How a Claude Code that does not know the default model is fixed, in one sentence: what
 /// Yulius does by itself on `channel`, and the host's way. `newest_lacks` is npm's newest
-/// release when that does not know the model either (the last check refused it, or it is what
-/// runs get): then no release knows it yet, and neither a check nor the host's install helps.
+/// release when that does not know the model either ([`newest_lacking_default`]): then no
+/// release knows it yet, and neither a check nor the host's install helps.
 #[must_use]
 pub fn default_model_fix(channel: Channel, newest_lacks: Option<&str>) -> String {
     if let Some(newest) = newest_lacks {
@@ -428,6 +490,8 @@ mod tests {
             stopped_for: None,
             typed_ms_ago: None,
             switch_refused: false,
+            paused: false,
+            update_holds: false,
             background: Some(false),
         };
         assert!(moves_now(&due));
@@ -476,6 +540,20 @@ mod tests {
         );
         stays(
             MoveFacts {
+                paused: true,
+                ..due
+            },
+            "a person paused the task",
+        );
+        stays(
+            MoveFacts {
+                update_holds: true,
+                ..due
+            },
+            "an update of the instance holds the runs",
+        );
+        stays(
+            MoveFacts {
                 background: Some(true),
                 ..due
             },
@@ -495,6 +573,119 @@ mod tests {
             typed_ms_ago: Some(TYPED_RECENTLY_MS),
             ..due
         }));
+    }
+
+    /// SPEC-461 CCM-007 (review round 2): npm's newest release is said not to know the default
+    /// model only on a fresh, successful read of the registry by a channel that checks.
+    #[test]
+    fn the_newest_release_is_named_only_from_a_fresh_read() {
+        let refused = NewestFacts {
+            channel: Channel::Latest,
+            read: RegistryRead::Refused(v("2.1.322")),
+            read_ms_ago: Some(5 * 60_000),
+            latest: Some(v("2.1.322")),
+            runs: Some(v("2.1.311")),
+        };
+        // The newest release was refused for it.
+        assert_eq!(newest_lacking_default(&refused), Some(v("2.1.322")));
+        // Runs already get the newest release (or a newer one): that is the one named.
+        let in_use = NewestFacts {
+            read: RegistryRead::Read,
+            runs: Some(v("2.1.322")),
+            ..refused
+        };
+        assert_eq!(newest_lacking_default(&in_use), Some(v("2.1.322")));
+        let beyond = NewestFacts {
+            runs: Some(v("2.1.330")),
+            ..in_use
+        };
+        assert_eq!(newest_lacking_default(&beyond), Some(v("2.1.330")));
+        // On `stable`, stable's release was refused and `latest`'s too: the last one tried.
+        let stable = NewestFacts {
+            channel: Channel::Stable,
+            ..refused
+        };
+        assert_eq!(newest_lacking_default(&stable), Some(v("2.1.322")));
+
+        let unknown = |facts: NewestFacts, why: &str| {
+            assert_eq!(newest_lacking_default(&facts), None, "{why}");
+        };
+        // A newer release than the one runs get was read and nothing refused: the next check
+        // (or the host's install) takes it.
+        unknown(
+            NewestFacts {
+                read: RegistryRead::Read,
+                ..refused
+            },
+            "a newer release exists",
+        );
+        unknown(
+            NewestFacts {
+                read: RegistryRead::Refused(v("2.1.318")),
+                ..refused
+            },
+            "an older release than the newest was refused",
+        );
+        // Nothing reads the registry with updates off: a remembered `latest` is not today's.
+        for facts in [refused, in_use, beyond] {
+            unknown(
+                NewestFacts {
+                    channel: Channel::Off,
+                    ..facts
+                },
+                "updates are off",
+            );
+            unknown(
+                NewestFacts {
+                    read: RegistryRead::Unknown,
+                    ..facts
+                },
+                "the last check failed, or none ran",
+            );
+            unknown(
+                NewestFacts {
+                    read_ms_ago: Some(NEWEST_KNOWN_FOR_MS + 1),
+                    ..facts
+                },
+                "the last read is old",
+            );
+            unknown(
+                NewestFacts {
+                    read_ms_ago: None,
+                    ..facts
+                },
+                "no check was made",
+            );
+            unknown(
+                NewestFacts {
+                    read_ms_ago: Some(-1),
+                    ..facts
+                },
+                "the check is dated after now",
+            );
+            unknown(
+                NewestFacts {
+                    latest: None,
+                    ..facts
+                },
+                "npm's latest was not read",
+            );
+        }
+        unknown(
+            NewestFacts {
+                runs: None,
+                ..in_use
+            },
+            "the version runs get is unknown",
+        );
+        assert_eq!(
+            newest_lacking_default(&NewestFacts {
+                read_ms_ago: Some(NEWEST_KNOWN_FOR_MS),
+                ..refused
+            }),
+            Some(v("2.1.322")),
+            "two rounds of the hourly check are still fresh"
+        );
     }
 
     #[test]
