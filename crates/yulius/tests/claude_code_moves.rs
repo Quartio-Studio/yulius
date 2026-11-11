@@ -1075,11 +1075,12 @@ mod moves {
         Ok(())
     }
 
-    /// SPEC-468 CCF-006 (review round 3, nit 6): two turn ends of one task that decide at once.
-    /// Both find the session due; one restarts it and the other leaves it to that one, so the
-    /// restart stays on the breaker's watch: its session, which never starts here, stops
-    /// further restarts on that version. The second used to register an equal start, be
-    /// refused its switch, and take the first's start off the watch with its own.
+    /// SPEC-468 CCF-006 (review round 3, nit 6): two turn ends of one task that both decide to
+    /// restart its session. One restarts it and the other, which comes while that restart is
+    /// under way, leaves the session to it: the restart stays on the breaker's watch, and its
+    /// session, which never starts here, stops further restarts on that version. The second
+    /// used to register an equal start, be refused its switch, and take the first's start off
+    /// the watch with its own.
     #[test]
     fn two_turn_ends_that_decide_at_once_make_one_watched_restart() -> TestResult {
         let (_dir, data) = data_dir()?;
@@ -1103,37 +1104,45 @@ mod moves {
             turn_that_stays(&s, "one").await?;
             release(&s, &version, "2.1.322")?;
             std::fs::write(&stuck, "")?;
-            // The first turn's end, its look at the session made, waits until the second's
-            // got as far: from there both decide at once.
-            let first_there = Arc::new(AtomicBool::new(false));
-            let both_there = Arc::new(AtomicBool::new(false));
+            // Both turn ends have decided before either begins: the first waits there for
+            // the second, and the second until the first's switch is under way (the task is
+            // switching), so it is the second that comes too late.
+            const HELD: Duration = Duration::from_secs(60);
+            let first_decided = Arc::new(AtomicBool::new(false));
+            let in_order = Arc::new(AtomicBool::new(false));
             let (second_tx, second_rx) = std::sync::mpsc::channel::<()>();
-            let (there, both) = (Arc::clone(&first_there), Arc::clone(&both_there));
+            let (switching_tx, switching_rx) = std::sync::mpsc::channel::<()>();
             let task = Path::new(s.id.as_str());
-            race::on(Point::ClaudeMoveProbed, task, move || {
+            let there = Arc::clone(&first_decided);
+            race::on(Point::ClaudeMoveDecided, task, move || {
                 there.store(true, Ordering::SeqCst);
-                let second =
-                    tokio::task::block_in_place(|| second_rx.recv_timeout(Duration::from_secs(60)));
-                both.store(second.is_ok(), Ordering::SeqCst);
+                let _ = tokio::task::block_in_place(|| second_rx.recv_timeout(HELD));
             });
-            race::on(Point::ClaudeMoveProbed, task, move || {
+            let order = Arc::clone(&in_order);
+            race::on(Point::ClaudeMoveDecided, task, move || {
                 let _ = second_tx.send(());
+                let switching = tokio::task::block_in_place(|| switching_rx.recv_timeout(HELD));
+                order.store(switching.is_ok(), Ordering::SeqCst);
+            });
+            race::on(Point::SwitchDecided, task, move || {
+                let _ = switching_tx.send(());
             });
             let (one, other) = (decided(&s.id), decided(&s.id));
             let judged = reached(Point::ClaudeMoveStartJudged, &s.id);
             turn(&s, "two").await?;
             wait_for(
-                "the first turn's end to look at the session",
+                "the first turn's end to decide",
                 Duration::from_secs(60),
-                || async { first_there.load(Ordering::SeqCst) },
+                || async { first_decided.load(Ordering::SeqCst) },
             )
             .await?;
             turn(&s, "three").await?;
             until_decided(&one).await?;
             until_decided(&other).await?;
             assert!(
-                both_there.load(Ordering::SeqCst),
-                "both turn ends found the session due before either restarted it"
+                in_order.load(Ordering::SeqCst),
+                "the second turn's end decided before the first began, and went on once the \
+                 first's switch was under way"
             );
             // One restart, and it is watched: the session that never starts is noticed.
             second_run_live(&s).await?;

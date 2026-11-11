@@ -8,7 +8,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -53,6 +53,38 @@ struct MoveStart {
     from: AttemptId,
 }
 
+/// The restarts whose session has not started on the new version yet (its SessionStart hook),
+/// by task: one that ends by itself, or stays silent, before that stops further restarts on it.
+#[derive(Debug, Default)]
+struct Starts {
+    /// The identity of the next one.
+    next: u64,
+    by_task: HashMap<TaskId, MoveStart>,
+}
+
+impl Starts {
+    /// Watches a restart of `task`'s session, whose run is `from`, on `version`.
+    fn watch(&mut self, task: &TaskId, version: Version, from: &AttemptId) -> MoveStart {
+        let start = MoveStart {
+            id: self.next,
+            version,
+            from: from.clone(),
+        };
+        self.next += 1;
+        self.by_task.insert(task.clone(), start.clone());
+        start
+    }
+
+    /// Takes `start` off the watch; whether it was the one watched for `task`.
+    fn take(&mut self, task: &TaskId, start: &MoveStart) -> bool {
+        if self.by_task.get(task) == Some(start) {
+            self.by_task.remove(task);
+            return true;
+        }
+        false
+    }
+}
+
 /// The channel a superadmin chose in Settings, as the store keeps it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChosenChannel {
@@ -77,14 +109,11 @@ pub struct AgentCliServices {
     /// A version a session could not continue on, and what happened: no other session is sent
     /// to it (a newer version, or a restart of the server, lifts it).
     stopped: Mutex<Option<(Version, String)>>,
-    /// Restarts whose session has not started on the new version yet (its SessionStart hook):
-    /// one that ends by itself, or stays silent, before that stops further restarts on it.
-    starting: Mutex<HashMap<TaskId, MoveStart>>,
+    /// Restarts whose session has not started on the new version yet.
+    starting: Mutex<Starts>,
     /// The tasks whose session is being restarted right now ([`Moving`]): one restart of a
     /// task at a time.
     moving: Mutex<HashSet<TaskId>>,
-    /// The identity of the next restart.
-    next_start: AtomicU64,
 }
 
 /// The one restart of a task's session that may be under way: until it is dropped, no other
@@ -170,7 +199,6 @@ impl App {
                 stopped: Mutex::default(),
                 starting: Mutex::default(),
                 moving: Mutex::default(),
-                next_start: AtomicU64::new(0),
             })
             .is_ok()
     }
@@ -394,6 +422,10 @@ impl App {
         let Some(services) = self.agent_cli.get() else {
             return;
         };
+        crate::race::reached(
+            crate::race::Point::ClaudeMoveDecided,
+            Path::new(task_id.as_str()),
+        );
         // Turn ends that decide at once name the same version and run: the second would
         // replace the first's start on the watch and be refused its switch, or make the
         // restart a second time.
@@ -408,14 +440,10 @@ impl App {
             return;
         }
         // Known before the old run ends: the restarted session's run may end at once.
-        let start = MoveStart {
-            id: services.next_start.fetch_add(1, Ordering::SeqCst),
-            version,
-            from: from.clone(),
+        let watched = services.starting.lock();
+        let Ok(start) = watched.map(|mut starts| starts.watch(task_id, version, &from)) else {
+            return;
         };
-        if let Ok(mut starting) = services.starting.lock() {
-            starting.insert(task_id.clone(), start.clone());
-        }
         if let Err(err) = self
             .switch_task_now(task_id, account, MOVE_REASON, prompt)
             .await
@@ -472,14 +500,10 @@ impl App {
         task_id: &TaskId,
         start: &MoveStart,
     ) -> bool {
-        let Ok(mut starting) = services.starting.lock() else {
-            return false;
-        };
-        if starting.get(task_id) == Some(start) {
-            starting.remove(task_id);
-            return true;
-        }
-        false
+        services
+            .starting
+            .lock()
+            .is_ok_and(|mut starts| starts.take(task_id, start))
     }
 
     /// No other session is restarted on `version`: `why` is said on the Instance page.
@@ -502,12 +526,13 @@ impl App {
     /// Code that got this far works, and is no longer watched.
     pub(crate) fn claude_code_run_started(&self, task_id: &TaskId, attempt: &AttemptId) {
         if let Some(services) = self.agent_cli.get()
-            && let Ok(mut starting) = services.starting.lock()
-            && starting
+            && let Ok(mut starts) = services.starting.lock()
+            && starts
+                .by_task
                 .get(task_id)
                 .is_some_and(|start| start.from != *attempt)
         {
-            starting.remove(task_id);
+            starts.by_task.remove(task_id);
         }
         crate::race::reached(
             crate::race::Point::ClaudeMoveStarted,
@@ -524,7 +549,7 @@ impl App {
             services
                 .starting
                 .lock()
-                .is_ok_and(|starting| starting.contains_key(task_id))
+                .is_ok_and(|starts| starts.by_task.contains_key(task_id))
         })
     }
 
@@ -543,13 +568,13 @@ impl App {
             return;
         };
         let ended = {
-            let Ok(mut starting) = services.starting.lock() else {
+            let Ok(mut starts) = services.starting.lock() else {
                 return;
             };
-            match starting.get(task_id) {
+            match starts.by_task.get(task_id) {
                 // The run that was ended for the restart: the restarted session is to come.
                 Some(start) if start.from == *attempt => return,
-                Some(_) => starting.remove(task_id),
+                Some(_) => starts.by_task.remove(task_id),
                 None => return,
             }
         };
@@ -793,5 +818,27 @@ fn view_of(
         refused,
         behind: Vec::new(),
         moves_stopped: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// SPEC-468 CCF-006: two restarts of one run on one version are two starts, and the one
+    /// that is watched is only taken off the watch as itself.
+    #[test]
+    fn a_start_is_only_taken_off_the_watch_as_itself() -> Result<(), Box<dyn std::error::Error>> {
+        let (task, run) = (TaskId::parse("t-1")?, AttemptId::parse("a-1")?);
+        let version = Version::parse("2.1.322").ok_or("a version")?;
+        let mut starts = Starts::default();
+        let first = starts.watch(&task, version, &run);
+        let second = starts.watch(&task, version, &run);
+        assert_ne!(first, second, "each start has its own identity");
+        assert!(!starts.take(&task, &first), "the second is the one watched");
+        assert_eq!(starts.by_task.get(&task), Some(&second));
+        assert!(starts.take(&task, &second));
+        assert!(!starts.take(&task, &second), "taken once");
+        Ok(())
     }
 }
