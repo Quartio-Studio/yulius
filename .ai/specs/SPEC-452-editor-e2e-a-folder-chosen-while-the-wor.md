@@ -81,7 +81,7 @@ and passes under load.
 - [x] Regression test: typing while the file's join is held loses nothing and logs no error
 - [x] The editor starts without a model, so nothing can be typed before the file is set
 - [x] The quarantined test waits for the open tab and runs again, 10 runs green under the probe
-- [ ] The #1087 test moves the disk once the server has the typing: green under a late first edit
+- [x] The #1087 test moves the disk once the server has the typing: green under a late first edit
 - [ ] Independent review answered and gates green
 
 ## Acceptance criteria
@@ -125,4 +125,36 @@ and passes under load.
 
 ## Evidence
 
-(filled in when done)
+All e2e runs from `e2e/` with `E2E_TELEMETRY_DISABLED=1 npx e2e run …`, on the shared machine at a
+load average of 18-60. Probes are uncommitted edits of `web/assets/mock.js`, restored after each
+run.
+
+| What | Result |
+| --- | --- |
+| Both #1087 tests (`--grep "a folder chosen while the worktrees are read\|the editor offers nothing to type into"`), head 9defdf9e, join answered 1.5 s late | 10 of 10 runs: 2 passed |
+| The same, the file's read answered 1.5 s late | 10 of 10 runs: 2 passed |
+| The same, the first edit answered 3 s late | 10 of 10 runs: 2 passed |
+| Dev's code and test (skip lifted), join late | 3 of 3 runs fail: the `README.md, modified` tab is missing, "app 2 errors logged" (the issue's failure) |
+| `model: null` taken out, join late | the regression test fails 3 of 3 (the "Editor content" textbox is there) |
+| The test without the `liveDoc` wait (d1abcc25), first edit 3 s late | 3 of 3 runs fail at the "Changed on disk" check with `README.md Saving… Ln 1, Col 9` |
+| `editor`, `live-editor`, `places`, `terminal`, `filedrop` (111 tests), head 9defdf9e, no probe | 111 passed |
+| The same five files, join late | 111 passed |
+| The same, first edit late | 111 passed |
+| The same, read late | 110 passed, 1 failed: `terminal.e2e.ts` "file names a shell prints open the editor", at the Shell's `toBeFocused`, before any file is read (see below) |
+| The same five files of dev, join late | 106 passed, 1 skipped, 3 failed: the places test named in Context (the #1087 cause; passes on this branch) and the two below |
+| Whole e2e suite, at an earlier head of this branch (before 508f11fa) | 903 passed, 1 skipped (`agent.e2e.ts`), 1 failed: `notes.e2e.ts` "a conflict on Me is always with the person's own other tab, even under an older login"; passed on a re-run, no Editor in it |
+| `yulius security-scan` | "Security scan disabled": not run, so not passed |
+
+Two failures met that this change does not cause (neither opens the Editor before the failing
+line; both also fail on dev's copy). They are reported on #1087, since this task opens no issues:
+
+- `terminal.e2e.ts` "file names a shell prints open the editor": the Shell's textarea is not
+  focused in time (once on this branch with the read late, once on dev's copy with the join late;
+  5 of 5 pass with no probe).
+- `places.e2e.ts` "each sandbox comes back with its own tool panel and the same Superagent
+  session": the "Tool panel" region is still visible after the Superagent button closes it (once on
+  dev's copy, once in 5 runs on this branch with no probe).
+
+Review: round 1 at 52383b1c asked for changes (a places test waited on `editorShown` while holding
+the read: fixed in 508f11fa; the "redundant `aria-selected` wait" nit is kept, it is the condition
+the test types on). The second round approves the delivered head and is named in the merge.
