@@ -118,7 +118,9 @@ to use, run instead of printing the wrapper's usage line.
   commit's `assert!` was not formatted; the local run had skipped fmt); `cargo fmt --all` fixed it
   and `scripts/dev lint` (fmt check and clippy) → exit 0. Run `3f6de5ac` at `366946c0` failed
   `cargo deny` on a new advisory, RUSTSEC-2026-0486 (rustix 1.1.5), which fails every pull request
-  and which no open one fixed: `cargo update -p rustix@1.1.5 --precise 1.1.6`, in its own commit
+  (PR #1151 carries the same bump, `ada375dc`, with identical lock hunks, which this check
+  missed; whichever merges second merges cleanly): `cargo update -p rustix@1.1.5 --precise 1.1.6`,
+  in its own commit
   (the resolver also moves the Windows-only `windows-sys` users onto 0.52, which `ring` already
   locks); then `cargo deny --locked check` → all ok, `cargo check --locked --workspace
   --all-targets` and `scripts/dev macos` → exit 0.
