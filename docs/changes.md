@@ -4,6 +4,15 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-11
+
+- `browser_screenshot` never shows an agent secret typed with `browser_fill_secret` (SPEC-450,
+  task #432, ADR-0291, #1113). Before capturing a tab with a filled secret, Yulius reads the page's
+  text and text fields and refuses the screenshot, pointing to `browser_snapshot`, while the value
+  shows there, while the page cannot be read, or, for a value typed where it cannot look (a
+  cross-origin frame), until the tab shows another document. Password fields keep screenshots
+  working until the page reveals them. This covers a task's agent and both Superagents.
+
 ## 2026-11-10
 
 - Text stays inside its box (SPEC-449, task #431, ADR-0290). A long URL, path or identifier
