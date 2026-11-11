@@ -2821,7 +2821,7 @@ a.update-text:hover { text-decoration: underline; text-underline-offset: 2px; }
 .limits-stale { margin: 0; padding-left: 16px; }
 .limits-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
 .limit { display: flex; flex-direction: column; gap: 6px; padding: 12px 0; border-top: 1px solid var(--border); }
-.limit-head { gap: 10px; flex-wrap: wrap; }
+.limit-head { gap: 8px; flex-wrap: wrap; }
 .limit-name { font-size: var(--fs); line-height: var(--lh); }
 .limit-value { font-variant-numeric: tabular-nums; font-weight: 600; }
 .limit-note { margin: 0; max-width: 88ch; }
