@@ -495,8 +495,11 @@ pub fn take_in<R: Read>(
         }
     }
     let deferred = ex.deferred().to_vec();
-    let cleared = ex.cleared();
+    // What the old host knows of the staged copy no longer holds when the pass removed paths
+    // it never sent and broke, or when the directories it wrote into kept the time of that.
+    let mut unknown = ex.cleared();
     let report = ex.finish().unwrap_or_else(|e| {
+        unknown = true;
         failure.get_or_insert(format!("cannot set the directories' times: {e}"));
         Report::default()
     });
@@ -517,7 +520,7 @@ pub fn take_in<R: Read>(
             complete: failure.is_none(),
             live: pass.live,
             deferred,
-            unknown: cleared && failure.is_some(),
+            unknown: unknown && failure.is_some(),
         }),
     };
     // Acknowledged only once it is on disk: first what arrived, then the marker that says so.

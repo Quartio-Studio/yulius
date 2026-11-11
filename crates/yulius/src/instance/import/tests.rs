@@ -1098,3 +1098,54 @@ fn a_pass_says_of_the_host_only_what_is_news() {
         );
     }
 }
+
+#[test]
+fn directory_times_that_could_not_be_set_leave_nothing_known() -> TestResult {
+    let mut h = hosts()?;
+    arrived(h.warm()?)?;
+    let all = h.sent()?.len();
+    // The next pass writes into directories the old host holds receipts for; their times are
+    // put back when the stream has been read. Here that fails: a directory the pass made is
+    // gone by then.
+    fs::create_dir(h.old.join("sandboxes/sb/made"))?;
+    fs::write(h.old.join("sandboxes/sb/home/more"), b"more")?;
+    h.reconcile()?;
+    let m = h.manifest(true);
+    let nonce = m.pass.as_ref().map(|p| p.nonce.clone()).unwrap_or_default();
+    h.stage.begin(&nonce, true, 1_000, &era())?;
+    let mut out = Vec::new();
+    send_live(
+        &h.old,
+        &m,
+        &mut out,
+        &mut h.stage,
+        (i64::MAX / 2, 0),
+        &mut |_| {},
+    )?;
+    let new = h.new.clone();
+    let landed = land(
+        out.as_slice(),
+        &new,
+        None,
+        &mut |_, _| Ok(ids()),
+        &mut Ground {
+            chown: false,
+            sync: &mut |_| Ok(()),
+            tick: &mut |_, _| {
+                let _ = fs::remove_dir(new.join("sandboxes/sb/made"));
+            },
+        },
+    );
+    let why = failed(landed)?;
+    assert!(why.contains("cannot set the directories' times"), "{why}");
+    // The directories it wrote into are not as the old host's receipts say: nothing the old
+    // host knew holds, and the next pass sends everything into the same stage.
+    let last = h.last()?;
+    assert!(!last.complete && last.unknown, "{last:?}");
+    let found = h.reconcile()?;
+    assert_eq!((found.fresh, h.stage.receipts()), (false, 0));
+    arrived(h.warm()?)?;
+    assert_eq!(h.sent()?.len(), all + 2);
+    assert!(h.new.join("sandboxes/sb/made").is_dir());
+    Ok(())
+}
