@@ -160,10 +160,11 @@ an older one.
 - e2e, `e2e/tests/claude-code.e2e.ts` (mock): AC7, AC8's task info rows, and a channel change
   and a check the server refuses.
 - Not testable in CI, done by hand (see Evidence): a real download from npm with the real
-  340 MB binaries, and what real sessions resumed on a newer Claude Code write. Not testable
-  here: the move of a real Claude Code session by Yulius (the fake agent stands in for it),
-  including what a real release that cannot resume a session looks like (the fake agent exits
-  or stays silent at its start).
+  340 MB binaries, a real isolated server on a real host with the incident's Claude Code (the
+  doctor, the card, the first check, the channel, "Check now"), and what real sessions resumed
+  on a newer Claude Code write. Not testable here: the move of a real Claude Code session by
+  Yulius (the fake agent stands in for it), including what a real release that cannot resume
+  a session looks like (the fake agent exits or stays silent at its start).
 
 ## Decisions
 
@@ -291,8 +292,10 @@ an older one.
   PR #1167 merged at e9e11c0a. Two things its Evidence named as untested were then checked
   with what this sandbox holds: npm's real registry, and the transcripts of real sessions that
   were restarted on newer Claude Code releases that day.
-  - *The registry.* The production updater against registry.npmjs.org replayed the incident
-    with the real releases and found nothing to fix (Evidence).
+  - *The registry and a real host.* The production updater against registry.npmjs.org
+    replayed the incident with the real releases, and a real isolated server on an Ubuntu
+    26.04 guest with npm's 2.1.311 went through it from the doctor's `FAIL` to the release it
+    installed by itself; neither found anything to fix (Evidence).
   - *The transcripts.* Seven real sessions name two or three Claude Code versions in one
     transcript (2.1.292, 2.1.311, 2.1.322): a resumed process writes into the session's file
     and every record of the session's thread carries its version. The observer took the
@@ -420,6 +423,33 @@ an older one.
   810, and at the same line twice.
 - Seen failing first: `wiring::harness::tests::a_run_resumed_with_nothing_typed_names_its_claude_code_at_once`
   read `None` after the resumed run's first record.
+- After the merge, a real host (2026-11-11 21:07 to 21:18 UTC): an Ubuntu 26.04.1 guest (QEMU,
+  kernel 7.0.0-38) with Node 22 and `npm install -g @anthropic-ai/claude-code@2.1.311`, the
+  incident's host (`claude --version`: 2.1.311; its binary holds `claude-fable-5-2` 0 times
+  and `claude-fable-5-1` 13 times), and a release build of 93529f5d installed with `yulius
+  host setup` (isolation on, base built, service started).
+  1. The doctor, run by host setup: `FAIL  Claude Code in sandboxes 2.1.311 from the host …
+     Claude Code 2.1.311 does not know claude-fable-5-2, Yulius's default model … Fix: Yulius
+     installs a release that knows it at its next check … `sudo npm install -g
+     @anthropic-ai/claude-code@latest``; host setup ends with that item failed.
+  2. The server, one second after its start (21:14:46), logs the same sentence as an error
+     and writes `in_use` 2.1.311 with `in_use_missing` `claude-fable-5-2` to `status.json`.
+  3. The card in the sandbox browser, signed in as the superadmin: the red banner with that
+     sentence and the fix, "Sandboxes run Claude Code 2.1.311", "default model unknown", "the
+     host's install", the channel Latest "From the server's configuration".
+  4. By itself at 21:16:59, 2 min 14 s after the start: "Claude Code updated: new runs use it
+     version=2.1.322". `current` points at `versions/2.1.322`, whose `claude.exe` has the
+     sha256 of npm's own (`bfb3703a…4c478`); the doctor says `ok … 2.1.322, kept current by
+     Yulius … (the host has 2.1.311)`; the card, reloaded, "knows every offered model", "kept
+     current by Yulius · the host has 2.1.311", "npm has latest 2.1.322 · stable 2.1.311.
+     Installed 2.1.322: new runs use it."
+  5. Off chosen on the card: applied without a restart. The banner is back with "Claude Code
+     updates are off: choose Latest …", "Updates are off: nothing is checked.", "Check now" is
+     off, "Chosen here by superadmin just now"; the doctor says "updates are off (chosen in
+     Settings, Instance)" with the same fix and exits 1.
+  6. "Use the server's (Latest)": "Claude Code follows Latest now. Checking for a release…",
+     then "Up to date: runs get 2.1.322." "Check now" then shows "Checking npm for a newer
+     release…" and the view ends `up_to_date`, checked at 21:18:04.
 - `scripts/dev ci` at 768f2c38 (that fix, on `dev` at eb2e8a4e): exit 0, nextest 3533 passed /
   16 skipped, and every other step as above. The commit after it changes this file only.
   Mutations, each caught by a test and reverted: the watcher ignoring a line's version; the
@@ -427,11 +457,12 @@ an older one.
   replacing the transcript's.
 - `yulius security-scan`: "Security scan disabled: Vidoc is turned off in Yulius" (exit 0):
   disabled, not passed.
-- Not tested: the updater inside a deployed, isolated instance (its download, checks and
-  switch ran here against the real registry, outside a server); a restart of a real Claude
-  Code session made by Yulius (the fake agent stands in; what real restarted sessions write
-  was read from their transcripts), and how a real release that cannot resume a session fails
-  (the fake agent exits or stays silent at its start); the card against a real server (the
-  mock, and the API over a fake adapter); a session's own `/loop` schedule, which a restart
-  ends (Yulius does not know it); a Claude Code whose binary no longer names its models as
-  plain text (the check would refuse every release, which the card and the doctor would say).
+- Not tested: anything that needs a signed-in Claude subscription, which the guest has none
+  of: a restart of a real Claude Code session made by Yulius (the fake agent stands in; what
+  real restarted sessions write was read from their transcripts), how a real release that
+  cannot resume a session fails (the fake agent exits or stays silent at its start), and so
+  the card's list of tasks on an older version and a task's info against a real server (the
+  mock, and the API with real processes of the fake agent); a session's own `/loop` schedule,
+  which a restart ends (Yulius does not know it); a Claude Code whose binary no longer names
+  its models as plain text (the check would refuse every release, which the card and the
+  doctor would say).
