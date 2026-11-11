@@ -155,31 +155,20 @@ mod tests {
     }
 
     #[test]
-    fn own_anthropic_names_are_accepted_and_the_cli_s_are_reserved() {
+    fn own_anthropic_keys_are_accepted_and_every_other_anthropic_name_is_reserved() {
         for own in [
             "ANTHROPIC_API_KEY_QUARTIO",
-            "ANTHROPIC_KEY_PROD",
-            "ANTHROPIC_TOKEN",
-            "ANTHROPIC_MODEL_FOR_APP",
+            "ANTHROPIC_AUTH_TOKEN_PROD",
+            "ANTHROPIC_API_KEY_2",
         ] {
             assert!(SecretName::parse(own).is_ok(), "{own}");
         }
-        for read in [
-            "ANTHROPIC_API_KEY",
-            "ANTHROPIC_AUTH_TOKEN",
-            "ANTHROPIC_BASE_URL",
-            "ANTHROPIC_MODEL",
-            "ANTHROPIC_BETAS",
-            "ANTHROPIC_LOG",
-            "ANTHROPIC_UNIX_SOCKET",
-            "ANTHROPIC_CUSTOM_HEADERS",
-            "ANTHROPIC_DEFAULT_OPUS_MODEL",
-            "ANTHROPIC_SMALL_FAST_MODEL",
-            "ANTHROPIC_SMALL_FAST_MODEL_AWS_REGION",
-            "ANTHROPIC_BEDROCK_BASE_URL",
-            "ANTHROPIC_VERTEX_PROJECT_ID",
-            "ANTHROPIC_FOUNDRY_API_KEY",
-        ] {
+        for read in CLI_READS.iter().chain(&[
+            "ANTHROPIC_API_KEY_",
+            "ANTHROPIC_API_KEY_FILE",
+            "ANTHROPIC_AUTH_TOKEN_FILE",
+            "ANTHROPIC_KEY_PROD",
+        ]) {
             let refused = SecretName::parse(read);
             assert!(
                 matches!(&refused, Err(VaultError::Name(m)) if m.contains("reserved")),
@@ -187,4 +176,108 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn a_refusal_names_the_reserved_prefix_and_a_name_that_works() {
+        let Err(VaultError::Name(message)) = SecretName::parse("ANTHROPIC_KEY_PROD") else {
+            panic!("ANTHROPIC_KEY_PROD is reserved");
+        };
+        assert!(message.contains("starting with ANTHROPIC_"), "{message}");
+        assert!(message.contains("ANTHROPIC_API_KEY_<NAME>"), "{message}");
+        assert!(message.contains("APP_ANTHROPIC_KEY_PROD"), "{message}");
+        let Err(VaultError::Name(message)) = SecretName::parse("GIT_TOKEN") else {
+            panic!("GIT_TOKEN is reserved");
+        };
+        assert!(message.contains("starting with GIT_"), "{message}");
+        assert!(!message.contains("ANTHROPIC"), "{message}");
+        for reserved in ["PATH", "GIT_TOKEN", "ANTHROPIC_KEY_PROD"] {
+            let suggested = format!("APP_{reserved}");
+            assert!(SecretName::parse(&suggested).is_ok(), "{suggested}");
+        }
+        let long = format!("GIT_{}", "A".repeat(MAX_NAME_LEN - 4));
+        let Err(VaultError::Name(message)) = SecretName::parse(&long) else {
+            panic!("{long} is reserved");
+        };
+        assert!(!message.contains("such as"), "{message}");
+    }
+
+    /// Every `ANTHROPIC_` string in the agent CLI (Claude Code 2.1.292, ADR-0292).
+    const CLI_READS: &[&str] = &[
+        "ANTHROPIC_API_HOST",
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_ASSETS_HOST",
+        "ANTHROPIC_AUTH_TOKEN",
+        "ANTHROPIC_AWS",
+        "ANTHROPIC_AWS_API_KEY",
+        "ANTHROPIC_AWS_AUTH",
+        "ANTHROPIC_AWS_BASE_URL",
+        "ANTHROPIC_AWS_WORKSPACE_ID",
+        "ANTHROPIC_BASE_URL",
+        "ANTHROPIC_BEDROCK_BASE_URL",
+        "ANTHROPIC_BEDROCK_MANTLE_BASE_URL",
+        "ANTHROPIC_BEDROCK_REGION_PREFIX",
+        "ANTHROPIC_BEDROCK_SERVICE_TIER",
+        "ANTHROPIC_BETAS",
+        "ANTHROPIC_CONFIG_DIR",
+        "ANTHROPIC_CONTROL_PLANE_5XX",
+        "ANTHROPIC_CUSTOM_HEADERS",
+        "ANTHROPIC_CUSTOM_MODEL_OPTION",
+        "ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION",
+        "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME",
+        "ANTHROPIC_CUSTOM_MODEL_OPTION_SUPPORTED_CAPABILITIES",
+        "ANTHROPIC_DEFAULT_",
+        "ANTHROPIC_DEFAULT_FABLE_MODEL",
+        "ANTHROPIC_DEFAULT_FABLE_MODEL_DESCRIPTION",
+        "ANTHROPIC_DEFAULT_FABLE_MODEL_NAME",
+        "ANTHROPIC_DEFAULT_FABLE_MODEL_SUPPORTED_CAPABILITIES",
+        "ANTHROPIC_DEFAULT_FABLE_MODEL_SUPPORTED_CAPABILITIES3",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL_SUPPORTED_CAPABILITIES",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL_SUPPORTED_CAPABILITIES4",
+        "ANTHROPIC_DEFAULT_MODEL",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL_DESCRIPTION",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL_SUPPORTED_CAPABILITIES",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL_SUPPORTED_CAPABILITIES",
+        "ANTHROPIC_ENVIRONMENT_ID",
+        "ANTHROPIC_ENVIRONMENT_KEY",
+        "ANTHROPIC_FEDERATION_RULE_ID",
+        "ANTHROPIC_FOUNDRY_API_KEY",
+        "ANTHROPIC_FOUNDRY_AUTH_TOKEN",
+        "ANTHROPIC_FOUNDRY_BASE_URL",
+        "ANTHROPIC_FOUNDRY_RESOURCE",
+        "ANTHROPIC_GOOGLE_CLOUD",
+        "ANTHROPIC_GOOGLE_CLOUD_AUTH",
+        "ANTHROPIC_GOOGLE_CLOUD_BASE_URL",
+        "ANTHROPIC_GOOGLE_CLOUD_LOCATION",
+        "ANTHROPIC_GOOGLE_CLOUD_PROJECT",
+        "ANTHROPIC_GOOGLE_CLOUD_WORKSPACE_ID",
+        "ANTHROPIC_IDENTITY_TOKEN",
+        "ANTHROPIC_IDENTITY_TOKEN_FILE",
+        "ANTHROPIC_LOG",
+        "ANTHROPIC_MODEL",
+        "ANTHROPIC_ORGANIZATION_ID",
+        "ANTHROPIC_PROFILE",
+        "ANTHROPIC_SCOPE",
+        "ANTHROPIC_SECRET_PLACEHOLDER_",
+        "ANTHROPIC_SERVICE_ACCOUNT_ID",
+        "ANTHROPIC_SESSION_ID",
+        "ANTHROPIC_SMALL_FAST_MODEL",
+        "ANTHROPIC_SMALL_FAST_MODEL_AWS_REGION",
+        "ANTHROPIC_TELEMETRY_GROUP",
+        "ANTHROPIC_TIER_NAMES",
+        "ANTHROPIC_UNIX_SOCKET",
+        "ANTHROPIC_VERTEX_BASE_URL",
+        "ANTHROPIC_VERTEX_PROJECT_ID",
+        "ANTHROPIC_WEBHOOK_SIGNING_KEY",
+        "ANTHROPIC_WORKSPACE_ID",
+        "ANTHROPIC_WORK_ID",
+        "ANTHROPIC_WORK_SECRET",
+    ];
 }
