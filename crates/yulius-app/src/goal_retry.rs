@@ -20,6 +20,7 @@ use std::sync::atomic::Ordering;
 
 use yulius_domain::ids::TaskId;
 use yulius_domain::task::{Activity, TaskStatus};
+use yulius_domain::time::Timestamp;
 
 use crate::context::App;
 use crate::error::AppResult;
@@ -42,6 +43,14 @@ const RESOLVED_ACTION: &str = "task.needs_you.resolved";
 
 /// Why the request for a goal pause ended without a person.
 const WORKS_AGAIN: &str = "the agent works again after Claude Code paused the goal";
+
+/// Whether the Needs you a task reads since `state_at` is the flag of the goal pause whose request
+/// was asked at `asked_ms`: the request is recorded first and the task flagged next, so a state
+/// that began before the request was asked is an earlier flag, which the pause left as it was.
+#[must_use]
+fn flagged_by_the_pause(state_at: Timestamp, asked_ms: i64) -> bool {
+    state_at.0 >= asked_ms
+}
 
 impl App {
     /// Claude Code's goal mode answered a turn an error ended: a retry it `armed`, or its
@@ -95,14 +104,28 @@ impl App {
 
     /// A run of `task_id` is watched from now on: a request for a goal pause that is still open,
     /// made before this server started, is answered by the run's work too (SPEC-469 GPW-004).
+    /// So is the flag that pause raised (STA-003): a restart of Yulius forgot when it was
+    /// raised, and a task that reads Needs you since the request was asked says it.
     pub(crate) async fn watch_goal_pause_request(&self, task_id: &TaskId) {
-        if matches!(
-            self.deps.store.task_needs_you(task_id).await,
-            Ok(Some(open)) if open.action == RETRY_ACTION
-        ) {
-            self.runtime(task_id)
-                .goal_pause_asked
-                .store(true, Ordering::SeqCst);
+        let store = &self.deps.store;
+        let Ok(Some(open)) = store.task_needs_you(task_id).await else {
+            return;
+        };
+        if open.action != RETRY_ACTION {
+            return;
+        }
+        let runtime = self.runtime(task_id);
+        runtime.goal_pause_asked.store(true, Ordering::SeqCst);
+        if runtime.notice_attention_ms.load(Ordering::SeqCst) == 0
+            && let Ok(Some(task)) = store.task(task_id).await
+            && task.status == TaskStatus::Running
+            && task.activity == Some(Activity::NeedsAttention)
+            && let Ok(Some(times)) = store.task_times(task_id).await
+            && flagged_by_the_pause(times.state_at, open.at)
+        {
+            runtime
+                .notice_attention_ms
+                .store(times.state_at.0.max(1), Ordering::SeqCst);
         }
     }
 
@@ -219,5 +242,22 @@ impl App {
         {
             tracing::warn!(task = %task.id, error = %err, "could not log a goal's spent retries");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// SPEC-469 GPW-004: after a restart of Yulius the flag a goal pause raised is known by its
+    /// time: at or after the request was asked. A task flagged before the pause keeps that flag.
+    #[test]
+    fn a_flag_raised_since_the_request_was_asked_is_the_pauses() {
+        assert!(flagged_by_the_pause(Timestamp(1_000), 1_000));
+        assert!(flagged_by_the_pause(Timestamp(1_007), 1_000));
+        assert!(
+            !flagged_by_the_pause(Timestamp(999), 1_000),
+            "flagged before"
+        );
     }
 }

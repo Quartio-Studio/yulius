@@ -581,17 +581,6 @@ pub(crate) fn waited_turn_settles(activity: Option<Activity>, achieved: bool) ->
     }
 }
 
-/// Whether the task's current state (`times`, as read from the store) began before the session's
-/// agent `worked`: the flag it reads predates that work, so the work is past it (SPEC-469
-/// GPW-004). Unknown times say nothing.
-#[must_use]
-pub(crate) fn flagged_before(
-    times: AppResult<Option<crate::model::TaskTimes>>,
-    worked: yulius_domain::time::Timestamp,
-) -> bool {
-    matches!(times, Ok(Some(times)) if times.state_at < worked)
-}
-
 /// Whether a turn closed with no Stop Yulius answered settles now: not while a full context is
 /// being recovered (`context_clear` false), at a usage limit, or with an open pause, whose own
 /// paths say how the task goes on (SPEC-290 GDW-001).
@@ -920,22 +909,21 @@ impl App {
             .store(facts.background_agents, Ordering::SeqCst);
         // The agent worked after Claude Code's last goal pause while nobody watched: the request
         // made for that pause is answered (SPEC-469 GPW-004).
-        let overtaken = match facts.worked_since_goal_pause {
-            Some(worked) if self.goal_pause_overtaken(task_id).await => Some(worked),
-            _ => None,
-        };
+        if facts.worked_since_goal_pause.is_some() {
+            self.goal_pause_overtaken(task_id).await;
+        }
         let Ok(Some(mut task)) = self.deps.store.task(task_id).await else {
             return;
         };
         if task.status != TaskStatus::Running {
             return;
         }
-        // A task that reads Needs you since before that work follows its session, as it does
-        // when a prompt is seen to start the turn: Working while the turn is open, settled
-        // below once it closed. A flag raised after the work began is another matter's.
-        if let Some(worked) = overtaken
-            && task.activity == Some(Activity::NeedsAttention)
-            && flagged_before(self.deps.store.task_times(task_id).await, worked)
+        // So is the flag that pause raised, as it is while Yulius watches (STA-003): the task
+        // follows its session, Working while the turn is open, settled below once it closed.
+        let flagged_ms = runtime.notice_attention_ms.load(Ordering::SeqCst);
+        if task.activity == Some(Activity::NeedsAttention)
+            && activity_on_work(task.activity, facts.worked_since_goal_pause, 0, flagged_ms)
+                == Some(Activity::Working)
         {
             match self.set_task_activity(&task, Activity::Working).await {
                 Ok(()) => task.activity = Some(Activity::Working),
@@ -1686,26 +1674,6 @@ mod tests {
         // An armed retry is Claude Code's to end: the answer of another turn does not.
         let armed = reduce(&[PROMPT, retry(true), ENDED, answer_at(3)]);
         assert_eq!(armed.goal_retry, Some(GoalRetryFact::Armed));
-    }
-
-    /// SPEC-469 GPW-004: a replay lifts Needs you only when the task reads it since before the
-    /// session's work: a flag raised after that work began, or times that cannot be read, stay.
-    #[test]
-    fn only_a_flag_older_than_the_agents_work_is_past() {
-        let since = |ms| {
-            Ok(Some(crate::model::TaskTimes {
-                state_at: Timestamp(ms),
-                working_since: None,
-            }))
-        };
-        assert!(flagged_before(since(100), Timestamp(101)));
-        assert!(!flagged_before(since(100), Timestamp(100)), "same instant");
-        assert!(!flagged_before(since(200), Timestamp(101)), "flagged later");
-        assert!(!flagged_before(Ok(None), Timestamp(101)));
-        assert!(!flagged_before(
-            Err(crate::error::AppError::NotFound),
-            Timestamp(101)
-        ));
     }
 
     /// STA-001: a replayed turn end that says background agents are pending keeps them, until the
