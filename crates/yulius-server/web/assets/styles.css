@@ -2267,6 +2267,8 @@ a.dl-task:hover { text-decoration: underline; }
 .btn-github { height: var(--control-xl); font-weight: 600; }
 /* The quiet "another GitHub account" link under the sign-in button (ACC-004). */
 .auth-alt { align-self: center; }
+/* GitHub refuses this address after a move (SPEC-466 MVC-012). */
+.auth-moved { align-items: flex-start; }
 .drawer-backdrop { display: none; }
 
 /* ---------------------------------------------------------------- home (pages/home.js, UI-045) */
@@ -2827,6 +2829,17 @@ a.update-text:hover { text-decoration: underline; text-underline-offset: 2px; }
 .limit-note { margin: 0; max-width: 88ch; }
 .limit-form { flex-wrap: wrap; }
 .limit-input { width: 112px; }
+/* The instance page's Address card (SPEC-466 MVC-011). */
+.address-ok { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0; }
+.address-ok .icon { flex: none; color: var(--ok); }
+.address-moved { margin: 0; max-width: 88ch; }
+.address-missing { align-items: flex-start; }
+.address-missing .banner-text { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.address-missing p { margin: 0; max-width: 80ch; }
+.address-values { display: flex; flex-direction: column; gap: 8px; margin: 0; }
+.address-value dt { font-weight: 600; }
+.address-value dd { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0; }
+.address-value code { overflow-wrap: anywhere; }
 .jev-status { display: flex; align-items: center; gap: 8px; }
 .jev-status.jev-on .icon { color: var(--ok); }
 .jev-form { display: flex; flex-direction: column; gap: 8px; max-width: 520px; }

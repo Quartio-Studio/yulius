@@ -111,6 +111,8 @@ function createApp(root, transport) {
 
   // Whether GitHub sign-in can start (SPEC-422): the public setup status says it before sign-in.
   let githubConfigured = true;
+  // Whether GitHub is known to refuse this address for sign-in (after a move, SPEC-466).
+  let callbackMissing = false;
 
   async function start() {
     setChildren(root, h('main', { class: 'auth' }, placeholder(`Loading ${BRAND.name}…`, 'loading')));
@@ -127,6 +129,7 @@ function createApp(root, transport) {
     }
     // A server before SPEC-422 does not say it: GitHub sign-in stays offered.
     githubConfigured = !(setup && setup.github_configured === false);
+    callbackMissing = Boolean(setup && setup.github_callback_missing);
     if (setup && setup.setup_required) {
       renderSetup();
       return;
@@ -172,20 +175,24 @@ function createApp(root, transport) {
     const reason = loc.path === '/signin' ? loc.query.get('error') : null;
     const problem = reason ? signInProblem(reason, loc.query.get('login')) : null;
     navigate(`/signin?next=${encodeURIComponent(next)}`, { replace: true });
-    const page = mountSignIn(ctx, { next, problem, githubConfigured, onDone: (me, target) => signedIn(me, target) });
+    const page = mountSignIn(ctx, { next, problem, githubConfigured, callbackMissing, onDone: (me, target) => signedIn(me, target) });
     setChildren(root, page.el);
     if (!recheck) return;
     // GitHub may have been connected since the page loaded (another tab, another admin): the
     // setup status says it now, and the page shows or hides GitHub sign-in in place. An answer
     // for a page no longer shown (signed in and out meanwhile) changes nothing.
     let shown = githubConfigured;
+    let shownMissing = callbackMissing;
     api.get('/api/setup/status', { allow401: true }).then((setup) => {
       if (root.firstChild !== page.el) return;
       const configured = !(setup && setup.github_configured === false);
+      const missing = Boolean(setup && setup.github_callback_missing);
       githubConfigured = configured;
-      if (configured === shown) return;
+      callbackMissing = missing;
+      if (configured === shown && missing === shownMissing) return;
       shown = configured;
-      page.setGithub(configured);
+      shownMissing = missing;
+      page.setGithub(configured, missing);
     }).catch(() => { /* the page drawn from what was known stays */ });
   }
 

@@ -177,3 +177,54 @@ test('a late status answer for an earlier sign-in page leaves the current one ri
   await expect(screen.getByText(NO_GITHUB)).toBeVisible();
   await expect(browser.locator('a.btn-github')).toBeHidden();
 });
+
+// SPEC-466 MVC-012: after a move to another URL GitHub refuses every sign-in from the new address
+// until the GitHub App holds its callback URL. The page says so (`callback=missing`: the server
+// knows GitHub's answer), opens the superadmin password and keeps GitHub sign-in, which asks
+// GitHub again when pressed.
+const MOVED_ADDRESS = /GitHub doesn’t know this address yet/;
+
+test('when GitHub does not know this address the page says so and opens the password', async ({ app, browser, screen }) => {
+  await app.open(mock('/', '&signedout=1&callback=missing'));
+  await expect(browser).toHaveURL(/#\/signin/);
+  await expect(screen.getByText(MOVED_ADDRESS)).toBeVisible();
+  await expect(screen.getByText(/The superadmin signs in with the password below and finds what to do in Settings → Instance/)).toBeVisible();
+  await githubOffered(browser);
+  await expect(browser.locator('details[open]')).toHaveCount(1);
+  expect(await axeViolations(browser)).toEqual([]);
+  const password = screen.getByLabel('Superadmin password');
+  await password.fill(MOCK_PASSWORD);
+  await screen.getByRole('button', 'Sign in').click();
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Sandboxes');
+});
+
+test('a GitHub sign-in refused for the address says why once, on the sign-in page', async ({ app, browser }) => {
+  // Where the server sends /api/auth/github/start while GitHub refuses the callback.
+  await app.open(mock('/signin?error=github_callback&next=/', '&signedout=1&callback=missing'));
+  await expect(browser.locator('.auth-card >> text=/GitHub doesn’t know this address yet/')).toHaveCount(1);
+  await expect(browser.locator('.auth-card .field-error:visible >> text=/\\S/')).toHaveCount(0);
+  await expect(browser).toHaveURL(/#\/signin\?next=/);
+});
+
+test('a stale "address" reason is not shown once GitHub accepts it', async ({ app, browser }) => {
+  await app.open(mock('/signin?error=github_callback&next=/', '&signedout=1'));
+  await githubOffered(browser);
+  await expect(browser.locator('.auth-moved:visible')).toHaveCount(0);
+  await expect(browser.locator('.auth-card .field-error:visible >> text=/\\S/')).toHaveCount(0);
+  await expect(browser.locator('details[open]')).toHaveCount(0);
+});
+
+test('the page learns in place that GitHub accepts the address now', async ({ app, browser, screen }) => {
+  await app.open(mock('/', '&signedout=1&callback=missing'));
+  await expect(screen.getByText(MOVED_ADDRESS)).toBeVisible();
+  // Signing in and out again reads the status anew, as every sign-in page does.
+  await browser.evaluate(() => { (window as unknown as { __yuliusMock: { address: { state: string } } }).__yuliusMock.address.state = 'registered'; });
+  const password = screen.getByLabel('Superadmin password');
+  await password.fill(MOCK_PASSWORD);
+  await screen.getByRole('button', 'Sign in').click();
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Sandboxes');
+  await signOut(browser, screen);
+  await expect(browser).toHaveURL(/#\/signin/);
+  await githubOffered(browser);
+  await expect(screen.getByText(MOVED_ADDRESS)).toBeHidden();
+});
