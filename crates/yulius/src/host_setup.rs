@@ -1377,23 +1377,23 @@ impl<'a> Run<'a> {
             })
     }
 
-    /// Why the service user could replace the binary `exe` (its link target), or `None`: a
-    /// directory on its path is open to it ([`Run::dir_open_to_service`]), or the file is not
-    /// root's alone. A unit that runs `exe` as root must not be written then (SPEC-458 HST-003).
-    /// In a dry run the file's owner is not judged: the "yulius binary" item only says what it
-    /// would fix.
+    /// Why someone but root could replace the binary `exe` (its link target), or `None`: a
+    /// directory on its path is not root's, or is open to the service user
+    /// ([`Run::dir_open_to_service`]), or the file is not root's alone. A unit that runs `exe` as
+    /// root must not be written then (SPEC-458 HST-003). This is stricter than the "yulius
+    /// binary" item, which asks only about the service user: here the file runs as root. In a
+    /// dry run the file's owner is not judged: that item only says what it would fix.
     pub(super) fn replaceable_by_service(&self, exe: &Path) -> Option<String> {
         let target = self
             .host
             .canonical(exe)
             .unwrap_or_else(|| exe.to_path_buf());
-        if let Some(dir) = target
-            .ancestors()
-            .skip(1)
-            .find(|dir| self.dir_open_to_service(dir))
-        {
+        if let Some(dir) = target.ancestors().skip(1).find(|dir| {
+            self.dir_open_to_service(dir)
+                || self.host.stat(dir).is_some_and(|(owner, _)| owner != 0)
+        }) {
             return Some(format!(
-                "{} is under {}, which the service user or others may write",
+                "{} is under {}, which is not root's alone to write",
                 target.display(),
                 dir.display()
             ));

@@ -87,9 +87,11 @@ reason) or `FAIL`, then a summary; it exits 1 when an item failed. In order:
     `yulius.service.d/20-yulius-sessions.conf` ([Where sessions live](#where-sessions-live),
     [ADR-0298](decisions/0298-sessions-live-in-their-own-unit.md)) are written when they differ,
     and the sessions unit is started. A running server is not restarted: its next restart moves
-    its sessions there and keeps them. The adopt unit runs the server's binary as root, so the
-    item writes nothing and fails while the service user could replace that binary (the file or
-    any directory above it). `yulius host check` only reports this item.
+    its sessions there and keeps them. The adopt unit runs the server's binary as root (a
+    linked one at the link's target), so the item writes nothing and fails while anyone but
+    root could replace that binary: the file, or a directory above it that is not root's alone
+    to write. A sessions unit that does not run is started. `yulius host check` only reports
+    this item, also when the files are there and the sessions unit does not run.
 12. **update helper**: when `yulius-update.service` is installed, a drop-in lets its re-check
     write `/etc/modules-load.d` and `/etc/needrestart/conf.d` (§8).
 13. **sandbox base**: built now, as the service user, when there is none, when it lacks the

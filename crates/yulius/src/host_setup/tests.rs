@@ -45,6 +45,8 @@ struct Fake {
     helper: bool,
     /// `yulius.service` runs.
     service_active: bool,
+    /// Whether the sessions unit runs (SPEC-458): started by the setup, asked with `is-active`.
+    sessions_active: bool,
     /// The smoke test fails.
     smoke_fails: bool,
     /// apt's package lists know Docker's repository (an `apt-get update` after its source).
@@ -113,6 +115,7 @@ impl Fake {
             modprobe_fails: false,
             helper: true,
             service_active: false,
+            sessions_active: false,
             smoke_fails: false,
             docker_lists: false,
             systemd_down: false,
@@ -588,7 +591,21 @@ impl Host for Fake {
             }
             ["systemctl", "daemon-reload"] => ok(""),
             ["systemctl", "enable", service] if service.ends_with(".service") => ok(""),
-            ["systemctl", "start", unit] if unit.ends_with("-sandboxes.service") => ok(""),
+            ["systemctl", "start", unit] if unit.ends_with("-sandboxes.service") => {
+                self.sessions_active = true;
+                ok("")
+            }
+            ["systemctl", "is-active", unit] if unit.ends_with("-sandboxes.service") => {
+                if self.sessions_active {
+                    ok("active\n")
+                } else {
+                    Out {
+                        code: 3,
+                        stdout: "inactive\n".into(),
+                        stderr: String::new(),
+                    }
+                }
+            }
             ["systemctl", "start", service] if service.ends_with(".service") => {
                 self.service_active = true;
                 ok("")

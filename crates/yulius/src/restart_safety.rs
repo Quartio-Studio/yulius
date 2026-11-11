@@ -54,9 +54,9 @@ pub fn blocker(service: &str, facts: &Facts) -> Option<String> {
     let sessions = units::sessions_unit(service).unwrap_or_default();
     Some(format!(
         "{service} would not start again: its sessions live in its own group, where systemd \
-         {version} starts no unit while one runs, and {sessions} is not running, so nothing \
-         would move them out before the start. Start it (`sudo systemctl start {sessions}`) \
-         or see why it does not (`systemctl status {sessions}`), then try again"
+         {version} starts no unit while one runs, and {sessions} is not running: it has to run \
+         for them to be moved out before the start. Start it (`sudo systemctl start \
+         {sessions}`) or see why it does not (`systemctl status {sessions}`), then try again"
     ))
 }
 
@@ -220,7 +220,7 @@ mod tests {
     }
 
     /// Review of SPEC-458 (low): the adopt unit needs the sessions unit (`Requires=`). Wired
-    /// but with a sessions unit that does not run, nothing would move the sessions out.
+    /// but with a sessions unit that does not run, the sessions may not be moved out.
     #[test]
     fn a_wired_unit_whose_sessions_unit_does_not_run_is_blocked_too() {
         let stopped = Facts {

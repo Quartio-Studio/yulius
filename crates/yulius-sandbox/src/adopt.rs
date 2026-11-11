@@ -52,10 +52,11 @@ pub struct Adopted {
 }
 
 impl Adopted {
-    /// Whether there was nothing to do.
+    /// Whether there was nothing to do: no group made, no process moved, no engine ended and
+    /// nothing left behind. A process that was gone before it could be placed does not count.
     #[must_use]
     pub fn nothing(&self) -> bool {
-        *self == Self::default()
+        self.groups == 0 && self.processes == 0 && self.engines == 0 && self.left.is_empty()
     }
 }
 
@@ -697,6 +698,72 @@ mod tests {
             std::fs::write(from.join("cgroup.procs"), format!("{next}\n"))
         });
         assert_eq!(done.processes, MAX_PASSES);
+        Ok(())
+    }
+
+    /// Review round 2 of SPEC-458 (low): the second look moves a process that appeared in a
+    /// group already made in the sessions unit, and nothing else: not an engine's, and not one
+    /// of a group that was never made there.
+    #[test]
+    fn the_second_look_moves_what_appeared_in_a_group_already_made() -> TestResult {
+        let root = tempfile::tempdir()?;
+        let old = root.path().join("old");
+        let sessions = root.path().join("sessions");
+        group(
+            &old.join("sandboxes/s1/agents"),
+            &[("cgroup.procs", "77\n")],
+        )?;
+        group(
+            &old.join("sandboxes/s1/engine"),
+            &[("cgroup.procs", "88\n")],
+        )?;
+        group(
+            &old.join("sandboxes/s2/agents"),
+            &[("cgroup.procs", "99\n")],
+        )?;
+        group(
+            &sessions.join("sandboxes/s1/agents"),
+            &[("cgroup.procs", "")],
+        )?;
+        group(
+            &sessions.join("sandboxes/s1/engine"),
+            &[("cgroup.procs", "")],
+        )?;
+        let mut done = Adopted::default();
+        sweep(&old, &sessions, Path::new("sandboxes"), &mut done);
+        assert_eq!(done.processes, 1, "{done:?}");
+        assert_eq!(
+            std::fs::read_to_string(sessions.join("sandboxes/s1/agents/cgroup.procs"))?,
+            "77"
+        );
+        assert_eq!(
+            std::fs::read_to_string(sessions.join("sandboxes/s1/engine/cgroup.procs"))?,
+            "",
+            "an engine is ended, never moved"
+        );
+        assert!(
+            !sessions.join("sandboxes/s2").exists(),
+            "no group is made by a look"
+        );
+        // What was placed once is not placed again.
+        sweep(&old, &sessions, Path::new("sandboxes"), &mut done);
+        assert_eq!(done.processes, 1);
+        Ok(())
+    }
+
+    /// Review round 2 of SPEC-458 (nit): a process that was gone before it could be placed is
+    /// not something the step did.
+    #[test]
+    fn a_process_that_had_already_exited_leaves_nothing_to_say() -> TestResult {
+        let root = tempfile::tempdir()?;
+        let (from, to) = (root.path().join("from"), root.path().join("to"));
+        group(&from, &[("cgroup.procs", "41\n")])?;
+        group(&to, &[("cgroup.procs", "")])?;
+        let mut done = Adopted::default();
+        move_with(&from, &to, &mut done, &mut |_, _| {
+            Err(io::Error::from_raw_os_error(nix::libc::ESRCH))
+        });
+        assert!(done.nothing(), "{done:?}");
         Ok(())
     }
 

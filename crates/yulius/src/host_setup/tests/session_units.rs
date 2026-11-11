@@ -69,8 +69,12 @@ fn a_fresh_host_gets_the_units_and_a_second_run_changes_nothing() {
     fake.log.clear();
     let lines = run(&mut fake, Mode::Setup);
     assert_eq!(outcome(&lines, ITEM), HostOutcome::Ok, "{lines:#?}");
+    // It only asks whether the sessions unit runs.
     assert!(
-        !fake.log.iter().any(|c| c.contains("yulius-sandboxes")),
+        !fake
+            .log
+            .iter()
+            .any(|c| c.contains("yulius-sandboxes") && !c.starts_with("systemctl is-active ")),
         "{:#?}",
         fake.log
     );
@@ -210,6 +214,86 @@ fn a_directory_above_the_binary_counts_too() {
     assert_eq!(item.outcome, HostOutcome::Failed, "{lines:#?}");
     assert!(item.detail.contains("under /usr/local,"), "{}", item.detail);
     assert!(!fake.has(ADOPT) && !fake.has(DROP_IN));
+}
+
+/// Review round 2 of SPEC-458 (medium): the server's unit may name its binary through a link,
+/// and whoever may write the link's directory can point it elsewhere. The adopt unit therefore
+/// gets the binary the link leads to, which is what was judged, never the link.
+#[test]
+fn the_adopt_unit_runs_the_binary_a_link_leads_to_not_the_link() {
+    let mut fake = before_the_sessions_unit();
+    let target = PathBuf::from("/opt/yulius/bin/yulius");
+    fake.files.remove(Path::new(EXE));
+    fake.files
+        .insert(target.clone(), (String::new(), 0, 0o100_755));
+    fake.links.insert(PathBuf::from(EXE), target);
+    // The link's own directory is the service user's.
+    fake.files.insert(
+        PathBuf::from("/usr/local/bin"),
+        (String::new(), SERVICE_UID, 0o040_755),
+    );
+    let lines = run(&mut fake, Mode::Setup);
+    assert_eq!(outcome(&lines, ITEM), HostOutcome::Changed, "{lines:#?}");
+    let adopt = fake.text(ADOPT).unwrap_or_default();
+    assert!(
+        adopt.contains("ExecStart=/opt/yulius/bin/yulius host adopt-sessions"),
+        "{adopt}"
+    );
+    assert!(!adopt.contains(EXE), "{adopt}");
+}
+
+/// Review round 2 of SPEC-458 (low): a directory of any account but root above the binary lets
+/// that account replace what root would run.
+#[test]
+fn a_directory_of_another_account_above_the_binary_counts_too() {
+    let mut fake = before_the_sessions_unit();
+    fake.files.insert(
+        PathBuf::from("/usr/local"),
+        (String::new(), 1234, 0o040_755),
+    );
+    let lines = run(&mut fake, Mode::Setup);
+    let item = line(&lines, ITEM);
+    assert_eq!(item.outcome, HostOutcome::Failed, "{lines:#?}");
+    assert!(item.detail.contains("under /usr/local,"), "{}", item.detail);
+    assert!(!fake.has(ADOPT) && !fake.has(DROP_IN));
+    assert_ne!(
+        outcome(&lines, "yulius binary"),
+        HostOutcome::Failed,
+        "the binary item keeps its own rule: {lines:#?}"
+    );
+}
+
+/// Review round 2 of SPEC-458 (low): the files being there is not the sessions unit running.
+/// A check reports it as the doctor and the guard do, and the setup starts it.
+#[test]
+fn a_sessions_unit_that_does_not_run_is_reported_and_started() {
+    let mut fake = Fake::set_up();
+    fake.sessions_active = false;
+    let lines = run(&mut fake, Mode::Check);
+    let item = line(&lines, ITEM);
+    assert_eq!(item.outcome, HostOutcome::Failed, "{lines:#?}");
+    assert!(
+        item.detail
+            .contains("yulius-sandboxes.service is not running"),
+        "{}",
+        item.detail
+    );
+    assert!(!fake.ran("systemctl start"), "{:#?}", fake.log);
+
+    let lines = run(&mut fake, Mode::DryRun);
+    assert!(
+        line(&lines, ITEM).detail.starts_with("would start"),
+        "{lines:#?}"
+    );
+    assert!(!fake.ran("systemctl start"), "{:#?}", fake.log);
+
+    let lines = run(&mut fake, Mode::Setup);
+    assert_eq!(outcome(&lines, ITEM), HostOutcome::Changed, "{lines:#?}");
+    assert!(fake.ran("systemctl start yulius-sandboxes.service"));
+    fake.log.clear();
+    let lines = run(&mut fake, Mode::Setup);
+    assert_eq!(outcome(&lines, ITEM), HostOutcome::Ok, "{lines:#?}");
+    assert!(!fake.ran("systemctl start"), "{:#?}", fake.log);
 }
 
 /// Units an earlier run wrote do not make an unsafe binary safe: the item fails all the same.

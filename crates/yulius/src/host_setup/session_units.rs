@@ -97,19 +97,22 @@ impl Run<'_> {
         if !self.unit.loaded {
             return;
         }
-        let exe = self
+        let named = self
             .unit
             .exec
             .clone()
             .unwrap_or_else(|| self.opts.exe.clone());
+        // The adopt unit gets the binary itself, never a link to it: whoever may write a link's
+        // directory can point the link elsewhere, and the unit runs what it names as root.
+        let exe = self.host.canonical(&named).unwrap_or(named);
         if !unit_safe(&user) || !unit_safe(&exe.display().to_string()) {
             return self.failed(
                 ITEM,
                 "the user or the binary's path has characters a unit file cannot hold",
             );
         }
-        // The adopt unit runs this binary as root before every start: where the service user
-        // could put another one in its place, the unit would hand it root (SPEC-458 HST-003).
+        // The adopt unit runs this binary as root before every start: where someone but root
+        // could put another one in its place, the unit would hand them root (SPEC-458 HST-003).
         if let Some(why) = self.replaceable_by_service(&exe) {
             return self.failed(
                 ITEM,
@@ -141,9 +144,42 @@ impl Run<'_> {
             .filter(|(path, text)| self.host.read(path).as_deref() != Some(text.as_str()))
             .collect();
         if stale.is_empty() {
-            return self.ok(
+            // The files being there is not the unit running: the doctor and the restart guard
+            // ask for it, so this item does too (SPEC-458, review round 2).
+            let running = self
+                .run_cmd(&Cmd::new(&["systemctl", "is-active", &sessions]))
+                .ok();
+            if running {
+                return self.ok(
+                    ITEM,
+                    format!("sessions live in {sessions}: a restart of {service} keeps them"),
+                );
+            }
+            if self.mode == Mode::Check {
+                return self.needs_setup(
+                    ITEM,
+                    &format!("{sessions} is not running, so sessions do not live in it"),
+                );
+            }
+            if self.may(false) {
+                let out = self.run_cmd(&Cmd::new(&["systemctl", "start", &sessions]));
+                if !out.ok() {
+                    return self.failed(
+                        ITEM,
+                        format!(
+                            "{sessions} is not running and `systemctl start {sessions}` failed: {}",
+                            out.why()
+                        ),
+                    );
+                }
+            }
+            return self.changed(
                 ITEM,
-                format!("sessions live in {sessions}: a restart of {service} keeps them"),
+                &format!(
+                    "started {sessions}, which was not running; restart {service} so that its \
+                     sessions live there"
+                ),
+                &format!("start {sessions}, which is not running"),
             );
         }
         let files = stale

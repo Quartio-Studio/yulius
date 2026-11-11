@@ -443,9 +443,9 @@ fn restart_check(service: &str, facts: &crate::restart_safety::Facts) -> Option<
                 Level::Warn,
                 format!(
                     "{sessions} is not running, so {service} keeps its sessions in its own \
-                     group and nothing would move them out before a start{refused}: start it \
-                     (`sudo systemctl start {sessions}`) or see why it does not (`systemctl \
-                     status {sessions}`), then restart {service}"
+                     group, and it has to run for them to be moved out before a start{refused}: \
+                     start it (`sudo systemctl start {sessions}`) or see why it does not \
+                     (`systemctl status {sessions}`), then restart {service}"
                 ),
             ));
         }
