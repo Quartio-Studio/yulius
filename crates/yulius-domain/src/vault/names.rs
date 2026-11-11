@@ -217,6 +217,16 @@ mod tests {
             let suggested = format!("APP_{reserved}");
             assert!(SecretName::parse(&suggested).is_ok(), "{suggested}");
         }
+        let Err(VaultError::Name(message)) = SecretName::parse("ANTHROPIC_API_KEY_FILE") else {
+            panic!("ANTHROPIC_API_KEY_FILE is reserved");
+        };
+        assert!(message.contains("not ending in _FILE"), "{message}");
+        let at_limit = format!("GIT_{}", "A".repeat(MAX_NAME_LEN - 8));
+        let Err(VaultError::Name(message)) = SecretName::parse(&at_limit) else {
+            panic!("{at_limit} is reserved");
+        };
+        assert!(message.contains(&format!("such as APP_{at_limit}")), "{message}");
+        assert!(SecretName::parse(&format!("APP_{at_limit}")).is_ok());
         let long = format!("GIT_{}", "A".repeat(MAX_NAME_LEN - 4));
         let Err(VaultError::Name(message)) = SecretName::parse(&long) else {
             panic!("{long} is reserved");
@@ -224,7 +234,7 @@ mod tests {
         assert!(!message.contains("such as"), "{message}");
     }
 
-    /// Every `ANTHROPIC_` string in the agent CLI (Claude Code 2.1.292, ADR-0292).
+    /// The `ANTHROPIC_` names in the agent CLI's strings (Claude Code 2.1.292, ADR-0292).
     const CLI_READS: &[&str] = &[
         "ANTHROPIC_API_HOST",
         "ANTHROPIC_API_KEY",
