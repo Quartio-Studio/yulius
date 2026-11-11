@@ -272,7 +272,7 @@ What stands in for what, because it cannot be had in a guest:
 - A build is staged by hand in `/var/lib/yulius-update/staged/` where the helper's own build
   would put it. The request file is written as the server writes it, by the service user.
 
-Results (ten runs; every one ended and no session process was lost where one should be kept):
+Results (twelve runs; every one ended and no session process was lost where one should be kept):
 
 | Scenario | 24.04 (systemd 255) | 26.04 (systemd 259) |
 | --- | --- | --- |
@@ -286,6 +286,7 @@ Results (ten runs; every one ended and no session process was lost where one sho
 | `sudo yulius host setup`, then Restart asked of the server | units written, server untouched; 202, "moved 5 processes in 6 groups", sessions kept; doctor and check ok | the same |
 | The adopt step alone (server stopped) | `cpu.max`, `memory.max`, `pids.max`, the owner and `frozen 1` of the paused run are the same in the sessions unit; engine processes gone; old group gone; the server's start then thaws the run (no update is open) | the same |
 | Update now without the units while sessions run | goes through (255) | `failed`: "Could not start yulius.service … The rollback failed too … Restore by hand from …", sessions still alive; the guide's way back (units, the staged build's `host adopt-sessions`, start) brings the previous version back with 5 of 5 kept; the second install is `done`, 5 of 5 kept |
+| After a rollback: the pre-fix binary with the units, sessions in `yulius.slice/yulius.service/sandboxes`; then the update again | the adopt unit fails with the pre-fix binary ("unrecognized subcommand 'adopt-sessions'") and the server starts regardless; the install is `done`, "moved 5 processes in 6 groups from …/yulius.slice/yulius.service …" (the unit in place), 5 of 5 kept, also over a `systemctl restart` after it | the same |
 | A host without the unit, set up by the build with the fix | units and server written and started; server in `yulius.slice`, "per-sandbox limits on cgroup=…/yulius-sandboxes.service"; restart and crash keep the sessions; a second setup changes nothing | the same |
 
 Found by these runs and fixed before the last one: the adopt step reported a failure on 26.04

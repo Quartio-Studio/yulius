@@ -1866,8 +1866,9 @@ should set the commit it is built from: `YULIUS_BUILD_COMMIT=$(git rev-parse HEA
   on systemd 258 or later: the server does not start (`Failed to spawn executor: Device or
   resource busy`, in a loop), the helper reports "Could not start yulius.service … The rollback
   failed too … Restore by hand from /var/lib/yulius-update/backups/…", and the sessions are
-  still running. Nothing needs restoring: the previous binary and database are back in place. As root, do step 1, then run the adopt step of a binary of
-  the new version by hand (the helper keeps the build it staged) and start the server:
+  still running. Nothing needs restoring: the helper put the previous binary and database back
+  before that last start. As root, do step 1, then run the adopt step of a binary of the new
+  version by hand (the helper keeps the build it staged) and start the server:
 
   ```sh
   /var/lib/yulius-update/staged/yulius host adopt-sessions --service yulius.service
