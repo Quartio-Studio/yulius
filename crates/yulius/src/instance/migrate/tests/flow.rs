@@ -2084,8 +2084,17 @@ fn one_run_at_a_time_holds_the_state_directory() -> TestResult {
     let second = crate::instance::migrate::lock(dir.path());
     assert!(second.is_err_and(|why| why.contains("another `yulius instance migrate` runs")));
     drop(held);
-    crate::instance::migrate::lock(dir.path())?;
-    Ok(())
+    // Free again, once every copy of the lock's file is closed: under `cargo test` all tests
+    // share one process, and a child that another test starts holds a copy between its fork
+    // and its exec.
+    let until = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        match crate::instance::migrate::lock(dir.path()) {
+            Ok(_) => return Ok(()),
+            Err(why) if std::time::Instant::now() >= until => return Err(why.into()),
+            Err(_) => std::thread::yield_now(),
+        }
+    }
 }
 
 #[test]
