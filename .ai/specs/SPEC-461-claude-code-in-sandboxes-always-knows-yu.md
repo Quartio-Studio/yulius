@@ -472,6 +472,9 @@ an older one.
   assumed version replacing the transcript's; and, after the review, the restart writing its
   version without the condition, the statement doing nothing where a row exists, and a recount
   naming versions from lines outside its window.
+- `scripts/dev ci` at f9b2b5ce (the review's answers, with `dev` up to 4b59bce3 merged): exit
+  0, nextest 3639 passed / 16 skipped, and every other step as above. The commit after it
+  changes this file only.
 - `yulius security-scan`: "Security scan disabled: Vidoc is turned off in Yulius" (exit 0):
   disabled, not passed.
 - Not tested: anything that needs a signed-in Claude subscription, which the guest has none
