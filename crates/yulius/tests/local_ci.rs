@@ -1437,9 +1437,13 @@ impl Fixture {
 /// the scan; both run to the end and report. Fail-fast among the other jobs stays.
 #[tokio::test]
 async fn the_security_job_and_the_others_never_cancel_each_other() -> TestResult {
-    let f = fixture_with(false, |data| {
-        format!(
-            r#"[[ci.jobs]]
+    // Only the test ends a held job: the fixture's 8 s limit ended the jobs before a slow host
+    // had shown them running (#1079).
+    let f = fixture_tuned(
+        false,
+        |data| {
+            format!(
+                r#"[[ci.jobs]]
 name = "security"
 command = 'if [ -f fail-security ]; then exit 1; fi; while [ ! -f "{release}" ]; do sleep 0.05; done'
 
@@ -1451,11 +1455,21 @@ command = 'if [ -f fail-quality ]; then exit 1; fi; while [ ! -f "{release}" ]; 
 name = "e2e"
 command = 'while [ ! -f "{release}" ]; do sleep 0.05; done'
 "#,
-            release = data.join("release").display()
-        )
-    })
+                release = data.join("release").display()
+            )
+        },
+        None,
+        |config| config.ci.job_timeout = Duration::from_secs(3600),
+    )
     .await?;
     let release = f.data.join("release");
+    // The integration branch's run and the pull request's first one go ahead, released: held,
+    // their jobs took the three job slots from the runs below until the limit ended them (#1079).
+    std::fs::write(&release, "")?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    f.all_passed(2).await?;
+    std::fs::remove_file(&release)?;
     // The scan fails at once; quality and e2e are still running when it does.
     let first = f.push_feature("fail-security", Some("x\n"))?;
     f.h.app.ci_sync_sandbox(&f.sandbox).await?;
