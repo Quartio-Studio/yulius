@@ -436,6 +436,14 @@ pub trait UpdateStore: Send + Sync {
     async fn vidoc_off(&self) -> AppResult<Option<crate::vidoc_key::VidocOff>>;
     /// Switches Vidoc off for the instance, by `by` (`Some`), or on again (`None`).
     async fn set_vidoc_off(&self, by: Option<&str>, at: Timestamp) -> AppResult<()>;
+    /// The instance's resource limits record (SPEC-459): a JSON document, `None` before the
+    /// first one is saved.
+    async fn limits(&self) -> AppResult<Option<String>>;
+    /// Saves the limits record.
+    ///
+    /// # Errors
+    /// `Conflict` while the instance is not set up: there is no row to keep it.
+    async fn set_limits(&self, doc: &str) -> AppResult<()>;
 }
 
 /// Yulius-run CI (SPEC-001 DLV-006, SPEC-002 ADR-21, tables `ci_runs` and `ci_jobs`).

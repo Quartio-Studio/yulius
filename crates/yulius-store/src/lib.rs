@@ -125,9 +125,11 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0048_ci_job_limit_and_wait.sql"),
     // Schema version 49 (SPEC-440).
     include_str!("migrations/0049_vault_copy_requests.sql"),
-    // Schema version 50 (SPEC-463). The file is 0052, the number `record_number` gave this
-    // task (0050 and 0051 went to other reservations); a version is a migration's place in
-    // this list.
+    // Schema version 50 (SPEC-459). The file is 0051, the number `record_number` gave this
+    // task (0050 went to another reservation); a version is a migration's place in this list.
+    include_str!("migrations/0051_instance_limits.sql"),
+    // Schema version 51 (SPEC-463). The file is 0052, the number `record_number` gave this
+    // task.
     include_str!("migrations/0052_account_email_typed.sql"),
 ];
 
@@ -1111,6 +1113,38 @@ mod tests {
                 .as_deref(),
             Some("p@example.com")
         );
+        Ok(())
+    }
+
+    /// A version-49 instance has no limits record (SPEC-459 HSL-009); one saved is read back,
+    /// and an instance that is not set up has no row to keep it.
+    #[tokio::test]
+    async fn version_forty_nine_instance_gets_a_limits_record()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use yulius_app::ports::store_ext::UpdateStore as _;
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("v49.db");
+        {
+            let conn = Connection::open(&path)?;
+            for sql in &MIGRATIONS[..49] {
+                conn.execute_batch(sql)?;
+            }
+            conn.pragma_update(None, "user_version", 49)?;
+            conn.execute_batch(
+                "INSERT INTO instance (singleton, public_url) VALUES (1, 'https://yulius.test')",
+            )?;
+        }
+        let store = SqliteStore::open(&path)?;
+        assert_eq!(store.limits().await?, None);
+        store.set_limits(r#"{"unit":{}}"#).await?;
+        assert_eq!(store.limits().await?.as_deref(), Some(r#"{"unit":{}}"#));
+
+        let empty = SqliteStore::open(&dir.path().join("empty.db"))?;
+        assert_eq!(empty.limits().await?, None);
+        assert!(matches!(
+            empty.set_limits("{}").await,
+            Err(AppError::Conflict(_))
+        ));
         Ok(())
     }
 

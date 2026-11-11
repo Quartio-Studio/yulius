@@ -772,9 +772,19 @@ impl yulius_app::ports::system::SystemProbe for FixedSystem {
 #[derive(Default)]
 pub struct SettableSystem {
     pub disk: std::sync::Mutex<Option<(u64, u64)>>,
+    /// Logical CPUs and memory bytes ([`FixedSystem`]'s by default).
+    pub host: std::sync::Mutex<Option<(u32, u64)>>,
 }
 
 impl SettableSystem {
+    /// Sets the host's logical CPUs and memory bytes.
+    pub fn set_host(&self, cpus: u32, memory: u64) {
+        *self
+            .host
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((cpus, memory));
+    }
+
     /// Sets the data disk's total and used bytes.
     pub fn set_disk(&self, total: u64, used: u64) {
         *self
@@ -790,10 +800,17 @@ impl yulius_app::ports::system::SystemProbe for SettableSystem {
             .disk
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let fixed = yulius_app::ports::system::SystemProbe::snapshot(&FixedSystem, dir);
+        let host = *self
+            .host
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         yulius_app::ports::system::SystemSnapshot {
             disk_total: disk.map(|d| d.0),
             disk_used: disk.map(|d| d.1),
-            ..yulius_app::ports::system::SystemProbe::snapshot(&FixedSystem, dir)
+            cpu_count: host.map_or(fixed.cpu_count, |h| Some(h.0)),
+            memory_total: host.map_or(fixed.memory_total, |h| Some(h.1)),
+            ..fixed
         }
     }
 }
