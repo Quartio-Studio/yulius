@@ -6,6 +6,7 @@
 
 import { h, icon, setChildren, toast, errorToast, skeleton, loadError } from './dom.js';
 import { relLong, dateTime, plural } from './format.js';
+import { BRAND } from './brand.js';
 
 const API = '/api/admin/instance/address';
 /** How often an answer that is not "registered" is read again while the card is shown. */
@@ -44,6 +45,14 @@ export function addressCard(ctx) {
     body);
   let timer = null;
   let gone = false;
+  /** The number of the last read: an earlier one that answers later is dropped. */
+  let latest = 0;
+  /** A read that asks GitHub now is on its way. */
+  let asking = false;
+  /** The view the card shows; null before the first answer. */
+  let shown = null;
+  /** Whether GitHub's word is still awaited: an App whose callback is not registered. */
+  const awaited = () => Boolean(shown && shown.github && shown.github.state !== 'registered');
 
   function github(g) {
     if (!g) return h('p', { class: 'muted small' }, 'No GitHub App is connected, so there is nothing to register on GitHub: people sign in once the App is connected under GitHub connection.');
@@ -60,7 +69,7 @@ export function addressCard(ctx) {
           h('dl', { class: 'address-values' },
             pasteValue('callback', 'callback URL', g.callback_url, 'Add it to the callback URLs. An old one may stay until the old host is retired.'),
             pasteValue('homepage', 'homepage URL', g.homepage_url, 'Replace the old homepage.')),
-          h('p', { class: 'muted xs' }, `Asked again while this page is open, and said here once GitHub accepts it. ${checked}`)));
+          h('p', { class: 'muted xs' }, `${BRAND.name} asks GitHub again while this page is open and when you come back to it, and says here once GitHub accepts the address. ${checked}`)));
     }
     return h('div', { class: 'banner banner-info' }, icon('info', { size: 16 }),
       h('span', { class: 'banner-text' }, `GitHub didn’t say whether it accepts this address: ${g.reason || 'no answer yet'}. Sign-in is not affected by that. ${checked}`));
@@ -79,25 +88,45 @@ export function addressCard(ctx) {
 
   /** Reads the address; `ask` makes the server ask GitHub now. */
   async function load(ask = false) {
+    const mine = ++latest;
     clearTimeout(timer);
-    check.disabled = true;
+    if (ask) { asking = true; check.disabled = true; }
     let view = null;
+    let failure = null;
     try {
       view = ask ? await ctx.api.post(`${API}/check`, {}) : await ctx.api.get(API);
     } catch (error) {
-      if (ask) {
-        errorToast(error, 'Couldn’t ask GitHub');
-        // What the card shows stays, and is read again as before.
-        if (!gone) timer = setTimeout(() => load(), REREAD_MS);
-      } else if (!gone) setChildren(body, loadError(`Couldn’t load the address: ${error.message}`, () => load()));
+      failure = error;
     }
-    check.disabled = false;
-    if (gone || !view) return;
-    render(view);
+    if (ask) { asking = false; check.disabled = false; }
+    // A later read answers in its place: Check again pressed while the card read by itself.
+    if (gone || mine !== latest) return;
+    if (failure) {
+      if (ask) errorToast(failure, 'Couldn’t ask GitHub');
+      // Nothing to show yet: say so. Else what the card shows stays, and is read again.
+      if (!shown) {
+        setChildren(body, loadError(`Couldn’t load the address: ${failure.message}`, () => load()));
+        return;
+      }
+    } else {
+      shown = view;
+      render(view);
+    }
     // Until GitHub accepts the address the answer is read again: the server asks GitHub anew.
-    if (view.github && view.github.state !== 'registered') timer = setTimeout(() => load(), REREAD_MS);
+    if (awaited()) timer = setTimeout(() => load(), REREAD_MS);
   }
 
+  // Back on the page after adding the callback on GitHub: GitHub is asked at once.
+  const onVisible = () => { if (!document.hidden && awaited() && !asking) load(true); };
+  document.addEventListener('visibilitychange', onVisible);
+
   load();
-  return { el: card, destroy() { gone = true; clearTimeout(timer); } };
+  return {
+    el: card,
+    destroy() {
+      gone = true;
+      clearTimeout(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+    },
+  };
 }

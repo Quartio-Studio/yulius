@@ -186,8 +186,9 @@ function seed(params) {
     // numbers sized for the 12-CPU one it came from. A test sets `failAfterSave` for a save
     // that is applied and answers 500 (its audit entry failed).
     // The instance's address (SPEC-466): `callback=missing|unknown` is GitHub's answer about the
-    // sign-in callback (a test changes `address.state`), `moved=1` a move's report.
-    address: { state: params.get('callback') || 'registered', moved: params.get('moved') === '1' },
+    // sign-in callback (a test changes `address.state`), `moved=1` a move's report; `answered`
+    // counts the answers given, past a hold.
+    address: { state: params.get('callback') || 'registered', moved: params.get('moved') === '1', answered: 0 },
     limits: { unit: params.get('limits') === 'moved' ? { max_sessions: 8, sandbox_disk_gb: 300 } : {}, kept: false, settings: {}, runningMemory: 660, failAfterSave: false },
     // The instance Vidoc key (SPEC-195): `vidoc=config` (YULIUS_VIDOC_API_KEY_FILE is set).
     protectPatchFail: params.get('protect_patch_fail') === '1',
@@ -4589,8 +4590,8 @@ const addressView = (db) => ({
   } : null,
   moved: db.address.moved ? { from: 'https://old.yulius.example', to: ORIGIN, at: '2026-11-11T10:04:00Z', queued: 7, left: 2, failed: 1 } : null,
 });
-route('GET', '/api/admin/instance/address', ({ db }) => { superadminOnly(db); return addressView(db); });
-route('POST', '/api/admin/instance/address/check', ({ db }) => { superadminOnly(db); return addressView(db); });
+route('GET', '/api/admin/instance/address', ({ db }) => { superadminOnly(db); db.address.answered += 1; return addressView(db); });
+route('POST', '/api/admin/instance/address/check', ({ db }) => { superadminOnly(db); db.address.answered += 1; return addressView(db); });
 route('GET', '/api/admin/limits', ({ db }) => { superadminOnly(db); return limitsView(db); });
 route('PUT', `/api/admin/limits/${ID}`, ({ db, body, p }) => {
   superadminOnly(db);

@@ -100,3 +100,81 @@ test('a load that fails says so and can be tried again', async ({ app, browser, 
   await card.getByRole('button', 'Try again').click();
   await expect(card.getByText(REGISTERED)).toBeVisible();
 });
+
+type HoldMock = { __yuliusMock: { holdPath: string | null; held: Promise<void> | null; release(): void; heldWaiting?: number; address: { state: string; answered: number } } };
+const ADDRESS_API = '/api/admin/instance/address';
+
+test('"Check again" stays the person’s while the card reads the answer again, and a late read does not undo it', async ({ app, browser, screen }) => {
+  await app.open(mock('/admin/instance', '&callback=missing'));
+  const card = screen.getByRole('region', 'Address');
+  await expect(card.getByText(MISSING)).toBeVisible();
+  // The card's next read of the answer stays on its way.
+  await browser.evaluate((path: string) => {
+    const m = (window as unknown as HoldMock).__yuliusMock;
+    m.holdPath = path;
+    m.held = new Promise<void>((resolve) => { m.release = resolve; });
+  }, ADDRESS_API);
+  await expect.poll(() => browser.evaluate(() => (window as unknown as HoldMock).__yuliusMock.heldWaiting ?? 0), { timeout: 15000 }).toBe(1);
+  const answered = await browser.evaluate(() => (window as unknown as HoldMock).__yuliusMock.address.answered);
+
+  // Meanwhile the person adds the callback on GitHub and presses Check again.
+  await answers(browser, 'registered');
+  const check = card.getByRole('button', 'Check again');
+  await expect(check).toBeEnabled();
+  await check.click();
+  await expect(card.getByText(REGISTERED)).toBeVisible();
+
+  // The read that was on its way answers now, with what an earlier look would have said: the
+  // card keeps the later answer and reads nothing more.
+  await answers(browser, 'missing');
+  await browser.evaluate(() => { (window as unknown as HoldMock).__yuliusMock.release(); });
+  await expect.poll(() => browser.evaluate(() => (window as unknown as HoldMock).__yuliusMock.address.answered)).toBe(answered + 2);
+  await expect(card.getByText(REGISTERED)).toBeVisible();
+  await expect(card.getByText(MISSING)).toBeHidden();
+});
+
+/** The page goes to the background or comes back, as when the person switches tabs. */
+const setHidden = (browser: Browser, hidden: boolean) => browser.evaluate((h: boolean) => {
+  Object.defineProperty(document, 'hidden', { configurable: true, get: () => h });
+  Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => (h ? 'hidden' : 'visible') });
+  document.dispatchEvent(new Event('visibilitychange'));
+}, hidden);
+
+test('coming back to the page asks GitHub at once', async ({ app, browser, screen }) => {
+  await app.open(mock('/admin/instance', '&callback=missing'));
+  const card = screen.getByRole('region', 'Address');
+  await expect(card.getByText(MISSING)).toBeVisible();
+  const checks = () => browser.evaluate(() => ((window as unknown as AddressMock).__yuliusMock.sent || {})['POST /api/admin/instance/address/check'] || 0);
+
+  // The person goes to GitHub in another tab, adds the callback and comes back.
+  await setHidden(browser, true);
+  await answers(browser, 'registered');
+  expect(await checks()).toBe(0);
+  await setHidden(browser, false);
+  await expect.poll(checks).toBe(1);
+  await expect(card.getByText(REGISTERED)).toBeVisible();
+
+  // Nothing is left to ask about: coming back again asks nothing.
+  await setHidden(browser, true);
+  await setHidden(browser, false);
+  await expect(card.getByText(REGISTERED)).toBeVisible();
+  expect(await checks()).toBe(1);
+});
+
+test('a read that fails while the card is shown keeps what it shows and is tried again', async ({ app, browser, screen }) => {
+  await app.open(mock('/admin/instance', '&callback=missing'));
+  const card = screen.getByRole('region', 'Address');
+  await expect(card.getByText(MISSING)).toBeVisible();
+  // The server is away for a moment (a restart): the card's next read fails.
+  type FailMock = { __yuliusMock: { failPath: string | null; failedReads: number } };
+  const failed = () => browser.evaluate(() => (window as unknown as FailMock).__yuliusMock.failedReads);
+  const before = await failed();
+  await browser.evaluate((path: string) => { (window as unknown as FailMock).__yuliusMock.failPath = path; }, ADDRESS_API);
+  await expect.poll(failed, { timeout: 15000 }).toBe(before + 1);
+  await expect(card.getByText(MISSING)).toBeVisible();
+  await expect(card.getByText(/Couldn’t load the address/)).toBeHidden();
+  // It is back, and GitHub accepts the callback meanwhile: the card finds out by itself.
+  await browser.evaluate(() => { (window as unknown as FailMock).__yuliusMock.failPath = null; });
+  await answers(browser, 'registered');
+  await expect(card.getByText(REGISTERED)).toBeVisible({ timeout: 15000 });
+});
