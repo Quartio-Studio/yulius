@@ -244,8 +244,8 @@ Settings → Instance (slice D)
 ## Plan
 
 - [x] Spec SPEC-460 and ADR-0297 for the whole command and its slices
-- [ ] The copy's inventory: counted by the export, recomputed on the target, compared
-- [ ] The host profile: the old host's facts read and transformed for the target
+- [x] The copy's inventory: counted by the export, recomputed on the target, compared
+- [x] The host profile: the old host's facts read and transformed for the target
 - [ ] Target steps over the one-time key: staged binary, preflight, data disk, sources and packages, trees
 - [ ] Units, update helper, proxy and firewall carried to the target
 - [ ] `yulius instance migrate`: plan, confirm, prepare, frozen copy, proof, start, redirect, finish, with resume, status and abort
