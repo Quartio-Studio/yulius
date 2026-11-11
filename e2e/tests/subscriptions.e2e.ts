@@ -62,10 +62,48 @@ test('a task shows its subscription and a person runs it on another (SPEC-447 MO
   await expect(screen.getByRole('menuitem', /^Claude #2\s*Runs on it now/)).toHaveAttribute('aria-disabled', 'true');
   await expect(screen.getByRole('menuitem', /^Claude #3\s*Needs a new sign-in/)).toHaveAttribute('aria-disabled', 'true');
   await expect(screen.getByRole('menuitem', /^Claude #4\s*5 h 12% · week 33%/)).toBeVisible();
+  // Out of the default model's usage credits only: this task runs Opus, so it can go there (SPEC-464).
+  await expect(screen.getByRole('menuitem', /^Claude #5\s*5 h 100% · week 71%/)).toBeVisible();
   expect(await axeViolations(browser)).toEqual([]);
   await screen.getByRole('menuitem', /^Claude #4/).click();
   await expect(screen.getByText('#12 moves to Claude #4…')).toBeVisible();
   await expect(chip).toHaveText('Claude #4');
+});
+
+test('"Run #N on…" judges a subscription by the windows that bind the task\'s model (unit, in the page; SPEC-464)', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const reasons = await browser.evaluate(async () => {
+    const url = '/assets/actions.js';
+    const { cannotTake } = await import(url);
+    const ahead = new Date(Date.now() + 3600e3).toISOString();
+    const past = new Date(Date.now() - 3600e3).toISOString();
+    const w = (used, resets_at = ahead) => ({ used_percent: used, resets_at, window_minutes: 10080 });
+    // "Limited" because the default model's allowance is used up; its own windows have room.
+    const fableOut = { status: 'limited', usage: { primary: w(10), secondary: w(20), weekly_fable: w(100) } };
+    const opus = { model: 'claude-opus-5-5' };
+    return {
+      fableTaskOnFableOut: cannotTake(fableOut, { model: 'claude-fable-5-2' }),
+      opusTaskOnFableOut: cannotTake(fableOut, opus),
+      unknownModelOnFableOut: cannotTake(fableOut, {}),
+      opusTaskOnOpusOut: cannotTake({ status: 'ok', usage: { primary: w(10), weekly_opus: w(100) } }, opus),
+      weekUsedUp: cannotTake({ status: 'limited', usage: { secondary: w(100) } }, opus),
+      limitWithoutWindow: cannotTake({ status: 'limited', usage: { primary: w(10) } }, opus),
+      windowPastItsReset: cannotTake({ status: 'ok', usage: { primary: w(100, past) } }, opus),
+      needsSignIn: cannotTake({ status: 'relogin', usage: {} }, opus),
+      room: cannotTake({ status: 'ok', usage: { primary: w(40), secondary: w(12) } }, { model: 'claude-fable-5-2' }),
+    };
+  });
+  expect(reasons).toEqual({
+    fableTaskOnFableOut: 'At its usage limit',
+    opusTaskOnFableOut: null,
+    unknownModelOnFableOut: 'At its usage limit',
+    opusTaskOnOpusOut: 'At its usage limit',
+    weekUsedUp: 'At its usage limit',
+    limitWithoutWindow: 'At its usage limit',
+    windowPastItsReset: null,
+    needsSignIn: 'Needs a new sign-in',
+    room: null,
+  });
 });
 
 test('the Tasks list says which subscription each task runs on (SPEC-447 MOV-004)', async ({ app, browser }) => {
