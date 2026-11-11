@@ -187,12 +187,13 @@ URL change
 - MIG-041 **Old URL.** When the URL changed and the old host's proxy is Caddy, its site answers
   every request with a temporary redirect (307) to the same path at the new URL and the header
   `X-Yulius-Moved-To`; the earlier configuration is kept for `--abort`.
-- MIG-042 **GitHub App.** When the URL changes the plan gives one deep link to the App's settings
-  (`https://github.com/organizations/<owner>/settings/apps/<slug>`, or under `settings/apps` for a
-  person's App) and the callback and homepage to register, before the cutover: an App accepts
-  several callbacks, so the old one keeps working until the old host is retired. Yulius never
-  uses a person's GitHub session. (Slice C: the instance asks GitHub whether its callback is
-  registered, at start and on demand, and the plan and Settings → Instance show the answer.)
+- MIG-042 **GitHub App.** When the URL changes the plan says, before the cutover, where the
+  App's settings are and the callback and homepage to register there: an App accepts several
+  callbacks, so the old one keeps working until the old host is retired. Yulius never uses a
+  person's GitHub session. (Slice C: the instance asks GitHub whether its callback is registered,
+  at start and on demand; the plan and Settings → Instance show the answer and the one deep link
+  `https://github.com/organizations/<owner>/settings/apps/<slug>`, which needs the App's sealed
+  credentials that only the running server opens.)
 - MIG-043 **Remote clients (slice C).** `yulius remote` follows a redirect that carries
   `X-Yulius-Moved-To`: it moves the saved sign-in to the new URL, says so and repeats the call.
 
@@ -251,7 +252,7 @@ Settings → Instance (slice D)
 - [x] `yulius instance migrate`: plan, confirm, prepare, frozen copy, proof, start, redirect, finish, with resume, status and abort
 - [x] Tasks that were live come back by themselves at the first start after a move
 - [ ] Operations guide §7, architecture, product summary, changes
-- [ ] Chained tasks created for slices B, C and D
+- [x] Chained tasks created for slices B, C and D
 - [ ] Gates run and the independent review answered
 
 ## Acceptance criteria
@@ -310,10 +311,11 @@ Settings → Instance (slice D)
   a source that worked; rechecking repositories would only find damage the old host already had,
   at many minutes frozen); GitHub's settings never driven with a person's session.
 - **Slices.** This task delivers the command with a frozen full copy (what was done by hand,
-  made one safe command) and the tasks' return. Chained tasks deliver: B, the warm copy and
-  delta (MIG-032); C, the GitHub App check, the "moved" notes in Settings → Instance and the
-  remote CLI following the move (MIG-042, MIG-043); D, the button (MIG-060). Each is a separate
-  concern with its own tests, and B and D build on the command's state and status files.
+  made one safe command) and the tasks' return. Chained tasks deliver: B (#445), the warm copy
+  and delta (MIG-032); C (#446), the GitHub App check, the "moved" notes in Settings → Instance
+  and the remote CLI following the move (MIG-042, MIG-043); D (#447), the button (MIG-060). Each
+  is a separate concern with its own tests, and B and D build on the command's state and status
+  files.
 - **Limits are not re-sized here.** SPEC-459 owns the formulas and adapts at the first start from
   the import's mark; the move carries the pins and names them.
 - **Sandbox package layers are named, not rebuilt** (MIG-051): the layers keep working on the
