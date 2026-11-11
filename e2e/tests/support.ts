@@ -119,6 +119,8 @@ export const MONACO_LOAD_MS = 60_000;
 
 /**
  * Waits until the Editor shows a Monaco editor, within Monaco's cold load (`MONACO_LOAD_MS`).
+ * Monaco builds its view with the first file's model (the editor is made with none, #1087), so this
+ * is also when that file is in it.
  * Touch `window.monaco.editor` only after it: Monaco's main chunk sets `window.monaco` before its
  * last chunk has registered its services, and the first call into the API fixes the services every
  * editor gets. A call in that gap (a poll of `getEditors()`) makes the editor's idle-time setup
