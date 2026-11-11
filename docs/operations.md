@@ -1426,13 +1426,12 @@ usual.
   again while the changes alone would take more than a minute to send, at most five times, and
   then freezes. With `--max-downtime <minutes>` it freezes only when the estimate is at most
   that; after five passes above it the move ends with exit 1, nothing was frozen, and the staged
-  copy stays: run the command again at a quieter time or with a higher bound. To copy first and
-  decide on the freeze later, give a bound the move cannot meet (`--max-downtime 1` on an
-  instance of any size): it copies, says its estimate and stops; the next run sends only what
-  changed since.
+  copy stays: run the command again at a quieter time or with a higher bound; it sends only
+  what changed since.
 - A pass that was cut (a broken link, Ctrl-C, a killed command) costs only what the new host had
-  not yet taken in: run the same command again. Ctrl-C during the copy ends the command at once;
-  nothing is frozen yet. The new host's data directory holds the staged copy's marker
+  not yet taken in: run the same command again. A link that goes silent ends the pass after
+  about two minutes (`Timeout, server … not responding`). Ctrl-C during the copy ends the
+  command at once; nothing is frozen yet. The new host's data directory holds the staged copy's marker
   (`.yulius-import-incomplete`); when the copy there was removed, or is not the one the old host
   knows, the copy starts from the beginning. When the receiving side died in the middle of a
   pass (the new host was restarted), everything is sent into the staged copy again.
