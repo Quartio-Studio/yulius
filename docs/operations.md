@@ -1544,6 +1544,18 @@ usual.
   (`.yulius-import-incomplete`); when the copy there was removed, or is not the one the old host
   knows, the copy starts from the beginning. When the receiving side died in the middle of a
   pass (the new host was restarted), everything is sent into the staged copy again.
+- The receipts hold only in the boot they were written in and while the old host's clock is not
+  set back. After a restart of the old host (after a crash a file may be newer than its change
+  time says), or when its clock was set back by a second and a half or more, the move says so
+  and sends everything into the staged copy again; when that happens just before the freeze,
+  nothing is copied frozen, the old instance is thawed and the same command copies again while
+  it runs. The clock's own pace (NTP) does not count, only a step.
+- The copy reads as root while the sandboxes run. It never follows a link, and it stays in the
+  directories it opened: a directory that is renamed or replaced by a link while a pass walks
+  it is left out of that pass and sent by the next.
+- The line `downtime` names what every pass sends again, when that takes a second or more:
+  entries that change all the time, and files on another filesystem. They are sent during the
+  freeze too, in full.
 - Do not update Yulius on the old host during the copy. An instance that reports another build
   before the freeze than in the plan is not frozen; run the command again with the build it runs
   (the staged copy is kept).

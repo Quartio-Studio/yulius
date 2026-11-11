@@ -55,9 +55,12 @@ Passes
 - WCP-002 **Live reads.** A warm pass walks once. A path that vanished is left out (with what is
   below it). A file's header comes from the open file's own stat, exactly that many bytes follow,
   padded with zeros when the file shrank while it was read. What replaced a file between the walk
-  and the open (a link, a FIFO, a device) is never opened blocking or followed. The manifest says
-  the pass was read live; its totals are estimates, so the importer checks the stream's checksum
-  and not its length.
+  and the open (a link, a FIFO, a device) is never opened or followed. The walk runs as root
+  while the sandboxes' processes write, so it never follows a name out of the data directory: it
+  holds every directory it is in open, opens each in the one that holds it without following a
+  link, and names every entry through that open directory; a directory that is no longer the one
+  the walk looked at is left out. The manifest says the pass was read live; its totals are
+  estimates, so the importer checks the stream's checksum and not its length.
 - WCP-003 **Receipts.** The old host keeps, for every path it sent, the state the new host holds:
   a 16-byte digest of the entry's archive headers, its inode's change time in nanoseconds and its
   inode number. A pass skips an entry only when the receipt of its path is that digest. An entry
@@ -81,11 +84,20 @@ Passes
 - WCP-006 **Binding.** Receipts live in `<state>/copy/` on the old host with the stage id and the
   count of streams. Before every pass the old host asks the new host for its marker: equal id and
   count continue; a count one ahead with the pending stream's nonce is adopted (WCP-011). A
-  stream that was never closed, a pass that removed paths and then broke, and a journal written
-  before the old host was restarted leave nothing known: the stage goes on without receipts, and
-  the next pass sends everything into it. Anything else (no marker, another id, another count,
-  another stream) drops the receipts and the staged copy, and the next pass is a full one into a
-  new stage.
+  stream that was never closed, a pass that removed paths and then broke, and one whose
+  directories' times could not be put back leave nothing known: the stage goes on without
+  receipts, and the next pass sends everything into it. Anything else (no marker, another id,
+  another count, another stream) drops the receipts and the staged copy, and the next pass is a
+  full one into a new stage.
+- WCP-016 **Where receipts hold.** Receipts and the journal are believed only in the boot they
+  were written in and while the clock was not set back. An inode's times are not written with
+  its data, so after a crash of the old host a file may hold newer content than its change time
+  says; and a clock that goes back by 2 s or more can stamp a later change with the time of what
+  was copied. `stage.json` records the boot's id and the furthest the clock was ahead of the
+  boot's own time when a pass began; another boot, or a clock 1.5 s or more behind that, drops
+  the receipts. The stage goes on, the move says why, and the next pass sends everything into
+  it. A frozen pass is never planned on such receipts: the old instance is thawed and the next
+  run copies warm again.
 
 The frozen pass
 
@@ -117,8 +129,9 @@ Resume and bound
 - WCP-012 **Estimate.** After each delta pass the checklist shows the estimated freeze (item
   `downtime`) before anything freezes: four counts of the tree at the measured rate (two on each
   host), the time to send what will have changed since the pass began (the last pass's sending
-  time, scaled by how long changes gathered for it), the new host's sync and the start (30 s:
-  the mark, the unit's start and its first answer took under 20 s between two emulated hosts).
+  time, scaled by how long changes gathered for it; the time for entries that earned no receipt
+  counts in full, since every pass sends them), the new host's sync and the start (30 s: the
+  mark, the unit's start and its first answer took under 20 s between two emulated hosts).
   The plan shows what is known then: the copy's size and time at the link's rate, the bound, and
   a first estimate of the freeze: the entries of the data directory's filesystem counted four
   times at the rate of a sample (what a walk reaches in 2 s, walked again and timed, so that the
@@ -135,8 +148,9 @@ Resume and bound
   names. A rerun does not ask again for the room the staged copy already takes. The freeze is
   not begun when the old instance reports another build than when the plan looked (an update
   during the copy): the staged copy stays for a run with that build. A copy whose proof fails is
-  dropped with its receipts. `--abort` closes a stream still being received and names the staged
-  copy left on the new host, which holds every secret.
+  dropped with its receipts. `--abort` closes a stream still being received and names the copy
+  left on the new host, which holds every secret, also when the old host has dropped what it
+  knew of it (the move's state records that a copy was begun).
 
 ## Design
 
@@ -145,8 +159,14 @@ Resume and bound
   for the frozen pass, the count of kept paths. A frozen pass carries the entry
   `yulius-export.kept` (16 bytes per path: the first half of the SHA-256 of its archive path)
   after the last data entry. `yulius instance import` refuses a stream with `pass`.
+- **A live walk** (`instance/walk.rs`). Each directory is opened with `O_NOFOLLOW` through the
+  open directory above it and checked to be the inode the walk looked at; its entries are named
+  `/proc/self/fd/<n>/<name>`, so every look at an entry resolves one name in a directory that
+  cannot be swapped. A file is reached through an `O_PATH` handle, checked to be a regular file,
+  and then opened plainly through that handle. The frozen walks read by path as before.
 - **Receipts** (`instance/receipts.rs`). `<state>/copy/stage.json` holds the stage id, the count,
-  the valid length of the log and the pending stream; `receipts` is a log of 32-byte records
+  the valid length of the log, the pending stream, the boot and the clock's lead (WCP-016);
+  `receipts` is a log of 32-byte records
   (path digest, state digest; a zero state revokes); `pending` is the journal of the stream in
   flight, 40 bytes per sent entry in stream order (the stream's digest before the entry, path,
   state), written before the entry is sent and completed after it; `pending.kept` lists what a
@@ -208,17 +228,28 @@ Resume and bound
 - An old instance that reports another build before the freeze than in the plan is not frozen.
 - A plain `yulius instance export | import` is unchanged (its tests pass untouched), and `import`
   refuses a pass.
+- A directory that is replaced by a link to a place outside the data directory while a warm pass
+  walks it is not entered, and a file whose directory was replaced is read where the walk listed
+  it: no stream carries a file from outside.
+- After a restart of the old host, or with a clock set back by 2 s, the next pass sends every
+  entry into the same staged copy and the move says why; set back just before the freeze, the
+  frozen pass is not sent and the old instance is thawed.
+- A pass whose directories' times could not be put back on the new host leaves "nothing known",
+  and the next pass sends everything.
+- `--abort` after a proof that differed names the copy on the new host.
 
 ## Test plan
 
 - Unit tests: `instance::receipts` (state digest, held, revoke, adoption of a prefix, a foreign
-  nonce, another boot, a completed frozen pass replacing the log, reload from disk);
-  `instance::walk` (change time and inode seen, a vanished path tolerated, the first path of a
-  link forgotten); `instance::archive` (the kept entry, digests at entry boundaries, a padded
-  live file); `instance::export` (each case of WCP-002..004 and WCP-007 against an in-memory
-  ledger); `instance::extract` (each case of WCP-009, the deletions of WCP-008);
-  `instance::import` (stage marker, refusal of another stage or count, a cut stream's
-  acknowledgment, the marker before the first entry, the plain import refusing a pass);
+  nonce, another boot, a clock set back, a completed frozen pass replacing the log, reload from
+  disk); `instance::walk` (change time and inode seen, a vanished path tolerated, the first path
+  of a link forgotten, a directory swapped for a link under a live walk); `instance::archive`
+  (the kept entry, digests at entry boundaries, a padded live file); `instance::export` (each
+  case of WCP-002..004 and WCP-007 against an in-memory ledger, also one that swaps a directory
+  for a link at a chosen entry; the time sent without a receipt); `instance::extract` (each case
+  of WCP-009, the deletions of WCP-008); `instance::import` (stage marker, refusal of another
+  stage or count, a cut stream's acknowledgment, the marker before the first entry, directory
+  times that cannot be set, the plain import refusing a pass);
   `instance::migrate::target` (the staged copy kept or removed by the data-directory step, the
   marker read once no stream is received, the stop word, the watched stream).
 - Flow tests (`instance::migrate::tests::flow`): the acceptance criteria, with the existing moves
@@ -262,3 +293,17 @@ Resume and bound
   ids are reused, and the reads would have to be interruptible).
 - **One pull request.** The change is one concern (MIG-032) whose parts are not useful alone; it
   is built in the plan's slices, each with its tests.
+- **Receipts end with the boot** (from the review). Keeping them across a restart would need a
+  digest of every file's content in the receipt and a second read of the whole tree to check it,
+  which is the copy again. A restart of the old host during a move is rare; it costs one full
+  pass into the staged copy that is already there.
+- **The clock is watched by its lead over the boot's own time**, not by comparing two readings
+  of the wall clock: the lead does not move with the clock's pace or with time spent suspended,
+  only when the clock is set. The highest lead at which a pass began is kept, so a step forward
+  and a later step back are found too. 1.5 s is below the 2 s a later change needs to be
+  mistaken and above a leap second.
+- **A live walk names entries through `/proc/self/fd`** rather than by `openat` calls
+  throughout: every existing look (`lstat`, `readlink`, the attribute calls, which have no
+  directory-relative form before Linux 6.13) stays as it is, and only the name's prefix changes.
+  Measured on 300,000 files it costs nothing (about 400,000 entries a second either way). The
+  frozen walks keep reading by path: nothing writes then, and the plain export is unchanged.

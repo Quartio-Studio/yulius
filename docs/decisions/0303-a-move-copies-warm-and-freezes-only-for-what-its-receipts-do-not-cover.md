@@ -32,6 +32,12 @@ Accepted. Specified in
   vanished paths left out, a file's header taken from the open file and its bytes padded when it
   shrank; their totals are estimates, their checksum is checked. The frozen pass is exact as
   before and ends with the digests of every path the old host holds.
+- **A walk over a running instance never follows a name out of the data directory.** It runs
+  as root while the sandboxes' processes write there. It holds every directory it is in open,
+  opens each one in the directory that holds it without following a link, and names every entry
+  through that open directory (`/proc/self/fd/<n>/<name>`), so a directory that is renamed away
+  or replaced by a link between two looks leads it nowhere else. A file is reached through a
+  handle that opens nothing, checked to be a regular file, and then opened plainly.
 - **Receipts are a map from a path to the state the new host holds.** The state is a 16-byte
   digest of the entry's archive headers, its inode's change time in nanoseconds and its inode
   number. A pass skips an entry only when its path's receipt is that state. Sending a path
@@ -40,6 +46,12 @@ Accepted. Specified in
   filesystem, which write-protects every mapped page. An entry earns a receipt only when its
   change time is at least 2 s before that, its stat did not move while it was read, and it lies
   on the synced filesystem. Any later change, through a mapping too, gets a later change time.
+- **Receipts are believed only where they were earned.** An inode's times are not written with
+  its data: after a crash a file rewritten in place may hold new content under the change time
+  its receipt was earned with. And a clock that is set back by 2 s or more can stamp a later
+  change with the time of what was copied. The receipts record the boot and the furthest the
+  clock was ahead of the boot's own time when a pass began; another boot, or a clock 1.5 s or
+  more behind that, drops them. The stage goes on and is filled again.
 - **The new host acknowledges what it installed and synced, in its marker.** The marker
   `.yulius-import-incomplete` holds the stage id, the count of streams taken in, the last
   stream's nonce, how many of its entries were installed and the stream's digest there. The old
@@ -48,9 +60,9 @@ Accepted. Specified in
   the staged copy.
 - **Nothing is known while a stream is open.** The marker names a stream before its first entry
   and says that the copy's state is unknown; the stream's end takes that back. A receive that
-  dies, a pass that removed paths and then broke, and a journal from before a restart of the old
-  host therefore cost the receipts, never the copy's truth: the stage goes on and everything is
-  sent into it again.
+  dies, a pass that removed paths and then broke, and one whose directories' times could not be
+  put back therefore cost the receipts, never the copy's truth: the stage goes on and
+  everything is sent into it again.
 - **A stream whose sender is gone is closed by the next run.** A link that breaks leaves the new
   host's end open until TCP gives up. The receive reads on a thread of its own and, without
   bytes, looks for a stop file beside its lock; the old host's next look at the marker writes
@@ -63,7 +75,8 @@ Accepted. Specified in
   are sent in the same pass, so the copy never holds two files where the old host has one.
 - **The freeze is estimated, and can be bounded.** After each delta pass the checklist shows the
   estimate; `--max-downtime` makes the move copy again while it is above the bound and stop
-  without freezing after 5 delta passes.
+  without freezing after 5 delta passes. What a pass sent without earning a receipt is counted
+  in full, since the frozen pass sends it whatever happens.
 
 ## Alternatives
 
@@ -87,6 +100,11 @@ Accepted. Specified in
   a volume layout or a watcher the hosts do not have, and miss what happens before the watch.
 - **Deleting in warm passes**: would make receipts of removed paths false unless every removal
   were reported back; the frozen pass deletes once, from the full list.
+- **Receipts that outlive a restart**: they would need a digest of each file's content and a
+  second read of the tree to check it after a crash, which is the copy again.
+- **`openat2` with `RESOLVE_NO_SYMLINKS` for every look of a live walk**: equally safe, but it
+  resolves the whole path again for each call and needs handles where the walk has paths.
+  Holding the directories open resolves one name a look.
 
 ## Consequences
 
@@ -100,10 +118,15 @@ Accepted. Specified in
   every pass, the frozen one included.
 - The old host keeps 32 bytes per entry in its state directory and in memory during a pass; the
   new host holds 16 bytes per entry in memory while it deletes.
-- The receipts rest on the inode change time: a clock set back onto the exact tick of an earlier
-  change of the same inode could hide that change. The 2 s margin covers filesystems that keep
-  whole seconds.
+- The receipts rest on the inode change time. The 2 s margin covers filesystems that keep whole
+  seconds. A clock set back is found when a pass begins or ends (its lead over the boot's own
+  time fell by 1.5 s or more); a clock set back and forward again between two such looks is
+  not.
+- A restart of the old host during the copy, or a clock set back, costs one full pass into the
+  staged copy that is there.
+- A live walk holds one open file for each level it is deep, and needs `/proc`.
 - A cut stream's prefix is acknowledged on the stream's own digest at the last entry, not on the
   trailer, which was never sent.
-- A proof that fails still fails the move and thaws the old instance; the staged copy and its
-  receipts stay, and the next run sends what changed.
+- A proof that fails still fails the move and thaws the old instance. The staged copy is not
+  built on: the old host drops what it knew of it, and the next run removes it and copies
+  everything again.

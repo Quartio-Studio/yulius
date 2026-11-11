@@ -17,7 +17,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   before it begins; `--max-downtime <minutes>` makes the move copy again while the estimate is
   above it and stop without freezing after five such passes. A pass cut by a broken link or a
   killed command is continued by the same command, and nothing the new host acknowledged is sent
-  twice. The operations guide §7 describes it.
+  twice. The copy reads as root while the sandboxes run and never follows a link out of the data
+  directory; after a restart of the old host, or when its clock was set back, the receipts are
+  dropped and everything is sent into the staged copy again. The operations guide §7 describes
+  it.
 - A restart of the server keeps its sessions on systemd 258 and later (SPEC-458, task #440,
   ADR-0298). On Ubuntu 26.04 (systemd 259) `yulius.service` could be stopped but not started
   again while one session ran, so a restart or an update took the instance down until every

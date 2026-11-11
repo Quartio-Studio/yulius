@@ -3093,7 +3093,11 @@ runs, then one exact pass while it is frozen. The old host keeps a receipt for e
 host took in and synced (`receipts.rs`: a digest of the entry's archive headers, its inode number
 and its inode's change time) and leaves an entry out only while its receipt matches; an entry
 earns one only when it last changed two seconds before its pass, which begins by syncing the
-filesystem. The new host's marker (`.yulius-import-incomplete`) holds the stage id, the count of
+filesystem. Receipts are believed only in the boot they were earned in and while the clock was
+not set back; otherwise they are dropped and the staged copy is filled again. A walk while the
+instance runs holds every directory it is in open and names its entries through it
+(`walk.rs`), so nothing a sandbox does to its own files leads the walk, which runs as root,
+outside the data directory. The new host's marker (`.yulius-import-incomplete`) holds the stage id, the count of
 streams and what the last one installed; it names a stream before its first entry, so a receive
 that dies costs the receipts and never the copy's truth. The frozen pass carries the digests of
 every path the old host holds, and the new host removes the rest. Both hosts then count the
