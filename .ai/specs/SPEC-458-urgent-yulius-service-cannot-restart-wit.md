@@ -1,11 +1,11 @@
 ---
 yulius-task: 43a4ea9a-8f2b-4c87-9cb9-9376e150eb5f
-status: draft
+status: done
 ---
 
 # SPEC-458: The server restarts with live sessions on systemd 258 and later
 
-Status: draft
+Status: done
 Date: 2026-11-11
 Owner: Yulius task #440
 Scope authorization: task #440 ("URGENT: yulius.service cannot restart with live sessions on
@@ -147,9 +147,15 @@ Two defects made it unusable meanwhile:
   test), for the first restart on a host that has no binary with this change yet.
 - **HST-003** The adopt unit runs the server unit's binary as root. The "yulius binary" item
   therefore runs before this one (it makes the binary root's), and the sessions item writes
-  nothing and fails, naming the directory, while the service user could replace that binary:
-  the file is not root's alone, or a directory above it is the service user's, writable by a
-  group it is in or by everyone. Units an earlier run wrote do not excuse it.
+  nothing and fails, naming the directory, while anyone but root could replace that binary:
+  the file is not root's alone, or a directory above it is not root's, or is writable by a
+  group the service user is in or by everyone. A binary the unit names through a link is
+  judged at the link's target, and the adopt unit names that target, never the link (whoever
+  may write the link's directory could point it elsewhere). Units an earlier run wrote do not
+  excuse it.
+- **HST-004** The files being as the setup writes them is not the sessions unit running. With
+  the files in place and the unit not active, a check fails the item ("… is not running", as
+  the doctor warns and the guard refuses), and the setup starts the unit.
 - **HST-002** `yulius doctor` has a line "restart with sessions": ok with the sessions unit in
   use; a warning naming `sudo yulius host setup` when sessions live in the server's unit, which
   says that a restart fails while sessions run when systemd is 258 or later.
@@ -192,15 +198,15 @@ Two defects made it unusable meanwhile:
 
 ## Plan
 
-- [ ] The server uses the sessions unit when the host has one (cgroup detection)
-- [ ] `yulius host adopt-sessions` moves the sessions of the old layout out of the server's unit
-- [ ] Host setup writes the sessions unit, the adopt unit and the drop-in; host check and the doctor report it
-- [ ] Restart and Update now refuse where the restart would fail (helper and server)
-- [ ] The export freezes the sessions unit too
-- [ ] Start-up never rests a launching task; a start or a stop settles a run left on record (#439)
-- [ ] Proof on real hosts: restarts, the helper's restart and rollback, the first restart that installs the fix (systemd 255 and 259)
-- [ ] ADR-0298, the operations guide, the architecture document and the change entry
-- [ ] Gates and an independent review of the final head
+- [x] The server uses the sessions unit when the host has one (cgroup detection)
+- [x] `yulius host adopt-sessions` moves the sessions of the old layout out of the server's unit
+- [x] Host setup writes the sessions unit, the adopt unit and the drop-in; host check and the doctor report it
+- [x] Restart and Update now refuse where the restart would fail (helper and server)
+- [x] The export freezes the sessions unit too
+- [x] Start-up never rests a launching task; a start or a stop settles a run left on record (#439)
+- [x] Proof on real hosts: restarts, the helper's restart and rollback, the first restart that installs the fix (systemd 255 and 259)
+- [x] ADR-0298, the operations guide, the architecture document and the change entry
+- [x] Gates and an independent review of the final head
 
 ## Acceptance criteria
 
@@ -237,8 +243,8 @@ Two defects made it unusable meanwhile:
   `cgroup.rs` makes): the acceptance list above; results in the Evidence section.
 - Not testable here: production itself (the first restart is a person's, by the operations
   guide); real agent sessions, sandboxes and Docker engines in the guests (they need a GitHub
-  App, a Claude subscription and a sandbox base), so reattaching to a session's terminal and an
-  engine starting again after the move are covered by unit tests and unchanged code only.
+  App and a Claude subscription), so reattaching to a session's terminal and an engine starting
+  again after the move are covered by unit tests and unchanged code only.
 
 ## Decisions
 
@@ -283,64 +289,98 @@ Two defects made it unusable meanwhile:
 
 ### Real hosts (2026-11-11)
 
-Two QEMU guests from Ubuntu's cloud images, each run several times from one prepared disk:
+Two QEMU guests from Ubuntu's cloud images, each scenario on a fresh copy of one prepared disk:
 Ubuntu 24.04.5 (systemd 255.4, kernel 6.8) and Ubuntu 26.04.1 (systemd 259.5, kernel 7.0).
-Prepared as production was: the pre-fix binary (`911e3127`, the merge base) installed as
+Prepared as production was: the pre-fix binary (`911e3127`, the first merge base) installed as
 `/usr/local/bin/yulius` and set up by its own `yulius host setup --public-url http://vm.test
 --no-smoke`, which wrote and started `yulius.service`; the update helper installed from
-`deploy/systemd` as the guide says. The build with the fix is this branch at `16607772` (the
-merge of `dev`; later commits change no code that ran here unless said below).
+`deploy/systemd` as the guide says. The build with the fix is this branch at `0fed03fe` (the
+last commit that changes code; the runs were repeated as the change grew, and the figures
+below are those of the last, complete run at that commit).
 
 What stands in for what, because it cannot be had in a guest:
 
-- Sessions are stand-in processes (`sleep`) started by the service user from inside the
-  server's group, in the groups, with the limits and controllers `cgroup.rs` gives a sandbox:
+- Sessions are stand-in processes started by the service user from inside the server's group,
+  in the groups, with the limits and controllers `cgroup.rs` gives a sandbox:
   `sandboxes/<sandbox>/{system,agents,agents/run-a1 (frozen),agents/run-a2,ci,engine/init,engine/docker/c1}`.
-  "Kept" below means the same process ids are alive.
+  Seven per sandbox must be kept; two of them fork about 50 children a second each, as shells,
+  browsers and CI jobs do while a server restarts. "Kept" means the same process ids are alive.
 - A build is staged by hand in `/var/lib/yulius-update/staged/` where the helper's own build
   would put it. The request file is written as the server writes it, by the service user.
 
-Results (twelve runs; every one ended and no session process was lost where one should be kept):
+Results (fourteen runs, seven scripted scenarios on each system; every run ended, and no session
+process was lost where one should be kept):
 
 | Scenario | 24.04 (systemd 255) | 26.04 (systemd 259) |
 | --- | --- | --- |
-| The incident: `systemctl restart yulius` with sessions in the server's unit, pre-fix binary | restarts, sessions kept | `Failed to spawn executor: Device or resource busy`, restart counter 18 and rising, the unit's group as on production (`subtree_control = cpu memory pids`, no process in its root, no `server`); back only after every session process was ended |
-| The first restart that installs the fix: the three files of `deploy/systemd` put in place, then an `install` request handled by the pre-fix helper | `done`; "moved 10 processes in 11 groups … (2 Docker engines ended)"; 10 of 10 kept; server in `yulius.slice/yulius.service/server` | the same |
-| Then `systemctl restart`, `kill -9` of the server (`Restart=on-failure`), the helper's `restart` | 15 of 15 kept each time (a third sandbox added in the sessions unit by the service user) | the same |
-| An install whose build reports another commit, and one whose build cannot run at all (the adopt step fails with it) | both `rolled_back`, previous binary back and healthy, 15 of 15 kept | the same |
+| The incident: `systemctl restart yulius` with sessions in the server's unit, pre-fix binary | restarts, sessions kept | `Failed to spawn executor: Device or resource busy`, the restart counter rising, the unit's group as on production (`subtree_control = cpu memory pids`, no process in its root, no `server`); back only after every session process was ended |
+| The first restart that installs the fix: the three files of `deploy/systemd` put in place, then an `install` request handled by the pre-fix helper | `done`; "moved 17 processes in 11 groups … (2 Docker engines ended)" (14 sessions and the children alive at that moment); 14 of 14 kept; server in `yulius.slice/yulius.service/server`; old group gone | the same |
+| Then `systemctl restart`, `kill -9` of the server (`Restart=on-failure`), the helper's `restart` | 21 of 21 kept each time (a third sandbox added in the sessions unit by the service user) | the same |
+| An install whose build reports another commit, and one whose build cannot run at all (the adopt step fails with it) | both `rolled_back`, previous binary back and healthy, 21 of 21 kept | the same |
 | The fix installed without the units, sessions then running in the server's unit: the helper's `restart` and `install` | both go through (this systemd restarts it), sessions kept; the host check names the setup | both `failed`: "yulius.service would not start again: its sessions live in its own group, where systemd 259 starts no unit while one runs. Run `sudo yulius host setup` on the host once, then try again; nothing was stopped."; same server process, sessions kept |
 | The same host, the server's own answers (superadmin session) | Update now: 409 "no update is on offer yet" (not the guard); Restart: 202, restarted, sessions kept | Update now and Restart: 409 with the sentence above; same server process |
 | `yulius doctor` and `yulius host check` there | warn "… (this host: systemd 255; this systemd still restarts it): run `sudo yulius host setup`"; check fails the item | warn "… (this host: systemd 259; sessions run there now, so Restart and Update now are refused) …"; check fails the item |
-| `sudo yulius host setup`, then Restart asked of the server | units written, server untouched; 202, "moved 5 processes in 6 groups", sessions kept; doctor and check ok | the same |
+| `sudo yulius host setup` there; then `systemctl start` on the running server | units written, server untouched; the adopt step says "yulius.service is running (process N): … nothing was moved", sessions where they were | the same |
+| The sessions unit stopped while sessions are in the server's unit | doctor warns "yulius-sandboxes.service is not running …"; the helper's restart goes through (255) | doctor warns "… Restart and Update now are refused"; the helper's `restart` is `failed`: "… and yulius-sandboxes.service is not running: it has to run for them to be moved out before the start. …; nothing was stopped." |
+| `yulius host check`, then `sudo yulius host setup`, with the files in place and the sessions unit stopped | check fails the item: "yulius-sandboxes.service is not running, so sessions do not live in it"; setup: "started yulius-sandboxes.service, which was not running; restart yulius.service so that its sessions live there"; 7 of 7 kept | the same |
+| Restart asked of the server, after the sessions unit runs again | 202, "moved 9 processes in 6 groups", 7 of 7 kept; doctor and check ok | the same |
+| One `systemctl restart yulius` with two sandboxes in the server's unit and the units written by host setup | "Stopped", then the adopt step ("moved 18 processes in 11 groups"), then "Started"; no failed attempt; 14 of 14 kept; old group gone | the same |
 | The adopt step alone (server stopped) | `cpu.max`, `memory.max`, `pids.max`, the owner and `frozen 1` of the paused run are the same in the sessions unit; engine processes gone; old group gone; the server's start then thaws the run (no update is open) | the same |
-| Update now without the units while sessions run | goes through (255) | `failed`: "Could not start yulius.service … The rollback failed too … Restore by hand from …", sessions still alive; the guide's way back (units, the staged build's `host adopt-sessions`, start) brings the previous version back with 5 of 5 kept; the second install is `done`, 5 of 5 kept |
-| After a rollback: the pre-fix binary with the units, sessions in `yulius.slice/yulius.service/sandboxes`; then the update again | the adopt unit fails with the pre-fix binary ("unrecognized subcommand 'adopt-sessions'") and the server starts regardless; the install is `done`, "moved 5 processes in 6 groups from …/yulius.slice/yulius.service …" (the unit in place), 5 of 5 kept, also over a `systemctl restart` after it | the same |
-| A host without the unit, set up by the build with the fix | units and server written and started; server in `yulius.slice`, "per-sandbox limits on cgroup=…/yulius-sandboxes.service"; restart and crash keep the sessions; a second setup changes nothing | the same |
+| Update now without the units while sessions run | goes through (255) | `failed`: "Could not start yulius.service … The rollback failed too … Restore by hand from …", sessions still alive; the guide's way back (units, the staged build's `host adopt-sessions`, start) brings the previous version back with 7 of 7 kept; the second install is `done`, 7 of 7 kept |
+| After a rollback: the pre-fix binary with the units, sessions in `yulius.slice/yulius.service/sandboxes`; then the update again | the adopt unit fails with the pre-fix binary ("unrecognized subcommand 'adopt-sessions'") and the server starts regardless; the install is `done`, the sessions move out of the unit in place, 7 of 7 kept, also over a `systemctl restart` after it | the same |
+| A host without the unit, with `/usr/local/bin` given to the service user | host setup fails "yulius binary" and "sessions unit" ("… would run /usr/local/bin/yulius as root, but … nothing was written"); no unit file is written | the same |
+| The same host with the directory root's again | units and server written and started; server in `yulius.slice`, "per-sandbox limits on cgroup=…/yulius-sandboxes.service"; restart and crash keep the sessions; a second setup changes nothing | the same |
 
-Found by these runs and fixed before the last one: the adopt step reported a failure on 26.04
-when systemd gave up the emptied old group without removing it (commit `cdeb3f6e`); a Docker
-front would have kept the old group's path (`30f7ebd1`); one sandbox that cannot be moved
-ended the whole move (`50a5b6ea`). Three probes with scratch units back the design: a root
-keeper with `User=` keeps the delegation and cannot be signalled by the user; systemd 255 and
-259 let go of a stopped unit's emptied group at once, also while its start job waits; the old
-layout restarts on 255 and not on 259.
+Found by these runs and by the independent review, and fixed before the last run: the adopt
+step reported a failure on 26.04 when systemd gave up the emptied old group without removing
+it (`cdeb3f6e`); a Docker front would have kept the old group's path (`30f7ebd1`); one sandbox
+that cannot be moved ended the whole move (`50a5b6ea`); the review's nine findings (below).
+Three probes with scratch units back the design: a root keeper with `User=` keeps the
+delegation and cannot be signalled by the user; systemd 255 and 259 let go of a stopped unit's
+emptied group at once, also while its start job waits; the old layout restarts on 255 and not
+on 259.
 
 ### Tests and gates
 
-- New tests fail without their change and pass with it: `cgroup::detect` and the unit names
-  (`yulius-sandbox`), `adopt` and `let_go` on fake cgroup trees (11), the host setup item (10,
-  with the deploy files and the operations guide pinned to what the setup writes), the restart
-  guard's table and readers, the helper refusing before it stops anything, the server's 409
-  (`self_update`), the doctor's line, the export's freeze with a sessions unit, the Docker front
-  decision (3), and the supervisor (`task_done`: the reconciliation during a launch, a refused
-  start, a start and a stop that settle a run no server holds).
-- `scripts/dev ci` at `c27ce1fa`: exit 0; formatting, clippy, the repository check, the macOS
-  compile check, `3393 tests run: 3393 passed, 16 skipped`, doctests and the documentation
-  build.
+- New tests fail without their change and pass with it (several were checked by taking the
+  change out again): `cgroup::detect` and the unit names; `adopt`, its repeated reads, its
+  second look and `let_go` on fake cgroup trees (18); the host setup item (23, with the deploy
+  files and the operations guide pinned to what the setup writes, the binary that could be
+  replaced, the linked binary, the sessions unit that does not run, and the adopt command over
+  a fake tree and injected systemd answers); the restart guard's table and readers; the helper
+  refusing before it stops anything; the server's 409 (`self_update`); the doctor's line; the
+  export's freeze with a sessions unit; the Docker front decision (3); and the supervisor
+  (`task_done`: the reconciliation during a launch, the sweep's two conditions, a refused
+  start, a start during a launch, a start and a stop that settle a run no server holds).
+- `scripts/dev ci` at `0fed03fe`, the last commit that changes code: exit 0; formatting,
+  clippy, the repository check, the macOS compile check, `3450 tests run: 3450 passed, 16
+  skipped`, doctests and the documentation build.
 - `yulius security-scan`: "Security scan disabled: Vidoc is turned off in Yulius"; nothing was
   scanned, so this is not a pass.
 
+### Independent review
+
+A fresh read-only session reviewed the change against this spec with the `om-code-review`
+skill, three times.
+
+- Round 1 (head `774c23ee`): changes needed, nine findings, all in this change's code. High:
+  host setup wrote the root adopt unit before it judged whether the service user could
+  replace the binary it runs. Medium: the adopt step could run beside a running server
+  (`systemctl start` on an active unit starts its `Wants=` again) and move its sandboxes and
+  its own processes; a process that forked during the move left a child behind, which is
+  enough to keep the unit from starting. Low: unbounded `systemctl` calls and no start timeout;
+  a run being launched not counted as held; controllers kept when only `server/` was left, a
+  guard that saw only `sandboxes` and took `Wants=` for proof; missing tests; documentation.
+  All fixed test-first (`9bad56a7`, `e53968ac`, `a4734449`, `76cc6d69`, `6e6f99be`,
+  `be0123c4`).
+- Round 2 (head `be0123c4`): changes needed. Medium: the binary check judged a link's target
+  while the unit named the link. Low: a directory of another account than the service user
+  above the binary; the second look untested; host setup and check saying ok with the sessions
+  unit down; stale evidence. Fixed test-first (`0fed03fe`).
+- Round 3: the head that holds this text.
+
 Not shown, and why: production itself; real agent sessions, sandboxes and Docker engines (a
-guest has no GitHub App, no Claude subscription and no sandbox base), so that the server
-attaches to a session's terminal again and that an engine starts again after the move rest on
-unit tests and on code this change does not touch; the helper's own `build` step.
+guest has no GitHub App and no Claude subscription), so that the server attaches to a session's
+terminal again and that an engine starts again after the move rest on unit tests and on code
+this change does not touch; a server unit that names its binary through a link (fake host
+only); the helper's own `build` step.
