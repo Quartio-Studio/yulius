@@ -76,6 +76,7 @@ other in load order, which a boot does not fix.
 - A release upgrade from 24.04 to 26.04 installs the shipped profile next to Yulius's: sandboxes
   fail until `sudo yulius host setup` runs again. `host check` and the doctor say so.
 - A host whose AppArmor restricts user namespaces but cannot load a `userns` rule is reported as
-  unsupported, and Yulius's file is removed again so AppArmor's unit keeps loading cleanly.
+  unsupported, and Yulius's file is removed again (an earlier version of it gets its text back)
+  so AppArmor's unit keeps loading cleanly.
 - The proof needs the host's `mount` and `/usr/sbin/runuser` (util-linux, on every supported
   host).
