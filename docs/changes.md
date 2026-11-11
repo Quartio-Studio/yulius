@@ -6,8 +6,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-11
 
-- Your own Anthropic key can be named `ANTHROPIC_API_KEY_<NAME>` or `ANTHROPIC_AUTH_TOKEN_<NAME>`,
-  such as `ANTHROPIC_API_KEY_QUARTIO` (SPEC-455, task #437, ADR-0292, #1153); every other
+- Your own Anthropic key can be named `ANTHROPIC_API_KEY_<NAME>` or `ANTHROPIC_AUTH_TOKEN_<NAME>`
+  (not ending in `_FILE`), such as `ANTHROPIC_API_KEY_QUARTIO` (SPEC-455, task #437, ADR-0292, #1153); every other
   `ANTHROPIC_` name stays reserved for the agent CLI. A refused name now says which prefix is
   reserved and suggests one that works (`APP_<NAME>`), instead of the same bare refusal for every
   name tried.

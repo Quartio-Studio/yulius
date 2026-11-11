@@ -230,6 +230,11 @@ mod tests {
             "{message}"
         );
         assert!(SecretName::parse(&format!("APP_{at_limit}")).is_ok());
+        let long = format!("GIT_{}", "A".repeat(MAX_NAME_LEN - 7));
+        let Err(VaultError::Name(message)) = SecretName::parse(&long) else {
+            panic!("{long} is reserved");
+        };
+        assert!(!message.contains("such as"), "{message}");
         let long = format!("GIT_{}", "A".repeat(MAX_NAME_LEN - 4));
         let Err(VaultError::Name(message)) = SecretName::parse(&long) else {
             panic!("{long} is reserved");

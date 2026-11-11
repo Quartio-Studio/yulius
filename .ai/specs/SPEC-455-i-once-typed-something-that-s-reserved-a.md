@@ -105,6 +105,10 @@ name says what is reserved and a name that works, so nobody guesses one rename a
   and the mock's agent-secret POST checks no reserved names; the mock serves e2e only and its
   accept/refuse rule now matches the server, so it stays.
 
+- Round 3 (APPROVE on eb7e4eaa): (low, own) the ADR index still said the CLI reads none of the
+  own-key names: reworded; (low, own) `changes.md` did not mention `_FILE`: added; (nit, own) a
+  61-character name, whose suggestion would not fit, was untested: tested.
+
 ## Evidence
 
 - `cargo test -p yulius-domain --lib vault::`: 54 passed; the three `vault::names` tests failed
