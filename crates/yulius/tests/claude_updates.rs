@@ -667,6 +667,18 @@ async fn the_doctor_fails_on_a_claude_code_without_the_default_model() -> TestRe
         text.contains("Claude Code updates are off: choose Latest"),
         "{text}"
     );
+    // A host package that names no version still reads as a sentence.
+    std::fs::write(
+        s.host.join("package.json"),
+        r#"{"name":"@anthropic-ai/claude-code","bin":{"claude":"bin/claude.exe"}}"#,
+    )?;
+    let (health, text) = doctor_line(&s.root, Some(&s.host), Channel::Off);
+    assert_eq!(health, Health::Fail, "{text}");
+    assert!(
+        text.contains("Claude Code of an unknown version does not know claude-fable-5-2"),
+        "{text}"
+    );
+    host_install_manifest(&s.host, "2.1.311")?;
 
     // The server's last check refused the newest release too: no release knows the model yet.
     s.stub.tag("latest", "2.1.322");
@@ -848,6 +860,12 @@ async fn a_channel_change_and_check_now_take_effect_without_a_restart() -> TestR
         StatusFile::read(&s.root).is_some_and(|file| file.channel.as_deref() == Some("off"))
     })
     .await;
+
+    // A channel changed while nothing runs is "checking" from the request to the check's end.
+    until("the check ended", || !service.is_checking()).await;
+    service.set_channel(Channel::Off, false);
+    assert!(service.is_checking(), "asked for, about to run");
+    until("the off check ended", || !service.is_checking()).await;
 
     // Latest from the configuration, then "Check now" for a release published since.
     service.set_channel(Channel::Latest, false);
@@ -1056,9 +1074,27 @@ async fn stable_names_both_refusals_and_stays_stable_while_the_default_is_known(
         "{refused:?}"
     );
 
-    // A version in use that knows the default model: `stable` takes stable's release and never
-    // asks for `latest`'s.
+    // A version in use that knows the default model keeps `stable` on stable's releases, also
+    // when stable's newer release is refused: runs keep what they have, and `latest`'s release
+    // is not asked for.
     host_knows(&s.host, "2.1.292", &OFFERED)?;
+    s.stub.release("2.1.318", good("2.1.318")?);
+    let downloads = s.stub.downloads.load(Ordering::SeqCst);
+    let refused = s.updater.check(Channel::Stable).await;
+    let error = refused
+        .as_ref()
+        .err()
+        .ok_or("stable's release is refused")?;
+    let versions: Vec<_> = error.refused().iter().map(|r| r.version).collect();
+    assert_eq!(versions, [v("2.1.311")], "{error}");
+    assert_eq!(
+        s.stub.downloads.load(Ordering::SeqCst),
+        downloads + 1,
+        "only stable's release was downloaded"
+    );
+    assert!(s.updater.current().is_none());
+
+    // Stable's release knows it: taken, and `latest`'s still not asked for.
     s.stub.release("2.1.311", good("2.1.311")?);
     s.stub.release("2.1.318", good("2.1.318")?);
     assert_eq!(

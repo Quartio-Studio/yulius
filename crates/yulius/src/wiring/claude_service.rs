@@ -22,8 +22,8 @@ use yulius_domain::agent_cli::{
 use yulius_domain::time::Timestamp;
 
 use crate::wiring::claude_cli::{
-    BINARY, CHECK_EVERY, ClaudeUpdater, FIRST_CHECK_AFTER, Outcome, agent_cli_binds, describe,
-    source_for, unique_suffix,
+    BINARY, CHECK_EVERY, ClaudeUpdater, FIRST_CHECK_AFTER, Outcome, agent_cli_binds,
+    current_version, describe, host_version, source_for, unique_suffix,
 };
 use crate::wiring::claude_models::missing_in;
 
@@ -130,7 +130,10 @@ pub struct ClaudeCode {
     last: Mutex<Last>,
     /// One check at a time.
     one: tokio::sync::Mutex<()>,
+    /// A check runs, or was asked for and is about to.
     checking: AtomicBool,
+    /// Another check was asked for while one ran (a channel change): it follows at once.
+    again: AtomicBool,
     /// Wakes the loop for a check now.
     wake: tokio::sync::Notify,
 }
@@ -152,6 +155,7 @@ impl ClaudeCode {
             last: Mutex::new(last),
             one: tokio::sync::Mutex::new(()),
             checking: AtomicBool::new(false),
+            again: AtomicBool::new(false),
             wake: tokio::sync::Notify::new(),
         })
     }
@@ -248,7 +252,9 @@ impl ClaudeCode {
             last.result.clone_from(&result);
         }
         self.report().await;
-        self.checking.store(false, Ordering::SeqCst);
+        // A check asked for meanwhile follows at once: the page keeps saying it checks.
+        let again = self.again.swap(false, Ordering::SeqCst);
+        self.checking.store(again, Ordering::SeqCst);
         result
     }
 
@@ -370,7 +376,9 @@ impl AgentCli for ClaudeCode {
         }
         tracing::info!(channel = channel.as_str(), chosen, "Claude Code channel");
         // Checked on the new channel at once, also after a check that runs now.
-        self.checking.store(true, Ordering::SeqCst);
+        if self.checking.swap(true, Ordering::SeqCst) {
+            self.again.store(true, Ordering::SeqCst);
+        }
         self.wake.notify_one();
     }
 
@@ -415,7 +423,13 @@ pub fn doctor_line(root: &Path, host_dir: Option<&Path>, configured: Channel) ->
             format!("{base}; its binary could not be read for the models it knows"),
         );
     };
-    let version = base.split([' ', ',']).next().unwrap_or_default();
+    let version = if source == host_dir {
+        host_version(host_dir)
+    } else {
+        current_version(root)
+    };
+    let version = version.map_or_else(|| "of an unknown version".to_owned(), |v| v.to_string());
+    let version = version.as_str();
     // The releases the server's last check refused, when they are newer than what runs get.
     let refused: Vec<&RefusedRelease> = file
         .iter()

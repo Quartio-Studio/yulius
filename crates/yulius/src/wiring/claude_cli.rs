@@ -350,11 +350,17 @@ impl ClaudeUpdater {
                 Err(error) if !error.refused().is_empty() => refused = Some(error),
                 taken => return taken,
             }
-        } else if self.in_use_knows_default(host_dir).await {
-            return Ok(in_use.map_or(Outcome::UpToDate(offered), Outcome::UpToDate));
         }
-        // Neither the version in use nor the channel's release knows the default model: on
-        // `stable`, `latest`'s release is taken instead (SPEC-461 CCM-004).
+        // Runs keep what they have: `stable` goes on to `latest` only while that does not know
+        // the default model either (SPEC-461 CCM-004).
+        let stays = |refused: Option<UpdateError>| match refused {
+            Some(error) => Err(error),
+            // Nothing newer was taken: what the version in use lacks is the report's to say.
+            None => Ok(in_use.map_or(Outcome::UpToDate(offered), Outcome::UpToDate)),
+        };
+        if self.in_use_knows_default(host_dir).await {
+            return stays(refused);
+        }
         if let Some(forward) = channel.falls_forward_to().and_then(tagged)
             && forward != offered
             && should_install(forward, in_use)
@@ -364,11 +370,7 @@ impl ClaudeUpdater {
                 (taken, _) => taken,
             };
         }
-        match refused {
-            Some(error) => Err(error),
-            // Nothing newer exists: what the version in use lacks is the report's to say.
-            None => Ok(in_use.map_or(Outcome::UpToDate(offered), Outcome::UpToDate)),
-        }
+        stays(refused)
     }
 
     /// Whether the Claude Code runs get knows the default model; a binary that cannot be read
@@ -738,7 +740,7 @@ pub fn agent_cli_source(root: &Path, host_dir: &Path) -> PathBuf {
 }
 
 /// The version `current` points at, when its binary is there.
-fn current_version(root: &Path) -> Option<Version> {
+pub(crate) fn current_version(root: &Path) -> Option<Version> {
     let link = std::fs::read_link(root.join("current")).ok()?;
     let version = Version::parse(link.file_name()?.to_str()?)?;
     root.join("versions")

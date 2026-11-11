@@ -267,9 +267,6 @@ impl App {
         let Some(services) = self.agent_cli.get() else {
             return;
         };
-        if let Ok(mut moved) = services.moved.lock() {
-            moved.insert(task_id.clone(), version);
-        }
         self.runtime(task_id).hub.notice(format!(
             "↻ Claude Code {version} is installed: this session restarts on it and continues…"
         ));
@@ -277,6 +274,10 @@ impl App {
             .switch_task_now(task_id, account, MOVE_REASON, prompt)
             .await
         else {
+            // Sent once: a session that still names the old version is not restarted again.
+            if let Ok(mut moved) = services.moved.lock() {
+                moved.insert(task_id.clone(), version);
+            }
             return;
         };
         tracing::warn!(error = %err, task = %task_id, %version, "the session did not move to the new Claude Code");
