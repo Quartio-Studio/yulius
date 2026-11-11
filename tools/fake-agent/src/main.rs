@@ -22,7 +22,8 @@
 //!            [--echo-turn-ms MS] [--context-full-after N] [--compact-fails] [--compact-hangs]
 //!            [--prompt TEXT] [--limit-continues-ms MS [--limit-continues-answer-only]]
 //!            [--idle-compact-ms MS] [--trust-prompt] [--goal-api-errors N [--goal-retry-ms MS]
-//!            [--goal-check-errors] [--goal-cleared-on-retry]]
+//!            [--goal-check-errors] [--goal-cleared-on-retry]
+//!            [--paused-wake-file PATH [--paused-wake-dies]]]
 //! ```
 //!
 //! Modes:
@@ -98,6 +99,14 @@
 //! `--goal-check-errors` each failed turn instead ends cleanly, runs its Stop hook and the goal
 //! check fails ("the goal check could not complete"); with `--goal-cleared-on-retry` the goal is
 //! cleared (`/goal clear`) while the first retry is armed, so no check-in comes (`GOAL CLEARED`).
+//! With `--paused-wake-file PATH` the session whose goal was paused is woken once PATH exists
+//! (within 2 minutes of the pause), as Claude Code wakes an idle session when background work
+//! ends, paused goal or not: the `<task-notification>` prompt with its `UserPromptSubmit` hook,
+//! then a tool call (`WOKEN`), the answer once `--turn-hold-file` exists if one is given (`WOKEN
+//! DONE`), the Stop hook and the closed turn, with no goal verdict. With `--paused-wake-dies` the
+//! API refuses that turn again: its error record and the closed turn, with no work, no new notice
+//! and no Stop hook (`WAKE DIED`), as Claude Code 2.1.311 did in task #438's session 16 minutes
+//! after its pause.
 //!
 //! `--hooks YULIUS_EXE` runs Claude Code's hooks as configured by Yulius:
 //! `YULIUS_EXE hook claude UserPromptSubmit` before and `… Stop` after each turn, with the hook
@@ -200,6 +209,9 @@ const CHECK_CAUSE: &str = "the goal check could not complete";
 const GOAL_RETRIES: u32 = 3;
 const MAX_HOOK_OUTPUT: u64 = 1024 * 1024;
 const MAX_WORK_MS: u64 = 60_000;
+/// How long a paused session waits for `--paused-wake-file`: a test may restart its server in
+/// between, and a leaked fixture still ends.
+const MAX_PAUSED_WAKE_MS: u64 = 120_000;
 /// Two Ctrl+C at the prompt within this time exit (Claude Code's "Press Ctrl-C again to exit").
 const DOUBLE_CTRL_C: Duration = Duration::from_secs(2);
 /// The user line Claude Code 2.1.292 writes when the person interrupts a turn.
@@ -249,6 +261,8 @@ struct Options {
     goal_retry_ms: u64,
     goal_check_errors: bool,
     goal_cleared_on_retry: bool,
+    paused_wake_file: Option<PathBuf>,
+    paused_wake_dies: bool,
     goal_delay_ms: u64,
     goal_met_on_wake_ms: Option<u64>,
     wake_stop_lost: bool,
@@ -308,6 +322,8 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
         goal_retry_ms: 2_000,
         goal_check_errors: false,
         goal_cleared_on_retry: false,
+        paused_wake_file: None,
+        paused_wake_dies: false,
         goal_delay_ms: 0,
         goal_met_on_wake_ms: None,
         wake_stop_lost: false,
@@ -409,6 +425,11 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
             "--goal-api-errors" => options.goal_api_errors = parse_number(&flag, args.next())?,
             "--goal-check-errors" => options.goal_check_errors = true,
             "--goal-cleared-on-retry" => options.goal_cleared_on_retry = true,
+            "--paused-wake-file" => {
+                options.paused_wake_file =
+                    Some(args.next().ok_or("--paused-wake-file needs a path")?.into());
+            }
+            "--paused-wake-dies" => options.paused_wake_dies = true,
             "--goal-retry-ms" => {
                 let ms: u64 = parse_number(&flag, args.next())?;
                 options.goal_retry_ms = ms.min(MAX_GOAL_DELAY_MS);
@@ -630,13 +651,18 @@ fn cli_version() -> &'static str {
 /// Holds a turn until `--turn-hold-file` exists (bounded by [`MAX_WORK_MS`]); nothing without
 /// the option.
 fn hold_turn(options: &Options) {
-    let Some(file) = &options.turn_hold_file else {
-        return;
-    };
+    if let Some(file) = &options.turn_hold_file {
+        wait_for_file(file, MAX_WORK_MS);
+    }
+}
+
+/// Waits until `file` exists, at most `bound_ms`; whether it does.
+fn wait_for_file(file: &Path, bound_ms: u64) -> bool {
     let started = std::time::Instant::now();
-    while !file.exists() && started.elapsed() < Duration::from_millis(MAX_WORK_MS) {
+    while !file.exists() && started.elapsed() < Duration::from_millis(bound_ms) {
         std::thread::sleep(Duration::from_millis(25));
     }
+    file.exists()
 }
 
 struct Transcript {
@@ -1763,7 +1789,17 @@ fn goal_api_errors(
                 )?;
                 t.turn_duration(9_000)
             })?;
-            return say("GOAL PAUSED");
+            say("GOAL PAUSED")?;
+            if let Some(file) = &options.paused_wake_file {
+                wake_after_pause(
+                    file.clone(),
+                    options.paused_wake_dies,
+                    options.turn_hold_file.clone(),
+                    transcript.cloned(),
+                    hooks.cloned(),
+                );
+            }
+            return Ok(());
         }
         write(&|t| {
             t.notice(
@@ -1806,6 +1842,60 @@ fn goal_api_errors(
             t.tool_use()
         })?;
     }
+}
+
+/// The prompt that wakes a session whose goal was paused (`--paused-wake-file`): a background
+/// command of the session ended, shaped like Claude Code 2.1.292's notification.
+const PAUSED_WAKE_PROMPT: &str = "<task-notification>\n<task-id>bfakepaused</task-id>\n<tool-use-id>toolu_fake_paused</tool-use-id>\n<output-file>/tmp/claude-0/fake/tasks/bfakepaused.output</output-file>\n<status>completed</status>\n<summary>Background command \"Run the tests\" completed (exit code 0)</summary>\n</task-notification>";
+
+/// Wakes the session whose goal was paused once `file` exists, like Claude Code wakes an idle
+/// session when background work ends (`--paused-wake-file`): the prompt and its hook, then the
+/// agent works (a tool call, `WOKEN`), answers once `hold` exists if given (`WOKEN DONE`), runs
+/// its Stop hook and closes the turn with no goal verdict. With `dies` the API refuses the turn
+/// again (`--paused-wake-dies`): its error record and the closed turn, no work, no new notice and
+/// no Stop hook (`WAKE DIED`). Nothing happens when `file` does not come in time.
+fn wake_after_pause(
+    file: PathBuf,
+    dies: bool,
+    hold: Option<PathBuf>,
+    transcript: Option<Arc<Mutex<Transcript>>>,
+    hooks: Option<Hooks>,
+) {
+    std::thread::spawn(move || {
+        if !wait_for_file(&file, MAX_PAUSED_WAKE_MS) {
+            return;
+        }
+        let write = |f: &dyn Fn(&mut Transcript) -> io::Result<()>| {
+            if let Some(transcript) = &transcript
+                && let Ok(mut t) = transcript.lock()
+            {
+                let _ = f(&mut t);
+            }
+        };
+        if let Some(hooks) = &hooks {
+            let _ = hooks.prompt(PAUSED_WAKE_PROMPT);
+        }
+        write(&|t| t.begin(PAUSED_WAKE_PROMPT));
+        if dies {
+            write(&|t| {
+                t.connection_lost()?;
+                t.turn_duration(900)
+            });
+            let _ = say("WAKE DIED");
+            return;
+        }
+        write(&|t| t.tool_use());
+        let _ = say("WOKEN");
+        if let Some(hold) = &hold {
+            wait_for_file(hold, MAX_WORK_MS);
+        }
+        write(&|t| t.answer(PAUSED_WAKE_PROMPT, "The background work finished."));
+        let _ = say("WOKEN DONE");
+        if let Some(hooks) = &hooks {
+            let _ = hooks.stop();
+        }
+        write(&|t| t.close_turn(2_000, 0));
+    });
 }
 
 /// The idle session compacts itself after `ms`, like Claude Code 2.1.292 before its prompt cache
@@ -2425,6 +2515,12 @@ mod tests {
         assert!(parse(&["--exit-at-start-file"]).is_err());
         assert!(parse(&["--stuck-at-start-file"]).is_err());
         assert!(parse(&["--turn-hold-file"]).is_err());
+        assert!(parse(&["--paused-wake-file"]).is_err());
+        assert!(
+            parse(&["--paused-wake-file", "/tmp/wake", "--paused-wake-dies"]).is_ok_and(|o| {
+                o.paused_wake_file.as_deref() == Some(Path::new("/tmp/wake")) && o.paused_wake_dies
+            })
+        );
         assert!(
             parse(&["--goal-background", "3", "--goal-delay-ms", "999999"])
                 .is_ok_and(|o| o.goal_background == Some(3) && o.goal_delay_ms == MAX_GOAL_DELAY_MS)
