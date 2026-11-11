@@ -4784,6 +4784,55 @@ fn a_session_woken_after_a_restart_no_longer_needs_you() -> TestResult {
     )
 }
 
+/// SPEC-469 GPW-004 (review round 1): Yulius restarts while the session is paused, and the
+/// session then goes on with no prompt anyone sees. The new server never saw the pause flag the
+/// task, and still the agent's work is past that flag: the request ends and the task reads
+/// Working, not Needs you until the turn ends.
+#[test]
+fn a_session_that_goes_on_unprompted_after_a_restart_no_longer_needs_you() -> TestResult {
+    let (_keep, files) = data_dir()?;
+    let (wake, hold) = (files.join("wake"), files.join("hold-turn"));
+    let agent = FakeAgentOptions {
+        paused_wake_file: Some(wake.clone()),
+        paused_wake_hidden: true,
+        turn_hold_file: Some(hold.clone()),
+        ..pausing_agent()
+    };
+    a_restart_while_a_goal_is_paused(
+        agent,
+        async |_| Ok(()),
+        async |app, id| {
+            let runtime = app.runtime(id);
+            wait_for(
+                "the transcript read again",
+                Duration::from_secs(30),
+                || async { runtime.transcript_rounds() >= 2 },
+            )
+            .await?;
+            assert_eq!(activity(app, id).await, Some(Activity::NeedsAttention));
+            assert!(pause_asks(app, id).await, "still paused: still asked");
+            std::fs::write(&wake, "")?;
+            wait_for(
+                "the request to end with the agent's work",
+                Duration::from_secs(60),
+                || async { !pause_asks(app, id).await },
+            )
+            .await?;
+            wait_for("Working", Duration::from_secs(10), || async {
+                activity(app, id).await == Some(Activity::Working)
+            })
+            .await?;
+            std::fs::write(&hold, "")?;
+            wait_for("the turn's end", Duration::from_secs(60), || async {
+                activity(app, id).await == Some(Activity::Waiting)
+            })
+            .await?;
+            assert!(!pause_asks(app, id).await, "the request stays ended");
+            Ok(())
+        },
+    )
+}
+
 /// SPEC-469 GPW-004: Claude Code wakes the paused session while Yulius is down, and the agent
 /// works. The start reads that from the transcript: the request ends and the task follows its
 /// session (Working while the woken turn runs, waiting once it ended), not Needs you for good.
