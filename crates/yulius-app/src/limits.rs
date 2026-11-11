@@ -424,6 +424,11 @@ impl App {
             loaded.resolved(Limit::CdRunDisk).value.saturating_mul(GB),
             Ordering::Relaxed,
         );
+        // At start the isolation is not installed yet: it is built with the quota.
+        if let Some(isolation) = self.isolation.get() {
+            let disk = loaded.resolved(Limit::SandboxDisk).value;
+            isolation.set_disk_quota((disk > 0).then(|| disk.saturating_mul(GB)));
+        }
         raised
     }
 

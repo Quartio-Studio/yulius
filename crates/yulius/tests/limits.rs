@@ -568,3 +568,42 @@ async fn a_queued_task_is_started_when_the_session_limit_is_raised() -> TestResu
     assert_eq!(status.body["sessions"]["limit"], 2);
     Ok(())
 }
+
+/// An isolation that records the disk quota it is told.
+#[derive(Default)]
+struct Quota(std::sync::Mutex<Vec<Option<u64>>>);
+
+#[async_trait::async_trait]
+impl yulius_app::ports::isolation::SandboxIsolation for Quota {
+    async fn prepare(
+        &self,
+        _: &yulius_app::ports::isolation::SandboxRef,
+    ) -> yulius_app::error::AppResult<Option<yulius_app::ports::isolation::SandboxJoin>> {
+        Ok(None)
+    }
+    fn release(&self, _: &yulius_domain::ids::SandboxId) {}
+    fn set_disk_quota(&self, quota: Option<u64>) {
+        if let Ok(mut told) = self.0.lock() {
+            told.push(quota);
+        }
+    }
+}
+
+/// HSL-006: a sandbox's disk quota changes while the server runs: the isolation is told the
+/// new quota in bytes, and "no quota" for 0.
+#[tokio::test]
+async fn the_sandbox_disk_quota_reaches_the_isolation_at_once() -> TestResult {
+    let (h, admin) = instance(NEW, &[]).await?;
+    let quota = std::sync::Arc::new(Quota::default());
+    assert!(h.app.set_isolation(quota.clone()));
+    put(&h, &admin, "sandbox_disk_gb", json!(1000)).await?;
+    put(&h, &admin, "sandbox_disk_gb", json!(0)).await?;
+    put(&h, &admin, "sandbox_disk_gb", Value::Null).await?;
+    let told = quota.0.lock().map(|told| told.clone()).unwrap_or_default();
+    assert_eq!(told, [Some(1000 * GB), None, Some(875 * GB)]);
+    let v = view(&h, &admin).await?;
+    let disk = limit(&v, "sandbox_disk_gb");
+    assert_eq!(disk["live"], true);
+    assert_eq!(disk["restart_needed"], false);
+    Ok(())
+}
