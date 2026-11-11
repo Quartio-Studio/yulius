@@ -1623,8 +1623,10 @@ failing, the commands that stop the old instance for good (`systemctl stop` and 
 --kill-whom=all --signal=SIGKILL` of both units); nothing is thawed then either, and a freeze
 that did not complete within a minute is left on its way. A server's unit that has stopped
 (`inactive` or `failed`) is not frozen by systemd: its sessions unit is frozen where it still
-runs, and both are named for you to make sure nothing of the old instance is left. A unit that
-systemd reports on its way up or down is not taken for stopped. When the new instance answers
+runs, and both are named for you to make sure nothing of the old instance is left. A server's
+unit that systemd reports on its way up or down is not taken for stopped (a sessions unit that
+is being stopped counts as ended). A unit that was frozen is named also when the other could not
+be. When the new instance answers
 and does not run, `--abort` is the way back; when the new host does not answer the question,
 nothing is touched and the same command asks again once it does.
 

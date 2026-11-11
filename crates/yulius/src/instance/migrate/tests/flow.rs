@@ -166,7 +166,9 @@ impl freeze::Host for FakeSystemd {
                         unit.freezing = unit.never_frozen;
                         unit.looks = Some(0);
                     }
-                    "thaw" if unit.stopped || unit.failed => return Ok((1, String::new())),
+                    "thaw" if unit.stopped || unit.failed || unit.starting => {
+                        return Ok((1, String::new()));
+                    }
                     "thaw" => {
                         unit.frozen = false;
                         unit.freezing = false;
@@ -1375,6 +1377,31 @@ fn a_recorded_start_freezes_whatever_unit_runs_beside_the_new_instance() -> Test
         assert_eq!((state.cutover, state.finished), (Cutover::Moved, true));
     }
 
+    // The server's unit cannot be frozen (it is on its way up) while its sessions unit can:
+    // the unit that was frozen is named all the same, beside the failure of the other.
+    let mut s = killed_while_starting()?;
+    if let Ok(mut unit) = s.world.systemd.lock() {
+        unit.frozen = false;
+        unit.starting = true;
+    }
+    sessions(&s, false)?;
+    assert_eq!(s.run()?, 1);
+    let shown = s.shown();
+    assert!(
+        shown.contains(
+            "yulius-sandboxes.service ran here beside the new instance (thawed or started \
+             since the start was ordered): it is frozen again"
+        ),
+        "{shown}"
+    );
+    assert!(
+        shown.contains("yulius.service may run beside the new instance and could not be frozen"),
+        "{shown}"
+    );
+    assert!(shown.contains("must be frozen and disabled now"), "{shown}");
+    assert!(!s.events().iter().any(|e| e.contains("thaw")));
+    assert_eq!(units(&s)?, (false, Some(true)));
+
     // The sessions unit cannot be frozen: never exit 0, both units named in what to do, and
     // nothing thawed.
     let mut s = killed_while_starting()?;
@@ -1555,8 +1582,37 @@ fn a_failed_look_right_after_the_freeze_thaws_the_sessions_unit_too() -> TestRes
         );
     }
 
-    // The server's unit stopped at that moment (systemd thaws what it stops): its sessions,
-    // which the freeze took, are thawed without a failed thaw of a unit that does not run.
+    // The server's unit stopped at that moment (systemd thaws what it stops), or died and is
+    // on its way up again: its sessions, which the freeze took, are thawed without a failed
+    // thaw of a unit that does not run (systemd thaws none with a job pending either).
+    for change in [
+        (|unit| {
+            unit.frozen = false;
+            unit.starting = true;
+        }) as Outside,
+        |unit| {
+            unit.frozen = false;
+            unit.stopped = true;
+        },
+    ] {
+        let mut s = right_after_the_freeze(change)?;
+        sessions(&s, false)?;
+        assert_eq!(s.run()?, 1);
+        let shown = s.shown();
+        assert!(
+            shown.contains("is not running any more: start it"),
+            "{shown}"
+        );
+        assert!(!shown.contains("systemctl thaw"), "{shown}");
+        assert_eq!(units(&s)?, (false, Some(false)));
+        assert!(
+            s.events()
+                .contains(&"old: systemctl thaw sessions".to_owned())
+                && !s.events().contains(&"old: systemctl thaw".to_owned()),
+            "{:?}",
+            s.events()
+        );
+    }
     let mut s = right_after_the_freeze(|unit| {
         unit.frozen = false;
         unit.stopped = true;
@@ -2298,6 +2354,14 @@ fn a_look_that_fails_right_after_the_freeze_thaws_and_says_what_is_known() -> Te
     assert!(!shown.contains("is not running any more"), "{shown}");
     // Thawed once the move took the freeze's end, and still enabled; nothing was copied.
     assert_eq!(s.old_unit(), (false, false), "{shown}");
+    // What the freeze covered is thawed as the freeze knew it, without another question to a
+    // systemd that does not answer: no thaw of a sessions unit this host does not have, and
+    // no failure that did not happen.
+    assert!(shown.contains("thawed: it runs as before"), "{shown}");
+    assert!(
+        !shown.contains("run it by hand") && !shown.contains("yulius-sandboxes.service"),
+        "{shown}"
+    );
     let events = s.events();
     let at = |what: &str| {
         events

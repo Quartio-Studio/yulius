@@ -62,11 +62,14 @@ messages and documents say what the code does.
   the line says what systemd said: the server's unit does not run (as before: "is not running
   any more: start it"), a unit of the instance runs unfrozen (thawed or started from outside),
   or systemd does not say. In the last two cases the move thaws the instance, its sessions unit
-  first, after it claimed the freeze's end, so the old instance runs on. When the server's unit
-  does not run, what the freeze took all the same (its sessions unit) is thawed, without a
-  failed thaw of a unit that does not run. The copy on the new host is not touched and the same
-  command starts over. (Amends SPEC-460 MIG-004: "a failure … before the new instance is
-  started thaws the old one".)
+  first, after it claimed the freeze's end, so the old instance runs on: by what systemd says
+  when a unit runs unfrozen, and, when systemd does not say, the units the freeze covered,
+  without another question (no thaw of a sessions unit the host does not have). When the
+  server's unit does not run (stopped, or on its way up again), what the freeze took all the
+  same (its sessions unit) is thawed, without a thaw of a unit that does not run, which systemd
+  would refuse. The copy on the new host is not touched and the same command starts over.
+  (Amends SPEC-460 MIG-004: "a failure … before the new instance is started thaws the old
+  one".)
 - LFT-002 **A recorded start never ends in two running instances.** A run that goes on from a
   recorded start and finds the old instance not frozen as a whole asks the new instance, as
   before. When it reports the build:
@@ -75,19 +78,22 @@ messages and documents say what the code does.
     recorded as done. That is: the server's unit has stopped (systemd says `inactive` or
     `failed`) and its sessions unit does not run unfrozen;
   - whatever unit of it runs unfrozen is frozen by the run, to stay (bounded by the freeze's
-    wait for each unit), and so is a unit that is on its way up or down (`activating`,
-    `reloading`, `deactivating`: a restart after a crash, a start or a stop in progress) or
-    whose state systemd does not say. A server's unit that has stopped is not frozen (systemd
+    wait for each unit, and every unit is sent its freeze before any is waited for), and so is
+    a server's unit that is on its way up or down (`activating`, `reloading`, `deactivating`: a
+    restart after a crash, a start or a stop in progress) and a unit whose state systemd does
+    not say. A sessions unit follows #1173's reading: one that is being stopped counts as
+    ended, as one that does not run. A server's unit that has stopped is not frozen (systemd
     freezes none); its sessions unit that still runs is, and then the `manual` line above
     follows. Otherwise the server's unit is disabled and the instance checked as after any
     start. When a unit is frozen the checklist names it and says that it ran beside the new
     instance, or that it may have when its state was not known or in between (`changed`); when
-    one cannot be frozen the line is `FAIL` with the reason and the commands, among them the
-    ones that stop the instance for good when a freeze keeps failing (systemd freezes only a
-    unit that runs), the other unit is frozen all the same, the move is still recorded as done
-    (the new instance has taken over, MIG-004) and the run exits 1. Nothing thaws on that path:
-    a freeze that systemd refuses or that is not complete within the wait is left as it stands
-    (SPEC-460 MIG-004: once the start was ordered nothing thaws the old instance).
+    one cannot be frozen the line is `FAIL`, names that unit with the reason and gives the
+    commands, among them the ones that stop the instance for good when a freeze keeps failing
+    (systemd freezes only a unit that runs); the other unit is frozen and named all the same,
+    the move is still recorded as done (the new instance has taken over, MIG-004) and the run
+    exits 1. Nothing thaws on that path: a freeze that systemd refuses or that is not complete
+    within the wait is left as it stands (SPEC-460 MIG-004: once the start was ordered nothing
+    thaws the old instance).
 - LFT-003 **The new host's silence is not "does not run".** A run that goes on from a recorded
   start and cannot reach the new host with the move's key (no connection, no answer) fails
   saying so, with `ssh`'s reason, and tells to run the command again when the new host answers
@@ -253,10 +259,15 @@ messages and documents say what the code does.
 - **Merged onto the two units of #1173, not beside them.** #1173 had changed the cutover's
   check after the freeze in its own way: what the freeze took was "given back" (thawed by the
   freeze's own guard) and the line had two wordings. Three things were decided in the merge:
-  - One way to thaw there: the move claims the freeze's end and thaws the instance by what
-    systemd says (`freeze::thaw_instance`, #1173's), which leaves out a server's unit that does
-    not run. The guard's own thaw tried that unit too and reported "thaw failed: run it by
-    hand" for a unit stopped right after the freeze, which nobody can thaw. `give_back` is gone.
+  - One way to thaw there: the move claims the freeze's end and thaws. The guard's own thaw
+    (`give_back`) tried a server's unit that had stopped right after the freeze too and
+    reported "thaw failed: run it by hand" for a unit nobody can thaw; it is gone. What the
+    guard knew without asking is kept: the units the freeze covered are taken before the claim
+    and thawed in a thaw's order when systemd does not answer (asking it again which units
+    there are named a sessions unit the host does not have and reported its thaw as failed) and
+    when the server's unit does not run (then without that unit, also when it is on its way up
+    again: systemd thaws no unit with a job pending). Only when systemd says that a unit runs
+    unfrozen is the instance thawed by what systemd says (`thaw`, #1173's).
   - Three wordings stay (LFT-001): #1173's "not known to be frozen as a whole (systemd does not
     say, or one of its units is not frozen)" was true and told two different states as one.
     Its test of that line asserts the three now.
@@ -265,6 +276,14 @@ messages and documents say what the code does.
     (the `manual` line and exit 0 while agents of the old instance run): it now asserts that the
     sessions unit is frozen. What systemd says of the old instance (`Old`) got two facts the
     resumed start needs: the server's unit has stopped, and the sessions unit runs unfrozen.
+    The freeze to stay tells what it froze beside what it could not (`Stayed`), so a unit that
+    was frozen is named also when the other's freeze failed.
+- **The GitHub App's callback is asked only while the key signs in (#1184).** #1184 reached
+  `dev` after that and asked the new instance about the App's callback at the start of the
+  finish, before this change's question whether the one-time key is still there: git merged
+  the two without a conflict, and a finish found done sent a step over the missing key again.
+  The key is asked first; a finish found done names the App with its link and values as the
+  plan does, which is what #1184 does whenever the new instance cannot be asked.
 - **No new ADR.** ADR-0297's decisions stand (the start is the point of no automatic return; the
   inventory is the proof); these are corrections inside them.
 

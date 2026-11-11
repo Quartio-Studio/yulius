@@ -1534,20 +1534,32 @@ impl<'a> Move<'a> {
         if !state.is_some_and(|old| old.all_frozen) {
             // Found before the copy, not after it. The move takes the freeze's end first, so
             // what is said and thawed here is the only answer to it.
+            let covered: Vec<String> = held.covered().iter().rev().cloned().collect();
             self.claim(held);
             let why = not_frozen_after_freeze(&unit, state);
             self.fail("old instance", why);
             match state {
-                // The server's unit is down, as the line says. What the freeze took all the
-                // same (its sessions unit) is thawed, and only a failure of that is said: a
-                // unit that does not run is not thawed, and nothing of it is frozen.
-                Some(old) if !old.active => {
-                    if let Err(why) = freeze::thaw_instance(&mut *self.world.freezer(), &unit) {
-                        self.fail("old instance", why);
+                // A unit of it runs unfrozen, as systemd says: thawed by what systemd says.
+                Some(old) if old.active => self.thaw(),
+                // The server's unit does not run, as the line says, or systemd does not say
+                // what runs. What the freeze covered is thawed as the freeze knew it, in the
+                // order a thaw takes it and without another question. A server's unit that
+                // does not run is left out: systemd thaws none (stopped, or with a job
+                // pending), nothing of it is frozen, and only a failed thaw is said then.
+                _ => {
+                    let down = state.is_some();
+                    let units: Vec<String> = covered
+                        .into_iter()
+                        .filter(|name| !(down && *name == unit))
+                        .collect();
+                    match freeze::thaw_each(&mut *self.world.freezer(), &units) {
+                        Ok(()) if down || units.is_empty() => {}
+                        Ok(()) => self.changed("old instance", "thawed: it runs as before"),
+                        Err(why) => {
+                            self.fail("old instance", why);
+                        }
                     }
                 }
-                // The freeze had worked as far as anyone knows: not left frozen without a word.
-                _ => self.thaw(),
             }
             return Err(Stop::Failed);
         }
@@ -1813,62 +1825,83 @@ impl<'a> Move<'a> {
     /// Freezes what runs of an old instance beside a new one that has taken over (a recorded
     /// start, a unit of it thawed or started since), to stay: the start was ordered, so nothing
     /// here thaws, also not when a freeze fails ([`freeze::freeze_to_stay`], not the export's
-    /// freeze, which undoes itself). The caller looks again and says whether it holds. `before`
-    /// is what systemd said of the instance before.
+    /// freeze, which undoes itself). Every unit that was frozen is named, and every one that
+    /// could not be; the caller looks again and says whether the instance is held. `before` is
+    /// what systemd said of the instance before.
     fn freeze_beside_new(&mut self, before: Option<Old>) {
         let unit = self.opts.service.clone();
-        // systemd named what runs: the server's unit was active or had stopped, not on its way
-        // up or down, and its sessions unit answered.
-        let known = before.is_some_and(|old| old.active || old.stopped);
-        match freeze::freeze_to_stay(&mut *self.world.freezer(), &unit) {
-            // Nothing of it ran unfrozen by the time the freeze looked.
-            Ok(frozen) if frozen.is_empty() => {}
-            Ok(frozen) => {
-                let (names, are) = (
-                    frozen.join(" and "),
-                    if frozen.len() == 1 {
-                        "it is"
-                    } else {
-                        "they are"
-                    },
-                );
-                if known {
-                    self.changed(
-                        "old instance",
-                        format!(
-                            "{names} ran here beside the new instance (thawed or started since \
-                             the start was ordered): {are} frozen again. What its agents did \
-                             meanwhile is on this host only"
-                        ),
-                    );
+        // Whether systemd had said that this unit of it ran unfrozen (a unit that is sent a
+        // freeze was not frozen): the server's unit when it was active, its sessions unit when
+        // it ran. A unit on its way up or down, or an unanswered question, is not that.
+        let ran = |name: &String| {
+            before.is_some_and(|old| {
+                if *name == unit {
+                    old.active
                 } else {
-                    self.changed(
-                        "old instance",
-                        format!(
-                            "{names} may have run here beside the new instance (systemd did \
-                             not say that it was frozen, or it was on its way up or down): \
-                             {are} frozen now"
-                        ),
-                    );
+                    old.sessions_run
                 }
+            })
+        };
+        let did = freeze::freeze_to_stay(&mut *self.world.freezer(), &unit);
+        let are = |names: &[String]| {
+            if names.len() == 1 {
+                "it is"
+            } else {
+                "they are"
             }
-            Err(why) => {
-                let runs = if known { "runs" } else { "may run" };
-                let units = self.old_units();
-                // The freeze `moved` asks for may fail again: systemd freezes only a unit
-                // that runs, not one on its way up or down or with a process stuck in the
-                // kernel. Stopping it (so it is not restarted) and killing what is left, with
-                // SIGKILL as the new host's own stop does, ends the old instance in every state.
-                self.fail(
-                    "old instance",
-                    format!(
-                        "{unit} {runs} beside the new instance and could not be frozen: {why}. \
-                         If a freeze keeps failing (systemd freezes only a unit that runs), \
-                         stop it for good instead: `systemctl stop {units}; systemctl kill \
-                         --kill-whom=all --signal=SIGKILL {units}`"
-                    ),
-                );
-            }
+        };
+        let (known, unknown): (Vec<String>, Vec<String>) = did.frozen.into_iter().partition(ran);
+        if !known.is_empty() {
+            self.changed(
+                "old instance",
+                format!(
+                    "{} ran here beside the new instance (thawed or started since the start \
+                     was ordered): {} frozen again. What the old instance's agents did \
+                     meanwhile is on this host only",
+                    known.join(" and "),
+                    are(&known)
+                ),
+            );
+        }
+        if !unknown.is_empty() {
+            self.changed(
+                "old instance",
+                format!(
+                    "{} may have run here beside the new instance (systemd did not say that \
+                     {} frozen, or it was on its way up or down): {} frozen now",
+                    unknown.join(" and "),
+                    if unknown.len() == 1 {
+                        "it was"
+                    } else {
+                        "they were"
+                    },
+                    are(&unknown)
+                ),
+            );
+        }
+        if !did.failed.is_empty() {
+            let what: Vec<String> = did
+                .failed
+                .iter()
+                .map(|(name, _)| format!("{name} {}", if ran(name) { "runs" } else { "may run" }))
+                .collect();
+            let why: Vec<&str> = did.failed.iter().map(|(_, why)| why.as_str()).collect();
+            let units = self.old_units();
+            // The freeze `moved` asks for may fail again: systemd freezes only a unit that
+            // runs, not one on its way up or down or with a process stuck in the kernel.
+            // Stopping it (so it is not restarted) and killing what is left, with SIGKILL as
+            // the new host's own stop does, ends the old instance in every state.
+            self.fail(
+                "old instance",
+                format!(
+                    "{} beside the new instance and could not be frozen: {}. If a freeze keeps \
+                     failing (systemd freezes only a unit that runs), stop it for good instead: \
+                     `systemctl stop {units}; systemctl kill --kill-whom=all --signal=SIGKILL \
+                     {units}`",
+                    what.join(" and "),
+                    why.join("; ")
+                ),
+            );
         }
     }
 

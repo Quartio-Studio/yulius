@@ -83,7 +83,12 @@ impl Host for Fake {
     fn systemctl(&mut self, args: &[&str]) -> Result<(i32, String), String> {
         let call = args.join(" ");
         self.log.borrow_mut().push(call.clone());
-        let code = self.codes.get(args[0]).copied().unwrap_or(0);
+        let code = self
+            .codes
+            .get(&call)
+            .or_else(|| self.codes.get(args[0]))
+            .copied()
+            .unwrap_or(0);
         match args[0] {
             "show" if args.last() == Some(&SESSIONS) && self.sessions_silent => {
                 Err("Failed to connect to bus".into())
@@ -292,9 +297,18 @@ fn only_frozen(fake: &Fake) -> bool {
         .any(|call| call.starts_with("is-active") || call.starts_with("thaw"))
 }
 
+/// What a freeze to stay could not freeze, as one text.
+fn failures(did: &Stayed) -> String {
+    did.failed
+        .iter()
+        .map(|(unit, why)| format!("{unit}: {why}"))
+        .collect::<Vec<_>>()
+        .join(" | ")
+}
+
 /// SPEC-467 LFT-002: beside a new instance that has taken over, the old unit is frozen to stay.
 #[test]
-fn a_freeze_to_stay_never_thaws_and_asks_no_helper() -> TestResult {
+fn a_freeze_to_stay_never_thaws_and_asks_no_helper() {
     // Frozen after a moment.
     let mut fake = Fake::new(&[
         ("active", "running"),
@@ -303,18 +317,22 @@ fn a_freeze_to_stay_never_thaws_and_asks_no_helper() -> TestResult {
     ]);
     // An update that runs would refuse an export; here the unit must be frozen all the same.
     *fake.helper.borrow_mut() = VecDeque::from(["active".to_owned()]);
-    assert_eq!(freeze_to_stay(&mut fake, UNIT)?, [UNIT]);
+    let did = freeze_to_stay(&mut fake, UNIT);
+    assert_eq!(
+        (did.frozen.as_slice(), failures(&did).as_str()),
+        (&[UNIT.to_owned()][..], "")
+    );
     assert_eq!(fake.calls(), ["freeze yulius.service"]);
     assert!(only_frozen(&fake), "{:?}", fake.log.borrow());
 
     // Not frozen within the wait: said, and left on its way instead of thawed.
     let mut fake = Fake::new(&[("active", "freezing")]);
-    let err = freeze_to_stay(&mut fake, UNIT)
-        .err()
-        .ok_or("expected an error")?;
+    let did = freeze_to_stay(&mut fake, UNIT);
+    assert!(did.frozen.is_empty());
     assert!(
-        err.contains("yulius.service was not frozen within 60 s") && err.contains("left in place"),
-        "{err}"
+        failures(&did).contains("yulius.service was not frozen within 60 s")
+            && failures(&did).contains("left in place"),
+        "{did:?}"
     );
     assert_eq!(fake.calls(), ["freeze yulius.service"]);
     assert!(only_frozen(&fake), "{:?}", fake.log.borrow());
@@ -324,12 +342,11 @@ fn a_freeze_to_stay_never_thaws_and_asks_no_helper() -> TestResult {
     for active in ["active", "activating", "deactivating"] {
         let mut fake = Fake::new(&[(active, "running")]);
         fake.codes.insert("freeze".into(), 1);
-        let err = freeze_to_stay(&mut fake, UNIT)
-            .err()
-            .ok_or("expected an error")?;
-        assert!(
-            err.contains("`systemctl freeze yulius.service` failed (exit 1)"),
-            "{err}"
+        let did = freeze_to_stay(&mut fake, UNIT);
+        assert!(did.frozen.is_empty());
+        assert_eq!(
+            failures(&did),
+            "yulius.service: `systemctl freeze yulius.service` failed (exit 1)"
         );
         assert_eq!(fake.calls(), ["freeze yulius.service"]);
         assert!(only_frozen(&fake), "{:?}", fake.log.borrow());
@@ -339,7 +356,11 @@ fn a_freeze_to_stay_never_thaws_and_asks_no_helper() -> TestResult {
     // unit is frozen, which is all that is asked.
     let mut fake = Fake::new(&[("active", "freezing"), ("active", "frozen")]);
     fake.codes.insert("freeze".into(), 1);
-    assert_eq!(freeze_to_stay(&mut fake, UNIT)?, [UNIT]);
+    let did = freeze_to_stay(&mut fake, UNIT);
+    assert_eq!(
+        (did.frozen.as_slice(), failures(&did).as_str()),
+        (&[UNIT.to_owned()][..], "")
+    );
     assert!(only_frozen(&fake), "{:?}", fake.log.borrow());
 
     // Frozen already, or stopped: nothing is sent, systemd would refuse it.
@@ -349,20 +370,28 @@ fn a_freeze_to_stay_never_thaws_and_asks_no_helper() -> TestResult {
         ("failed", "running"),
     ] {
         let mut fake = Fake::new(&[state]);
-        assert!(freeze_to_stay(&mut fake, UNIT)?.is_empty(), "{state:?}");
+        assert_eq!(
+            freeze_to_stay(&mut fake, UNIT),
+            Stayed::default(),
+            "{state:?}"
+        );
         assert!(fake.calls().is_empty(), "{state:?}: {:?}", fake.calls());
     }
-    Ok(())
 }
 
 /// SPEC-467 LFT-002 beside SPEC-458: the old instance is its server's unit and its sessions
 /// unit. Whatever of the two runs unfrozen is frozen to stay, each half alone too.
 #[test]
-fn a_freeze_to_stay_takes_the_sessions_unit_too() -> TestResult {
+fn a_freeze_to_stay_takes_the_sessions_unit_too() {
     let (running, frozen) = (("active", "running"), ("active", "frozen"));
+    let names = |units: &[&str]| -> Vec<String> { units.iter().map(|u| (*u).to_owned()).collect() };
     // Both run: the server's unit first, as in an export.
     let mut fake = Fake::new(&[running, frozen]).with_sessions(&[running, frozen]);
-    assert_eq!(freeze_to_stay(&mut fake, UNIT)?, [UNIT, SESSIONS]);
+    let did = freeze_to_stay(&mut fake, UNIT);
+    assert_eq!(
+        (did.frozen, did.failed),
+        (names(&[UNIT, SESSIONS]), Vec::new())
+    );
     assert_eq!(
         fake.calls(),
         ["freeze yulius.service", "freeze yulius-sandboxes.service"]
@@ -371,55 +400,123 @@ fn a_freeze_to_stay_takes_the_sessions_unit_too() -> TestResult {
 
     // The sessions unit thawed alone.
     let mut fake = Fake::new(&[frozen]).with_sessions(&[running, frozen]);
-    assert_eq!(freeze_to_stay(&mut fake, UNIT)?, [SESSIONS]);
+    assert_eq!(freeze_to_stay(&mut fake, UNIT).frozen, names(&[SESSIONS]));
     assert_eq!(fake.calls(), ["freeze yulius-sandboxes.service"]);
 
     // The server's unit thawed alone.
     let mut fake = Fake::new(&[running, frozen]).with_sessions(&[frozen]);
-    assert_eq!(freeze_to_stay(&mut fake, UNIT)?, [UNIT]);
+    assert_eq!(freeze_to_stay(&mut fake, UNIT).frozen, names(&[UNIT]));
     assert_eq!(fake.calls(), ["freeze yulius.service"]);
 
     // A server's unit that has stopped while its sessions run on: the sessions are frozen.
     let mut fake = Fake::new(&[("inactive", "running")]).with_sessions(&[running, frozen]);
-    assert_eq!(freeze_to_stay(&mut fake, UNIT)?, [SESSIONS]);
+    assert_eq!(freeze_to_stay(&mut fake, UNIT).frozen, names(&[SESSIONS]));
     assert_eq!(fake.calls(), ["freeze yulius-sandboxes.service"]);
 
     // A sessions unit that does not run is no part of what runs.
     let mut fake = Fake::new(&[running, frozen]).with_sessions(&[("inactive", "running")]);
-    assert_eq!(freeze_to_stay(&mut fake, UNIT)?, [UNIT]);
+    assert_eq!(freeze_to_stay(&mut fake, UNIT).frozen, names(&[UNIT]));
 
     // systemd says nothing about the sessions unit: that is not "there is none". It is sent
     // the freeze, and the run says that nobody knows whether it took.
     let mut fake = Fake::new(&[frozen]).with_sessions(&[running]);
     fake.sessions_silent = true;
-    let err = freeze_to_stay(&mut fake, UNIT)
-        .err()
-        .ok_or("expected an error")?;
+    let did = freeze_to_stay(&mut fake, UNIT);
+    assert!(did.frozen.is_empty());
     assert!(
-        err.contains("yulius-sandboxes.service was sent the freeze, and systemd does not say"),
-        "{err}"
+        failures(&did)
+            .contains("yulius-sandboxes.service was sent the freeze, and systemd does not say"),
+        "{did:?}"
     );
     assert_eq!(fake.calls(), ["freeze yulius-sandboxes.service"]);
     assert!(only_frozen(&fake), "{:?}", fake.log.borrow());
 
-    // A freeze of one unit that fails does not keep the other from being frozen, and nothing
-    // that was frozen is thawed for it.
+    // Both freezes refused: both are tried and both are told; nothing is thawed for it.
     let mut fake = Fake::new(&[running]).with_sessions(&[running]);
     fake.codes.insert("freeze".into(), 1);
-    let err = freeze_to_stay(&mut fake, UNIT)
-        .err()
-        .ok_or("expected an error")?;
-    assert!(
-        err.contains("`systemctl freeze yulius.service` failed (exit 1)")
-            && err.contains("`systemctl freeze yulius-sandboxes.service` failed (exit 1)"),
-        "{err}"
+    let did = freeze_to_stay(&mut fake, UNIT);
+    assert!(did.frozen.is_empty());
+    assert_eq!(
+        failures(&did),
+        "yulius.service: `systemctl freeze yulius.service` failed (exit 1) | \
+         yulius-sandboxes.service: `systemctl freeze yulius-sandboxes.service` failed (exit 1)"
     );
     assert_eq!(
         fake.calls(),
         ["freeze yulius.service", "freeze yulius-sandboxes.service"]
     );
     assert!(only_frozen(&fake), "{:?}", fake.log.borrow());
-    Ok(())
+}
+
+/// One unit that cannot be frozen does not hide the other that was: what was frozen is told
+/// beside what was not, so the checklist can name both (SPEC-467 LFT-002).
+#[test]
+fn a_freeze_to_stay_tells_what_it_froze_beside_what_it_could_not() {
+    let (running, frozen) = (("active", "running"), ("active", "frozen"));
+    // The server's unit is on its way up: systemd refuses its freeze, and takes the other.
+    let mut fake = Fake::new(&[("activating", "running")]).with_sessions(&[running, frozen]);
+    fake.codes.insert("freeze yulius.service".into(), 1);
+    let did = freeze_to_stay(&mut fake, UNIT);
+    assert_eq!(did.frozen, [SESSIONS]);
+    assert_eq!(
+        failures(&did),
+        "yulius.service: `systemctl freeze yulius.service` failed (exit 1)"
+    );
+    assert!(only_frozen(&fake), "{:?}", fake.log.borrow());
+
+    // The other way round.
+    let mut fake = Fake::new(&[running, frozen]).with_sessions(&[running]);
+    fake.codes
+        .insert("freeze yulius-sandboxes.service".into(), 1);
+    let did = freeze_to_stay(&mut fake, UNIT);
+    assert_eq!(did.frozen, [UNIT]);
+    assert_eq!(
+        failures(&did),
+        "yulius-sandboxes.service: `systemctl freeze yulius-sandboxes.service` failed (exit 1)"
+    );
+
+    // The server's freeze hangs (a process stuck in the kernel): its sessions unit was sent
+    // its freeze before that wait began, not a minute later, and is told as frozen.
+    let mut fake = Fake::new(&[running, ("active", "freezing")]).with_sessions(&[running, frozen]);
+    let did = freeze_to_stay(&mut fake, UNIT);
+    assert_eq!(did.frozen, [SESSIONS]);
+    assert!(
+        failures(&did).contains("yulius.service was not frozen within 60 s"),
+        "{did:?}"
+    );
+    let log = fake.log.borrow();
+    let at = |call: &str| log.iter().position(|c| c == call);
+    let sent = at("freeze yulius.service").zip(at("freeze yulius-sandboxes.service"));
+    assert!(
+        sent.is_some_and(|(server, sessions)| sessions == server + 1),
+        "both freezes are sent before either is waited for: {log:?}"
+    );
+    assert!(only_frozen(&fake), "{log:?}");
+}
+
+/// What a caller knows the freeze covered is thawed in its order without a question to
+/// systemd (SPEC-467 LFT-001: a systemd that does not answer `show` right after the freeze).
+#[test]
+fn thawing_named_units_asks_systemd_nothing() {
+    let mut fake = Fake::new(&[]);
+    fake.sessions_silent = true;
+    let units = [SESSIONS.to_owned(), UNIT.to_owned()];
+    assert_eq!(thaw_each(&mut fake, &units), Ok(()));
+    assert_eq!(
+        *fake.log.borrow(),
+        ["thaw yulius-sandboxes.service", "thaw yulius.service"]
+    );
+    // Every one is tried, and a failure names its unit.
+    let mut fake = Fake::new(&[]);
+    fake.codes.insert("thaw yulius-sandboxes.service".into(), 1);
+    let why = thaw_each(&mut fake, &units).err().unwrap_or_default();
+    assert!(
+        why.contains("`systemctl thaw yulius-sandboxes.service` failed (exit 1); run it by hand")
+            && !why.contains("thaw yulius.service"),
+        "{why}"
+    );
+    assert_eq!(fake.calls().len(), 2);
+    assert_eq!(thaw_each(&mut fake, &[]), Ok(()));
 }
 
 #[test]
