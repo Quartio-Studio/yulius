@@ -525,7 +525,6 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
 }
 
 /// Agent-secret tools (SPEC-002 ADR-20): names only, and typing into the sandbox browser.
-
 fn secret_tool_descriptors() -> Vec<ToolDescriptor> {
     vec![
         ToolDescriptor {
