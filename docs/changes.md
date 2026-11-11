@@ -4,6 +4,28 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-10
+
+- Text stays inside its box (SPEC-449, task #431, ADR-0290). A long URL, path or identifier
+  wraps inside its box (`overflow-wrap: break-word` on the page, `anywhere` for the Git board
+  card's line and the task overview's state) instead of running out of it, as a Needs you link
+  did on the Git board. A new e2e sweep gives the mock's tasks long text and fails on any text or
+  box past its box, sideways scrolling, or a short word broken mid-word, on every main page at
+  three widths. It also found the task overview scrolling sideways on a phone, the New task hint
+  and Done's Archive all spilling out of a narrow sidebar, all fixed.
+- Tasks and the Cockpit that name no model now run Fable 5.2 at max effort (SPEC-023, ADR-0289),
+  instead of Opus 5.5 at high. The composer lists Fable 5.2, its price is known, and a spent weekly
+  Opus cap no longer keeps a default task off a subscription. A subscription without Fable access
+  needs Opus 5.5 picked by hand.
+- A person is never stuck on a subscription (SPEC-447, task #429). Each task shows the subscription
+  it runs on (its strip, the Tasks list), and "Run #N on…" moves a running or waiting task to the
+  one they choose in the same session, or continues an ended task there; a choice above the pool's
+  98 % but below the limit is honoured. Removing a subscription always works: its tasks move to
+  another one or wait, and nothing runs on it again. A task that moved because its subscription
+  was refused or removed says so in one line naming both, and one with no usable subscription left
+  is under Needs you. A refused subscription's card says "Claude refused it: …". Everyone signed in
+  gets subscription ids from `/api/status`.
+
 ## 2026-11-09
 
 - A subscription that stops working moves its task to a working one (ROT-010, task #428's

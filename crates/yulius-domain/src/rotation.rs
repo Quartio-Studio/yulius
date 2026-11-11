@@ -130,7 +130,7 @@ pub enum Refusal {
     UnknownAccount,
     /// The requested account is not signed in or broken.
     Unavailable,
-    /// The requested account is at the threshold or limited at decision time.
+    /// The requested account is full (100 % of a binding window) or limited at decision time.
     Exhausted,
     /// The requested account belongs to another provider.
     ProviderMismatch,
@@ -349,7 +349,9 @@ fn manual(input: &RotationInput, account: Option<AccountId>) -> (Decision, Decis
     if !target.healthy {
         return refuse(Refusal::Unavailable);
     }
-    if assess(target, input.now, input.threshold, input.family).is_none() {
+    // A person may use what the pool keeps in reserve above its threshold, never a full window
+    // or a limit in effect (SPEC-447 MOV-002).
+    if target.usage.exhausted_for(input.now, 100.0, input.family) {
         return refuse(Refusal::Exhausted);
     }
     (
@@ -744,6 +746,7 @@ mod tests {
                 account("a2", usage(100.0, 0.0, Some(10)))?,
                 broken,
                 account("a4", AccountUsage::default())?,
+                account("a5", usage(99.0, 10.0, None))?,
             ],
         )?;
         let manual = |name: &str| -> Result<Trigger, IdError> {
@@ -771,6 +774,15 @@ mod tests {
             decide(&rotation, manual("a4")?),
             (
                 Decision::Switch { account: id("a4")? },
+                DecisionReason::ManualChoice
+            )
+        );
+        // A person's choice above the pool's threshold but below the limit is honoured (SPEC-447
+        // MOV-002): a task waiting for capacity could not be moved by hand otherwise.
+        assert_eq!(
+            decide(&rotation, manual("a5")?),
+            (
+                Decision::Switch { account: id("a5")? },
                 DecisionReason::ManualChoice
             )
         );

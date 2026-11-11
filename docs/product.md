@@ -207,8 +207,12 @@ watching, steering and unblocking.
   terminal's colours, following its newest lines until they scroll up), see whose it is
   in the view and in the sidebar, and can ask the owner for control; once handed over, it acts as
   the new owner.
-- **Subscription pool**: Claude accounts are used as one self-managing pool; tasks are
-  subscription-agnostic, switches and pauses are invisible to agents. Its Capacity card says what
+- **Subscription pool**: Claude accounts are used as one self-managing pool; switches and
+  pauses are invisible to agents. Each task shows the subscription it runs on, and a person can
+  run it on another from the task ("Run #N on…"); removing a subscription moves its tasks, and a
+  subscription Claude refuses (cancelled, downgraded) is taken out of the pool and says why. A
+  task that moved for either reason says so in its terminal, and one with nothing usable left is
+  under Needs you. Its Capacity card says what
   is left, how fast it burns, the tokens it used and what they would cost at Claude API list
   prices, with a 7-day chart for each. Administrators rename each subscription in place ("work
   Max", "personal") and see the email of its Claude account wherever it is named. Connecting one

@@ -11,7 +11,7 @@ import { taskInfo, isLive, allows, taskActions, otherOwner, endedMessage, limitC
 import { heldPromptCard, splitCard, supertaskCard, checkRequest, intakeStatus } from './intake.js';
 import { createMarkdownEditor } from './mdeditor.js';
 import { SUBMIT_KEYS, SUBMIT_ARIA } from './shortcuts.js';
-import { openTaskMenu, continueTask, deliveryStrip, startNow, stopTask, resumeTask, requestControl, dropControlRequest, handOverTask, openScheduleDialog, rescheduleTask } from './actions.js';
+import { openTaskMenu, openSubscriptionMenu, continueTask, deliveryStrip, startNow, stopTask, resumeTask, requestControl, dropControlRequest, handOverTask, openScheduleDialog, rescheduleTask } from './actions.js';
 import { attachTerminalDrop, attachPromptDrop, draftAttachments, taskAttachments, withAttachments, openAttachment } from './filedrop.js';
 import { createPromptInput, ATOM, FILE_MARK, FILE_MARK_END, PLACE_TYPE, placeFiles, withoutMarks } from './promptinput.js';
 import { mentionOf, parsePrompt } from './promptparts.js';
@@ -821,12 +821,24 @@ export function mountTaskView(ctx, sandbox, task) {
     const supertask = current.supertask
       ? h('span', { class: 'chip strip-extra supertask-chip', title: 'A supertask: it runs alone in its project, the other tasks wait for it' }, icon('shield', { size: 12 }), 'Supertask')
       : null;
+    // The subscription it runs on, a button to run it on another (SPEC-447 MOV-001, MOV-004).
+    const known = ctx.store.sandboxById(sandbox.id) || sandbox;
+    const movable = taskActions(current, known.access, ctx.store.pullsOf(current.sandbox_id).get(current.id), ctx.store.state.me?.user?.login).move;
+    const live = current.status === 'running' || current.status === 'waiting_capacity';
+    const runsOn = current.account_label || (live ? 'No subscription' : null);
+    const accountText = runsOn || 'Continue on…';
+    const accountTitle = runsOn && current.account_label ? `Runs on ${current.account_label}` : live ? 'Not on a subscription right now' : 'Continue it on a subscription you choose';
+    const account = movable
+      ? h('button', { type: 'button', class: 'chip strip-extra account-chip', 'aria-haspopup': 'menu', title: `${accountTitle}: choose another`, onClick: (event) => openSubscriptionMenu(ctx, event.currentTarget, current) }, icon('key', { size: 12 }), accountText)
+      : runsOn ? h('span', { class: 'chip strip-extra account-chip', title: accountTitle }, icon('key', { size: 12 }), runsOn) : null;
     setChildren(extrasEl,
       supertask,
       auto ? h('span', { class: 'chip strip-extra auto-chip', title: auto.title }, icon('zap', { size: 12 }), auto.text)
         : current.mode === 'goal' ? h('span', { class: 'chip strip-extra', title: 'Runs as a goal (/goal): the agent keeps working until it is met' }, 'Goal') : null,
       after,
-      next);
+      next,
+      // Last, so it gives way first: Task details and the Tasks list name it too.
+      account);
     fitStrip();
   }
 
@@ -1285,7 +1297,7 @@ export function mountComposer(ctx, sandbox) {
     startButton.title = write ? `${startAction()} (${SUBMIT_KEYS})` : 'Requires write access';
     const found = findModel(modelId);
     setChildren(modelChip, h('span', { class: 'sr-only' }, 'Model: '), h('span', { class: 'chip-label' }, found ? found.model.name : 'Default model'), icon('down', { size: 12 }));
-    modelChip.title = found ? `${found.provider.name} · ${found.model.name}` : 'Model: default, Opus 5.5';
+    modelChip.title = found ? `${found.provider.name} · ${found.model.name}` : 'Model: default, Fable 5.2';
     // A model without effort levels (Haiku) hides the effort choice and sends none.
     const effortless = Boolean(found && found.model.effort === false);
     effortChip.hidden = effortless;

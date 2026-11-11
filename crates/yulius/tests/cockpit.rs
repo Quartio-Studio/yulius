@@ -333,7 +333,7 @@ async fn a_write_user_gets_one_plain_cockpit_on_a_pool_subscription() -> TestRes
     // The default model and effort (SPEC-023 DEF-004).
     assert_eq!(
         printed(&screen, "cockpit-args")?,
-        "[--model claude-opus-5-5 --effort high]"
+        "[--model claude-fable-5-2 --effort max]"
     );
     assert_eq!(printed(&screen, "token")?, TOKEN);
     let repo = std::fs::canonicalize(f.data.join("sandboxes/s1/repo"))?;
@@ -520,7 +520,7 @@ async fn a_cockpit_started_again_resumes_the_newest_conversation() -> TestResult
     read_until(&mut socket, &mut screen, "ready").await?;
     assert_eq!(
         printed(&screen, "cockpit-args")?,
-        "[--resume after-clear --model claude-opus-5-5 --effort high]"
+        "[--resume after-clear --model claude-fable-5-2 --effort max]"
     );
 
     // Unwatched for a day it ends like a terminal, and comes back with its conversation.
@@ -543,7 +543,7 @@ async fn a_cockpit_started_again_resumes_the_newest_conversation() -> TestResult
     read_until(&mut socket, &mut screen, "ready").await?;
     assert_eq!(
         printed(&screen, "cockpit-args")?,
-        "[--resume after-clear --model claude-opus-5-5 --effort high]"
+        "[--resume after-clear --model claude-fable-5-2 --effort max]"
     );
     f.h.app.end_all_shells().await;
     Ok(())
@@ -749,7 +749,7 @@ async fn a_resume_that_fails_at_once_starts_fresh_the_next_time() -> TestResult 
     read_until(&mut socket, &mut screen, "ready").await?;
     assert_eq!(
         printed(&screen, "cockpit-args")?,
-        "[--model claude-opus-5-5 --effort high]",
+        "[--model claude-fable-5-2 --effort max]",
         "a fresh conversation"
     );
     f.h.app.end_all_shells().await;
@@ -786,7 +786,7 @@ async fn a_cockpit_takes_the_repository_mcp_servers_into_yulius_without_asking()
     read_until(&mut socket, &mut screen, "ready").await?;
     assert_eq!(
         printed(&screen, "cockpit-args")?,
-        "[--model claude-opus-5-5 --effort high]"
+        "[--model claude-fable-5-2 --effort max]"
     );
     let config = PathBuf::from(printed(&screen, "config")?);
     let settings: Value = serde_json::from_slice(&std::fs::read(config.join("launch-settings"))?)?;
@@ -1127,7 +1127,7 @@ async fn a_resumed_cockpit_killed_by_a_signal_resumes_the_same_conversation() ->
     read_until(&mut socket, &mut screen, "ready").await?;
     assert_eq!(
         printed(&screen, "cockpit-args")?,
-        "[--resume kept --model claude-opus-5-5 --effort high]",
+        "[--resume kept --model claude-fable-5-2 --effort max]",
         "the same conversation"
     );
     f.h.app.end_all_shells().await;
@@ -1247,10 +1247,10 @@ async fn a_cockpit_that_cannot_start_leaves_nothing_and_starts_once_it_can() -> 
     Ok(())
 }
 
-/// SPEC-023 DEF-004: the Cockpit runs Opus 5.5, so a subscription whose weekly Opus cap is spent
-/// is passed over even when it has the most room otherwise.
+/// SPEC-023 DEF-004: the Cockpit runs Fable 5.2, which no weekly Opus cap binds, so the
+/// subscription with the most room is taken even when its Opus cap is spent.
 #[tokio::test]
-async fn the_cockpit_skips_a_subscription_whose_opus_cap_is_spent() -> TestResult {
+async fn a_spent_opus_cap_does_not_keep_the_cockpit_off_a_subscription() -> TestResult {
     let f = fixture_with(false, None).await?;
     let now = f.h.clock.0.load(Ordering::SeqCst);
     let window = |used: f64| json!({"used_percent": used, "window_minutes": 10080, "resets_at": now + 80 * 3_600_000});
@@ -1283,7 +1283,7 @@ async fn the_cockpit_skips_a_subscription_whose_opus_cap_is_spent() -> TestResul
     let mut socket = attach(served.addr, &id, &f.alice).await?;
     let mut screen = String::new();
     read_until(&mut socket, &mut screen, "ready").await?;
-    assert_eq!(printed(&screen, "token")?, TOKEN);
+    assert_eq!(printed(&screen, "token")?, "spent-opus-token");
     f.h.app.end_all_shells().await;
     Ok(())
 }
@@ -2654,7 +2654,7 @@ async fn a_usage_limit_moves_the_cockpit_to_a_subscription_with_capacity() -> Te
     read_until(&mut socket, &mut screen, "ready").await?;
     assert_eq!(
         printed(&screen, "cockpit-args")?,
-        "[--resume conv-1 --model claude-opus-5-5 --effort high]",
+        "[--resume conv-1 --model claude-fable-5-2 --effort max]",
         "the same conversation, nothing typed"
     );
     assert_eq!(printed(&screen, "interrupted")?, "1");
@@ -2921,7 +2921,7 @@ async fn a_failed_move_still_continues_the_cut_turn_at_the_next_start() -> TestR
     read_until(&mut socket, &mut screen, "ready").await?;
     assert_eq!(
         printed(&screen, "cockpit-args")?,
-        "[--resume conv-1 --model claude-opus-5-5 --effort high]"
+        "[--resume conv-1 --model claude-fable-5-2 --effort max]"
     );
     assert_eq!(
         printed(&screen, "interrupted")?,
@@ -2975,7 +2975,7 @@ async fn a_quick_second_move_keeps_resuming_the_conversation() -> TestResult {
     assert_eq!(printed(&screen, "token")?, TOKEN);
     assert_eq!(
         printed(&screen, "cockpit-args")?,
-        "[--resume conv-1 --model claude-opus-5-5 --effort high]"
+        "[--resume conv-1 --model claude-fable-5-2 --effort max]"
     );
     // Opened again later, it still resumes the conversation.
     socket
@@ -4005,7 +4005,7 @@ async fn a_superagent_started_before_an_update_restarts_resuming_its_conversatio
     read_until(&mut socket, &mut screen, "ready").await?;
     assert_eq!(
         printed(&screen, "cockpit-args")?,
-        "[--resume conv-1 --model claude-opus-5-5 --effort high]",
+        "[--resume conv-1 --model claude-fable-5-2 --effort max]",
         "the same conversation, nothing typed"
     );
     assert_eq!(
@@ -4390,7 +4390,7 @@ async fn a_superagent_that_lost_yulius_says_so_and_restarts_in_place() -> TestRe
     read_until(&mut socket, &mut screen, "ready").await?;
     assert_eq!(
         printed(&screen, "cockpit-args")?,
-        "[--resume conv-1 --model claude-opus-5-5 --effort high]",
+        "[--resume conv-1 --model claude-fable-5-2 --effort max]",
         "the same conversation"
     );
     let fresh = link_state(&f, &f.alice).await?;

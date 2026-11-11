@@ -1353,8 +1353,8 @@ fn a_done_task_frees_its_slot_for_a_queued_task() -> TestResult {
 }
 
 /// SPEC-057 SUB-001, SUB-003: a Done task no longer holds its subscription. A working task counts
-/// on it and keeps it from being removed; once the task is Done the subscription shows no task,
-/// and removing it closes the Done session (task #48).
+/// on it; once the task is Done the subscription shows no task, and removing it closes the Done
+/// session (task #48).
 #[test]
 fn a_done_task_lets_its_subscription_go() -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
@@ -1386,15 +1386,11 @@ fn a_done_task_lets_its_subscription_go() -> TestResult {
                 capacity.accounts[0].in_use_by,
             ))
         };
-        // Working: the subscription is in use and cannot be removed.
+        // Working: the subscription is in use.
         assert_eq!(
             in_use(app.clone(), ctx.clone()).await?,
             (1, Some(1), Some(1))
         );
-        assert!(matches!(
-            app.delete_account(&ctx, "a-claude").await,
-            Err(yulius_app::error::AppError::Conflict(_))
-        ));
         // Done: the idle session stays, but no longer counts on the subscription.
         app.deps
             .store
@@ -1422,10 +1418,10 @@ fn a_done_task_lets_its_subscription_go() -> TestResult {
     Ok(())
 }
 
-/// SPEC-057 SUB-003: removing a subscription is refused while a task works on it, and then leaves
-/// its Done neighbour alone; once every task on it is Done, removal closes all of them.
+/// SPEC-057 SUB-003, SPEC-447 MOV-003: removing a subscription closes its Done tasks' sessions and
+/// moves the working ones; with no subscription left a working task waits for one, with no run.
 #[test]
-fn removing_a_subscription_spares_working_tasks_and_closes_every_done_one() -> TestResult {
+fn removing_a_subscription_closes_done_tasks_and_moves_working_ones() -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
     let dir = tempfile::Builder::new().prefix("yl").tempdir_in("/tmp")?;
     let data = dir.path().canonicalize()?;
@@ -1458,15 +1454,6 @@ fn removing_a_subscription_spares_working_tasks_and_closes_every_done_one() -> T
             }
         };
         done(first.clone()).await?;
-        // The second task still works: refused, and the Done one keeps its session.
-        assert!(matches!(
-            app.delete_account(&ctx, "a-claude").await,
-            Err(yulius_app::error::AppError::Conflict(_))
-        ));
-        assert_eq!(task(&app, &first).await?.status, TaskStatus::Running);
-        assert!(app.deps.store.live_attempt(&first).await?.is_some());
-        // Both Done: removal closes both and deletes the subscription.
-        done(second.clone()).await?;
         app.delete_account(&ctx, "a-claude").await?;
         assert!(
             app.deps
@@ -1475,10 +1462,22 @@ fn removing_a_subscription_spares_working_tasks_and_closes_every_done_one() -> T
                 .await?
                 .is_none()
         );
-        for id in [&first, &second] {
-            assert_eq!(task(&app, id).await?.status, TaskStatus::Closed);
-            assert!(app.deps.store.live_attempt(id).await?.is_none());
-        }
+        assert_eq!(task(&app, &first).await?.status, TaskStatus::Closed);
+        assert!(app.deps.store.live_attempt(&first).await?.is_none());
+        // The working one moves by itself after the answer: nothing is left, so it waits.
+        wait_for("the wait", Duration::from_secs(60), || async {
+            task(&app, &second)
+                .await
+                .is_ok_and(|t| t.status == TaskStatus::WaitingCapacity)
+                && app
+                    .deps
+                    .store
+                    .live_attempt(&second)
+                    .await
+                    .is_ok_and(|a| a.is_none())
+        })
+        .await?;
+        support::stop_tasks(&app, &[&second]).await?;
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));

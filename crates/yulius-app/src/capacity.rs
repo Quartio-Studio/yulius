@@ -194,7 +194,7 @@ impl App {
         Ok(RotationInput {
             current,
             task_provider: task.harness.provider(),
-            // A task without a model runs the default, Opus: its weekly cap binds.
+            // A task without a model runs the default, Fable 5.2: no per-model weekly cap binds.
             family: ModelFamily::of(Some(
                 task.model
                     .as_deref()
@@ -315,6 +315,8 @@ impl App {
 
     /// Closes the open pause of a task, if any (the task resumed, ended or was stopped).
     pub(crate) async fn end_pause(&self, task_id: &TaskId, outcome: &str) {
+        // A task that no longer waits needs nobody for a subscription (SPEC-447 MOV-006).
+        self.end_no_subscription_request(task_id).await;
         if let Err(err) = self
             .deps
             .store

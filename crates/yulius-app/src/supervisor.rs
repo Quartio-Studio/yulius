@@ -979,9 +979,16 @@ impl App {
                     .ok_or(AppError::NotFound)?,
             )),
             (Decision::Wait { .. }, _) => Ok(None),
-            (Decision::Stay, reason) => Err(AppError::Capacity(format!(
-                "the requested account cannot take the task right now ({reason:?})"
-            ))),
+            (Decision::Stay, reason) => {
+                let label = match requested {
+                    Some(id) => self.deps.store.account(id).await?.map(|a| a.label),
+                    None => None,
+                };
+                Err(AppError::Capacity(refused_choice(
+                    label.as_deref(),
+                    &reason,
+                )))
+            }
         }
     }
 
@@ -1224,6 +1231,7 @@ impl App {
         requested: Option<AccountId>,
     ) -> AppResult<()> {
         let store = &self.deps.store;
+        let relaunch = start.clone();
         let sandbox = store
             .sandbox(&task.sandbox_id)
             .await?
@@ -1271,6 +1279,12 @@ impl App {
         let lineage = store.provider_sessions(&task.id).await?;
         let previous = lineage.last().cloned();
         let harness = task.harness;
+        // A subscription asked for and removed since (after the switch's preflight) is no choice
+        // any more: the pool chooses, as for a launch that chose it just before (SPEC-447).
+        let requested = match requested {
+            Some(id) if store.account(&id).await?.is_none() => None,
+            other => other,
+        };
         let Some(account) = self.choose_account(&task, requested.as_ref()).await? else {
             // No subscription has capacity: the task waits before starting, without a process
             // (ROT-010); the resume loop starts it when capacity returns. A turn a limit cut
@@ -1280,10 +1294,19 @@ impl App {
             } else {
                 PauseKind::Start
             };
-            self.pause_task(&task.id, kind, None, None).await?;
+            // A resume's text (a held prompt a move carried, SPEC-447) is typed when it starts.
+            let continuation = match &start {
+                RunStart::Resume { prompt } => prompt.clone(),
+                _ => None,
+            };
+            self.pause_task(&task.id, kind, None, continuation).await?;
             return Ok(());
         };
         let credential = self.open_credential(&account)?;
+        crate::race::reached(
+            crate::race::Point::AccountChosen,
+            Path::new(task.id.as_str()),
+        );
         let home = self.sandbox_home(&sandbox.id);
         make_home(&self.sandbox_dir(&sandbox.id))?;
         self.prepare_run_extras(&sandbox, &home).await;
@@ -1503,6 +1526,19 @@ impl App {
             exit_reason: None,
         };
         store.insert_attempt(&attempt).await?;
+        // Removed since it was chosen (SPEC-447 MOV-003): the removal looked for runs on it before
+        // this one was recorded, so this launch never starts on it and chooses again.
+        if store.account(&account.id).await?.is_none() {
+            let update = AttemptUpdate {
+                ended_at: Some(self.now()),
+                exit_reason: Some("account_removed".into()),
+                ..AttemptUpdate::default()
+            };
+            store
+                .transition_attempt(&attempt_id, AttemptState::Exited, &update)
+                .await?;
+            return Box::pin(self.launch_attempt(&task, relaunch, None)).await;
+        }
         // Before the spawn, so the first prompt's hook always finds it (SPEC-068).
         if typed_opening.is_some()
             && let Err(err) = write_private_file(&run_dir.join(OPENING_PENDING_FILE), b"")
@@ -3774,11 +3810,13 @@ impl App {
                     AccountStatus::Relogin | AccountStatus::PendingLogin
                 ) =>
             {
-                Some(record.status)
+                Some((record.status, record.last_error))
             }
             _ => None,
         };
-        let status = if let Some(status) = needs_sign_in {
+        // Nor does it erase why it needs one (SPEC-447 MOV-005).
+        let kept_error = needs_sign_in.as_ref().and_then(|(_, error)| error.clone());
+        let status = if let Some((status, _)) = needs_sign_in {
             status
         } else if usage.limit_in_effect(self.now()) {
             AccountStatus::Limited
@@ -3789,7 +3827,13 @@ impl App {
         let _ = self
             .deps
             .store
-            .set_account_state(account, status, Some(&json), None, self.now())
+            .set_account_state(
+                account,
+                status,
+                Some(&json),
+                kept_error.as_deref(),
+                self.now(),
+            )
             .await;
         // New usage may let paused tasks resume, or pause the pool (ROT-010).
         self.capacity_changed();
@@ -4101,13 +4145,25 @@ impl App {
                 runtime.end_turn(self.now());
                 runtime.at_limit.store(true, Ordering::SeqCst);
                 runtime.limit_resets_at.store(0, Ordering::SeqCst);
+                let mut refused = None;
                 if let Some(account) = &attempt.account_id {
+                    refused = match self.deps.store.account(account).await {
+                        Ok(Some(record)) => Some(record.label),
+                        _ => None,
+                    };
                     self.record_access_lost(account, &message).await;
                 }
                 let app = self.clone();
                 let tid = task_id.clone();
                 let account = attempt.account_id.clone();
-                tokio::spawn(async move { app.rotate(&tid, account, Trigger::LimitReached).await });
+                tokio::spawn(async move {
+                    app.rotate(&tid, account, Trigger::LimitReached).await;
+                    // Said in one line, with a Needs you when nothing is left (SPEC-447 MOV-006).
+                    if let Some(label) = refused {
+                        let left = crate::moves::Left::Refused { label, message };
+                        app.tell_left(&tid, &left).await;
+                    }
+                });
             }
             Observation::UserTurn { at, wake } => {
                 if let Some(at) = at {
@@ -4314,10 +4370,33 @@ fn make_home(sandbox_dir: &Path) -> AppResult<()> {
         })
 }
 
+/// Why a person's choice of subscription cannot take the task, in one plain sentence naming it
+/// (SPEC-447 MOV-002).
+fn refused_choice(label: Option<&str>, reason: &rotation::DecisionReason) -> String {
+    use rotation::{DecisionReason, Refusal};
+    let name = label.unwrap_or("That subscription");
+    match reason {
+        DecisionReason::ManualRefused(Refusal::UnknownAccount) => {
+            "That subscription no longer exists.".into()
+        }
+        DecisionReason::ManualRefused(Refusal::Unavailable) => {
+            format!("{name} needs a new sign-in, so it cannot take the task.")
+        }
+        DecisionReason::ManualRefused(Refusal::Exhausted) => {
+            format!("{name} is at its usage limit, so it cannot take the task until it resets.")
+        }
+        DecisionReason::ManualRefused(Refusal::ProviderMismatch) => {
+            format!("{name} is not a Claude subscription, so it cannot take the task.")
+        }
+        _ => "No other subscription can take the task right now.".into(),
+    }
+}
+
 /// Whether a switch for `reason` interrupts the turn before ending the run: a person's switch
-/// and a hand-over may come mid-turn (SPEC-332), automatic switches come while the agent is idle.
+/// and a hand-over may come mid-turn (SPEC-332), and so may a removal of the subscription (SPEC-447);
+/// automatic switches come while the agent is idle.
 fn interrupts_first(reason: &str) -> bool {
-    matches!(reason, "manual" | "handover")
+    matches!(reason, "manual" | "handover" | "removed")
 }
 
 #[cfg(test)]

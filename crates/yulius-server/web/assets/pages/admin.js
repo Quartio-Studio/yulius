@@ -354,7 +354,7 @@ export function mountAccountsPage(ctx, route) {
   const capacityHost = h('section', { class: 'card card-pad stack', 'aria-label': 'Capacity' },
     h('h2', { class: 'card-title' }, 'Capacity'), skeleton('Loading the capacity…', 3));
   const host = h('div');
-  frame.body.append(capacityHost, host, h('p', { class: 'muted xs' }, `Tasks don't belong to a subscription: ${BRAND.name} starts each one on the subscription whose capacity expires soonest and moves it to another one by itself, at the end of a turn, when its subscription reaches 98%. A task pauses only when no subscription has capacity left — without telling the agent — and continues by itself, oldest first, when a window resets or a subscription is added. Usage comes from the running tasks, so an idle subscription shows it once a task runs on it.`));
+  frame.body.append(capacityHost, host, h('p', { class: 'muted xs' }, `Tasks don't belong to a subscription: ${BRAND.name} starts each one on the subscription whose capacity expires soonest and moves it to another one by itself, at the end of a turn, when its subscription reaches 98%. A task pauses only when no subscription has capacity left — without telling the agent — and continues by itself, oldest first, when a window resets or a subscription is added. You can run a task on a subscription you choose from the task, and removing a subscription moves its tasks to another one. Usage comes from the running tasks, so an idle subscription shows it once a task runs on it.`));
 
   // Resolves true once the panel shows the capacity, false when it says it is not available.
   const loadCapacity = () => ctx.api.get('/api/capacity').then((view) => {
@@ -407,9 +407,10 @@ export function mountAccountsPage(ctx, route) {
               errorToast(error, 'Couldn’t start the sign-in');
             }
           } }, 'Sign in again') : null,
-          // Removal is refused while tasks use the subscription: say so instead of offering it (UX2-12).
-          h('button', { type: 'button', class: 'btn btn-sm btn-quiet-danger', disabled: account.in_use_by > 0, title: account.in_use_by > 0 ? `${account.in_use_by} live task${account.in_use_by === 1 ? '' : 's'} use this subscription; they move away at their next turn end or when stopped` : null, onClick: async () => {
-            if (!(await confirmDialog({ title: `Remove ${account.label}?`, message: 'Its stored credential is deleted and a running sign-in is cancelled. Done tasks on it are closed (Continue starts them on another subscription), and tasks never start on it again.', confirmLabel: 'Remove', danger: true }))) return;
+          // Removal always works: the tasks on it move to another subscription (SPEC-447 MOV-003).
+          h('button', { type: 'button', class: 'btn btn-sm btn-quiet-danger', title: account.in_use_by > 0 ? `${account.in_use_by} live task${account.in_use_by === 1 ? '' : 's'} on this subscription move to another one` : null, onClick: async () => {
+            const moving = account.in_use_by > 0 ? ` ${account.in_use_by === 1 ? 'The task' : `The ${account.in_use_by} tasks`} on it ${account.in_use_by === 1 ? 'moves' : 'move'} to another subscription in the same session, or ${account.in_use_by === 1 ? 'waits' : 'wait'} for one.` : '';
+            if (!(await confirmDialog({ title: `Remove ${account.label}?`, message: `Its stored credential is deleted and a running sign-in is cancelled.${moving} Done tasks on it are closed (Continue starts them on another subscription), and nothing runs on it again.`, confirmLabel: 'Remove', danger: true }))) return;
             try {
               await ctx.api.del(`/api/admin/accounts/${enc(account.id)}`);
               toast(`Subscription ${account.label} removed.`, { kind: 'ok' });

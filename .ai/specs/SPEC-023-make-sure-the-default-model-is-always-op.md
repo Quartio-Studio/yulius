@@ -3,17 +3,18 @@ yulius-task: 8e5a1bae-c2e1-4fcc-bf3b-7ae8518fb149
 status: done
 ---
 
-# SPEC-023: tasks run Opus 5.5 at high effort by default
+# SPEC-023: tasks run Fable 5.2 at max effort by default
 
 Status: done
 Date: 2026-10-12
 Owner: Yulius task #21
 Scope authorization: user request (task #21): "make sure the default model is always opus 5.5 and
-default effort is high".
+default effort is high"; amended 2026-11-10 (person in the Superagent): "make fable 5.2 effort
+max default model" (ADR-0289).
 
 ## Goal
 
-A task that names no model runs Opus 5.5, and a task that names no effort runs at high effort,
+A task that names no model runs Fable 5.2, and a task that names no effort runs at max effort,
 whatever Claude Code's aliases or a subscription's defaults say.
 
 ## Context
@@ -28,10 +29,10 @@ switches and the composer's "Default" all go through the one launch plan
 
 | ID | Requirement | Evidence |
 | --- | --- | --- |
-| DEF-001 | A launch without a model passes `--model claude-opus-5-5` (supersedes the `opus` alias of HRN-012). | `launch.rs` test `claude_resume_uncontained_never_skips_permissions` |
-| DEF-002 | A launch without an effort passes `--effort high`, for the default and any named model, except a Haiku model, which takes no effort level; a named effort is kept. | `launch.rs` test `a_named_model_without_effort_runs_at_high_effort_unless_it_takes_none` |
-| DEF-004 | The Cockpit (SPEC-021), a person's plain Claude Code session, also starts with `--model claude-opus-5-5 --effort high`; `/model` and `/effort` change it within the session; its subscription is chosen by the weekly Opus cap. | `launch.rs` test `a_cockpit_is_plain_claude_code_with_the_token_only_in_its_environment`, `cockpit.rs` test `the_cockpit_skips_a_subscription_whose_opus_cap_is_spent` |
-| DEF-003 | The composer, Settings and the task's model chip describe "Default" as Opus 5.5 and High. | `models.js`, `taskview.js` |
+| DEF-001 | A launch without a model passes `--model claude-fable-5-2` (supersedes the `opus` alias of HRN-012; Opus 5.5 until 2026-11-10). | `launch.rs` test `claude_resume_uncontained_never_skips_permissions` |
+| DEF-002 | A launch without an effort passes `--effort max` (high until 2026-11-10), for the default and any named model, except a Haiku model, which takes no effort level; a named effort is kept. | `launch.rs` test `a_named_model_without_effort_runs_at_max_effort_unless_it_takes_none` |
+| DEF-004 | The Cockpit (SPEC-021), a person's plain Claude Code session, also starts with `--model claude-fable-5-2 --effort max`; `/model` and `/effort` change it within the session; no per-model weekly cap chooses its subscription (Fable has none Yulius reads). | `launch.rs` test `a_cockpit_is_plain_claude_code_with_the_token_only_in_its_environment`, `cockpit.rs` test `a_spent_opus_cap_does_not_keep_the_cockpit_off_a_subscription` |
+| DEF-003 | The composer, Settings and the task's model chip describe "Default" as Fable 5.2 and Max; the model list offers Fable 5.2. | `models.js`, `taskview.js` |
 
 ## Plan
 
@@ -42,10 +43,10 @@ switches and the composer's "Default" all go through the one launch plan
 ## Acceptance criteria
 
 - A new task, a resumed task and a task moved to another subscription with no model or effort run
-  `claude --model claude-opus-5-5 --effort high`.
+  `claude --model claude-fable-5-2 --effort max`.
 - A task on Haiku 4.5 without an effort gets no `--effort`.
-- The default's weekly cap is the Opus one (rotation reads `DEFAULT_CLAUDE_MODEL`, which is still
-  an Opus id).
+- No per-model weekly cap binds the default (rotation reads `DEFAULT_CLAUDE_MODEL`, a Fable id,
+  as `ModelFamily::Any`); a task that names an Opus or Sonnet model keeps its cap.
 
 ## Test plan
 
@@ -83,3 +84,14 @@ switches and the composer's "Default" all go through the one launch plan
 - `cd e2e && npx e2e run`: 31 files, 130 tests passed, 1 skipped.
 - Not exercised here: a live Claude Code run accepting `--model claude-opus-5-5 --effort high`
   (this session itself runs `claude-opus-5-5`).
+
+## Amendment 2026-11-10: Fable 5.2 at max effort
+
+- Anthropic's models overview lists Claude Fable 5.2 (`claude-fable-5-2`, $8 / $40 per MTok, cache
+  reads $0.20, effort `low` to `max`). The constants, the price table, the UI labels and the tests
+  above moved to it; Fable 5.1 stays in the model list.
+- Claude Code 2.1.311 does not know the id yet: `claude -p --model claude-fable-5-2` logs
+  `unrecognized_model` and still sends it. Not exercised here: a live run on a subscription (this
+  sandbox's `claude` is not signed in).
+- A subscription without Fable access cannot run a default task; picking Opus 5.5 in the composer
+  or Settings still works.

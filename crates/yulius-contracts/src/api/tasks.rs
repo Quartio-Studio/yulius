@@ -72,6 +72,9 @@ pub struct TaskSummary {
     pub archived: bool,
     /// Label of the account in use.
     pub account_label: Option<String>,
+    /// Id of the account in use, which "Run on…" marks (SPEC-447 MOV-001); absent without a run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
     /// Email of the Claude account in use: in a task's detail for instance administrators only
     /// (UI-022); absent otherwise and while unknown (SPEC-244).
     #[serde(default, skip_serializing_if = "Option::is_none")]

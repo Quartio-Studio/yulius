@@ -83,7 +83,8 @@ impl App {
                 provider: a.provider.as_str().to_owned(),
                 status: a.status.as_str().to_owned(),
                 usage: usage_view(&account_usage(a)),
-                id: admin.then(|| a.id.to_string()),
+                // Everyone may move a task of theirs to it (SPEC-447 MOV-004).
+                id: Some(a.id.to_string()),
                 last_error: if admin { a.last_error.clone() } else { None },
                 in_use_by: admin.then(|| in_use_count(&a.id, &working)),
             })
