@@ -62,7 +62,9 @@ wrong:
   refused before it ends the session (ROT-014), the session stays at Claude Code's refusal and
   nothing goes on by itself, so the held pause opens the Needs you after all, once, whichever of
   the notice and the refusal came first. A later move past the limit continues the cut turn and
-  ends that request.
+  ends that request. A task already under Needs you is told nothing new (a restart reads the
+  same pause again); one that a message set working since, refused again, is under Needs you
+  again.
 
 ## Alternatives
 
