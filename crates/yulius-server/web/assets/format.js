@@ -186,10 +186,11 @@ export function describeCron(expr) {
 
 /**
  * Whether `text` looks like an email address, by the server's rule for one (`plausible_email`):
- * one `@` with text on both sides, no whitespace or control characters, at most 254 characters.
+ * one `@` with text on both sides, no whitespace or control characters (Unicode's White_Space
+ * and Cc, as the server reads them), at most 254 characters.
  */
 export function plausibleEmail(text) {
-  return /^[^@\s\p{Cc}]+@[^@\s\p{Cc}]+$/u.test(text) && [...text].length <= 254;
+  return /^[^@\p{White_Space}\p{Cc}]+@[^@\p{White_Space}\p{Cc}]+$/u.test(text) && [...text].length <= 254;
 }
 
 /**

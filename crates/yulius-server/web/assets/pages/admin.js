@@ -377,23 +377,35 @@ export function mountAccountsPage(ctx, route) {
   // same control.
   let pendingReload = false;
   let gone = false;
-  const editing = () => Boolean(host.querySelector('.account-rename-input'));
+  /** A field is open: in use, or set aside (refused as it was left, `data-set-aside`). */
+  const open = () => Boolean(host.querySelector('.account-rename-input'));
+  /** A field is in use: typed in, being left or saving. */
+  const inUse = () => Boolean(host.querySelector('.account-rename-input:not([data-set-aside])'));
   const defer = () => {
     pendingReload = true;
     host.dataset.refresh = 'waiting';
   };
+  const settled = () => {
+    pendingReload = false;
+    delete host.dataset.refresh;
+  };
   /** Reads the list again now, or notes that it must be read once no field is open. */
   const refresh = () => {
     if (gone) return;
-    if (editing()) { defer(); return; }
-    pendingReload = false;
-    delete host.dataset.refresh;
+    if (open()) { defer(); return; }
+    settled();
     reload({ quiet: true });
   };
   const flush = () => { if (pendingReload) refresh(); };
-  const held = () => {
-    if (editing()) defer();
-    return editing();
+  // An update from elsewhere waits for every open field, so a refused value can be come back
+  // to. What the person asked for themselves (the read after a removal, an Add, a sign-in)
+  // waits only for a field in use: one set aside goes with the redraw, and the list shows what
+  // they did.
+  const held = ({ quiet }) => {
+    const wait = quiet ? open() : inUse();
+    if (wait) defer();
+    else settled();
+    return wait;
   };
   // A field closes without any focus leaving the list when it is left as it was or saved by
   // leaving it, so the field itself says that it is gone.

@@ -7,8 +7,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 ## 2026-11-11
 
 - A subscription's email is typed in place, under its name (SPEC-463, task #448, ADR-0300).
-  Production's subscriptions read "email unknown", because Claude gives no email to a
-  `claude setup-token` sign-in, so the address went into the name. On the Subscriptions page the
+  Production's subscriptions read "email unknown" (Claude gave Yulius no email for their
+  `claude setup-token` sign-ins, as ADR-0185 feared), so the address went into the name. On the Subscriptions page the
   email line now has a pencil like the name: Enter or leaving the field saves, Escape cancels,
   Enter in the empty field removes it. A card can read "Agent TEAM" over its address. A typed
   email stays when the subscription signs in again, and nothing says Claude confirmed it: the

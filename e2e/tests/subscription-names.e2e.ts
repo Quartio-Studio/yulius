@@ -629,6 +629,59 @@ test("a click on a card's button arrives although leaving a field shows or remov
   expect((await cards(browser)).length).toBe(6);
 });
 
+test("a refused field that was left does not keep the person's own change off the list", async ({ app, browser, screen }) => {
+  await openSubscriptions(app, browser);
+  await eventsConnected(browser);
+  const names = async () => (await cards(browser)).map((c) => c.name);
+  // What is not an address is refused as the field is left: it stays open, without the keyboard.
+  await screen.getByRole('button', 'Change the email of Claude #4').click();
+  const email = screen.getByRole('textbox', 'Email of Claude #4');
+  await expect(email).toBeFocused();
+  await email.fill('not an address');
+  await browser.locator('main h1').click();
+  await expect(screen.getByText('Type an address like name@example.com.')).toBeVisible();
+  // An update from elsewhere waits for it, so the person can come back to what they typed.
+  await renamedElsewhere(browser, 'Claude #2', 'renamed elsewhere');
+  await expect(refreshWaits(browser)).toHaveCount(1);
+  await expect(email).toBeVisible();
+  expect(await names()).not.toContain('renamed elsewhere');
+  // What the person does next is drawn: Claude #5 is removed, and gone from the list.
+  await browser.locator('main .card:has-text("studio@example.com") button:has-text("Remove")').click();
+  await screen.getByRole('dialog', 'Remove Claude #5?').getByRole('button', 'Remove').click();
+  await expect(screen.getByText('Subscription Claude #5 removed.')).toBeVisible();
+  await expect.poll(names).not.toContain('Claude #5');
+  expect(await names()).toContain('renamed elsewhere');
+  await expect(refreshWaits(browser)).toHaveCount(0);
+  // The refused field went with that; nothing of it was sent.
+  await expect(email).toBeHidden();
+  expect(await sentFor(browser, 'acc_x1')).toBe(0);
+  expect(await stored(browser, 'Claude #4')).toEqual({ email: 'pawel@example.com', typed: false });
+});
+
+test('the window losing the focus is not leaving the field: nothing is saved or closed', async ({ app, browser, screen }) => {
+  await openSubscriptions(app, browser);
+  await screen.getByRole('button', 'Change the email of Claude spare').click();
+  const email = screen.getByRole('textbox', 'Email of Claude spare');
+  await expect(email).toBeFocused();
+  await email.fill('agent@exam');
+  // The person goes to another window for the address. The browser tells the field `blur` then,
+  // while the field stays the page's focused element; that is what is done here (a headless
+  // browser's window does not lose the focus).
+  await browser.evaluate(() => {
+    document.activeElement?.dispatchEvent(new FocusEvent('blur'));
+    window.dispatchEvent(new Event('blur'));
+  });
+  expect(await sentFor(browser, 'acc_x3')).toBe(0);
+  await expect(email).toBeFocused();
+  await expect(email).toHaveValue('agent@exam');
+  // Back in the window they finish the address and leave the field: saved once.
+  await email.fill('agent@example.com');
+  await browser.locator('main h1').click();
+  await expect(screen.getByText('Email of Claude spare is now agent@example.com.')).toBeVisible();
+  expect(await sentFor(browser, 'acc_x3')).toBe(1);
+  expect(await stored(browser, 'Claude spare')).toEqual({ email: 'agent@example.com', typed: true });
+});
+
 test("a field's late claim on the keyboard does not take it back from where Tab went", async ({ app, browser, screen }) => {
   // The name's save waits here until the test lets it go.
   await app.open(mock('/admin/accounts', '&ambient=0&holdpost=/api/admin/accounts/acc_x1'));

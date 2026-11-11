@@ -506,25 +506,27 @@ function pressOver() {
 }
 
 /**
- * Follows the main mouse button from now on (once per page). A release may come anywhere, and a
- * press can end where no release is seen (a drag, a context menu, the window losing the
- * pointer): the next move of a pointer whose button is up says so too, so nothing waits on a
- * press that is over.
+ * Follows the main mouse button from now on (once per page), by the mouse's own events and not
+ * the pointer's: a field loses the keyboard with the mousedown, and a tap's mousedown comes
+ * when its pointer is already up. A release may come anywhere, and a press can end where no
+ * release is seen (a drag, a context menu, the window losing the pointer): the next move of a
+ * mouse whose button is up says so too, so nothing waits on a press that is over.
  */
 function watchPresses() {
   if (watchingPresses) return;
   watchingPresses = true;
-  document.addEventListener('pointerdown', (event) => { if (event.button === 0) pressed = true; }, true);
-  for (const type of ['pointerup', 'pointercancel', 'dragend', 'contextmenu']) document.addEventListener(type, pressOver, true);
-  document.addEventListener('pointermove', (event) => { if (pressed && !(event.buttons & 1)) pressOver(); }, true);
+  document.addEventListener('mousedown', (event) => { if (event.button === 0) pressed = true; }, true);
+  document.addEventListener('mouseup', (event) => { if (event.button === 0) pressOver(); }, true);
+  for (const type of ['dragend', 'contextmenu']) document.addEventListener(type, pressOver, true);
+  document.addEventListener('mousemove', (event) => { if (pressed && !(event.buttons & 1)) pressOver(); }, true);
   window.addEventListener('blur', pressOver);
 }
 
 /**
- * Runs `run` now, or, while the mouse button is down, once the press has ended and its click is
- * delivered. A field that is left by a press on a control does its work then: a refusal's line
- * or a saved value drawn at once would move or replace that control before the button comes up,
- * and the click would be lost (#1174).
+ * Runs `run` now, or, while the mouse button is down (a tap's included), once the press has
+ * ended and its click is delivered. A field that is left by a press on a control does its work
+ * then: a refusal's line or a saved value drawn at once would move or replace that control
+ * before the button comes up, and the click would be lost (#1174).
  */
 function afterPress(run) {
   if (pressed) afterPressRuns.push(run);
@@ -537,9 +539,12 @@ function afterPress(run) {
  * into a field; Enter or leaving the field saves through `save`, Escape cancels. A refused value
  * keeps the field open with the message; focus returns to the field only after Enter, never when
  * it was left, and to the pencil once editing ends. A field left by a press on a control saves,
- * refuses or closes only once that press has ended (`afterPress`), so the control is clicked. A
- * field that closes says so (the bubbling event `yulius:edit-closed`), whatever ended the edit:
- * a page that kept a refresh from drawing over it reads it then.
+ * refuses or closes only once that press has ended (`afterPress`), so the control is clicked.
+ * The window losing the focus is not leaving the field. A field that closes says so (the
+ * bubbling event `yulius:edit-closed`), whatever ended the edit: a page that kept a refresh
+ * from drawing over it reads it then. A field refused as it was left stays open, set aside
+ * (`data-set-aside`) until the keyboard comes back to it: the person can return to what they
+ * typed, but it no longer keeps what they do next off the page.
  *
  * `line` says what differs: `holder` and `pencil` (classes), `key` (which line of which
  * subscription: the pencil and the field carry it as `data-focus-key`, so a list drawn again
@@ -589,6 +594,7 @@ function editableLine(line, save) {
       const refuse = (message) => {
         error.textContent = message;
         if (fromKey) input.focus();
+        else input.dataset.setAside = 'true';
       };
       const refused = line.check(value);
       if (refused) { refuse(refused); return; }
@@ -606,7 +612,14 @@ function editableLine(line, save) {
       if (event.key === 'Enter') { event.preventDefault(); finish(true, true); }
       else if (event.key === 'Escape') { event.preventDefault(); finish(false, true); }
     });
-    input.addEventListener('blur', () => { left = true; afterPress(() => finish(true, false)); });
+    input.addEventListener('focus', () => { delete input.dataset.setAside; });
+    input.addEventListener('blur', () => {
+      // The window lost the focus, not the field, which is still the page's focused element:
+      // the person went to fetch what to type and comes back to the field as it is.
+      if (document.activeElement === input) return;
+      left = true;
+      afterPress(() => finish(true, false));
+    });
     setChildren(holder, input, error);
     setTimeout(() => { if (!left && !closed) { input.focus(); input.select(); } }, 0);
   }
