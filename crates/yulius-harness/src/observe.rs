@@ -282,7 +282,8 @@ pub struct UsageAccumulator {
     seen_order: VecDeque<String>,
     limit: Option<LimitSignal>,
     model: Option<String>,
-    /// The CLI version the session's prompt records name, latest last (SPEC-461 CCM-011).
+    /// The CLI version the records of the session's own thread name, latest last (SPEC-461
+    /// CCM-011).
     cli_version: Option<String>,
     malformed: u64,
     /// Claude Code's turn records (`turn_duration`): one per turn of the session.

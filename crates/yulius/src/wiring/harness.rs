@@ -612,6 +612,7 @@ mod tests {
         assert_eq!(style(&config)?, "Concise");
         Ok(())
     }
+
     /// The lines of a session whose first run (Claude Code 2.1.311) got a prompt, and whose
     /// second run was resumed at 11:56:37 on 2.1.322 with nothing typed: the structure of the
     /// records a real session wrote on 2026-11-11 (its texts are made up). The resumed process
@@ -662,9 +663,23 @@ mod tests {
         resumed.poll()?;
         assert_eq!(ran_on(resumed.as_ref()).as_deref(), Some("2.1.322"));
 
-        // A recount of the run's window says the same.
+        // A recount of a run's window says the same, from that window's lines only.
         let counted = recount::count_run(&path, Some(started), None)?.ok_or("the transcript")?;
         assert_eq!(counted.cli_version(), Some("2.1.322"));
+        let first = recount::count_run(&path, None, Some(started))?.ok_or("the transcript")?;
+        assert_eq!(
+            first.cli_version(),
+            Some("2.1.311"),
+            "the later run's version"
+        );
+        let between =
+            claude::record_time(r#"{"timestamp":"2026-11-11T11:40:00.000Z"}"#).ok_or("a time")?;
+        let idle = recount::count_run(&path, Some(between), Some(started))?.ok_or("transcript")?;
+        assert_eq!(
+            idle.cli_version(),
+            None,
+            "a window without a line names nothing"
+        );
         Ok(())
     }
 }

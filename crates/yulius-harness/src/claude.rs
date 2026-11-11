@@ -191,7 +191,11 @@ pub fn observe_versioned(line: &str) -> (Vec<Observed>, Option<String>) {
         Some(_) => Vec::new(),
         None => return (vec![Observed::Malformed], None),
     };
-    let version = owned_str(&record, "version").filter(|_| !bool_of(&record, "isSidechain"));
+    let version = if bool_of(&record, "isSidechain") {
+        None
+    } else {
+        owned_str(&record, "version")
+    };
     (observed, version)
 }
 

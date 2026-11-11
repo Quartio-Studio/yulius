@@ -47,15 +47,16 @@ fn claude_session_counts_each_message_once_including_sidechains() {
     );
     assert_eq!(acc.malformed_lines(), 0);
     assert_eq!(acc.model(), Some("claude-opus-4-1"));
-    // The Claude Code that wrote the session's prompt records (SPEC-461 CCM-011).
+    // The Claude Code that wrote the session's records (SPEC-461 CCM-011).
     assert_eq!(acc.cli_version(), Some("2.1.292"));
 }
 
-/// SPEC-461 CCM-011: a run names the Claude Code of its latest prompt record (a resumed session
-/// continues on a newer one), a sub-agent's lines name nothing for the session, and a record
-/// without a version leaves the last one known.
+/// SPEC-461 CCM-011: a prompt record names the run's Claude Code through its session observation
+/// (a resumed session continues on a newer one), a sub-agent's lines name nothing for the
+/// session, and a record without a version leaves the last one known. Every other record of the
+/// session's thread names it too: the next test.
 #[test]
-fn the_cli_version_is_the_latest_prompt_records() {
+fn a_prompt_record_names_the_cli_version_through_its_session_observation() {
     let prompt = |version: Option<&str>| {
         let mut record = serde_json::json!({
             "type": "user",
