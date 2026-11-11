@@ -118,7 +118,7 @@ the fix. Nobody writes an AppArmor rule by hand again.
 - [x] Proof on real Ubuntu 24.04, Ubuntu 26.04 and Debian hosts
 - [x] Gates and independent review
 - [x] After the merge: the review's last nits (issue #1165) and Settings → Instance in a browser
-- [ ] The follow-up's review answered: a header's variables are read as AppArmor reads them, and a kernel limit is its own clause
+- [x] The follow-up's review answered: a header's variables are read as AppArmor reads them, and a kernel limit is its own clause
 
 ## Acceptance criteria
 
@@ -321,8 +321,9 @@ container: at `b74138b1` for the first runs, at `39c85810` for the runs after re
   - Yulius CI on #1168 at `05d79655` failed once in e2e alone, in `onboarding.e2e.ts` "a
     composer left before its reads answer adds no second toast to the start" (two recovery
     reads waited where the test expects one). The branch changes no web or e2e file and the
-    next run passed it: issue #1170 tracks the test (opened by task #442 for the same failure
-    on its own pull request); this run is added there.
+    next run passed it. `dev` has since corrected that test for this very race (#1151: the
+    hold starts once the earlier recovery reads answered), merged into this branch; issue
+    #1170, opened by task #442 for the same failure, has the pointer.
   - Settings → Instance in a browser against a failing host: `yulius host check --json
     --update-state …` (binary `ce389689`) as root in a throwaway `ubuntu:26.04` container on the
     sandbox's 26.04 kernel (AppArmor on, `apparmor_restrict_unprivileged_userns = 1`, bubblewrap
