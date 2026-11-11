@@ -40,6 +40,7 @@ pub mod github_admin;
 pub mod global_superagent;
 pub mod goal_retry;
 pub mod hooks;
+pub mod host_move;
 pub mod hub;
 pub mod identity;
 pub mod imports;

@@ -41,6 +41,7 @@ mod git_adapter;
 mod github_admin;
 mod github_checks;
 mod global_superagent;
+mod host_move;
 mod http_auth;
 mod import_server;
 mod intake;
