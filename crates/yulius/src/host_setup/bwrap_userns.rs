@@ -339,21 +339,28 @@ impl Run<'_> {
                 }
             };
         }
-        match self.mode {
-            Mode::Setup => {}
-            Mode::DryRun => return self.changed(ITEM, "", &plan.steps(false)),
-            Mode::Check => {
-                let state = match &first {
-                    Proof::Fails(why) => {
-                        format!("bwrap cannot start a user namespace as {user} ({why})")
-                    }
-                    Proof::Works | Proof::NotRun(_) => {
-                        "the AppArmor rules for bwrap are not what setup leaves".to_owned()
-                    }
-                };
-                return self
-                    .needs_setup(ITEM, &format!("{state}: setup would {}", plan.steps(false)));
+        if self.mode != Mode::Setup {
+            // Setup's steps alone do not let bwrap in past a kernel limit, proven or not.
+            let limits: String = match first {
+                Proof::Works => String::new(),
+                Proof::Fails(_) | Proof::NotRun(_) => {
+                    self.limits().iter().map(|l| format!("; {l}")).collect()
+                }
+            };
+            let steps = plan.steps(false);
+            if self.mode == Mode::DryRun {
+                return self.changed(ITEM, "", &format!("{steps}{limits}"));
             }
+            let state = match &first {
+                Proof::Fails(why) => {
+                    format!("bwrap cannot start a user namespace as {user} ({why})")
+                }
+                Proof::Works | Proof::NotRun(_) => {
+                    "the AppArmor rules for bwrap are not what setup leaves".to_owned()
+                }
+            };
+            let then = if limits.is_empty() { ":" } else { ";" };
+            return self.needs_setup(ITEM, &format!("{state}{limits}{then} setup would {steps}"));
         }
         if let Err(why) = self.apply(&plan) {
             return self.failed(ITEM, why);
@@ -472,7 +479,8 @@ impl Run<'_> {
     /// What else keeps bwrap from a namespace, where the host says so.
     fn cause(&self, facts: &Facts) -> String {
         let mut causes = self.limits();
-        if facts.enabled && facts.ours_disabled {
+        // Beside a person's profile Yulius's is never loaded: its link is no cause then.
+        if facts.enabled && facts.ours_disabled && facts.foreign.is_empty() {
             causes.push(format!(
                 "{DIR}/disable/{PROFILE_NAME} keeps Yulius's profile from loading (remove that \
                  link, then run `sudo yulius host setup` again)"
