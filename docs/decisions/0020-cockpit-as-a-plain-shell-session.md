@@ -3,6 +3,9 @@
 ## Status
 
 Accepted. Specified in [SPEC-021](../../.ai/specs/SPEC-021-in-this-bar-we-need-to-add-cockpit-at-th.md).
+Amended by [0289](0289-tasks-default-to-fable-5-2-at-max-effort.md) and
+[0295](0295-the-default-effort-is-high-again.md): the default it starts with is Fable 5.2 at high
+effort, and no weekly Opus cap chooses its subscription.
 Amended by [0165](0165-the-superagent-bypasses-approvals-on-contained-servers.md): on a contained
 server it starts with the approval bypass, as task runs do.
 Amended by [0029](0029-cockpit-manages-through-mcp.md): the Cockpit gets the Yulius MCP server with
