@@ -360,7 +360,7 @@ fn the_next_steps_name_the_namespace_rule_only_when_the_host_lacks_it() {
     );
     assert!(!ready.contains("bwrap"), "{ready}");
     for text in [&lacking, &ready] {
-        assert!(!text.contains("apparmor"), "{text}");
+        assert!(!text.to_lowercase().contains("apparmor"), "{text}");
         assert!(text.contains("\n  4. Keep the old instance"), "{text}");
     }
 }

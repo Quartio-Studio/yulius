@@ -256,13 +256,17 @@ impl Mapper {
     /// # Errors
     /// What bwrap or the mount said.
     pub fn probe(&self) -> io::Result<()> {
-        let args: Vec<OsString> = HOLDER_NAMESPACE
-            .iter()
-            .chain(&PROOF_COMMAND)
-            .map(OsString::from)
-            .collect();
-        self.run(&args, Duration::from_secs(20))
+        self.run(&proof_args(), Duration::from_secs(20))
     }
+}
+
+/// What a proof passes to bwrap after its id options: the holder's namespace, then the mount.
+fn proof_args() -> Vec<OsString> {
+    HOLDER_NAMESPACE
+        .iter()
+        .chain(&PROOF_COMMAND)
+        .map(OsString::from)
+        .collect()
 }
 
 /// The start of what a child wrote to its stderr file.
@@ -308,6 +312,20 @@ mod tests {
         assert_eq!(
             info_child_pid("bwrap: setting up uid map: Permission denied"),
             None
+        );
+    }
+
+    /// SPEC-456 BNS-009: the proof starts what a sandbox's holder runs in (its network, the
+    /// host's root, every capability) and mounts there. Host setup's item passes the same words.
+    #[test]
+    fn the_proof_mounts_in_the_holders_namespace() {
+        let args: Vec<String> = proof_args()
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            args.join(" "),
+            "--unshare-net --dev-bind / / --cap-add ALL --chdir / -- mount -t tmpfs none /tmp"
         );
     }
 
