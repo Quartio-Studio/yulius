@@ -3043,12 +3043,21 @@ line. The new host's steps (`target.rs`) are Rust code over `host_setup::Host`, 
 same build, which the flow copies first (`yulius instance migrate-target`). The old host's profile
 (`profile.rs`: the unit and its drop-ins, key files, apt sources and the manual package list,
 software outside apt, the update helper, Caddy, ufw) is read live and fitted to the new host by
-pure rewrites (release codename, public URL, host name). The copy is the export's own stream into
-the import; both hosts then count the copy's inventory (`inventory.rs`: entries and bytes per
-top-level folder and a fingerprint over every entry's metadata, as the import installs it and in
-the old host's ids), and the new instance is started only when they are equal. Only the move's
-identity and the cutover's progress are stored (`/var/lib/yulius-migrate/state.json`); every step
-reads the facts and acts if needed, so the same command continues a move. The copy carries a mark
+pure rewrites (release codename, public URL, host name). The copy is the export's own stream,
+sent in passes into a staged copy (`warm.rs`; SPEC-465, ADR-0303): passes while the old instance
+runs, then one exact pass while it is frozen. The old host keeps a receipt for every path the new
+host took in and synced (`receipts.rs`: a digest of the entry's archive headers, its inode number
+and its inode's change time) and leaves an entry out only while its receipt matches; an entry
+earns one only when it last changed two seconds before its pass, which begins by syncing the
+filesystem. The new host's marker (`.yulius-import-incomplete`) holds the stage id, the count of
+streams and what the last one installed; it names a stream before its first entry, so a receive
+that dies costs the receipts and never the copy's truth. The frozen pass carries the digests of
+every path the old host holds, and the new host removes the rest. Both hosts then count the
+copy's inventory (`inventory.rs`: entries and bytes per top-level folder and a fingerprint over
+every entry's metadata, as the import installs it and in the old host's ids), and the new
+instance is started only when they are equal. Only the move's identity, the cutover's progress
+and the receipts are stored (`/var/lib/yulius-migrate/state.json`, `copy/`); every step reads the
+facts and acts if needed, so the same command continues a move. The copy carries a mark
 (`move-pending.json`): the first start that finds it queues the tasks whose runs were lost with the
 old host (`yulius-app::host_move`).
 
@@ -3063,8 +3072,16 @@ sequenceDiagram
   M->>T: one-time key, this build, facts (release, space, disks, ports)
   M->>O: Plan: what a person must do, then "Proceed?"
   M->>T: Prepare: data disk, apt sources, packages, software, host items, unit, proxy
+  loop warm passes, the old instance runs
+    M->>T: marker of the staged copy (stage id, streams, last stream)
+    M->>M: receipts follow the marker, sync the data directory
+    M->>T: a pass: every entry without a matching receipt
+    T->>M: marker: entries installed and synced
+    M->>O: downtime: the estimated freeze (copy again while above --max-downtime)
+  end
   M->>D: systemctl freeze yulius.service
-  M->>T: the export's stream into the import
+  M->>T: the frozen pass: what changed, and every path the old host holds
+  T->>T: install, remove what is not among those paths
   T->>M: inventory of the copy
   alt inventories differ or a step fails
     M->>D: systemctl thaw (the old instance runs on)

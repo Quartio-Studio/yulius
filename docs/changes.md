@@ -6,6 +6,18 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-11
 
+- A move copies while the instance runs and freezes only for the changes (SPEC-465, task #445,
+  ADR-0303; SPEC-460's MIG-032). `sudo yulius instance migrate root@new-host` now copies the data
+  directory in passes into a staged copy on the new host while the old instance runs, then
+  freezes, sends what changed since, removes what no longer exists and proves the whole copy as
+  before. Changes are never judged by size and time: the old host keeps a receipt for every entry
+  the new host took in and synced (a digest of its metadata, its inode number and its inode's
+  change time) and sends again whatever has none that matches, also a file rewritten in place
+  within the same second or with its time set back. The checklist shows the estimated freeze
+  before it begins; `--max-downtime <minutes>` makes the move copy again while the estimate is
+  above it and stop without freezing after five such passes. A pass cut by a broken link or a
+  killed command is continued by the same command, and nothing the new host acknowledged is sent
+  twice. The operations guide §7 describes it.
 - One command moves the instance to another host (SPEC-460, task #442, ADR-0297): `sudo yulius
   instance migrate root@new-host` on the old host. It plans first and asks people only there (the
   SSH sign-in, a DNS record, the GitHub App's callback, blank disks to use), then sets up the new

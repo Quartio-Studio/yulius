@@ -341,8 +341,9 @@ enum InstanceAction {
         user: Option<String>,
     },
     /// Move the whole instance to another host with one command: check and set up the new
-    /// host, carry every setting and key, copy and prove the data, start the new instance,
-    /// redirect the old URL. Run it on the old host; run it again to continue.
+    /// host, carry every setting and key, copy the data while this instance runs, freeze it
+    /// only to send what changed, prove the copy, start the new instance, redirect the old
+    /// URL. Run it on the old host; run it again to continue.
     Migrate {
         /// The new host, as ssh takes it: `root@new-host`.
         target: Option<String>,
