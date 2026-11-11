@@ -166,6 +166,10 @@ pub trait SandboxIsolation: Send + Sync {
         None
     }
 
+    /// The soft disk quota per sandbox is `quota` bytes from now on (`None`: none; SPEC-459
+    /// HSL-006). Nothing where nothing measures sandboxes.
+    fn set_disk_quota(&self, _quota: Option<u64>) {}
+
     /// The largest consumers of the last measurement, largest first, as paths relative to the
     /// sandbox directory (`worktrees/<task>`, `ci/jobs`) or `system` (SPEC-059 DSK-202).
     async fn largest(&self, _sandbox: &SandboxRef) -> Vec<(String, u64)> {

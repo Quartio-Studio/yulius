@@ -656,7 +656,7 @@ impl App {
                 Some(turn) => Some(turn.lock_owned().await),
                 None => None,
             };
-            let slot = slots.acquire_owned().await.ok()?;
+            let slot = slots.acquire().await?;
             let reservation = self.ci_reserve(budget).await?;
             Some((turn, slot, reservation))
         };

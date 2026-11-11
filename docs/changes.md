@@ -12,6 +12,27 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   in which they took them and by the fixture's 8 s job limit. Now the integration branch's run and
   the pull request's first run pass before the test holds any job, the test asserts that, and its
   jobs have a limit of an hour: only the test ends them. Nothing in the product changes.
+- `yulius host setup` lets bwrap create user namespaces (SPEC-456, task #438, ADR-0296). Ubuntu
+  since 24.04 allows them only to programs with an AppArmor rule, and production ran on one
+  written by hand. The new item "bwrap namespaces" starts bwrap as the service user and, where
+  that fails, writes and loads `/etc/apparmor.d/yulius-bwrap`; on Ubuntu 26.04 it first disables
+  the package's `bwrap-userns-restrict` with a link, never editing its file. A hand-written rule
+  that works is adopted and left alone; Debian and hosts without AppArmor get nothing. `yulius
+  host check` (the update helper's re-check, Settings → Instance) and `yulius doctor --contained`
+  ("sandbox namespaces") report a host where bwrap cannot start a sandbox, with the fix, by
+  starting one, and `yulius instance import` names the step. Run `sudo yulius host setup` again
+  after a release upgrade from 24.04 to 26.04.
+- Resource limits are sized from the host (SPEC-459, task #441, ADR-0294). Live sessions, CI
+  jobs, CI runs per sandbox, the sandbox disk quota and the CD run disk no longer have fixed
+  defaults (8, 4, 2, 100 GB, 20 GB): like the sandbox memory they follow the host's CPUs, memory
+  and data disk (the 12-CPU VM keeps its numbers; a 64-CPU, 755 GiB, 3.5 TB host gets 34, 12, 4,
+  875 GB, 175 GB). Settings → Instance → Resource limits shows each value, its source (host-sized,
+  unit, settings) and its formula, and the superadmin changes it there without a unit edit; all
+  but the sandbox memory apply without a restart. Every pinned number remembers the host it was
+  configured on: on a host that differs by a quarter or more the start log and the page say which
+  limits no longer fit and offer the host-sized values, and after `yulius instance import` the
+  first start takes them by itself (`limits.adapted` in the audit log). Migration 0051; the API is
+  `/api/admin/limits*`. Operators: see "Resource limits" in `docs/operations.md`.
 - A turn whose Stop meets its own prompt still ends (SPEC-453, task #435, ADR-0299). On a loaded
   host a goal task could stay Working for good after Claude Code recorded its goal as met: the
   transcript watcher, applying the turn's prompt, cleared the verdict wait the turn's Stop had
