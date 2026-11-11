@@ -194,6 +194,24 @@ async fn old_runs_get_their_transcripts_figures_once() -> TestResult {
         (Some(77), Some(2), Some(1_000)),
         "a run whose transcript is gone keeps its figures"
     );
+    // The Claude Code a run's lines name is recorded with its figures (SPEC-461 CCM-011): no
+    // live watch read these runs. A run whose window holds no line names none.
+    let ran_on: Vec<(String, String)> = {
+        use yulius_app::ports::store::TaskStore as _;
+        let task = yulius_domain::ids::TaskId::parse("t1")?;
+        let facts = h.store.task_run_facts(&task).await?;
+        facts
+            .into_iter()
+            .filter_map(|facts| Some((facts.attempt.as_str().to_owned(), facts.cli_version?)))
+            .collect()
+    };
+    assert_eq!(
+        ran_on,
+        [
+            ("a1".to_owned(), "2.1.292".to_owned()),
+            ("a2".to_owned(), "2.1.292".to_owned()),
+        ]
+    );
     let rows = recounts(&db)?;
     let outcomes: Vec<_> = rows
         .iter()

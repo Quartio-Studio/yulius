@@ -145,6 +145,43 @@ fn every_record_of_the_sessions_own_thread_names_its_claude_code() {
     }
 }
 
+/// The agent writes its own transcript, and a line may be megabytes: the version a record names
+/// is kept per run and shown, so only its first bytes are kept, cut on a character boundary;
+/// whichever record names it. A version that is no plain `X.Y.Z` is kept as it is.
+#[test]
+fn the_version_a_transcript_names_is_kept_short() {
+    use yulius_harness::observe::CLI_VERSION_BYTES;
+    let mut acc = UsageAccumulator::new();
+    acc.note_cli_version("2.2.0-beta.3+build.7");
+    assert_eq!(acc.cli_version(), Some("2.2.0-beta.3+build.7"));
+
+    let long = "9".repeat(4 * 1024 * 1024);
+    let kept = format!("{}…", "9".repeat(CLI_VERSION_BYTES));
+    acc.note_cli_version(&long);
+    assert_eq!(acc.cli_version(), Some(kept.as_str()));
+    // What was cut already stays as it is.
+    acc.note_cli_version(&kept);
+    assert_eq!(acc.cli_version(), Some(kept.as_str()));
+    // 21 three-byte characters fit in 64 bytes; the ellipsis follows them.
+    acc.note_cli_version(&"…".repeat(100));
+    assert_eq!(acc.cli_version(), Some("…".repeat(22).as_str()));
+
+    // A prompt record names it through its session observation: cut the same way.
+    let prompt = serde_json::json!({
+        "type": "user", "isSidechain": false, "sessionId": "s1", "cwd": "/w",
+        "timestamp": "2026-11-11T10:00:00.000Z", "version": long,
+        "message": {"role": "user", "content": "go on"},
+    })
+    .to_string();
+    let mut acc = UsageAccumulator::new();
+    acc.observe_all(claude::observe_line(&prompt).iter());
+    assert_eq!(acc.cli_version(), Some(kept.as_str()));
+    let mut acc = UsageAccumulator::new();
+    let (_, named) = claude::observe_versioned(&prompt);
+    acc.note_cli_version(&named.unwrap_or_default());
+    assert_eq!(acc.cli_version(), Some(kept.as_str()));
+}
+
 #[test]
 fn claude_session_turns_meta_and_ignored_records() {
     let per_line = observe_all(CLAUDE_SESSION, claude::observe_line);

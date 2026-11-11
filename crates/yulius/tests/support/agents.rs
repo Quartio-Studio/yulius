@@ -134,7 +134,8 @@ pub struct FakeAgentOptions {
     /// A goal turn or an echoed turn ends only once this file exists (`--turn-hold-file`).
     pub turn_hold_file: Option<PathBuf>,
     /// The agent writes a meta record, no prompt, with its version at each start, as a real
-    /// Claude Code does when it resumes an interrupted turn (`--resume-record`).
+    /// Claude Code may before any prompt when it resumes an interrupted turn
+    /// (`--resume-record`).
     pub resume_record: bool,
 }
 

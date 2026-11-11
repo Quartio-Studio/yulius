@@ -127,8 +127,8 @@
 //! ends only once PATH exists (bounded by 60 s), so a test says when a turn ends instead of a
 //! timer.
 //!
-//! `--resume-record`: at its start the agent writes the record a real Claude Code writes first
-//! when it resumes a session whose turn was interrupted: a meta user record, no prompt, with
+//! `--resume-record`: at its start the agent writes a record a real Claude Code writes before
+//! any prompt when it resumes a session whose turn was interrupted: a meta user record with
 //! its version (the transcript then names the version before any prompt, SPEC-461).
 //!
 //! `--rate-limits-file PATH` runs Claude Code's status line command as Yulius configures it
@@ -731,8 +731,8 @@ impl Transcript {
         self.append(&[user, assistant])
     }
 
-    /// The first record of a resumed session that redoes an interrupted turn: a meta user
-    /// record, which is no prompt (`--resume-record`).
+    /// A record a resumed session that redoes an interrupted turn writes before any prompt: a
+    /// meta user record (`--resume-record`).
     fn resumed(&mut self) -> io::Result<()> {
         let uuid = format!("fake-{}-resumed-{}", self.session_id, now_ms());
         let mut user = self.claude_envelope("user", &uuid, &rfc3339(now_ms()));

@@ -1083,7 +1083,9 @@ mod moves {
                 "what the transcript named stays"
             );
             // It runs a newer one than runs got when it was sent: nothing restarts it again.
+            let flag = decided(&s.id);
             turn(&s, "three").await?;
+            until_decided(&flag).await?;
             settled(&s, Activity::Waiting).await?;
             assert_eq!(runs(&s).await, 2);
             stop(&s.app, &s.id).await
