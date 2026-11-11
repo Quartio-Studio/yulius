@@ -55,7 +55,7 @@ and passes under load.
 ## Plan
 
 - [x] Spec names the cause: typing before the file lands goes into Monaco's placeholder model
-- [ ] Regression test: typing while the file's join is held loses nothing and logs no error
+- [x] Regression test: typing while the file's join is held loses nothing and logs no error
 - [ ] The editor starts without a model, so nothing can be typed before the file is set
 - [ ] The quarantined test waits for the open tab and runs again, 10 runs green under the probe
 - [ ] Independent review answered and gates green

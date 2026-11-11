@@ -1308,6 +1308,26 @@ test('another person’s worktree saves nothing, offers no writing menu items an
   await expect(tree.getByRole('treeitem', 'notes.txt')).toHaveCount(0);
 });
 
+// #1087 (SPEC-452): Monaco shows before the first file's read and join are back. Made with no model,
+// Monaco gave it an empty one of its own: text typed in that gap went into it, the file's model
+// replaced it, and the suggestions for the typed word threw "Model is disposed!" twice.
+type JoinsMock = Window & { __yuliusMock: { live: { holdJoins: boolean }; releaseJoins(): void } };
+test('the editor offers nothing to type into until its first file is in it', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await browser.evaluate(() => { (window as unknown as JoinsMock).__yuliusMock.live.holdJoins = true; });
+  await screen.getByRole('button', /^Show tools/).click();
+  await screen.getByRole('button', 'Editor').click();
+  await screen.getByRole('tree', 'Files').getByRole('treeitem', 'README.md').click();
+  await editorShown(browser);
+  await expect(screen.getByRole('textbox', 'Editor content')).toHaveCount(0);
+
+  await browser.evaluate(() => (window as unknown as JoinsMock).__yuliusMock.releaseJoins());
+  await expect(screen.getByRole('tab', /^README\.md/)).toHaveAttribute('aria-selected', 'true');
+  await screen.getByRole('textbox', 'Editor content').focus();
+  await browser.keyboard.type('unsaved ');
+  await expect(screen.getByRole('tab', /^README\.md\s*, modified/)).toBeVisible();
+});
+
 // Review of SPEC-340: the folder list arriving while "Switch folder?" is asked must not turn the
 // answer into a switch to the folder already open. Asked now only for a file whose unsaved text met
 // a change on disk (SPEC-411).
