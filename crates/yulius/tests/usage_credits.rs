@@ -554,19 +554,30 @@ fn session_transcript(data: &Path) -> Option<PathBuf> {
     None
 }
 
-/// What Claude Code 2.1.311 appends to `transcript` when a prompt is refused for usage credits
-/// in a goal session (task #438's records of 2026-11-11, ids replaced): the prompt, the refusal,
-/// the goal's pause notice and the record closing the turn, written `at`.
-fn refused_turn(transcript: &Path, at: Timestamp) -> Result<String, Box<dyn std::error::Error>> {
+/// Appends to `transcript` what Claude Code 2.1.311 writes when a prompt is refused for usage
+/// credits in a goal session (task #438's records of 2026-11-11, ids replaced): the prompt, the
+/// refusal, the goal's pause notice and the record closing the turn, written now, to the
+/// millisecond as Claude Code writes them. `tag` tells one such turn's records from another's.
+fn append_refused_turn(transcript: &Path, tag: &str) -> TestResult {
+    let now = i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_millis(),
+    )?;
+    let at = format!(
+        "{}.{:03}Z",
+        rfc3339(Timestamp(now)).trim_end_matches('Z'),
+        now.rem_euclid(1000)
+    );
     let text = std::fs::read_to_string(transcript)?;
     let last: Value = serde_json::from_str(text.lines().last().ok_or("an empty transcript")?)?;
     let session = last["sessionId"].as_str().ok_or("a session id")?.to_owned();
     let mut parent = last["uuid"].as_str().ok_or("a uuid")?.to_owned();
     let mut lines = String::new();
     let mut record = |kind: &str, name: &str, extra: Value| {
-        let uuid = format!("down-{name}");
+        let uuid = format!("{tag}-{name}");
         let mut record = json!({"type": kind, "uuid": uuid, "parentUuid": parent,
-            "isSidechain": false, "sessionId": session, "timestamp": rfc3339(at),
+            "isSidechain": false, "sessionId": session, "timestamp": at,
             "userType": "external", "version": "2.1.311"});
         if let (Some(map), Some(more)) = (record.as_object_mut(), extra.as_object()) {
             map.extend(more.clone());
@@ -584,7 +595,7 @@ fn refused_turn(transcript: &Path, at: Timestamp) -> Result<String, Box<dyn std:
         "refusal",
         json!({"isApiErrorMessage": true, "error": "rate_limit",
             "apiError": "model_requires_usage_credits", "apiErrorStatus": 429,
-            "message": {"id": "down-refusal", "type": "message", "role": "assistant",
+            "message": {"id": format!("{tag}-refusal"), "type": "message", "role": "assistant",
                 "model": "<synthetic>", "stop_reason": "stop_sequence",
                 "content": [{"type": "text",
                     "text": "You're out of usage credits. /model to switch models."}]}}),
@@ -600,7 +611,11 @@ fn refused_turn(transcript: &Path, at: Timestamp) -> Result<String, Box<dyn std:
         "duration",
         json!({"subtype": "turn_duration", "durationMs": 250, "isMeta": false}),
     );
-    Ok(lines)
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(transcript)?
+        .write_all(lines.as_bytes())?;
+    Ok(())
 }
 
 /// Yulius is down while Claude Code is refused and pauses the goal: what Claude Code wrote is
@@ -609,9 +624,11 @@ fn refused_turn(transcript: &Path, at: Timestamp) -> Result<String, Box<dyn std:
 /// too. Here the move is refused, so the pause the replay held asks a person.
 ///
 /// It asks once per limit. Another restart reads the same refusal and pause again and tries
-/// the move again, but the request made for that limit is still open: nothing new is asked or
-/// audited, whatever the task read meanwhile (the replay also settles the closed turn as Your
-/// turn, and that may land after the request), and the task is under Needs you again.
+/// the move again, but that limit was asked about: nothing new is asked or audited, whatever
+/// the task read meanwhile (the replay also settles the closed turn as Your turn, and that may
+/// land after the request), and the task is under Needs you again. A second refusal written
+/// while Yulius was down is a new limit: audited once, its request the one still open, and
+/// once only however often Yulius restarts after it.
 #[test]
 fn a_usage_credits_refusal_written_while_yulius_was_down_is_read_at_restart() -> TestResult {
     use yulius_app::ports::Crypto;
@@ -644,16 +661,7 @@ fn a_usage_credits_refusal_written_while_yulius_was_down_is_read_at_restart() ->
     })?;
     first.shutdown_timeout(Duration::from_secs(5));
 
-    let at = Timestamp(i64::try_from(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_millis(),
-    )?);
-    let refused = refused_turn(&transcript, at)?;
-    std::fs::OpenOptions::new()
-        .append(true)
-        .open(&transcript)?
-        .write_all(refused.as_bytes())?;
+    append_refused_turn(&transcript, "down")?;
 
     let second = runtime()?;
     let asked = second.block_on(async {
@@ -684,36 +692,55 @@ fn a_usage_credits_refusal_written_while_yulius_was_down_is_read_at_restart() ->
     })?;
     second.shutdown_timeout(Duration::from_secs(5));
 
-    let third = runtime()?;
-    third.block_on(async {
-        let app = build_with(&data, &fake, probe.clone(), agent)?;
-        // As if the replay's settle of the closed turn had landed after the request.
-        app.deps
-            .store
-            .set_activity(&id, Some(Activity::Waiting), app.now())
+    // Each restart replays the pending limit and is refused the move again. `settled` is as if
+    // the replay's settle of the closed turn had landed after the request.
+    let restart = |moves: usize, audits: usize, settled: bool, last: bool| -> TestResult {
+        let rt = runtime()?;
+        rt.block_on(async {
+            let app = build_with(&data, &fake, probe.clone(), agent.clone())?;
+            if settled {
+                app.deps
+                    .store
+                    .set_activity(&id, Some(Activity::Waiting), app.now())
+                    .await?;
+            }
+            app.reconcile().await?;
+            wait_for(
+                "the move refused again",
+                Duration::from_secs(30),
+                || async {
+                    refused_moves(&app, &id).await == moves
+                        && pauses_audited(&app, &id).await >= audits
+                        && app.deps.store.task(&id).await.is_ok_and(|task| {
+                            task.is_some_and(|task| task.activity == Some(Activity::NeedsAttention))
+                        })
+                },
+            )
             .await?;
-        app.reconcile().await?;
-        wait_for(
-            "the move refused again",
-            Duration::from_secs(30),
-            || async {
-                refused_moves(&app, &id).await == 2
-                    && app.deps.store.task(&id).await.is_ok_and(|task| {
-                        task.is_some_and(|task| task.activity == Some(Activity::NeedsAttention))
-                    })
-            },
-        )
-        .await?;
-        assert_eq!(pauses_audited(&app, &id).await, 1, "asked once");
-        assert_eq!(
-            app.deps.store.task_needs_you(&id).await?.as_ref(),
-            Some(&asked),
-            "the same request"
-        );
-        stop(&app, &id).await?;
-        Ok::<_, Box<dyn std::error::Error>>(())
-    })?;
-    third.shutdown_timeout(Duration::from_secs(5));
+            assert_eq!(
+                pauses_audited(&app, &id).await,
+                audits,
+                "asked once per limit"
+            );
+            assert_eq!(
+                app.deps.store.task_needs_you(&id).await?.as_ref(),
+                Some(&asked),
+                "the same request"
+            );
+            if last {
+                stop(&app, &id).await?;
+            }
+            Ok::<_, Box<dyn std::error::Error>>(())
+        })?;
+        rt.shutdown_timeout(Duration::from_secs(5));
+        Ok(())
+    };
+    // The same limit again: nothing new.
+    restart(2, 1, true, false)?;
+    // Refused once more while Yulius was down: a new limit, asked about once.
+    append_refused_turn(&transcript, "down-again")?;
+    restart(3, 2, false, false)?;
+    restart(4, 2, false, true)?;
     Ok(())
 }
 
