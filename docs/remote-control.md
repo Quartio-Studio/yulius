@@ -63,8 +63,11 @@ computer) and lead to the same path there; your token is never sent anywhere els
 points, and a move onto a URL where you saved another sign-in is not followed. Once the old host
 is gone nothing redirects any more: run `yulius remote login <new URL>` on a computer that had
 not followed yet. If the move is undone after your CLI followed it, the new URL stops answering
-and the error names the URL the sign-in came from: `yulius remote login <old URL>` and Enter at
-the token prompt take it back (an empty token on stdin with `--token-stdin`). Claude Code's own
+and the error names the URL the sign-in came from. Sign in there again with `yulius remote
+login <old URL>`: it asks for a token, and the saved one is never sent there by itself (the old
+name may be someone else's by then). With the token you used before, the sign-in is back as it
+was. With a new one (tokens are shown once; make one on Settings) the sign-in that followed the
+move stays beside it, and `yulius remote logout --server <new URL>` forgets it. Claude Code's own
 connection does not follow a move: `claude mcp remove yulius`, then add it again with the new
 URL as above. `yulius login`, `yulius onboard` and `yulius secrets import` take the new URL with
 `--server`.

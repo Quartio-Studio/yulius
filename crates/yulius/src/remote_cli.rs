@@ -290,14 +290,26 @@ fn failed(server: &Url, err: &RemoteError) -> String {
         .ok()
         .and_then(|store| store.moved_from(server).ok())
         .unwrap_or_default();
-    match from.first() {
-        Some(old) => format!(
-            "{said}\nThe saved sign-in followed a move here from {}. If the instance is back \
+    came_from(said, &from)
+}
+
+/// `said`, with the way back to the URLs the sign-in came `from`. A sign-in there asks for a
+/// token: the saved one goes nowhere unless a person types it.
+fn came_from(said: String, from: &[String]) -> String {
+    const ASKS: &str = "it asks for a token; the saved one is sent nowhere by itself";
+    match from {
+        [] => said,
+        [old] => format!(
+            "{said}\nThe saved sign-in followed a move here from {old}. If the instance is back \
              there (the move was undone), sign in there again: `yulius remote login {old}` \
-             (Enter at the token prompt takes this sign-in back)",
-            from.join(", ")
+             ({ASKS})"
         ),
-        None => said,
+        several => format!(
+            "{said}\nThe saved sign-in followed moves here from {}. If the instance is back at \
+             one of them (a move was undone), sign in there again: `yulius remote login <that \
+             URL>` ({ASKS})",
+            several.join(", ")
+        ),
     }
 }
 
@@ -503,19 +515,9 @@ pub fn remote(action: RemoteAction, opts: &RemoteOpts) -> ExitCode {
 fn login(url: &str, token_stdin: bool) -> ExitCode {
     let result = (|| -> Result<String, String> {
         let server = parse_url(url)?;
-        // A sign-in that followed this URL's move elsewhere can come back without its token
-        // being typed (SPEC-466 MVC-032): the move was undone.
+        // The token is typed, always: one saved for an instance this URL moved to is sent
+        // nowhere without a person's act (SPEC-466 MVC-032).
         let store = store()?;
-        let followed = match store.moved_to(&server).map_err(|e| e.to_string())? {
-            Some(to) => {
-                let to = parse_url(&to)?;
-                store
-                    .load(&to)
-                    .map_err(|e| e.to_string())?
-                    .map(|token| (to, token))
-            }
-            None => None,
-        };
         let token = if token_stdin || !io::stdin().is_terminal() {
             let mut text = String::new();
             io::stdin()
@@ -524,23 +526,13 @@ fn login(url: &str, token_stdin: bool) -> ExitCode {
                 .map_err(|e| format!("cannot read the token: {e}"))?;
             text
         } else {
-            let back = match &followed {
-                Some((to, _)) => format!(
-                    "; Enter alone takes back the sign-in that followed its move to {}",
-                    TokenStore::server_key(to)
-                ),
-                None => String::new(),
-            };
-            print!("Token for {server} (Settings → Connect your local agent{back}): ");
+            print!("Token for {server} (Settings → Connect your local agent): ");
             io::stdout().flush().map_err(|e| e.to_string())?;
             console::Term::stdout()
                 .read_secure_line()
                 .map_err(|e| format!("cannot read the token: {e}"))?
         };
-        let (token, back) = match (token.trim(), followed) {
-            ("", Some((to, token))) => (token, Some(to)),
-            (typed, _) => (Secret::new(typed.to_owned()), None),
-        };
+        let token = Secret::new(token.trim().to_owned());
         if !token.expose().starts_with("yul_") {
             return Err("that is not a Yulius API token (they start with yul_)".into());
         }
@@ -551,12 +543,21 @@ fn login(url: &str, token_stdin: bool) -> ExitCode {
             }
             other => other.to_string(),
         })?;
+        // A sign-in that had followed this URL's move comes back when its own token was typed;
+        // with another token it stays, and may be one for an instance that is gone.
+        let followed = store.moved_to(&server).map_err(|e| e.to_string())?;
         store.save(&server, &token).map_err(|e| e.to_string())?;
+        let kept = followed.filter(|to| {
+            parse_url(to)
+                .ok()
+                .and_then(|to| store.load(&to).ok().flatten())
+                .is_some()
+        });
         let meta = &info["_meta"];
-        let with = match back {
+        let with = match kept {
             Some(to) => format!(
-                ", with the sign-in that had followed its move to {}",
-                TokenStore::server_key(&to)
+                ". The sign-in that followed its move to {to} is kept; if that instance is \
+                 gone, forget it: `yulius remote logout --server {to}`"
             ),
             None => String::new(),
         };
@@ -859,5 +860,54 @@ pub fn vars_cmd(action: VarsAction, opts: &RemoteOpts) -> ExitCode {
             true,
         ),
         Err(err) => fail(command, err),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::came_from;
+
+    /// SPEC-466 MVC-032: the way back names the URL the sign-in came from, and no one of several
+    /// as if it were the only one; the saved token is never promised to travel.
+    #[test]
+    fn the_way_back_is_said_for_the_urls_a_sign_in_came_from() {
+        let said = || "connection refused".to_owned();
+        assert_eq!(came_from(said(), &[]), "connection refused");
+
+        let one = came_from(said(), &["https://old.example".to_owned()]);
+        assert!(one.starts_with("connection refused\n"), "{one}");
+        assert!(
+            one.contains("followed a move here from https://old.example."),
+            "{one}"
+        );
+        assert!(
+            one.contains("`yulius remote login https://old.example`"),
+            "{one}"
+        );
+
+        let several = came_from(
+            said(),
+            &[
+                "https://a-older.example".to_owned(),
+                "https://old.example".to_owned(),
+            ],
+        );
+        assert!(
+            several.contains("from https://a-older.example, https://old.example."),
+            "{several}"
+        );
+        assert!(
+            several.contains("`yulius remote login <that URL>`"),
+            "{several}"
+        );
+        assert!(
+            !several.contains("login https://"),
+            "no name is singled out: {several}"
+        );
+
+        for hint in [one, several] {
+            assert!(hint.contains("it asks for a token"), "{hint}");
+            assert!(!hint.contains("Enter"), "{hint}");
+        }
     }
 }

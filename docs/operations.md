@@ -1594,8 +1594,8 @@ the old proxy configuration back, thaws and enables the old unit and removes the
 state. The copy on the new host, with `master.key` and every secret, stays there until you remove it.
 It never leaves both running. Work done on the new host after the move is not copied back.
 Laptops whose `yulius remote` had already followed the move point at the stopped instance: their
-commands say where the sign-in came from, and `yulius remote login <old URL>` takes it back
-(Enter at the token prompt, [remote control](remote-control.md#2-connect-your-agent)).
+commands say where the sign-in came from, and `yulius remote login <old URL>` signs in there
+again, with a token ([remote control](remote-control.md#2-connect-your-agent)).
 
 A run that hangs after the start was ordered ignores Ctrl-C on purpose (it must not thaw the old
 instance beside a new one). End it with `kill -9`, then run the same command again (it decides

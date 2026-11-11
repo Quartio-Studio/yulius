@@ -87,7 +87,9 @@ C of [0297](0297-one-root-command-moves-an-instance-and-drives-the-new-host-over
   before the move. It cannot move it onto another instance the laptop is signed in to: a move
   onto a URL with another saved sign-in is refused.
 - After a move that was undone, laptops that had followed point at the stopped instance. Their
-  CLI says where the sign-in came from and never probes the old URL with the token by itself (a
-  retired name may belong to someone else by then); `yulius remote login <old URL>` takes the
-  sign-in back.
+  CLI says where the sign-in came from and never sends the saved token to the old URL, neither
+  to find out nor for a sign-in without a token (a retired name may belong to someone else by
+  then). `yulius remote login <old URL>` needs a token typed: the one that followed brings the
+  sign-in back, a new one leaves the sign-in that followed beside it until `yulius remote
+  logout --server <new URL>` forgets it.
 - `yulius login`, `yulius onboard` and `yulius secrets import` do not follow a move (SPEC-466).

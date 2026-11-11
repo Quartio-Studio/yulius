@@ -144,9 +144,11 @@ Remote clients
   (`moved` in `remote-credentials.json`), so a command that names the old URL (`--server`,
   `YULIUS_SERVER`) uses the sign-in at the new one. When the instance a sign-in followed does
   not answer, the error says where the sign-in came from and how to go back; the token is sent
-  nowhere to find out. `yulius remote login <old URL>` brings the sign-in back after a move that
-  was undone: an empty token takes the one that followed the move (tokens are shown once), what
-  followed is forgotten, and the names that led there lead to the old URL.
+  nowhere to find out, and nowhere without being typed: `yulius remote login <old URL>` asks for
+  a token as ever, and without one it contacts nobody and changes nothing. A sign-in there with
+  the token that followed the move brings the sign-in back: what followed is forgotten, and the
+  names that led there lead to the old URL. With another token the old URL is a server again and
+  the sign-in that followed stays; the CLI says how to forget it.
 
 ## Design
 
@@ -174,7 +176,8 @@ Remote clients
   (`TokenStore::relocate`, which refuses another sign-in at the new URL), says the line and asks
   once more; `client` resolves a name that moved (`TokenStore::moved_to`); `failed` adds where a
   sign-in came from (`moved_from`) to a transport error; `TokenStore::save` at a URL that had
-  moved brings the sign-in back.
+  moved makes it a server again, and brings the sign-in back when the token is the one that
+  followed. `login` reads the token from the prompt or stdin only.
 
 ## Plan
 
@@ -226,8 +229,10 @@ Remote clients
   not followed and the store is unchanged; a second move in a row is an error. A move onto a URL
   where another sign-in is saved is not followed and the file is unchanged byte for byte. After
   a move that is undone, the failing command names the URL the sign-in came from without
-  contacting it, and `yulius remote login <old URL>` with an empty token brings the sign-in
-  back: the file holds the token under the old URL only.
+  contacting it. `yulius remote login <old URL>` without a token (with and without
+  `--token-stdin`) exits 2, sends the old URL nothing and leaves the file unchanged byte for
+  byte. With the token that followed, the file holds it under the old URL only; with another
+  token both sign-ins stay and the output names the command that forgets the one that followed.
 - e2e on the mock: the Address card shows the warning, the link, both values and the move; after
   GitHub accepts the callback the card says so without a reload; "Check again" works while the
   card reads by itself and a read that answers late changes nothing; coming back to the page asks
@@ -268,6 +273,14 @@ Remote clients
   would let the check lock every member out if GitHub ever answered a made-up code otherwise for
   a GitHub App than for the OAuth app it was measured with (not testable here). A wrong answer
   now costs a wrong sentence, never a sign-in.
+- **A saved token is never reused for another URL.** After a move that was undone, a first
+  version let `yulius remote login <old URL>` take the token that had followed the move when
+  none was typed (tokens are shown once). An empty stdin is no person's act: an agent that
+  follows the error's hint, or a script, would have sent the token to whatever answers at a
+  name that may be someone else's by then. A sign-in always needs its token typed; a person who
+  has none makes a new one on Settings, and the CLI says how to forget the sign-in that stayed
+  behind. For the same reason the store takes a sign-in back only when the token typed is the
+  one that followed: another token says nothing about the instance the sign-in moved to.
 - **One pull request.** The four parts are one slice of SPEC-460 as its owner cut it, and the
   chained task #447 builds on all of it; each part is small and has its own tests.
 - **Not in this change.** `yulius login`, `yulius onboard` and `yulius secrets import` (the

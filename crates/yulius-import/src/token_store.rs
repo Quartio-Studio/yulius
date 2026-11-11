@@ -162,15 +162,22 @@ impl TokenStore {
 
     /// Saves `token` for `server`, replacing any previous one. The file is written atomically
     /// with owner-only permissions (directory `0700`, file `0600` on Unix). A sign-in at a URL
-    /// that had moved ([`Self::relocate`]) brings the sign-in back (SPEC-466 MVC-032): the one
-    /// that followed the move is forgotten, and the names that led to it lead here.
+    /// whose sign-in had followed a move ([`Self::relocate`]) makes the URL a server again
+    /// (SPEC-466 MVC-032). With the token that followed, the move was undone: that sign-in comes
+    /// back, and the names that led to it lead here. With another token nothing of the instance
+    /// it had moved to is touched.
     ///
     /// # Errors
     /// I/O failure or a corrupt existing file.
     pub fn save(&self, server: &Url, token: &Secret) -> Result<(), TokenStoreError> {
         let mut file = self.read()?;
         let key = Self::server_key(server);
-        if let Some(followed) = file.moved.remove(&key) {
+        if let Some(followed) = file.moved.remove(&key)
+            && file
+                .servers
+                .get(&followed)
+                .is_some_and(|there| there.token == *token)
+        {
             file.servers.remove(&followed);
             for target in file
                 .moved
@@ -536,23 +543,28 @@ mod tests {
     }
 
     /// SPEC-466 MVC-032: a move that was undone. Signing in again at the URL the sign-in had
-    /// left brings it back: what followed the move is gone, and every name leads there.
+    /// left, with the token that followed, brings it back: one sign-in, and every name leads
+    /// there. A sign-in there with another token touches nothing of the instance it had moved to.
     #[test]
     fn signing_in_again_at_the_old_url_brings_the_sign_in_back() -> TestResult {
         let dir = tempfile::tempdir()?;
-        let store = TokenStore::new(dir.path().join("remote-credentials.json"));
         let older = Url::parse("https://older.example")?;
         let old = Url::parse("https://old.example")?;
         let new = Url::parse("https://new.example")?;
         let other = Url::parse("https://other.example")?;
-        store.save(&older, &Secret::new("yul_token"))?;
-        store.save(&other, &Secret::new("yul_other"))?;
-        assert_eq!(store.relocate(&older, &old)?, Relocated::Moved);
-        assert_eq!(store.relocate(&old, &new)?, Relocated::Moved);
+        let followed = |file: &str| -> Result<TokenStore, TokenStoreError> {
+            let store = TokenStore::new(dir.path().join(file));
+            store.save(&older, &Secret::new("yul_token"))?;
+            store.save(&other, &Secret::new("yul_other"))?;
+            assert_eq!(store.relocate(&older, &old)?, Relocated::Moved);
+            assert_eq!(store.relocate(&old, &new)?, Relocated::Moved);
+            Ok(store)
+        };
 
-        // With another token than the one that followed (the first was shown once, long ago).
-        store.save(&old, &Secret::new("yul_again"))?;
-        assert_eq!(store.load(&old)?, Some(Secret::new("yul_again")));
+        // The token that followed, typed again at the name it left: the sign-in is back.
+        let store = followed("same.json")?;
+        store.save(&old, &Secret::new("yul_token"))?;
+        assert_eq!(store.load(&old)?, Some(Secret::new("yul_token")));
         assert_eq!(store.load(&new)?, None);
         assert_eq!(
             store.servers()?,
@@ -565,7 +577,28 @@ mod tests {
                 Some("https://old.example")
             );
         }
-        // Another instance's sign-in is never touched.
+        assert_eq!(store.load(&other)?, Some(Secret::new("yul_other")));
+
+        // Another token there (the old name is an instance of its own again): both sign-ins
+        // stay, the old name is a server again, and the new one is not made a name of it.
+        let store = followed("other.json")?;
+        store.save(&old, &Secret::new("yul_again"))?;
+        assert_eq!(store.load(&old)?, Some(Secret::new("yul_again")));
+        assert_eq!(store.load(&new)?, Some(Secret::new("yul_token")));
+        assert_eq!(
+            store.servers()?,
+            [
+                "https://new.example",
+                "https://old.example",
+                "https://other.example"
+            ]
+        );
+        assert_eq!(store.moved_to(&old)?, None);
+        assert_eq!(store.moved_to(&new)?, None);
+        assert_eq!(
+            store.moved_to(&older)?.as_deref(),
+            Some("https://new.example")
+        );
         assert_eq!(store.load(&other)?, Some(Secret::new("yul_other")));
         Ok(())
     }
