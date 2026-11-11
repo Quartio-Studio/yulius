@@ -89,7 +89,9 @@ Command and checklist
   is proven (MIG-031). When it does not come up healthy it is stopped and disabled, then the old
   one is thawed, and the checklist says that the copy on the target was started and must be
   removed before another run. Only when the new instance is healthy does the old one stay frozen
-  and disabled. Once the start was ordered no signal thaws the old instance.
+  and disabled. Once the start was ordered no signal thaws the old instance; a run that ends
+  there (killed) leaves it frozen, and the next run decides from the new instance's health
+  without planning or copying again. A failed cutover thaws the unit whoever froze it.
 
 Target
 
@@ -136,8 +138,11 @@ Provisioning (sandboxes copy the host system, so the target matches the old host
   copied tree.
 - MIG-024 **Host setup.** Prepare runs `host setup`'s host items on the target (needrestart,
   packages, Docker engine and units, kernel modules, service user and ids, and the bwrap rule once
-  SPEC-456 is merged); after the copy the whole `host setup` runs (unit drop-in, binary, sandbox
-  base, start, verdict, contained doctor, Docker smoke). A failed item fails the step.
+  SPEC-456 is merged) and, with the unit in place, everything up to the sandbox base, so a host
+  that cannot run sandboxes fails the move before anything freezes. After the copy the instance
+  is started and the running service's items follow (verdict, contained doctor, Docker smoke). A
+  failed item fails the step. The import accepts a data directory that holds only what a copy
+  never carries (the host's own sandbox base).
 
 Settings and keys
 
@@ -162,8 +167,9 @@ Copy and proof
 
 - MIG-030 **Copy.** The old instance is frozen and its data directory streamed to the target with
   the export's exact-size archive and checksum, compressed with `zstd` when both hosts have it,
-  and installed there by the import (its checks, id remapping and marker). An incomplete copy of
-  this move found on the target is removed first; anything else there is refused.
+  and installed there by the import (its checks, id remapping and marker). An unfinished copy
+  found on the target is removed first (a copy that was installed but not proven is marked
+  unfinished); an instance or anything else there is refused.
 - MIG-031 **Proof.** Both hosts compute the copy's inventory: entries and bytes for each
   top-level folder and one fingerprint over every entry's path, kind, size, owner, mode, time and
   restorable attributes in archive order, in the old host's ids. The new instance is started only
@@ -234,9 +240,10 @@ Settings → Instance (slice D)
 - **Steps, not flags.** A step reads the facts, acts if needed and returns a line; nothing but
   the move's identity and the cutover's progress is stored, so a rerun cannot disagree with the
   hosts.
-- **Cutover order.** freeze → copy → proof → mark → order the start (no thaw by signal from
-  here) → `host setup` on the target → health → `systemctl disable` on the old host → redirect →
-  Finish. A failure before the order thaws; one after it stops and disables the target first.
+- **Cutover order.** (prepared: `host setup` up to the sandbox base) → freeze → copy → proof →
+  mark → order the start (no thaw by signal from here) → `systemctl enable` and `start` on the
+  target → health → `systemctl disable` on the old host → redirect → Finish. A failure before
+  the order thaws; one after it stops and disables the target first.
 - **States.** `planned` (owner: the operator; exit: confirm or rerun), `prepared` and `copying`
   (the flow; a failure leaves them for the rerun), `starting` (the flow; exit: healthy, or
   rollback when the bound passes; a killed flow leaves the old instance frozen and the rerun
@@ -272,6 +279,11 @@ Settings → Instance (slice D)
   reports the finished steps as `ok` and completes.
 - A target whose instance does not report healthy is stopped and disabled before the old unit is
   thawed; the checklist says the copy there must be removed, and a rerun is refused until it is.
+- A target on which `host setup` cannot build the sandbox base fails the move while preparing;
+  nothing is frozen or copied.
+- A run that was killed after it ordered the start: the next run plans and copies nothing; with a
+  healthy new instance it disables the old unit and finishes, else it stops the new one and thaws
+  the old one.
 - The plan with a public URL that changes names the GitHub App's link and both values; with
   neither a terminal nor `--yes` nothing is changed on the target beyond the flow's files, and
   nothing is frozen.
