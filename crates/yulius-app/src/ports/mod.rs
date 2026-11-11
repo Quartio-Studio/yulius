@@ -9,6 +9,7 @@ pub mod guests;
 pub mod harness;
 pub mod intake;
 pub mod isolation;
+pub mod migration;
 pub mod session;
 pub mod session_docs;
 pub mod store;

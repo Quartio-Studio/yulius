@@ -19,6 +19,7 @@ mod leftovers;
 mod limits;
 mod mcp;
 mod mcp_servers;
+mod migration;
 mod notes;
 mod previews;
 mod projects;
@@ -252,6 +253,11 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
         // (SPEC-466).
         .route("/api/admin/instance/address", get(address::view))
         .route("/api/admin/instance/address/check", post(address::check))
+        // A move to another host asked from Settings → Instance (SPEC-470).
+        .route(
+            "/api/admin/instance/migration",
+            get(migration::view).post(migration::ask),
+        )
         // The instance's resource limits (SPEC-459).
         .route("/api/admin/limits", get(limits::view))
         .route("/api/admin/limits/adapt", post(limits::adapt))

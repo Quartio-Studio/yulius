@@ -264,6 +264,8 @@ pub struct App {
     pub(crate) profile_writes: tokio::sync::Mutex<()>,
     /// Instance updates: checks of `main` and the update run (SPEC-002 ADR-18).
     pub(crate) updates: crate::updates::UpdateState,
+    /// The root move helper's files (SPEC-470); unset: no move is asked from this server.
+    pub(crate) move_helper: OnceLock<Arc<dyn crate::ports::migration::MoveHelper>>,
     /// Secrets vault runtime state (SPEC-002 ADR-20).
     pub(crate) vault: crate::vault::VaultState,
     /// Yulius-run CI and repository hygiene (SPEC-002 ADR-21).
@@ -341,6 +343,7 @@ impl App {
             vidoc: OnceLock::new(),
             profile_writes: tokio::sync::Mutex::new(()),
             updates: crate::updates::UpdateState::default(),
+            move_helper: OnceLock::new(),
             vault: crate::vault::VaultState::default(),
             ci: crate::ci::CiState::default(),
             isolation: OnceLock::new(),
