@@ -439,6 +439,16 @@ async fn a_move_needs_the_plan_that_was_shown_and_the_typed_host() -> TestResult
     i.refused(moving(), StatusCode::CONFLICT, "found problems")
         .await?;
 
+    // A plan that was stopped before its end: its lines are fine as far as they go.
+    i.later(1_000);
+    i.planned(&GOOD[..2], None).await?;
+    for stopped in [None, Some(2)] {
+        i.helper.says(|status| status.exit_code = stopped);
+        assert_eq!(i.view().await?["can"]["move"], false, "{stopped:?}");
+        i.refused(moving(), StatusCode::CONFLICT, PLAN_FIRST)
+            .await?;
+    }
+
     // A good plan.
     i.later(1_000);
     i.planned(&GOOD, None).await?;
@@ -619,8 +629,21 @@ async fn an_abort_is_of_the_recorded_move_and_may_stop_a_run() -> TestResult {
     )
     .await?;
 
-    // The helper stopped the plan and ran the abort.
+    // The helper stopped the plan and runs the abort: nothing else beside it.
     i.helper.takes(i.now())?;
+    i.helper
+        .checklist("Abort", &[("old URL", HostOutcome::Changed)], None, i.now());
+    let aborting = i.view().await?;
+    assert_eq!(aborting["run"]["action"], "abort");
+    assert_eq!(aborting["run"]["state"], "running");
+    assert_eq!(
+        aborting["can"],
+        json!({"plan": false, "move": false, "abort": false})
+    );
+    i.refused(abort(), StatusCode::CONFLICT, "an abort is running")
+        .await?;
+    i.refused(plan(), StatusCode::CONFLICT, "an abort is running")
+        .await?;
     i.helper.checklist(
         "aborted",
         &[("old instance", HostOutcome::Changed)],
@@ -752,9 +775,19 @@ async fn an_unanswered_request_and_a_silent_helper_are_said() -> TestResult {
     assert_eq!(i.view().await?["request"], Value::Null);
     assert_eq!(i.helper.cleared.load(Ordering::SeqCst), 1);
 
-    // A run whose helper stops reporting (killed, the host restarted).
+    // A run whose helper stops reporting (killed, the host restarted): before its first line
+    // there is no checklist, and what it began can still be aborted.
     assert_eq!(i.ask(plan()).await?.status, StatusCode::ACCEPTED);
     i.helper.takes(i.now())?;
+    i.later(60_001);
+    let silent = i.view().await?;
+    assert_eq!(silent["move"], Value::Null);
+    assert_eq!(silent["run"]["state"], "lost");
+    assert_eq!(
+        silent["can"],
+        json!({"plan": true, "move": false, "abort": true})
+    );
+    i.helper.says(|status| status.updated_at += 60_001);
     i.helper.checklist("Plan", &GOOD[..1], None, i.now());
     i.later(60_000);
     assert_eq!(i.view().await?["run"]["state"], "running");
