@@ -63,6 +63,9 @@ struct Fake {
     profiles: BTreeMap<String, Profile>,
     /// `apparmor_parser` cannot read a profile (no `abi/4.0`).
     parser_fails: bool,
+    /// Commands that fail, by the first words of their line: the exit code (`None`: it cannot
+    /// be started) and what they say.
+    failing: Vec<(&'static str, Option<i32>, &'static str)>,
 }
 
 /// A loaded AppArmor profile, as far as bwrap's start depends on it.
@@ -85,7 +88,9 @@ fn profiles_in(text: &str) -> Vec<(String, Profile)> {
             let profile = Profile {
                 bwrap: header.contains(" /usr/bin/bwrap "),
                 unconfined: header.contains("flags=(unconfined)"),
-                userns: text.contains("  userns,\n") || text.contains("  allow userns,\n"),
+                userns: ["  userns,\n", "  allow userns,\n", "{ userns, }"]
+                    .iter()
+                    .any(|rule| text.contains(rule)),
             };
             (name, profile)
         })
@@ -116,6 +121,7 @@ impl Fake {
             read_only: BTreeSet::new(),
             profiles: BTreeMap::new(),
             parser_fails: false,
+            failing: Vec::new(),
         };
         fake.files
             .insert(PathBuf::from(EXE), (String::new(), 0, 0o100_755));
@@ -351,6 +357,20 @@ impl Host for Fake {
         let line = cmd.argv.join(" ");
         self.log.push(line.clone());
         let argv: Vec<&str> = cmd.argv.iter().map(String::as_str).collect();
+        let failing = self.failing.iter().find(|f| {
+            line.strip_prefix(f.0)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with(' '))
+        });
+        if let Some((_, code, why)) = failing {
+            return match code {
+                Some(code) => Ok(Out {
+                    code: *code,
+                    stdout: String::new(),
+                    stderr: (*why).to_owned(),
+                }),
+                None => Err((*why).to_owned()),
+            };
+        }
         if self.systemd_down && argv.first() == Some(&"systemctl") {
             return Ok(Out {
                 code: 1,
@@ -697,6 +717,7 @@ impl Host for Fake {
             }
             ["rm", "-f", file] => {
                 self.files.remove(Path::new(file));
+                self.links.remove(Path::new(file));
                 ok("")
             }
             [EXE, "doctor", "--docker-smoke", "--data-dir", DATA] => {

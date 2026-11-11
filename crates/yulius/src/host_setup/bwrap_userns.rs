@@ -66,6 +66,8 @@ struct Facts {
     restricted: bool,
     /// Ubuntu's profile for bwrap is there and not disabled.
     shipped: bool,
+    /// It is there and disabled by its link, which alone does not unload it.
+    shipped_off: bool,
     ours: Ours,
     /// A link in `disable/` keeps ours from loading (a person's).
     ours_disabled: bool,
@@ -89,6 +91,8 @@ struct Plan {
     write: bool,
     /// Disable the shipped profile.
     disable: bool,
+    /// Unload the shipped profile a link already disables.
+    unload: bool,
     /// A person's files to load again, as a boot does.
     reload: Vec<String>,
     /// Load Yulius's profile.
@@ -114,9 +118,11 @@ fn skipped(name: &str) -> bool {
     name.starts_with('.') || SUFFIXES.iter().any(|s| name.ends_with(s))
 }
 
-/// Whether a profile in `text` attaches to `/usr/bin/bwrap`: a header line (`profile name /path
-/// flags=(…) {`, or `/path {`) whose path is bwrap's, plain or as the alternations Ubuntu's own
-/// profiles spell it. A rule that only names bwrap (`/usr/bin/bwrap mr,`) is none.
+/// Whether a profile in `text` attaches to `/usr/bin/bwrap`: a header at the top level
+/// (`profile name /path flags=(…) {`, or `/path {`) whose path is bwrap's, plain or as the
+/// alternations Ubuntu's own profiles spell it. The header's brace may open the profile on the
+/// same line, before a comment or on the next line. A rule that only names bwrap
+/// (`/usr/bin/bwrap mr,`) and a profile inside another one are none.
 fn attaches_bwrap(text: &str) -> bool {
     const PATHS: [&str; 4] = [
         "/usr/bin/bwrap",
@@ -124,25 +130,69 @@ fn attaches_bwrap(text: &str) -> bool {
         "/{,usr/}bin/bwrap",
         "@{bin}/bwrap",
     ];
-    text.lines()
-        .map(str::trim)
-        .filter(|l| !l.starts_with('#') && l.ends_with('{'))
-        .any(|l| {
-            l.split_whitespace()
-                .take_while(|t| !t.starts_with("flags=") && *t != "{")
-                .any(|t| PATHS.contains(&t.trim_matches('"')))
-        })
+    // Blocks open, and the words since the last rule or block at the top level.
+    let mut depth = 0_usize;
+    let mut header: Vec<&str> = Vec::new();
+    let mut in_list = false;
+    let words = text
+        .lines()
+        .flat_map(|l| l.split_whitespace().take_while(|w| !w.starts_with('#')));
+    for word in words {
+        // An alternation (`/{usr/,}bin`, `@{bin}`) closes its own brace.
+        let opens = word.matches('{').count();
+        let closes = word.matches('}').count();
+        if opens > closes {
+            header.push(word.trim_end_matches('{'));
+            let attaches = header
+                .iter()
+                .take_while(|w| !w.starts_with("flags="))
+                .any(|w| PATHS.contains(&w.trim_matches('"')));
+            if depth == 0 && attaches {
+                return true;
+            }
+            depth += 1;
+            header.clear();
+        } else if closes > opens {
+            depth = depth.saturating_sub(1);
+            header.clear();
+        } else if depth == 0 {
+            // `flags=(a, b)`: a comma inside a list ends no rule.
+            in_list = (in_list || word.contains('(')) && !word.contains(')');
+            if word.ends_with(',') && !in_list {
+                header.clear();
+            } else {
+                header.push(word);
+            }
+        }
+    }
+    false
+}
+
+/// What a person does about a profile of theirs that keeps bwrap from working.
+fn theirs(files: &[String]) -> String {
+    let disable: Vec<String> = files
+        .iter()
+        .map(|file| format!("sudo ln -s {file} {DIR}/disable/ && sudo {PARSER} -R {file}"))
+        .collect();
+    format!(
+        "Yulius does not change a profile it did not write: disable it (`{}`), then run `sudo \
+         yulius host setup` again",
+        disable.join(" && ")
+    )
 }
 
 impl Plan {
     /// From the files and the first proof. Nothing when AppArmor is off or a person disabled
-    /// Yulius's profile: no rule of ours can help there.
+    /// Yulius's profile: no rule of ours can help there, and disabling the shipped profile for
+    /// it would only change how bwrap fails.
     fn of(facts: &Facts, first: &Proof) -> Self {
         if !facts.enabled {
             return Self::default();
         }
         let fails = matches!(first, Proof::Fails(_));
         let disable = facts.shipped;
+        // Whoever made the link may not have unloaded it.
+        let unload = facts.shipped_off && fails;
         if !facts.foreign.is_empty() {
             let reload = if disable || fails {
                 facts.foreign.clone()
@@ -151,15 +201,13 @@ impl Plan {
             };
             return Self {
                 disable,
+                unload,
                 reload,
                 ..Self::default()
             };
         }
         if facts.ours_disabled {
-            return Self {
-                disable,
-                ..Self::default()
-            };
+            return Self::default();
         }
         // The proof speaks for the host as it is: not once the shipped profile is gone, and
         // not when it could not run.
@@ -169,6 +217,7 @@ impl Plan {
         Self {
             write,
             disable,
+            unload,
             reload: Vec::new(),
             load,
         }
@@ -186,6 +235,12 @@ impl Plan {
                 "{} Ubuntu's AppArmor profile {SHIPPED} (a link in {DIR}/disable; its file is \
                  untouched)",
                 if done { "disabled" } else { "disable" }
+            ));
+        }
+        if self.unload {
+            steps.push(format!(
+                "{} sure Ubuntu's disabled AppArmor profile {SHIPPED} is not loaded",
+                if done { "made" } else { "make" }
             ));
         }
         for name in &self.reload {
@@ -206,26 +261,32 @@ impl Plan {
 }
 
 impl Facts {
-    /// Which rule lets bwrap create its namespaces.
-    fn rule(&self) -> String {
+    /// Which rule lets bwrap create its namespaces (`proven`: it does).
+    fn rule(&self, proven: bool) -> String {
         if !self.enabled {
             "AppArmor is not active here".to_owned()
         } else if !self.foreign.is_empty() {
             format!(
                 "allowed by {} (not written by Yulius, left as it is)",
-                self.foreign
-                    .iter()
-                    .map(|name| format!("{DIR}/{name}"))
-                    .collect::<Vec<_>>()
-                    .join(", ")
+                self.foreign_files().join(", ")
             )
         } else if !self.restricted {
             "AppArmor does not restrict user namespaces here".to_owned()
         } else if self.ours == Ours::Current && !self.ours_disabled {
             format!("allowed by {PROFILE_FILE}")
+        } else if self.ours_disabled && !proven {
+            format!("{DIR}/disable/{PROFILE_NAME} keeps Yulius's profile from loading")
         } else {
             "allowed by a rule Yulius did not write".to_owned()
         }
+    }
+
+    /// The files of a person's profiles for bwrap.
+    fn foreign_files(&self) -> Vec<String> {
+        self.foreign
+            .iter()
+            .map(|name| format!("{DIR}/{name}"))
+            .collect()
     }
 }
 
@@ -241,10 +302,13 @@ impl Run<'_> {
             return match first {
                 Proof::Works => self.ok(
                     ITEM,
-                    format!("bwrap starts a user namespace as {user}: {}", facts.rule()),
+                    format!(
+                        "bwrap starts a user namespace as {user}: {}",
+                        facts.rule(true)
+                    ),
                 ),
                 Proof::NotRun(why) => {
-                    self.ok(ITEM, format!("{}; not proven: {why}", facts.rule()));
+                    self.ok(ITEM, format!("{}; not proven: {why}", facts.rule(false)));
                 }
                 Proof::Fails(why) => {
                     let cause = self.cause(&facts);
@@ -283,25 +347,14 @@ impl Run<'_> {
             ),
             Proof::NotRun(why) => self.changed(ITEM, &format!("{done}; not proven: {why}"), ""),
             Proof::Fails(why) if !facts.foreign.is_empty() => {
-                let files: Vec<String> = facts
-                    .foreign
-                    .iter()
-                    .map(|name| format!("{DIR}/{name}"))
-                    .collect();
-                let disable: Vec<String> = files
-                    .iter()
-                    .map(|file| {
-                        format!("sudo ln -s {file} {DIR}/disable/ && sudo {PARSER} -R {file}")
-                    })
-                    .collect();
+                let files = facts.foreign_files();
                 self.failed(
                     ITEM,
                     format!(
-                        "bwrap cannot start a user namespace as {user} with {} ({why}); Yulius \
-                         does not change a profile it did not write: disable it (`{}`), then run \
-                         `sudo yulius host setup` again",
+                        "{done}, but bwrap cannot start a user namespace as {user} with {} \
+                         ({why}); {}",
                         files.join(", "),
-                        disable.join(" && ")
+                        theirs(&files)
                     ),
                 );
             }
@@ -346,10 +399,12 @@ impl Run<'_> {
                     .is_some_and(|text| attaches_bwrap(&text))
             })
             .collect();
+        let shipped = host.is_file(Path::new(&format!("{DIR}/{SHIPPED}")));
         Facts {
             enabled: says(ENABLED, "Y"),
             restricted: says(RESTRICTED, "1"),
-            shipped: host.is_file(Path::new(&format!("{DIR}/{SHIPPED}"))) && !disabled(SHIPPED),
+            shipped: shipped && !disabled(SHIPPED),
+            shipped_off: shipped && disabled(SHIPPED),
             ours,
             ours_disabled: disabled(PROFILE_NAME),
             foreign,
@@ -386,11 +441,10 @@ impl Run<'_> {
         for arg in HOLDER_NAMESPACE.iter().chain(&PROOF_COMMAND) {
             cmd = cmd.arg(*arg);
         }
-        let out = self.run_cmd(&cmd);
-        if out.ok() {
-            Proof::Works
-        } else {
-            Proof::Fails(out.why())
+        match self.host.run(&cmd) {
+            Ok(out) if out.ok() => Proof::Works,
+            Ok(out) => Proof::Fails(out.why()),
+            Err(_) => Proof::NotRun("/usr/sbin/runuser cannot be started"),
         }
     }
 
@@ -439,36 +493,72 @@ impl Run<'_> {
     }
 
     /// Ours is written before anything is unloaded, so a failed write leaves the host as it
-    /// was.
+    /// was; a later step that fails is undone and the line says so.
     fn apply(&mut self, plan: &Plan) -> Result<(), String> {
         if plan.write {
             self.host
                 .write(Path::new(PROFILE_FILE), PROFILE, 0o644)
                 .map_err(|why| format!("cannot write {PROFILE_FILE}: {why}"))?;
         }
+        let mut linked = false;
+        self.apply_loaded(plan, &mut linked).map_err(|why| {
+            let mut undone = String::new();
+            // A file AppArmor does not hold, or cannot read, would change or fail its next
+            // boot.
+            if plan.write {
+                let removed = self.run_cmd(&Cmd::new(&["rm", "-f", PROFILE_FILE])).ok();
+                undone += &format!(
+                    "; {PROFILE_FILE} {}",
+                    if removed {
+                        "was removed again"
+                    } else {
+                        "could not be removed again"
+                    }
+                );
+            }
+            if linked {
+                let link = format!("{DIR}/disable/{SHIPPED}");
+                let back = self.run_cmd(&Cmd::new(&["rm", "-f", &link])).ok()
+                    && self
+                        .run_cmd(&Cmd::new(&[PARSER, "-r", &format!("{DIR}/{SHIPPED}")]))
+                        .ok();
+                undone += &if back {
+                    format!("; Ubuntu's AppArmor profile {SHIPPED} is enabled again")
+                } else {
+                    format!("; Ubuntu's AppArmor profile {SHIPPED} stays disabled by {link}")
+                };
+            }
+            format!("{why}{undone}")
+        })
+    }
+
+    /// What changes the profiles AppArmor holds; `linked` once the shipped profile's link is
+    /// made.
+    fn apply_loaded(&mut self, plan: &Plan, linked: &mut bool) -> Result<(), String> {
+        let shipped = format!("{DIR}/{SHIPPED}");
         if plan.disable {
-            let file = format!("{DIR}/{SHIPPED}");
-            self.must(&["ln", "-s", &file, &format!("{DIR}/disable/{SHIPPED}")])?;
-            // Exit 254 when it was not loaded; the proof judges what is.
-            let _ = self.run_cmd(&Cmd::new(&[PARSER, "-R", &file]));
+            self.must(&["ln", "-s", &shipped, &format!("{DIR}/disable/{SHIPPED}")])?;
+            *linked = true;
+        }
+        if plan.disable || plan.unload {
+            let argv = [PARSER, "-R", shipped.as_str()];
+            let out = self.run_cmd(&Cmd::new(&argv));
+            // Exit 254: it was not loaded.
+            if !out.ok() && out.code != 254 {
+                return Err(format!("`{}` failed: {}", argv.join(" "), out.why()));
+            }
         }
         for name in &plan.reload {
-            self.must(&[PARSER, "-r", &format!("{DIR}/{name}")])?;
+            let file = format!("{DIR}/{name}");
+            self.must(&[PARSER, "-r", &file])
+                .map_err(|why| format!("{why}; {}", theirs(std::slice::from_ref(&file))))?;
         }
         if plan.load {
             let out = self.run_cmd(&Cmd::new(&[PARSER, "-r", PROFILE_FILE]));
             if !out.ok() {
-                // A file AppArmor cannot read would fail its unit at every boot.
-                let removed =
-                    plan.write && self.run_cmd(&Cmd::new(&["rm", "-f", PROFILE_FILE])).ok();
                 return Err(format!(
-                    "unsupported: this host's AppArmor cannot load Yulius's profile ({}){}",
-                    out.why(),
-                    if removed {
-                        format!("; {PROFILE_FILE} was removed again")
-                    } else {
-                        String::new()
-                    }
+                    "unsupported: this host's AppArmor cannot load Yulius's profile ({})",
+                    out.why()
                 ));
             }
         }
@@ -504,6 +594,32 @@ mod tests {
         }
     }
 
+    /// However a person lays the profile out, it is theirs; a profile inside another one
+    /// attaches to nothing by itself.
+    #[test]
+    fn a_profile_header_is_found_in_any_layout() {
+        for whole in [
+            "profile bwrap /usr/bin/bwrap flags=(unconfined) { userns, }\n",
+            "profile bwrap /usr/bin/bwrap flags=(unconfined) { # by hand\n  userns,\n}\n",
+            "include <tunables/global>\nprofile bwrap /usr/bin/bwrap flags=(unconfined)\n{\n  \
+             userns,\n}\n",
+            "profile bwrap /usr/bin/bwrap flags=(unconfined, attach_disconnected) {\n}\n",
+            "/usr/bin/bwrap{\n  userns,\n}\n",
+            "profile x /usr/bin/x {\n  userns,\n}\nprofile b /usr/bin/bwrap {\n}\n",
+        ] {
+            assert!(attaches_bwrap(whole), "{whole}");
+        }
+        for other in [
+            "profile outer /usr/bin/outer {\n  profile inner /usr/bin/bwrap {\n    userns,\n  \
+             }\n}\n",
+            "profile x /usr/bin/x { /usr/bin/bwrap Px -> bwrap, }\n",
+            "profile x /usr/bin/x flags=(unconfined) /usr/bin/bwrap {\n}\n",
+            "profile x /usr/bin/x { # /usr/bin/bwrap {\n}\n",
+        ] {
+            assert!(!attaches_bwrap(other), "{other}");
+        }
+    }
+
     #[test]
     fn backups_and_hidden_files_are_not_profiles() {
         assert!(skipped("bwrap.dpkg-old") && skipped("bwrap~") && skipped(".bwrap.swp"));
@@ -515,6 +631,7 @@ mod tests {
             enabled: true,
             restricted: true,
             shipped: false,
+            shipped_off: false,
             ours: Ours::Missing,
             ours_disabled: false,
             foreign: Vec::new(),
@@ -576,6 +693,25 @@ mod tests {
             ..facts()
         };
         assert!(Plan::of(&disabled, &fails).is_empty());
+        let disabled_beside_shipped = Facts {
+            shipped: true,
+            ..disabled
+        };
+        assert!(Plan::of(&disabled_beside_shipped, &fails).is_empty());
+        let linked = Facts {
+            shipped_off: true,
+            ours: Ours::Current,
+            ..facts()
+        };
+        assert!(Plan::of(&linked, &Proof::Works).is_empty());
+        assert_eq!(
+            Plan::of(&linked, &fails),
+            Plan {
+                unload: true,
+                load: true,
+                ..Plan::default()
+            }
+        );
         let stale = Facts {
             ours: Ours::Stale,
             ..facts()
