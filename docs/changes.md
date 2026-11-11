@@ -6,6 +6,20 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-11
 
+- Yulius knows whether GitHub accepts its sign-in address, and laptops follow a move (SPEC-466,
+  task #446, ADR-0302; slice C of the move). After a move to another URL GitHub sign-in fails until
+  a person adds the new callback URL to the GitHub App, which GitHub offers no API for. The
+  instance now asks GitHub, with its own App credentials and a made-up code, whether its callback
+  is registered: at start, on demand, and while someone looks at an answer that is not
+  "registered". Settings → Instance has the card **Address**: when the callback is missing, one
+  link to the App's settings and the two values to paste, read again until GitHub accepts it; after
+  a move, where the instance came from, when, and what its first start did with the tasks. The
+  sign-in page says why GitHub sign-in cannot complete and opens the password. `yulius instance
+  migrate` asks the running instance over its loopback listener, so its plan checks the new URL's
+  callback before the cutover (`ok` when registered, else the exact link and values) and its last
+  checklist asks the new instance again. `yulius remote` on a laptop follows the old URL's
+  redirect: it moves the saved sign-in to the new URL, says so in one line and repeats the call;
+  no other redirect is followed. Claude Code's own MCP connection still has to be added again.
 - One command moves the instance to another host (SPEC-460, task #442, ADR-0297): `sudo yulius
   instance migrate root@new-host` on the old host. It plans first and asks people only there (the
   SSH sign-in, a DNS record, the GitHub App's callback, blank disks to use), then sets up the new

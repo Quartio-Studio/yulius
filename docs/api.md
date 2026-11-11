@@ -40,13 +40,13 @@ Other frontends (for example a desktop app, OPS-002) use bearer tokens from the 
 
 | Method | Path | Body → Response |
 | --- | --- | --- |
-| GET | `/api/setup/status` | → `{"setup_required": bool, "github_configured": bool}` (`github_configured`: the instance has a GitHub App; until then the sign-in page offers only the password, SPEC-422) |
+| GET | `/api/setup/status` | → `{"setup_required": bool, "github_configured": bool, "github_callback_missing": bool}` (`github_configured`: the instance has a GitHub App; until then the sign-in page offers only the password, SPEC-422. `github_callback_missing`: GitHub is known to refuse this instance's sign-in callback, after a move to another URL until the App holds it; the page says so and opens the password. Reading it while the answer is not "registered" and older than 30 s makes the server ask GitHub again, SPEC-466) |
 | POST | `/api/setup` | `{"token", "password", "password_confirm", "confirm_saved": true}` → 201 `Me` + `"recovery_code": "123456"` (shown once) + cookie. 422 when the repeat differs or the password has fewer than 8 characters (`the password needs at least 8 characters`; SPEC-242). Refused once a superadmin exists. The web UI's last setup steps offer the optional Jev key (`PUT /api/admin/jev`, ADM-001) and the optional Vidoc key (`PUT /api/admin/vidoc`, SPEC-195) with this session. |
 | POST | `/api/auth/password` | `{"password"}` → `Me` + cookie (superadmin only; 5 attempts per client per minute, then 429; the client is the TCP peer, or the reverse proxy's `X-Yulius-Client-Ip` when `X-Yulius-Proxy-Secret` matches the configured secret, ACC-013, [operations](operations.md#per-client-sign-in-limits-trusted-proxy-header)) |
 | GET | `/api/auth/recovery` | → `{"available": bool, "locked": bool, "attempts_left": 0..3}` (ACC-011) |
 | POST | `/api/auth/recover` | `{"code", "password", "password_confirm"}` → `{"recovery_code"}` (a new code, shown once); sets the superadmin password and ends every superadmin session. 422 for a wrong code (with the attempts left), and, before the code is checked (no attempt spent), for a repeat that differs or a password under 8 characters; 403 when no code is set or recovery is locked — the third wrong code locks it permanently |
 | POST | `/api/admin/recovery-code` | superadmin session, `{"password"}` → `{"recovery_code"}`: replaces the code and re-enables a locked recovery; 403 for a wrong password |
-| GET | `/api/auth/github/start?next=/[&prompt=select_account]` | → 303 to GitHub; `prompt=select_account` makes GitHub show its account picker (sign in with another GitHub account). Never an error body: without a GitHub App → 303 to `/signin?error=github_unconfigured[&next=…]`, another failure → `/signin?error=failed[&next=…]` (logged; SPEC-422) |
+| GET | `/api/auth/github/start?next=/[&prompt=select_account]` | → 303 to GitHub; `prompt=select_account` makes GitHub show its account picker (sign in with another GitHub account). Never an error body: without a GitHub App → 303 to `/signin?error=github_unconfigured[&next=…]`, another failure → `/signin?error=failed[&next=…]` (logged; SPEC-422). While GitHub is known to refuse the instance's callback the server asks GitHub again first (an answer younger than 5 s is reused) and, when it is still refused, → 303 to `/signin?error=github_callback[&next=…]` instead of GitHub's error page (SPEC-466) |
 | GET | `/api/auth/github/callback?code&state` | → 303 to `next`, sets cookie. Never answers with an error body: a refusal → 303 to `/signin?error=<reason>&next=…`, where `reason` is `not_admitted` (with `&login=<refused GitHub login>`), `disabled`, `expired` (unknown, used or expired state — e.g. a reload of the callback), `denied` (GitHub `error=access_denied`) or `failed` (GitHub or server error, logged) |
 | POST | `/api/auth/logout` | → 204 |
 | GET | `/api/me` | → `Me`; a playground's guest's `user` has `"login": "<name> (guest)"` and `"guest": {"sandbox_id", "slug", "expires_at"}` (SPEC-410) |
@@ -1474,6 +1474,8 @@ resolves to nothing, the run gets the server without that variable or token.
 | GET | `/api/admin/github` | superadmin | `{"configured","app_slug","owner_login","install_url|null","installed"}` |
 | POST | `/api/admin/github/manifest` | superadmin | `{"owner_login","owner_kind":"org|user"}` → `{"post_url","manifest"}` (browser posts the manifest form to GitHub; `post_url` carries a one-time `state`, 30 min); 409 when an App is configured; 422 for a non-https public URL |
 | GET | `/api/admin/github/manifest/callback?code&state` | superadmin | converts the code, stores the sealed App credentials and owner, 303 to the App's installation page; failures 303 to `/admin/github?error=…` |
+| GET | `/api/admin/instance/address` | superadmin | → `InstanceAddress` `{"public_url", "github": GitHubCallback\|null, "moved": {"from\|null", "to\|null", "at", "queued", "left", "failed"}\|null}` (SPEC-466): `github` is whether GitHub accepts the instance's sign-in callback, `null` without a GitHub App: `{"state": "registered\|missing\|unknown", "reason\|null", "callback_url", "homepage_url", "settings_url", "checked_at\|null"}` (`reason`: why the answer is unknown; `settings_url`: the App's settings page, `https://github.com/organizations/<owner>/settings/apps/<slug>` or `https://github.com/settings/apps/<slug>`). `moved` is what the first start after `yulius instance migrate` recorded (`moved.json`): the old and new URL, when, and the tasks put back in the queue, left stopped and not queued. Reading an answer that is not "registered" and older than 30 s makes the server ask GitHub again in the background |
+| POST | `/api/admin/instance/address/check` | superadmin | asks GitHub now → `InstanceAddress` |
 | GET | `/api/analytics/summary?sandbox&from&to` | read | → `AnalyticsSummary` |
 | GET | `/api/analytics/tasks?format=json|csv&sandbox&from&to` | read | → `[TaskRow]` or CSV |
 | GET | `/api/status` | signed in | → `Status` |
@@ -1691,7 +1693,11 @@ is a regression, with its reasons. The internal
 listener also serves `GET /internal/version` → `{"commit|null","version"}` for the update
 helper's health check, `GET /internal/healthz` (and `GET /healthz` on the public one) → `ok`, and
 `GET /internal/leftovers`, `POST /internal/leftovers/scan` and `…/delete` for `yulius leftovers`,
-with `Authorization: Bearer <the key in <data>/leftovers-cli.key>` (401 otherwise).
+with `Authorization: Bearer <the key in <data>/leftovers-cli.key>` (401 otherwise). The same key
+opens `GET /internal/github-callback[?public_url=https://host]` for `yulius instance migrate`
+(SPEC-466): the server asks GitHub now whether it accepts the sign-in callback of that public URL
+(its own without one, whose kept answer it replaces) → `{"github": GitHubCallback|null}` as in
+`GET /api/admin/instance/address`; 422 for a `public_url` that is not `https://host`.
 
 ## Secrets vault
 

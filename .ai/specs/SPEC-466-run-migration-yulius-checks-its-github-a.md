@@ -94,9 +94,9 @@ The root command
 - MVC-020 **Internal endpoint.** `GET /internal/github-callback[?public_url=https://host]` on the
   loopback listener, with `Authorization: Bearer <key of <data>/leftovers-cli.key>`: asks GitHub
   now about the callback of that public URL (default: the instance's own, whose kept answer it
-  replaces) and answers `configured`, `state`, `reason`, `callback_url`, `homepage_url`,
-  `settings_url`. 401 without the key; 422 for a `public_url` that is not `https://host`. No
-  credential is in the answer.
+  replaces) and answers `{"github": …}`: `state`, `reason`, `callback_url`, `homepage_url`,
+  `settings_url`, `checked_at`, or `null` without an App. 401 without the key; 422 for a
+  `public_url` that is not `https://host`. No credential is in the answer.
 - MVC-021 **The plan.** When the URL changes, the plan of `yulius instance migrate` asks the old
   instance (it still runs) about the new URL's callback: registered is `ok`; missing is `manual`
   with the exact link and both values; no App is `ok` (nothing to register); when the instance
@@ -133,13 +133,16 @@ Remote clients
   States: no answer yet (owner: the start's or a read's background check; exit: its answer),
   `unknown`/`missing` (owner: whoever reads next after 30 s, or a demand; exit: `registered`),
   `registered` (kept until the next start or demand).
-- **Move.** `World::github` asks the local instance and `target::Env::github` the new one; both
-  call `target::asked_instance` (the key file, one HTTP/1.0 request to the loopback listener,
-  bounded at 20 s). `Request::GitHub` answers one checklist line made by the same function as the
-  plan's.
+- **Move** (`instance/migrate/github.rs`). `asked_instance` reads the key file and sends one
+  HTTP/1.0 request to the loopback listener (connecting, sending and each read bounded at 20 s; a
+  `public_url` that is not `https://host` is never sent); `line` makes the checklist's "GitHub
+  App" line of the answer. The plan asks through `World::github` (the old instance, the new URL);
+  before the finish the flow sends `Request::Callback` to the new host, whose step asks the
+  instance there about its own URL, so that instance keeps the answer too.
 - **Remote client.** `RemoteClient` returns `RemoteError::Moved(new base URL)` for a valid move
-  and never follows anything itself; `remote_cli` moves the sign-in (`TokenStore::relocate`),
-  says the line and asks once more.
+  (`moved_base`) and never follows anything itself; `remote_cli::following` moves the sign-in
+  (`TokenStore::relocate`), says the line and asks once more; `client` resolves a name that moved
+  (`TokenStore::moved_to`).
 
 ## Plan
 
@@ -169,9 +172,9 @@ Remote clients
 - `GET /api/setup/status` says `github_callback_missing: true` only while the answer is missing;
   `GET /api/auth/github/start` then returns to `/signin?error=github_callback…` and, once GitHub
   accepts the callback, redirects to GitHub again; password sign-in works throughout.
-- `/internal/github-callback` answers 401 without the key, the facts with it, checks another
-  `public_url` without changing the kept answer, and refuses `public_url=http://x` and
-  `https://x/path` (422).
+- `/internal/github-callback` answers 401 without the key, `{"github": …}` with it (`null`
+  without an App), checks another `public_url` without changing the kept answer, and refuses
+  `public_url=http://x` and `https://x/path` (422).
 - A move whose URL changes: the plan's "GitHub App" line is `ok` when the old instance says the
   new callback is registered, `manual` with the exact link and both values when missing, and
   `manual` with the general note when the instance cannot be asked; the final checklist's line
@@ -192,10 +195,11 @@ Remote clients
 - `crates/yulius/tests/github_callback.rs` (the app harness with its GitHub port fake): MVC-002,
   MVC-003, MVC-010, MVC-012, MVC-013, MVC-020, with failure cases (GitHub down, no App, a member,
   a bad key, a bad URL).
-- `instance::migrate` unit and flow tests: MVC-021, MVC-022 with fake hosts; `asked_instance`
-  against a loopback listener.
-- `yulius-import` unit tests (`remote.rs`, `token_store.rs`) and a CLI test with two loopback
-  servers: MVC-030 to MVC-032.
+- `instance::migrate` unit and flow tests (`tests/github.rs`, `tests/flow.rs`): MVC-021, MVC-022
+  with fake hosts; `asked_instance` against a loopback listener, and against the real loopback
+  router in `github_callback.rs`.
+- `yulius-import` unit tests (`remote.rs`, `token_store.rs`) and a test of the `yulius` binary
+  with real servers that redirect (`remote_mcp.rs`): MVC-030 to MVC-032.
 - e2e (`e2e/tests/instance-address.e2e.ts`, `sign-in.e2e.ts`) on the mock.
 - Gates: `scripts/dev ci`, the e2e suite, `yulius security-scan` (Vidoc is off for this project:
   disabled, not passed).

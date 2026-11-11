@@ -52,6 +52,19 @@ the token of `yulius login`; `yulius onboard` and `yulius secrets import` use th
 have it, else this one. Inside a GitHub checkout,
 `--project` defaults to its `origin`. Pass `--project owner/name` anywhere else.
 
+**When the instance moves to another URL** the CLI follows by itself (SPEC-466): the old URL
+answers with a redirect that says it is a move (`X-Yulius-Moved-To`), and `yulius remote` and its
+shortcuts (`yulius project`, `task`, `ci`, `vars`, `secrets list` and `delete`) then keep your
+sign-in under the new URL, print `yulius: <old URL> moved to <new URL>; the saved sign-in follows
+it.` once and repeat the call there. The token stays the same, and a command that still names the
+old URL (`--server`, `YULIUS_SERVER`) reaches the new one. Only that redirect is followed: the
+header must name an `https` address alone and lead to the same path there; your token is never
+sent anywhere else a response points. Once the old host is gone nothing redirects any more: run
+`yulius remote login <new URL>` on a computer that had not followed yet. Claude Code's own
+connection does not follow a move: `claude mcp remove yulius`, then add it again with the new
+URL as above. `yulius login`, `yulius onboard` and `yulius secrets import` take the new URL with
+`--server`.
+
 ## 3. Onboard this folder: one request, nothing else from you
 
 Your project works from your laptop: a GitHub checkout, its deploy scripts, its GitHub Actions,

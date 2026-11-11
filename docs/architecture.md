@@ -630,7 +630,8 @@ failure names the entry that stayed. No link is followed: an item reached throug
 removal opens each directory from the data directory down with `O_NOFOLLOW` and removes through
 the opened directory, so a link a sandbox swaps in after the check fails the removal. A tree that stays is made writable directory by directory through `O_PATH` handles, its owner's unreadable directories included ([decision 0179](decisions/0179-a-tree-is-made-writable-through-o-path-handles.md)), and removed again. The automatic round runs at every start and hourly. People reach the
 same engine through `/api/admin/leftovers*` (Settings → Instance) and `yulius leftovers` (the
-loopback `/internal/leftovers*` with the key in `<data>/leftovers-cli.key`).
+loopback `/internal/leftovers*` with the key in `<data>/leftovers-cli.key`; the same key opens
+`/internal/github-callback` for `yulius instance migrate`, [Moving an instance](#moving-an-instance)).
 
 **Build caches and disk pressure** ([SPEC-276](../.ai/specs/SPEC-276-reclaim-disk-automatically-ask-on-sandbo.md),
 [decision 0205](decisions/0205-build-caches-are-swept-under-cargo-s-lock-and-a-removed-sandbox-s-files-go-on-request.md)).
@@ -3038,6 +3039,24 @@ reads the facts and acts if needed, so the same command continues a move. The co
 (`move-pending.json`): the first start that finds it queues the tasks whose runs were lost with the
 old host (`yulius-app::host_move`).
 
+A move to another URL leaves one thing only a person can do: add the new callback URL to the
+GitHub App (GitHub has no API for it). The instance finds out by itself whether that is done
+(SPEC-466, ADR-0302, `yulius-app::github_callback`): it posts its own client id and secret, a
+made-up code and its callback URL to GitHub's token endpoint, which answers `redirect_uri_mismatch`
+or `bad_verification_code`, and keeps the answer (registered, missing, or unknown with the reason)
+in memory. GitHub is asked at start, on demand, and when an answer that is not "registered" is
+read after 30 s; never in a loop, and one check at a time. Settings → Instance reads it with the
+App's settings link and the move's report (`GET /api/admin/instance/address`), the sign-in page
+through `GET /api/setup/status`, and a sign-in that starts while the answer is "missing" asks
+again before it returns to the sign-in page. The root command cannot open the sealed App
+credentials, so it asks the running server (`migrate/github.rs`): `GET /internal/github-callback`
+on the loopback listener with the key of `<data>/leftovers-cli.key`, in the plan for the new URL
+(the old instance answers) and before the finish (the new instance answers, through the staged
+build). Remote clients follow the move by themselves: the old host's proxy answers 307 with
+`X-Yulius-Moved-To`, and `yulius remote` (`yulius-import::remote`) takes exactly that redirect
+(a bare `https` origin, the same path) as a move: the saved sign-in is kept under the new URL, the
+old name is remembered (`moved` in `remote-credentials.json`) and the call is repeated once.
+
 ```mermaid
 sequenceDiagram
   participant O as Operator (root, SSH)
@@ -3045,9 +3064,12 @@ sequenceDiagram
   participant D as systemd (old host)
   participant T as yulius instance migrate-target (new host)
   participant S as New yulius.service
+  participant G as GitHub
   O->>M: sudo yulius instance migrate root@new-host
   M->>T: one-time key, this build, facts (release, space, disks, ports)
-  M->>O: Plan: what a person must do, then "Proceed?"
+  M->>D: old yulius.service: is the new URL's callback registered? (loopback, CLI key)
+  D->>G: token endpoint: App credentials, made-up code, the new callback URL
+  M->>O: Plan: what a person must do (the App's link and values), then "Proceed?"
   M->>T: Prepare: data disk, apt sources, packages, software, host items, unit, proxy
   M->>D: systemctl freeze yulius.service
   M->>T: the export's stream into the import
@@ -3063,7 +3085,8 @@ sequenceDiagram
     else healthy
       M->>D: systemctl disable (stays frozen)
       S->>S: first start: queue the tasks that were live
-      M->>M: old proxy redirects to the new URL
+      M->>M: old proxy redirects to the new URL (X-Yulius-Moved-To: laptops' CLI follows)
+      M->>T: ask the new instance about its callback (it asks GitHub)
       M->>T: remove the key, enable the firewall
     end
   end
