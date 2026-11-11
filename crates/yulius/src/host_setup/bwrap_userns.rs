@@ -10,7 +10,7 @@
 //! AppArmor's `disable/` link. A profile a person wrote is never changed and never joined by
 //! ours: two profiles for one program cancel each other.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use yulius_sandbox::userns::{HOLDER_NAMESPACE, PROOF_COMMAND};
@@ -119,30 +119,51 @@ fn skipped(name: &str) -> bool {
     name.starts_with('.') || SUFFIXES.iter().any(|s| name.ends_with(s))
 }
 
+/// The program Yulius's profile is for.
+const BWRAP: &str = "/usr/bin/bwrap";
+/// Stands for the values a variable gets in a file this one includes: no path.
+const UNKNOWN: &str = "\0";
+/// A file past these is not read: the values one variable may come to, the bytes one header
+/// word may, the alternatives tried for it.
+const MOST_VALUES: usize = 1024;
+const LONGEST_WORD: usize = 16 * 1024;
+const MOST_TRIES: u32 = 1024;
+
 /// Whether a profile in `text` attaches to `/usr/bin/bwrap`: a header at the top level
-/// (`profile name /path flags=(…) {`, or `/path {`) whose path is bwrap's, plain or as the
-/// alternations Ubuntu's own profiles spell it. The header's brace may open the profile on the
-/// same line, before a comment or on the next line (with its `flags = (…)`), and the path may
-/// use variables the file sets (`@{prog} = /usr/bin/bwrap`, `@{dir}/bwrap`). A rule that only
-/// names bwrap (`/usr/bin/bwrap mr,`), a header's attributes and a profile inside another one
-/// are none.
+/// (`profile name /path flags=(…) {`, or `/path {`) whose path, read as AppArmor reads it, is
+/// bwrap's. The header's brace may open the profile on the same line, before a comment or on
+/// the next line (with its `flags = (…)`); the path may use variables the file sets and
+/// alternations (`@{bin}={/usr,}/bin`, `@{bin}/bwrap`). A rule that only names bwrap
+/// (`/usr/bin/bwrap mr,`), a header's attributes and a profile inside another one are none.
 fn attaches_bwrap(text: &str) -> bool {
-    const PATHS: [&str; 4] = [
-        "/usr/bin/bwrap",
-        "/{usr/,}bin/bwrap",
-        "/{,usr/}bin/bwrap",
-        "@{bin}/bwrap",
-    ];
     // Blocks open, and the words since the last rule or block at the top level.
     let mut depth = 0_usize;
     let mut header: Vec<&str> = Vec::new();
     let mut in_list = false;
-    let mut vars: Vars = Vars::new();
+    let mut vars = Vars::new();
+    // The variable whose values go on after a line's closing backslash.
+    let mut more: Option<&str> = None;
     for line in text.lines() {
         // A variable's line ends without a comma and is no header.
-        if let Some((name, values)) = assignment(line) {
-            let values = words(values).map(|w| w.trim_matches('"'));
-            vars.entry(name).or_default().extend(values);
+        let assigned = more.take().map(|name| (name, line)).or_else(|| {
+            let (name, adds, values) = assignment(line)?;
+            vars.entry(name).or_default().declared |= !adds;
+            Some((name, values))
+        });
+        if let Some((name, values)) = assigned {
+            let var = vars.entry(name).or_default();
+            let mut values = words(values).peekable();
+            while let Some(value) = values.next() {
+                if value == "\\" && values.peek().is_none() {
+                    more = Some(name);
+                } else {
+                    var.values.push(value.trim_matches('"'));
+                }
+            }
+            continue;
+        }
+        // Nor is an `include`, which ends without a comma too.
+        if words(line).next() == Some("include") {
             continue;
         }
         // A brace that starts a word opens a block (`{userns,}`); an alternation's
@@ -154,15 +175,8 @@ fn attaches_bwrap(text: &str) -> bool {
             let opens = word.matches('{').count();
             let closes = word.matches('}').count();
             if opens > closes {
-                header.push(word.trim_end_matches('{'));
-                let named = (0..header.len())
-                    .find(|&at| attribute(header[at], header.get(at + 1).copied()))
-                    .map_or(&header[..], |at| &header[..at]);
-                let mut budget = 256;
-                let attaches = named
-                    .iter()
-                    .any(|w| stands_for(w.trim_matches('"'), &PATHS, &vars, &mut budget));
-                if depth == 0 && attaches {
+                header.extend(Some(word.trim_end_matches('{')).filter(|w| !w.is_empty()));
+                if depth == 0 && header_attaches(&header, &vars) {
                     return true;
                 }
                 depth += 1;
@@ -184,61 +198,219 @@ fn attaches_bwrap(text: &str) -> bool {
     false
 }
 
-/// A line's words before its comment.
-fn words(text: &str) -> impl Iterator<Item = &str> {
-    text.split_whitespace().take_while(|w| !w.starts_with('#'))
+/// A line's words before its comment; quotes keep a word with spaces whole.
+fn words(line: &str) -> impl Iterator<Item = &str> {
+    let mut rest = line;
+    std::iter::from_fn(move || {
+        rest = rest.trim_start();
+        if rest.is_empty() || rest.starts_with('#') {
+            return None;
+        }
+        let mut quoted = false;
+        let end = rest.find(|c: char| {
+            quoted ^= c == '"';
+            !quoted && c.is_whitespace()
+        });
+        let (word, after) = rest.split_at(end.unwrap_or(rest.len()));
+        rest = after;
+        Some(word)
+    })
 }
 
-/// A file's variables: each name (as used in `@{name}`) with its values.
-type Vars<'a> = BTreeMap<&'a str, Vec<&'a str>>;
+/// A variable of the file: whether the file sets it (`=`; `+=` adds to what an included file
+/// set) and the values it gives.
+#[derive(Default)]
+struct Var<'a> {
+    declared: bool,
+    values: Vec<&'a str>,
+}
 
-/// A variable's line (`@{name} = values`, `@{name}+=values`, `@name = values`): its name and
-/// values. A header that starts with a variable (`@{bin}/bwrap {`, which AppArmor itself
-/// refuses) is none.
-fn assignment(line: &str) -> Option<(&str, &str)> {
+/// A file's variables by name (as used in `@{name}`).
+type Vars<'a> = BTreeMap<&'a str, Var<'a>>;
+
+/// A variable's line (`@{name} = values`, `@{name}+=values`, `@name = values`): its name,
+/// whether it adds, and its values. A header that starts with a variable (`@{bin}/bwrap {`,
+/// which AppArmor itself refuses) is none.
+fn assignment(line: &str) -> Option<(&str, bool, &str)> {
     let line = line.trim_start().strip_prefix('@')?;
     let (name, rest) = line.split_at(line.find(|c: char| c.is_whitespace() || "+=".contains(c))?);
     let name = name
         .strip_prefix('{')
         .map_or(Some(name), |name| name.strip_suffix('}'))?;
     let rest = rest.trim_start();
+    let adds = rest.starts_with("+=");
     let values = rest.strip_prefix("+=").or_else(|| rest.strip_prefix('='))?;
     let plain = !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_');
-    plain.then_some((name, values))
+    plain.then_some((name, adds, values))
 }
 
-/// Whether a header's word starts its attributes (`flags=(…)`, `xattrs = (…)`): what follows
-/// names no program. A profile may be called `flags`.
+/// Whether a header's word starts its attributes (`flags=(…)`, `xattrs = (…)`, a bare
+/// `(complain)`): what follows names no program. A profile may be called `flags`.
 fn attribute(word: &str, next: Option<&str>) -> bool {
-    ["flags", "xattrs"].iter().any(|key| {
+    let keyed = |key: &str| {
         word.strip_prefix(key).is_some_and(|rest| {
             rest.starts_with('=') || (rest.is_empty() && next.is_some_and(|n| n.starts_with('=')))
         })
+    };
+    word.starts_with('(') || keyed("flags") || keyed("xattrs")
+}
+
+/// Whether a top-level header gives bwrap as its profile's program: its attachment where it
+/// has one (`profile name /path`, `/name /path`), else its name (`profile /path`, `/path`).
+/// A profile in a policy namespace (`:ns:name`) confines nothing on the host itself. In a
+/// layout not known here any word may be the program: a person's profile is rather seen
+/// than missed.
+fn header_attaches(header: &[&str], vars: &Vars) -> bool {
+    let named = (0..header.len())
+        .find(|&at| attribute(header[at], header.get(at + 1).copied()))
+        .map_or(header, |at| &header[..at]);
+    let keyword = named.iter().rposition(|w| *w == "profile");
+    match keyword.map_or(named, |at| &named[at + 1..]) {
+        [name] => is_bwrap(name, vars, true),
+        [name, attachment] => !name.starts_with(':') && is_bwrap(attachment, vars, false),
+        words => words.iter().any(|word| is_bwrap(word, vars, false)),
+    }
+}
+
+/// Whether a header's word is bwrap's path once the file's variables are in it. In a name,
+/// `//` parts a child from its parent: that is no path.
+fn is_bwrap(word: &str, vars: &Vars, name: bool) -> bool {
+    expanded(word.trim_matches('"'), vars).is_some_and(|text| {
+        !(name && text.contains("//")) && spells(&one_slash(&text), BWRAP, &mut MOST_TRIES.clone())
     })
 }
 
-/// Whether a header's word stands for one of `paths`, each variable the file sets replaced by
-/// each of its values in turn; one it does not set (`@{bin}`) stays as written. `budget` ends
-/// a variable that names itself.
-fn stands_for(word: &str, paths: &[&str], vars: &Vars, budget: &mut u32) -> bool {
+/// A header's word with each variable replaced as AppArmor does: by its value, or by an
+/// alternation of its values (`{a,b}`). A value loses its slashes where the word has one of
+/// its own: at its end before a slash, at its start after one that follows other text.
+/// `None` where a variable cannot be read.
+fn expanded(word: &str, vars: &Vars) -> Option<String> {
+    let mut text = word.to_owned();
     let mut from = 0;
-    while let Some(at) = word[from..].find("@{").map(|at| at + from) {
-        let Some(end) = word[at..].find('}').map(|end| end + at) else {
-            break;
+    while let Some((at, end)) = variable(&text, from) {
+        let (before, after) = (&text[..at], &text[end + 1..]);
+        let values = values(&text[at + 2..end], vars, &mut Vec::new())?;
+        let leads = before.ends_with('/') && before.contains(|c| c != '/');
+        let trimmed: Vec<&str> = values
+            .iter()
+            .map(|value| {
+                if leads {
+                    value.trim_start_matches('/')
+                } else {
+                    value
+                }
+            })
+            .map(|value| {
+                if after.starts_with('/') {
+                    value.trim_end_matches('/')
+                } else {
+                    value
+                }
+            })
+            .collect();
+        let put = match trimmed.as_slice() {
+            [one] => (*one).to_owned(),
+            many => format!("{{{}}}", many.join(",")),
         };
-        let Some(values) = vars.get(&word[at + 2..end]) else {
-            from = end + 1;
+        from = at + put.len();
+        text = format!("{before}{put}{after}");
+        if text.len() > LONGEST_WORD {
+            return None;
+        }
+    }
+    Some(text)
+}
+
+/// Where the next `@{name}` of `text` starts and ends, from `from` on.
+fn variable(text: &str, from: usize) -> Option<(usize, usize)> {
+    let at = text[from..].find("@{")? + from;
+    Some((at, text[at..].find('}')? + at))
+}
+
+/// A variable's values as AppArmor holds them: a set, the variables inside a value replaced
+/// by each of theirs in turn. One the file does not set comes from a file it includes:
+/// `@{bin}` is then taken for bwrap's directory, any other for no path. `None` where a
+/// variable names itself (`seen`: the ones being read) or has too many values.
+fn values(name: &str, vars: &Vars, seen: &mut Vec<String>) -> Option<BTreeSet<String>> {
+    if seen.iter().any(|s| s == name) {
+        return None;
+    }
+    let var = vars.get(name);
+    let mut raw: Vec<String> = var.map_or_else(Vec::new, |var| {
+        var.values.iter().map(|value| (*value).to_owned()).collect()
+    });
+    if !var.is_some_and(|var| var.declared) {
+        raw.push(if name == "bin" { "/usr/bin" } else { UNKNOWN }.to_owned());
+    }
+    seen.push(name.to_owned());
+    let mut done = BTreeSet::new();
+    while let Some(value) = raw.pop() {
+        if done.len() + raw.len() >= MOST_VALUES || value.len() > LONGEST_WORD {
+            return None;
+        }
+        let Some((at, end)) = variable(&value, 0) else {
+            done.insert(value);
             continue;
         };
-        return values.iter().any(|value| {
-            let left = *budget > 0;
-            *budget = budget.saturating_sub(1);
-            let word = format!("{}{value}{}", &word[..at], &word[end + 1..]);
-            left && stands_for(&word, paths, vars, budget)
-        });
+        for inner in values(&value[at + 2..end], vars, seen)? {
+            raw.push(format!("{}{inner}{}", &value[..at], &value[end + 1..]));
+        }
     }
-    // AppArmor reads `/usr/bin//bwrap` as one slash.
-    paths.contains(&word.replace("//", "/").as_str())
+    seen.pop();
+    Some(done)
+}
+
+/// A path as AppArmor reads its slashes: several are one, except exactly two at the start.
+fn one_slash(path: &str) -> String {
+    let kept = if path.starts_with("//") && !path.starts_with("///") {
+        2
+    } else {
+        0
+    };
+    let mut out = path[..kept].to_owned();
+    for c in path[kept..].chars() {
+        if c != '/' || !out.ends_with('/') || out.len() == kept {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// Whether `pattern` spells `path`, each of its alternations (`{a,b}`, also one inside
+/// another) tried in turn, `tries` times at most. A `*`, `?` or `[` stands for itself: a
+/// profile that matches by one gives way to a profile that names the path.
+fn spells(pattern: &str, path: &str, tries: &mut u32) -> bool {
+    let mut depth = 0_usize;
+    let (mut open, mut start) = (0, 0);
+    let mut alternatives = Vec::new();
+    for (at, c) in pattern.char_indices() {
+        match c {
+            '{' => {
+                depth += 1;
+                if depth == 1 {
+                    (open, start) = (at, at + 1);
+                }
+            }
+            ',' if depth == 1 => {
+                alternatives.push(&pattern[start..at]);
+                start = at + 1;
+            }
+            '}' if depth == 1 => {
+                alternatives.push(&pattern[start..at]);
+                let Some(path) = path.strip_prefix(&pattern[..open]) else {
+                    return false;
+                };
+                return alternatives.iter().any(|alternative| {
+                    *tries = tries.saturating_sub(1);
+                    *tries > 0
+                        && spells(&format!("{alternative}{}", &pattern[at + 1..]), path, tries)
+                });
+            }
+            '}' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    depth == 0 && pattern == path
 }
 
 /// What a person does about a profile of theirs that keeps bwrap from working.
@@ -746,6 +918,59 @@ mod tests {
             "@{bin} = /opt/bin\nprofile x @{bin}/bwrap {\n}\n",
             "@{a} = @{a}/bwrap\nprofile x @{a} {\n}\n",
             "profile x /usr/bin/x xattrs = (user.t = /usr/bin/bwrap ) {\n}\n",
+        ] {
+            assert!(!attaches_bwrap(other), "{other}");
+        }
+    }
+
+    /// A header's variables, alternations and slashes are read as AppArmor reads them: each
+    /// sample is what `apparmor_parser` 5.0.2 makes of it (SPEC-456, Evidence).
+    #[test]
+    fn a_header_is_read_as_apparmor_reads_it() {
+        for whole in [
+            // Ubuntu 26.04's own spelling (its `hostname` profile).
+            "@{bin}={/usr,}/bin\nprofile b @{bin}/bwrap {\n  userns,\n}\n",
+            "@{bin}={/usr,}/bin\n@{exec}={bwrap,x}\nprofile b @{bin}/@{exec} {\n}\n",
+            // Added to what an included file sets: that file's values are not seen here.
+            "include <tunables/global>\n@{bin} += /usr/local/bin\nprofile b @{bin}/bwrap {\n}\n",
+            "@{exec} = bwrap\nprofile b @{bin}/@{exec} {\n}\n",
+            "@{prog} = /usr/bin/bwrap\n@{prog} += /usr/bin/x\nprofile b @{prog} {\n}\n",
+            "@{b} = @{a}\n@{a} = /usr/bin/bwrap\nprofile b @{b} {\n}\n",
+            "@{paths} = /usr/bin/x \\\n  /usr/bin/bwrap\nprofile b @{paths} {\n}\n",
+            "@{d} = /bin/ /sbin/\nprofile b /usr/@{d}/bwrap {\n}\n",
+            "@{d} = /opt /usr\n@{x} = @{d}/bin/bwrap\nprofile b @{x} {\n}\n",
+            "profile b /{usr,}/bin/bwrap {\n}\n",
+            "profile b /{,usr/}{,s}bin/bwrap {\n}\n",
+            "profile b /usr/{bin,sbin}/bwrap {\n}\n",
+            "profile b /{usr/{bin,sbin},opt}/bwrap {\n}\n",
+            "profile b /usr/bin///bwrap {\n}\n",
+            "profile b /usr/bin/bwrap (unconfined) {\n}\n",
+            "/usr/bin/x /usr/bin/bwrap {\n}\n",
+            "profile \"my bwrap\" /usr/bin/bwrap {\n}\n",
+            "@{d} = /usr/bin\nprofile @{d}/bwrap {\n}\n",
+        ] {
+            assert!(attaches_bwrap(whole), "{whole}");
+        }
+        for other in [
+            "@{prog} = /usr/bin/x # /usr/bin/bwrap\nprofile x @{prog} {\n}\n",
+            "  @{prog} = /usr/bin/bwrap\nprofile x /usr/bin/x {\n  @{prog} mr,\n}\n",
+            "@{paths} = /usr/bin/x \\\n  /usr/bin/bwrap\nprofile x /usr/bin/x {\n  @{paths} ix,\n}\n",
+            "@{p} = \"/usr/bin/bwrap helper\" /usr/bin/x\nprofile x @{p} {\n}\n",
+            // Two slashes at the start are kept, and so are those an alternation makes.
+            "profile b //usr/bin/bwrap {\n}\n",
+            "@{dir} = /usr/bin\nprofile b /@{dir}/bwrap {\n}\n",
+            "@{dirs} = /opt /usr/bin\nprofile b /@{dirs}/bwrap {\n}\n",
+            "profile b /{usr/,}/bin/bwrap {\n}\n",
+            "profile b /usr/bin/bwrap/ {\n}\n",
+            // In a name, `//` parts a child from its parent.
+            "/usr/bin//bwrap {\n}\n",
+            "include <tunables/global>\nprofile /usr/bin//bwrap (complain) {\n}\n",
+            "@{p} = /usr/bin//bwrap\nprofile @{p} {\n}\n",
+            // Beside an attachment the name is none, and a policy namespace is not the host's.
+            "profile /usr/bin/bwrap /usr/bin/x {\n}\n",
+            "profile :ns:b /usr/bin/bwrap {\n}\n",
+            // A glob gives way to a profile that names the path.
+            "profile b /usr/bin/bw* {\n}\n",
         ] {
             assert!(!attaches_bwrap(other), "{other}");
         }
