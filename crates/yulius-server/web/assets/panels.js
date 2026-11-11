@@ -127,9 +127,10 @@ export function createPanelHost(ctx) {
   let recent = []; // sandbox ids whose views are kept, the one used last first
   const toolOf = new Map(); // sandbox id → the tool it had open, or null (SPEC-113 KST-005)
   const arriving = new Set(); // sandbox ids whose page is loading, not the context yet (SPEC-170)
-  // The tool the person chose while a sandbox's page loads and none is the context yet, how, and
-  // for which sandbox (`{ kind, opts, sandbox }`): it opens there when it arrives, and is not
-  // wanted any more once another sandbox's page starts loading (SPEC-450).
+  let arrivingLast = null; // the one whose page started loading last
+  // The tool the person chose while a sandbox's page loads and none is the context yet, and how
+  // (`{ kind, opts }`): it opens in that sandbox, the one arriving last, and is not wanted any
+  // more once another sandbox's page starts loading (SPEC-450).
   let chosen = null;
   // The page's one Global Superagent view, held by whichever Superagent panel shows its tab (SPEC-428).
   let globalAgent = null;
@@ -253,7 +254,7 @@ export function createPanelHost(ctx) {
    */
   function open(k, opts = {}) {
     if (sandbox || !arriving.size) { show(k, opts); return; }
-    chosen = { kind: k, opts, sandbox: [...arriving].pop() };
+    chosen = { kind: k, opts };
     press();
   }
 
@@ -358,8 +359,8 @@ export function createPanelHost(ctx) {
     arrive(next) {
       // Left for another sandbox: the tool that waited for this one's page is not wanted there
       // (what it was opened with, a tab or a file, is this sandbox's).
-      if (chosen && chosen.sandbox !== next.id) { chosen = null; press(); }
-      arriving.delete(next.id); // the one arriving last is last
+      if (chosen && next.id !== arrivingLast) { chosen = null; press(); }
+      arrivingLast = next.id;
       arriving.add(next.id);
       if (!sandbox) updateBadges();
     },
