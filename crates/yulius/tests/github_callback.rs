@@ -666,3 +666,92 @@ async fn a_callback_that_stays_missing_is_asked_for_less_often_until_someone_dem
     assert_eq!(asked(&h), 42);
     Ok(())
 }
+
+/// MVC-003: a GitHub sign-in that completes proves the callback: GitHub exchanged a code for it.
+/// The answer is "registered" at once, whatever was known, and GitHub is not asked for it; a
+/// sign-in GitHub refuses proves nothing.
+#[tokio::test]
+async fn a_completed_github_sign_in_proves_the_callback() -> TestResult {
+    let h = harness()?;
+    let admin = setup_superadmin_creds(&h).await?;
+    configure_github_app(&h).await?;
+    register(&h, &[]);
+    let missing = call(&h.router, Method::POST, CHECK, Some(json!({})), &admin).await?;
+    assert_eq!(missing.body["github"]["state"], "missing");
+    later(&h, 2_000);
+
+    // GitHub refuses the code: nothing is learned.
+    let started = start_sign_in(&h).await?;
+    let state = started.split("state=").nth(1).ok_or("no state")?;
+    let refused = call(
+        &h.router,
+        Method::GET,
+        &format!("/api/auth/github/callback?code=not-a-code&state={state}"),
+        None,
+        &Creds::default(),
+    )
+    .await?;
+    assert_eq!(refused.location.as_deref(), Some("/signin?error=failed"));
+    assert_eq!(github(&h, &admin).await?["state"], "missing");
+    assert!(says_missing(&h).await?);
+
+    // The callback was added on GitHub meanwhile, and a member signs in.
+    crate::support::admit_and_sign_in(&h, &admin, "alice", 7, false).await?;
+    let said = github(&h, &admin).await?;
+    assert_eq!(said["state"], "registered");
+    assert_eq!(said["reason"], Value::Null);
+    assert_eq!(said["checked_at"], "2026-10-07T00:00:02Z");
+    assert!(!says_missing(&h).await?);
+    assert_eq!(asked(&h), 1);
+    Ok(())
+}
+
+/// MVC-003: a check that dies (a panic below the port) does not stop the checks: the next read
+/// asks again.
+#[tokio::test]
+async fn a_check_that_dies_does_not_stop_the_checks() -> TestResult {
+    let h = harness()?;
+    let admin = setup_superadmin_creds(&h).await?;
+    configure_github_app(&h).await?;
+    register(&h, &[]);
+    h.github.callback_dies.store(true, Ordering::SeqCst);
+    h.app.start_github_callback_check();
+    // The check that died was asked and gave no answer; the reads after it ask again.
+    until_state(&h, &admin, "missing").await?;
+    assert_eq!(asked(&h), 2);
+    Ok(())
+}
+
+/// MVC-003: a sign-in that completes while GitHub is being asked is the better witness: the
+/// answer that was on its way (asked before the callback was there) does not undo it.
+#[tokio::test]
+async fn a_question_on_its_way_does_not_undo_a_completed_sign_in() -> TestResult {
+    use yulius_app::github_callback::CallbackState;
+    let h = harness()?;
+    let admin = setup_superadmin_creds(&h).await?;
+    configure_github_app(&h).await?;
+    register(&h, &[]);
+    let hold = Arc::new(tokio::sync::Notify::new());
+    if let Ok(mut held) = h.github.callback_hold.lock() {
+        *held = Some(Arc::clone(&hold));
+    }
+    let app = Arc::clone(&h.app);
+    let check = tokio::spawn(async move { app.check_github_callback(None, 0).await });
+    h.github.callback_entered.notified().await;
+
+    // Meanwhile the callback is added on GitHub and a member signs in.
+    crate::support::admit_and_sign_in(&h, &admin, "alice", 7, false).await?;
+    assert_eq!(github(&h, &admin).await?["state"], "registered");
+
+    // GitHub's answer to the question asked before that: "missing".
+    if let Ok(mut held) = h.github.callback_hold.lock() {
+        *held = None;
+    }
+    hold.notify_one();
+    let told = check.await??.map(|facts| facts.state);
+    assert_eq!(told, Some(CallbackState::Registered));
+    assert_eq!(github(&h, &admin).await?["state"], "registered");
+    assert!(!says_missing(&h).await?);
+    assert_eq!(asked(&h), 1);
+    Ok(())
+}

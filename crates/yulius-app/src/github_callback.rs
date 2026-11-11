@@ -21,8 +21,8 @@ const RECHECK_MS: i64 = 30_000;
 /// So many answers in a row that say the same are asked for again after [`RECHECK_MS`]: someone
 /// is adding the callback on GitHub and watches the page.
 const QUICK_RECHECKS: u32 = 10;
-/// After them the wait doubles with every such answer, this often at most (32 minutes).
-const MAX_DOUBLINGS: u32 = 6;
+/// After them the wait doubles with every such answer, this often at most (4 minutes).
+const MAX_DOUBLINGS: u32 = 3;
 /// A sign-in start, and a check started beside a read, reuse an answer this young, so visitors
 /// cannot make the instance ask GitHub more often.
 const REUSE_MS: i64 = 5_000;
@@ -224,11 +224,17 @@ impl App {
         let own = public_url.is_none();
         let url = public_url.unwrap_or(&self.config.public_url);
         let _one = self.github_callback.asking.lock().await;
+        let known = self.kept_answer();
         if own
-            && let Some(kept) = self.kept_answer()
+            && let Some(kept) = &known
             && (Some(kept.number) != before || self.now().0.saturating_sub(kept.at.0) < reuse_ms)
         {
-            return Ok(Some(facts(url, settings, kept.state, Some(kept.at))));
+            return Ok(Some(facts(
+                url,
+                settings,
+                kept.state.clone(),
+                Some(kept.at),
+            )));
         }
         let asked = self
             .deps
@@ -243,6 +249,18 @@ impl App {
         let at = self.now();
         if own && let Ok(mut kept) = self.github_callback.answer.lock() {
             let was = kept.as_ref();
+            // Only a sign-in that completed writes while GitHub is asked: it proved the
+            // callback, and is the better witness than an answer that was on its way.
+            if let Some(proven) = was
+                && Some(proven.number) != known.as_ref().map(|known| known.number)
+            {
+                return Ok(Some(facts(
+                    url,
+                    settings,
+                    proven.state.clone(),
+                    Some(proven.at),
+                )));
+            }
             if was.map(|was| &was.state) != Some(&state) {
                 tracing::info!(state = ?state, "GitHub's answer about the sign-in callback");
             }
@@ -268,19 +286,44 @@ impl App {
 
     /// Starts a check in the background; `false` when one is already on its way.
     fn ask_github_beside(self: &Arc<Self>, by_a_read: bool) -> bool {
+        /// Says that no background check is on its way any more, however it ended.
+        struct Done(Arc<App>);
+        impl Drop for Done {
+            fn drop(&mut self) {
+                self.0
+                    .github_callback
+                    .refreshing
+                    .store(false, Ordering::SeqCst);
+            }
+        }
         if self.github_callback.refreshing.swap(true, Ordering::SeqCst) {
             return false;
         }
-        let app = Arc::clone(self);
+        let done = Done(Arc::clone(self));
         tokio::spawn(async move {
-            if let Err(err) = app.ask_github(None, REUSE_MS, by_a_read).await {
+            if let Err(err) = done.0.ask_github(None, REUSE_MS, by_a_read).await {
                 tracing::warn!(error = %err, "could not ask GitHub about the sign-in callback");
             }
-            app.github_callback
-                .refreshing
-                .store(false, Ordering::SeqCst);
         });
         true
+    }
+
+    /// GitHub just exchanged a sign-in code for the instance's callback URL, so it is registered,
+    /// whatever was known before: the pages say so at once, without another question.
+    pub(crate) fn github_callback_proven(&self) {
+        let at = self.now();
+        if let Ok(mut kept) = self.github_callback.answer.lock() {
+            let was = kept.as_ref();
+            if was.map(|was| &was.state) != Some(&CallbackState::Registered) {
+                tracing::info!("a GitHub sign-in completed: its callback is registered");
+            }
+            *kept = Some(Kept {
+                state: CallbackState::Registered,
+                at,
+                number: was.map_or(1, |was| was.number.wrapping_add(1)),
+                same: 0,
+            });
+        }
     }
 
     /// The kept answer. Reading one that is not "registered" and due ([`Kept::stale`]), or none
@@ -369,10 +412,11 @@ mod tests {
         }
         assert_eq!(recheck_after(11), 60_000);
         assert_eq!(recheck_after(12), 120_000);
-        assert_eq!(recheck_after(16), 1_920_000);
-        // About half an hour at most, however long it stands.
-        assert_eq!(recheck_after(17), 1_920_000);
-        assert_eq!(recheck_after(u32::MAX), 1_920_000);
+        assert_eq!(recheck_after(13), 240_000);
+        // Four minutes at most, however long it stands: what the sign-in page says of a
+        // callback added since is never older.
+        assert_eq!(recheck_after(14), 240_000);
+        assert_eq!(recheck_after(u32::MAX), 240_000);
 
         let kept = |state: CallbackState, same| Kept {
             state,
@@ -389,8 +433,8 @@ mod tests {
             assert!(kept(state.clone(), 0).stale(at(30_000)));
             assert!(!kept(state.clone(), 11).stale(at(59_999)));
             assert!(kept(state.clone(), 11).stale(at(60_000)));
-            assert!(!kept(state.clone(), 400).stale(at(1_919_999)));
-            assert!(kept(state, 400).stale(at(1_920_000)));
+            assert!(!kept(state.clone(), 400).stale(at(239_999)));
+            assert!(kept(state, 400).stale(at(240_000)));
         }
         // An answer GitHub did not give says the same whatever the reason; another answer is news.
         let unknown = |why: &str| CallbackState::Unknown(why.into());

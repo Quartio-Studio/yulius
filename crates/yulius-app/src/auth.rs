@@ -636,6 +636,8 @@ impl App {
             .github
             .exchange_code(&app, code, &self.github_redirect_uri())
             .await?;
+        // GitHub took the code for this callback URL: it is registered (SPEC-466).
+        self.github_callback_proven();
         let gh = self.deps.github.current_user(&token.access).await?;
         // A linked user is found by its GitHub id only: GitHub frees a renamed account's login
         // for anyone, so the login admits only a user not linked yet (#653).

@@ -54,6 +54,8 @@ pub struct FakeGitHub {
     pub callback_error: Mutex<Option<String>>,
     /// Every callback URL GitHub was asked about, in order: one request each.
     pub callback_asked: Mutex<Vec<String>>,
+    /// When set, the next callback question dies (a panic), once.
+    pub callback_dies: std::sync::atomic::AtomicBool,
     /// When set, a callback question waits for it; `callback_entered` says one began.
     pub callback_hold: Mutex<Option<Arc<tokio::sync::Notify>>>,
     pub callback_entered: tokio::sync::Notify,
@@ -172,6 +174,10 @@ impl GitHubPort for FakeGitHub {
             .lock()
             .map_err(AppError::internal)?
             .push(uri.to_owned());
+        assert!(
+            !self.callback_dies.swap(false, Ordering::SeqCst),
+            "the callback question dies (a test asked for it)"
+        );
         let hold = self.callback_hold.lock().ok().and_then(|h| h.clone());
         if let Some(hold) = hold {
             self.callback_entered.notify_one();
