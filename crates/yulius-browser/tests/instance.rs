@@ -761,6 +761,115 @@ async fn bounded_screenshots_shrink_until_they_fit_the_budget() -> TestResult {
     Ok(())
 }
 
+/// SPEC-450 SSC-003/004: a secret the page shows nowhere right after typing (a cross-origin frame)
+/// refuses screenshots of that document, and of any while its document cannot be told; an
+/// unreadable page refuses them; a value that comes back after navigation refuses them again; a
+/// tab remembers a bounded number of secrets; text typed with `tool_type` guards nothing.
+#[tokio::test]
+async fn typed_secrets_refuse_screenshots_while_the_page_may_show_them() -> TestResult {
+    let (fake, instance, tab) = setup().await?;
+    let shot = ScreenshotParams {
+        tab_id: tab.clone(),
+    };
+    let secret = |text: &str| TypeParams {
+        tab_id: tab.clone(),
+        text: text.to_owned(),
+        selector: Some("#frame-field".into()),
+    };
+    let navigate = |url: &str| NavigateParams {
+        tab_id: tab.clone(),
+        url: url.to_owned(),
+    };
+    fn refused<T>(result: Result<T, BrowserError>) -> bool {
+        matches!(result, Err(BrowserError::SecretOnPage))
+    }
+
+    instance.tool_type(&secret("plain text")).await?;
+    instance.tool_screenshot_within(&shot, 100_000).await?;
+
+    // Typed where the probe cannot see it: no pixels of this document, and none captured.
+    fake.set_secret_probe(Some(
+        json!({"shown": ["Fake page text"], "masked": [], "over": false}),
+    ));
+    instance
+        .tool_type_secret(&secret("frame-secret-8812"))
+        .await?;
+    let captures = fake.calls_for("Page.captureScreenshot").len();
+    assert!(refused(
+        instance.tool_screenshot_within(&shot, 100_000).await
+    ));
+    assert!(refused(instance.tool_screenshot(&shot).await));
+    assert_eq!(fake.calls_for("Page.captureScreenshot").len(), captures);
+    // Another document: captured again.
+    instance
+        .tool_navigate(&navigate("https://example.com/next"))
+        .await?;
+    instance.tool_screenshot_within(&shot, 100_000).await?;
+
+    // A page read over its bound, or not as expected, is not captured.
+    fake.set_secret_probe(Some(json!({"shown": [], "masked": [], "over": true})));
+    assert!(refused(
+        instance.tool_screenshot_within(&shot, 100_000).await
+    ));
+    fake.set_secret_probe(Some(
+        json!({"shown": "frame-secret-8812", "masked": [], "over": false}),
+    ));
+    assert!(refused(
+        instance.tool_screenshot_within(&shot, 100_000).await
+    ));
+    // The value comes back (history navigation restored the field): refused again.
+    fake.set_secret_probe(Some(
+        json!({"shown": ["key: frame-secret-8812!"], "masked": [], "over": false}),
+    ));
+    assert!(refused(
+        instance.tool_screenshot_within(&shot, 100_000).await
+    ));
+    fake.set_secret_probe(None);
+    instance.tool_screenshot_within(&shot, 100_000).await?;
+
+    // At most 32 secrets per tab; one more is refused before it is typed.
+    for n in 1..32 {
+        instance
+            .tool_type_secret(&secret(&format!("secret-{n:02}-xyz")))
+            .await?;
+    }
+    instance.tool_type_secret(&secret("secret-01-xyz")).await?;
+    let typed = fake.calls_for("Input.insertText").len();
+    assert!(matches!(
+        instance.tool_type_secret(&secret("one-too-many")).await,
+        Err(BrowserError::InvalidInput(_))
+    ));
+    assert_eq!(fake.calls_for("Input.insertText").len(), typed);
+
+    // When the document cannot be told, an unseen secret refuses every screenshot.
+    instance
+        .tool_navigate(&navigate("https://example.com/other"))
+        .await?;
+    let (fake, instance, tab) = setup().await?;
+    let shot = ScreenshotParams {
+        tab_id: tab.clone(),
+    };
+    fake.fail("Page.getFrameTree", -32000, "no frame tree");
+    fake.set_secret_probe(Some(json!({"shown": [], "masked": [], "over": false})));
+    instance
+        .tool_type_secret(&TypeParams {
+            tab_id: tab.clone(),
+            text: "frame-secret-8812".into(),
+            selector: None,
+        })
+        .await?;
+    instance
+        .tool_navigate(&NavigateParams {
+            tab_id: tab,
+            url: "https://example.com/next".into(),
+        })
+        .await?;
+    assert!(refused(
+        instance.tool_screenshot_within(&shot, 100_000).await
+    ));
+    Ok(())
+}
+
 #[tokio::test]
 async fn user_action_requests_are_registered_published_and_cleared() -> TestResult {
     let (_fake, instance, tab) = setup().await?;
