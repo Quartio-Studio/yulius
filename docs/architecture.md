@@ -468,6 +468,10 @@ these windows: a reading replaces the 5-hour and weekly windows and keeps the pe
 until their reset, and a new sign-in of the subscription drops them (they were the previous
 sign-in's). A model's limit without a reset is kept as a limit of the subscription that
 the next reading ends. A subscription reads `limited` while the default model cannot run on it.
+A reported limit, a session's reading, a provider's reading and a new sign-in each read, change
+and write a subscription's stored usage under one lock (`CapacityState::usage_writes`, never
+held across a request to the provider), so a limit recorded while a reading is under way is
+kept.
 
 ```mermaid
 flowchart TD

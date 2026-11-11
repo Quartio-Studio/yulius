@@ -47,7 +47,10 @@ wrong:
   keeps the per-model windows it does not carry while their reset is ahead. A per-model window
   whose reset passed is dropped at the next stored reading: nothing is known about the new one.
   A new sign-in of the subscription drops the per-model windows: they are what Claude told the
-  previous sign-in, which may have been another Claude account.
+  previous sign-in, which may have been another Claude account. A reported limit, a session's
+  reading, a provider's reading and a new sign-in each read, change and write the stored usage
+  under one lock (`CapacityState::usage_writes`), taken after the provider answered: a limit
+  recorded while a reading is under way is added to what the reading stored, not written over.
 - **A model's limit without a reset stays a limit of the subscription**, with no reset, as every
   limit without one was: the next usage reading ends it.
 - **A subscription reads `limited` while the default model cannot run on it**: a limit Claude
@@ -62,9 +65,10 @@ wrong:
   refused before it ends the session (ROT-014), the session stays at Claude Code's refusal and
   nothing goes on by itself, so the held pause opens the Needs you after all, once, whichever of
   the notice and the refusal came first. A later move past the limit continues the cut turn and
-  ends that request. A task already under Needs you is told nothing new (a restart reads the
-  same pause again); one that a message set working since, refused again, is under Needs you
-  again.
+  ends that request. The pause is asked and audited once per limit: the runtime keeps when
+  Claude Code recorded the limit, and a request asked at or after it is that limit's. While it
+  is open, reading the same pause again (a restart replays it) only puts the task back under
+  Needs you; a refusal after a later prompt is a new limit.
 
 ## Alternatives
 
@@ -82,6 +86,8 @@ wrong:
 - **Drop the pause for good once a limit was seen.** A switch refused in preflight leaves the
   session at the refusal with only a line in its terminal, and Claude Code does not continue a
   credits refusal at a reset as it does a window's limit. Rejected.
+- **A compare-and-set in the store for the usage column**, or merging the windows in SQL. A new
+  store contract for one JSON column; the four writers are all in the app. Rejected for the lock.
 - **A fixed back-off for a model's limit without a reset.** It needs a time per limit in the
   stored usage. Only sessions still on Claude Code 2.1.311 and the "credits are off" refusal lack
   the reset, and a retry costs one refused request and a move. Not now.
