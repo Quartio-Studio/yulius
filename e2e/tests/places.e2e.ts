@@ -1,6 +1,6 @@
 import { test, type Browser, type Screen } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { editorShown, failOnPageErrors, firstShown, mock, openSuperagent } from './support.ts';
+import { editorShown, failOnPageErrors, firstShown, MONACO_LOAD_MS, mock, openSuperagent } from './support.ts';
 
 failOnPageErrors();
 
@@ -310,7 +310,9 @@ test('a file opened just before a sandbox switch shows when the sandbox is back'
   await screen.getByRole('button', /^Show tools/).click();
   await screen.getByRole('button', 'Editor').click();
   await screen.getByRole('tree', 'Files').getByRole('treeitem', 'README.md').click();
-  await editorShown(browser);
+  // Its read waits at the hold: asked once Monaco loaded and the editor was made, which shows no
+  // view before a file's model is set (#1087).
+  await expect.poll(() => browser.evaluate(() => (window as unknown as { __yuliusMock: { heldWaiting?: number } }).__yuliusMock.heldWaiting ?? 0), { timeout: MONACO_LOAD_MS }).toBe(1);
   await tab(screen, 'product').click();
   await expect(heading(screen)).toHaveText('New task');
   await browser.evaluate(() => (window as unknown as { __yuliusMock: { release: () => void } }).__yuliusMock.release());
