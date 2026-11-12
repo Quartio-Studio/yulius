@@ -44,7 +44,10 @@ a prompt is submitted from it.
 - **The draft's mark is kept in the run folder.** The keystroke that begins a possible draft
   writes `person-typed` (its time) into the run's folder, once; a prompt submitted from the box
   removes it. A restarted server reads it when it reattaches the run, so the wake after an
-  outage, which is typed only after a restart, does not land on a draft typed before it.
+  outage, which is typed only after a restart, does not land on a draft typed before it. A
+  draft the server knows from the mark alone stays one until a prompt follows a key it saw: a
+  prompt held across the restart is asked about again, reads as a new submit, and may have a
+  draft behind it.
 
 ## Alternatives
 
@@ -98,6 +101,9 @@ a prompt is submitted from it.
   minutes after their last key. `App::has_draft` (SPEC-468) reads the same time, so a session
   with a draft from before a restart of the server is not restarted on a newer Claude Code
   either. A mark that could not be written is logged and tried again at the next key.
+- A session whose mark outlived its draft across a restart (a prompt held over the restart
+  with nothing typed behind it) holds messages although its box is empty, until a prompt
+  follows a key typed after the restart; its person is told like any other.
 - A prompt Claude Code scheduled for itself ends the hold early until issue #1225 is fixed.
 - Reversible: the rule is `policy::box_held` and one constant; a later, proven way to know the
   box is empty only has to move `box_emptied_ms`.

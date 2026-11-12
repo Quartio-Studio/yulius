@@ -894,7 +894,8 @@ silent. It types none of them while a person's draft may sit in the session's pr
   it never sends or clears a person's text.
 - A restart of Yulius does not forget a draft: the key that begins one leaves `person-typed`
   (its time) in the run's folder (`<data>/runs/…`), removed when a prompt is sent from the
-  box, and a restarted server reads it when it reattaches the run.
+  box, and a restarted server reads it when it reattaches the run. A draft it knows from
+  that file alone stays one until a prompt is sent after a key typed since the restart.
 
 ### Docker in sandboxes
 

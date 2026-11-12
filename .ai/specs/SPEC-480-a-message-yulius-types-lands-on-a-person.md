@@ -96,11 +96,15 @@ after a bound the person is told.
   person's draft.
 - DRF-009 (a restart of the server does not forget a draft). The keystroke that begins a
   possible draft (a person's first key after the box was last empty) writes its time into the
-  run's folder (`person-typed`), before the key is passed on to the session; a prompt
-  submitted from the box removes the file, unless a key typed after that submit began a new
-  draft. A server that reattaches the run reads it as the person's last keystroke, so
-  DRF-001 holds for a draft typed before the restart: the wake after an outage is typed only
-  after one. A new run starts in a new folder, without a mark.
+  run's folder (`person-typed`, through a synced temporary file), before the key is passed on
+  to the session; a prompt submitted from the box removes the file, whatever the server
+  remembers of having written it, unless a key typed after that submit began a new draft. A
+  server that reattaches the run reads it as the person's last keystroke, never later than
+  its own clock, so DRF-001 holds for a draft typed before the restart: the wake after an
+  outage is typed only after one. A draft a server knows from the mark alone (it saw no key
+  in that run) stays a draft until a prompt follows a key it saw: a prompt that was held
+  across the restart is asked about again and reads as a new submit, although the draft was
+  typed behind it. A new run starts in a new folder, without a mark.
 
 ## Plan
 
@@ -110,6 +114,7 @@ after a bound the person is told.
 - [x] A held message of Yulius's own flags the task and says so in its terminal after ten minutes
 - [x] SPEC-230, ADR-0178, the guide, the architecture and the tool description say when a message waits
 - [x] Review round 1 answered: a draft from before a restart holds messages, the last wake tells its person, the flag ends with its hold
+- [x] Review round 2 answered: a draft behind a prompt held across a restart stays one, a stale mark leaves, the mark is written whole
 - [x] The full gate passes on the final code and the spec carries the evidence
 
 ## Acceptance criteria
@@ -146,6 +151,15 @@ after a bound the person is told.
 - AC8 (DRF-007; review round 1). On the test's clock: a task flagged for a held message whose
   person submits `/compact` (a prompt that starts no turn) reads no flag afterwards and is
   Waiting. In AC2 the flag is gone once the person's prompt was read.
+- AC9 (DRF-009; review round 2). With real processes and a subscription without room: a person
+  submits a prompt, which is held, and types more behind it. When the prompt goes on, the
+  agent reads it without that text, `task_message` is refused for the draft and the mark is
+  still in the run folder; the same after a restart of the server while the prompt was held.
+  Fails without the rule for a draft known from its mark alone: only the last minute still
+  refuses the message.
+- AC10 (DRF-009; review round 2). A mark the server does not remember writing leaves the run
+  folder with the next prompt that empties the box. A mark whose time is ahead of the clock is
+  read as typed at the reattach: eleven minutes later the person is told.
 
 ## Test plan
 
@@ -155,8 +169,8 @@ after a bound the person is told.
   times, which are the earlier of the client's and the server's, stay in order).
 - The same file: `a_message_of_yulius_waits_for_a_persons_draft_and_tells_them` (AC2, AC4) on
   the same clock, with the MCP watch as the typist: its reconnect is the command of DRF-003,
-  and it needs no pull request and no restart. The pull-request watch and the outage wake call
-  the same function with the same `Sender::Yulius`.
+  and it needs no pull request and no restart. The pull-request watch calls the same function
+  with the same `Sender::Yulius`; the outage wake does too, except at its last pass (AC7).
 - `crates/yulius-domain/src/intake.rs`: `a_persons_draft_holds_the_prompt_box_however_old`
   (AC3).
 - `crates/yulius/tests/task_message.rs`:
@@ -168,6 +182,12 @@ after a bound the person is told.
   `a_prompt_that_starts_no_turn_ends_the_flag_of_a_held_message` (AC8), on the test's clock
   with the hook sent over the internal listener: the fake agent runs no prompt hook for
   `/compact`, as Claude Code 2.1.292 did not.
+- `crates/yulius/tests/task_message.rs`:
+  `a_draft_behind_a_held_prompt_keeps_its_mark_when_the_prompt_goes_on` and
+  `a_draft_behind_a_prompt_held_across_a_restart_still_keeps_the_message_out` (AC9), with a
+  scripted usage probe that leaves the task's only subscription without room and then with
+  room; `a_stale_mark_leaves_the_run_folder_with_the_next_prompt` and
+  `a_mark_ahead_of_the_clock_is_read_as_typed_now` (AC10).
 - The existing tests of typed messages, the watches and the Claude Code moves stay green
   (`task_message::`, `restart::`, `pr_watch`, `claude_code_moves::`).
 - Mutation checks by hand (Evidence): without the draft rule AC1, AC2 and AC3 fail; with the
@@ -206,6 +226,16 @@ after a bound the person is told.
   that first key's, so a person may be told earlier than ten minutes after their last key.
   `App::has_draft` reads the same time: a session with a draft from before a restart of the
   server is not restarted on a newer Claude Code either.
+- **A draft known from its mark alone outlasts a prompt it did not see typed** (review round 2).
+  After a restart the server cannot tell a new submit from a held prompt that is asked about
+  again, and a draft may sit behind the held one. It errs toward the draft: such a session
+  holds messages until a prompt follows a key the server saw, also when the box is in fact
+  empty (a prompt held across a restart with nothing typed behind it); its person is told
+  after ten minutes like any other, and one prompt releases it. The hook reads the mark from
+  the file, because it may be served before the run is reattached.
+- **The mark is removed whenever the box is emptied** (review round 2), not only when the
+  server remembers writing it: a mark that outlives its draft would make a restarted server
+  hold messages for nothing.
 - **A message that is given up tells at its last try** (review round 1). A key typed after a
   restart cannot be ten minutes old before the wakes end, so the wake would be dropped with
   nobody told. The flag then outlives the wake; the prompt it asks for is what continues the
@@ -256,7 +286,11 @@ Run in this task's worktree on 2026-11-12; logs under the ignored `target/eviden
   8. every pass tells at any age: AC2 and AC7 fail;
   9. the emptied box does not end the flag: AC8 fails;
   10. the mark is not read at reattach: AC6 fails;
-  11. the mark stays after the box was emptied: AC6 fails.
+  11. the mark stays after the box was emptied: AC6 fails;
+  12. a submit clears the mark although a key followed it: AC9 (no restart) fails;
+  13. a draft known from its mark alone is emptied by any prompt: AC9 (restart) fails;
+  14. a mark the server does not remember stays: AC10 (stale mark) fails;
+  15. a mark ahead of the clock is kept as it is: AC10 (clock) fails.
 - **The gate**: `scripts/dev ci` at 26168d119 (the head of review round 1): exit 0, 4033 tests
   passed, 16 skipped. Again at 9951d297a (the review's fixes and their documents): exit 0, 4036
   tests passed, 16 skipped. After that only this spec changed (status, Plan, Evidence).
@@ -289,6 +323,28 @@ Run in this task's worktree on 2026-11-12; logs under the ignored `target/eviden
     tasks. Named in ADR-0309 and the guide as a consequence (read in the code, not run).
   - pre-existing, minor: the `/compact` typist honours only keys typed since it asked.
     Outside this change; reported in a comment on issue #1199 (Limits above).
+- **The held prompt across a restart reproduced** (commit cae3c4d80, before the rule for a
+  draft known from its mark alone):
+  `a_draft_behind_a_prompt_held_across_a_restart_still_keeps_the_message_out` failed: the
+  restarted server refused the message only with "a person typed into task #1's terminal in
+  the last minute", the draft was no longer known.
+- **Independent review, round 2** (the same reviewer, head 043290098, the delta since round
+  1): "approve — no blocker or major finding in the delta's own code". Its findings and what
+  was done:
+  - own code, minor: "a draft typed behind a prompt that is held across a server restart is
+    forgotten." Fixed (DRF-009, AC9): a draft known from its mark alone stays one until a
+    prompt follows a key the server saw.
+  - own code, minor: "the guard `!self.persons_draft_holds(...)` has no test." AC9's test
+    without a restart; mutation 12.
+  - own code, minor: "the file is removed only when `draft_marked` is set, so a mark can
+    outlive its draft when flag and file disagree." The file is removed at every prompt that
+    empties the box (AC10, mutation 14).
+  - own code, nit: "the mark's time is not clamped to now at reattach." Clamped (AC10,
+    mutation 15), also where the hook reads it.
+  - own code, nit: "the mark is written in place". Written through a synced temporary file
+    and a rename, as `stop-answered` is.
+  - own code, nit: the Test plan named `Sender::Yulius` for the outage wake's every pass.
+    Corrected.
   A delta review of the final head follows this section's commit; its verdict is in the pull
   request.
 - **Not tested here.** The real Claude Code: the fake agent stands in for it, and what Claude
