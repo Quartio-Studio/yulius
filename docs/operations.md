@@ -1160,7 +1160,12 @@ Vidoc off, it also says `Vidoc scans are switched off for the instance`.
    allowance of them beside the 5-hour and weekly windows) is at that model's limit: its card
    reads "Limit reached" with "Fable this week" at 100 % until the reset Claude named, its tasks
    of that model move on or wait for the reset by themselves, and tasks of other models still
-   run on it. A usage reading does not end that limit. After buying credits, press **Refresh**
+   run on it. When Fable is used up on every subscription, tasks of a Fable model and the
+   Superagents go on with Opus 5.5 instead of waiting (SPEC-482, ADR-0312): the Capacity card
+   and the Status line say "Fable 5.2 is used up on every subscription: tasks run on Opus 5.5
+   until it can run again", a task's details name the model its session runs on, and each
+   session runs Fable again at its next start once a subscription can. A task waits, or asks a
+   person, only when neither model can run. A usage reading does not end that limit. After buying credits, press **Refresh**
    on the subscription's card (or **Refresh all**): Yulius asks Claude with that model, and
    when the model answers the limit ends at once and the tasks that wait for it go on
    (SPEC-473, ADR-0307); otherwise it holds until its reset or until the subscription is signed

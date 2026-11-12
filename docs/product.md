@@ -272,7 +272,12 @@ watching, steering and unblocking.
   Yulius tries it once more after the provider's next usage reading. Refused again, the task
   waits for another subscription's reset when one is known, and otherwise asks a person
   instead of trying on; that request ends by itself once the task's agent works again or
-  Yulius takes the task on after all (SPEC-464). Its Capacity card says what
+  Yulius takes the task on after all (SPEC-464). A task of a Fable model, the default one
+  included, does not wait while a subscription can run Opus 5.5: when Fable is used up on
+  every subscription its session goes on with Opus 5.5, on the same subscription when that is
+  the one with room, and says so; the task's details, the Capacity card and the Status line
+  say it too, and the task's next launch runs Fable again once a subscription can. The
+  Superagent does the same (SPEC-482). Its Capacity card says what
   is left, how fast it burns, the tokens it used and what they would cost at Claude API list
   prices, with a 7-day chart for each. Administrators rename each subscription in place ("work
   Max", "personal") and see the email of its Claude account wherever it is named; when Claude

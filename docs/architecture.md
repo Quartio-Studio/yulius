@@ -523,14 +523,48 @@ recorded while a reading is under way is kept. The write that marks a subscripti
 (`record_access_lost`) takes the lock as well: a usage write stores the status it read together
 with the usage, and one under way would otherwise store `ok` over "needs a new sign-in" (#1211).
 
-A model's limit nothing says the end of, with no subscription the task can go to, makes the task
+### The fallback model
+
+A task of a Fable model does not wait while a subscription can run Opus 5.5
+([SPEC-482](../.ai/specs/SPEC-482-add-fallback-for-opus-5-5-if-fable-is-do.md),
+[decision 0312](decisions/0312-a-fable-run-falls-back-to-opus-5-5-while-no-subscription-can-run-fable.md)).
+The pool's policy decides the model at each placement (`rotation::placing_family`):
+
+```mermaid
+flowchart TD
+    P[A run is placed: start, limit, turn boundary it cannot stay at, a person's move] --> F{An account is a candidate<br/>for the task's model?}
+    F -- yes --> O[Launch with the task's model]
+    F -- no --> B{The model has a fallback and<br/>an account is a candidate for it?}
+    B -- yes --> X[Launch with the fallback: Opus 5.5 for a Fable model]
+    B -- no --> W[Wait until the earliest time either model can run]
+```
+
+The fallback is one constant (`harness::fallback_model`: `claude-opus-5-5` for every Fable model,
+the default one included; no other model has one). The task's own setting is not changed:
+`choose_account` returns the account with the fallback model from the same snapshot of the pool
+(`Placed`), and the launch gives it to Claude Code. A run records the model it was launched with
+(`attempts.model`; a Superagent's `shell.json`), and that model, not the task's, is what a limit
+reported to the run binds and what a run stays on its subscription by. So a run that fell back
+is not restarted because Fable can run again: the next launch that happens anyway is placed with
+the task's own model once an account is a candidate for it. A placement after a limit leaves
+the current account out only when the run placed would be of the model the current run was
+launched with, so a run that changes its model may stay where it is and one subscription is
+enough. The session's terminal says the change in one line, at the launch that makes it; the
+move's entry names the model; `TaskDetail.fallback_model` and the capacity view's
+`fallback_model` carry it to the task's details, the Capacity panel and the Status line. The
+Superagent is placed by the same rule (`App::place_default_run`).
+
+A model's limit nothing says the end of, with no subscription the task can go to (for a Fable
+model: none for its fallback either), makes the task
 wait, and the provider's reading that ends it lets the pool try the task once
 (`BLIND_LIMIT_RETRIES`). Refused the same way again before the model answered (`BlindLimits`),
 the task is not started on that subscription at each of its readings, so no session is restarted
 every few minutes with nobody told. What follows depends on what is known. When another
 subscription says when it resets, the task waits for that reset and the pool leaves the refusing
 subscription out for the waiting task, whatever its readings say meanwhile
-(`rotation::decide_leaving_out`). When nothing says when the task can go on, its session stays
+(`rotation::decide_leaving_out`). Left out means out of the refused model: that model's own
+window counts as full with no reset, so the reset of the fallback's window on the same
+subscription is one to wait for too. When nothing says when the task can go on, its session stays
 at the refusal and Yulius asks a person (`task.limit_without_end`). Two starts on that
 subscription remain possible, one each: once no reset is known any more (the other subscription
 was removed or needs a sign-in) it is a candidate again, and a task that went on elsewhere and
