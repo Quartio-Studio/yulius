@@ -43,7 +43,7 @@ pub(crate) struct BlindLimits {
     /// Such waits in a row, the model not having answered in between.
     waits: u32,
     /// The subscription that refused the task that way again after its retries: the pool does
-    /// not put the task back on it by itself.
+    /// not put the task back on it by itself while a reset is known to wait for.
     refused_by: Option<AccountId>,
 }
 
@@ -90,12 +90,6 @@ impl BlindLimits {
     /// The subscription the pool leaves out for this task.
     pub(crate) fn refused_by(&self) -> Option<&AccountId> {
         self.refused_by.as_ref()
-    }
-
-    /// No reset is known to wait for any more: the subscription is a candidate again. The task
-    /// has no retry left, so it asks a person when it is refused there the same way.
-    pub(crate) fn nothing_to_wait_for(&mut self) {
-        self.refused_by = None;
     }
 }
 
@@ -353,10 +347,8 @@ mod tests {
             BlindWait::Pause
         );
         assert_eq!(blind.refused_by(), Some(&first), "left out from now on");
-        // That reset is no longer known: the subscription is tried once more, and the task
-        // asks a person when it is refused there again.
-        blind.nothing_to_wait_for();
-        assert_eq!(blind.refused_by(), None);
+        // That reset is no longer known and the pool tried the subscription once more
+        // (`rotation::decide_leaving_out`): refused there again, the task asks a person.
         assert_eq!(
             blind.nowhere_to_go(Some(&first), None, RUNNING),
             BlindWait::AskAPerson

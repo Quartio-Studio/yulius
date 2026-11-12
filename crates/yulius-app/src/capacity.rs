@@ -636,21 +636,11 @@ impl App {
         // A subscription that refused the task again at a limit nothing says the end of is not
         // tried again while a reset is known to wait for, whatever a reading said since
         // (SPEC-464 UCL-010).
-        let blind = self.existing_runtime(&task.id);
-        let left_out = blind
-            .as_ref()
+        let left_out = self
+            .existing_runtime(&task.id)
             .and_then(|rt| rt.blind_limits.lock().ok()?.refused_by().cloned());
         let (decision, reason) = match left_out {
-            Some(account) => {
-                let (decided, again) = rotation::decide_leaving_out(&input, trigger, &account);
-                if again
-                    && let Some(mut blind) =
-                        blind.as_ref().and_then(|rt| rt.blind_limits.lock().ok())
-                {
-                    blind.nothing_to_wait_for();
-                }
-                decided
-            }
+            Some(account) => rotation::decide_leaving_out(&input, trigger, &account),
             None => rotation::decide(&input, trigger),
         };
         Ok((decision, format!("{reason:?}"), has_process))

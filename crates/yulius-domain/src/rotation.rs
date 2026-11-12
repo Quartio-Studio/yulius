@@ -310,13 +310,13 @@ pub fn decide(input: &RotationInput, trigger: Trigger) -> (Decision, DecisionRea
 /// of another subscription is known to wait for, `left_out` counts as limited with no known
 /// reset, whatever a reading said since: the task waits for that reset and is not started on
 /// `left_out` at every reading. With no reset known, nothing would ever take the task on, so
-/// `left_out` is a candidate again; `true` says so, and the caller no longer leaves it out.
+/// `left_out` is a candidate like any other.
 #[must_use]
 pub fn decide_leaving_out(
     input: &RotationInput,
     trigger: Trigger,
     left_out: &AccountId,
-) -> ((Decision, DecisionReason), bool) {
+) -> (Decision, DecisionReason) {
     let mut without = input.clone();
     for account in &mut without.accounts {
         if &account.id == left_out {
@@ -325,8 +325,8 @@ pub fn decide_leaving_out(
         }
     }
     match decide(&without, trigger.clone()) {
-        (Decision::Wait { until: None }, _) => (decide(input, trigger), true),
-        decided => (decided, false),
+        (Decision::Wait { until: None }, _) => decide(input, trigger),
+        decided => decided,
     }
 }
 
@@ -718,18 +718,17 @@ mod tests {
             switched_to(&decide(&known, Trigger::Start).0),
             Some("refusing")
         );
-        let ((decision, _), again) = decide_leaving_out(&known, Trigger::Start, &refusing);
+        let (decision, _) = decide_leaving_out(&known, Trigger::Start, &refusing);
         assert_eq!(
             decision,
             Decision::Wait {
                 until: Some(NOW.plus_millis(40 * HOUR))
             }
         );
-        assert!(!again, "it stays left out while that reset is waited for");
         // A paused task that still has its process there is not released in place either.
         let mut held = known.clone();
         held.current = Some(refusing.clone());
-        let ((decision, _), _) = decide_leaving_out(&held, Trigger::Proactive, &refusing);
+        let (decision, _) = decide_leaving_out(&held, Trigger::Proactive, &refusing);
         assert!(
             matches!(decision, Decision::Wait { until: Some(_) }),
             "{decision:?}"
@@ -738,9 +737,8 @@ mod tests {
         let mut room = known.clone();
         room.accounts
             .push(account("third", usage(20.0, 20.0, Some(100)))?);
-        let ((decision, _), again) = decide_leaving_out(&room, Trigger::Start, &refusing);
+        let (decision, _) = decide_leaving_out(&room, Trigger::Start, &refusing);
         assert_eq!(switched_to(&decision), Some("third"));
-        assert!(!again);
         // Nothing known to wait for: it is tried again rather than never.
         let mut unknown = usage(10.0, 100.0, None);
         unknown.limit_reached = true;
@@ -751,9 +749,8 @@ mod tests {
                 account("later", unknown)?,
             ],
         )?;
-        let ((decision, _), again) = decide_leaving_out(&blind, Trigger::Start, &refusing);
+        let (decision, _) = decide_leaving_out(&blind, Trigger::Start, &refusing);
         assert_eq!(switched_to(&decision), Some("refusing"));
-        assert!(again, "the caller no longer leaves it out");
         Ok(())
     }
 
