@@ -645,7 +645,7 @@ impl App {
     /// Asks the provider for the account's current usage windows and stores them (ROT-009),
     /// then asks it about each usage limit stored for the account, so that a limit a person
     /// lifted ends now and one recorded without a reset gets it (SPEC-473,
-    /// [`Self::ask_about_limits`]). A failure of either is recorded as the account's usage note
+    /// `ask_about_limits`). A failure of either is recorded as the account's usage note
     /// and returned; what was stored about the limit stays.
     ///
     /// # Errors
