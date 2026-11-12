@@ -77,6 +77,9 @@ struct Facts {
     /// It is there and disabled by its link, which alone does not unload it.
     shipped_off: bool,
     ours: Ours,
+    /// Ours declares a profile for bwrap, in this version's text or another. A file a person
+    /// emptied declares none: there is nothing of it to take out of AppArmor.
+    ours_attaches: bool,
     /// A link in `disable/` keeps ours from loading (a person's).
     ours_disabled: bool,
     /// Other enabled files with a profile for bwrap (a person's), by name.
@@ -203,7 +206,7 @@ enum Unloaded {
     Now,
     /// It did not hold it.
     Never,
-    /// It keeps it: what to say of that.
+    /// It refused: what to say of that.
     Held(String),
 }
 
@@ -321,6 +324,19 @@ impl Facts {
     fn rule(&self, proven: bool) -> String {
         if !self.enabled {
             "AppArmor is not active here".to_owned()
+        } else if !self.foreign.is_empty()
+            && self.restricted
+            && self.ours_attaches
+            && !self.ours_disabled
+        {
+            // Which of the two AppArmor holds, the files do not say; a boot loads both, and
+            // where user namespaces need a rule, bwrap then has none.
+            format!(
+                "a profile for bwrap is in {} (not written by Yulius, left as it is) and in \
+                 Yulius's {PROFILE_FILE}; AppArmor applies neither once it holds both: after a \
+                 boot, run `sudo yulius host setup` again",
+                self.foreign_files().join(", ")
+            )
         } else if !self.foreign.is_empty() {
             format!(
                 "allowed by {} (not written by Yulius, left as it is)",
@@ -413,8 +429,9 @@ impl Run<'_> {
             // A limit keeps bwrap out whatever the profile says: theirs is not to blame.
             Proof::Fails(why) if !facts.foreign.is_empty() && self.limits().is_empty() => {
                 // Yulius's profile from an earlier run weighs as much as theirs: AppArmor
-                // applies neither. A person's link on it is that person's say (BNS-006).
-                if earlier.is_some() && !facts.ours_disabled {
+                // applies neither (BNS-006). A file that declares no profile is nothing to
+                // take out: the parser says "done" for it whatever AppArmor holds.
+                if facts.ours_attaches {
                     return self.without_ours(&plan, &facts, earlier.as_deref(), &done, &why);
                 }
                 let files = facts.foreign_files();
@@ -448,7 +465,9 @@ impl Run<'_> {
 
     /// Proves once more with Yulius's profile out of AppArmor. Where bwrap starts now, a
     /// person's profile lets it in and is adopted: Yulius's file goes too, whichever run wrote
-    /// it. Where not, Yulius's is back as it was before this run (BNS-012, BNS-006).
+    /// it. Where not, Yulius's is back as it was before this run (BNS-012, BNS-006). A file
+    /// that a person's link disables is neither removed nor loaded again: its profile only
+    /// leaves AppArmor.
     fn without_ours(
         &mut self,
         plan: &Plan,
@@ -459,6 +478,13 @@ impl Run<'_> {
     ) {
         let user = self.service_name();
         let theirs_files = facts.foreign_files();
+        // A person's link says Yulius's profile is not to be loaded: one AppArmor still
+        // holds is unloaded, and its file neither removed nor loaded again (BNS-006).
+        let linked = facts.ours_disabled;
+        let was_held = format!(
+            "Yulius's own ({PROFILE_FILE}), which a link disables, was still loaded and is \
+             unloaded now"
+        );
         let unloaded = self.unload_ours();
         // The file stays until the proof has spoken: a failure need not write it again.
         let third = (unloaded == Unloaded::Now).then(|| self.prove_namespace());
@@ -485,6 +511,9 @@ impl Run<'_> {
                 "{}: bwrap starts a user namespace as {user} with {with}",
                 steps.join(", ")
             );
+            if linked {
+                return self.changed(ITEM, &format!("{starts}; {was_held}"), "");
+            }
             // No boot may load Yulius's beside it again.
             return if self.file_back(None).0 {
                 self.changed(
@@ -514,11 +543,9 @@ impl Run<'_> {
             String::new()
         };
         match unloaded {
+            Unloaded::Now if linked => back += &format!("; {was_held}"),
             Unloaded::Now if self.host.is_file(Path::new(PROFILE_FILE)) => {
-                let out = self.run_cmd(&Cmd::new(&[PARSER, "-r", PROFILE_FILE]));
-                if !out.ok() {
-                    back += &format!("; AppArmor did not load it again ({})", out.why());
-                }
+                back += &self.reload_ours()
             }
             Unloaded::Now | Unloaded::Never => {}
             Unloaded::Held(says) => back += &says,
@@ -570,11 +597,13 @@ impl Run<'_> {
             host.stat(Path::new(&format!("{DIR}/disable/{name}")))
                 .is_some()
         };
-        let ours = match host.read(Path::new(PROFILE_FILE)) {
+        let ours_text = host.read(Path::new(PROFILE_FILE));
+        let ours = match ours_text.as_deref() {
             None => Ours::Missing,
             Some(text) if text == PROFILE => Ours::Current,
             Some(_) => Ours::Stale,
         };
+        let ours_attaches = ours_text.as_deref().is_some_and(attaches_bwrap);
         let foreign = host
             .list(Path::new(DIR))
             .into_iter()
@@ -592,6 +621,7 @@ impl Run<'_> {
             shipped: shipped && !disabled(SHIPPED),
             shipped_off: shipped && disabled(SHIPPED),
             ours,
+            ours_attaches,
             ours_disabled: disabled(PROFILE_NAME),
             foreign,
         }
@@ -709,7 +739,7 @@ impl Run<'_> {
                     };
                     undone += &self.file_back(earlier.as_deref()).1;
                     if loaded && earlier.is_some() {
-                        self.run_cmd(&Cmd::new(&[PARSER, "-r", PROFILE_FILE]));
+                        undone += &self.reload_ours();
                     }
                     undone += &held;
                 } else if loaded {
@@ -753,10 +783,25 @@ impl Run<'_> {
             0 => Unloaded::Now,
             // Exit 254: it was not loaded.
             254 => Unloaded::Never,
+            // The parser may have refused the file itself: what AppArmor holds, it did not
+            // say.
             _ => Unloaded::Held(format!(
-                "; AppArmor still holds Yulius's profile ({})",
+                "; AppArmor did not let Yulius's profile go ({})",
                 out.why()
             )),
+        }
+    }
+
+    /// Loads Yulius's file again, as it is now. Says so where AppArmor refuses it.
+    fn reload_ours(&mut self) -> String {
+        let out = self.run_cmd(&Cmd::new(&[PARSER, "-r", PROFILE_FILE]));
+        if out.ok() {
+            String::new()
+        } else {
+            format!(
+                "; AppArmor did not load Yulius's profile again ({})",
+                out.why()
+            )
         }
     }
 
@@ -909,6 +954,7 @@ mod tests {
             shipped: false,
             shipped_off: false,
             ours: Ours::Missing,
+            ours_attaches: false,
             ours_disabled: false,
             foreign: Vec::new(),
         }

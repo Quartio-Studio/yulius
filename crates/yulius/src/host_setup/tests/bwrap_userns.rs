@@ -612,7 +612,14 @@ fn yulius_earlier_profile_gives_way_to_a_rule_it_reads() {
         fake.log
     );
 
-    // A file of Yulius's that AppArmor does not hold: nothing is taken out, nothing loaded.
+    // A file of Yulius's that AppArmor does not hold: nothing is taken out, nothing loaded,
+    // and no third proof is asked (it would say what the second said).
+    let proofs = |fake: &Fake| {
+        fake.log
+            .iter()
+            .filter(|c| c.starts_with("/usr/sbin/runuser -u yulius -- bwrap"))
+            .count()
+    };
     let mut fake = set_up(noble());
     fake.file(HAND_WRITTEN, &confined);
     fake.reboot();
@@ -621,9 +628,10 @@ fn yulius_earlier_profile_gives_way_to_a_rule_it_reads() {
     let lines = run(&mut fake, Mode::Setup);
     assert_eq!(item(&lines), (HostOutcome::Failed, failed.as_str()));
     assert!(state(&fake) == before, "{:#?}", fake.log);
+    assert_eq!(proofs(&fake), 2, "{:#?}", fake.log);
 
     // AppArmor does not let Yulius's profile go: nothing is proven without it, and the line
-    // says what AppArmor holds before it names theirs.
+    // says what AppArmor answered before it names theirs.
     let mut fake = set_up(noble());
     fake.file(HAND_WRITTEN, &confined);
     fake.reboot();
@@ -641,15 +649,66 @@ fn yulius_earlier_profile_gives_way_to_a_rule_it_reads() {
             format!(
                 "loaded /etc/apparmor.d/bwrap again, but bwrap cannot start a user namespace as \
                  yulius with /etc/apparmor.d/bwrap (bwrap: setting up uid map: Permission \
-                 denied); AppArmor still holds Yulius's profile (apparmor_parser: Unable to \
-                 remove \"yulius-bwrap\".  Permission denied); {THEIRS}"
+                 denied); AppArmor did not let Yulius's profile go (apparmor_parser: Unable \
+                 to remove \"yulius-bwrap\".  Permission denied); {THEIRS}"
+            )
+            .as_str()
+        )
+    );
+    assert!(state(&fake) == before, "{:#?}", fake.log);
+    assert_eq!(proofs(&fake), 2, "{:#?}", fake.log);
+
+    // A file of Yulius's that the parser cannot read cannot be unloaded by its file, whatever
+    // AppArmor holds: the line says what was asked and answered, and guesses nothing.
+    let mut fake = noble();
+    fake.file(HAND_WRITTEN, &confined);
+    fake.file(PROFILE_FILE, &format!("# broken\n{PROFILE}"));
+    fake.reboot();
+    let before = state(&fake);
+    let lines = run(&mut fake, Mode::Setup);
+    assert_eq!(
+        item(&lines),
+        (
+            HostOutcome::Failed,
+            format!(
+                "loaded /etc/apparmor.d/bwrap again, but bwrap cannot start a user namespace as \
+                 yulius with /etc/apparmor.d/bwrap (mount: /tmp: permission denied.); AppArmor \
+                 did not let Yulius's profile go (AppArmor parser error for \
+                 /etc/apparmor.d/yulius-bwrap at line 1: syntax error); {THEIRS}"
             )
             .as_str()
         )
     );
     assert!(state(&fake) == before, "{:#?}", fake.log);
 
-    // A file of Yulius's that a person's link disables is theirs to keep: not even unloaded.
+    // AppArmor lets Yulius's profile go and does not take it back: said by its name.
+    let mut fake = set_up(noble());
+    fake.file(HAND_WRITTEN, &confined);
+    fake.reboot();
+    fake.failing.push((
+        "/usr/sbin/apparmor_parser -r /etc/apparmor.d/yulius-bwrap",
+        Some(1),
+        "apparmor_parser: Unable to replace \"yulius-bwrap\".  Permission denied",
+    ));
+    let lines = run(&mut fake, Mode::Setup);
+    assert_eq!(
+        item(&lines),
+        (
+            HostOutcome::Failed,
+            format!(
+                "loaded /etc/apparmor.d/bwrap again, but bwrap cannot start a user namespace as \
+                 yulius with /etc/apparmor.d/bwrap (mount: /tmp: permission denied.); AppArmor \
+                 did not load Yulius's profile again (apparmor_parser: Unable to replace \
+                 \"yulius-bwrap\".  Permission denied); {THEIRS}"
+            )
+            .as_str()
+        )
+    );
+    assert_eq!(fake.profiles.keys().collect::<Vec<_>>(), ["bwrap"]);
+    assert_eq!(fake.text(PROFILE_FILE), Some(PROFILE));
+
+    // A file of Yulius's that a person's link disables and AppArmor does not hold: nothing
+    // changes.
     let mut fake = set_up(noble());
     fake.file(HAND_WRITTEN, &confined);
     fake.links.insert(
@@ -657,14 +716,217 @@ fn yulius_earlier_profile_gives_way_to_a_rule_it_reads() {
         PathBuf::from(PROFILE_FILE),
     );
     fake.reboot();
+    let before = state(&fake);
     let lines = run(&mut fake, Mode::Setup);
     assert_eq!(item(&lines), (HostOutcome::Failed, failed.as_str()));
+    assert!(state(&fake) == before, "{:#?}", fake.log);
+    assert_eq!(proofs(&fake), 2, "{:#?}", fake.log);
+}
+
+/// BNS-006: a file of Yulius's that declares no profile (a person emptied it) is nothing to
+/// take out of AppArmor: the parser would say "done" for it whatever AppArmor holds. The line
+/// is the one of a person's profile alone, with or without a link on Yulius's file.
+#[test]
+fn a_file_of_yulius_without_a_profile_is_not_unloaded() {
+    let confined = HAND_WRITTEN_TEXT.replace(" flags=(unconfined)", "");
+    for linked in [false, true] {
+        let mut fake = set_up(noble());
+        fake.file(HAND_WRITTEN, &confined);
+        fake.reboot();
+        // The profile an earlier text of the file declared is still held.
+        fake.file(PROFILE_FILE, "# switched off by hand\n");
+        if linked {
+            fake.links.insert(
+                PathBuf::from("/etc/apparmor.d/disable/yulius-bwrap"),
+                PathBuf::from(PROFILE_FILE),
+            );
+        }
+        let before = state(&fake);
+        let lines = run(&mut fake, Mode::Setup);
+        assert_eq!(
+            item(&lines),
+            (
+                HostOutcome::Failed,
+                format!(
+                    "loaded /etc/apparmor.d/bwrap again, but bwrap cannot start a user \
+                     namespace as yulius with /etc/apparmor.d/bwrap (bwrap: setting up uid map: \
+                     Permission denied); {THEIRS}"
+                )
+                .as_str()
+            ),
+            "linked: {linked}"
+        );
+        assert!(state(&fake) == before, "{:#?}", fake.log);
+        assert!(
+            !fake.ran("/usr/sbin/apparmor_parser -R /etc/apparmor.d/yulius-bwrap"),
+            "{:#?}",
+            fake.log
+        );
+    }
+}
+
+/// BNS-006: a person disabled Yulius's profile by its link and did not unload it. AppArmor
+/// still holds it beside theirs and applies neither: setup unloads it, as the link says, and
+/// neither removes the file nor loads it again.
+#[test]
+fn a_disabled_profile_of_yulius_that_is_still_loaded_is_unloaded() {
+    let unloaded = "Yulius's own (/etc/apparmor.d/yulius-bwrap), which a link disables, was \
+                    still loaded and is unloaded now";
+    let confined = HAND_WRITTEN_TEXT.replace(" flags=(unconfined)", "");
+    let host = |theirs: &str| {
+        let mut fake = set_up(noble());
+        fake.file(HAND_WRITTEN, theirs);
+        fake.links.insert(
+            PathBuf::from("/etc/apparmor.d/disable/yulius-bwrap"),
+            PathBuf::from(PROFILE_FILE),
+        );
+        fake.reboot();
+        // What AppArmor held before the link was made.
+        fake.profiles.extend(profiles_in(PROFILE));
+        fake
+    };
+
+    let mut fake = host(HAND_WRITTEN_TEXT);
+    assert!(fake.bwrap_proof().is_err());
+    let lines = run(&mut fake, Mode::Setup);
+    assert_eq!(
+        item(&lines),
+        (
+            HostOutcome::Changed,
+            format!(
+                "loaded /etc/apparmor.d/bwrap again: bwrap starts a user namespace as yulius \
+                 with /etc/apparmor.d/bwrap; {unloaded}"
+            )
+            .as_str()
+        )
+    );
+    assert_eq!(fake.profiles.keys().collect::<Vec<_>>(), ["bwrap"]);
+    assert_eq!(fake.text(PROFILE_FILE), Some(PROFILE));
     assert!(
-        !fake.ran("/usr/sbin/apparmor_parser -R /etc/apparmor.d/yulius-bwrap"),
+        fake.links
+            .contains_key(Path::new("/etc/apparmor.d/disable/yulius-bwrap"))
+            && !fake.ran("rm -f /etc/apparmor.d/yulius-bwrap")
+            && !fake.ran("write /etc/apparmor.d"),
         "{:#?}",
         fake.log
     );
-    assert!(fake.has(PROFILE_FILE));
+    // Settled: the link keeps the file from every later boot.
+    fake.reboot();
+    fake.log.clear();
+    let lines = run(&mut fake, Mode::Setup);
+    assert_eq!(
+        item(&lines),
+        (
+            HostOutcome::Ok,
+            "bwrap starts a user namespace as yulius: allowed by /etc/apparmor.d/bwrap (not \
+             written by Yulius, left as it is)"
+        )
+    );
+    assert!(!touched(&fake), "{:#?}", fake.log);
+
+    // Theirs does not let bwrap in: named, and Yulius's stays unloaded as its link says.
+    let mut fake = host(&confined);
+    let lines = run(&mut fake, Mode::Setup);
+    assert_eq!(
+        item(&lines),
+        (
+            HostOutcome::Failed,
+            format!(
+                "loaded /etc/apparmor.d/bwrap again, but bwrap cannot start a user namespace as \
+                 yulius with /etc/apparmor.d/bwrap (mount: /tmp: permission denied.); \
+                 {unloaded}; {THEIRS}"
+            )
+            .as_str()
+        )
+    );
+    assert_eq!(fake.profiles.keys().collect::<Vec<_>>(), ["bwrap"]);
+    assert_eq!(fake.text(PROFILE_FILE), Some(PROFILE));
+    assert!(
+        !fake.ran("/usr/sbin/apparmor_parser -r /etc/apparmor.d/yulius-bwrap"),
+        "{:#?}",
+        fake.log
+    );
+}
+
+/// BNS-006: a person's profile and Yulius's file both in the directory while bwrap starts:
+/// AppArmor holds one of them, and the files do not say which. The line names both and what
+/// comes of them; the setup after the boot settles it.
+#[test]
+fn two_profiles_on_disk_are_named() {
+    let both = "bwrap starts a user namespace as yulius: a profile for bwrap is in \
+                /etc/apparmor.d/bwrap (not written by Yulius, left as it is) and in Yulius's \
+                /etc/apparmor.d/yulius-bwrap; AppArmor applies neither once it holds both: \
+                after a boot, run `sudo yulius host setup` again";
+    // Theirs copied into the directory and never loaded: Yulius's is what works.
+    let mut fake = set_up(noble());
+    fake.file(HAND_WRITTEN, HAND_WRITTEN_TEXT);
+    for mode in [Mode::Check, Mode::Setup, Mode::DryRun] {
+        let lines = run(&mut fake, mode);
+        assert_eq!(item(&lines), (HostOutcome::Ok, both), "{mode:?}");
+    }
+    assert!(!touched(&fake), "{:#?}", fake.log);
+    // The boot loads both, and the next setup adopts theirs.
+    fake.reboot();
+    let lines = run(&mut fake, Mode::Check);
+    assert_eq!(item(&lines).0, HostOutcome::Failed);
+    let lines = run(&mut fake, Mode::Setup);
+    let (outcome, detail) = item(&lines);
+    assert_eq!(outcome, HostOutcome::Changed, "{detail}");
+    assert!(
+        detail.ends_with(
+            "with /etc/apparmor.d/bwrap; Yulius's own (/etc/apparmor.d/yulius-bwrap), which \
+             AppArmor does not apply beside it, was removed"
+        ),
+        "{detail}"
+    );
+
+    // An earlier version of Yulius's file declares the profile too: both are named.
+    let mut fake = set_up(noble());
+    fake.file(HAND_WRITTEN, HAND_WRITTEN_TEXT);
+    fake.file(
+        PROFILE_FILE,
+        &PROFILE.replace("# Written by", "# Once written by"),
+    );
+    let lines = run(&mut fake, Mode::Check);
+    assert_eq!(item(&lines), (HostOutcome::Ok, both));
+
+    // Where AppArmor does not restrict user namespaces, two profiles keep nothing from
+    // starting: no boot changes that, and the line does not say so.
+    let mut fake = set_up(debian());
+    fake.file(HAND_WRITTEN, HAND_WRITTEN_TEXT);
+    fake.file(PROFILE_FILE, PROFILE);
+    fake.reboot();
+    let lines = run(&mut fake, Mode::Check);
+    assert_eq!(
+        item(&lines),
+        (
+            HostOutcome::Ok,
+            "bwrap starts a user namespace as yulius: allowed by /etc/apparmor.d/bwrap (not \
+             written by Yulius, left as it is)"
+        )
+    );
+
+    // A text of Yulius's file that declares no profile is no second profile: the line stays
+    // with what it can tell.
+    let theirs = "bwrap starts a user namespace as yulius: allowed by /etc/apparmor.d/bwrap (not \
+                  written by Yulius, left as it is)";
+    let mut fake = set_up(noble());
+    fake.file(HAND_WRITTEN, HAND_WRITTEN_TEXT);
+    fake.file(PROFILE_FILE, "# switched off by hand\n");
+    fake.reboot();
+    let lines = run(&mut fake, Mode::Check);
+    assert_eq!(item(&lines), (HostOutcome::Ok, theirs));
+
+    // Yulius's file that a person's link disables is no second profile for a boot.
+    let mut fake = set_up(noble());
+    fake.file(HAND_WRITTEN, HAND_WRITTEN_TEXT);
+    fake.links.insert(
+        PathBuf::from("/etc/apparmor.d/disable/yulius-bwrap"),
+        PathBuf::from(PROFILE_FILE),
+    );
+    fake.reboot();
+    let lines = run(&mut fake, Mode::Check);
+    assert_eq!(item(&lines), (HostOutcome::Ok, theirs));
 }
 
 /// What a person does about a profile of theirs.
@@ -902,6 +1164,31 @@ fn a_taking_back_that_fails_is_said() {
     assert!(fake.has(PROFILE_FILE));
     assert_eq!(fake.profiles.keys().collect::<Vec<_>>(), ["theirs"]);
 
+    // bwrap does not start without Yulius's profile either, and the file this run wrote
+    // cannot be removed: it stays, and with it the profile in AppArmor.
+    let mut fake = noble();
+    fake.file(
+        HAND_WRITTEN,
+        &UNREAD_TEXT.replace(" flags=(unconfined)", ""),
+    );
+    fake.reboot();
+    fake.failing.push((
+        "rm -f /etc/apparmor.d/yulius-bwrap",
+        Some(1),
+        "rm: cannot remove '/etc/apparmor.d/yulius-bwrap': Read-only file system",
+    ));
+    let lines = run(&mut fake, Mode::Setup);
+    assert_eq!(
+        item(&lines),
+        (
+            HostOutcome::Failed,
+            format!("{done}; /etc/apparmor.d/yulius-bwrap could not be removed again; {rival}")
+                .as_str()
+        )
+    );
+    assert_eq!(fake.text(PROFILE_FILE), Some(PROFILE));
+    assert!(fake.profiles.contains_key("yulius-bwrap"));
+
     // AppArmor does not let the profile go: it holds it without a file until the next boot.
     let mut fake = noble();
     fake.file(HAND_WRITTEN, UNREAD_TEXT);
@@ -916,8 +1203,8 @@ fn a_taking_back_that_fails_is_said() {
         (
             HostOutcome::Failed,
             format!(
-                "{done}; /etc/apparmor.d/yulius-bwrap was removed again; AppArmor still holds \
-                 Yulius's profile (apparmor_parser: Unable to remove \"yulius-bwrap\".  \
+                "{done}; /etc/apparmor.d/yulius-bwrap was removed again; AppArmor did not let \
+                 Yulius's profile go (apparmor_parser: Unable to remove \"yulius-bwrap\".  \
                  Permission denied); {rival}"
             )
             .as_str()
@@ -975,8 +1262,8 @@ fn what_cannot_be_put_back_is_said() {
             HostOutcome::Failed,
             format!(
                 "{done}; /etc/apparmor.d/yulius-bwrap has its earlier text again; AppArmor did \
-                 not load it again (AppArmor parser error for /etc/apparmor.d/yulius-bwrap at \
-                 line 1: syntax error); {rival}"
+                 not load Yulius's profile again (AppArmor parser error for \
+                 /etc/apparmor.d/yulius-bwrap at line 1: syntax error); {rival}"
             )
             .as_str()
         )
@@ -1025,8 +1312,8 @@ fn a_directory_load_that_does_not_end_is_a_failed_step() {
             HostOutcome::Failed,
             "`/usr/sbin/apparmor_parser -r /etc/apparmor.d` did not run to its end: \
              /usr/sbin/apparmor_parser did not finish within 300 s; \
-             /etc/apparmor.d/yulius-bwrap was removed again; AppArmor still holds Yulius's \
-             profile (apparmor_parser: Unable to remove \"yulius-bwrap\".  Permission denied)"
+             /etc/apparmor.d/yulius-bwrap was removed again; AppArmor did not let Yulius's \
+             profile go (apparmor_parser: Unable to remove \"yulius-bwrap\".  Permission denied)"
         )
     );
 
@@ -1046,6 +1333,28 @@ fn a_directory_load_that_does_not_end_is_a_failed_step() {
     );
     assert_eq!(fake.text(PROFILE_FILE), Some(PROFILE));
     assert!(fake.profiles.contains_key("yulius-bwrap"));
+
+    // An earlier text that AppArmor refuses is back in the file and, as before, not loaded:
+    // the undoing says so.
+    let refused = format!("# broken\n{}", PROFILE.replace("  userns,\n", ""));
+    let mut fake = noble();
+    fake.file(PROFILE_FILE, &refused);
+    fake.reboot();
+    fake.failing.push(STALLED);
+    let before = state(&fake);
+    let lines = run(&mut fake, Mode::Setup);
+    assert_eq!(
+        item(&lines),
+        (
+            HostOutcome::Failed,
+            "`/usr/sbin/apparmor_parser -r /etc/apparmor.d` did not run to its end: \
+             /usr/sbin/apparmor_parser did not finish within 300 s; \
+             /etc/apparmor.d/yulius-bwrap has its earlier text again; AppArmor did not load \
+             Yulius's profile again (AppArmor parser error for /etc/apparmor.d/yulius-bwrap at \
+             line 1: syntax error)"
+        )
+    );
+    assert!(state(&fake) == before, "{:#?}", fake.log);
 
     // On Ubuntu 26.04 the shipped profile is enabled again, and an earlier text is back.
     let earlier = PROFILE.replace("  userns,\n", "");
