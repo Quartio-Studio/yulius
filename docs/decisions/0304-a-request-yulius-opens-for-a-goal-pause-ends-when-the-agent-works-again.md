@@ -26,11 +26,13 @@ task a message…" for as long as it ran (task #154 of another project: 33 minut
 While a request is open Yulius also types nothing into the task, so that session heard nothing of
 its pull request.
 
-A prompt is not proof that the session recovered. The other 4 of the 13 were refused again: a
-goal check-in that Claude Code closed without a new notice (task #438's session), a session
-Yulius had restarted, and twice a person's "continue". Nor is a restart: in the nine sessions
-that worked again, the model's first output came 10 to 76 minutes after the pause, and in five
-of them only after two to four restarts.
+A prompt is not proof that the session recovered. The other four pauses were followed by
+another refusal: in task #438's session, which was paused six times that day, after a goal
+check-in that Claude Code closed without a new notice and after messages a person typed; in
+task #450's, after a restart by Yulius. Nor is a restart proof: a pause that follows a refused
+try finds the request still open, so the 13 pauses made nine requests, and counted from the
+first pause of each the model's first output came 10 to 76 minutes later, in five of the nine
+only after two to four restarts.
 
 ## Decision
 
