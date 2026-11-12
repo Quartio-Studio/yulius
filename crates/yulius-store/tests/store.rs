@@ -1750,7 +1750,7 @@ async fn a_playground_record_moves_to_github_once() -> R {
 /// both (SPEC-244 SUB-003).
 #[tokio::test]
 async fn an_account_email_lasts_until_the_next_sign_in() -> R {
-    use yulius_app::model::{AccountRecord, AccountStatus, Sealed};
+    use yulius_app::model::{AccountChange, AccountRecord, AccountStatus, Sealed};
     use yulius_app::ports::store::AccountStore;
     use yulius_domain::harness::Provider;
     use yulius_domain::ids::AccountId;
@@ -1769,6 +1769,7 @@ async fn an_account_email_lasts_until_the_next_sign_in() -> R {
             last_error: None,
             email: None,
             email_checked_at: None,
+            email_typed: false,
             created_at: Timestamp(1),
             updated_at: Timestamp(1),
         })
@@ -1798,7 +1799,11 @@ async fn an_account_email_lasts_until_the_next_sign_in() -> R {
         )
         .await?;
     assert!(stored);
-    store.update_account(&id, "personal", Timestamp(6)).await?;
+    let rename = AccountChange {
+        label: Some("personal".into()),
+        email: None,
+    };
+    store.update_account(&id, &rename, Timestamp(6)).await?;
     let named = store.account(&id).await?.ok_or("account")?;
     assert_eq!(named.label, "personal");
     assert_eq!(named.email.as_deref(), Some("pawel@example.com"));
@@ -1810,6 +1815,162 @@ async fn an_account_email_lasts_until_the_next_sign_in() -> R {
     let signed_in = store.account(&id).await?.ok_or("account")?;
     assert_eq!((signed_in.email, signed_in.email_checked_at), (None, None));
     assert_eq!(signed_in.label, "personal");
+    Ok(())
+}
+
+/// An email a person typed is theirs, like the name (SPEC-463 EML-004): a new sign-in keeps it
+/// and Claude's answer never replaces it, though the answer still counts as given. Removing it
+/// clears the email and the check, so Claude is asked again and its answer is stored as before.
+#[tokio::test]
+async fn a_typed_account_email_stays_until_its_person_removes_it() -> R {
+    use yulius_app::model::{AccountChange, AccountRecord, AccountStatus, Sealed};
+    use yulius_app::ports::store::AccountStore;
+    use yulius_domain::harness::Provider;
+    use yulius_domain::ids::AccountId;
+
+    let store = SqliteStore::open_in_memory()?;
+    let id = AccountId::parse("acc1")?;
+    store
+        .insert_account(&AccountRecord {
+            id: id.clone(),
+            provider: Provider::Anthropic,
+            label: "work Max".into(),
+            credential: Some(Sealed(vec![1])),
+            status: AccountStatus::Ok,
+            usage_json: None,
+            last_error: None,
+            email: None,
+            email_checked_at: None,
+            email_typed: false,
+            created_at: Timestamp(1),
+            updated_at: Timestamp(1),
+        })
+        .await?;
+    let typed = |email: &str| AccountChange {
+        label: None,
+        email: Some(Some(email.to_owned())),
+    };
+    let seen = || async {
+        let a = store.account(&id).await?.ok_or("account")?;
+        Ok::<_, Box<dyn std::error::Error>>((a.label, a.email, a.email_checked_at))
+    };
+
+    store
+        .update_account(&id, &typed("agent@example.com"), Timestamp(2))
+        .await?;
+    assert_eq!(
+        seen().await?,
+        ("work Max".into(), Some("agent@example.com".into()), None),
+        "the name is left alone"
+    );
+    let record = store.account(&id).await?.ok_or("account")?;
+    assert_eq!(
+        (record.email_typed, record.updated_at),
+        (true, Timestamp(2))
+    );
+
+    // Claude answers for this sign-in, with another address and then with none: neither
+    // replaces what the person typed, and the answer is marked so nobody asks again.
+    for (answer, at) in [(Some("claude@example.com"), 3), (None, 4)] {
+        let stored = store
+            .set_account_email(
+                &id,
+                &Sealed(vec![1]),
+                answer,
+                Some(Timestamp(at)),
+                Timestamp(at),
+            )
+            .await?;
+        assert!(stored, "the answer is for the current sign-in");
+        assert_eq!(
+            seen().await?,
+            (
+                "work Max".into(),
+                Some("agent@example.com".into()),
+                Some(Timestamp(at))
+            )
+        );
+    }
+
+    // A new sign-in keeps the typed email and opens the question to Claude again.
+    store
+        .set_account_credential(&id, &Sealed(vec![2]), AccountStatus::Ok, Timestamp(5))
+        .await?;
+    assert_eq!(
+        seen().await?,
+        ("work Max".into(), Some("agent@example.com".into()), None)
+    );
+
+    // A rename leaves it alone; a name and an email change together.
+    let rename = AccountChange {
+        label: Some("Agent TEAM".into()),
+        email: None,
+    };
+    store.update_account(&id, &rename, Timestamp(6)).await?;
+    assert_eq!(
+        seen().await?,
+        ("Agent TEAM".into(), Some("agent@example.com".into()), None)
+    );
+    let both = AccountChange {
+        label: Some("team".into()),
+        email: Some(Some("team@example.com".into())),
+    };
+    store.update_account(&id, &both, Timestamp(7)).await?;
+    assert_eq!(
+        seen().await?,
+        ("team".into(), Some("team@example.com".into()), None)
+    );
+
+    // Removed: the email and Claude's check are gone, so Claude is asked again, and what it
+    // answers is stored as it was before anything was typed.
+    store
+        .set_account_email(
+            &id,
+            &Sealed(vec![2]),
+            None,
+            Some(Timestamp(8)),
+            Timestamp(8),
+        )
+        .await?;
+    let removed = AccountChange {
+        label: None,
+        email: Some(None),
+    };
+    store.update_account(&id, &removed, Timestamp(9)).await?;
+    assert_eq!(seen().await?, ("team".into(), None, None));
+    assert!(!store.account(&id).await?.ok_or("account")?.email_typed);
+    store
+        .set_account_email(
+            &id,
+            &Sealed(vec![2]),
+            Some("claude@example.com"),
+            Some(Timestamp(10)),
+            Timestamp(10),
+        )
+        .await?;
+    assert_eq!(
+        seen().await?,
+        (
+            "team".into(),
+            Some("claude@example.com".into()),
+            Some(Timestamp(10))
+        )
+    );
+    assert!(!store.account(&id).await?.ok_or("account")?.email_typed);
+    // That one is Claude's again: the next sign-in drops it (SPEC-244 SUB-003).
+    store
+        .set_account_credential(&id, &Sealed(vec![3]), AccountStatus::Ok, Timestamp(11))
+        .await?;
+    assert_eq!(seen().await?, ("team".into(), None, None));
+
+    // An empty change writes nothing, not even the time.
+    store
+        .update_account(&id, &AccountChange::default(), Timestamp(12))
+        .await?;
+    assert_eq!(
+        store.account(&id).await?.ok_or("account")?.updated_at,
+        Timestamp(11)
+    );
     Ok(())
 }
 

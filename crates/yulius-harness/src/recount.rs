@@ -40,7 +40,11 @@ pub fn count_run(
     while !window.ended() {
         for line in tail.poll()? {
             if window.keep(&line) {
-                acc.observe_all(claude::observe_line(&line).iter());
+                let (observed, version) = claude::observe_versioned(&line);
+                if let Some(version) = version {
+                    acc.note_cli_version(&version);
+                }
+                acc.observe_all(observed.iter());
             }
         }
         if tail.at_end() {

@@ -22,6 +22,29 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   operations guide §7 says which run ignores Ctrl-C, and the decisions index lists 0297 in its
   place and 0219 once. Two things the review found that were there before are issues #1178 and
   #1179.
+- A subscription's email is typed in place, under its name (SPEC-463, task #448, ADR-0300).
+  Production's subscriptions read "email unknown" (Claude gave Yulius no email for their
+  `claude setup-token` sign-ins, as ADR-0185 feared), so the address went into the name. On the Subscriptions page the
+  email line now has a pencil like the name: Enter or leaving the field saves, Escape cancels,
+  Enter in the empty field removes it. A card can read "Agent TEAM" over its address. A typed
+  email stays when the subscription signs in again, and nothing says Claude confirmed it: the
+  toast after a sign-in names only an email Claude gave. `PATCH /api/admin/accounts/{id}` takes
+  `email` beside an optional `label`, and `Account` carries `email_typed`. Also fixed on that
+  page, for the name too: a list read (after a save, a removal or an update) could draw over a
+  field being typed in and save what was half typed, and an update that came while a field was
+  open could stay undrawn; a click or a tap on Remove, Sign in again or a pencil was lost when
+  leaving a field showed its refusal (#1174); switching to another window saved what was half
+  typed; a late answer to a name saved with Enter took the keyboard from the field the person
+  had gone on to; and the keyboard left a subscription's pencil when its usage was read again
+  or, after a rename that moved its card, could land on another subscription's control.
+- A session that works on after a restart shows the Claude Code it runs with the first record
+  it writes (SPEC-461, task #443). Yulius read a session's Claude Code version from its prompt
+  records only, and a session that redoes an interrupted turn by itself writes none for hours:
+  task info showed the previous session's version meanwhile. Every record of the session's own
+  thread names the version now (an idle session resumed with nothing typed still names it at
+  its next prompt). Found by reading real restarted sessions' transcripts after the merge; the
+  updater was also run against npm's real registry and on a real host with npm's 2.1.311
+  (the doctor fails, the server installs 2.1.322 by itself two minutes after its start).
 - Yulius knows whether GitHub accepts its sign-in address, and laptops follow a move (SPEC-466,
   task #446, ADR-0302; slice C of the move). After a move to another URL GitHub sign-in fails until
   a person adds the new callback URL to the GitHub App, which GitHub offers no API for. The
