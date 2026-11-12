@@ -146,7 +146,7 @@ function attentionBlocks(lines, keyShown = false) {
  */
 export function phaseStates(phase) {
   const index = phase === 'done' ? PHASES.length : PHASES.findIndex(([name]) => name === phase);
-  return PHASES.map((_, i) => (index < 0 ? 'next' : i < index ? 'done' : i === index ? 'current' : 'next'));
+  return PHASES.map((_, i) => (i < index ? 'done' : i === index ? 'current' : 'next'));
 }
 
 /** The phases of a running move, as the update's stepper shows its own. */

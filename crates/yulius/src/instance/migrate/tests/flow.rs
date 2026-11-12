@@ -1921,6 +1921,36 @@ fn a_run_without_a_sign_in_never_uses_roots_own() -> TestResult {
     Ok(())
 }
 
+/// SPEC-470 MVB-004: the connection the command itself makes for such a run offers the
+/// one-time key alone and reads none of root's ssh configuration; any other run's is as before.
+#[test]
+fn the_connection_of_a_run_without_a_sign_in_is_key_only() -> TestResult {
+    let mut s = setup()?;
+    let state = s.state()?;
+    let args = |opts: &Options| super::super::connection(opts, &state).args(true, "true");
+    let usual = args(&s.opts);
+    assert!(!usual.iter().any(|a| a == "-F"), "{usual:?}");
+    s.opts.no_sign_in = true;
+    let strict = args(&s.opts);
+    assert_eq!(strict[..2], ["-F", "none"], "{strict:?}");
+    assert!(
+        strict
+            .iter()
+            .any(|a| a == "PreferredAuthentications=publickey")
+    );
+    // The recorded host, its port, and the move's own key.
+    assert!(strict.iter().any(|a| a == "root@185.189.47.160"));
+    let key = strict
+        .iter()
+        .position(|a| a == "-i")
+        .map(|i| strict[i + 1].clone());
+    assert_eq!(
+        key,
+        Some(s.opts.state_dir.join("key").display().to_string())
+    );
+    Ok(())
+}
+
 #[test]
 fn without_a_sign_in_the_key_is_shown_for_a_person_to_add() -> TestResult {
     let mut s = setup()?;

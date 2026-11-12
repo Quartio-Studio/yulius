@@ -2516,6 +2516,23 @@ impl<'a> Move<'a> {
     }
 }
 
+/// The connection of a run to the recorded host with the move's key. A run that is nobody's
+/// sign-in (`--no-sign-in`, the move helper's) gets one that offers that key alone and reads
+/// nothing of root's.
+fn connection(opts: &Options, state: &State) -> remote::Ssh {
+    let ssh = remote::Ssh::new(
+        &state.target,
+        state.port,
+        &opts.state_dir,
+        &state.key_comment(),
+    );
+    if opts.no_sign_in {
+        ssh.without_sign_in()
+    } else {
+        ssh
+    }
+}
+
 /// What a person registers in the GitHub App for a new URL (SPEC-460 MIG-042): GitHub has no
 /// API for it, and Yulius never uses a person's GitHub session.
 #[must_use]
@@ -2842,15 +2859,7 @@ pub fn main(opts: &Options, action: Action) -> ExitCode {
     // The copy walks the data directory while the instance runs, with every directory it is in
     // held open.
     target::raise_open_files();
-    let mut ssh = remote::Ssh::new(
-        &state.target,
-        state.port,
-        &opts.state_dir,
-        &state.key_comment(),
-    );
-    if opts.no_sign_in {
-        ssh = ssh.without_sign_in();
-    }
+    let mut ssh = connection(opts, &state);
     let mut host = host_setup::system::RealHost { quiet: false };
     let mut world = RealWorld {
         signal: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(freeze::LEAVE)),
