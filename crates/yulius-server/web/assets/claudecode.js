@@ -100,9 +100,14 @@ export function claudeCodeCard(ctx) {
   let timer = null;
   let gone = false;
   let failed = false;
+  /** A channel change is being saved: its controls stay off however the card is drawn meanwhile. */
   let saving = false;
+  /** A check is being asked for: "Check now" stays off likewise. */
+  let asking = false;
   /** What is drawn: a poll that reads the same leaves the card (its focus, its alert) alone. */
   let drawn = '';
+  /** How many changes this card asked for have had their outcome (see `change`). */
+  let changes = 0;
 
   /** The channel choice, and where the channel in effect is set. */
   function channel(view) {
@@ -126,7 +131,7 @@ export function claudeCodeCard(ctx) {
     const shown = JSON.stringify([view, saving]);
     if (shown === drawn) return;
     drawn = shown;
-    checkButton.disabled = !view.managed || view.checking || view.channel === 'off';
+    checkButton.disabled = asking || !view.managed || view.checking || view.channel === 'off';
     checkButton.classList.toggle('busy', Boolean(view.checking));
     checkButton.title = !view.managed ? `${BRAND.name} keeps nothing current on this server` : view.channel === 'off' ? 'Updates are off' : '';
     const parts = [
@@ -143,13 +148,14 @@ export function claudeCodeCard(ctx) {
   }
 
   async function refresh() {
+    const asked = changes;
     try {
       const view = await ctx.api.get(API);
-      if (gone) return;
+      if (gone || asked !== changes) return;
       failed = false;
       render(view);
     } catch (error) {
-      if (gone) return;
+      if (gone || asked !== changes) return;
       drawn = '';
       setChildren(body, h('p', { class: 'muted small' }, 'Couldn’t read which Claude Code sandboxes run.'));
       // One toast per outage.
@@ -160,24 +166,45 @@ export function claudeCodeCard(ctx) {
     }
   }
 
+  /**
+   * Sends a change this card asks for (a check, a channel change) and marks its outcome, taken
+   * or refused. From then on the card is drawn again whatever the next view says, because the
+   * change's controls were switched off by hand. And a read asked before the outcome may say
+   * what was true before the change, so `refresh` drops its answer: the outcome's own draw, or
+   * the read after a refusal, is the newer word.
+   */
+  async function change(send) {
+    try {
+      return await send();
+    } finally {
+      changes += 1;
+      drawn = '';
+    }
+  }
+
   async function checkNow() {
+    asking = true;
     checkButton.disabled = true;
     try {
-      render(await ctx.api.post(`${API}/check`, {}));
+      const view = await change(() => ctx.api.post(`${API}/check`, {}));
+      asking = false;
+      render(view);
     } catch (error) {
+      asking = false;
       errorToast(error, 'Couldn’t check for a Claude Code release');
-      // Drawn again from what the server says now, the button with it.
-      drawn = '';
       refresh();
     }
   }
 
-  /** Follows `id` (null: the server's configuration again); the select goes back when refused. */
+  /**
+   * Follows `id` (null: the server's configuration again); the select goes back when refused.
+   * While the change is saved neither the select nor "Use the server's" takes another one.
+   */
   async function setChannel(id, select) {
     saving = true;
-    select.disabled = true;
+    for (const control of select.closest('.claude-channel').querySelectorAll('select, button')) control.disabled = true;
     try {
-      const view = await ctx.api.put(`${API}/channel`, { channel: id });
+      const view = await change(() => ctx.api.put(`${API}/channel`, { channel: id }));
       saving = false;
       toast(view.channel === 'off' ? 'Claude Code updates are off: sandboxes run the host’s install from their next start.'
         : `Claude Code follows ${channelName(view.channel)} now. Checking for a release…`, { kind: 'ok' });
@@ -185,9 +212,7 @@ export function claudeCodeCard(ctx) {
     } catch (error) {
       saving = false;
       errorToast(error, 'Couldn’t change the channel');
-      // The select shows the refused choice and is off: the card is drawn again from what the
-      // server says, also when that reads as before.
-      drawn = '';
+      // The select shows the refused choice: the card is drawn again from what the server says.
       refresh();
     }
   }
