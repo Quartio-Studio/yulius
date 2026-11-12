@@ -2834,7 +2834,16 @@ merge"), even with a complete plan and a tested pull request; only an achieved g
 
 While a goal is open, a clean Stop reads idle only after the goal verdict (or the turn record, or
 20 s). A proactive switch waits for any of this background work
-([ADR-0063](decisions/0063-background-work-and-goal-verdict-from-the-transcript.md)):
+([ADR-0063](decisions/0063-background-work-and-goal-verdict-from-the-transcript.md)), and for a
+prompt that waits in Claude Code's queue, which would go with the process: `hook_stop` asks
+`prompt_waits_for_turns_end` once the turn's lines were read and answers the Stop as on a
+subscription that stays; a turn held for capacity is released in place instead of moved
+(`resume_paused`). What a turn's closing record found waiting at an end that handed nothing
+on (`Queue::turn_closed`, `Queue::hands_on`) was left by Claude Code and keeps no move; an
+end that handed something on marks nothing, since what waits behind an entry Claude Code
+hands on alone leaves one end later
+([SPEC-479](../.ai/specs/SPEC-479-a-subscription-switch-at-a-turn-s-end-lo.md),
+[ADR-0310](decisions/0310-a-move-to-another-subscription-at-a-turns-end-waits-for-what-claude-code-still-queues.md)):
 
 ```mermaid
 flowchart LR

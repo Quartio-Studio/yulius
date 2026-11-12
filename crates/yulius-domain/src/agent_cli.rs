@@ -173,6 +173,9 @@ pub struct Queue {
     /// When Claude Code recorded the last of the hand-overs that are not over, if every one of
     /// their records said when.
     handed_on_at: Option<Timestamp>,
+    /// How many of the entries that wait were left by a turn's end: its closing record found
+    /// them waiting and that end had handed nothing on (SPEC-479 SWQ-002).
+    left_over: u32,
 }
 
 impl Queue {
@@ -193,6 +196,22 @@ impl Queue {
                 self.handing_on = true;
             }
             QueueChange::Taken => self.waiting = self.waiting.saturating_sub(1),
+        }
+        // No record names the entry that left: it is taken to be one that was not left over,
+        // while there is one (SPEC-479 SWQ-002).
+        self.left_over = self.left_over.min(self.waiting);
+    }
+
+    /// The record that closes a turn was read (Claude Code's `turn_duration`, written after
+    /// the `dequeue` records of that turn's end and not at a Stop a hook blocks). When that
+    /// end handed nothing on, what still waits was left by it: Claude Code hands on whatever
+    /// it will hand on, so it is not handed on at a later end either. An end that did hand
+    /// something on says nothing about the rest: Claude Code hands a notification of its own,
+    /// a slash command or a `!` line on alone, and a prompt behind it at the next turn's end
+    /// (SPEC-479 SWQ-002).
+    pub fn turn_closed(&mut self) {
+        if !self.handing_on {
+            self.left_over = self.waiting;
         }
     }
 
@@ -223,10 +242,24 @@ impl Queue {
         self.waiting > 0 || self.handing_on
     }
 
+    /// Whether the process holds something a turn's end hands on, which a move of the session
+    /// at that end would lose: an entry that waits and that no turn's end left behind, or one
+    /// handed on to a turn that is not known yet (SPEC-479 SWQ-001, SWQ-002).
+    #[must_use]
+    pub fn hands_on(&self) -> bool {
+        self.waiting > self.left_over || self.handing_on
+    }
+
     /// The entries that wait.
     #[must_use]
     pub fn waiting(&self) -> u32 {
         self.waiting
+    }
+
+    /// The entries that wait and that a turn's end left behind ([`Queue::turn_closed`]).
+    #[must_use]
+    pub fn left_over(&self) -> u32 {
+        self.left_over
     }
 }
 
@@ -856,6 +889,96 @@ mod tests {
             typed_ms_ago: Some(TYPED_RECENTLY_MS),
             ..due
         }));
+    }
+
+    /// SPEC-479 SWQ-002: what a turn's closing record finds waiting was left by that turn's
+    /// end. It is not handed on at a later one, so a move at a turn's end loses nothing with
+    /// it; the restart's rule ([`Queue::holds`]) still counts it. An entry that comes later is
+    /// not left over, and a leave takes one that is not left over first.
+    #[test]
+    fn what_a_turns_end_left_in_the_queue_is_not_handed_on_later() {
+        let counts = |queue: &Queue| (queue.waiting(), queue.left_over());
+        let mut queue = Queue::default();
+        assert!(!queue.hands_on(), "a run starts with an empty queue");
+        queue.record(QueueChange::Added, None);
+        assert_eq!(counts(&queue), (1, 0));
+        assert!(queue.hands_on(), "it waits for the turn's end");
+        // The turn closes and the entry is still there.
+        queue.turn_closed();
+        assert_eq!(counts(&queue), (1, 1));
+        assert!(!queue.hands_on());
+        assert!(queue.holds(), "the process still holds it");
+        // A prompt entered during the next turn waits for that turn's end.
+        queue.record(QueueChange::Added, None);
+        assert_eq!(counts(&queue), (2, 1));
+        assert!(queue.hands_on());
+        // The hand-over takes the prompt, not the entry that was left before.
+        queue.record(QueueChange::HandedOn, None);
+        assert_eq!(counts(&queue), (1, 1));
+        assert!(queue.hands_on(), "handed on to a turn not known yet");
+        queue.turn_closed();
+        queue.turn_seen();
+        assert_eq!(counts(&queue), (1, 1));
+        assert!(!queue.hands_on());
+        // So does a tool result that takes a notification in.
+        queue.record(QueueChange::Added, None);
+        queue.record(QueueChange::Taken, None);
+        assert_eq!(counts(&queue), (1, 1));
+        assert!(!queue.hands_on());
+        // The entry that was left goes after all: nothing is counted that does not wait.
+        queue.record(QueueChange::Taken, None);
+        assert_eq!(counts(&queue), (0, 0));
+        queue.record(QueueChange::Added, None);
+        assert_eq!(counts(&queue), (1, 0));
+        assert!(queue.hands_on());
+        // Claude Code's order at a turn's end: the hand-over, then the closing record. What
+        // was handed on is not left over.
+        let mut queue = Queue::default();
+        queue.record(QueueChange::Added, None);
+        queue.record(QueueChange::HandedOn, None);
+        queue.turn_closed();
+        assert_eq!(counts(&queue), (0, 0));
+        assert!(queue.hands_on(), "its turn is not known yet");
+        queue.turn_seen();
+        assert!(!queue.hands_on());
+    }
+
+    /// SPEC-479 SWQ-002 (review round 1): Claude Code hands a notification of its own, a slash
+    /// command or a `!` line on alone; a prompt behind it waits through that turn's closing
+    /// record and is handed on at the next turn's end (seen with 2.1.322). A turn's end that
+    /// handed something on says nothing about what waits behind it: only an end that handed
+    /// nothing on leaves what waits. Every entry such an end finds is left, not one of them.
+    #[test]
+    fn an_end_that_handed_something_on_leaves_nothing_behind() {
+        let counts = |queue: &Queue| (queue.waiting(), queue.left_over());
+        let mut queue = Queue::default();
+        // A notification, then a prompt; the turn's end hands the notification on alone.
+        queue.record(QueueChange::Added, None);
+        queue.record(QueueChange::Added, None);
+        queue.record(QueueChange::HandedOn, None);
+        queue.turn_closed();
+        assert_eq!(counts(&queue), (1, 0), "the prompt waits for the next end");
+        queue.turn_seen();
+        assert!(queue.hands_on(), "at the end of the notification's turn");
+        // That end hands the prompt on.
+        queue.record(QueueChange::HandedOn, None);
+        queue.turn_closed();
+        queue.turn_seen();
+        assert_eq!(counts(&queue), (0, 0));
+        assert!(!queue.hands_on());
+        // Two entries nothing takes out, and a prompt: the end that hands the prompt on marks
+        // none; the next one, which hands nothing on, marks both.
+        for _ in 0..3 {
+            queue.record(QueueChange::Added, None);
+        }
+        queue.record(QueueChange::HandedOn, None);
+        queue.turn_closed();
+        assert_eq!(counts(&queue), (2, 0));
+        queue.turn_seen();
+        assert!(queue.hands_on(), "nothing says yet that they stay");
+        queue.turn_closed();
+        assert_eq!(counts(&queue), (2, 2));
+        assert!(!queue.hands_on());
     }
 
     /// SPEC-471 CCQ-001: the queue as Claude Code's records count it. An entry waits from its

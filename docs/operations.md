@@ -1150,7 +1150,33 @@ Vidoc off, it also says `Vidoc scans are switched off for the instance`.
    terminal in the browser. They form one pool with nothing to configure: Yulius places them on the capacity that expires soonest, moves them at
    98% at a turn boundary, pauses them (without telling the agent) only while no subscription has
    capacity left and resumes them by itself. The capacity panel there and on the Dashboard says
-   when to add subscriptions (SPEC-002 ADR-17). Claude's sign-in here (`claude setup-token`) may
+   when to add subscriptions (SPEC-002 ADR-17). A message sent while a task is about to move
+   is not lost (SPEC-479, ADR-0310): a prompt entered while the agent works, a person's or one
+   Yulius types for a person (a message through a Superagent, a pull request's news), waits in
+   Claude Code's queue until the turn ends, and a resumed session does not get that queue
+   back. So a move at a turn's end waits while such a prompt waits: the session answers it on
+   the subscription it is on, and the next turn's end moves it. Where the gate blocks a turn's
+   end it blocks there, on the same subscription. On a subscription at its limit Claude
+   refuses that turn and the session continues it on the next subscription, like any turn a
+   limit cuts. A task that waits for capacity at its turn's end with a prompt waiting stays as
+   it is; when another subscription gets room it goes on in place first and moves a turn
+   later. Yulius knows the queue from the records Claude Code writes into the transcript, as
+   for a restart on a newer Claude Code ("Claude Code updates" above); an entry a turn's end
+   left in the queue when it handed nothing on (Claude Code leaves some of its own
+   notifications there for good) keeps no move, so such a session stays only until a turn's
+   end hands nothing on, usually one. A prompt that waits behind a notification of finished
+   background work, a slash command or a `!` line is not such an entry: Claude Code hands
+   those on alone and the prompt one turn's end later, and the session stays until then. The
+   server's log says when a
+   move waits ("the session is not moved to another subscription at this turn's end"). A
+   message sent while the task reads "Continuing" is refused ("try again once it runs"), so
+   its sender knows. What can still be lost: a prompt entered in the moment between a turn's
+   end deciding to move and the task reading "Continuing", a prompt whose record Claude Code
+   takes longer than two seconds to write, a prompt that waits at the moment an entry a turn's
+   end had left in the queue leaves it after all, alone (a notification delivered to a
+   sub-agent: Yulius then takes the prompt for the entry that was left), and what waits in
+   the queue when a person moves or stops the task themselves or when a usage limit cuts the
+   turn (Yulius carries nothing over). Claude's sign-in here (`claude setup-token`) may
    not read Claude's usage endpoint (it lacks the `user:profile` scope), so a subscription's usage
    shows once a task runs on it: the running sessions report it through Claude Code's status line.
    A subscription Claude refuses (a cancelled or downgraded plan) is marked "Sign in again" with
