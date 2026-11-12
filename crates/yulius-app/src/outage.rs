@@ -150,7 +150,7 @@ pub fn write_alive_at(data_dir: &Path, at: Timestamp) -> std::io::Result<()> {
 
 /// Writes `ms` to `path` through a synced temporary file, so a crash leaves the old time or the
 /// new one.
-fn write_time(path: &Path, ms: i64) -> std::io::Result<()> {
+pub(crate) fn write_time(path: &Path, ms: i64) -> std::io::Result<()> {
     use std::io::Write as _;
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(".tmp");

@@ -167,8 +167,11 @@ pub struct TaskRuntime {
     /// message of Yulius's own waits for (SPEC-480 DRF-006): one line per keystroke.
     pub(crate) draft_told_ms: AtomicI64,
     /// The run's folder holds the mark of a person's possible draft (`person-typed`, SPEC-480
-    /// DRF-009), so that a keystroke writes it once and an emptied box removes it once.
+    /// DRF-009), so that a draft's keystrokes write it once.
     pub(crate) draft_marked: AtomicBool,
+    /// This server saw a person type into the run. Until it did, a draft is known from its
+    /// mark alone, and a prompt that goes on is not known to follow it (DRF-009).
+    pub(crate) typed_seen: AtomicBool,
     /// When the prompt whose hook is being answered emptied the prompt box (ms): worked out at
     /// its first request and taken into [`Self::box_emptied_ms`] when the prompt goes on, so a
     /// prompt that is held and then blocked, which Claude Code puts back into the box, empties
@@ -445,6 +448,7 @@ impl TaskRuntime {
         self.box_emptied_ms.store(now_ms, Ordering::SeqCst);
         // Its folder is new: no draft is marked there (SPEC-480 DRF-009).
         self.draft_marked.store(false, Ordering::SeqCst);
+        self.typed_seen.store(false, Ordering::SeqCst);
         self.prompt_held.store(false, Ordering::SeqCst);
         self.with_queue(|queue| *queue = yulius_domain::agent_cli::Queue::default());
         self.queue_unread.store(false, Ordering::SeqCst);
@@ -496,6 +500,7 @@ impl TaskRuntime {
             box_emptied_ms: AtomicI64::new(0),
             draft_told_ms: AtomicI64::new(0),
             draft_marked: AtomicBool::new(false),
+            typed_seen: AtomicBool::new(false),
             submit_emptied_ms: AtomicI64::new(0),
             prompt_held: AtomicBool::new(false),
             typed_by: Mutex::new(None),
@@ -798,8 +803,9 @@ pub(crate) fn person_typed_marked(run_dir: &Path) -> i64 {
 }
 
 /// Records that a person began a draft in the run in `run_dir` at `at`; whether it was written.
+/// Through a synced temporary file, so a crash leaves no mark or a whole one.
 pub(crate) fn mark_person_typed(run_dir: &Path, at: i64) -> bool {
-    let written = write_private_file(&run_dir.join(PERSON_TYPED_FILE), at.to_string().as_bytes());
+    let written = crate::outage::write_time(&run_dir.join(PERSON_TYPED_FILE), at);
     if let Err(err) = &written {
         tracing::warn!(run_dir = %run_dir.display(), error = %err, "could not record a person's draft");
     }
@@ -4097,7 +4103,8 @@ impl App {
             // A draft a person typed before this server started may still sit in the prompt
             // box: its mark says since when (SPEC-480 DRF-009). A keystroke this server saw is
             // newer and stays.
-            let drafted = person_typed_marked(Path::new(&attempt.run_dir));
+            // Never later than now: a time ahead of the clock would never grow old.
+            let drafted = person_typed_marked(Path::new(&attempt.run_dir)).min(self.now().0);
             if drafted > 0 {
                 runtime.typed_at_ms.fetch_max(drafted, Ordering::SeqCst);
                 runtime.draft_marked.store(true, Ordering::SeqCst);

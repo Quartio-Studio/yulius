@@ -267,16 +267,33 @@ impl App {
         );
         if from_box && !held && !blocked {
             let emptied = runtime.submit_emptied_ms.load(Ordering::SeqCst);
-            runtime.box_emptied_ms.fetch_max(emptied, Ordering::SeqCst);
-            // With the box empty no person's draft holds a typed message any more (SPEC-480
-            // DRF-007, DRF-009): its mark leaves the run's folder, and a flag that said a
-            // message of Yulius's own waits for it ends, also after a prompt that starts no
-            // turn. A key typed after this submit is a draft of its own, and both stay.
-            if !self.persons_draft_holds(&ctx.task.id) {
-                if runtime.draft_marked.swap(false, Ordering::SeqCst) {
-                    crate::supervisor::clear_person_typed(Path::new(&ctx.attempt.run_dir));
+            let run_dir = Path::new(&ctx.attempt.run_dir);
+            // A draft this server knows from its mark alone (typed before it started, no key
+            // seen since) may sit behind this very prompt: one held across the restart is
+            // asked about again and reads as a new submit here. Such a draft stays one until
+            // a prompt follows a key this server saw (SPEC-480 DRF-009). Read from the file,
+            // not from what recovery kept: this hook may be served before the run is
+            // reattached.
+            let inherited = if runtime.typed_seen.load(Ordering::SeqCst) {
+                0
+            } else {
+                crate::supervisor::person_typed_marked(run_dir).min(self.now().0)
+            };
+            if inherited > 0 {
+                runtime.typed_at_ms.fetch_max(inherited, Ordering::SeqCst);
+                runtime.draft_marked.store(true, Ordering::SeqCst);
+            } else {
+                runtime.box_emptied_ms.fetch_max(emptied, Ordering::SeqCst);
+                // With the box empty no person's draft holds a typed message any more
+                // (DRF-007, DRF-009): its mark leaves the run's folder, whatever this server
+                // remembers of having written it, and a flag that said a message of Yulius's
+                // own waits for it ends, also after a prompt that starts no turn. A key typed
+                // after this submit is a draft of its own, and both stay.
+                if !self.persons_draft_holds(&ctx.task.id) {
+                    runtime.draft_marked.store(false, Ordering::SeqCst);
+                    crate::supervisor::clear_person_typed(run_dir);
+                    self.settle_draft_flag(&ctx.task.id).await;
                 }
-                self.settle_draft_flag(&ctx.task.id).await;
             }
             // It goes on to Claude Code now, which writes where it went (a turn of its own,
             // or its queue) only after this answer: until that record is read, a turn's end

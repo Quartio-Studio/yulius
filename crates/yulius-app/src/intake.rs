@@ -250,6 +250,7 @@ impl App {
     pub fn record_typing(&self, task: &TaskId, user: &UserId) {
         let runtime = self.runtime(task);
         runtime.typed_at_ms.store(self.now().0, Ordering::SeqCst);
+        runtime.typed_seen.store(true, Ordering::SeqCst);
         if let Ok(mut who) = runtime.typed_by.lock() {
             *who = Some(user.clone());
         }
