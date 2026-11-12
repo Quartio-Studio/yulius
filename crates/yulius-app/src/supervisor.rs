@@ -4167,12 +4167,16 @@ impl App {
 
     /// A subscription the provider refused for good: it needs a new sign-in, with the provider's
     /// text as its error. The pool no longer places tasks on it, the usage round skips it, and
-    /// paused tasks are reconsidered for the subscriptions left.
+    /// paused tasks are reconsidered for the subscriptions left. A usage write under way
+    /// finishes first, so that it never stores what it read before this.
     pub(crate) async fn record_access_lost(&self, account: &AccountId, message: &str) {
         crate::race::reached(
             crate::race::Point::AccessLostRecord,
             Path::new(account.as_str()),
         );
+        // Under the lock every write of the subscription's usage takes: such a write reads the
+        // status and stores it back with the usage, and would store `ok` over this (#1211).
+        let _writing = self.capacity.usage_writes.lock().await;
         if let Err(err) = self
             .deps
             .store
