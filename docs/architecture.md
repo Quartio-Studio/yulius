@@ -505,7 +505,9 @@ windows only. A subscription reads `limited` while the default model cannot run 
 limit, a session's reading and a provider's reading read, change and store a subscription's usage
 through one helper under one lock (`App::change_account_usage`, `CapacityState::usage_writes`),
 which a new sign-in takes too; it is never held across a request to the provider, so a limit
-recorded while a reading is under way is kept.
+recorded while a reading is under way is kept. The write that marks a subscription refused
+(`record_access_lost`) takes the lock as well: a usage write stores the status it read together
+with the usage, and one under way would otherwise store `ok` over "needs a new sign-in" (#1211).
 
 A model's limit nothing says the end of, with no subscription the task can go to, makes the task
 wait, and the provider's reading that ends it lets the pool try the task once
@@ -526,9 +528,11 @@ own limit.
 
 Yulius's request says the task does not go on by itself, like the one for a goal Claude Code
 paused, and ends the same way ([decision 0304](decisions/0304-a-request-yulius-opens-for-a-goal-pause-ends-when-the-agent-works-again.md)):
-when the session's agent works again, or sooner when Yulius takes the task on at a usage limit
-(`TakenOn`): it runs the session on past the limit, or pauses the task and resumes it by itself.
-The audit log says which (`task.needs_you.resolved`).
+when the session's agent works again, or sooner when Yulius takes the task on at the refusal
+that cut its turn (`TakenOn`; a usage limit, or a subscription Claude refuses for good): it runs
+the session on past the refusal, or pauses the task until a subscription can take it and resumes
+it then. The audit log says which (`task.needs_you.resolved`). When the last subscription is
+refused, the request gives way to the one that asks for a sign-in.
 
 ```mermaid
 flowchart TD
@@ -3314,12 +3318,13 @@ request file, the helper's report and the command's `status.json` on every read,
 database travels with the copy and a row "running" would arrive on the new host as a move of that
 host. For the same reason no copy takes the request along (`migrate/` is left out of every copy, as
 `update/` is). Asks are taken one at a time and audited before the request is written; a removal
-and a repeated write name the request's id; and the checklist's time tells whose it is: one written
-before the helper's last run started is the recorded move's, not what that run found. A move needs
-the plan that was shown for the same values, and the host typed by the person. The finished
-checklist travels with the Finish step (`target::Request::Carry`, then the new host's Finish leaves
-it as `/var/lib/yulius-migrate/arrived.json`, in root's directory and not in the data directory the
-running instance's user owns), so the new instance's page shows it. The page
+and a repeated write name the request's id; and the checklist itself tells whose it is: the helper
+passes the request's id to the command, which writes it into `status.json`, and one that names
+another request, or none (a run started on the host), is the recorded move's, not what the helper's
+last run found. A move needs the plan that was shown for the same values, and the host typed by the
+person. The finished checklist travels with the Finish step (`target::Request::Carry`, then the new
+host's Finish leaves it as `/var/lib/yulius-migrate/arrived.json`, in root's directory and not in
+the data directory the running instance's user owns), so the new instance's page shows it. The page
 (`web/assets/instancemove.js`) keeps trying while nothing answers, and notices the old address's
 redirect with a request that follows none.
 

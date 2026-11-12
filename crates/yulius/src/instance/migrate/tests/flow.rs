@@ -818,6 +818,7 @@ fn setup() -> Result<Setup, Box<dyn std::error::Error>> {
             state_dir,
             max_downtime: None,
             no_sign_in: false,
+            request: None,
         },
         local,
         remote: FakeRemote {
@@ -1926,6 +1927,34 @@ fn a_run_without_a_sign_in_never_uses_roots_own() -> TestResult {
     let status = s.status()?;
     assert_eq!(status.phase, "done");
     assert_eq!(status.public_key, None);
+    Ok(())
+}
+
+/// SPEC-470 MVB-010: a run the move helper started says in its status which request it
+/// answers, from its first line on; a run started on the host says none.
+#[test]
+fn the_status_names_the_request_a_run_answers() -> TestResult {
+    let mut s = setup()?;
+    assert_eq!(s.run()?, 0, "{}", s.shown());
+    assert_eq!(s.status()?.request, None);
+
+    // A plan that ends with the key to add, then its abort: each run names its own request.
+    let mut s = setup()?;
+    s.remote.signs_in = false;
+    s.opts.request = Some("0123abcd-plan".into());
+    assert_eq!(s.run()?, 0, "{}", s.shown());
+    let status = s.status()?;
+    assert_eq!(
+        (status.phase.as_str(), status.request.as_deref()),
+        ("Plan", Some("0123abcd-plan"))
+    );
+    s.opts.request = Some("0123abcd-abort".into());
+    assert_eq!(s.abort()?, 0, "{}", s.shown());
+    let status = s.status()?;
+    assert_eq!(
+        (status.phase.as_str(), status.request.as_deref()),
+        ("aborted", Some("0123abcd-abort"))
+    );
     Ok(())
 }
 

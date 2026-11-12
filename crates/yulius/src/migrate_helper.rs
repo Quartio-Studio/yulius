@@ -172,6 +172,9 @@ pub fn command_args(args: &MoveHelperArgs, request: &MoveRequest) -> Vec<String>
         // the move's one-time key, which a person adds on the new host, reaches it. Without
         // this the service user would reach every host that trusts root's own keys.
         "--no-sign-in".to_owned(),
+        // The request this run answers: the command writes it into its checklist, so the
+        // server tells this run's from another's. An id holds letters, digits and hyphens.
+        format!("--request-id={}", request.id),
     ]);
     if request.action == MoveAction::Abort {
         return argv;
@@ -196,7 +199,10 @@ pub fn command_args(args: &MoveHelperArgs, request: &MoveRequest) -> Vec<String>
 
 /// The ids the helper acted on, in its state directory: a line `<until> <id>` each.
 const HANDLED_FILE: &str = "handled";
-/// Ids kept at most: more than a person asks in the quarter of an hour an id is kept.
+/// Ids kept at most: more than a person asks in the quarter of an hour an id is kept. Whoever
+/// writes more requests than that in the time (the service user: nobody else can) makes the
+/// helper forget the oldest, which gains it nothing: it can write a request under a new id
+/// at any time.
 const KEPT_REQUESTS: usize = 1024;
 
 /// Until when (ms) an id handled at `now` is kept: as long as a request the helper took at
@@ -372,9 +378,24 @@ impl Helper {
         })
     }
 
+    /// What the record of handled ids holds: nothing while there is none. Bytes that are no
+    /// text do not hide its other lines, and a record that cannot be read is not taken for an
+    /// empty one.
+    fn handled_text(&self) -> Result<String, String> {
+        let path = self.state(HANDLED_FILE);
+        match std::fs::read(&path) {
+            Ok(bytes) => Ok(String::from_utf8_lossy(&bytes).into_owned()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+            Err(err) => Err(format!(
+                "cannot record the request in {}: what was handled cannot be read: {err}",
+                path.display()
+            )),
+        }
+    }
+
     /// Whether `id` was acted on (or refused) while its request could still be taken.
     fn already_handled(&self, id: &str) -> bool {
-        let text = std::fs::read_to_string(self.state(HANDLED_FILE)).unwrap_or_default();
+        let text = self.handled_text().unwrap_or_default();
         still_handled(&text, now_ms())
             .iter()
             .any(|(_, handled)| handled == id)
@@ -382,7 +403,8 @@ impl Helper {
 
     fn mark_handled(&self, id: &str) -> Result<(), String> {
         let path = self.state(HANDLED_FILE);
-        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        // Not written when it cannot be read: the ids it holds would be lost with it.
+        let text = self.handled_text()?;
         write_atomic(&path, with_handled(&text, id, now_ms()).as_bytes(), 0o600)
             .map_err(|err| format!("cannot record the request in {}: {err}", path.display()))
     }

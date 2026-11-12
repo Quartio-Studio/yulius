@@ -149,6 +149,18 @@ export function phaseStates(phase) {
   return PHASES.map((_, i) => (i < index ? 'done' : i === index ? 'current' : 'next'));
 }
 
+/**
+ * What a checklist of an earlier run is: a move that is still recorded on this host, or the
+ * last one, which is over (nothing is recorded then).
+ */
+function earlierNote(move) {
+  const over = { aborted: 'was aborted', done: 'finished' }[move.phase];
+  const whose = 'The checklist below is that move’s, not this request’s.';
+  return over
+    ? ` The last move of this host, to ${move.target}, ${over} ${relLong(move.updated_at)}. ${whose}`
+    : ` A move to ${move.target} is recorded on this host (phase ${move.phase}, last line ${relLong(move.updated_at)}). ${whose}`;
+}
+
 /** The phases of a running move, as the update's stepper shows its own. */
 function stepper(phase) {
   const states = phaseStates(phase);
@@ -317,8 +329,7 @@ export function moveCard(ctx) {
       ? h('p', { class: 'small move-recorded' }, icon('terminal', { size: 14 }),
         ` A move to ${move.target} is recorded on this host by the command line (yulius instance migrate), phase ${move.phase}, last line ${relLong(move.updated_at)}. Whether it still runs is not known here.`)
       : move.earlier
-        ? h('p', { class: 'small move-recorded' }, icon('info', { size: 14 }),
-          ` A move to ${move.target} is recorded on this host (phase ${move.phase}, last line ${relLong(move.updated_at)}). The checklist below is that move’s, not this request’s.`)
+        ? h('p', { class: 'small move-recorded' }, icon('info', { size: 14 }), earlierNote(move))
         : null;
     const all = move.lines || [];
     return [
