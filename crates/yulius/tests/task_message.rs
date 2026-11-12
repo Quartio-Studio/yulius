@@ -909,6 +909,127 @@ fn a_draft_typed_before_a_restart_still_keeps_the_message_out() -> TestResult {
     Ok(())
 }
 
+/// SPEC-480 AC10 (DRF-009; review round 2): a mark that outlived its draft (the server did not
+/// remember writing it) leaves the run folder with the next prompt that empties the box, here
+/// a message Yulius types: a restarted server would otherwise hold messages for a draft that
+/// is not there.
+#[test]
+fn a_stale_mark_leaves_the_run_folder_with_the_next_prompt() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let (app, clock) = app_behind(&data, 2 * MINUTE).await?;
+        let (id, caller) = running(&app, &data).await?;
+        let run_dir = app
+            .deps
+            .store
+            .live_attempt(&id)
+            .await?
+            .ok_or("run")?
+            .run_dir;
+        let mark = Path::new(&run_dir).join("person-typed");
+        // Their prompt writes the mark and removes it again.
+        let (ctx, attach) = terminal(&app, &caller, &id).await?;
+        app.terminal_input(&ctx, &attach, b"one", false).await?;
+        assert!(mark.exists(), "the first key of a draft marks it");
+        app.terminal_input(&ctx, &attach, b"\r", false).await?;
+        wait_for("the person's prompt", Duration::from_secs(30), || async {
+            read_alone(&app, &id, "one") && !mark.exists()
+        })
+        .await?;
+        app.terminal_leave(&attach).await;
+        // A mark the server does not remember, and the minute after their Enter has passed.
+        std::fs::write(&mark, app.now().0.to_string())?;
+        clock.0.store(0, Ordering::SeqCst);
+        let answer = send(&app, &caller, &id).await?;
+        assert_eq!(answer["delivered"], "sent", "{answer}");
+        wait_for("the mark's removal", Duration::from_secs(30), || async {
+            !mark.exists()
+        })
+        .await?;
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-480 AC10 (DRF-009; review round 2): a mark whose time is ahead of the clock (a clock
+/// set back, a damaged file) is read as typed now by the server that reattaches the run, so
+/// it grows old: eleven minutes later its person is told. A time in the future never did.
+#[test]
+fn a_mark_ahead_of_the_clock_is_read_as_typed_now() -> TestResult {
+    use yulius_app::mcp_watch::WatchBounds;
+    let (_dir, data) = data_dir()?;
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let first = runtime()?;
+    let (port, id) = first.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let (app, port) = start(&data, &fake, fake_agent(), 0, probe).await?;
+        let (id, caller) = running(&app, &data).await?;
+        wait_for("the first turn's end", Duration::from_secs(30), || async {
+            activity(&app, &id).await.is_some_and(Activity::is_idle)
+        })
+        .await?;
+        let (ctx, attach) = terminal(&app, &caller, &id).await?;
+        app.terminal_input(&ctx, &attach, b"half a thought", false)
+            .await?;
+        app.terminal_leave(&attach).await;
+        let run_dir = app
+            .deps
+            .store
+            .live_attempt(&id)
+            .await?
+            .ok_or("run")?
+            .run_dir;
+        let ahead = app.now().0 + 24 * 60 * MINUTE;
+        std::fs::write(Path::new(&run_dir).join("person-typed"), ahead.to_string())?;
+        Ok::<_, Error>((port, id))
+    })?;
+    first.shutdown_timeout(Duration::from_secs(5));
+
+    let rt = runtime()?;
+    rt.block_on(async {
+        let clock = Arc::new(ShiftedClock(AtomicI64::new(0)));
+        let probe = Arc::new(ScriptedUsage::default());
+        let (app, _) = start_on(
+            &data,
+            &fake,
+            fake_agent(),
+            port,
+            probe,
+            clock.clone(),
+            |_| {},
+        )
+        .await?;
+        app.reconcile().await?;
+        // Its transcript was read again: the watch knows that no turn is open.
+        wait_for(
+            "the transcript read again",
+            Duration::from_secs(30),
+            || async {
+                screen(&app, &id).contains("half a thought") && !app.claude_queue_holds(&id)
+            },
+        )
+        .await?;
+        let bounds = WatchBounds {
+            silent_after_ms: 1_000,
+            reconnect_gap_ms: 60_000,
+            ..WatchBounds::new(yulius_domain::time::Timestamp(0))
+        };
+        // Eleven minutes later (the run was spawned on the system's clock, so this one goes
+        // ahead of it).
+        clock.0.store(11 * MINUTE, Ordering::SeqCst);
+        assert!(app.watch_mcp(&bounds).await.is_empty());
+        assert_eq!(
+            support::attention(&app, id.as_str()).await?,
+            held_message_flag()
+        );
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// A running task whose person submitted "first" while its only subscription had no room, so
 /// the prompt is held at its submit, and then typed "more" behind it without sending it.
 async fn a_draft_behind_a_held_prompt(
