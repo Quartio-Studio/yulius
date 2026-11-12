@@ -6,6 +6,24 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-12
 
+- The Subscriptions page reads usage and limit state again on request (SPEC-473, task #451,
+  ADR-0307). Each signed-in subscription's card has **Refresh**, and the page has **Refresh
+  all**. A refresh reads the usage and then asks Claude about each limit stored for the
+  subscription, one request of one output token with the model that limit binds. When the model
+  answers, the limit ends at once and the tasks that wait for it go on: a person who bought
+  usage credits no longer waits for the allowance's reset. When Claude still refuses, a limit
+  recorded without a reset gets the one Claude names. When Claude does not answer, the refresh
+  says why in one sentence and the limit stays. Each card starts with how old its usage reading
+  is ("Usage read 3 min ago"; one older than 10 minutes is marked, also in a folded row) and
+  names each used-up window with its reset: the 5-hour window, the week, a model's allowance
+  ("Fable this week"), or a limit Claude reported without saying when it resets. That is worked
+  out when the card is shown and again every second, so a card stops saying "Limit reached" the
+  moment its window resets, and a subscription at 100 % of a window no longer reads ready
+  because its last reading stored `ok`. The reading's time (`usage.observed_at`) now means that
+  both windows were read: a session's reading of one window and a limit Claude reports no
+  longer make a card say "just now", and the background round reads the window such sessions
+  do not report. The round does not read a model's allowance ahead of its limit; ADR-0307
+  states the cost.
 - Moving from Settings → Instance: three notes of the review that approved it, answered after the
   merge (SPEC-470, task #447, follow-up of #1214). The card no longer says "A move to … is
   recorded" over the checklist of a move that was aborted or finished: it says the last move is

@@ -729,6 +729,15 @@ the task on at a limit, by a move or a wait it resumes from (ADR-0304). Every ch
 subscription's stored usage takes one lock
 (`App::change_account_usage`).
 
+**Asking about a stored limit (SPEC-473, ADR-0307).** The Subscriptions page's Refresh reads the
+usage and then asks Claude about each limit stored for the subscription, one request of one
+output token with the model that limit binds; the response's status is the answer (it ran: the
+limit ends; HTTP 429 that names a limit: recorded with its reset; anything else: the refresh
+fails with one sentence and the limit stays). The background round asks about no limit. The
+time a usage was read (`observed_at`) is the time both of its windows were read, so a session's
+reading of one window and a reported limit do not move it, and the round reads what sessions do
+not report.
+
 **Where the readings come from (F 2026-10-10, #143).** The usage endpoint needs the OAuth scope
 `user:profile`. Yulius signs subscriptions in with `claude setup-token`, whose token Claude Code
 2.1.292 creates with `user:inference` only (Claude Code itself skips the endpoint without
@@ -2648,6 +2657,11 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 
 ## 15. Changelog
 
+- 2026-11-12 (task #451; SPEC-473, ADR-0307): §7.2 a refresh asks Claude about each stored
+  limit with the model it binds (`UsageProbe::model_answer`, `AccountUsage::record_model_answer`,
+  `ReportedLimit::of_refusal` shared with the harness) under one deadline; the round reads no
+  model's allowance ahead; `observed_at` means both windows were read; the web UI works a
+  subscription's state out when it is shown (`usage.js`).
 - 2026-11-11 (task #449, #1172; SPEC-464, ADR-0301): §7.2 a limit says what it binds
   (`LimitScope`); `ModelFamily::Fable` and `AccountUsage::weekly_fable` (the weekly allowance of
   usage credits, known from the CLI's `model_requires_usage_credits` record); a usage reading
