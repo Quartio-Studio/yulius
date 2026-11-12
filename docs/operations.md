@@ -74,8 +74,11 @@ reason) or `FAIL`, then a summary; it exits 1 when an item failed. In order:
    AppArmor restricts user namespaces (Ubuntu 24.04 and later), it writes and loads
    `/etc/apparmor.d/yulius-bwrap`; on Ubuntu 26.04 it first disables the package's
    `bwrap-userns-restrict` with a link in `/etc/apparmor.d/disable/` (the file itself is never
-   edited). A step that fails is undone and the line says so. A rule a person wrote for
-   `/usr/bin/bwrap` is left as it is and named. See [Sandbox isolation](#sandbox-isolation).
+   edited). With its profile it loads the directory's other profiles as a boot does, and proves
+   then; where bwrap starts only without Yulius's profile, a person's profile lets it in: that
+   one is adopted and Yulius's removed. A step that fails is undone and the line says so. A
+   rule a person wrote for `/usr/bin/bwrap` is left as it is and named.
+   See [Sandbox isolation](#sandbox-isolation).
 9. **yulius.service**: written from §3 and enabled when missing (`--public-url` is needed then).
    Otherwise, a drop-in `yulius.service.d/10-yulius-sandboxes.conf` adds `Delegate=yes`,
    `DelegateSubgroup=server` and `KillMode=process` if they are missing. The restart that applies
@@ -643,7 +646,22 @@ it is adopted ("not written by Yulius, left as it is"); when it does not, the it
 prints the two commands that disable it (for a file AppArmor's parser refuses: the parser's
 words, and the file is to be corrected first, since the parser cannot unload it either). To move from such a rule to Yulius's, disable it
 (`sudo ln -s /etc/apparmor.d/bwrap /etc/apparmor.d/disable/ && sudo apparmor_parser -R /etc/apparmor.d/bwrap`)
-and run the setup again. **After a release upgrade from 24.04 to 26.04**, run
+and run the setup again. Yulius knows such a profile by its text only in the plain spellings
+(`profile bwrap /usr/bin/bwrap …`). One in any other spelling (an alternation, a pattern, an
+`alias`, a variable) it finds by what it does: with its own profile, setup loads every other
+profile of `/etc/apparmor.d` as a boot does (`apparmor_parser -r /etc/apparmor.d`, at most
+300 s; edits of those files that were waiting for a boot or a `systemctl reload apparmor`
+become live with it) and proves bwrap then. AppArmor applies neither of two profiles that name
+one program (the kernel's log may say "conflicting profile attachments"), so where bwrap does
+not start and no kernel limit explains it, setup takes Yulius's profile away, whichever run
+wrote it, and proves once more. If bwrap starts, the person's profile is adopted and
+`/etc/apparmor.d/yulius-bwrap` stays removed; the line says so, and later runs and checks are
+ok. If not, Yulius's file and profile are put back as they were before the run (none where
+there was none), the profiles that load loaded stay loaded as after a boot, and the line says
+how to disable the second profile. Beside a kernel limit Yulius's profile stays, to work once
+the limit is lifted: run the setup again then. A profile for many programs (`/usr/bin/bw*`,
+`/usr/bin/*`) is no such second profile: AppArmor prefers the one that names the path.
+**After a release upgrade from 24.04 to 26.04**, run
 `sudo yulius host setup` once: the upgrade installs the shipped profile next to Yulius's, and
 sandboxes fail until it is disabled. A host whose AppArmor cannot load the profile is reported
 as unsupported.

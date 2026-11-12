@@ -160,7 +160,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   starting one, and `yulius instance import` names the step. Run `sudo yulius host setup` again
   after a release upgrade from 24.04 to 26.04. A follow-up (#1165) makes the check and the
   dry run name a kernel limit on user namespaces (`user.max_user_namespaces` or
-  `kernel.unprivileged_userns_clone` set to 0) like setup does.
+  `kernel.unprivileged_userns_clone` set to 0) like setup does. A second one (#1165, #1177) finds
+  a person's profile for bwrap in a spelling Yulius does not read (an alternation, a pattern, an
+  `alias`, a variable) by what it does: setup loads `/etc/apparmor.d` as a boot does beside its
+  own profile and proves bwrap then; where bwrap does not start it proves once more without
+  Yulius's profile, adopts a person's profile that lets bwrap in (Yulius's is removed,
+  whichever run wrote it) and otherwise puts Yulius's back as it was and says how to disable
+  the other.
 - Resource limits are sized from the host (SPEC-459, task #441, ADR-0294). Live sessions, CI
   jobs, CI runs per sandbox, the sandbox disk quota and the CD run disk no longer have fixed
   defaults (8, 4, 2, 100 GB, 20 GB): like the sandbox memory they follow the host's CPUs, memory
