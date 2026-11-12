@@ -890,6 +890,10 @@ impl App {
                 let prompts_before = self.prompts_passed(&task.id);
                 self.await_transcript_read(&task.id).await;
                 let busy = self.shells_running_now(&task.id).await;
+                crate::race::reached(
+                    crate::race::Point::SwitchProbed,
+                    std::path::Path::new(task.id.as_str()),
+                );
                 (
                     busy,
                     self.prompt_waits_for_turns_end(&task.id, prompts_before),

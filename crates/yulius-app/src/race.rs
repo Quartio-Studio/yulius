@@ -139,6 +139,10 @@ pub enum Point {
     /// Code, whatever it found; who typed and what pauses it are not read again yet. The path is
     /// the task id.
     ClaudeMoveProbed,
+    /// A turn's end at which the pool wants the session on another subscription (SPEC-479) read
+    /// the turn's lines and looked at its background work; whether a prompt waits is not asked
+    /// yet. The path is the task id.
+    SwitchProbed,
     /// A turn's end decided to restart its session on a newer Claude Code (SPEC-468); the
     /// restart is not registered or asked for yet. The path is the task id.
     ClaudeMoveDecided,

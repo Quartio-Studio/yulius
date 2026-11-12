@@ -3338,4 +3338,178 @@ mod moves {
         rt.shutdown_timeout(Duration::from_secs(5));
         Ok(())
     }
+
+    // --- SPEC-479 on the test's clock: the facts no process can time. The task's subscription
+    // is at its limit and a second one has room, so the pool wants the session moved at each
+    // turn's end; no process runs, so a move that is tried is refused and leaves its wait.
+
+    /// A second subscription, with room, beside the one [`on_the_test_clock`] seeds.
+    async fn second_subscription(h: &crate::support::Harness) -> TestResult {
+        use yulius_app::model::{AccountRecord, AccountStatus};
+        use yulius_domain::harness::Provider;
+        use yulius_domain::ids::AccountId;
+        use yulius_domain::time::Timestamp;
+        h.app
+            .deps
+            .store
+            .insert_account(&AccountRecord {
+                id: AccountId::parse("acc-2")?,
+                provider: Provider::Anthropic,
+                label: "Claude acc-2".into(),
+                credential: Some(h.app.deps.crypto.seal(b"acc-2")?),
+                status: AccountStatus::Ok,
+                usage_json: None,
+                last_error: None,
+                created_at: Timestamp(1),
+                updated_at: Timestamp(1),
+                email: None,
+                email_checked_at: None,
+                email_typed: false,
+            })
+            .await?;
+        Ok(())
+    }
+
+    /// Whether a move of the task to another subscription was tried.
+    async fn move_tried(h: &crate::support::Harness, task: &TaskId) -> bool {
+        h.app.switch_cooling(task)
+            || h.app
+                .deps
+                .store
+                .switches(task)
+                .await
+                .is_ok_and(|switches| !switches.is_empty())
+    }
+
+    async fn until_move_tried(h: &crate::support::Harness, task: &TaskId) -> TestResult {
+        wait_for("the move", Duration::from_secs(60), || async {
+            move_tried(h, task).await
+        })
+        .await
+    }
+
+    /// SPEC-479 SWQ-001 with SPEC-471 CCQ-004: a turn's end less than two seconds after a
+    /// prompt from the prompt box went on does not move the session, since the record that
+    /// says where the prompt went may not be written: the Stop is answered as on a
+    /// subscription that stays. One two seconds after it moves the session.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_prompt_that_just_went_on_keeps_the_session_on_its_subscription() -> TestResult {
+        use axum::http::StatusCode;
+        let (h, task) = on_the_test_clock(true).await?;
+        second_subscription(&h).await?;
+        assert_eq!(hook(&h, Some("first")).await?, StatusCode::OK);
+        h.clock.0.fetch_add(1_999, Ordering::SeqCst);
+        assert_eq!(hook(&h, None).await?, StatusCode::OK, "the turn ends here");
+        assert!(
+            !move_tried(&h, &task).await,
+            "a prompt went on 1,999 ms ago: the session is not moved"
+        );
+        assert_eq!(hook(&h, Some("second")).await?, StatusCode::OK);
+        h.clock.0.fetch_add(2_000, Ordering::SeqCst);
+        assert_eq!(
+            hook(&h, None).await?,
+            StatusCode::ACCEPTED,
+            "the turn is held while the session moves"
+        );
+        until_move_tried(&h, &task).await
+    }
+
+    /// SPEC-479 SWQ-001 with SPEC-471 CCQ-004: a prompt from the prompt box that goes on while
+    /// a turn's end reads the turn's lines is in no line it read: the session is not moved,
+    /// however the clock went meanwhile. The next turn's end moves it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_prompt_that_goes_on_while_a_turns_end_looks_keeps_the_session_on_its_subscription()
+    -> TestResult {
+        use axum::http::StatusCode;
+        const HELD: Duration = Duration::from_secs(60);
+        let (h, task) = on_the_test_clock(true).await?;
+        second_subscription(&h).await?;
+        assert_eq!(hook(&h, Some("first")).await?, StatusCode::OK);
+        h.clock.0.fetch_add(5 * MINUTE, Ordering::SeqCst);
+        // The turn's end is held where its look at the session is over.
+        let looking = Arc::new(AtomicBool::new(false));
+        let (go_on, held) = std::sync::mpsc::channel::<()>();
+        let there = Arc::clone(&looking);
+        race::on(Point::SwitchProbed, Path::new(task.as_str()), move || {
+            there.store(true, Ordering::SeqCst);
+            let _ = tokio::task::block_in_place(|| held.recv_timeout(HELD));
+        });
+        let meanwhile = async {
+            wait_for("the look at the session", HELD, || async {
+                looking.load(Ordering::SeqCst)
+            })
+            .await?;
+            let entered = hook(&h, Some("/compact")).await?;
+            h.clock.0.fetch_add(5 * MINUTE, Ordering::SeqCst);
+            go_on.send(())?;
+            Ok::<_, Box<dyn std::error::Error>>(entered)
+        };
+        let (stopped, entered) = tokio::join!(hook(&h, None), meanwhile);
+        assert_eq!(entered?, StatusCode::OK);
+        assert_eq!(stopped?, StatusCode::OK, "the turn ends here");
+        assert!(
+            !move_tried(&h, &task).await,
+            "a prompt went on while the turn's end looked: the session is not moved"
+        );
+        // A prompt and its turn, long after: that end moves the session.
+        assert_eq!(hook(&h, Some("second")).await?, StatusCode::OK);
+        h.clock.0.fetch_add(5 * MINUTE, Ordering::SeqCst);
+        assert_eq!(hook(&h, None).await?, StatusCode::ACCEPTED);
+        until_move_tried(&h, &task).await
+    }
+
+    /// The task waits for capacity with a pause of `kind`, as the pool leaves it.
+    async fn paused(
+        h: &crate::support::Harness,
+        task: &TaskId,
+        kind: yulius_app::model::PauseKind,
+    ) -> TestResult {
+        let account = yulius_domain::ids::AccountId::parse("acc-1")?;
+        h.app.pause_task(task, kind, Some(account), None).await?;
+        assert_eq!(
+            state(&h.app, task).await.map(|(status, _)| status),
+            Some(TaskStatus::WaitingCapacity)
+        );
+        Ok(())
+    }
+
+    /// SPEC-479 SWQ-003: a turn held at its Stop for capacity, with room on another
+    /// subscription, goes on in place while a prompt may wait (here: one went on moments ago),
+    /// and is moved once none does.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_held_turn_goes_on_in_place_while_a_prompt_may_wait() -> TestResult {
+        use axum::http::StatusCode;
+        use yulius_app::model::PauseKind;
+        let (h, task) = on_the_test_clock(true).await?;
+        second_subscription(&h).await?;
+        assert_eq!(hook(&h, Some("first")).await?, StatusCode::OK);
+        paused(&h, &task, PauseKind::Turn).await?;
+        let _ = h.app.resume_round().await;
+        assert_eq!(
+            state(&h.app, &task).await.map(|(status, _)| status),
+            Some(TaskStatus::Running),
+            "released in place"
+        );
+        assert!(h.app.deps.store.open_pause(&task).await?.is_none());
+        assert!(!move_tried(&h, &task).await);
+        // Two seconds after the prompt nothing may wait: the pool moves the held turn.
+        h.clock.0.fetch_add(2_000, Ordering::SeqCst);
+        paused(&h, &task, PauseKind::Turn).await?;
+        let _ = h.app.resume_round().await;
+        until_move_tried(&h, &task).await
+    }
+
+    /// SPEC-479 SWQ-003: only a turn held at its Stop is released in place. A turn a usage
+    /// limit cut cannot go on where it is: it is moved past the limit whatever may wait.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_turn_the_limit_cut_is_moved_whatever_may_wait() -> TestResult {
+        use axum::http::StatusCode;
+        use yulius_app::model::PauseKind;
+        let (h, task) = on_the_test_clock(true).await?;
+        second_subscription(&h).await?;
+        assert_eq!(hook(&h, Some("first")).await?, StatusCode::OK);
+        paused(&h, &task, PauseKind::Limit).await?;
+        let _ = h.app.resume_round().await;
+        until_move_tried(&h, &task).await
+    }
 }
