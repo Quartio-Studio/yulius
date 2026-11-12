@@ -243,6 +243,11 @@ glance), SPEC-447 ("Run #N on…", which already judges by windows when the menu
   signed in again is not stored.
 - **Refresh all counts what was read** (review round 1): a subscription Claude gave no reading
   for is not "read again".
+- **A sign-in during the reading is said as that** (review round 2). The first answer to it
+  returned the account with `usage_read: false`, and the card then gave the reason of a
+  sign-in that may not read its usage. The refresh now fails with its own sentence and stores
+  no note: the person presses Refresh once more, on the new sign-in. A usage note goes through
+  one writer that checks the sign-in, as the reading and the answers do.
 - **Stale is 10 minutes**: the round reads an idle subscription every 5, so an older reading
   means the round is backing off or cannot read. It is the age the page already read again at.
 - **A second per card** for the clock: a few date comparisons, drawn only on change, stopped
@@ -289,18 +294,34 @@ caught. Each finding and its answer, test first:
 | Nit: Refresh all's toast counted subscriptions Claude gave no reading for as read again | "Usage read again for 4 of 5 subscriptions: Claude gave no new reading for the rest." and "Claude gave no new usage reading: each card says so." (e2e) |
 | Nit: `docs/api.md` said `observed_at` stays unchanged for a reading Claude does not share | It says `usage_read: false` and when an answer counts as a reading |
 
-After the fixes, on `25997575c` (with `dev` at `48fc8a3a9` merged):
+Independent review, round 2 (the same reviewer, head `dbb178bf6`): approve. Its own gate passed
+(4029 tests) and its e2e run passed (1014 tests); it verified each answer of round 1 by mutation
+or probe, and 26 of its 29 new mutations were caught. No blocker, no major. Its two minors and
+four nits were answered before the pull request was opened:
 
-- `scripts/dev ci`: green. 4029 tests run, 4029 passed, 16 skipped; repository contracts,
+| Finding | Answer |
+| --- | --- |
+| Minor: two clauses of `usage_read` had no test (an answer the guard did not apply, an answer with one window) | `usage_refresh::a_limit_recorded_while_claude_is_asked_is_kept` and `an_answer_for_the_previous_sign_in_is_not_recorded_for_a_new_one` assert them; both of its mutations now fail |
+| Minor: a check that no toast was said retried for as long as a toast lives, so it passed once in eight runs with the defect present | Such checks look once (`toastsNow`), seven places; its mutation was caught four times of four |
+| Nit: `e2e/README.md` did not name the three new tests | Named |
+| Nit: in the sign-in race the card named a cause that was not the cause | The refresh says what happened: "This subscription was signed in again while its usage was read; refresh it once more." (502, no note). Red `bd58b33d8`, fix `281a3e820` |
+| Nit: the gates in this section were run before the last merge of `dev` | Run again on the final code (below) |
+| Nit, pre-existing: a usage note of a reading asked with the previous sign-in was still written for the new one | Every usage note goes through one writer that checks the sign-in (`App::note_usage`); `usage_refresh::a_failed_reading_for_the_previous_sign_in_leaves_no_note`. Red `bd58b33d8`, fix `281a3e820` |
+
+After the fixes, on `281a3e820` (with `dev` at `099639c97` merged; the commit after it changes
+only this spec):
+
+- `scripts/dev ci`: green. 4030 tests run, 4030 passed, 16 skipped; repository contracts,
   check, fmt, clippy (Linux and macOS), doctests, deny, shear and docs passed. Earlier gates:
-  3980 passed on `83c9666d2`, 4004 on `f22ba2725`.
+  3980 passed on `83c9666d2`, 4004 on `f22ba2725`, 4029 on `25997575c`.
 - `cd e2e && E2E_TELEMETRY_DISABLED=1 npx e2e run`: 83 files passed, 1 skipped; 1014 tests
   passed, 1 skipped, none failed. `subscriptions.e2e.ts` alone: 43 of 43.
-- Mutation checks (one line bent at a time; scripts kept in `target/evidence/`). Rust, 61, all
+- Mutation checks (one line bent at a time; scripts kept in `target/evidence/`). Rust, 65, all
   caught: the claim rule, what an answer ends, keeps and stamps, which families are asked, the
   reading before the questions, the probe's reading of status, headers and body, the model of
   the request, both guards, the throttled and failed readings, the deadline and the notes, the
-  round, the administrator check, `usage_read`. Web, 50, all caught, run on copies of the web
+  round, the administrator check, `usage_read` and each of its clauses, the sign-in's guard of a
+  reading and of a note. Web, 50, all caught, run on copies of the web
   UI: what limits, the stale edge, the stored status, the clock (ticking, drawing only on
   change, the redraw at a press), the rows and the glance past a reset, the folded mark, the
   button's states, the queue (three at a time, joining, once per visit, dropped with the page),
