@@ -2376,25 +2376,27 @@ reset-failed yulius-migrate.service yulius-migrate.path` and starts it again.
 directory's owner, who is not root, at most 16 KiB, with exactly the fields above, at most 15
 minutes old, and an id it has not acted on: it keeps every id it handled in `handled` until that
 request would be refused as stale, and when it cannot read or write that file it runs nothing and
-the unit fails. Every value is checked again with the rules the server used: the host as `ssh` takes it
-(`root@host` or `host`, nothing that reads as an option), a port from 1 to 65535, a public URL that
-is `https://host` and nothing more, at most two different disks under `/dev/`; an abort names none
-of them. It refuses while the update helper's unit runs, and a host outside
+the unit fails. Every value is checked again with the rules the server used: the host as `ssh`
+takes it (`root@host` or `host`, nothing that reads as an option), a port from 1 to 65535, a public
+URL that is `https://host` and nothing more, at most two different disks under `/dev/`; an abort
+names none of them. It refuses while the update helper's unit runs, and a host outside
 `YULIUS_MIGRATE_TARGETS` when that is set. A refused request changes nothing; the page shows the
 reason, which never repeats the request's content. An accepted one runs `yulius instance migrate
---no-sign-in` with each value as one argument (no shell): the plan without `--yes`, the move with
-it, the abort as `--abort` and never with `--yes`. While the command runs, an abort request ends it
-with SIGTERM and is then handled. The helper does not touch the command's checklist: a run the
-command refuses (a move to another host is recorded, another run holds its lock) changes nothing,
-and the page shows the recorded move's checklist as that move's.
+--no-sign-in --request-id=<the request's id>` with each value as one argument (no shell): the plan
+without `--yes`, the move with it, the abort as `--abort` and never with `--yes`. While the command
+runs, an abort request ends it with SIGTERM and is then handled. The helper does not touch the
+command's checklist: a run the command refuses (a move to another host is recorded, another run
+holds its lock) changes nothing, and the page shows the recorded move's checklist as that move's:
+the command writes the request's id into its checklist, so the page knows which run a checklist is
+of.
 
 **Files.** In `/var/lib/yulius-migrate` (root's, mode 0711): `helper.json` (0644: the request it
-took, `running` with a heartbeat every 5 s, then `ended` with the command's exit code, or
-`refused` with the reason), `handled` (0600: the ids it acted on), the command's `status.json` (0644: the phase and the checklist, with
-the key line while a person has to add it and the new URL once decided), `state.json` and the
-one-time key (0600), and on a host a move arrived at `arrived.json` (0644: that move's finished
-checklist). None holds a secret value. The server reads them and stores nothing about a move:
-its database travels with the copy.
+took, `running` with a heartbeat every 5 s, then `ended` with the command's exit code, or `refused`
+with the reason), `handled` (0600: the ids it acted on), the command's `status.json` (0644: the
+phase and the checklist, with the key line while a person has to add it, the new URL once decided,
+and the id of the request the run answers), `state.json` and the one-time key (0600), and on a host
+a move arrived at `arrived.json` (0644: that move's finished checklist). None holds a secret value.
+The server reads them and stores nothing about a move: its database travels with the copy.
 
 | Setting (flag / environment) | Default | Meaning |
 | --- | --- | --- |

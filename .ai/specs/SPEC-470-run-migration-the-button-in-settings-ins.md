@@ -87,8 +87,8 @@ The request and the root helper
 - MVB-004 **It runs the command, as nobody's sign-in.** An accepted request runs this binary's
   `instance migrate --no-sign-in`
   with the unit's data directory, service, update service and state directory, and the request's
-  values each as one argument (`--ssh-port=`, `--public-url=`, `--data-disk=`, then `--` and the
-  target): `plan` without `--yes` (no terminal, so it ends after its plan), `move` with `--yes`,
+  values each as one argument (`--request-id=`, `--ssh-port=`, `--public-url=`, `--data-disk=`,
+  then `--` and the target): `plan` without `--yes` (no terminal, so it ends after its plan), `move` with `--yes`,
   `abort` as `--abort` and never with `--yes` (an abort that needs a person's word that the new
   instance is stopped stays a command on the host). No shell; standard input is closed; the
   command's output goes to the journal. `--no-sign-in` (a new option of the command): the
@@ -122,7 +122,9 @@ The request and the root helper
 The command, for readers
 
 - MVB-010 **Status for the page.** `status.json` also holds `public_key` (the one-time key's
-  public line, while a person has to add it) and `new_url` (once the plan decided it).
+  public line, while a person has to add it), `new_url` (once the plan decided it) and
+  `request`: the id of the request the run answers (`--request-id`, which the helper passes),
+  absent for a run started on the host.
 - MVB-011 **The checklist travels.** The move's Finish leaves the finished checklist on the new
   host as `/var/lib/yulius-migrate/arrived.json` (0644, root's file in the flow's own
   directory): the lines so far, the new host's own Finish lines, and the lines the old host
@@ -141,11 +143,10 @@ Application and API
   `lost` when a running helper's heartbeat is more than 60 s old); `move` (the command's status:
   id, target, phase, lines, `public_key`, `new_url`, `updated_at`, and `by_command` when it was
   written after the helper's last run ended, or without any, that is by a run started on the
-  host, and `earlier` when it was written before the helper's last run started and that run
-  ended without one of its own: the recorded move's, not what the run found; a run that was
-  refused, by the helper or by the command with exit 2, has none of its own whenever the
-  checklist was written; while a run has written none of its own, an earlier one is not shown
-  at all); `arrived`
+  host, and `earlier` when it is neither that nor the helper's last run's own: the recorded
+  move's, not what the run found. The run's own is the one that names the run's request
+  (`request`, MVB-010), however the run ended and whatever the clock says; while a run has
+  written none of its own, another one is not shown at all); `arrived`
   (the checklist a move to this host left, MVB-011); and `can` (`plan`, `move`,
   `abort`: what would be accepted now). A request the helper took is removed when the view is
   read, one never taken after 15 minutes, and no copy of the data directory takes the request
@@ -367,7 +368,12 @@ Settings → Instance
 - **Review round 2** (on `d4c748a2`): approve, with one minor note and two nits in this change's
   code. The approved head was merged (#1214) and the three are answered in a second pull
   request, each with a test first: a commit for them before the merge would have voided the
-  approval while `dev` kept moving (it was merged in seven times). The 1024 ids the helper
+  approval while `dev` kept moving (it was merged in seven times). The first answer to the nit
+  about a checklist written in the second a refused run began was a rule that a refused run
+  (exit 2) has none of its own; the review of the second pull request showed that wrong (the
+  command also refuses, exit 2, after a line that says why, and that line was then read as
+  another move's). The time is no longer asked: the command writes the request's id into its
+  checklist, and the server compares ids. The 1024 ids the helper
   keeps can be pushed out by whoever writes that many requests in 16 minutes, which is the
   service user alone and gains it nothing (it can write a request under a new id at any time):
   said in the code, not changed.
