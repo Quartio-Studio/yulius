@@ -23,6 +23,18 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   stopped with nothing left also asks whether it is disabled, and the line for a new host that
   stopped answering names `--abort` with its condition (only once the new instance is known to
   be stopped).
+- A message Yulius types into a session no longer lands on a person's unsent draft (SPEC-480,
+  task #463, ADR-0309, issue #1199). Yulius held a message back only while someone had typed in
+  the last minute; an older draft got the message pasted behind it and was sent with it, as one
+  prompt. Now nothing is typed while someone typed into the task's terminal since its prompt
+  box was last empty, however long ago: a person's `task_message`, a pull request's news,
+  "Yulius is back; continue" and the MCP watch's texts all wait. `task_message` answers with
+  the reason at once. For a message of Yulius's own the task reads Needs your action and its
+  terminal says so once the person's last key is ten minutes old; the next prompt sent from
+  the box releases it. Every key counts, because Yulius sees keys and not the box, so a session
+  someone typed into without leaving text also waits for one prompt. A draft typed before a
+  restart of Yulius counts too: the run's folder keeps its mark (`person-typed`), so the wake
+  after an outage does not land on it.
 - `yulius instance migrate`, going on from a recorded start, no longer ends well while processes
   of a stopped old unit still run (SPEC-478, task #460, issue #1178). The server's unit has
   `KillMode=process`: a unit stopped by hand keeps its agents, terminals and sandbox engines

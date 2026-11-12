@@ -1368,6 +1368,47 @@ mod moves {
         Ok(())
     }
 
+    /// SPEC-480 AC8 (DRF-007; review round 1): the flag that says a message of Yulius's own
+    /// waits for a person's draft ends when the prompt box is emptied, also by a prompt that
+    /// starts no turn (`/compact`), which leaves the task's activity alone. The flag used to
+    /// outlast its reason there, and a flagged task gets no pull request's news typed. On the
+    /// test's clock, with no process: the MCP watch's reconnect is refused for the draft
+    /// before anything is written to the session.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_prompt_that_starts_no_turn_ends_the_flag_of_a_held_message() -> TestResult {
+        use axum::http::StatusCode;
+        use yulius_app::mcp_watch::WatchBounds;
+        use yulius_domain::task::Activity;
+        let (h, task) = on_the_test_clock(false).await?;
+        let alice = UserId::parse("u-alice")?;
+        let flag = || crate::support::attention(&h.app, task.as_str());
+
+        // Its person typed eleven minutes ago and sent nothing; its Yulius MCP is silent.
+        h.app.record_typing(&task, &alice);
+        h.clock.0.fetch_add(11 * MINUTE, Ordering::SeqCst);
+        let bounds = WatchBounds {
+            silent_after_ms: 1_000,
+            ..WatchBounds::new(yulius_domain::time::Timestamp(0))
+        };
+        assert!(h.app.watch_mcp(&bounds).await.is_empty());
+        let flagged = flag().await?;
+        assert_eq!(flagged["kind"], "yulius", "{flagged}");
+        assert!(
+            flagged["problem"]
+                .as_str()
+                .is_some_and(|said| said.starts_with("Yulius has a message for this session")),
+            "{flagged}"
+        );
+
+        // They send `/compact`: the box is empty, no turn starts, and the flag is gone.
+        h.clock.0.fetch_add(1_000, Ordering::SeqCst);
+        assert_eq!(hook(&h, Some("/compact")).await?, StatusCode::OK);
+        assert_eq!(flag().await?, serde_json::Value::Null);
+        let activity = h.app.deps.store.task(&task).await?.and_then(|t| t.activity);
+        assert_eq!(activity, Some(Activity::Waiting));
+        Ok(())
+    }
+
     /// SPEC-468 CCF-010: a prompt that is held at its submit (here: no subscription has room)
     /// is sent again by the hook client every ten seconds, stamped anew each time, until it
     /// goes on. That is one submit: what a person types while it is held is a draft, and it

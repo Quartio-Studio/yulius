@@ -6,6 +6,8 @@ Accepted. Specified in [SPEC-230](../../.ai/specs/SPEC-230-superagent-should-be-
 task #216. Amended by [SPEC-322](../../.ai/specs/SPEC-322-a-remote-mcp-task-message-names-the-chan.md)
 (#789): the same tool served by the remote MCP (SPEC-247) labels its message
 `Message from <login> (through their own agent):`; the Superagent's label is unchanged.
+Amended by [ADR-0309](0309-yulius-types-nothing-onto-a-persons-possible-draft.md) (SPEC-480,
+#1199): a person's draft holds a message however old it is, not for a minute.
 Amends SPEC-037 MGT-006 (one more Superagent tool) and extends SPEC-052 (queued messages) to the
 Superagent.
 
@@ -34,7 +36,8 @@ Superagent, which acts for that person, could do neither.
   Superagent. It is not among `COCKPIT_READ_ONLY_TOOLS`, so on an uncontained server Claude Code
   asks the person first (ADR-0165).
 - **Nothing is typed over a person.** A person who typed into the terminal in the last minute
-  (`typed_recently`) owns the prompt box. Nothing is typed before Claude Code's session started:
+  (`typed_recently`) owns the prompt box (since ADR-0309: also a person who typed since the
+  prompt box was last empty, however long ago, `policy::box_held`). Nothing is typed before Claude Code's session started:
   input typed earlier is lost or left unsubmitted, and the folder-trust dialog may be about to
   show. The SessionStart hook says it started and leaves a `session-started` marker in the run
   folder, which a restarted server reads when it reattaches the run. Without either (a CLI
@@ -77,7 +80,8 @@ Superagent, which acts for that person, could do neither.
   dialogs.
 - The person's draft counts for a minute (`TYPED_WINDOW_MS`, as for prompt attribution). A draft
   left longer ago is submitted with the message, unlike the goal typist, which leaves any draft
-  typed since the run attached.
+  typed since the run attached. (No longer: issue #1199 reported exactly this, and since
+  ADR-0309 a draft holds a message until a prompt is submitted from the box.)
 - Yulius's other typists (the goal of a resumed session, `/compact` for a full context) do not
   wait for a message being typed. If one types within the 300 ms between the paste and its Enter,
   both texts go out as one prompt, or the goal typist's Ctrl-U clears the message. The window is
