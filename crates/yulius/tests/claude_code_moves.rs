@@ -804,12 +804,19 @@ mod moves {
     async fn on_the_test_clock_limited_for(
         limited_ms: Option<i64>,
     ) -> Result<(crate::support::Harness, TaskId), Box<dyn std::error::Error>> {
-        use crate::support::{harness, seed_github_user, seed_sandbox, seed_task};
+        seeded_on_the_test_clock(crate::support::harness()?, limited_ms).await
+    }
+
+    /// [`on_the_test_clock_limited_for`] on the server `h`.
+    async fn seeded_on_the_test_clock(
+        h: crate::support::Harness,
+        limited_ms: Option<i64>,
+    ) -> Result<(crate::support::Harness, TaskId), Box<dyn std::error::Error>> {
+        use crate::support::{seed_github_user, seed_sandbox, seed_task};
         use yulius_app::model::{AccountRecord, AccountStatus, AttemptRecord};
         use yulius_domain::harness::{Harness, Provider};
         use yulius_domain::ids::{AccountId, AttemptId};
         use yulius_domain::time::Timestamp;
-        let h = harness()?;
         seed_github_user(&h, "u-alice", "alice").await?;
         seed_sandbox(&h, "s1", "fixture", "u-alice").await?;
         let now = h.app.now();
@@ -1024,6 +1031,57 @@ mod moves {
         assert!(
             h.app.has_draft(&task),
             "the prompt is back in the prompt box"
+        );
+        Ok(())
+    }
+
+    /// SPEC-468 CCF-010 (the last look's minor): a prompt that waits for room has not gone on
+    /// when one of its requests is answered with an error, since the hook client, once it
+    /// holds, asks again after a failing answer. The box counts as emptied at the prompt's
+    /// first request all the same: what its person typed while it waited is still a draft when
+    /// it goes on. An error used to end the hold, so the next request counted as a new submit,
+    /// at its own, later time. Here the store fails for one request: a second connection takes
+    /// a table away.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_failed_answer_inside_a_hold_keeps_the_hold() -> TestResult {
+        use axum::http::StatusCode;
+        let dir = tempfile::tempdir()?;
+        let db = dir.path().join("store.db");
+        let h = crate::support::harness_with(crate::support::HarnessOptions {
+            store: Some(yulius_store::SqliteStore::open(&db)?),
+            dir: Some(dir),
+            ..Default::default()
+        })?;
+        let (h, task) = seeded_on_the_test_clock(h, Some(30_000)).await?;
+        let alice = UserId::parse("u-alice")?;
+
+        // A prompt waits for a subscription with room.
+        h.app.record_typing(&task, &alice);
+        h.clock.0.fetch_add(1_000, Ordering::SeqCst);
+        assert_eq!(hook(&h, Some("first")).await?, StatusCode::ACCEPTED);
+        // The store fails for the client's next request.
+        let other = rusqlite::Connection::open(&db)?;
+        other.execute_batch("ALTER TABLE capacity_pauses RENAME TO capacity_pauses_gone")?;
+        h.clock.0.fetch_add(10_000, Ordering::SeqCst);
+        let failed = hook(&h, Some("first")).await?;
+        other.execute_batch("ALTER TABLE capacity_pauses_gone RENAME TO capacity_pauses")?;
+        assert!(failed.is_server_error(), "{failed}");
+        assert!(
+            h.app.has_draft(&task),
+            "a prompt that still waits is still in the box"
+        );
+        // Its person types on while it waits.
+        h.clock.0.fetch_add(1_000, Ordering::SeqCst);
+        h.app.record_typing(&task, &alice);
+        // The client asks again: still no room. Then the limit resets and the prompt goes on.
+        h.clock.0.fetch_add(2_000, Ordering::SeqCst);
+        assert_eq!(hook(&h, Some("first")).await?, StatusCode::ACCEPTED);
+        h.clock.0.fetch_add(25_000, Ordering::SeqCst);
+        let _ = h.app.resume_round().await;
+        assert_eq!(hook(&h, Some("first")).await?, StatusCode::OK);
+        assert!(
+            h.app.has_draft(&task),
+            "what was typed while the prompt was held is still a draft"
         );
         Ok(())
     }
