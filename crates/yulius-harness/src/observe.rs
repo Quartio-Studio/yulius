@@ -7,6 +7,7 @@
 
 use std::collections::{HashSet, VecDeque};
 
+use yulius_domain::agent_cli::QueueChange;
 use yulius_domain::task::GoalOutcome;
 use yulius_domain::time::Timestamp;
 use yulius_domain::usage::{LimitScope, TokenUsage};
@@ -158,6 +159,15 @@ pub enum Observed {
     Compacted,
     /// A compaction failed ("Error during compaction" in the command's error output).
     CompactFailed,
+    /// Claude Code recorded a change of its queue of waiting prompts (a `queue-operation`
+    /// record, SPEC-471 CCQ-001): a prompt entered while a turn runs, or one of its own
+    /// notifications, was put in, handed on to a turn, or taken out.
+    Queue {
+        /// What happened.
+        change: QueueChange,
+        /// When Claude Code recorded it (the record's `timestamp`), if parseable.
+        at: Option<Timestamp>,
+    },
     /// The line is not a JSON object or lacks a required field.
     Malformed,
 }

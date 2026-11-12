@@ -7,6 +7,7 @@
 use std::fmt;
 
 use crate::harness::{DEFAULT_CLAUDE_MODEL, OFFERED_CLAUDE_MODELS};
+use crate::time::Timestamp;
 
 /// The npm package of the Claude Code CLI.
 pub const PACKAGE: &str = "@anthropic-ai/claude-code";
@@ -136,6 +137,108 @@ pub struct MoveFacts {
     /// Whether background shells (one that only waits for Yulius included), agents or monitors of
     /// the session run now; `None` when that could not be told.
     pub background: Option<bool>,
+    /// Something waits in Claude Code's queue, or was handed on to a turn not seen yet
+    /// ([`Queue::holds`]): the process holds it in memory alone (SPEC-471 CCQ-002, CCQ-003).
+    pub queued: bool,
+    /// A prompt from the prompt box went on moments ago ([`record_pending`]), or while this
+    /// turn's end looked at the session: where it went (a turn of its own, or Claude Code's
+    /// queue) may not be in the lines read (SPEC-471 CCQ-004).
+    pub prompt_unread: bool,
+}
+
+/// What one `queue-operation` record of Claude Code's transcript says happened to its queue
+/// (SPEC-471 CCQ-001). Claude Code keeps a prompt entered while a turn runs, and its own
+/// notifications, in a queue inside its process: a resumed session does not get it back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueueChange {
+    /// An entry waits (`enqueue`).
+    Added,
+    /// An entry was handed on to a turn of its own, which starts next (`dequeue`).
+    HandedOn,
+    /// An entry left without a turn of its own (`remove`, `popAll`, `popOne`): taken into the
+    /// running turn at a tool result, given to another agent, put back into the prompt box, or
+    /// dropped.
+    Taken,
+}
+
+/// What waits in Claude Code's queue, as the records of one run say, in the order they were
+/// written (SPEC-471 CCQ-001). A run starts with [`Queue::default`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Queue {
+    /// Entries put in and not taken out.
+    waiting: u32,
+    /// An entry was handed on and the turn it starts was not seen yet: between the two the
+    /// queue reads empty and no turn shows (CCQ-003).
+    handing_on: bool,
+    /// When Claude Code recorded the last of the hand-overs that are not over, if every one of
+    /// their records said when.
+    handed_on_at: Option<Timestamp>,
+}
+
+impl Queue {
+    /// One record, written at `at`, in transcript order. The count never goes below zero: a
+    /// record whose entry was put in before the run's lines began takes nothing out.
+    pub fn record(&mut self, change: QueueChange, at: Option<Timestamp>) {
+        match change {
+            QueueChange::Added => self.waiting = self.waiting.saturating_add(1),
+            QueueChange::HandedOn => {
+                self.waiting = self.waiting.saturating_sub(1);
+                // The latest of a batch, whatever order they are read in; a record without a
+                // time may be the latest, so with one the time is not known.
+                self.handed_on_at = match (self.handing_on, self.handed_on_at, at) {
+                    (false, _, at) => at,
+                    (true, Some(before), Some(at)) => Some(before.max(at)),
+                    (true, _, _) => None,
+                };
+                self.handing_on = true;
+            }
+            QueueChange::Taken => self.waiting = self.waiting.saturating_sub(1),
+        }
+    }
+
+    /// The prompt record of a turn was read: what was handed on has its turn.
+    pub fn turn_seen(&mut self) {
+        self.handing_on = false;
+        self.handed_on_at = None;
+    }
+
+    /// A line of the model's own, written at `at`, was read. Written after the hand-over, it
+    /// is of the turn the hand-over started, which then needs no prompt record to be known:
+    /// a prompt Claude Code scheduled for itself is handed on with a record Yulius does not
+    /// read as a prompt. A line of the turn that ended may follow the hand-over in the file,
+    /// but was written before it; a line without a time, or a hand-over without one, says
+    /// nothing.
+    pub fn work_seen(&mut self, at: Option<Timestamp>) {
+        if let (Some(at), Some(handed_on)) = (at, self.handed_on_at)
+            && at > handed_on
+        {
+            self.turn_seen();
+        }
+    }
+
+    /// Whether the process holds something a restart would lose: an entry that waits, or one
+    /// handed on to a turn that is not known yet.
+    #[must_use]
+    pub fn holds(&self) -> bool {
+        self.waiting > 0 || self.handing_on
+    }
+
+    /// The entries that wait.
+    #[must_use]
+    pub fn waiting(&self) -> u32 {
+        self.waiting
+    }
+}
+
+/// Whether the record of a prompt from the prompt box that went on `passed_ms_ago` (`None`:
+/// none did in this run) may still be missing from the transcript, with `bound_ms` taken as
+/// the time Claude Code needs to write it (SPEC-471 CCQ-004). Claude Code makes the record
+/// (the prompt's own, or its `enqueue`) once the prompt's hook returned, and the record
+/// reaches the file about 100 ms later: until then nothing says where the prompt went. A clock
+/// that went back counts as "just now".
+#[must_use]
+pub fn record_pending(passed_ms_ago: Option<i64>, bound_ms: i64) -> bool {
+    bound_ms > 0 && passed_ms_ago.is_some_and(|ago| ago < bound_ms)
 }
 
 /// A person who typed into a session this recently owns its prompt box: it is not restarted
@@ -155,21 +258,63 @@ pub fn is_draft(typed_at_ms: i64, box_emptied_ms: i64) -> bool {
 /// `target` before (a session that still names the old one afterwards is not restarted at every
 /// turn's end), no session failed to continue on `target`, nobody typed into it in the last
 /// minute, left a draft in its prompt box or paused it, no update of the instance holds the
-/// runs, no switch was just refused, and nothing of it runs in the background, which a restart
-/// would end (unknown counts as running).
+/// runs, no switch was just refused, nothing of it runs in the background, which a restart
+/// would end (unknown counts as running), and nothing waits in Claude Code's queue or went on
+/// unread while the turn's end looked, which the process alone holds (SPEC-471).
 #[must_use]
 pub fn moves_now(facts: &MoveFacts) -> bool {
+    is_due(facts) && kept_by(facts).is_none()
+}
+
+/// Whether a restart on `target` is due at all: the session runs an older version, was not
+/// sent to `target` before, and no session failed to continue on it.
+fn is_due(facts: &MoveFacts) -> bool {
     facts.runs < facts.target
         && facts.sent_to != Some(facts.target)
         && facts.stopped_for != Some(facts.target)
-        && facts
-            .typed_ms_ago
-            .is_none_or(|ago| ago >= TYPED_RECENTLY_MS)
-        && !facts.draft
-        && !facts.switch_refused
-        && !facts.paused
-        && !facts.update_holds
-        && facts.background == Some(false)
+}
+
+/// What keeps a session that is due for a newer Claude Code where it is at a turn's end, in
+/// words for the log (SPEC-471): the first of the facts [`moves_now`] asks that says so. `None`
+/// when the session moves, and when nothing is due: it runs the version runs get or a newer
+/// one, was sent to that version before, or no session is sent to it any more.
+#[must_use]
+pub fn kept_by(facts: &MoveFacts) -> Option<&'static str> {
+    if !is_due(facts) {
+        return None;
+    }
+    let typed = facts
+        .typed_ms_ago
+        .is_some_and(|ago| ago < TYPED_RECENTLY_MS);
+    let background = match facts.background {
+        Some(false) => None,
+        Some(true) => Some("background work of it runs"),
+        None => Some("its background work could not be told"),
+    };
+    [
+        (typed, "a person typed into it in the last minute"),
+        (facts.draft, "a draft may sit in its prompt box"),
+        (
+            facts.switch_refused,
+            "a switch or a restart of it was refused moments ago",
+        ),
+        (facts.paused, "a person paused it"),
+        (
+            facts.update_holds,
+            "an update of the instance holds the runs",
+        ),
+        (background.is_some(), background.unwrap_or_default()),
+        (
+            facts.queued,
+            "something waits in Claude Code's queue, or its lines were not read yet",
+        ),
+        (
+            facts.prompt_unread,
+            "a prompt just went on and its record may not be written yet",
+        ),
+    ]
+    .into_iter()
+    .find_map(|(keeps, why)| keeps.then_some(why))
 }
 
 /// The text after a model id that ends it: anything but a letter, a digit or a hyphen, or the end
@@ -506,6 +651,8 @@ mod tests {
             paused: false,
             update_holds: false,
             background: Some(false),
+            queued: false,
+            prompt_unread: false,
         };
         assert!(moves_now(&due));
         let stays = |facts: MoveFacts, why: &str| assert!(!moves_now(&facts), "{why}");
@@ -588,6 +735,120 @@ mod tests {
             },
             "background work could not be told",
         );
+        // SPEC-471 CCQ-002, CCQ-004.
+        stays(
+            MoveFacts {
+                queued: true,
+                ..due
+            },
+            "a prompt waits in Claude Code's queue",
+        );
+        stays(
+            MoveFacts {
+                prompt_unread: true,
+                ..due
+            },
+            "a prompt just went on, or did while the turn's end looked",
+        );
+        // SPEC-471: a session that is due and stays is kept by a fact that has a name; one
+        // that moves, or is not due, by none.
+        assert_eq!(kept_by(&due), None);
+        let kept = |facts: MoveFacts| kept_by(&facts);
+        for not_due in [
+            MoveFacts {
+                runs: v("2.1.322"),
+                queued: true,
+                ..due
+            },
+            MoveFacts {
+                sent_to: Some(v("2.1.322")),
+                queued: true,
+                ..due
+            },
+            MoveFacts {
+                stopped_for: Some(v("2.1.322")),
+                draft: true,
+                ..due
+            },
+        ] {
+            assert_eq!(kept(not_due), None, "{not_due:?}");
+        }
+        let named = [
+            (
+                MoveFacts {
+                    typed_ms_ago: Some(1),
+                    ..due
+                },
+                "a person typed into it in the last minute",
+            ),
+            (
+                MoveFacts { draft: true, ..due },
+                "a draft may sit in its prompt box",
+            ),
+            (
+                MoveFacts {
+                    switch_refused: true,
+                    ..due
+                },
+                "a switch or a restart of it was refused moments ago",
+            ),
+            (
+                MoveFacts {
+                    paused: true,
+                    ..due
+                },
+                "a person paused it",
+            ),
+            (
+                MoveFacts {
+                    update_holds: true,
+                    ..due
+                },
+                "an update of the instance holds the runs",
+            ),
+            (
+                MoveFacts {
+                    background: Some(true),
+                    ..due
+                },
+                "background work of it runs",
+            ),
+            (
+                MoveFacts {
+                    background: None,
+                    ..due
+                },
+                "its background work could not be told",
+            ),
+            (
+                MoveFacts {
+                    queued: true,
+                    ..due
+                },
+                "something waits in Claude Code's queue, or its lines were not read yet",
+            ),
+            (
+                MoveFacts {
+                    prompt_unread: true,
+                    ..due
+                },
+                "a prompt just went on and its record may not be written yet",
+            ),
+        ];
+        for (facts, why) in named {
+            assert_eq!(kept(facts), Some(why));
+            assert!(!moves_now(&facts), "{why}");
+        }
+        // Every fact that keeps a due session has a name.
+        assert_eq!(
+            kept(MoveFacts {
+                queued: true,
+                draft: true,
+                ..due
+            }),
+            Some("a draft may sit in its prompt box"),
+            "the first one asked"
+        );
         // Sent to an older version before, or stopped for another: this one is new.
         assert!(moves_now(&MoveFacts {
             sent_to: Some(v("2.1.318")),
@@ -595,6 +856,147 @@ mod tests {
             typed_ms_ago: Some(TYPED_RECENTLY_MS),
             ..due
         }));
+    }
+
+    /// SPEC-471 CCQ-001: the queue as Claude Code's records count it. An entry waits from its
+    /// `enqueue` until it is handed on or taken, and the count never goes below zero.
+    #[test]
+    fn the_queue_counts_what_was_put_in_and_not_taken_out() {
+        let mut queue = Queue::default();
+        assert!(!queue.holds(), "a run starts with an empty queue");
+        queue.record(QueueChange::Added, None);
+        queue.record(QueueChange::Added, None);
+        assert_eq!(queue.waiting(), 2);
+        assert!(queue.holds());
+        // Taken into the running turn at a tool result: one still waits.
+        queue.record(QueueChange::Taken, None);
+        assert_eq!(queue.waiting(), 1);
+        assert!(queue.holds());
+        queue.record(QueueChange::Taken, None);
+        assert_eq!(queue.waiting(), 0);
+        assert!(!queue.holds(), "taken into a turn that runs: nothing waits");
+        // A record whose entry was put in before the run's lines began takes nothing out.
+        queue.record(QueueChange::Taken, None);
+        assert_eq!(queue.waiting(), 0);
+        queue.record(QueueChange::Added, None);
+        assert_eq!(queue.waiting(), 1, "the count did not go below zero");
+    }
+
+    /// SPEC-471 CCQ-003: an entry that was handed on counts until the prompt record of the
+    /// turn it starts was read; a turn seen before the hand-over ends nothing.
+    #[test]
+    fn a_hand_over_counts_until_its_turn_is_seen() {
+        let mut queue = Queue::default();
+        queue.record(QueueChange::Added, None);
+        queue.turn_seen();
+        assert!(
+            queue.holds(),
+            "the turn that runs is not the waiting prompt's"
+        );
+        queue.record(QueueChange::HandedOn, None);
+        assert_eq!(queue.waiting(), 0);
+        assert!(queue.holds(), "handed on, and its turn is not known yet");
+        queue.turn_seen();
+        assert!(!queue.holds());
+        // Two prompts handed on together are one turn.
+        queue.record(QueueChange::Added, None);
+        queue.record(QueueChange::Added, None);
+        queue.record(QueueChange::HandedOn, None);
+        assert!(queue.holds());
+        queue.record(QueueChange::HandedOn, None);
+        queue.turn_seen();
+        assert!(!queue.holds());
+        // A hand-over of an entry this run never counted still starts a turn.
+        queue.record(QueueChange::HandedOn, None);
+        assert_eq!(queue.waiting(), 0);
+        assert!(queue.holds());
+        // An entry put in while a hand-over's turn is awaited waits on after that turn showed.
+        queue.record(QueueChange::Added, None);
+        queue.turn_seen();
+        assert!(queue.holds());
+    }
+
+    /// SPEC-471 CCQ-003: a hand-over whose turn has no prompt record Yulius reads (a prompt
+    /// Claude Code scheduled for itself) ends with the model's first line written after it.
+    /// The lines of the turn that ended were written before the hand-over, though they may be
+    /// read after it; a line without a time, and a hand-over without one, decide nothing.
+    #[test]
+    fn a_hand_over_ends_with_the_models_work_written_after_it() {
+        let at = |ms| Some(Timestamp(ms));
+        let mut queue = Queue::default();
+        queue.record(QueueChange::Added, at(100));
+        queue.record(QueueChange::HandedOn, at(200));
+        queue.work_seen(at(190));
+        assert!(queue.holds(), "a line of the turn that ended");
+        queue.work_seen(at(200));
+        assert!(queue.holds(), "the same millisecond does not say after");
+        queue.work_seen(None);
+        assert!(queue.holds(), "a sub-agent's line has no time");
+        queue.work_seen(at(201));
+        assert!(!queue.holds(), "the turn it started works");
+        // Handed on together: the last record's time counts.
+        queue.record(QueueChange::Added, at(250));
+        queue.record(QueueChange::Added, at(260));
+        queue.record(QueueChange::HandedOn, at(300));
+        queue.record(QueueChange::HandedOn, at(310));
+        queue.work_seen(at(305));
+        assert!(queue.holds());
+        queue.work_seen(at(311));
+        assert!(!queue.holds());
+        // Read out of order, the later of the two still counts.
+        queue.record(QueueChange::HandedOn, at(410));
+        queue.record(QueueChange::HandedOn, at(400));
+        queue.work_seen(at(405));
+        assert!(queue.holds(), "written before the later hand-over");
+        queue.work_seen(at(411));
+        assert!(!queue.holds());
+        // A hand-over whose record names no time ends with a prompt record alone.
+        queue.record(QueueChange::HandedOn, None);
+        queue.work_seen(at(10_000));
+        assert!(queue.holds());
+        queue.turn_seen();
+        assert!(!queue.holds());
+        // So does a batch in which one record names none, whichever comes first: when the
+        // last of them was written is not known.
+        queue.record(QueueChange::HandedOn, at(11_000));
+        queue.record(QueueChange::HandedOn, None);
+        queue.work_seen(at(12_000));
+        assert!(queue.holds(), "the untimed one may be later");
+        queue.turn_seen();
+        queue.record(QueueChange::HandedOn, None);
+        queue.record(QueueChange::HandedOn, at(13_000));
+        queue.work_seen(at(14_000));
+        assert!(queue.holds(), "the untimed one may be later");
+        queue.turn_seen();
+        assert!(!queue.holds());
+        // An earlier hand-over's time does not outlive it.
+        queue.record(QueueChange::HandedOn, None);
+        queue.work_seen(at(20_000));
+        assert!(
+            queue.holds(),
+            "the time of the hand-over before is forgotten"
+        );
+        queue.turn_seen();
+        // Work never takes out what waits.
+        queue.record(QueueChange::Added, at(30_000));
+        queue.work_seen(at(40_000));
+        assert!(queue.holds());
+        assert_eq!(queue.waiting(), 1);
+    }
+
+    /// SPEC-471 CCQ-004: for the time Claude Code needs to write where a prompt went, the
+    /// prompt's record may be missing from the lines a turn's end reads.
+    #[test]
+    fn the_record_of_a_prompt_that_just_went_on_may_be_missing() {
+        assert!(!record_pending(None, 1_000), "no prompt went on");
+        assert!(record_pending(Some(0), 1_000));
+        assert!(record_pending(Some(999), 1_000));
+        assert!(!record_pending(Some(1_000), 1_000), "the time is over");
+        assert!(!record_pending(Some(60_000), 1_000), "long ago");
+        assert!(record_pending(Some(-5_000), 1_000), "the clock went back");
+        assert!(!record_pending(Some(0), 0), "no time is taken");
+        assert!(!record_pending(Some(-5_000), 0));
+        assert!(!record_pending(Some(0), -3));
     }
 
     /// SPEC-468 CCF-010: a keystroke is a draft when it came after the session's prompt box was

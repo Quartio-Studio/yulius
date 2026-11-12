@@ -15,7 +15,8 @@ use std::time::Duration;
 use yulius_contracts::api::updates::{ClaudeCodeBehind, ClaudeCodeRefused, ClaudeCodeView};
 use yulius_domain::agent_cli::{
     Channel, MoveFacts, NewestFacts, RegistryRead, Version, default_model_fix,
-    default_model_problem, gap_text, is_draft, lacks_default, moves_now, newest_lacking_default,
+    default_model_problem, gap_text, is_draft, kept_by, lacks_default, moves_now,
+    newest_lacking_default, record_pending,
 };
 use yulius_domain::harness::DEFAULT_CLAUDE_MODEL;
 use yulius_domain::ids::{AccountId, AttemptId, TaskId};
@@ -138,6 +139,15 @@ impl Drop for Moving<'_> {
             moving.remove(self.task);
         }
     }
+}
+
+/// What the looks of a turn's end found ([`App::claude_code_move_due`]).
+#[derive(Debug, Clone, Copy)]
+struct Looked {
+    /// Whether background work of the session runs; `None` when that could not be told.
+    background: Option<bool>,
+    /// How many prompts from the prompt box had gone on when the looks began.
+    prompts_before: u64,
 }
 
 /// The sentence about what the last check did.
@@ -321,8 +331,9 @@ impl App {
     /// Whether something was typed into the task's session since its prompt box was last
     /// empty (its run's start, or the last prompt submitted from it), by a person or by Yulius
     /// (a person's message, a pull request's news): it may still sit in the box, and a restart
-    /// would lose it (SPEC-468 CCF-010, CCF-011). A prompt submitted while a turn runs waits
-    /// in Claude Code's queue, which this does not know (issue #1204). Public for tests.
+    /// would lose it (SPEC-468 CCF-010, CCF-011). A prompt submitted while a turn runs is no
+    /// draft: it waits in Claude Code's queue, which [`Self::claude_queue_holds`] knows (SPEC-471).
+    /// Public for tests.
     #[must_use]
     pub fn has_draft(&self, task_id: &TaskId) -> bool {
         let runtime = self.runtime(task_id);
@@ -332,15 +343,40 @@ impl App {
         )
     }
 
+    /// Whether something waits in Claude Code's own queue (not Yulius's queue of tasks) in the
+    /// task's session, or was handed on
+    /// to a turn not seen yet, as the run's lines read so far say (SPEC-471 CCQ-001, CCQ-003):
+    /// a prompt entered while a turn runs, a message Yulius typed meanwhile, a notification of
+    /// Claude Code's own. The process holds it in memory alone, and a resumed session does not
+    /// get it back. A run reattached after a restart of the server counts as holding
+    /// something until its lines were read again: nothing is known before. Public for tests.
+    #[must_use]
+    pub fn claude_queue_holds(&self, task_id: &TaskId) -> bool {
+        self.existing_runtime(task_id)
+            .is_some_and(|runtime| runtime.queue_may_hold())
+    }
+
+    /// How many entries wait in Claude Code's queue of the task's session, as read so far
+    /// ([`Self::claude_queue_holds`] also counts one that is being handed on). Public for tests.
+    #[must_use]
+    pub fn claude_queue_waiting(&self, task_id: &TaskId) -> u32 {
+        self.existing_runtime(task_id)
+            .map_or(0, |runtime| runtime.queue().waiting())
+    }
+
     /// What a turn's end knows about restarting the task's session, which runs `runs`, on
     /// `target`. All of it is cheap to read, so it is read again after the looks that take
-    /// seconds; `background` is what those looks found.
+    /// seconds; `looked` is what those looks found, `None` before them. Only after them is
+    /// Claude Code's queue asked: the watcher reads once a second, so before the turn's lines
+    /// were read its count may still name an entry that was handed on, or miss one (SPEC-471
+    /// CCQ-002). A prompt that went on moments ago, or while the looks were made, is in no
+    /// line they read (CCQ-004).
     async fn move_facts(
         &self,
         services: &AgentCliServices,
         task_id: &TaskId,
         (runs, target): (Version, Version),
-        background: Option<bool>,
+        looked: Option<Looked>,
     ) -> Option<MoveFacts> {
         let sent_to = services.moved.lock().ok()?.get(task_id).copied();
         let stopped_for = services
@@ -359,8 +395,32 @@ impl App {
             switch_refused: self.switch_cooling(task_id) || self.claude_move_cooling(task_id),
             paused: self.is_paused_by_person(task_id).await,
             update_holds: self.update_holds_starts(),
-            background,
+            // Before the looks: taken as none, so that they are made.
+            background: looked.map_or(Some(false), |looked| looked.background),
+            queued: looked.is_some() && self.claude_queue_holds(task_id),
+            prompt_unread: self.prompt_just_went_on(task_id)
+                || looked
+                    .is_some_and(|looked| self.prompts_passed(task_id) != looked.prompts_before),
         })
+    }
+
+    /// How many prompts from the prompt box of the task's session went on in its run.
+    fn prompts_passed(&self, task_id: &TaskId) -> u64 {
+        self.runtime(task_id).prompts_passed.load(Ordering::SeqCst)
+    }
+
+    /// Whether a prompt from the prompt box of the task's session went on so recently that the
+    /// record which says where it went may not be written yet (SPEC-471 CCQ-004). Public for
+    /// tests, which wait for that time to pass instead of sleeping through it.
+    #[must_use]
+    pub fn prompt_just_went_on(&self, task_id: &TaskId) -> bool {
+        let passed = self
+            .runtime(task_id)
+            .prompt_passed_ms
+            .load(Ordering::SeqCst);
+        let ago = (passed > 0).then(|| self.now().0.saturating_sub(passed));
+        let bound = i64::try_from(self.config.claude_code_queue_record_ms).unwrap_or(i64::MAX);
+        record_pending(ago, bound)
     }
 
     /// The newer Claude Code the session of `attempt` moves to now, at its turn's end (SPEC-461
@@ -369,8 +429,11 @@ impl App {
     /// typed into it in the last minute, left a draft in its prompt box (typed since its last
     /// prompt) or paused it, an update of the instance holds the runs,
     /// a switch was refused moments ago, it has background shells (a `yulius wait` included),
-    /// agents or monitors, which a restart would end, or that could not be told within
-    /// [`crate::context::AppConfig::claude_code_decision_ms`].
+    /// agents or monitors, which a restart would end, something waits in Claude Code's queue
+    /// (a prompt entered while a turn ran, which a resumed session does not get back; SPEC-471),
+    /// a prompt went on within [`crate::context::AppConfig::claude_code_queue_record_ms`] or
+    /// while this looked, so that its record may not be read, or that could not be told
+    /// within [`crate::context::AppConfig::claude_code_decision_ms`].
     pub(crate) async fn claude_code_move_due(
         self: &Arc<Self>,
         task_id: &TaskId,
@@ -380,6 +443,8 @@ impl App {
         let target = services.adapter.version_for_new_runs()?;
         let deadline = tokio::time::Instant::now()
             + Duration::from_millis(self.config.claude_code_decision_ms);
+        // A prompt that goes on from here on is in no line the looks below read.
+        let prompts_before = self.prompts_passed(task_id);
         let mut lines_read = false;
         let runs = match self.run_cli_version(task_id, attempt).await {
             Some(runs) => runs?,
@@ -387,6 +452,7 @@ impl App {
             None => {
                 tokio::time::timeout_at(deadline, self.await_transcript_read(task_id))
                     .await
+                    .map_err(|_| Self::log_out_of_time(task_id))
                     .ok()?;
                 lines_read = true;
                 self.run_cli_version(task_id, attempt).await??
@@ -394,20 +460,24 @@ impl App {
         };
         // What costs nothing first: most turns end on the version runs get.
         let cheap = self
-            .move_facts(services, task_id, (runs, target), Some(false))
+            .move_facts(services, task_id, (runs, target), None)
             .await?;
         if !moves_now(&cheap) {
+            Self::log_kept(task_id, &cheap);
             return None;
         }
         // Background work started in this turn is known from its lines (SPEC-079 BGW-004); a
-        // shell that only runs `yulius wait` counts: its news would never arrive.
+        // shell that only runs `yulius wait` counts: its news would never arrive. So is a
+        // prompt entered while the turn ran, which waits in Claude Code's queue (SPEC-471).
         if !lines_read {
             tokio::time::timeout_at(deadline, self.await_transcript_read(task_id))
                 .await
+                .map_err(|_| Self::log_out_of_time(task_id))
                 .ok()?;
         }
         let background = tokio::time::timeout_at(deadline, self.background_or_wait_now(task_id))
             .await
+            .map_err(|_| Self::log_out_of_time(task_id))
             .ok()?;
         crate::race::reached(
             crate::race::Point::ClaudeMoveProbed,
@@ -415,10 +485,41 @@ impl App {
         );
         // That took a moment: a person may have started a draft or paused the task, an update
         // of the instance begun to hold the runs, another session failed on this version.
+        let looked = Looked {
+            background,
+            prompts_before,
+        };
         let facts = self
-            .move_facts(services, task_id, (runs, target), background)
+            .move_facts(services, task_id, (runs, target), Some(looked))
             .await?;
+        Self::log_kept(task_id, &facts);
         moves_now(&facts).then_some(target)
+    }
+
+    /// Says in the log that a turn's end could not decide in its time
+    /// ([`crate::context::AppConfig::claude_code_decision_ms`]): the session stays, and a
+    /// later turn's end decides.
+    fn log_out_of_time(task_id: &TaskId) {
+        tracing::info!(
+            task = %task_id,
+            why = "the look at the session took longer than a turn's end may",
+            "the session is not restarted on the newer Claude Code at this turn's end"
+        );
+    }
+
+    /// Says in the log what keeps a session that is due for the newer Claude Code where it
+    /// is: the Instance page lists such a task as one that moves when its turn ends, and
+    /// nothing else names the fact (a draft, something in Claude Code's queue, …).
+    fn log_kept(task_id: &TaskId, facts: &MoveFacts) {
+        if let Some(why) = kept_by(facts) {
+            tracing::info!(
+                task = %task_id,
+                runs = %facts.runs,
+                target = %facts.target,
+                why,
+                "the session is not restarted on the newer Claude Code at this turn's end"
+            );
+        }
     }
 
     /// Restarts the session of `task_id`, whose run is `from`, on Claude Code `version` in the

@@ -156,8 +156,8 @@ pub struct TaskRuntime {
     /// When Yulius last typed a message into the session for it to submit (ms, 0 = never): a
     /// person's message, a pull request's news (`type_into_session`). It counts as a draft
     /// until its submit, which Claude Code makes at Yulius's own Enter. The wait in Claude
-    /// Code's queue while a turn runs comes after that and is not known here (SPEC-468
-    /// CCF-011, issue #1204).
+    /// Code's queue while a turn runs comes after that: [`Self::queue`] knows it (SPEC-468
+    /// CCF-011, SPEC-471).
     pub(crate) message_typed_ms: AtomicI64,
     /// When the session's prompt box was last known empty (ms, 0 = not known): its run's
     /// launch, or the last prompt submitted from it. What was typed after that may still sit
@@ -173,7 +173,7 @@ pub struct TaskRuntime {
     /// for days) leaves this set until the run's next prompt is answered, which then counts as
     /// the held one going on: the session reads as holding a draft until the prompt after
     /// that is submitted, never as holding none. A new run holds none
-    /// ([`Self::prompt_box_starts_empty`]).
+    /// ([`Self::run_starts`]).
     pub(crate) prompt_held: AtomicBool,
     /// Whose personal MCP servers the current run was started with (SPEC-332 MSC-009): a live
     /// run keeps its MCP configuration, so a hand-over restarts it, and only that person messages
@@ -316,6 +316,21 @@ pub struct TaskRuntime {
     /// The clean Stop (ms) whose turn waits for the goal verdict before it reads idle (0 = none).
     /// Whoever takes it settles that turn (SPEC-079 BGW-005).
     pub(crate) verdict_stop_ms: crate::finish::VerdictSlot,
+    /// What waits in Claude Code's queue, as the run's `queue-operation` records say: a prompt
+    /// entered while a turn runs, or a notification of its own, which the process holds in
+    /// memory alone, so a restart loses it (SPEC-471 CCQ-001). A run starts with none.
+    pub(crate) queue: Mutex<yulius_domain::agent_cli::Queue>,
+    /// When a prompt from the session's prompt box last went on to Claude Code (ms, 0 = none in
+    /// this run): where it went (a turn of its own, or the queue) is written a moment later
+    /// (SPEC-471 CCQ-004).
+    pub(crate) prompt_passed_ms: AtomicI64,
+    /// How many prompts from the prompt box went on so far (it only grows): a turn's end that
+    /// looks at the session reads it twice and so sees that one went on meanwhile (SPEC-471
+    /// CCQ-004).
+    pub(crate) prompts_passed: AtomicU64,
+    /// The run was reattached after a restart of the server and its lines were not read again
+    /// yet: what waits in Claude Code's queue is not known (SPEC-471 CCQ-001).
+    pub(crate) queue_unread: AtomicBool,
     /// Polls of the transcript watcher so far: the Stop hook waits for one more before it decides
     /// a switch, so the lines written before the Stop are read (SPEC-079 BGW-004).
     pub(crate) watch_polls: AtomicU64,
@@ -416,11 +431,36 @@ impl TaskRuntime {
             .max(self.message_typed_ms.load(Ordering::SeqCst))
     }
 
-    /// A run starts at `now_ms`: its prompt box is empty, and no prompt of it is held (one held
-    /// in the run before went with that run's hook client; SPEC-468 CCF-010).
-    pub(crate) fn prompt_box_starts_empty(&self, now_ms: i64) {
+    /// A run starts at `now_ms`, in a new process: its prompt box is empty, and no prompt of
+    /// it is held (one held in the run before went with that run's hook client; SPEC-468
+    /// CCF-010). Nothing waits in its queue and no prompt of it went on: what the run before
+    /// queued went with its process (SPEC-471 CCQ-001).
+    pub(crate) fn run_starts(&self, now_ms: i64) {
         self.box_emptied_ms.store(now_ms, Ordering::SeqCst);
         self.prompt_held.store(false, Ordering::SeqCst);
+        self.with_queue(|queue| *queue = yulius_domain::agent_cli::Queue::default());
+        self.queue_unread.store(false, Ordering::SeqCst);
+        self.prompt_passed_ms.store(0, Ordering::SeqCst);
+    }
+
+    /// What the run's lines said so far about Claude Code's queue.
+    pub(crate) fn queue(&self) -> yulius_domain::agent_cli::Queue {
+        self.queue.lock().map(|queue| *queue).unwrap_or_default()
+    }
+
+    /// Whether Claude Code's queue may hold something a restart would lose: its records say
+    /// so, or they were not read yet ([`Self::queue_unread`]), or what they said cannot be
+    /// read (a poisoned lock): not known counts as holding.
+    pub(crate) fn queue_may_hold(&self) -> bool {
+        self.queue_unread.load(Ordering::SeqCst)
+            || self.queue.lock().map_or(true, |queue| queue.holds())
+    }
+
+    /// Changes what is known of the queue.
+    pub(crate) fn with_queue(&self, change: impl FnOnce(&mut yulius_domain::agent_cli::Queue)) {
+        if let Ok(mut queue) = self.queue.lock() {
+            change(&mut queue);
+        }
     }
 
     pub(crate) fn new() -> Self {
@@ -495,6 +535,10 @@ impl TaskRuntime {
             goal_open: AtomicBool::new(false),
             goal_unfinished: AtomicBool::new(false),
             verdict_stop_ms: crate::finish::VerdictSlot::default(),
+            queue: Mutex::default(),
+            prompt_passed_ms: AtomicI64::new(0),
+            prompts_passed: AtomicU64::new(0),
+            queue_unread: AtomicBool::new(false),
             watch_polls: AtomicU64::new(0),
             replay_transcript: AtomicBool::new(false),
             session_end: Mutex::new(None),
@@ -1789,7 +1833,7 @@ impl App {
         // Typing from now on, once viewers can write to this run, is a person's draft in it
         // (SPEC-068): its prompt box starts empty (SPEC-468 CCF-010).
         let typed_before = runtime.typed_at_ms.load(Ordering::SeqCst);
-        runtime.prompt_box_starts_empty(self.now().0);
+        runtime.run_starts(self.now().0);
         self.attach_run(&task.id, &attempt, &host_token).await?;
         // The new run learns its goal from its own lines, and an idle one writes none: what the
         // old run read of the goal still says what the agent left.
@@ -3992,8 +4036,10 @@ impl App {
                 .ok()
                 .and_then(|b| b.try_into().ok());
             // The run's transcript so far is history: its watcher catches up on it (TSK-014).
+            // Until it did, what waits in Claude Code's queue is not known (SPEC-471 CCQ-001).
             let runtime = self.runtime(&attempt.task_id);
             runtime.replay_transcript.store(true, Ordering::SeqCst);
+            runtime.queue_unread.store(true, Ordering::SeqCst);
             // Before the run is attached, so no message is typed meanwhile (SPEC-230): when it
             // was spawned, and whether its session started (a SessionStart this server did not
             // see left its marker).
@@ -4012,9 +4058,9 @@ impl App {
                 None => false,
             };
             if !reattached {
-                self.runtime(&attempt.task_id)
-                    .replay_transcript
-                    .store(false, Ordering::SeqCst);
+                let runtime = self.runtime(&attempt.task_id);
+                runtime.replay_transcript.store(false, Ordering::SeqCst);
+                runtime.queue_unread.store(false, Ordering::SeqCst);
             }
             if reattached {
                 tracing::info!(task = %attempt.task_id, "reattached live run");
@@ -4500,6 +4546,15 @@ impl App {
         {
             blind.answered();
         }
+        // A line of the model written after a hand-over is of the turn the hand-over started,
+        // which a prompt Claude Code scheduled for itself begins with no prompt record read
+        // here (SPEC-471 CCQ-003). Said to the queue once the line was applied below, as a
+        // prompt record's turn is: such a prompt has had its hook by then, so the task reads
+        // Working either way.
+        let worked = match &observation {
+            Observation::AgentWork { at } | Observation::TurnComplete { at } => *at,
+            _ => None,
+        };
         match observation {
             Observation::LimitReached {
                 resets_at,
@@ -4573,6 +4628,8 @@ impl App {
                 // settles, after this prompt started its turn (SPEC-453 TPO-001).
                 let _order = runtime.turn_order.lock().await;
                 if at.is_some_and(|at| at.0 <= runtime.last_stop_ms.load(Ordering::SeqCst)) {
+                    // Its turn came and went: what Claude Code handed on had it (SPEC-471).
+                    runtime.with_queue(yulius_domain::agent_cli::Queue::turn_seen);
                     return;
                 }
                 crate::race::reached(
@@ -4608,6 +4665,9 @@ impl App {
                     .await;
                 self.publish_task(task_id).await;
                 self.keep_working_stretch(task_id, stretch).await;
+                // Only now, with the task reading Working: the turn of what Claude Code handed
+                // on from its queue is known, so the hand-over is over (SPEC-471 CCQ-003).
+                runtime.with_queue(yulius_domain::agent_cli::Queue::turn_seen);
             }
             Observation::TurnComplete { at } => {
                 if let Some(at) = at {
@@ -4680,8 +4740,11 @@ impl App {
             Observation::BackgroundResumable { id } => {
                 self.background_resumable(task_id, id).await;
             }
+            // In the order of the lines: the count is ahead of nothing the watcher applied.
+            Observation::Queue(change, at) => runtime.with_queue(|queue| queue.record(change, at)),
             Observation::Session { .. } => {}
         }
+        runtime.with_queue(|queue| queue.work_seen(worked));
     }
 
     /// Applies the pool policy for a running task and acts on the decision (SPEC-001 §7.4):
@@ -4884,9 +4947,51 @@ mod tests {
         let runtime = super::TaskRuntime::new();
         runtime.typed_at_ms.store(5_000, Ordering::SeqCst);
         runtime.prompt_held.store(true, Ordering::SeqCst);
-        runtime.prompt_box_starts_empty(7_000);
+        runtime.run_starts(7_000);
         assert_eq!(runtime.box_emptied_ms.load(Ordering::SeqCst), 7_000);
         assert!(!runtime.prompt_held.load(Ordering::SeqCst));
+    }
+
+    /// SPEC-471 CCQ-001: what the run before left in Claude Code's queue went with its process,
+    /// and a resumed session does not get it back: a run starts with an empty queue and with
+    /// no prompt that just went on.
+    #[test]
+    fn a_new_run_starts_with_an_empty_queue() {
+        use std::sync::atomic::Ordering;
+        use yulius_domain::agent_cli::QueueChange;
+        let runtime = super::TaskRuntime::new();
+        runtime.with_queue(|queue| queue.record(QueueChange::Added, None));
+        runtime.with_queue(|queue| queue.record(QueueChange::HandedOn, None));
+        runtime.with_queue(|queue| queue.record(QueueChange::Added, None));
+        runtime.prompt_passed_ms.store(6_500, Ordering::SeqCst);
+        assert!(runtime.queue().holds());
+        runtime.run_starts(7_000);
+        assert_eq!(runtime.queue(), yulius_domain::agent_cli::Queue::default());
+        assert_eq!(runtime.prompt_passed_ms.load(Ordering::SeqCst), 0);
+        assert!(!runtime.queue_may_hold());
+        // A run reattached after a restart of the server: not known until its lines were read,
+        // which counts as holding; the next launch starts a process whose queue is empty.
+        runtime.queue_unread.store(true, Ordering::SeqCst);
+        assert!(runtime.queue_may_hold(), "not known counts as holding");
+        runtime.run_starts(8_000);
+        assert!(!runtime.queue_may_hold());
+    }
+
+    /// SPEC-471 CCQ-001: what the queue's records said cannot be read any more once a thread
+    /// died holding them: that is "not known", which counts as holding something.
+    #[test]
+    fn a_queue_that_cannot_be_read_counts_as_holding() {
+        let runtime = std::sync::Arc::new(super::TaskRuntime::new());
+        assert!(!runtime.queue_may_hold());
+        let dying = std::sync::Arc::clone(&runtime);
+        let died = std::thread::spawn(move || {
+            let _held = dying.queue.lock();
+            std::panic::resume_unwind(Box::new("a thread dies with the queue's lock"));
+        })
+        .join();
+        assert!(died.is_err());
+        assert!(runtime.queue.is_poisoned());
+        assert!(runtime.queue_may_hold());
     }
 
     /// Review of SPEC-332 (round 3): a person's switch and a hand-over may come mid-turn, so they

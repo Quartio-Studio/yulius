@@ -24,6 +24,26 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   longer make a card say "just now", and the background round reads the window such sessions
   do not report. The round does not read a model's allowance ahead of its limit; ADR-0307
   states the cost.
+- A restart on a newer Claude Code no longer loses what waits in Claude Code's queue (SPEC-471,
+  task #454, #1204; amends SPEC-461 CCM-013, SPEC-468 and ADR-0293). A prompt entered while the
+  agent works (a person's, a message sent through a Superagent, a pull request's news) waits in
+  a queue inside Claude Code's process until the turn ends, and a resumed session does not get
+  that queue back; the restart at a turn's end used to end the process with the prompt, and a
+  message's sender had been told "sent". Yulius now reads the queue from the records Claude
+  Code writes about it into the transcript, per run, and leaves a session with a non-empty
+  queue where it is, at a turn's end the gate blocks as at a clean one; it moves at a later
+  turn's end. A queue that was just handed on counts until its turn shows, and for two
+  seconds after a prompt went on the session stays too, since Claude Code writes that record
+  a moment after the prompt's hook. Claude Code's own notifications of finished background
+  work wait in the same queue and count; it leaves some of them there for good, and such a
+  session gets the newer version at its next start (the server's log says what keeps a
+  session). Two limits stay: a prompt entered in the moment after a turn's end decided to
+  restart, and a write of Claude Code's slower than those two seconds. Checked with the real Claude Code 2.1.322 against a local stub of
+  the model API before the design (turns with tool calls included: a waiting prompt is taken
+  into the running turn at the next tool result). The tests' fake agent can now queue prompts
+  in Claude Code's order (`--queue-prompts`). Not in this change: a subscription switch at a
+  turn's end still loses a queued prompt (#1194).
+
 - A task that reads "Needs your action" says why, and Reply shows where the answer goes
   (SPEC-472, task #455, ADR-0306, #1221). The bar over a flagged task's terminal read "The agent
   needs your attention. Its question is in the terminal below." for every such task, and its
