@@ -55,7 +55,9 @@ themselves.
 - AER-002: when Claude Code gives the retries up, or pauses the goal on an API error it does not
   retry, the task is in Needs you: activity NeedsAttention and an open request saying what
   happened (the cause in Claude Code's words) and what to do (send a message to continue). A
-  prompt typed into the task ends the request, as every Needs you request ends.
+  prompt typed into the task ends the request, as every Needs you request ends. Since
+  [SPEC-469](SPEC-469-even-if-it-woke-up-it-still-has-needs-yo.md) the request also ends when
+  the session's agent works again.
 - AER-003: Yulius types nothing itself: Claude Code owns the retry (no second prompt racing its
   check-in). A pause Yulius's own hooks cause (`a hook ended the turn`), a goal check timeout and
   a usage limit (its own pause and resume, SPEC-072) are not API errors and keep their paths.
