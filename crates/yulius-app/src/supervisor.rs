@@ -148,9 +148,13 @@ pub struct TaskRuntime {
     pub(crate) typed_at_ms: AtomicI64,
     /// Who typed last.
     pub(crate) typed_by: Mutex<Option<yulius_domain::ids::UserId>>,
+    /// When Yulius last typed a message into the session for it to submit (ms, 0 = never): a
+    /// person's message, a pull request's news (`type_into_session`). Until its submit it sits
+    /// in the prompt box, or in Claude Code's queue while a turn runs (SPEC-468 CCF-011).
+    pub(crate) message_typed_ms: AtomicI64,
     /// When the session's prompt box was last known empty (ms, 0 = not known): its run's
-    /// launch, or the last prompt submitted from it. What a person typed after that may still
-    /// sit there (SPEC-468 CCF-010).
+    /// launch, or the last prompt submitted from it. What was typed after that may still sit
+    /// there, or in Claude Code's queue (SPEC-468 CCF-010, CCF-011).
     pub(crate) box_emptied_ms: AtomicI64,
     /// The run's last prompt hook was answered with a hold: the next one is that prompt sent
     /// again by the hook client, not another submit. A hold the CLI gave up leaves this set
@@ -409,6 +413,7 @@ impl TaskRuntime {
             auto_pr_head: Mutex::new(None),
             merged_covers: Mutex::new(None),
             typed_at_ms: AtomicI64::new(0),
+            message_typed_ms: AtomicI64::new(0),
             box_emptied_ms: AtomicI64::new(0),
             prompt_held: AtomicBool::new(false),
             typed_by: Mutex::new(None),

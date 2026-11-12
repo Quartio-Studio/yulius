@@ -329,7 +329,8 @@ as its service user ([SPEC-421](../.ai/specs/SPEC-421-claude-should-autoupdate-w
   is restarted on the newer one through the subscription switch (reason `claude_code`), at the
   Stop hook of a turn it works on after, or once an idle prompt-mode session's turn has settled.
   A session stays while a goal its person set in it is open, while a draft may sit in its
-  prompt box (typed since its last prompt) and while another restart of its task is under way;
+  prompt box (typed since its last prompt, by a person or by Yulius: a message it typed waits
+  in Claude Code's queue while a turn runs) and while another restart of its task is under way;
   an idle one that is restarted is idle again from its launch on, with what its goal left
   (`IdleRest` in `supervisor.rs`), and the notification center remembers what a task read
   through a switch ([SPEC-468](../.ai/specs/SPEC-468-claude-code-moves-the-last-review-s-left.md)).

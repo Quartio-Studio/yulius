@@ -6,8 +6,9 @@
 //!   message of the Superagent's person (SPEC-052, TMS-002);
 //! - a running task gets it typed into its session as one bracketed paste, labelled with the
 //!   person and the channel it came through (SPEC-322), then a separate Enter; Claude Code
-//!   queues a message submitted while the agent works (TMS-003). Control characters other than
-//!   line breaks and tabs never reach the TUI;
+//!   queues a message submitted while the agent works (TMS-003), in its process: until it
+//!   submits the message, the session is not restarted on a newer Claude Code (SPEC-468
+//!   CCF-011). Control characters other than line breaks and tabs never reach the TUI;
 //! - nothing is typed before Claude Code's session started (its SessionStart hook, also read
 //!   from the run's marker after a restart, or the goal typist's fallback for a CLI without it),
 //!   while it asks a person whether to trust the folder, while a person typed in the last minute (their
@@ -249,6 +250,12 @@ impl App {
             )));
         }
         let _typing = Typing(&runtime.typing_message);
+        // From here the message is in the session and not submitted: in its prompt box, or,
+        // while a turn runs, in Claude Code's queue, which a restart of the session would lose
+        // (SPEC-468 CCF-011). Stamped before it is typed: its submit comes after.
+        runtime
+            .message_typed_ms
+            .store(self.now().0, Ordering::SeqCst);
         self.send_input(&task.id, paste).await?;
         tokio::time::sleep(SUBMIT_DELAY).await;
         // The text is in the prompt box but not sent: said, so a retry does not send it twice.

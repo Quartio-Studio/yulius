@@ -318,16 +318,19 @@ impl App {
         (typed > 0).then(|| self.now().0.saturating_sub(typed))
     }
 
-    /// Whether a person typed into the task's session since its prompt box was last empty
-    /// (its run's start, or the last prompt submitted from it): what they typed may still sit
-    /// there, and a restart would lose it (SPEC-468 CCF-010). Public for tests.
+    /// Whether something was typed into the task's session since its prompt box was last
+    /// empty (its run's start, or the last prompt submitted from it), by a person or by Yulius
+    /// (a person's message, a pull request's news): it may still sit in the box, or in the
+    /// queue Claude Code keeps while a turn runs, and a restart would lose it (SPEC-468
+    /// CCF-010, CCF-011). Public for tests.
     #[must_use]
     pub fn has_draft(&self, task_id: &TaskId) -> bool {
         let runtime = self.runtime(task_id);
-        is_draft(
-            runtime.typed_at_ms.load(Ordering::SeqCst),
-            runtime.box_emptied_ms.load(Ordering::SeqCst),
-        )
+        let typed = runtime
+            .typed_at_ms
+            .load(Ordering::SeqCst)
+            .max(runtime.message_typed_ms.load(Ordering::SeqCst));
+        is_draft(typed, runtime.box_emptied_ms.load(Ordering::SeqCst))
     }
 
     /// What a turn's end knows about restarting the task's session, which runs `runs`, on

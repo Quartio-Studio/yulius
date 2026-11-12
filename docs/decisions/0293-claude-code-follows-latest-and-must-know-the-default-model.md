@@ -40,13 +40,14 @@ knows as plain text (2.1.322 holds `claude-fable-5-2` 26 times, 2.1.311 not once
   restarts it on the newer one in the same Claude session, on the same subscription, through the
   subscription switch (reason `claude_code`): never while background work runs (a `yulius wait`
   included), a person typed in the last minute or left a draft (typed since the session's last
-  prompt), or a goal its person set in a prompt-mode session is open (Yulius could not follow it
-  across the restart); once per version, one restart of a task at a time. An idle session that
-  is restarted reads as it did before, so nobody is notified again. A version a session could
-  not continue on gets no further moves: the restart could not start, or the restarted session
-  ended by itself or stayed silent for two minutes before it started. A restart refused before
-  it began has its own ten-minute wait and is no switch decision. A goal session moves only
-  while its goal is set and unmet.
+  prompt), a message Yulius typed into it is not submitted yet (Claude Code's queue ends with its
+  process), or a goal its person set in a prompt-mode session is open (Yulius could not follow it
+  across the restart); once per version, one restart of a task at a time. An idle session that is
+  restarted reads as it did before, so nobody is notified again. A version a session could not
+  continue on gets no further moves: the restart could not start, or the restarted session ended
+  by itself or stayed silent for two minutes before it started. A restart refused before it began
+  has its own ten-minute wait and is no switch decision. A goal session moves only while its goal
+  is set and unmet.
 
 ## Alternatives
 

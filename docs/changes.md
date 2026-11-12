@@ -8,19 +8,22 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 - The restart of a running task on a newer Claude Code loses nothing a person left in the
   session and tells nobody twice (SPEC-468, task #452: the two minors and seven nits the last
-  review of SPEC-461 left open). A prompt-mode session in which a person set a goal of their
-  own (`/goal …`) keeps its version while that goal is open, since Yulius could not follow the
-  goal across a restart (Claude Code restores it by itself; what the review saw lost was the
-  test agent's goal and Yulius's own reading); so does a session with a draft in its prompt
-  box (typed since its last prompt was sent), not only one typed into in the last minute. An
-  idle session that is restarted reads "Continuing" and then as before, with no "Working" in
-  between and no second "Your turn" notification. Two turn ends that decide at once make one
-  restart, and the breaker watches it. While running tasks are no longer moved to a version,
-  the card and a task's info promise it only at the task's next start, and the card says when
-  the binary in use could not be read for its models. The model a transcript names is cut as
-  its Claude Code version is. The gate's block case of the move has its test. Older code,
-  reported as #1182: after a move to another subscription Yulius no longer knows a goal a
-  person set in a prompt-mode session until Claude Code records its next verdict.
+  review of SPEC-461 left open). A prompt-mode session in which a person set a goal of their own
+  (`/goal …`) keeps its version while that goal is open, since Yulius could not follow the goal
+  across a restart (Claude Code restores it by itself; what the review saw lost was the test
+  agent's goal and Yulius's own reading); so does a session with a draft in its prompt box
+  (typed since its last prompt was sent), not only one typed into in the last minute, and one in
+  which a message Yulius typed (through a Superagent, a pull request's news) still waits in
+  Claude Code's queue, which a restart used to lose after its sender was told "sent". An idle
+  session that is restarted reads "Continuing" and then as before, with no "Working" in between
+  and no second "Your turn" notification. Two turn ends that decide at once make one restart,
+  and the breaker watches it. While running tasks are no longer moved to a version, the card and
+  a task's info promise it only at the task's next start, and the card says when the binary in
+  use could not be read for its models. The model a transcript names is cut as its Claude Code
+  version is. The gate's block case of the move has its test. Older code, reported: after a
+  move to another subscription Yulius no longer knows a goal a person set in a prompt-mode
+  session until Claude Code records its next verdict (#1182), and a subscription switch at a
+  turn's end still loses a message that waits in Claude Code's queue (#1194).
 - A session that works on after a restart shows the Claude Code it runs with the first record
   it writes (SPEC-461, task #443). Yulius read a session's Claude Code version from its prompt
   records only, and a session that redoes an interrupted turn by itself writes none for hours:

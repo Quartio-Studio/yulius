@@ -972,6 +972,96 @@ mod moves {
         Ok(())
     }
 
+    /// What the session's terminal printed since `watch` was last read.
+    fn printed(watch: &mut tokio::sync::broadcast::Receiver<HubFrame>) -> String {
+        let mut out = String::new();
+        while let Ok(frame) = watch.try_recv() {
+            if let HubFrame::Output { bytes, .. } = frame {
+                out.push_str(&String::from_utf8_lossy(&bytes));
+            }
+        }
+        out
+    }
+
+    /// SPEC-468 CCF-011: Claude Code keeps a message that is entered while a turn runs in a
+    /// queue of its process, and takes no queue over when a session is resumed. A message
+    /// Yulius typed for a person (here: through their Superagent) that is still queued when
+    /// the turn ends would be gone with the old process, after its person was told "sent".
+    /// Until Claude Code submits it, it is a draft: the turn's end, which the gate blocks,
+    /// leaves the session where it is, the message gets its turn, and that turn's end
+    /// restarts the session. The restart used to come at the first turn's end.
+    #[test]
+    fn a_message_yulius_typed_that_is_not_submitted_yet_keeps_the_session() -> TestResult {
+        use yulius_app::coordination::{Channel as Through, ProjectCaller};
+        let (_dir, data) = data_dir()?;
+        let version = data.join("claude-version");
+        let may_end = data.join("turn-may-end");
+        let rt = runtime()?;
+        rt.block_on(async {
+            let options = FakeAgentOptions {
+                turn_hold_file: Some(may_end.clone()),
+                ..hooked()
+            };
+            // Runs get 2.1.322 from the start; the first session started on 2.1.311.
+            let s = server(&data, &version, options, TaskMode::Prompt, "2.1.322").await?;
+            std::fs::write(&version, "2.1.322\n")?;
+            change_code(&s).await?;
+            let mut watch = s.app.runtime(&s.id).hub.subscribe().rx;
+            // A turn runs, and the gate will block its end.
+            let submitted = reached(Point::PromptTurnChecked, &s.id);
+            s.app.send_input(&s.id, b"one\r").await?;
+            wait_for("the prompt's submit", Duration::from_secs(60), || async {
+                submitted.load(Ordering::SeqCst)
+            })
+            .await?;
+            assert!(!s.app.has_draft(&s.id), "its prompt was submitted");
+            // Meanwhile the task's person tells it something through their Superagent: typed
+            // into the session, where it waits for the turn to end.
+            let caller = ProjectCaller {
+                sandbox: s.sandbox.clone(),
+                user: s.user.clone(),
+                task: None,
+                channel: Through::Superagent,
+                actor: "cockpit:admin".into(),
+                detail: serde_json::json!({"via": "cockpit", "shell": "sh-test"}),
+            };
+            let answer = s
+                .app
+                .tool_task_message(
+                    &caller,
+                    &serde_json::json!({"task_id": s.id.as_str(), "text": "Keep the header blue"}),
+                )
+                .await?;
+            assert_eq!(answer["delivered"], "sent", "{answer}");
+            assert!(
+                s.app.has_draft(&s.id),
+                "typed into the session and not submitted yet"
+            );
+            // The turn ends, the message gets its turn, and the session moves at that turn's end.
+            std::fs::write(&may_end, "")?;
+            let mut shown = String::new();
+            wait_for("the restarted session", Duration::from_secs(90), || {
+                shown.push_str(&printed(&mut watch));
+                async { runs(&s).await == 2 }
+            })
+            .await?;
+            second_run_live(&s).await?;
+            shown.push_str(&printed(&mut watch));
+            assert!(
+                shown.contains("ECHO: Message from admin (through their Superagent):"),
+                "the message was lost with the old process: {shown}"
+            );
+            assert!(!s.app.has_draft(&s.id), "the message was submitted");
+            assert_eq!(
+                run_versions(&s.app, &s.id).await[0],
+                Some("2.1.311".to_owned())
+            );
+            stop(&s.app, &s.id).await
+        })?;
+        rt.shutdown_timeout(Duration::from_secs(5));
+        Ok(())
+    }
+
     /// AC9 (review round 1, finding 1): a session with a background shell is left alone, and so
     /// is one whose only background shell runs `yulius wait`: restarted, it would never hear
     /// what it waits for.
