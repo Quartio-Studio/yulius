@@ -1760,6 +1760,7 @@ impl App {
             account_id: Some(account.id.clone()),
             provider_session_id: plan.session_id.clone(),
             launch_kind,
+            model: None,
             state: AttemptState::Spawning,
             run_dir: run_dir.to_string_lossy().into_owned(),
             token_hash: self.deps.crypto.sha256_hex(task_token.as_bytes()),

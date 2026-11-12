@@ -117,7 +117,7 @@ launch; the price shown for a run, which already follows the model that answered
 
 - [x] Read the product context and related work, then write and validate the spec
 - [x] The pool policy places a Fable run with Opus 5.5's family when no subscription can run Fable (FBK-001 to FBK-004, FBK-007)
-- [ ] A run records the model it was launched with: migration 0054 and the attempt record (FBK-005)
+- [x] A run records the model it was launched with: migration 0054 and the attempt record (FBK-005)
 - [ ] A task's launch takes the placed model, says so, and a limit binds the run's model (FBK-005, FBK-006, FBK-008)
 - [ ] The task view and the capacity view say that sessions run on the fallback (FBK-009, FBK-010)
 - [ ] The Superagent falls back by the same rule (FBK-011)

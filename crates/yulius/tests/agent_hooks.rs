@@ -227,6 +227,7 @@ async fn fixture_with_task(
             account_id: Some(account),
             provider_session_id: None,
             launch_kind: LaunchKind::New,
+            model: None,
             state: AttemptState::Live,
             run_dir: repo.path().join("run").to_string_lossy().into_owned(),
             token_hash: hash,

@@ -106,6 +106,7 @@ fn attempt(id: &str, task: &TaskId, seq: u32) -> Result<AttemptRecord, Box<dyn s
         account_id: None,
         provider_session_id: None,
         launch_kind: LaunchKind::New,
+        model: None,
         state: AttemptState::Spawning,
         run_dir: format!("/tmp/{id}"),
         token_hash: format!("hash-{id}"),

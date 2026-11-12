@@ -1517,6 +1517,7 @@ async fn an_existing_task_keeps_its_run_directories() -> BoxResult<()> {
                 account_id: None,
                 provider_session_id: None,
                 launch_kind: LaunchKind::New,
+                model: None,
                 state,
                 run_dir: run.to_string_lossy().into_owned(),
                 token_hash: format!("hash-{attempt}"),

@@ -93,6 +93,7 @@ async fn attempt(
             account_id: Some(AccountId::parse(account)?),
             provider_session_id: None,
             launch_kind: LaunchKind::New,
+            model: None,
             state: if ended.is_some() {
                 AttemptState::Exited
             } else {

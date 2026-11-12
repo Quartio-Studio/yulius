@@ -449,6 +449,10 @@ pub struct AttemptRecord {
     pub provider_session_id: Option<String>,
     /// Launch kind.
     pub launch_kind: LaunchKind,
+    /// The model the run was launched with (SPEC-482 FBK-005): the task's own, or its fallback
+    /// while no subscription could run that. `None` for a run recorded before schema version 54,
+    /// read as the task's own.
+    pub model: Option<String>,
     /// State.
     pub state: AttemptState,
     /// ptyhost run directory.

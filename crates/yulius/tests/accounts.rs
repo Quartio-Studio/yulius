@@ -1032,6 +1032,7 @@ async fn insert_live_attempt(h: &support::Harness, account: &AccountId) -> TestR
             account_id: Some(account.clone()),
             provider_session_id: None,
             launch_kind: LaunchKind::New,
+            model: None,
             state: AttemptState::Live,
             run_dir: "/nonexistent".into(),
             token_hash: "live-hash".into(),
