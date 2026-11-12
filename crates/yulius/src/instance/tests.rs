@@ -59,3 +59,12 @@ fn the_progress_line_says_done_total_rate_and_time_left() -> TestResult {
     );
     Ok(())
 }
+
+#[test]
+fn progress_of_an_unknown_length_names_no_share() {
+    let p = Progress::new("Sent", 0);
+    assert_eq!(
+        p.line(3 * 1024 * 1024, Duration::from_secs(3)),
+        "Sent 3.0 MiB, 1.0 MiB/s"
+    );
+}
