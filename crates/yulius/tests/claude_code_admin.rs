@@ -132,6 +132,9 @@ async fn without_isolation_the_card_says_why_and_nothing_changes() -> TestResult
     );
     assert_eq!(view.body["default_model"], DEFAULT_CLAUDE_MODEL);
     assert_eq!(view.body["channel"], "latest");
+    // Nothing is kept current, so nothing was to be read for its models.
+    assert_eq!(view.body["models_read"], false);
+    assert!(view.body["models_unread"].is_null(), "{}", view.body);
     let check = call(&i.h.router, Method::POST, CHECK, None, &i.admin).await?;
     assert_eq!(check.status, StatusCode::CONFLICT, "{}", check.body);
     let put = call(
@@ -180,6 +183,7 @@ async fn the_superadmin_changes_the_channel_stored_audited_and_applied() -> Test
         "Installed 2.1.322: new runs use it."
     );
     assert_eq!(view.body["models_read"], true);
+    assert!(view.body["models_unread"].is_null(), "{}", view.body);
     assert_eq!(view.body["unknown_models"], json!([]));
     assert!(view.body["problem"].is_null() && view.body["fix"].is_null());
     assert!(view.body["checked_at"].is_string());
@@ -323,6 +327,42 @@ async fn the_superadmin_changes_the_channel_stored_audited_and_applied() -> Test
     }
     assert_eq!(cli.asked().len(), asked);
     assert_eq!(cli.checks.load(Ordering::SeqCst), 0);
+    Ok(())
+}
+
+/// SPEC-468 CCF-007 (review round 3, nit 7): when the binary runs get cannot be read for the
+/// models it knows, the view says so in a sentence for the card, as `yulius doctor` warns: it
+/// is no "knows every offered model", and no "does not know the default model" either. An
+/// adapter that keeps nothing current (no install on the host) has nothing to read.
+#[tokio::test]
+async fn the_view_says_when_the_binary_could_not_be_read_for_its_models() -> TestResult {
+    let i = instance().await?;
+    let cli = FakeCli::new(AgentCliStatus {
+        missing: None,
+        ..healthy()
+    });
+    i.h.app
+        .set_agent_cli(cli.clone() as Arc<_>, Channel::Latest);
+    let view = call(&i.h.router, Method::GET, VIEW, None, &i.admin).await?;
+    assert_eq!(view.status, StatusCode::OK, "{}", view.body);
+    assert_eq!(view.body["managed"], true);
+    assert_eq!(view.body["models_read"], false);
+    assert_eq!(
+        view.body["models_unread"],
+        "The binary of Claude Code 2.1.322 could not be read for the models it knows, so \
+         whether it knows claude-fable-5-2, Yulius's default model, is not known. It is read \
+         again whenever this page is opened; `yulius doctor --contained` names the install."
+    );
+    assert_eq!(view.body["unknown_models"], json!([]));
+    assert!(view.body["problem"].is_null() && view.body["fix"].is_null());
+
+    if let Ok(mut status) = cli.status.lock() {
+        status.unmanaged = Some("the host has no npm install of Claude Code".into());
+        status.version = None;
+    }
+    let view = call(&i.h.router, Method::GET, VIEW, None, &i.admin).await?;
+    assert_eq!(view.body["managed"], false);
+    assert!(view.body["models_unread"].is_null(), "{}", view.body);
     Ok(())
 }
 

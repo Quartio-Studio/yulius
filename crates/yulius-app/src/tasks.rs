@@ -530,13 +530,16 @@ impl App {
                 cli_version: ran_on,
             });
         }
-        // A running session on an older Claude Code than runs get now moves at its turn's end.
-        let cli_moves_to = live_cli
+        // A running session on an older Claude Code than runs get now moves at its turn's end,
+        // or at its next start only once a session could not continue on that version.
+        let moves_to = live_cli
             .as_deref()
             .and_then(Version::parse)
             .zip(self.claude_code_for_new_runs())
             .filter(|(runs, newest)| runs < newest)
-            .map(|(_, newest)| newest.to_string());
+            .map(|(_, newest)| newest);
+        let cli_moves_stopped = moves_to.is_some_and(|to| self.claude_moves_stopped_for(to));
+        let cli_moves_to = moves_to.map(|newest| newest.to_string());
         let model = task
             .model
             .clone()
@@ -587,6 +590,7 @@ impl App {
             effort,
             cli_version,
             cli_moves_to,
+            cli_moves_stopped,
         })
     }
 

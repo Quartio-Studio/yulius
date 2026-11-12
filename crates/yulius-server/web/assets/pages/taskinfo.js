@@ -159,10 +159,11 @@ export function mountTaskInfoView(ctx, sandbox, task) {
       ['Mode', current.mode === 'prompt' ? 'Prompt' : 'Goal (works until it is met)'],
       ['Subscription', accountRef(current.account_label, current.account_email, { unknown: ctx.isInstanceAdmin() }) || '—'],
       // What the task asks Claude Code for, what answered (its transcripts' word) and which
-      // Claude Code runs it (SPEC-461 CCM-012).
+      // Claude Code runs it (SPEC-461 CCM-012); while running tasks are no longer moved to the
+      // newer one, only its next start is promised (SPEC-468 CCF-003).
       ['Model', detail.model ? [modelLabel(detail.model), detail.model_default ? h('span', { class: 'muted' }, ' (default)') : null, detail.effort ? h('span', { class: 'muted' }, ` · ${(findEffort(detail.effort) || { name: detail.effort }).name} effort`) : null] : '—'],
       ['Answered by', m.models && m.models.length ? m.models.map((id) => modelLabel(id)).join(', ') : '—'],
-      ['Claude Code', detail.cli_version ? [detail.cli_version, detail.cli_moves_to ? h('span', { class: 'muted' }, ` · moves to ${detail.cli_moves_to} when its turn ends, or at its next start`) : null] : '—'],
+      ['Claude Code', detail.cli_version ? [detail.cli_version, detail.cli_moves_to ? h('span', { class: 'muted' }, detail.cli_moves_stopped ? ` · gets ${detail.cli_moves_to} at its next start` : ` · moves to ${detail.cli_moves_to} when its turn ends, or at its next start`) : null] : '—'],
       ['Turns', m.turns === null || m.turns === undefined ? '—' : int(m.turns)],
       ['Subscription switches', String(m.switches ?? (detail.switches || []).length ?? 0)],
       ['Branch', current.branch ? h('code', null, current.branch) : 'not created yet'],
