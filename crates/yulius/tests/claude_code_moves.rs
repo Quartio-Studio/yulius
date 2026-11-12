@@ -826,6 +826,7 @@ mod moves {
                 updated_at: Timestamp(1),
                 email: None,
                 email_checked_at: None,
+                email_typed: false,
             })
             .await?;
         let task = seed_task(&h, "t-draft", "s1", "u-alice", TaskStatus::Running, None).await?;
