@@ -177,7 +177,6 @@ async fn a_person_gets_one_global_superagent_in_its_own_folder_without_built_in_
     Ok(())
 }
 
-/// The bearer of `user`'s Global Superagent.
 /// SPEC-482 FBK-011: with Fable used up on every subscription a Global Superagent starts on
 /// Opus 5.5, and its record keeps the model (a limit it reports binds that model).
 #[tokio::test]
@@ -215,6 +214,7 @@ async fn a_global_superagent_starts_on_the_fallback_while_fable_is_used_up() -> 
     Ok(())
 }
 
+/// The bearer of `user`'s Global Superagent.
 fn global_token(f: &Fixture, user: &str) -> Result<String, Box<dyn std::error::Error>> {
     Ok(f.h
         .app

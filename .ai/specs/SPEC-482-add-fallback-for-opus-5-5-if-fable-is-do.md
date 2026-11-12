@@ -1,11 +1,11 @@
 ---
 yulius-task: 77d1f091-c74f-43f0-83c5-d4f0ef9e27a6
-status: in-progress
+status: done
 ---
 
 # SPEC-482: a Fable task runs Opus 5.5 while no subscription can run Fable
 
-Status: in-progress
+Status: done
 Date: 2026-11-12
 Owner: Yulius task #464
 Scope authorization: the request of task #464 (by MrFishPL, 2026-11-12): "add fallback for opus
@@ -145,8 +145,8 @@ launch; the price shown for a run, which already follows the model that answered
 - [x] A task's launch takes the placed model, says so, and a limit binds the run's model (FBK-005, FBK-006, FBK-008)
 - [x] The task view and the capacity view say that sessions run on the fallback (FBK-009, FBK-010)
 - [x] The Superagent falls back by the same rule (FBK-011)
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -225,3 +225,90 @@ launch; the price shown for a run, which already follows the model that answered
   person, a hand-over stopped the task. The pool places such a restart when it can.
 - **The same subscription is a candidate when the model changes.** Leaving the current account
   out protects from a limit that binds the placed run; it does not bind a run of another model.
+
+## Evidence
+
+Run in this task's worktree on 2026-11-12 and 2026-11-13; logs under the ignored
+`target/task464/`.
+
+- **Before the change** (mutation at commit 69343d50c: `RotationInput.fallback` always `None`,
+  which is `dev`'s behaviour): `cargo nextest run -p yulius -E 'binary_id(yulius::main) &
+  test(/^model_fallback::/)'`: 0 passed, 3 failed (the task stayed at its limit: "timed out
+  waiting for the next run"). With the change: 3 passed; at the reviewed head the file has 7
+  tests, all passing.
+- **The gate** (`scripts/dev ci`, head 420425da3): exit 0; `4105 tests run: 4105 passed, 16
+  skipped`; fmt, clippy (Linux and the macOS targets), deps, doctests and `cargo doc` included.
+  Three earlier runs failed and were fixed, not rerun: the repository check (`index.html`'s
+  preload links, synced with `scripts/check_repository.py --sync-brand`);
+  `subscription_pool::the_capacity_view_counts_for_the_default_model` (it asserted the wait
+  this change ends; extended to the fallback states); and this change's own
+  `model_fallback::a_task_refused_for_both_models_is_retried_once_then_asks_a_person`, once,
+  under the gate's load: `Error: Conflict("the task is not running")`. Cause: a run is recorded
+  live before its terminal is attached, and the test typed in between. The tests now wait until
+  the run takes the input (`type_into_run`); `--stress-count 12 -j 8` under six CPU burners: 12
+  of 12 iterations passed.
+- **Web e2e** (`cd e2e && E2E_TELEMETRY_DISABLED=1 npx e2e run`, head 420425da3): `84 passed |
+  1 skipped` files, `1018 passed | 1 skipped` tests (the skipped one needs a model key), the
+  four tests of `model-fallback.e2e.ts` among them.
+- **After the gate**, the final head adds this section and moves one doc comment in
+  `crates/yulius/tests/global_superagent.rs` (a nit of review round 2); `cargo nextest run -p
+  yulius -E 'binary_id(yulius::main) & test(/^global_superagent::/)'` passed on it. Yulius CI
+  runs the gate on the exact head.
+- **Mutation checks by hand** (each on a committed tree, restored with `git checkout` and the
+  file touched before the next run):
+  1. the store reads no `attempts.model`: `version_fifty_three_runs_have_no_launch_model`
+     fails;
+  2. nothing left out while the pool is in fallback (round 1's Major 1):
+     `rotation::tests::a_subscription_that_refused_the_fallback_is_left_out_for_it` and
+     `model_fallback::a_fallback_refused_with_no_end_is_retried_once_then_waits_for_fable`
+     fail;
+  3. a restart always asks for its subscription (Major 2):
+     `model_fallback::a_fresh_session_of_a_run_on_the_fallback_goes_where_fable_runs_again`
+     fails;
+  4. the run's launch model is not read into the policy (Major 3):
+     `subscription_pool::a_run_on_the_fallback_stays_at_its_turn_boundary_once_fable_runs_again`
+     fails.
+- **The real Claude Code** (2.1.322, `claude -p` against a local stand-in for the Messages
+  API; script and stub in `$HOME/.cache/yulius-claude-probe/fallback-464`, output in
+  `target/task464/claude-probe.log`): a session started with `--model claude-fable-5-2
+  --session-id <id>` was resumed with `--resume <id> --model claude-opus-5-5 --effort high`
+  and then again with Fable. All three turns ended with exit 0; the API was asked with
+  `model=claude-opus-5-5` for the second turn and `claude-fable-5-2` for the third, each with
+  the whole conversation and `effort: high`; the transcript is one file that names both models.
+  Claude Code sends another model's answers on without their thinking blocks (the Opus request
+  carried Fable's answer as text only), and sends a model its own thinking back with its
+  signature. Not tested: Anthropic's API itself accepting such a conversation (it needs a
+  subscription whose Fable allowance is used up); the stand-in accepts everything.
+- **Security scan**: `yulius security-scan` printed "Security scan disabled: Vidoc is turned
+  off in Yulius, for this project or the whole instance; nothing was scanned." Disabled, not
+  passed.
+- **Independent review** (a fresh session with the diff range, this spec and `om-code-review`;
+  its notes in `$HOME/.cache/review-task-464/notes.md`).
+  - Round 1, head 6f36d8e75: "VERDICT: request changes". Three majors in own code, all
+    fixed test-first in 40e88c173:
+    1. "restart loop when the fallback is refused with no end while any reset is known":
+       fixed by remembering each refused model per subscription (FBK-007);
+    2. "a run on the fallback cannot be restarted on its own subscription once another
+       subscription runs Fable again": fixed with `rotation::keeps_account` (FBK-004);
+    3. "AC-4 / FBK-004 has no app-level test that can fail": the Stop-hook test and the
+       move-off test were added.
+    Its minors (the Global Superagent's launch untested, four stale statements, the task
+    details' wording) and two nits (the Status line's 98 to 100 % band, the ADR index order)
+    were fixed in 40e88c173 and 420425da3. Three nits stay as they are: the fallback line of a
+    task started with nobody attached is seen only on the details page; the Superagent's line
+    is said before its move is certain (a failed move says so right after); a person's choice
+    of a subscription between 98 and 100 % while the pool is in fallback runs Opus 5.5 there,
+    as FBK-002 says.
+  - Round 2, head 420425da3: "VERDICT: approve (head 420425da3)". "No blocker or major
+    remains in the delta. The three round-1 majors and the round-1 minors are resolved, each
+    with a test that fails without its fix." One pre-existing minor, "A Refresh that proves
+    the model runs does not clear a task's left-out memory", is issue
+    [#1237](https://github.com/Quartio-Studio/yulius/issues/1237): it is about what a Refresh
+    tells waiting tasks, older than this change (SPEC-464's single `refused_by` behaved the
+    same). Its nit "Stray doc comment" is fixed in the final head. Two nits stay: a limit with
+    no end that names another family than the run's is remembered for the run's family
+    (rare, and "pre-existing in shape"); the switch entry of a restart the pool placed does
+    not say that the subscription changed ("Cosmetic").
+- **Not driven end to end**: the restart for a newer Claude Code and the hand-over of a run on
+  the fallback. Both go through the same branch of `switch_from` as the full-context restart,
+  which is driven end to end (mutation 3).
