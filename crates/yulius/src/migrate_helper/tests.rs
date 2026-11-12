@@ -870,7 +870,7 @@ exit 2"#,
 #[test]
 fn a_child_that_outlives_the_command_does_not_hold_the_helper() -> TestResult {
     let env = Env::new()?;
-    env.does(r#"(sleep 6 &) ; exit 0"#)?;
+    env.does(r#"(sleep 6 & echo $! > "$d/orphan.pid") ; exit 0"#)?;
     env.request(&plan("0123abcd-orphan"))?;
     let started = Instant::now();
     env.run()?;
@@ -880,6 +880,14 @@ fn a_child_that_outlives_the_command_does_not_hold_the_helper() -> TestResult {
         started.elapsed()
     );
     assert_eq!(env.said()?.exit_code, Some(0));
+    // The child is ended with the test: left alone it holds the test run's output open.
+    let orphan: i32 = std::fs::read_to_string(env.bin.join("orphan.pid"))?
+        .trim()
+        .parse()?;
+    nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(orphan),
+        nix::sys::signal::Signal::SIGKILL,
+    )?;
     Ok(())
 }
 
