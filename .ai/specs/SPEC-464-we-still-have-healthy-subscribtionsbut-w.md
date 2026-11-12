@@ -72,16 +72,16 @@ Parallel work: PR #1167 (task #443) touches `observe.rs`, `ports/harness.rs`, `w
 
 | ID | Requirement | Evidence |
 | --- | --- | --- |
-| UCL-001 | `observe_line` reads an API error record with `apiError: "model_requires_usage_credits"` as `LimitReached`, with or without `rate_limit_info`. Its reset is `resetsAt` only when `rateLimitType` is `seven_day_overage_included` (another claim's reset is not the allowance's). A record with only the text ("out of usage credits", "requires usage credits", "out of extra usage") is read the same way. The transcript step back removes the refusal, the goal's pause notice and the record closing that turn. | `claude::tests::a_usage_credits_refusal_is_a_usage_limit` (the two recorded lines, ids replaced), `step_back::tests::step_back_removes_a_usage_credits_refusal` |
+| UCL-001 | `observe_line` reads an API error record with `apiError: "model_requires_usage_credits"` as `LimitReached`, with or without `rate_limit_info`. Its reset is `resetsAt` only when `rateLimitType` is `seven_day_overage_included` (another claim's reset is not the allowance's). A record with only the text ("out of usage credits", "requires usage credits", "out of extra usage") is read too: the model's when the text names the model or a way to another one ("requires usage credits", "/model", "another model", "switch models"), else the subscription's (Claude Code's message for a subscription whose window and credits are both used up: "You're out of usage credits · resets 3pm"). The transcript step back removes the refusal, the goal's pause notice and the record closing that turn. | `claude::tests::a_usage_credits_refusal_is_a_usage_limit` (the two recorded lines, ids replaced), `step_back::tests::step_back_removes_a_usage_credits_refusal` |
 | UCL-002 | A limit says what it binds (`LimitScope`): the subscription (`five_hour`, `seven_day`, an unknown kind), or one model family: the one a per-model cap names (`seven_day_opus`, `seven_day_sonnet`), or the family of the model the task is launched with, for the allowance of usage credits (`seven_day_overage_included`, a bucket per model) and for a credits refusal that names no window. A task that names no model runs the default one. | same test; `structured_limit_record_with_reset_time`; `capacity::tests::a_tasks_model_family_is_its_models_or_the_defaults` |
 | UCL-003 | `ModelFamily::Fable` (a model name containing "fable") has its own weekly window, `AccountUsage::weekly_fable`, which binds only Fable tasks. A model's limit is stored as that family's window at 100 % until its reset; the 5-hour and weekly windows and `limit_reached` are left as they are. A reset is believed only as far as a window lasts (a week and a day ahead, `LIMIT_RESET_MAX_MS`): the record comes from the session's transcript, the agent's own file. Without a believable reset the window is full with no reset time, still only that model's. A model's limit for a family without a window is the subscription's (`limit_reached`), its windows untouched. | `usage::tests::a_models_limit_is_its_own_window`, `usage::tests::a_limits_reset_is_believed_only_as_far_as_a_window_lasts`, `rotation::tests::a_fable_allowance_binds_only_fable_tasks`; `usage_credits::a_task_out_of_usage_credits_moves_on_by_itself` (the stored window without a reset), `usage_credits::a_reset_no_window_could_have_does_not_outlive_a_provider_reading` |
-| UCL-004 | A usage reading from the provider replaces the windows it carries and keeps the per-model windows it does not carry while their reset is ahead, and no further than a window lasts; one without a reset is not kept, so a provider's reading ends a model's limit nothing says the end of. A per-model window whose reset passed is dropped at the next stored reading. A session's reading replaces the 5-hour and weekly windows only. A new sign-in of the subscription drops the per-model windows: they are what Claude told the previous sign-in. A limit Claude reports while a reading of the same subscription is under way is not written over: a reported limit, a session's reading and a provider's reading read, change and store through one helper (`App::change_account_usage`) under one lock (`CapacityState::usage_writes`), which a new sign-in takes too; it is never held across a request to the provider. | `usage::tests::a_reading_keeps_the_model_windows_it_cannot_see`; `usage_credits::a_subscription_out_of_usage_credits_gets_no_task_until_they_reset`; `account_email::a_new_sign_in_drops_the_models_limit_of_the_previous_one`; the lock: `usage_credits::a_limit_reported_during_a_usage_reading_is_kept`, `subscription_pool::a_sessions_reading_does_not_write_over_a_provider_reading`, `account_email::a_sign_in_during_a_usage_reading_still_drops_the_models_limit` |
+| UCL-004 | A usage reading from the provider replaces the windows it carries and keeps the per-model windows it does not carry while their reset is ahead, and no further than a window lasts; one without a reset is not kept, so a provider's reading ends a model's limit nothing says the end of. A per-model window whose reset passed is dropped at the next stored reading (`subscription_pool::a_models_window_past_its_reset_is_dropped_at_the_next_stored_reading`). A session's reading replaces the 5-hour and weekly windows only. A new sign-in of the subscription drops the per-model windows: they are what Claude told the previous sign-in. A limit Claude reports while a reading of the same subscription is under way is not written over: a reported limit, a session's reading and a provider's reading read, change and store through one helper (`App::change_account_usage`) under one lock (`CapacityState::usage_writes`), which a new sign-in takes too; it is never held across a request to the provider. | `usage::tests::a_reading_keeps_the_model_windows_it_cannot_see`; `usage_credits::a_subscription_out_of_usage_credits_gets_no_task_until_they_reset`; `account_email::a_new_sign_in_drops_the_models_limit_of_the_previous_one`; the lock: `usage_credits::a_limit_reported_during_a_usage_reading_is_kept`, `subscription_pool::a_sessions_reading_does_not_write_over_a_provider_reading`, `account_email::a_sign_in_during_a_usage_reading_still_drops_the_models_limit` |
 | UCL-005 | A subscription reads `limited` while the default model cannot run on it: a limit Claude reported is in effect or a window binding the default model is at 100 %. The capacity view's `available` (also per account) and `resumes_at` count for the default model. | `usage_credits::a_subscription_out_of_usage_credits_gets_no_task_until_they_reset` (status after the limit and after the reading); `account_usage::a_reading_keeps_a_models_limit_and_the_status_follows_the_windows`; `subscription_pool::the_capacity_view_counts_for_the_default_model` |
 | UCL-006 | A task refused for usage credits moves to a subscription that can run its model, in the same session, past the refused turn (transcript stepped back, nothing typed). With no such subscription it waits in a `limit` pause and resumes at the reset by itself, with no usage reading and no message. The pool places no task of that model on the subscription before the reset. | `usage_credits::a_task_out_of_usage_credits_moves_on_by_itself`, `…gets_no_task_until_they_reset`, `…resumes_at_their_reset_by_itself` |
 | UCL-007 | A goal pause Claude Code makes at a usage limit or a refused subscription (its notice follows the limit record of the same turn) opens no Needs you and writes no `task.goal_retries_spent` while Yulius takes the task on (moves it or pauses it), live and in the replay after a restart. Its notice is held: when the switch past the limit is refused before it ends the session (ROT-014), the session stays at the refusal and nothing goes on by itself, so the pause opens the Needs you after all, whichever of the two came first; a later move past the limit ends that request by itself. It is asked and audited once per limit, and the audit is the record of that: an entry written at or after Claude Code recorded the limit says the limit was asked about, whatever request is open. Reading the same pause again (a restart replays it) then only puts the task back under Needs you, whatever it read meanwhile; a refusal after a later prompt (Yulius's own, which ends no request) is a new limit, audited once, and the open request is kept. A goal pause with no limit before it is unchanged (ADR-0225). | `usage_credits::a_task_out_of_usage_credits_moves_on_by_itself`, `…gets_no_task_until_they_reset`, `…resumes_at_their_reset_by_itself` (`needs_nobody`); `usage_credits::a_refused_move_at_a_usage_credits_limit_still_asks_a_person`, `usage_credits::a_usage_credits_refusal_written_while_yulius_was_down_is_read_at_restart` (five starts, two limits); `finish::tests::a_goal_pause_at_a_usage_limit_is_the_limits`, `goal_retry::tests::a_goal_pause_at_a_limit_asks_a_person_only_when_the_move_is_refused`; `task_done.rs` goal-retry tests unchanged |
 | UCL-008 | The Superagent's limit path takes the same record: it records the limit with what it binds and moves as for any usage limit. | `cockpit::a_superagent_out_of_usage_credits_moves_to_another_subscription` |
-| UCL-009 | `GET /api/admin/accounts`, `/api/status` and `/api/capacity` carry `usage.weekly_fable` (one `usage_view`); the subscription card shows it as "Fable this week", like the Opus and Sonnet rows. "Run #N on…" judges a subscription by the windows that bind the task's model, as the server does: one that reads `limited` only because the default model's window is used up still takes a task of another model. | `account_usage::a_reading_keeps_a_models_limit_and_the_status_follows_the_windows`, `accounts::tests::unknown_usage_stays_null`; e2e `subscriptions.e2e.ts` "a subscription out of its model's usage credits shows that model's week beside its own", "\"Run #N on…\" judges a subscription by the windows that bind the task's model" and the menu of task #12 |
-| UCL-010 | A model's limit nothing says the end of (no believable reset), with no subscription the task can go to, is tried again by the pool once (`BLIND_LIMIT_RETRIES`): the task waits in a `limit` pause, and a provider's reading, which ends such a limit, resumes it. Refused the same way again with no answer from the agent in between, the task is not paused: its session stays at the refusal, and Yulius asks a person in the terminal and under Needs you ("Run the task on another subscription or model, or end the limit …", audit `task.limit_without_end`). Further readings start nothing; the request ends when the task goes on past the limit. A limit with a reset, or with another subscription whose reset is known, waits as before. | `usage_credits::a_limit_nothing_says_the_end_of_is_retried_once_then_asks_a_person` |
+| UCL-009 | `GET /api/admin/accounts`, `/api/status` and `/api/capacity` carry `usage.weekly_fable` and, for a limit Claude reported for the whole subscription, `usage.limit_reached` with `usage.limit_resets_at` (one `usage_view`); the subscription card shows the model's window as "Fable this week", like the Opus and Sonnet rows. "Run #N on…" judges a subscription by what binds the task's model, as the server does: a limit of the whole subscription in effect, the 5-hour and weekly windows and the model's own; one that reads `limited` only because the default model's window is used up still takes a task of another model. The menu reads the task's model itself (`GET /api/tasks/{id}` beside `/api/status`) when its caller does not have it yet, so a menu opened before the task view loaded the details is judged the same; when that read fails it still opens, and a task of no known model is not let through on a `limited` subscription. The status line of a pool whose every subscription reads `limited` says "Every subscription is at a usage limit", not that none has capacity. | `account_usage::a_reading_keeps_a_models_limit_and_the_status_follows_the_windows`, `accounts::tests::unknown_usage_stays_null`; e2e `subscriptions.e2e.ts`: "a subscription out of its model's usage credits shows that model's week beside its own", "\"Run #N on…\" judges a subscription by the windows that bind the task's model" (unit, in the page), "\"Run #N on…\" knows the task's model before the task view has its details" (the view's read held, then the menu's read failed), the menu of task #12, "the status line of a pool at its limits says so without claiming nothing runs" |
+| UCL-010 | A model's limit nothing says the end of (no believable reset: none named, or one further ahead than a window lasts), with no subscription the task can go to, is tried again by the pool once (`BLIND_LIMIT_RETRIES`): the task waits in a `limit` pause, and a provider's reading, which ends such a limit, resumes it. Refused the same way again before the model answered (`BlindLimits`; the model's own work or its turn's end is an answer, a refusal Claude Code writes is not), the task is not started on that subscription by itself again. When another subscription says when it resets, the task waits in its `limit` pause for that reset and the pool leaves the refusing subscription out for it, whatever its readings say meanwhile (`rotation::decide_leaving_out`); with no reset known the subscription is a candidate again. When nothing says when the task can go on, the task is not paused: its session stays at the refusal, and Yulius asks a person in the terminal and under Needs you ("Run the task on another subscription or model, or end the limit …", audit `task.limit_without_end`); further readings start nothing, the goal pause written at that refusal is not asked about beside it, and the request ends when the task goes on past the limit. A task that already waits for capacity keeps its pause. A limit with a believable reset waits for it as before. | `moves::tests::a_limit_nothing_says_the_end_of_is_waited_for_once`, `rotation::tests::a_subscription_left_out_is_not_chosen_while_a_reset_is_known`, `supervisor::tests::the_models_own_records_say_it_answered`; `usage_credits::a_limit_nothing_says_the_end_of_is_retried_once_then_asks_a_person` (with a refused move and then a person's move), `…a_limit_whose_reset_is_not_believed_is_retried_once_then_asks_a_person`, `…a_limit_after_the_model_answered_again_has_its_own_retry`, `…a_task_refused_again_waits_for_a_known_reset_off_that_subscription` |
 
 ## Plan
 
@@ -95,6 +95,8 @@ Parallel work: PR #1167 (task #443) touches `observe.rs`, `ports/harness.rs`, `w
 - [x] Docs, ADR-0301, changes and the chained task for the page's manual refresh
 - [x] Independent review in a fresh session, findings fixed test-first
 - [x] Every gate green on the reviewed head
+- [x] Review round 2 answered: the menu knows the task's model, the blind retry is bounded in every case and each clause has its test
+- [x] Round 3 review approves the final head with its gates green
 
 ## Acceptance criteria
 
@@ -113,7 +115,13 @@ Parallel work: PR #1167 (task #443) touches `observe.rs`, `ports/harness.rs`, `w
   provider's reading ends it.
 - A refusal without a reset on the only subscription: the task waits, is resumed after a
   provider's reading, and on the second such refusal stays Running under Needs you with
-  Yulius's request; a further reading starts no third run.
+  Yulius's request; a further reading starts no third run, and a person's move to a working
+  subscription ends the request.
+- The same with a second subscription out of the model until a known reset: after the second
+  refusal the task waits, a further reading of the refusing subscription starts no third run
+  and nobody is asked; at the other one's reset the task runs there.
+- "Run #N on…" opened while the task view still waits for the task's details shows a
+  subscription that is only out of the default model's credits as one an Opus task can go to.
 - When the move past the limit is refused (the other subscription's credential cannot be
   opened), the task stays on its subscription with the Needs you "Goal paused · the request was
   rate limited."; a person's move to a working subscription then continues the turn and ends
@@ -150,6 +158,14 @@ Parallel work: PR #1167 (task #443) touches `observe.rs`, `ports/harness.rs`, `w
 - The lock, at each writer: a held provider's reading against a reported limit and against a
   sign-in, a held session's reading against a provider's reading. Each gives the unlocked write
   half a second to land (a bounded negative check; locked, that wait always runs out).
+- UCL-010's clauses (review round 2): the rule itself as unit tests of `BlindLimits`,
+  `rotation::decide_leaving_out` and `model_answered`; with real processes, a later limit after
+  the model answered (each run of the fake agent answers one message, then is refused), a
+  second subscription with a known reset (stored out of the model for 40 hours, then freed by
+  rewriting its stored usage, so no test waits for a clock), a reset that is not believed, and
+  a refused move followed by a person's move after the request.
+- e2e, the menu: the task view's read of the task is held by the mock (`holdDetail`) while the
+  menu is opened, then the menu's own read is failed (`failNextDetail`).
 - Existing suites that cover the paths touched: `pool_supervision`, `subscription_moves`,
   `subscription_pool`, `account_usage`, `accounts`, `cockpit`, `task_done`, `ui_contract`.
 - e2e (`cd e2e && npx e2e run`): the Subscriptions page shows the Fable row.
@@ -226,6 +242,32 @@ Parallel work: PR #1167 (task #443) touches `observe.rs`, `ports/harness.rs`, `w
   turn as Your turn beside the move's refusal, and whichever lands last decided whether a later
   restart asked again. The second went by the open request's time, but the request kept from an
   earlier limit is older than a later one (review round 1).
+- **Refused again, the task waits for a reset that is known, off that subscription** (review
+  round 2). The first answer to "one blind retry" asked a person only when no subscription had
+  a known reset, and otherwise kept the pause: each reading of the refusing subscription ended
+  its limit, so the pool started the session there again every few minutes until the other
+  one's reset. Now the task remembers the subscription that refused it twice (`BlindLimits`,
+  in memory), and the pool's decision for the paused task counts that subscription as limited
+  with no known reset (`rotation::decide_leaving_out`). Rejected: asking a person in that case
+  too (the task would sit at its refusal past a reset the pool can use by itself), an assumed
+  reset stored on the refusing subscription (a made-up time on its card), and a stored,
+  per-account "kept across readings" mark (it needs an end, which nothing gives). With no
+  reset known the subscription is a candidate again, so a task is never left waiting for
+  nothing: refused there once more, it asks a person.
+- **The bound is the model's limit's.** A limit of the subscription without a reset ends by
+  what a reading shows of its windows, as before this change; a text-only credits refusal that
+  names no way to another model is read as such a limit.
+- **The API says when a limit binds the whole subscription** (`usage.limit_reached`,
+  `limit_resets_at`; review round 2). The menu guessed it from `status` and the other models'
+  windows, and let a task through when both a limit of the subscription and another model's
+  window were in effect. Rejected: a server route that judges every subscription for one task
+  (a new contract for a hint the switch itself re-checks).
+- **The menu reads the task's model itself** (review round 2, blocker). The task summary has no
+  model; the view reads the details after it drew the chip. Rejected: adding `model` to every
+  task summary (a wider contract for one menu), and disabling the chip until the details load.
+- **The turn-boundary flag stays the subscription's**, as on `dev`: a full model window comes
+  only from a limit record, whose task is rotated by that record; runs with hooks decide at
+  their Stop hook with the task's own model either way.
 - **Known limit: a refusal with no goal notice.** Claude Code writes no "Goal paused" notice
   when the goal is paused already (task #438, 15:05: a queued check-in). A move refused at such
   a refusal has no held pause to ask with: the task reads Working at its refusal, the earlier
@@ -290,37 +332,67 @@ and its answer, test first where code changed:
 A refusal Claude Code writes no goal notice for (the reviewer's last note) is recorded under
 Decisions as a known limit: it is the rule every limit without a goal notice had before.
 
-Round 2 (another fresh session) reviews the head this file is committed at, with the round 1
+Independent review, round 2 (another fresh session, head `5524a949`): request changes. Its own
+gate passed (3661 tests); its e2e run failed on the menu assertion this change had added.
+
+| Finding | Answer |
+| --- | --- |
+| E1, blocker: "Run #N on…" was judged with the model the task view had loaded so far, so the menu's e2e assertion failed about every second run (14 of 30 alone), and a person who clicked early saw an Opus task refused | The menu reads the task's model itself beside the subscriptions. Red: `27036d9a` (the view's read held: 5 of 5 failed). Fix: `0bf3c3ac`. The formerly flaky test passed 30 of 30 alone, the file 10 times in a row (240 of 240) |
+| M1: four clauses of UCL-010 without a test (the count's reset when the model answered, the known-reset exception, the request's end, a reset that is not believed) | The rule is now `BlindLimits` with unit tests, `model_answered` and `rotation::decide_leaving_out` with theirs, and four flows with real processes (`83c4bf04`); each clause's mutation fails a test |
+| m1: with another subscription's reset known, a task refused again was paused and started on the refusing subscription at each of its readings until that reset; the documents claimed the bound without that exception | The code holds the bound there too: the task waits for the known reset, off that subscription. Red: `a_task_refused_again_waits_for_a_known_reset_off_that_subscription` with the leave-out rule disabled ("not started there again at a reading": 3 runs). Fix: `83c4bf04`; the documents say both outcomes (`607bacf5`) |
+| m2: three tests named for UCL-007 passed without the hold | `needs_nobody` also asserts that no `task.goal_retries_spent` was audited; with the hold disabled all three fail |
+| m3: lines without a test (a passed model window dropped at a write; the turn-boundary flag; a refused subscription clearing the blind flag) | `subscription_pool::a_models_window_past_its_reset_is_dropped_at_the_next_stored_reading`; the flag is the subscription's again, as on `dev`; "blind" is an argument of the rotation, so nothing has to clear it |
+| Nit: a text-only "out of usage credits" was always the model's | The model's only when the text names a way to another model (`d24ad6de`, red first in the harness test) |
+| Nit: "usage reading" where only a provider's reading ends a limit without a reset; the family without a window missing from the architecture text | Reworded in `docs/operations.md`, `docs/changes.md`, `docs/product.md`; added to `docs/architecture.md` |
+| Nit: clearing the held goal pause worked for one order only | `LimitGoalPause::Asked` (unit test, both orders; the blind flow's refused move audits nothing) |
+| Nit: a task that waits for capacity could be asked about and keep its pause | `BlindLimits::nowhere_to_go` takes the task's status (unit test) |
+| Nit: the menu let a task through when a limit of the whole subscription and another model's window were both in effect | The API's `usage.limit_reached` and `limit_resets_at`; the menu refuses on them (unit cases in the page) |
+| Nit: "No subscription has capacity left" for a pool that is only out of the default model's window | "Every subscription is at a usage limit: …" with an e2e check |
+| Nit: the same eight-day bound as two constants | One (`LIMIT_RESET_MAX_MS`) |
+| Nit: the resume test's reset 4 s ahead | 8 s |
+| Nit, pre-existing: `TaskRuntime::limit_resets_at` gets the raw reset and nothing reads it | On `dev` before this change and unused: left as it is |
+| Direction: what the reset's bound leaves (a forged reset up to eight days ahead) | Said in ADR-0301's consequences |
+| `dev` moved (three pull requests) | Merged twice (the second merge is `170783875`); #1193 conflicted in `e2e/README.md` and SPEC-001 (one table row each, merged by words; both changelog entries kept) |
+
+Round 3 (a third fresh session) reviews the head this file is committed at, with both rounds'
 findings and these answers, and runs the gates itself; its verdict is in the pull request.
 
 After the fix:
 
-- `usage_credits::` 9 of 9 pass; with `subscription_pool::`, `account_usage::`, `account_email::`
-  and `accounts::` 34 pass; `cockpit::a_superagent_out_of_usage_credits_moves_to_another_subscription`
-  passes.
-- Mutation checks (the fix reverted in one place at a time, each failed by the tests named in
-  Requirements): the credits kind and phrases; the allowance named as Fable; the task's model
-  family; the model's window kept across a reading; the status rule; the goal pause held at a
-  limit, live and in the replay; the replay's call; the refusal's call; the request ended by a
-  move; the hold after a refusal; the pause kept in the fold; the sign-in's drop; asked once at a
-  restart; the limit's write without the lock; the reading without the lock; asked again
-  whenever the task does not read Needs you; a later limit taken for the one already asked
-  about; the helper without the lock (3 tests fail); the sign-in without the lock; the capacity
-  view for any model; the reset believed unbounded; a kept window's reset unbounded; the blind
-  retry unbounded; the audit guard removed. 27 mutations, 27 caught.
-- `scripts/dev ci` on `e821b8e6` (with `dev` at `63819769` merged): green. 3661 tests run, 3661
+- `usage_credits::` 12 of 12 pass; with the suites around it (`subscription_pool`,
+  `subscription_moves`, `pool_supervision`, `account_usage`, `account_email`, `accounts`,
+  `cockpit`, `task_done`, `ui_contract` and the goal tests) 219 pass.
+- Mutation checks (the fix reverted or bent in one place at a time; every one failed a test
+  named in Requirements). Rounds 0 and 1, 27: the credits kind and phrases; the allowance named
+  as Fable; the task's model family; the model's window kept across a reading; the status rule;
+  the goal pause held at a limit, live and in the replay; the replay's call; the refusal's
+  call; the request ended by a move; the hold after a refusal; the pause kept in the fold; the
+  sign-in's drop; asked once at a restart; the limit's write without the lock; the reading
+  without the lock; asked again whenever the task does not read Needs you; a later limit taken
+  for the one already asked about; the helper without the lock; the sign-in without the lock;
+  the capacity view for any model; the reset believed unbounded; a kept window's reset
+  unbounded; the blind retry unbounded; the audit guard removed. Round 2, 21: the model's
+  answer not counted (the call, and each kind of record); the leave-out rule ignored; the known
+  reset ignored; Yulius's request not ended by a move; "blind" by the raw reset; the hold
+  disabled; the goal pause not silenced beside Yulius's request; a passed window kept at a
+  write; the retries unbounded; a waiting task asked about; a pause held after Yulius asked;
+  the text-only scope; the left-out subscription never a candidate again; nothing left out; the
+  API's flag always false; the menu not reading the model; a failed read closing the menu; a
+  limit of the subscription ignored by the menu; its reset ignored. 48 of 48 caught.
+- `scripts/dev ci` on `170783875` (with `dev` at `420750d9` merged): green. 3724 tests run, 3724
   passed, 16 skipped; repository contracts, check, fmt, clippy (Linux and macOS), doctests,
-  deny, shear and docs passed. Round 1's gate, on `b051380f`: 3551 passed; an earlier run failed
-  only at the docs stage (a doc link to a private item), fixed in `8110f414`.
-- `cd e2e && E2E_TELEMETRY_DISABLED=1 npx e2e run` on the same head: 930 passed, 1 skipped, 1
-  failed. `tests/subscriptions.e2e.ts`: 21 of 21, with the card's row and the menu's rule. The
-  failure is `sessions.e2e.ts` "the spider web sticks to the top of the view while the session
-  scrolls" ("expected 199 to be greater than 200"): a flaky test this change did not cause,
-  reported as [#1185](https://github.com/Quartio-Studio/yulius/issues/1185). It reads the page's
-  scroll range once, and a probe shows the session view one frame at range 199 before its final
-  332; alone it passed 15 of 15, and it passed in the four earlier full runs of this branch
-  (none failed: 923, 923, 930 and the round 1 reviewer's 930). This change touches neither that
-  test nor the session view.
+  deny, shear and docs passed. Earlier gates: 3551 passed on `b051380f` (round 1), 3661 on
+  `e821b8e6`, 3720 on `607bacf5`.
+- `cd e2e && E2E_TELEMETRY_DISABLED=1 npx e2e run` on `170783875`: 80 files passed, 1 skipped;
+  967 tests passed, 1 skipped, none failed.
+- Two e2e failures were met on the way, on earlier heads. One was this change's own (E1 above:
+  the round 2 reviewer's run, and the reason "21 of 21" in an earlier version of this section
+  held only for the runs that happened to pass). The other is `sessions.e2e.ts` "the spider web
+  sticks to the top of the view while the session scrolls" ("expected 199 to be greater than
+  200", once in seven full runs): a flaky test this change did not cause, reported as
+  [#1185](https://github.com/Quartio-Studio/yulius/issues/1185). It reads the page's scroll
+  range once, and a probe shows the session view one frame at range 199 before its final 332;
+  this change touches neither that test nor the session view.
 - The mock's Subscriptions page looked at in the sandbox browser: "Claude #5" reads "Limit
   reached" with "Fable this week 100% used, Resets Friday …" under its own 5-hour and weekly rows.
 - `yulius security-scan`: "Security scan disabled: Vidoc is turned off in Yulius, for this
@@ -340,3 +412,9 @@ Not tested here:
 - A refusal Claude Code writes no goal notice for, with the move refused (a known limit above).
 - The blind retry against a real "credits switched off" account, and the count across a restart
   of Yulius (in memory: a restart allows one more).
+- A limit nothing says the end of that arrives for a task already waiting for capacity (a turn
+  held at its boundary), with real processes: the rule for it is `BlindLimits`' unit test.
+- The wait for a known reset until the clock reaches it: the test frees the other subscription
+  by rewriting its stored usage, so that no test waits on a clock.
+- The text-only wordings against real records: none was seen; they follow Claude Code
+  2.1.322's own strings.
