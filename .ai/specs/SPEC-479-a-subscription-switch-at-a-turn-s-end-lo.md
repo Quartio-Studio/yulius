@@ -1,6 +1,6 @@
 ---
 yulius-task: e5529390-b6e8-4cf3-8348-6672f8933749
-status: in-progress
+status: done
 ---
 
 # SPEC-479: A move to another subscription at a turn's end waits for what Claude Code still queues
@@ -84,8 +84,8 @@ handed-on prompt whose turn meets the limit is not lost either.
 - [x] A handed-on turn the limit cuts moves past the limit with its prompt (fake agent)
 - [x] Operations guide, ADR-0310, architecture and changes log say so
 - [x] Mutation checks and gate green, evidence recorded
-- [ ] Review round 1: an end that handed something on leaves nothing behind, the held turn's guards tested
-- [ ] Independent review answered
+- [x] Review round 1: an end that handed something on leaves nothing behind, the held turn's guards tested
+- [x] Independent review answered
 
 ## Acceptance criteria
 
@@ -128,21 +128,24 @@ handed-on prompt whose turn meets the limit is not lost either.
 
 ## Test plan
 
-- Unit, `crates/yulius-domain/src/agent_cli.rs`: `Queue` with left-over entries (AC4).
+- Unit, `crates/yulius-domain/src/agent_cli.rs`: `Queue` with left-over entries (AC4), and an
+  end that handed something on, with one and with two entries behind it (AC9).
 - Unit, `crates/yulius-app/src/finish.rs`: the replay of a reattached run folds the closing
   record into the queue (AC4).
 - Integration with real processes, `crates/yulius/tests/claude_code_moves.rs` (`mod moves`),
-  the fake agent in Claude Code's order with two subscriptions: AC1, AC2, AC3, AC4, AC5, AC6.
+  the fake agent in Claude Code's order with two subscriptions: AC1, AC2, AC3, AC4, AC5, AC6,
+  AC9, and AC10's record that is read late.
 - Integration on the test's clock, `claude_code_moves.rs` (hooks to the internal listener, no
   process; a move that is tried is refused there and leaves its wait): a turn's end 1,999 ms
   after a prompt went on does not move the session and one 2,000 ms after does; a prompt that
   goes on while the turn's end looks (held at the race point `SwitchProbed`) keeps the session;
   a held turn goes on in place while a prompt may wait and is moved once none does; a turn a
   limit cut is moved whatever may wait; a paused task without a process is not released in
-  place (SWQ-001, SWQ-003).
+  place; a held turn stays held while nothing has room; a pause that changed while the pool
+  looked (held at the race point `HeldTurnProbed`) is left alone (SWQ-001, SWQ-003, AC10).
 - Unit, `crates/yulius-app/src/supervisor.rs`: what a move asks of the queue, with a queue that
   is not known and a new run (SWQ-001, SWQ-002).
-- `tools/fake-agent/tests/cli.rs`: AC7.
+- `tools/fake-agent/tests/cli.rs`: AC7, and the order of a hand-over with an `/alone` line.
 - Mutations, each reverted (Evidence).
 - Checked against real artifacts: the installed Claude Code 2.1.322 against a local stub of
   the model API (the closing record at a blocked Stop), and a count over this instance's real
@@ -230,42 +233,73 @@ handed-on prompt whose turn meets the limit is not lost either.
   feedback and a `stop_hook_summary`, and no `turn_duration`; the second answer; `dequeue`,
   `stop_hook_summary`, `turn_duration`; the prompt's record (`promptSource: "queued"`). So a
   blocked Stop writes no closing record, and at the ending Stop the hand-over is in the file
-  before the closing record.
+  before the closing record. The review added six scenarios with the same tool (round 1): a
+  background shell's notification, a slash command or a `!` line ahead of a prompt is handed
+  on alone (one `dequeue`, the closing records with the prompt still waiting, the entry's
+  turn, and at its end the prompt's `dequeue`); a prompt ahead of a notification or a slash
+  command leaves first, the other one end later; two prompts leave together. A
+  notification's and a slash command's prompt hook comes at the hand-over, a `!` line gets
+  none.
 - **Real transcripts of this instance** (420 session files, 412 with queue records; scripts
   that count, no text read; kept outside the repository): 5,038 `enqueue`, 3,682 `dequeue`,
   1,339 `remove`, 4,197 `turn_duration`. Counted as SWQ-002 counts: 24 entries were found
   waiting by a closing record; no `dequeue` ever came while only such entries were counted;
   7 of them left later by a `remove` (6 `absorbed_mid_turn`, 1 `delivered_to_agent`), 17
-  still waited at the file's end. Records of 2.1.292, 2.1.311 and 2.1.322.
+  still waited at the file's end. Records of 2.1.292, 2.1.311 and 2.1.322. Counted again with
+  the rule as corrected in round 1 (the files change by the hour: 390 with queue records,
+  3,421 `dequeue`, 3,912 `turn_duration`): the same 24 entries are marked, at 15 turn ends;
+  no `dequeue` came while only such entries were counted; 4 closing records came at an end
+  that had handed something on while entries still waited, the case the first rule got
+  wrong. The first count could not show it: it has no hand-over of a left-over entry
+  because the mixed queues are few, not because they do not exist.
 - **Tests, each seen failing first.** AC1, AC2 as above. The fake agent's two tests failed
   before its change (a `/stuck` line was answered and got a hook; a handed-on turn was not
   cut). AC5 failed before SWQ-003 with "the held turn was moved with a prompt in its queue".
   AC3, AC4, AC6, the tests on the test's clock and the unit tests passed when written, since
-  the rule was there: their failure is the mutants below.
-- **Mutations** at 5a85caa6 (a script over 23 mutants, each applied alone, the tests of this
-  change run, reverted with `git checkout`): all 23 caught.
-  1. the turn's end not staying for a waiting prompt: AC1 to AC6 and the look's test fail;
+  the rule was there: their failure is the mutants below. Round 1: at e46cd059 (the fake
+  agent's `/alone` and the tests, before the rule's change) AC9 fails with real processes
+  ("the session moved with a prompt in its queue", 2 runs), and so do the domain and the
+  fold's cases (`(1, 1)` where `(1, 0)` is right); the fake agent's test failed before its
+  change. The tests of AC10 passed when written (mutants 26 to 28).
+- **Mutations** at 834f9524 (a script over 31 mutants, each applied alone, the tests of this
+  change run, reverted with `git checkout`): all 31 caught.
+  1. the turn's end not staying for a waiting prompt, and 4. the queue not asked by the
+     move: AC1 to AC6 and AC9 fail;
   2. prompts counted after the look, and 6. a prompt during the look not asked: the look's
-     test; 5. a prompt that just went on not asked: its test;
+     test; 5. a prompt that just went on not asked: its test and the held turn's;
   3. the move counting every entry, as the restart does, 9. the watcher not marking what a
-     turn's end left, 11. a closing record marking nothing, 14. a left-over entry counting
-     for the move: AC4 (the session never moves);
-  4. the queue not asked by the move: AC1 to AC6;
+     turn's end left: AC4 (the session never moves);
   7. a queue not read yet, 8. one that cannot be read, counting as empty, and 19. a new run
      keeping the old left-over count: the runtime's test;
   10. the replay not marking: the fold's test;
+  11. a closing record marking nothing, 14. a left-over entry counting for the move: the
+      domain tests, the fold's and AC4;
   12. a leave leaving the left-over count above what waits, 13. a hand-over that is not over
       not counting: the domain test; 15. the comparison including equal: AC1 to AC5;
-  16. a held turn moved over a waiting prompt: AC5; 17. any pause released in place: the
-      limit's test on the clock; 18. a task without a process released in place: its test;
+  16. a held turn moved over a waiting prompt: AC5 and the clock's tests; 17. any pause
+      released in place: the limit's test on the clock; 18. a task without a process
+      released in place: its test;
   20. to 23. the fake agent handing a stuck entry on, sending it a prompt hook, not cutting a
-      handed-on turn, cutting it one turn late: its own tests and AC4, AC6.
-  The first run of the script reported eight survivors; its pattern for nextest's result
-  lines missed `( 1/20)`. Run again with the pattern fixed, each of the eight is caught.
-- **Gate.** `scripts/dev ci` at 56662c57 (every code and test change of this task, `dev` up to
-  4157f67d merged without a conflict): exit 0. `cargo check`, `fmt --check`, clippy
-  `-D warnings` on Linux and for `aarch64-apple-darwin`, nextest 4047 passed / 16 skipped,
-  doctests, `cargo deny` (advisories, bans, licenses, sources ok), `cargo shear`, `cargo doc`.
+      handed-on turn, cutting it one turn late: its own tests and AC4, AC6;
+  24. a closing record marking what waits behind a hand-over (the first rule): AC9, the
+      domain and the fold's tests; 25. a closing record marking one entry at most: the
+      domain test;
+  26. a held turn released while nothing has room, 27. the pool asking a held turn's queue
+      without reading its lines, 28. a pause that changed meanwhile released: AC10's three
+      tests;
+  29. to 31. the fake agent handing an `/alone` entry on with what waits behind it, sending
+      its hook when it is entered, sending none at its hand-over: its own test.
+  The script's pattern for nextest's result lines missed `( 1/20)` in its first run (eight
+  false survivors) and `FAIL + LEAK` in this one (one): each was run again with the pattern
+  fixed and is caught.
+- **Gate.** `scripts/dev ci` at d0f6a78d (every code and test change of this task, `dev` up to
+  3393b2ad merged without a conflict; that merge brought SPEC-480, which changes when Yulius
+  types a message and not what a move does with the queue): exit 0. `cargo check`,
+  `fmt --check`, clippy `-D warnings` on Linux and for `aarch64-apple-darwin`, nextest 4071
+  passed / 16 skipped, doctests, `cargo deny` (advisories, bans, licenses, sources ok),
+  `cargo shear`, `cargo doc`. Before it: exit 0 at 56662c57 (the head of review round 1,
+  4047 passed) and at 18741b29 (round 1's fixes, 4053 passed). After it comes this section
+  alone.
 - **e2e.** Not run here: this change touches no page. Yulius CI runs the suite on the pull
   request.
 - **Security scan.** Disabled: `yulius security-scan` says "Security scan disabled: Vidoc is
@@ -275,6 +309,25 @@ handed-on prompt whose turn meets the limit is not lost either.
   in the order the real tool was seen to have. That Claude Code continues a handed-on turn
   after a resume past a limit rests on SPEC-034 and SPEC-072 (the transcript holds the
   prompt's record; the test shows that much). What Claude Code does with its queue when a
-  limit cuts a turn was not run. The re-check that the pause is still open before a held turn
-  is released (`pause_open` in `resume_paused`) has no test: it guards a change of the pause
-  during the read of the turn's lines.
+  limit cuts a turn was not run. A notification addressed to a sub-agent was not played with
+  the real tool.
+- **Independent review, round 1** (a fresh session, read-only, head 68b104d6; it ran the gate
+  in a worktree of its own, the new tests fifteen times over, mutants of its own, and six
+  scenarios with the real Claude Code 2.1.322): "**Request changes.** One major in the
+  change's own code: the new left-over rule (SWQ-002) reopens the loss of #1194 whenever the
+  prompt is not at the head of Claude Code's queue. The gate is green." The major: a closing
+  record marked a prompt that waits behind a notification, a slash command or a `!` line,
+  which Claude Code hands on one end later; answered by the rule above (only an end that
+  handed nothing on leaves what waits), AC9 and the corrected documents. Four minors, each a
+  guard whose removal no test noticed: the `Decision::Switch` condition of SWQ-003 (now: a
+  held turn stays held while nothing has room), the read of the lines before the pool asks
+  (a record that is read late), the re-check that the pause is still open (a pause that
+  changed while the pool looked), and two entries left at once (the domain test). One nit:
+  ROT-003 is SPEC-001's requirement, not SPEC-034's; corrected. On direction the review
+  says: "The issue's first acceptance criterion asks that the resumed session answers the
+  message or the sender is told. The change has the old session answer it before the move,
+  and ADR-0310 argues why. That is a decision, not a defect, and should be stated when the
+  issue is closed."
+- **Independent review, round 2.** The same reviewer looks at the delta after 68b104d6 on
+  the head that carries this section, so its verdict cannot be quoted here: it is recorded
+  on the pull request and on issue #1194.
