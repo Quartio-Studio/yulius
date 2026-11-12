@@ -87,7 +87,8 @@ pub enum Cutover {
     No,
     /// The start was ordered and its end is not recorded.
     Starting,
-    /// The new instance runs; the old one is frozen and disabled.
+    /// The new instance runs and has taken over. Whether the old one is held (frozen or stopped
+    /// with nothing left, and disabled) is not recorded: every run looks (SPEC-481).
     Moved,
     /// The new instance did not come up and the old one was thawed; the copy there was started.
     RolledBack,
@@ -110,7 +111,8 @@ pub struct State {
     pub cutover: Cutover,
     /// The old proxy redirects to the new URL.
     pub redirected: bool,
-    /// The move ended: the key is gone and nothing is left to do here.
+    /// The finish was done: the key is gone on both hosts. A run calls the move finished only
+    /// while it also finds the old instance held (SPEC-481 HLD-002).
     pub finished: bool,
     /// The instance the move is of, for `--abort` without options.
     #[serde(default)]
@@ -327,6 +329,16 @@ impl Old {
     fn down(self) -> bool {
         self.stopped && !self.sessions_run
     }
+}
+
+/// How the old instance of a move is held beside a new one that has taken over (SPEC-481
+/// HLD-001).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Hold {
+    /// All of it is frozen.
+    Frozen,
+    /// The server's unit has stopped, and nothing of the instance runs.
+    Down,
 }
 
 /// The command that ends every process of the units a person appends, for a line a person
@@ -560,6 +572,9 @@ impl<'a> Move<'a> {
         self.world.show("Plan");
         let profile = self.old_host()?;
         if self.state.finished {
+            // The finish was done. The move is finished while the old instance is also held,
+            // which no record says: systemd is asked by every run (SPEC-481 HLD-002).
+            self.look_again()?;
             self.ok(
                 "move",
                 format!(
@@ -571,7 +586,12 @@ impl<'a> Move<'a> {
             return Ok(());
         }
         match self.state.cutover {
-            Cutover::Moved => {}
+            // The new instance has taken over. The old one is looked at again; the steps that
+            // follow are the new instance's and are done whatever the look finds, as after
+            // the start (SPEC-481 HLD-003). A failed line ends the run with exit 1.
+            Cutover::Moved => {
+                let _ = self.look_again();
+            }
             // A run that ended while the new instance was starting: its state decides, and
             // nothing is planned or copied again.
             Cutover::Starting => {
@@ -1779,7 +1799,8 @@ impl<'a> Move<'a> {
                                 "the new host stopped answering ({why}; {again}), so nobody \
                                  knows whether it runs. {unit} stays frozen here: run the \
                                  command again when the new host answers (it decides from the \
-                                 new instance's state), or `yulius instance migrate --abort`"
+                                 new instance's state); `yulius instance migrate --abort` only \
+                                 once the new instance is known to be stopped"
                             ),
                         );
                         return Err(Stop::Failed);
@@ -1794,33 +1815,129 @@ impl<'a> Move<'a> {
         }
     }
 
-    /// The new instance runs: the old one stays frozen and is disabled.
+    /// The new instance runs: the old one stays frozen and is disabled. The move is recorded
+    /// whatever the look finds, for the new instance has taken over; an old instance that is
+    /// not held is a failed line here and in every later run until it is (SPEC-481).
     fn moved(&mut self) -> Result<(), Stop> {
         let unit = self.opts.service.clone();
-        // Again, for a run that goes on from a recorded start.
-        let disabled = matches!(
-            self.world.freezer().systemctl(&["disable", &unit]),
-            Ok((0, _))
-        );
-        if disabled && self.old_frozen() {
-            self.changed(
+        // Again, for a run that goes on from a recorded start. What systemd says after it
+        // decides, by the look every later run takes (SPEC-481 HLD-004).
+        let _ = self.world.freezer().systemctl(&["disable", &unit]);
+        match self.old_hold(false) {
+            Ok(Hold::Frozen) => self.changed(
                 "old instance",
                 format!("{unit} stays frozen and is disabled: it never runs beside the new one"),
-            );
-        } else {
-            let units = self.old_units();
-            self.fail(
+            ),
+            Ok(Hold::Down) => self.changed(
                 "old instance",
                 format!(
-                    "{unit} must be frozen and disabled now that the new instance runs: \
-                     `systemctl freeze {units}; systemctl disable {unit}`"
+                    "{unit} does not run here any more, nothing of it is left running, and it \
+                     is disabled: it never runs beside the new one"
                 ),
-            );
+            ),
+            Err(why) => {
+                self.fail("old instance", why);
+            }
         }
         self.state.cutover = Cutover::Moved;
         // The copy there is an instance now: nothing more is sent into it.
         self.stage.forget();
         self.save_state()
+    }
+
+    /// Looks at the old instance of a move whose new instance has taken over, and changes
+    /// nothing: how it is held, or the line that says what was found and what a person has to
+    /// run (SPEC-481 HLD-001). Held: no unit of it runs unfrozen, no unit of it that does not
+    /// run left processes that run, and the server's unit does not start with this host. What
+    /// systemd does not say is not held. `later`: a run after the one that started the new
+    /// instance; it tried no freeze itself, so its line also names the way out of a freeze
+    /// that keeps failing.
+    fn old_hold(&mut self, later: bool) -> Result<Hold, String> {
+        let unit = self.opts.service.clone();
+        let state = self.old_unit();
+        let hold = match state {
+            Some(old) if old.all_frozen => Hold::Frozen,
+            Some(old) if old.down() => Hold::Down,
+            // A unit of it runs unfrozen or is on its way up or down, or systemd does not say.
+            _ => {
+                let found = if state.is_some() {
+                    format!("{unit} is not frozen as a whole")
+                } else {
+                    format!("systemd does not say what {unit} does")
+                };
+                return Err(self.must_hold(&found, later));
+            }
+        };
+        // A unit that does not run may have left processes that do, beside frozen units too
+        // (a sessions unit that was stopped).
+        self.none_left(hold == Hold::Down, "finished")?;
+        match (freeze::disabled(&mut *self.world.freezer(), &unit), hold) {
+            (Ok(()), _) => Ok(hold),
+            (Err(said), Hold::Frozen) => {
+                let found = format!("{unit} is frozen, but `systemctl is-enabled {unit}` {said}");
+                Err(self.must_hold(&found, false))
+            }
+            (Err(said), Hold::Down) => Err(self.not_disabled(&said)),
+        }
+    }
+
+    /// The line of an old instance that is not frozen as a whole, or frozen and not known to
+    /// be disabled: what was `found`, and the two commands. `instead`: with the commands that
+    /// end an old instance systemd does not freeze (only a unit that runs is frozen: not one
+    /// on its way up or down or with a process stuck in the kernel).
+    fn must_hold(&mut self, found: &str, instead: bool) -> String {
+        let unit = self.opts.service.clone();
+        let units = self.old_units();
+        let instead = if instead {
+            format!(
+                " If a freeze keeps failing (systemd freezes only a unit that runs), stop it for \
+                 good instead: `systemctl stop {units}; {KILL_ALL} {units}`."
+            )
+        } else {
+            String::new()
+        };
+        format!(
+            "{found}. It must be frozen and disabled now that the new instance runs: `systemctl \
+             freeze {units}; systemctl disable {unit}`, then run the command again.{instead} \
+             The move is not finished until then"
+        )
+    }
+
+    /// The line of an old server's unit that has stopped with nothing left and is not known
+    /// to be disabled; `said` is what `systemctl is-enabled` said ([`freeze::disabled`]).
+    fn not_disabled(&self, said: &str) -> String {
+        let unit = &self.opts.service;
+        format!(
+            "{unit} does not run here any more, but `systemctl is-enabled {unit}` {said}: it may \
+             start again with this host, beside the new instance. Disable it: `systemctl \
+             disable {unit}`, then run the command again. The move is not finished until then"
+        )
+    }
+
+    /// A run that finds the move recorded as moved looks at the old instance again and says
+    /// what it found (SPEC-481 HLD-002): held, an `ok` line; not held, the failed line under
+    /// the cutover's heading, where `--status` and the page read it. Nothing of the old
+    /// instance is changed: the new one cannot be asked once the key is gone, and a person may
+    /// have gone back by hand.
+    fn look_again(&mut self) -> Result<(), Stop> {
+        let unit = self.opts.service.clone();
+        match self.old_hold(true) {
+            Ok(Hold::Frozen) => self.ok(
+                "old instance",
+                format!("{unit} is frozen and disabled: it does not run beside the new one"),
+            ),
+            Ok(Hold::Down) => self.ok(
+                "old instance",
+                format!(
+                    "{unit} does not run here, nothing of it is left running, and it is disabled"
+                ),
+            ),
+            Err(why) => {
+                self.phase("Cutover");
+                return Err(self.fail("old instance", why));
+            }
+        }
+        Ok(())
     }
 
     /// The new instance did not come up: it is stopped there before the old one thaws.
@@ -1905,6 +2022,13 @@ impl<'a> Move<'a> {
                              {KILL_ALL} {units}; systemctl disable {unit}`"
                         ),
                     );
+                    // Asked, not sent: nothing of a unit a person is told to look at is
+                    // touched. One that is not disabled would start beside the new instance
+                    // with this host (SPEC-481 HLD-005); later runs look again.
+                    if let Err(said) = freeze::disabled(&mut *self.world.freezer(), &unit) {
+                        let why = self.not_disabled(&said);
+                        self.fail("old instance", why);
+                    }
                     self.state.cutover = Cutover::Moved;
                     return self.save_state();
                 }
@@ -1947,19 +2071,31 @@ impl<'a> Move<'a> {
     /// run, so the line names the command that ends them. Nothing is killed here and nothing is recorded:
     /// the same command looks again.
     fn nothing_left_running(&mut self) -> Result<(), Stop> {
+        self.none_left(true, "recorded as done")
+            .map_err(|why| self.fail("old instance", why))
+    }
+
+    /// Asks what the units of the old instance that do not run left ([`freeze::left_running`])
+    /// and changes nothing: `Err` is the line for processes that still run, with the command
+    /// that ends them, or for a systemd that does not say. `stopped`: the server's unit is
+    /// known to have stopped. `done`: what the move is not until then ("recorded as done" for
+    /// a resumed start, SPEC-478; "finished" once it is recorded, SPEC-481).
+    fn none_left(&mut self, stopped: bool, done: &str) -> Result<(), String> {
         let unit = self.opts.service.clone();
         let left = match freeze::left_running(&mut *self.world.freezer(), &unit) {
             Ok(left) if left.is_empty() => return Ok(()),
             Ok(left) => left,
             // Not knowing is not "nothing is left" (RSL-003).
             Err(why) => {
-                return Err(self.fail(
-                    "old instance",
-                    format!(
-                        "{unit} has stopped, and systemd does not say whether processes of \
-                         the old instance still run here beside the new one ({why}). The move \
-                         is not recorded as done: run the command again when it answers"
-                    ),
+                let has_stopped = if stopped {
+                    format!("{unit} has stopped, and ")
+                } else {
+                    String::new()
+                };
+                return Err(format!(
+                    "{has_stopped}systemd does not say whether processes of the old instance \
+                     still run here beside the new one ({why}). The move is not {done}: run the \
+                     command again when it answers"
                 ));
             }
         };
@@ -1975,16 +2111,12 @@ impl<'a> Move<'a> {
         } else {
             ""
         };
-        Err(self.fail(
-            "old instance",
-            format!(
-                "{} {does} not run any more, but processes of {of} still run here beside the \
-                 new instance{kept}, and systemd freezes nothing of a unit that does not run. \
-                 End them: `{KILL_ALL} {}`, then run the command again. The move is not \
-                 recorded as done until then",
-                left.join(" and "),
-                left.join(" ")
-            ),
+        Err(format!(
+            "{} {does} not run any more, but processes of {of} still run here beside the new \
+             instance{kept}, and systemd freezes nothing of a unit that does not run. End them: \
+             `{KILL_ALL} {}`, then run the command again. The move is not {done} until then",
+            left.join(" and "),
+            left.join(" ")
         ))
     }
 
@@ -2077,7 +2209,9 @@ impl<'a> Move<'a> {
         };
         let host = profile::host_of(&new).unwrap_or_default();
         // Asked first: over a key that is gone (an earlier run's finish removed it there and
-        // deleted it here) nothing is tried, `ssh` could only complain about it.
+        // deleted it here) nothing is tried. Without the key's file `ssh` falls back to root's
+        // own identities and may sign in with them, and nothing of a move goes over another
+        // identity than its one-time key (SPEC-460 MIG-010).
         let key_gone = self
             .remote
             .reachable()

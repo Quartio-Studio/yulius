@@ -302,6 +302,25 @@ pub fn left_running(host: &mut dyn Host, unit: &str) -> Result<Vec<String>, Stri
     Ok(left)
 }
 
+/// Whether the unit `unit` is known not to start with its host: `systemctl is-enabled` says
+/// `disabled`, `masked` or `masked-runtime` (SPEC-481 HLD-001). A look: nothing is changed, so
+/// it is what a move asks of an old instance long after the `systemctl disable` it sent.
+///
+/// # Errors
+/// What systemd said instead, as the end of a sentence a person reads ("says `enabled`"): any
+/// other state (`enabled`, `static`, `linked`, `not-found`, ...), no word at all, or a
+/// `systemctl` that did not run. None of them is "disabled".
+pub fn disabled(host: &mut dyn Host, unit: &str) -> Result<(), String> {
+    match host.systemctl(&["is-enabled", unit]) {
+        Ok((code, said)) => match said.lines().next().unwrap_or_default().trim() {
+            "disabled" | "masked" | "masked-runtime" => Ok(()),
+            "" => Err(format!("says nothing (exit {code})")),
+            state => Err(format!("says `{state}`")),
+        },
+        Err(why) => Err(format!("did not run ({why})")),
+    }
+}
+
 /// Waits until systemd says that `target`, which was sent the freeze, is frozen; never thaws.
 fn frozen_to_stay(host: &mut dyn Host, target: &str) -> Result<(), String> {
     let mut waited = Duration::ZERO;
