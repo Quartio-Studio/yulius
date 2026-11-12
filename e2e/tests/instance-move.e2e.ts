@@ -14,7 +14,7 @@ failOnPageErrors();
 type Asked = { action: string; target: string | null; ssh_port: number | null; public_url: string | null; data_disks: string[]; confirm: string | null };
 type MoveMock = {
   __yuliusMock: {
-    migration: { stepMs: number; ackMs: number; asked?: Asked[]; holdReads: boolean; holds: unknown[]; releaseReads(): void; frozen: boolean; missed: number };
+    migration: { stepMs: number; ackMs: number; asked?: Asked[]; holdReads: boolean; holds: unknown[]; releaseReads(): void; holdAt: string | null; frozen: boolean; missed: number };
     sent?: Record<string, number>;
   };
 };
@@ -29,6 +29,10 @@ const QUICK = '&movepoll=200';
 const pace = (browser: Browser, stepMs: number) => browser.evaluate((ms: number) => {
   (window as unknown as MoveMock).__yuliusMock.migration.stepMs = ms;
 }, stepMs);
+/** A move stays in its preparation (`Prepare`), or frozen (`frozen`), while a test looks; `null` lets it go on. */
+const holdAt = (browser: Browser, state: string | null) => browser.evaluate((at: string | null) => {
+  (window as unknown as MoveMock).__yuliusMock.migration.holdAt = at;
+}, state);
 const asked = (browser: Browser) => browser.evaluate(() => (window as unknown as MoveMock).__yuliusMock.migration.asked ?? []);
 const sent = (browser: Browser) => browser.evaluate((path: string) => ((window as unknown as MoveMock).__yuliusMock.sent || {})[`POST ${path}`] || 0, API);
 /** The text of the card, as a person reads it. */
@@ -142,6 +146,7 @@ test('a move shows its checklist, says when the instance is frozen, and ends on 
   await pace(browser, 60);
   await showThePlan(screen);
   await expect(c.getByRole('button', 'Run migration…')).toBeVisible();
+  await holdAt(browser, 'Prepare');
   await runMigration(screen);
   // Asked with the plan's values and the host that was typed.
   await expect.poll(async () => (await asked(browser))[1] ?? null).toEqual({ action: 'move', target: TARGET, ssh_port: 22, public_url: URL, data_disks: ['/dev/vdc', '/dev/vdd'], confirm: HOST });
@@ -166,6 +171,7 @@ test('a move shows its checklist, says when the instance is frozen, and ends on 
   expect(await axeViolations(browser)).toEqual([]);
 
   // Nothing answers: the card says why, keeps the checklist and keeps trying.
+  await holdAt(browser, 'frozen');
   await expect(c.getByText(`Yulius is frozen while its data is copied to ${HOST}.`)).toBeVisible();
   await expect(c.getByText(/Nothing answers here meanwhile\. The plan said: about 44 min frozen.*This page keeps trying/)).toBeVisible();
   expect(await lineNames(browser)).toContain('software');
@@ -173,6 +179,7 @@ test('a move shows its checklist, says when the instance is frozen, and ends on 
   expect(await axeViolations(browser)).toEqual([]);
 
   // The name leads to the new host: the new instance answers with the finished checklist.
+  await holdAt(browser, null);
   await expect(c.getByText('The move finished: Yulius now runs on the new host.')).toBeVisible({ timeout: 15000 });
   await expect(c.getByText(`Yulius is frozen while its data is copied to ${HOST}.`)).toBeHidden();
   await expect(c.getByText(/^Yulius was moved to this host .*changed 11, left alone 15, manual 4, failed 0\.$/)).toBeVisible();
@@ -198,8 +205,10 @@ test('when the old address redirects, the card links to the instance at its new 
   await firstShown(c.getByRole('button', 'Show the plan'));
   await pace(browser, 60);
   await showThePlan(screen);
+  await holdAt(browser, 'frozen');
   await runMigration(screen);
   await expect(c.getByText(`Yulius is frozen while its data is copied to ${HOST}.`)).toBeVisible({ timeout: 15000 });
+  await holdAt(browser, null);
   await expect(c.getByText(`Yulius now runs at ${URL}.`)).toBeVisible({ timeout: 15000 });
   await expect(c.getByText(/This address redirects there\. Sign in again at the new address/)).toBeVisible();
   await expect(c.getByText(`Yulius is frozen while its data is copied to ${HOST}.`)).toBeHidden();
@@ -220,8 +229,10 @@ test('a move that does not complete is continued or aborted, and the abort says 
   await firstShown(c.getByRole('button', 'Show the plan'));
   await pace(browser, 60);
   await showThePlan(screen);
+  await holdAt(browser, 'frozen');
   await runMigration(screen);
   await expect(c.getByText(`Yulius is frozen while its data is copied to ${HOST}.`)).toBeVisible({ timeout: 15000 });
+  await holdAt(browser, null);
 
   // The old instance answers again: what failed first, then the whole checklist.
   await expect(c.getByText('The move did not complete')).toBeVisible({ timeout: 15000 });

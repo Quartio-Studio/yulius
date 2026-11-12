@@ -4746,6 +4746,9 @@ function migrationState(mode) {
     // `holdReads = true`: each read answers what it saw when it arrived, once `releaseReads()`
     // lets it go (`holds` are those waiting).
     holdReads: false, holds: [],
+    // `holdAt = 'Prepare' | 'frozen'`: a move stays in its preparation, or frozen, for as long
+    // as a test looks at that state; any other value lets it go on.
+    holdAt: null,
   };
 }
 
@@ -4910,7 +4913,7 @@ function moveSteps(db, values) {
   }
   steps.push(() => {
     // The page reads the preparation before the instance stops answering.
-    if (!m.seen.Prepare) return 'again';
+    if (!m.seen.Prepare || m.holdAt === 'Prepare') return 'again';
     // The cutover freezes the instance: nothing answers until the new one runs.
     moveSay(db, 'Cutover', MOVE_CUTOVER[0]);
     m.frozen = true;
@@ -4925,7 +4928,7 @@ function moveSteps(db, values) {
     steps.push(() => moveSay(db, 'Cutover', moveLine('new host', 'manual', 'the copy in /var/lib/yulius there was started and is no longer a clean copy: remove it there before running the move again')));
     steps.push(() => {
       // The page asked in vain while it was frozen: now the old instance answers again.
-      if (m.missed < 2) return 'again';
+      if (m.missed < 2 || m.holdAt === 'frozen') return 'again';
       moveEnd(db, 1, 'Cutover');
       m.frozen = false;
       db.goOnline();
@@ -4936,7 +4939,7 @@ function moveSteps(db, values) {
   for (const line of MOVE_CUTOVER.slice(3)) steps.push(() => moveSay(db, 'Cutover', line));
   for (const line of moveFinishLines(url)) steps.push(() => moveSay(db, 'Finish', line));
   steps.push(() => {
-    if (m.missed < 2) return 'again';
+    if (m.missed < 2 || m.holdAt === 'frozen') return 'again';
     const lines = m.moving.lines;
     if (m.mode === 'redirect') {
       // The old instance stays frozen for good; its proxy redirects to the new URL.
