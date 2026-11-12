@@ -617,6 +617,66 @@ async fn the_capacity_view_reports_burn_forecast_and_recommendation() -> TestRes
     Ok(())
 }
 
+/// SPEC-464 UCL-005: the capacity view counts for the default model. A subscription whose
+/// window of that model is used up is not available, though its 5-hour and weekly windows have
+/// room; and once none is left, the pool resumes at the first such window's reset.
+#[tokio::test]
+async fn the_capacity_view_counts_for_the_default_model() -> TestResult {
+    let h = harness()?;
+    let admin = setup_superadmin_creds(&h).await?;
+    let t0 = now(&h);
+    let at = |hours: i64| t0.plus_millis(hours * HOUR);
+    let out_of_fable = |resets: Timestamp| {
+        json!({
+            "primary": {"used_percent": 10.0, "window_minutes": 300, "resets_at": at(2).0},
+            "secondary": {"used_percent": 20.0, "window_minutes": 10080, "resets_at": at(100).0},
+            "weekly_fable": {"used_percent": 100.0, "window_minutes": 10080, "resets_at": resets.0},
+        })
+        .to_string()
+    };
+    add_account(&h, "acc-out", Some(out_of_fable(at(40)))).await?;
+    let room = add_account(&h, "acc-room", Some(usage(10.0, at(2), 20.0, at(100)))).await?;
+
+    let view = call(&h.router, Method::GET, "/api/capacity", None, &admin).await?;
+    assert_eq!(view.status, 200);
+    let account = |body: &serde_json::Value, label: &str| -> Option<serde_json::Value> {
+        body["accounts"]
+            .as_array()?
+            .iter()
+            .find(|a| a["label"] == label)
+            .cloned()
+    };
+    assert_eq!(view.body["subscriptions"], 2, "{}", view.body);
+    assert_eq!(view.body["available"], 1, "{}", view.body);
+    let out = account(&view.body, "Claude acc-out").ok_or("acc-out")?;
+    assert_eq!(out["available"], false, "{out}");
+    assert_eq!(out["usage"]["weekly_fable"]["used_percent"], 100.0, "{out}");
+    assert_eq!(out["usage"]["secondary"]["used_percent"], 20.0, "{out}");
+    let free = account(&view.body, "Claude acc-room").ok_or("acc-room")?;
+    assert_eq!(free["available"], true, "{free}");
+    assert!(view.body["resumes_at"].is_null(), "{}", view.body);
+
+    // The other one runs out of that model too: nothing is available until the first reset.
+    h.store
+        .set_account_state(
+            &room,
+            AccountStatus::Ok,
+            Some(&out_of_fable(at(20))),
+            None,
+            t0,
+        )
+        .await?;
+    let view = call(&h.router, Method::GET, "/api/capacity", None, &admin).await?;
+    assert_eq!(view.body["available"], 0, "{}", view.body);
+    assert_eq!(
+        view.body["resumes_at"],
+        yulius_app::auth::rfc3339(at(20)),
+        "{}",
+        view.body
+    );
+    Ok(())
+}
+
 /// No subscription at all and a task waiting: the forecast asks for one, and the capacity
 /// view counts the paused task.
 #[tokio::test]
@@ -988,5 +1048,126 @@ async fn a_running_but_idle_subscription_is_read_again_when_its_reading_is_old()
         1,
         "a fresh reading is left alone"
     );
+    Ok(())
+}
+
+/// Answers every request with the 5-hour window at 55 % and the weekly Opus cap at 30 %.
+struct OpusCapProbe;
+
+#[async_trait]
+impl UsageProbe for OpusCapProbe {
+    async fn fetch(&self, _: Provider, _: &Secret) -> Result<AccountUsage, UsageFailure> {
+        let window = |percent: f64, minutes: u32| UsageWindow {
+            used_percent: Some(percent),
+            window_minutes: Some(minutes),
+            resets_at: None,
+        };
+        Ok(AccountUsage {
+            primary: Some(window(55.0, 300)),
+            weekly_opus: Some(window(30.0, 10_080)),
+            ..AccountUsage::default()
+        })
+    }
+}
+
+/// SPEC-464 UCL-004: a session's reading takes the lock every change of a subscription's stored
+/// usage takes. The session's reading is held once it has read what is stored; a provider's
+/// reading of the same subscription arrives; the session's reading goes on. Unlocked, the
+/// provider's reading would be stored meanwhile and then written over by the session's older
+/// copy, which knows no Opus cap.
+///
+/// Half a second is the provider reading's chance to be stored while the session's is held:
+/// locked it waits, so that wait always runs out.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_sessions_reading_does_not_write_over_a_provider_reading() -> TestResult {
+    let h = harness_with(HarnessOptions {
+        usage: Some(Arc::new(OpusCapProbe)),
+        ..HarnessOptions::default()
+    })?;
+    seed(&h).await?;
+    let name = "acc-held-session";
+    let account = add_account(&h, name, None).await?;
+    running_task(&h, TaskMode::Prompt, &account).await?;
+    let t0 = now(&h);
+    let stored = || async {
+        let record = h.store.account(&account).await.ok().flatten()?;
+        serde_json::from_str::<serde_json::Value>(record.usage_json.as_deref()?).ok()
+    };
+
+    let (read, go_on) = support::hold_point(yulius_app::race::Point::UsageRead, name);
+    let session = {
+        let internal = h.internal.clone();
+        let input = rate_limits(
+            42.5,
+            t0.plus_millis(2 * HOUR),
+            18.0,
+            t0.plus_millis(90 * HOUR),
+        );
+        tokio::spawn(async move {
+            status_line(&internal, input)
+                .await
+                .map(|(code, _)| code)
+                .map_err(|err| err.to_string())
+        })
+    };
+    support::point_reached(read).await?;
+    let provider = {
+        let app = Arc::clone(&h.app);
+        tokio::spawn(async move {
+            app.refresh_usage_round(&mut std::collections::HashMap::new())
+                .await;
+        })
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+    let mut stored_meanwhile = false;
+    while !stored_meanwhile && std::time::Instant::now() < deadline {
+        stored_meanwhile = stored()
+            .await
+            .is_some_and(|usage| !usage["weekly_opus"].is_null());
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    go_on.send(())?;
+    assert_eq!(session.await??, 200);
+    provider.await?;
+    let usage = stored().await.ok_or("usage")?;
+    assert_eq!(
+        usage["weekly_opus"]["used_percent"], 30.0,
+        "the session's reading wrote over the provider's (stored while it was held: \
+         {stored_meanwhile}): {usage}"
+    );
+    assert_eq!(usage["primary"]["used_percent"], 55.0, "{usage}");
+    Ok(())
+}
+
+/// SPEC-464 UCL-004: a model's window whose reset passed says nothing about the window that
+/// began. No reading replaces it (a session's reading carries the 5-hour and weekly windows
+/// only), so the next reading stored for the subscription drops it and its card no longer shows
+/// a limit that is over. One whose reset is ahead stays.
+#[tokio::test]
+async fn a_models_window_past_its_reset_is_dropped_at_the_next_stored_reading() -> TestResult {
+    let h = harness()?;
+    seed(&h).await?;
+    let t0 = now(&h);
+    let window = |resets: Timestamp| json!({"used_percent": 100.0, "window_minutes": 10080, "resets_at": resets.0});
+    let stored = json!({
+        "weekly_fable": window(t0.plus_millis(-HOUR)),
+        "weekly_opus": window(t0.plus_millis(40 * HOUR)),
+    });
+    let account = add_account(&h, "acc-reset-passed", Some(stored.to_string())).await?;
+    running_task(&h, TaskMode::Prompt, &account).await?;
+    let reading = rate_limits(
+        42.5,
+        t0.plus_millis(2 * HOUR),
+        18.0,
+        t0.plus_millis(90 * HOUR),
+    );
+    let (code, _) = status_line(&h.internal, reading).await?;
+    assert_eq!(code, 200);
+    let record = h.store.account(&account).await?.ok_or("account")?;
+    let usage: serde_json::Value =
+        serde_json::from_str(record.usage_json.as_deref().ok_or("usage")?)?;
+    assert_eq!(usage["primary"]["used_percent"], 42.5, "{usage}");
+    assert!(usage["weekly_fable"].is_null(), "its reset passed: {usage}");
+    assert_eq!(usage["weekly_opus"]["used_percent"], 100.0, "{usage}");
     Ok(())
 }

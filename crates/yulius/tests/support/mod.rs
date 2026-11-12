@@ -1924,3 +1924,27 @@ impl SecretAnnouncements {
         sandboxes
     }
 }
+
+/// Holds the server at the pause point `point` for `key` (a task id, an account id, a path)
+/// until the returned sender is used, or 60 s pass; the receiver says when it got there. The
+/// hook blocks the thread that reached the point, so the test's runtime needs another one.
+pub fn hold_point(
+    point: yulius_app::race::Point,
+    key: &str,
+) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
+    let (reached, at) = std::sync::mpsc::channel();
+    let (go, wait) = std::sync::mpsc::channel::<()>();
+    yulius_app::race::on(point, std::path::Path::new(key), move || {
+        let _ = reached.send(());
+        let _ = wait.recv_timeout(std::time::Duration::from_secs(60));
+    });
+    (at, go)
+}
+
+/// Waits until the server reached the pause point `at` stands for.
+pub async fn point_reached(at: std::sync::mpsc::Receiver<()>) -> TestResult {
+    tokio::task::spawn_blocking(move || at.recv_timeout(std::time::Duration::from_secs(60)))
+        .await?
+        .map_err(|_| "the server never reached the pause point")?;
+    Ok(())
+}

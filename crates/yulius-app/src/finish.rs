@@ -98,10 +98,15 @@ pub struct TranscriptFacts {
     /// prompt, agent work or an interrupt; an armed retry also ends with the goal, and spent
     /// retries with the session's own answer (SPEC-469).
     pub goal_retry: Option<GoalRetryFact>,
+    /// Claude Code's notice of a goal pause it made at the pending usage limit or refused
+    /// subscription (SPEC-464 UCL-007): the limit's, not a pause nobody handles, unless Yulius
+    /// cannot take the task on from there. Until the next turn or limit.
+    pub limit_goal_pause: Option<String>,
     /// When the session's agent first worked (a line of the model's own, or its answer) after
-    /// Claude Code last stopped retrying the goal, or first worked at all when what was read holds
-    /// no such pause: a request made for that pause is answered (SPEC-469 GPW-004). A prompt
-    /// alone, a sub-agent's answer and work without a time are no such work.
+    /// Claude Code last stopped retrying the goal or a usage limit last cut its turn, or first
+    /// worked at all when what was read holds neither: a request made because the session did
+    /// not go on by itself is answered (SPEC-469 GPW-004, SPEC-464 UCL-010). A prompt alone, a
+    /// sub-agent's answer and work without a time are no such work.
     pub worked_since_goal_pause: Option<yulius_domain::time::Timestamp>,
     /// When the last record that closes a session's turn (its answer or its `turn_duration`)
     /// was written: a turn closed while Yulius was down is woken after it (SPEC-358 MSB-007).
@@ -137,6 +142,7 @@ impl TranscriptFacts {
             Observation::UserTurn { wake, .. } => {
                 self.turn_open = Some(true);
                 self.goal_retry = None;
+                self.limit_goal_pause = None;
                 // Claude Code's own wake-up keeps an achieved goal.
                 if !wake {
                     self.goal_achieved = Some(false);
@@ -155,6 +161,9 @@ impl TranscriptFacts {
                 self.context_full = false;
                 // A sub-agent's turn end (no time) says nothing about the session's limit.
                 self.limit_pending &= at.is_none();
+                if !self.limit_pending {
+                    self.limit_goal_pause = None;
+                }
                 // The session's own answer: the model works, so a pause before it is over.
                 if let Some(at) = at {
                     self.worked_since_goal_pause.get_or_insert(*at);
@@ -167,6 +176,12 @@ impl TranscriptFacts {
                 self.turn_open = Some(false);
                 self.goal_retry = None;
             }
+            // A pause at a usage limit or a refused subscription is the limit's (SPEC-464
+            // UCL-007): nobody is asked to send a message for it while Yulius takes the task on.
+            Observation::GoalRetry {
+                armed: false,
+                notice,
+            } if self.limit_pending => self.limit_goal_pause = Some(notice.clone()),
             Observation::GoalRetry { armed, notice } => {
                 self.goal_retry = Some(if *armed {
                     GoalRetryFact::Armed
@@ -197,6 +212,11 @@ impl TranscriptFacts {
             // A refused subscription cuts the turn like a limit: the task goes on elsewhere.
             Observation::LimitReached { .. } | Observation::AccessLost { .. } => {
                 self.limit_pending = true;
+                self.limit_goal_pause = None;
+                // Work before the limit answers no request made at it: its goal pause's (the
+                // notice follows this record, SPEC-464 UCL-007), or one for a limit nothing
+                // says the end of (UCL-010). SPEC-469's rule for a pause.
+                self.worked_since_goal_pause = None;
             }
             Observation::Session { .. }
             | Observation::CompactFailed
@@ -208,6 +228,7 @@ impl TranscriptFacts {
             Observation::AgentWork { at } => {
                 self.turn_open = Some(true);
                 self.goal_retry = None;
+                self.limit_goal_pause = None;
                 self.context_full = false;
                 self.limit_pending = false;
                 if let Some(at) = at {
@@ -1527,6 +1548,7 @@ impl App {
 mod tests {
     use super::*;
     use yulius_domain::time::Timestamp;
+    use yulius_domain::usage::LimitScope;
 
     fn reduce(observations: &[Observation]) -> TranscriptFacts {
         let mut facts = TranscriptFacts::default();
@@ -1584,6 +1606,75 @@ mod tests {
         Observation::GoalRetry {
             armed,
             notice: "Goal paused after 3 automatic retries · the API was unavailable".into(),
+        }
+    }
+
+    /// SPEC-464 UCL-007: Claude Code answers the refusal of a model for its usage credits with
+    /// "Goal paused · the request was rate limited". After a usage limit, or a refused
+    /// subscription, of the same turn that pause is the limit's: the replay keeps the limit and
+    /// asks nobody. With no limit before it, it is a pause nobody handles, as before; and a
+    /// limit a later turn overtook does not hide that turn's pause.
+    #[test]
+    fn a_goal_pause_at_a_usage_limit_is_the_limits() {
+        let paused = Observation::GoalRetry {
+            armed: false,
+            notice: "Goal paused · the request was rate limited".into(),
+        };
+        let limit = Observation::LimitReached {
+            resets_at: None,
+            message: "You're out of usage credits. /model to switch models.".into(),
+            window_minutes: None,
+            scope: LimitScope::Model(None),
+            at: Some(Timestamp(2)),
+        };
+        let refused = Observation::AccessLost {
+            message: "Your organization has disabled Claude subscription access".into(),
+            at: Some(Timestamp(2)),
+        };
+        let notice = Some("Goal paused · the request was rate limited".to_owned());
+        for cut in [limit.clone(), refused] {
+            let facts = reduce(&[PROMPT, cut.clone(), paused.clone(), ENDED]);
+            assert_eq!(facts.goal_retry, None, "{cut:?}");
+            assert!(facts.limit_pending, "{cut:?}");
+            // Kept beside the limit: it needs a person if Yulius cannot take the task on.
+            assert_eq!(facts.limit_goal_pause, notice, "{cut:?}");
+        }
+        let alone = reduce(&[PROMPT, paused.clone(), ENDED]);
+        assert_eq!(
+            alone.goal_retry,
+            Some(GoalRetryFact::Stopped(
+                "Goal paused · the request was rate limited".into()
+            ))
+        );
+        assert_eq!(alone.limit_goal_pause, None);
+        let later = reduce(&[PROMPT, limit.clone(), ENDED, PROMPT, paused.clone(), ENDED]);
+        assert!(later.goal_retry.is_some() && !later.limit_pending);
+        assert_eq!(later.limit_goal_pause, None);
+        // The next turn, or a new limit, ends a pause held at the limit before it.
+        let work = Observation::AgentWork {
+            at: Some(Timestamp(3)),
+        };
+        for next in [PROMPT, work.clone(), limit.clone()] {
+            let facts = reduce(&[PROMPT, limit.clone(), paused.clone(), ENDED, next.clone()]);
+            assert_eq!(facts.limit_goal_pause, None, "{next:?}");
+        }
+        // SPEC-469 for a request made at a limit (its goal pause's, or one for a limit nothing
+        // says the end of, with or without a notice): work before the limit answers nothing,
+        // work after it does.
+        let earlier = Observation::AgentWork {
+            at: Some(Timestamp(1)),
+        };
+        for cut in [vec![limit.clone(), paused.clone()], vec![limit.clone()]] {
+            let mut read = vec![PROMPT, earlier.clone(), PROMPT];
+            read.extend(cut);
+            read.push(ENDED);
+            assert_eq!(reduce(&read).worked_since_goal_pause, None, "{read:?}");
+            read.push(work.clone());
+            assert_eq!(
+                reduce(&read).worked_since_goal_pause,
+                Some(Timestamp(3)),
+                "{read:?}"
+            );
         }
     }
 
@@ -1851,6 +1942,7 @@ mod tests {
                 goal_unfinished: false,
                 goal_recorded: true,
                 goal_retry: None,
+                limit_goal_pause: None,
                 worked_since_goal_pause: None,
                 turn_closed_at: None,
                 turn_moved_at: Some(Timestamp(1)),
@@ -1881,6 +1973,7 @@ mod tests {
             resets_at: None,
             message: "limit".into(),
             window_minutes: None,
+            scope: LimitScope::Account,
             at: None,
         }]);
         // A limit changes no turn fact; it is only pending (SPEC-072 LRS-001).
@@ -2214,6 +2307,7 @@ mod tests {
             resets_at: None,
             message: "limit".into(),
             window_minutes: None,
+            scope: LimitScope::Account,
             at: None,
         };
         assert!(reduce(&[PROMPT, limit.clone()]).limit_pending);

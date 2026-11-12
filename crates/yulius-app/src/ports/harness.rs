@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use yulius_domain::harness::Harness;
 use yulius_domain::task::GoalOutcome;
 use yulius_domain::time::Timestamp;
-use yulius_domain::usage::TokenUsage;
+use yulius_domain::usage::{LimitScope, TokenUsage};
 
 use crate::error::AppResult;
 use crate::model::Secret;
@@ -215,6 +215,8 @@ pub enum Observation {
         message: String,
         /// The limited window in minutes (300 session, 10080 weekly), if known.
         window_minutes: Option<u32>,
+        /// What it binds: the subscription, or the models of one family (SPEC-464).
+        scope: LimitScope,
         /// When the CLI recorded it, if known (tells a new limit from history, SPEC-074).
         at: Option<Timestamp>,
     },

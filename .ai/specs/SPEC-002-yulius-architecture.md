@@ -710,6 +710,25 @@ only the reported percentages. The CLI's own limit record names the window it hi
 (`rateLimitType`). A few full 5-hour windows exhaust a week, so over a week the weekly window is
 the binding budget and the 5-hour window caps how fast one subscription can be spent.
 
+**The model's own window (SPEC-464, ADR-0301).** Fable runs on a weekly allowance of usage credits
+that Claude counts apart from those windows (`seven_day_overage_included`; Claude Code calls it
+the "Fable limit"). Neither the endpoint's windows nor the status line show it. Yulius learns it
+from the limit record: `apiError: "model_requires_usage_credits"` ("You're out of usage credits.
+/model to switch models."), which Claude Code 2.1.311 writes without `rate_limit_info` and
+2.1.322 with the allowance's `resetsAt`. A limit says what it binds (`LimitScope`): the
+subscription, or the models of one family (the one a per-model cap names, else the family of the
+model the task is launched with). A model's limit fills that family's weekly window in
+the stored usage (`weekly_opus`, `weekly_sonnet`, `weekly_fable`) until the reset Claude named and
+binds only that model's tasks; a usage reading replaces the windows it carries and keeps these
+until their reset. A reset is believed at most a week and a day ahead (the record is the agent's
+own file); without one the window is full until the provider's next reading, and a task with
+nowhere to go is tried once more; refused again, it waits for another subscription's known reset
+off the refusing one (`rotation::decide_leaving_out`), or a person is asked
+(`task.limit_without_end`), with a request that ends when the agent works again or Yulius takes
+the task on at a limit, by a move or a wait it resumes from (ADR-0304). Every change of a
+subscription's stored usage takes one lock
+(`App::change_account_usage`).
+
 **Where the readings come from (F 2026-10-10, #143).** The usage endpoint needs the OAuth scope
 `user:profile`. Yulius signs subscriptions in with `claude setup-token`, whose token Claude Code
 2.1.292 creates with `user:inference` only (Claude Code itself skips the endpoint without
@@ -2628,6 +2647,13 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 | Not exercised | Real GitHub App/OAuth, deployment (out of scope). Linux results: see the container runs below. `yulius onboard` against a deployed instance with real `~/.claude` stores. |
 
 ## 15. Changelog
+
+- 2026-11-11 (task #449, #1172; SPEC-464, ADR-0301): §7.2 a limit says what it binds
+  (`LimitScope`); `ModelFamily::Fable` and `AccountUsage::weekly_fable` (the weekly allowance of
+  usage credits, known from the CLI's `model_requires_usage_credits` record); a usage reading
+  keeps the per-model windows it does not carry; a reset is believed a week and a day ahead; one
+  lock for the stored usage; one blind retry, then a known reset elsewhere or a person; the
+  API's `usage.limit_reached`; a goal pause that follows a limit is the limit's.
 
 - 2026-10-21 (task #238, #626; SPEC-252, ADR-0191): the sandbox Chromium speaks DevTools over
   `--remote-debugging-pipe` and has no DevTools port; R-07 closed; ADR-09's CDP-capable MCPs and

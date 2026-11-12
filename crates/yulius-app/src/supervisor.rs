@@ -24,7 +24,7 @@ use yulius_domain::task::{
     Activity, AttemptState, STOP_INTERRUPT_GRACE_MS, StopReason, TaskEvent, TaskStatus,
 };
 use yulius_domain::time::Timestamp;
-use yulius_domain::usage::{AccountUsage, UsageWindow};
+use yulius_domain::usage::{AccountUsage, ModelFamily, ReportedLimit};
 
 use crate::auth::hex_token;
 use crate::context::App;
@@ -44,8 +44,8 @@ use crate::usage_json;
 /// Boxed `Send` future (breaks recursive async cycles between start, pump and finalize).
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
-/// The provider's short (session) window in minutes; longer limits are the secondary window.
-const SESSION_WINDOW_MINUTES: u32 = 5 * 60;
+/// A usage window that is used up, in percent.
+const FULL_PERCENT: f64 = 100.0;
 
 /// Default PTY size before the first viewer reports its size.
 pub const DEFAULT_SIZE: (u16, u16) = (120, 40);
@@ -134,6 +134,15 @@ pub struct TaskRuntime {
     /// (SPEC-072 LRS-002). A person's switch then resumes past the limit even without a `limit`
     /// pause (an automatic switch after the limit was refused).
     pub(crate) at_limit: AtomicBool,
+    /// The goal pause Claude Code wrote at that limit, held for the limit path, or that path's
+    /// word that the session stays there (SPEC-464 UCL-007).
+    pub(crate) limit_goal_pause: Mutex<crate::goal_retry::LimitGoalPause>,
+    /// When Claude Code recorded that limit (ms, 0 = unknown): what was audited at or after it
+    /// is this limit's (SPEC-464 UCL-007).
+    pub(crate) limit_at_ms: AtomicI64,
+    /// The limits nothing says the end of that left the task with nowhere to go: how often in a
+    /// row, and the subscription the pool no longer starts it on by itself (SPEC-464 UCL-010).
+    pub(crate) blind_limits: Mutex<crate::moves::BlindLimits>,
     /// When the current turn started (ms, 0 = no turn in progress). Active agent time comes
     /// from the transcript (SPEC-087 MET-001), not from this.
     turn_started_ms: AtomicI64,
@@ -232,9 +241,10 @@ pub struct TaskRuntime {
     /// `turn_duration` record, STA-001): they wake the session by themselves, so the idle task
     /// is not done. Counted with the shells.
     pub(crate) background_agents: AtomicU32,
-    /// When (ms) a notice that asks a person to act, or a goal Claude Code stopped retrying
-    /// (SPEC-469), flagged the task `needs_attention` (0 = no such flag): the agent's work after
-    /// it shows the person answered, or the session went on (STA-003).
+    /// When (ms) a notice that asks a person to act, or a request Yulius opened because the
+    /// session did not go on by itself (SPEC-469, SPEC-464 UCL-010), flagged the task
+    /// `needs_attention` (0 = no such flag): the agent's work after it shows the person
+    /// answered, or the session went on (STA-003).
     pub(crate) notice_attention_ms: AtomicI64,
     /// The state time (ms) of the `needs_attention` flag an agent's secret request raised (0 =
     /// none): a person's answer ends only that flag, while the task still reads it (SPEC-213).
@@ -255,7 +265,8 @@ pub struct TaskRuntime {
     /// Claude Code armed a goal retry after the turn an error ended (SPEC-333 AER-001): the turn
     /// that closes stays Working until the retry's prompt, or a person's, starts the next one.
     pub(crate) goal_retry_armed: AtomicBool,
-    /// Yulius asked a person to send a message for a goal Claude Code stopped retrying, and the
+    /// Yulius asked a person because the session does not go on by itself (a goal Claude Code
+    /// stopped retrying, or a usage limit nothing says the end of, SPEC-464 UCL-010), and the
     /// session's agent has not worked since: its next work ends that request (SPEC-469 GPW-001).
     /// It outlives the run: a session Yulius restarts answers it too.
     pub(crate) goal_pause_asked: AtomicBool,
@@ -431,6 +442,9 @@ impl TaskRuntime {
             hooks_seen: AtomicBool::new(false),
             limit_resets_at: AtomicI64::new(0),
             at_limit: AtomicBool::new(false),
+            limit_goal_pause: Mutex::new(crate::goal_retry::LimitGoalPause::None),
+            limit_at_ms: AtomicI64::new(0),
+            blind_limits: Mutex::new(crate::moves::BlindLimits::default()),
             turn_started_ms: AtomicI64::new(0),
             auto_pr_head: Mutex::new(None),
             merged_covers: Mutex::new(None),
@@ -538,6 +552,17 @@ impl TaskRuntime {
     /// Ends the turn in progress, if any.
     pub(crate) fn end_turn(&self, _now: Timestamp) {
         self.turn_started_ms.store(0, Ordering::SeqCst);
+    }
+
+    /// A usage limit or a refused subscription, recorded `at`, cut the run's turn: the run is at
+    /// its limit, and nothing is known yet of a goal pause written there (SPEC-464 UCL-007).
+    pub(crate) fn limit_cut_the_turn(&self, at: Option<Timestamp>) {
+        if let Ok(mut pause) = self.limit_goal_pause.lock() {
+            *pause = crate::goal_retry::LimitGoalPause::None;
+        }
+        self.limit_at_ms
+            .store(at.map_or(0, |at| at.0), Ordering::SeqCst);
+        self.at_limit.store(true, Ordering::SeqCst);
     }
 }
 
@@ -3321,39 +3346,24 @@ impl App {
             .await
     }
 
-    /// Records a usage limit the CLI reported on `account`: what the CLI was told is the
-    /// account's state (ROT-009), the limited window full until its reset, even when the
-    /// provider's usage request does not answer. Shared by tasks and the Cockpit (SPEC-074).
+    /// Records a usage limit the CLI reported on `account` to a session that runs a model of
+    /// `family`: what the CLI was told is the account's state (ROT-009), the limited window full
+    /// until its reset, even when the provider's usage request does not answer. A limit of one
+    /// model family fills that family's own window, never the subscription's week (SPEC-464,
+    /// [`AccountUsage::record_limit`]). Shared by tasks and the Cockpit (SPEC-074).
     pub(crate) async fn record_limit(
         &self,
         account: &AccountId,
-        resets_at: Option<Timestamp>,
-        window_minutes: Option<u32>,
+        limit: ReportedLimit,
+        family: ModelFamily,
     ) {
-        let mut usage = match self.deps.store.account(account).await {
-            Ok(Some(a)) => a
-                .usage_json
-                .as_deref()
-                .map(usage_json::from_json)
-                .unwrap_or_default(),
-            _ => AccountUsage::default(),
-        };
-        usage.limit_reached = true;
-        usage.limit_resets_at = resets_at;
-        usage.observed_at = Some(self.now());
-        let full = |minutes: u32| UsageWindow {
-            used_percent: Some(100.0),
-            window_minutes: Some(minutes),
-            resets_at,
-        };
-        match window_minutes {
-            Some(minutes) if minutes <= SESSION_WINDOW_MINUTES => {
-                usage.primary = Some(full(minutes));
-            }
-            Some(minutes) => usage.secondary = Some(full(minutes)),
-            None => {}
-        }
-        self.record_account_usage(account, &usage).await;
+        crate::race::reached(crate::race::Point::LimitRecord, Path::new(account.as_str()));
+        let now = self.now();
+        self.change_account_usage(account, |mut usage| {
+            usage.record_limit(limit, family, now);
+            Some(usage)
+        })
+        .await;
     }
 
     /// Switches a task whose turn a usage limit cut (SPEC-034): the session resumes on `account`
@@ -3460,6 +3470,12 @@ impl App {
         }
         // A paused task that moves to another subscription is no longer paused.
         self.end_pause(task_id, "switched").await;
+        // The turn a limit cut is continued by the new session itself (SPEC-034): nobody has to
+        // send the message a goal pause at that limit asked for (SPEC-464 UCL-007).
+        if matches!(start, RunStart::AfterLimit) {
+            self.end_limit_requests(task_id, crate::goal_retry::TakenOn::Moved)
+                .await;
+        }
         let from_desc = match &attempt {
             Some(a) => self.account_desc(a.harness, a.account_id.as_ref()).await,
             None => task.harness.as_str().to_owned(),
@@ -3824,6 +3840,8 @@ impl App {
             .switch_refused_ms
             .store(self.now().0, Ordering::SeqCst);
         tracing::warn!(task = %task.id, error = %err, "switch refused; the running session stays");
+        // At a usage limit the session stays at Claude Code's refusal (SPEC-464 UCL-007).
+        self.limit_move_refused(task).await;
         if repeat {
             return;
         }
@@ -4088,8 +4106,14 @@ impl App {
         Ok(lost)
     }
 
-    /// Account usage update from transcripts or providers.
+    /// Account usage update from transcripts or providers. The subscription reads `limited`
+    /// while the default model cannot run on it: a limit Claude reported is in effect, or a
+    /// window that binds that model is used up (SPEC-464).
     pub(crate) async fn record_account_usage(&self, account: &AccountId, usage: &AccountUsage) {
+        let now = self.now();
+        // A per-model window whose reset passed says nothing about the one that began.
+        let usage = &usage.without_reset_model_windows(now);
+        let family = crate::capacity::default_family();
         // A reading never makes a subscription that needs a new sign-in usable again: a
         // cancelled one can still report usage (or a late transcript line can), and only a
         // sign-in proves it works.
@@ -4108,7 +4132,7 @@ impl App {
         let kept_error = needs_sign_in.as_ref().and_then(|(_, error)| error.clone());
         let status = if let Some((status, _)) = needs_sign_in {
             status
-        } else if usage.limit_in_effect(self.now()) {
+        } else if usage.exhausted_for(now, FULL_PERCENT, family) {
             AccountStatus::Limited
         } else {
             AccountStatus::Ok
@@ -4117,19 +4141,13 @@ impl App {
         let _ = self
             .deps
             .store
-            .set_account_state(
-                account,
-                status,
-                Some(&json),
-                kept_error.as_deref(),
-                self.now(),
-            )
+            .set_account_state(account, status, Some(&json), kept_error.as_deref(), now)
             .await;
         // New usage may let paused tasks resume, or pause the pool (ROT-010).
         self.capacity_changed();
         // At or above the threshold: tasks on this account rotate at their next turn boundary
         // (ROT-003); with hooks the Stop hook decides this itself.
-        if usage.exhausted(self.now(), rotation::THRESHOLD)
+        if usage.exhausted(now, rotation::THRESHOLD)
             && let Ok(live) = self.deps.store.live_attempts().await
         {
             for attempt in live
@@ -4388,6 +4406,10 @@ impl App {
                         && facts.limit_pending
                     {
                         self.on_observation(&task_id, &attempt, limit).await;
+                        // The goal pause Claude Code wrote at that limit is the limit's too.
+                        if let Some(notice) = &facts.limit_goal_pause {
+                            self.goal_retry_observed(&task_id, false, notice).await;
+                        }
                     } else if !facts.limit_pending {
                         // Claude Code continued past its limit while Yulius was down.
                         self.cut_turn_continued(&task_id, facts.last_turn_at).await;
@@ -4424,18 +4446,33 @@ impl App {
         observation: Observation,
     ) {
         let runtime = self.runtime(task_id);
+        // The model answered: a later limit nothing says the end of is no repeat of an earlier
+        // one, and has its own retry (SPEC-464 UCL-010).
+        if model_answered(&observation)
+            && let Ok(mut blind) = runtime.blind_limits.lock()
+        {
+            blind.answered();
+        }
         match observation {
             Observation::LimitReached {
                 resets_at,
                 message,
                 window_minutes,
-                ..
+                scope,
+                at,
             } => {
-                tracing::info!(task = %task_id, %message, "usage limit reached");
+                tracing::info!(task = %task_id, %message, ?scope, "usage limit reached");
                 runtime.end_turn(self.now());
-                runtime.at_limit.store(true, Ordering::SeqCst);
+                runtime.limit_cut_the_turn(at);
+                let limit = ReportedLimit {
+                    scope,
+                    window_minutes,
+                    resets_at,
+                };
+                let blind = limit.without_an_end(self.now());
                 if let Some(account) = &attempt.account_id {
-                    self.record_limit(account, resets_at, window_minutes).await;
+                    let family = self.task_family(task_id).await;
+                    self.record_limit(account, limit, family).await;
                 }
                 runtime
                     .limit_resets_at
@@ -4443,16 +4480,19 @@ impl App {
                 let app = self.clone();
                 let tid = task_id.clone();
                 let account = attempt.account_id.clone();
-                tokio::spawn(async move { app.rotate(&tid, account, Trigger::LimitReached).await });
+                tokio::spawn(async move {
+                    app.rotate_at(&tid, account, Trigger::LimitReached, blind)
+                        .await;
+                });
             }
-            Observation::AccessLost { message, .. } => {
+            Observation::AccessLost { message, at } => {
                 // The subscription no longer works (cancelled, downgraded, revoked): it needs a
                 // new sign-in, so nothing is placed on it again and its usage is no longer read
                 // back to `ok`. The cut turn then moves on like a limit's, to the next working
                 // subscription, or the task waits for one.
                 tracing::warn!(task = %task_id, %message, "subscription access refused");
                 runtime.end_turn(self.now());
-                runtime.at_limit.store(true, Ordering::SeqCst);
+                runtime.limit_cut_the_turn(at);
                 runtime.limit_resets_at.store(0, Ordering::SeqCst);
                 let mut refused = None;
                 if let Some(account) = &attempt.account_id {
@@ -4609,6 +4649,18 @@ impl App {
         current: Option<AccountId>,
         trigger: Trigger,
     ) {
+        self.rotate_at(task_id, current, trigger, false).await;
+    }
+
+    /// [`Self::rotate`]; `blind` says the limit that asks for it is a model's that nothing says
+    /// the end of (SPEC-464 UCL-010).
+    async fn rotate_at(
+        self: &Arc<Self>,
+        task_id: &TaskId,
+        current: Option<AccountId>,
+        trigger: Trigger,
+        blind: bool,
+    ) {
         let Ok(Some(task)) = self.deps.store.task(task_id).await else {
             return;
         };
@@ -4642,18 +4694,55 @@ impl App {
                     tracing::warn!(error = %err, task = %task_id, "automatic switch failed");
                 }
             }
-            Decision::Wait { .. } => {
-                let kind = if limit {
-                    PauseKind::Limit
+            Decision::Wait { until } => {
+                // A model's limit nothing says the end of, with nowhere to go: the task is
+                // tried again by itself only so often (SPEC-464 UCL-010). After that it waits
+                // for a reset that is known, off this subscription, or asks a person.
+                if blind && limit {
+                    let next = self
+                        .runtime(task_id)
+                        .blind_limits
+                        .lock()
+                        .map_or(crate::moves::BlindWait::Pause, |mut blind| {
+                            blind.nowhere_to_go(current.as_ref(), until, task.status)
+                        });
+                    if next == crate::moves::BlindWait::AskAPerson {
+                        self.limit_without_end(&task).await;
+                        return;
+                    }
+                }
+                let paused = if limit {
+                    let paused = self
+                        .pause_task(task_id, PauseKind::Limit, current, None)
+                        .await;
+                    // The pool resumes a task that waits at its limit by itself: a request
+                    // that says it does not go on by itself is answered, as at a move past
+                    // the limit (SPEC-464 UCL-007).
+                    if paused.is_ok() {
+                        self.end_limit_requests(task_id, crate::goal_retry::TakenOn::Paused)
+                            .await;
+                    }
+                    paused
                 } else {
-                    PauseKind::Turn
+                    self.pause_task(task_id, PauseKind::Turn, current, None)
+                        .await
                 };
-                if let Err(err) = self.pause_task(task_id, kind, current, None).await {
+                if let Err(err) = paused {
                     tracing::warn!(error = %err, task = %task_id, "could not pause the task");
                 }
             }
         }
     }
+}
+
+/// Whether `observation` shows the model answered in the session: a record of its own work or of
+/// its turn's end, not one Claude Code writes itself for a refusal, and not a sub-agent's turn
+/// end (which carries no time).
+fn model_answered(observation: &Observation) -> bool {
+    matches!(
+        observation,
+        Observation::AgentWork { .. } | Observation::TurnComplete { at: Some(_) }
+    )
 }
 
 /// Asks the task's run, if one is attached, to shut down gracefully (interrupt, then TERM, then
@@ -4721,6 +4810,28 @@ fn interrupts_first(reason: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// SPEC-464 UCL-010: only the model's own records say it answered. A turn's work (a tool
+    /// call) and its end both do; a refusal Claude Code writes itself, a prompt and a
+    /// sub-agent's turn end (no time) do not, so a retry refused the same way stays a retry.
+    #[test]
+    fn the_models_own_records_say_it_answered() {
+        use super::{Observation, Timestamp, model_answered};
+        use yulius_domain::usage::LimitScope;
+        let at = Some(Timestamp(1_000));
+        assert!(model_answered(&Observation::AgentWork { at }));
+        assert!(model_answered(&Observation::AgentWork { at: None }));
+        assert!(model_answered(&Observation::TurnComplete { at }));
+        assert!(!model_answered(&Observation::TurnComplete { at: None }));
+        assert!(!model_answered(&Observation::UserTurn { at, wake: false }));
+        assert!(!model_answered(&Observation::LimitReached {
+            resets_at: None,
+            message: "You're out of usage credits.".into(),
+            window_minutes: None,
+            scope: LimitScope::Model(None),
+            at,
+        }));
+    }
+
     /// SPEC-468 CCF-010: a run starts with an empty prompt box and holds no prompt: one held
     /// in the run before went with that run's hook client, so the new run's first prompt is a
     /// submit, not that prompt sent again.
