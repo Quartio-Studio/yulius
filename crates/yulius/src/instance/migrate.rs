@@ -329,6 +329,12 @@ impl Old {
     }
 }
 
+/// The command that ends every process of the units a person appends, for a line a person
+/// reads. SIGKILL: a shell ignores SIGTERM. `--kill-who`: the option's name before systemd 252,
+/// which every later `systemctl` still takes (as the start of `--kill-whom`; run on 249, 255
+/// and 259), so the one line runs on every old host the freeze supports.
+const KILL_ALL: &str = "systemctl kill --kill-who=all --signal=SIGKILL";
+
 /// What the cutover says when the old instance is not frozen as a whole right after its
 /// freeze: what systemd said, not more (SPEC-467 LFT-001).
 fn not_frozen_after_freeze(unit: &str, old: Option<Old>) -> String {
@@ -1896,8 +1902,7 @@ impl<'a> Move<'a> {
                         format!(
                             "{unit} does not run here any more, and the new instance runs. Make \
                              sure nothing of the old one runs here: `systemctl stop {units}; \
-                             systemctl kill --kill-whom=all --signal=SIGKILL {units}; systemctl \
-                             disable {unit}`"
+                             {KILL_ALL} {units}; systemctl disable {unit}`"
                         ),
                     );
                     self.state.cutover = Cutover::Moved;
@@ -1935,11 +1940,11 @@ impl<'a> Move<'a> {
         }
     }
 
-    /// A recorded start whose old units have stopped while the new instance runs: refuses to
-    /// call that "nothing of it runs" while processes of a stopped unit still do (SPEC-478
-    /// RSL-001, issue #1178). The server's unit keeps what it started when it is stopped
-    /// (`KillMode=process`), and systemd freezes nothing of a unit that does not run, so the
-    /// line names the command that ends them. Nothing is killed here and nothing is recorded:
+    /// A recorded start whose old units do not run while the new instance does: refuses to
+    /// call that "nothing of it runs" while processes of such a unit still do (SPEC-478
+    /// RSL-001, issue #1178). The server's unit keeps what the server started in it when it
+    /// is stopped (`KillMode=process`), and systemd freezes nothing of a unit that does not
+    /// run, so the line names the command that ends them. Nothing is killed here and nothing is recorded:
     /// the same command looks again.
     fn nothing_left_running(&mut self) -> Result<(), Stop> {
         let unit = self.opts.service.clone();
@@ -1951,31 +1956,32 @@ impl<'a> Move<'a> {
                 return Err(self.fail(
                     "old instance",
                     format!(
-                        "systemd does not say whether processes of {unit}, which has stopped, \
-                         still run here beside the new instance ({why}). The move is not \
-                         recorded as done: run the command again when it answers"
+                        "{unit} has stopped, and systemd does not say whether processes of \
+                         the old instance still run here beside the new one ({why}). The move \
+                         is not recorded as done: run the command again when it answers"
                     ),
                 ));
             }
         };
-        let (have, of) = if left.len() == 1 {
-            ("has", "it")
+        let (does, of) = if left.len() == 1 {
+            ("does", "it")
         } else {
-            ("have", "them")
+            ("do", "them")
         };
+        // On a host without a sessions unit that is every agent, terminal and sandbox engine.
         let kept = if left.contains(&unit) {
-            " (a stopped server's unit keeps the agents, terminals and sandbox engines it \
-             started: KillMode=process)"
+            " (the server's unit keeps what the server started in it when it stops: \
+             KillMode=process)"
         } else {
             ""
         };
         Err(self.fail(
             "old instance",
             format!(
-                "{} {have} stopped, but processes of {of} still run here beside the new \
-                 instance{kept}, and systemd freezes nothing of a unit that has stopped. End \
-                 them: `systemctl kill --kill-whom=all --signal=SIGKILL {}`, then run the \
-                 command again. The move is not recorded as done until then",
+                "{} {does} not run any more, but processes of {of} still run here beside the \
+                 new instance{kept}, and systemd freezes nothing of a unit that does not run. \
+                 End them: `{KILL_ALL} {}`, then run the command again. The move is not \
+                 recorded as done until then",
                 left.join(" and "),
                 left.join(" ")
             ),
@@ -2056,8 +2062,7 @@ impl<'a> Move<'a> {
                 format!(
                     "{} beside the new instance and could not be frozen: {}. If a freeze keeps \
                      failing (systemd freezes only a unit that runs), stop it for good instead: \
-                     `systemctl stop {units}; systemctl kill --kill-whom=all --signal=SIGKILL \
-                     {units}`",
+                     `systemctl stop {units}; {KILL_ALL} {units}`",
                     what.join(" and "),
                     why.join("; ")
                 ),

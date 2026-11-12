@@ -277,11 +277,12 @@ pub fn freeze_to_stay(host: &mut dyn Host, unit: &str) -> Stayed {
 }
 
 /// The units of the instance of the server's unit `unit` that systemd says do not run while
-/// processes of them still do, unfrozen: the server's unit, which keeps the agents, terminals
-/// and sandbox engines it started when it is stopped (`KillMode=process`), and its sessions
-/// unit (SPEC-458) when a stop of it did not end everything. systemd freezes nothing of such a
-/// unit ("Unit is not active"), so [`freeze_to_stay`] leaves it alone; `systemctl kill
-/// --kill-whom=all` still reaches what is left (SPEC-478 RSL-001).
+/// processes of them still do, unfrozen: the server's unit, which keeps what the server
+/// started in it when it is stopped (`KillMode=process`: on a host without a sessions unit,
+/// every agent, terminal and sandbox engine), and its sessions unit (SPEC-458) while a stop of
+/// it is on its way or did not end everything. systemd freezes nothing of such a
+/// unit ("Unit is not active"), so [`freeze_to_stay`] leaves it alone; `systemctl kill` with
+/// `--kill-whom=all` still reaches what is left (SPEC-478 RSL-001).
 ///
 /// A unit that runs is not looked at: whether it is frozen is systemd's to say. Processes the
 /// kernel holds frozen do not count: they do not run.
