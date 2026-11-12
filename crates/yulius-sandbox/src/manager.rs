@@ -1456,7 +1456,8 @@ impl Manager {
     }
 
     /// Adopts holders a previous server process started; removes the records of dead ones.
-    /// The holders of a Docker smoke test that still runs are left to it ([`smoke_runs`]).
+    /// The holders of a Docker smoke test that still runs are left to it (`smoke_runs`,
+    /// ADR-0308).
     pub async fn adopt(&self) -> usize {
         let root = self.config.data_dir.join("runtime").join("sandboxes");
         let Ok(entries) = std::fs::read_dir(&root) else {
