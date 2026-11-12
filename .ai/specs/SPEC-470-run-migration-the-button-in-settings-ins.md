@@ -125,8 +125,10 @@ Application and API
   written after the helper's last run ended, or without any, that is by a run started on the
   host); `arrived`
   (the checklist a move to this host left, MVB-011); and `can` (`plan`, `move`,
-  `abort`: what would be accepted now). A request the helper took, or one older than 15
-  minutes, is removed, so it is never copied to a new host as a pending one.
+  `abort`: what would be accepted now). A request the helper took is removed by the server
+  itself, read or not (it looks every 250 ms for 20 s after writing it), so a move does not
+  copy it to the new host as one that waits there; one never taken is removed when it is read
+  after 15 minutes. A removal is of the request that was looked at, never of a newer one.
 - MVB-021 **Ask.** `POST /api/admin/instance/migration` with `action`, `target`, `ssh_port`,
   `public_url`, `data_disks` and `confirm` answers 202 with the view. Refused: 403 for anyone
   but the superadmin and without the CSRF token; 422 for a field outside MVB-002, and for `move`
@@ -134,7 +136,8 @@ Application and API
   or restart runs, when a request waits or a run is in flight (`abort` may arrive during a run:
   it stops it), for `move` unless the last run was a plan of the same values that ended without
   a failed line and without a key to add at most an hour ago (or a `move` of the same values:
-  it continues), and for `abort` when nothing is recorded.
+  it continues), and for `abort` when nothing is recorded. Asks are taken one at a time: of two
+  at once, one is written and the other is told that a request waits.
 - MVB-022 **Audit.** `migration.planned`, `migration.started` and `migration.aborted`: the
   actor, the target, the request's id and values.
 - MVB-023 **Updates wait.** "Update now" and "Restart…" are refused (409) while a move's request
@@ -322,6 +325,13 @@ Settings → Instance
   the new host (exit 127: the step that removes the key is run by the build, which such a plan
   never brings) and left the key there. That is the page's most natural abort (plan, key, think
   again), so the abort now brings the build for that step, with a flow test.
+- **A taken request is removed without a reader, and by its id.** The request went when the
+  view was read, which the page does every 3 s; with the page closed right after "Run
+  migration" it stayed, and the move copied it (the new host would have said "unanswered" for a
+  few minutes). The server now looks for the helper's answer itself. Root does not remove it:
+  that would be root deleting in a directory the service user controls. Found in my own review,
+  with two more of its kind: two asks at once both found nothing waiting (a lock now), and a
+  removal could hit a request written a moment later (it now names the id).
 - **An untaken request is written again, not re-triggered by the helper.** The path unit starts
   the helper on a change of the file; a change that comes while the helper is ending another
   run starts nothing (seen on a real host). Updates write their request again after 20 s for

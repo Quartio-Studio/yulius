@@ -31,6 +31,8 @@ struct FakeMoveHelper {
     written: Mutex<Vec<MoveRequest>>,
     cleared: AtomicUsize,
     unwritable: AtomicBool,
+    /// A write takes a while, as on a slow disk: another ask has time to come.
+    slow: AtomicBool,
     helper: Mutex<Option<MoveHelperStatus>>,
     status: Mutex<Option<MoveStatus>>,
     arrived: Mutex<Option<MoveChecklist>>,
@@ -45,6 +47,9 @@ impl MoveHelper for FakeMoveHelper {
         if self.unwritable.load(Ordering::SeqCst) {
             return Err("Read-only file system (os error 30)".into());
         }
+        if self.slow.load(Ordering::SeqCst) {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
         if let (Ok(mut pending), Ok(mut written)) = (self.pending.lock(), self.written.lock()) {
             *pending = Some(request.clone());
             written.push(request.clone());
@@ -56,10 +61,12 @@ impl MoveHelper for FakeMoveHelper {
         self.pending.lock().ok()?.clone()
     }
 
-    fn clear_request(&self) {
-        self.cleared.fetch_add(1, Ordering::SeqCst);
-        if let Ok(mut pending) = self.pending.lock() {
+    fn clear_request(&self, id: &str) {
+        if let Ok(mut pending) = self.pending.lock()
+            && pending.as_ref().is_some_and(|request| request.id == id)
+        {
             *pending = None;
+            self.cleared.fetch_add(1, Ordering::SeqCst);
         }
     }
 
@@ -224,6 +231,18 @@ impl Instance {
             .map(|entry| format!("{}: {}", entry.actor, entry.detail.unwrap_or_default()))
             .collect())
     }
+}
+
+/// Waits for what happens without a request: a bounded look every few milliseconds.
+async fn until(what: &str, mut met: impl FnMut() -> bool) -> TestResult {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !met() {
+        if std::time::Instant::now() > deadline {
+            return Err(format!("timed out waiting until {what}").into());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    Ok(())
 }
 
 fn plan() -> Value {
@@ -830,6 +849,59 @@ async fn an_unanswered_request_and_a_silent_helper_are_said() -> TestResult {
     i.helper.says(|status| status.updated_at += 30_000);
     assert_eq!(i.view().await?["run"]["state"], "running");
     Ok(())
+}
+
+/// MVB-021: of two asks at once (two tabs, two superadmins) one is written; the other is told
+/// that a request waits, however long the write takes.
+#[tokio::test]
+async fn of_two_asks_at_once_one_is_written() -> TestResult {
+    let i = instance().await?;
+    i.helper.slow.store(true, Ordering::SeqCst);
+    let (first, second) = tokio::join!(i.ask(plan()), i.ask(plan()));
+    let (first, second) = (first?, second?);
+    let mut answers = [first.status, second.status];
+    answers.sort();
+    assert_eq!(
+        answers,
+        [StatusCode::ACCEPTED, StatusCode::CONFLICT],
+        "{} / {}",
+        first.body,
+        second.body
+    );
+    assert_eq!(i.helper.written().len(), 1);
+    assert_eq!(i.audited(TARGET, "migration.planned").await?.len(), 1);
+    Ok(())
+}
+
+/// MVB-020: a request the helper took leaves the data directory by itself, with nobody
+/// reading the view (the page was closed): a move copies that directory, and the request would
+/// arrive on the new host as one that waits there.
+#[tokio::test]
+async fn a_taken_request_is_removed_with_nobody_reading() -> TestResult {
+    let i = instance().await?;
+    assert_eq!(
+        i.ask(moving_after_plan(&i).await?).await?.status,
+        StatusCode::ACCEPTED
+    );
+    let asked = i.helper.pending().ok_or("no request waits")?;
+    assert_eq!(asked.action, MoveAction::Move);
+    i.helper.takes(i.now())?;
+    until("the taken request is removed", || {
+        i.helper.pending().is_none()
+    })
+    .await?;
+    assert_eq!(
+        i.helper.written().last().map(|r| r.id.clone()),
+        Some(asked.id)
+    );
+    Ok(())
+}
+
+/// A plan of [`plan`] that ended well and was read, and the move of it.
+async fn moving_after_plan(i: &Instance) -> Result<Value, Box<dyn std::error::Error>> {
+    i.planned(&GOOD, None).await?;
+    assert_eq!(i.view().await?["can"]["move"], true);
+    Ok(moving())
 }
 
 /// MVB-020: on the host a move arrived at, its checklist; and a checklist written after the

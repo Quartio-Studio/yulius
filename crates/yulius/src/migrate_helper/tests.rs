@@ -694,6 +694,42 @@ while :; do sleep 0.02; done"#,
     Ok(())
 }
 
+/// MVB-006: an abort that runs is not stopped by its own request, which stays in its file
+/// until the server removes it.
+#[test]
+fn an_abort_that_runs_is_not_stopped_by_its_own_request() -> TestResult {
+    let env = Env::new()?;
+    env.does(
+        r#"trap 'echo terminated >> "$d/order"; exit 1' TERM
+while [ ! -f "$d/go" ]; do sleep 0.02; done
+exit 0"#,
+    )?;
+    env.request(&abort("0123abcd-abort"))?;
+    let helper = env.helper();
+    let run = std::thread::spawn(move || helper.run());
+    until("the abort runs", || {
+        env.status()
+            .is_some_and(|s| s.state == MoveHelperState::Running)
+    })?;
+    // Its file is looked at meanwhile: a heartbeat comes after a look.
+    for _ in 0..2 {
+        let before = env.said()?.updated_at;
+        until("the heartbeat advances", || {
+            env.status().is_some_and(|s| s.updated_at > before)
+        })?;
+    }
+    std::fs::write(env.bin.join("go"), "")?;
+    ended(run, &env)?;
+    assert!(!env.bin.join("order").exists(), "the abort was stopped");
+    let said = env.said()?;
+    assert_eq!(
+        (said.id.as_str(), said.exit_code),
+        ("0123abcd-abort", Some(0))
+    );
+    assert_eq!(env.runs(), 1);
+    Ok(())
+}
+
 /// MVB-006: a command that ignores the signal (the new instance's start is ordered) ends by
 /// itself; the helper waits for it and only then handles the abort.
 #[test]

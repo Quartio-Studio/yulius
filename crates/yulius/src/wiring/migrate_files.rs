@@ -35,6 +35,9 @@ pub struct FileMoveHelper {
     path_unit: Option<String>,
     systemctl: PathBuf,
     installed: Mutex<Option<(Instant, bool)>>,
+    /// Held while the request file is written or removed: a removal is of the request it
+    /// looked at, never of one written in between.
+    writes: Mutex<()>,
 }
 
 impl FileMoveHelper {
@@ -48,6 +51,7 @@ impl FileMoveHelper {
             path_unit,
             systemctl: PathBuf::from("systemctl"),
             installed: Mutex::new(None),
+            writes: Mutex::new(()),
         }
     }
 
@@ -99,6 +103,7 @@ impl MoveHelper for FileMoveHelper {
         std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
             .map_err(|e| format!("cannot restrict {}: {e}", dir.display()))?;
         let bytes = serde_json::to_vec(request).map_err(|e| e.to_string())?;
+        let _held = self.writes.lock();
         write_atomic(&self.request, &bytes, 0o600)
             .map_err(|e| format!("cannot write {}: {e}", self.request.display()))
     }
@@ -110,8 +115,11 @@ impl MoveHelper for FileMoveHelper {
             .filter(|request| request.version == VERSION)
     }
 
-    fn clear_request(&self) {
-        let _ = std::fs::remove_file(&self.request);
+    fn clear_request(&self, id: &str) {
+        let _held = self.writes.lock();
+        if self.pending().is_some_and(|request| request.id == id) {
+            let _ = std::fs::remove_file(&self.request);
+        }
     }
 
     fn helper_status(&self) -> Option<MoveHelperStatus> {
@@ -198,10 +206,13 @@ mod tests {
         std::fs::write(&path, vec![b' '; 17 * 1024])?;
         assert_eq!(helper.pending(), None);
 
+        // Removed by its id: a newer request that took its place meanwhile stays.
         helper.request(&request())?;
-        helper.clear_request();
+        helper.clear_request("0123abcd-older");
+        assert_eq!(helper.pending(), Some(request()));
+        helper.clear_request("0123abcd-plan");
         assert!(!path.exists());
-        helper.clear_request();
+        helper.clear_request("0123abcd-plan");
         Ok(())
     }
 

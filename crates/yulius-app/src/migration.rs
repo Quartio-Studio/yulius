@@ -5,11 +5,12 @@
 //! the old host after a move, and its database travels with the copy: a row "running" would
 //! arrive on the new host as a move of that host. So every answer is computed from the files
 //! the helper and the command keep outside the data directory, and from the request file, which
-//! is removed once the helper took it.
+//! the server removes once the helper took it, whether the view is read or not.
 
 pub mod rules;
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use yulius_contracts::api::migration::{
     AskMigration, MigrationArrived, MigrationCan, MigrationMove, MigrationRequest, MigrationRun,
@@ -38,6 +39,8 @@ pub const RETRY_AFTER_MS: i64 = 5_000;
 pub const LOST_AFTER_MS: i64 = 60_000;
 /// A move is asked on a plan shown at most this long ago.
 pub const PLAN_VALID_MS: i64 = 3_600_000;
+/// How often a written request is looked at until the helper took it.
+const TAKEN_POLL: Duration = Duration::from_millis(250);
 /// The SSH port when the person names none.
 const SSH_PORT: u16 = 22;
 
@@ -260,7 +263,7 @@ fn read(helper: &dyn MoveHelper, now: i64) -> Files {
         let age = now - request.requested_at;
         // Never left for a copy to carry to another host as if it were asked there.
         if taken || age > REQUEST_TTL_MS {
-            helper.clear_request();
+            helper.clear_request(&request.id);
             pending = None;
         } else if age > RETRY_AFTER_MS && age <= ACK_WAIT_MS {
             // The same request, with its id and its time: the helper acts on an id once.
@@ -274,6 +277,36 @@ fn read(helper: &dyn MoveHelper, now: i64) -> Files {
         status: helper.status(),
         arrived: helper.arrived(),
     }
+}
+
+/// Removes the request `id` once the helper took it, also when nobody reads the view meanwhile
+/// (the page was closed): a move copies the data directory, and a request left in it would
+/// arrive on the new host as one that waits there. Given up once its answer is no longer
+/// awaited; a request never taken goes when it is read (MVB-020).
+fn forget_once_taken(helper: Arc<dyn MoveHelper>, id: String) {
+    tokio::spawn(async move {
+        let waited = tokio::time::Instant::now();
+        let longest = Duration::from_millis(u64::try_from(ACK_WAIT_MS).unwrap_or(0));
+        while waited.elapsed() < longest {
+            tokio::time::sleep(TAKEN_POLL).await;
+            let (helper, id) = (Arc::clone(&helper), id.clone());
+            let waits = tokio::task::spawn_blocking(move || {
+                if helper.pending().is_none_or(|request| request.id != id) {
+                    return false;
+                }
+                let taken = helper.helper_status().is_some_and(|run| run.id == id);
+                if taken {
+                    helper.clear_request(&id);
+                }
+                !taken
+            })
+            .await
+            .unwrap_or(false);
+            if !waits {
+                return;
+            }
+        }
+    });
 }
 
 /// What a person typed, as the request holds it.
@@ -390,6 +423,9 @@ impl App {
                 "a move cannot be asked from this server: it has no move helper".into(),
             ));
         };
+        // Two asks at once would both find nothing waiting, and the second would replace
+        // the first one's request.
+        let _one_ask = self.move_asks.lock().await;
         let facts = self.migration_facts().await?;
         if !facts.files.installed {
             return Err(AppError::Conflict(NOT_ENABLED.into()));
@@ -432,7 +468,7 @@ impl App {
             of_run.or_else(|| facts.files.status.as_ref().map(|s| s.target.clone()))
         });
         let written = {
-            let request = request.clone();
+            let (helper, request) = (Arc::clone(&helper), request.clone());
             tokio::task::spawn_blocking(move || helper.request(&request))
                 .await
                 .map_err(AppError::internal)?
@@ -440,6 +476,7 @@ impl App {
         written.map_err(|why| {
             AppError::Conflict(format!("the move's request could not be written: {why}"))
         })?;
+        forget_once_taken(helper, request.id.clone());
         let login = self.login_of(&ctx.user.id).await;
         let mut detail = format!("request {}", request.id);
         if let Some(port) = values.ssh_port {

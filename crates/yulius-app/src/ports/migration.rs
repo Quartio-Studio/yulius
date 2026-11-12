@@ -35,8 +35,9 @@ pub trait MoveHelper: Send + Sync {
     fn request(&self, request: &MoveRequest) -> Result<(), String>;
     /// The request file as it stands, if readable and well formed.
     fn pending(&self) -> Option<MoveRequest>;
-    /// Removes the request file (the helper took it, or it is too old to be taken).
-    fn clear_request(&self);
+    /// Removes the request file when the request `id` is the one in it (the helper took it, or
+    /// it is too old to be taken): never a newer one that was written meanwhile.
+    fn clear_request(&self, id: &str);
     /// The helper's last report, if readable and well formed.
     fn helper_status(&self) -> Option<MoveHelperStatus>;
     /// The command's status, if readable and well formed.

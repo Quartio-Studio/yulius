@@ -3169,7 +3169,10 @@ The application (`yulius-app::migration`, port `ports::migration::MoveHelper`, a
 `wiring::migrate_files`) stores nothing: `GET /api/admin/instance/migration` is computed from the
 request file, the helper's report and the command's `status.json` on every read, because the
 database travels with the copy and a row "running" would arrive on the new host as a move of that
-host. A move needs the plan that was shown for the same values, and the host typed by the person.
+host. For the same reason the server removes a request as soon as the helper took it, read or
+not, so the copy holds none that waits; asks are taken one at a time, and a removal names the
+request's id. A move needs the plan that was shown for the same values, and the host typed by the
+person.
 The finished checklist travels with the Finish step (`target::Request::Carry`, then the new
 host's Finish leaves it as `/var/lib/yulius-migrate/arrived.json`, in root's directory and not in
 the data directory the running instance's user owns), so the new instance's page shows it. The
