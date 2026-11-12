@@ -4896,13 +4896,23 @@ fn a_flag_raised_after_the_goal_pause_is_not_lifted_by_the_agents_work() -> Test
 /// A finished goal task whose session then asks the person something (Claude Code's permission
 /// prompt, through its `Notification` hook): it reads Needs you, flagged by that notice.
 async fn task_flagged_by_a_notice(app: &Arc<App>, data: &Path) -> Result<TaskId, BoxError> {
+    task_flagged_by_a_notice_of(app, data, "permission_prompt").await
+}
+
+/// [`task_flagged_by_a_notice`], for a notice of `kind` (its `notification_type`).
+async fn task_flagged_by_a_notice_of(
+    app: &Arc<App>,
+    data: &Path,
+    kind: &str,
+) -> Result<TaskId, BoxError> {
     let (sandbox, user) = seed(app, data).await?;
     let id = goal_task(app, &sandbox, &user, "Merge on green").await?;
     wait_for("Done", Duration::from_secs(90), || async {
         activity(app, &id).await == Some(Activity::Done)
     })
     .await?;
-    app.send_input(&id, b"/notify permission_prompt\r").await?;
+    app.send_input(&id, format!("/notify {kind}\r").as_bytes())
+        .await?;
     wait_for("the notice's flag", Duration::from_secs(30), || async {
         activity(app, &id).await == Some(Activity::NeedsAttention)
             && screen_contains(app, &id, "NOTIFIED").await
@@ -4981,6 +4991,125 @@ fn a_flag_raised_after_a_notices_is_not_lifted_by_the_agents_work() -> TestResul
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
+}
+
+/// A hooked agent with a transcript, as the notice tests run it.
+fn noticing_agent() -> FakeAgentOptions {
+    FakeAgentOptions {
+        transcript: true,
+        hooks: true,
+        ..FakeAgentOptions::default()
+    }
+}
+
+/// The new server read the session's transcript again and the task still reads Needs you: a
+/// replay lifts no flag.
+async fn still_flagged_after_the_replay(app: &Arc<App>, id: &TaskId) -> TestResult {
+    let runtime = app.runtime(id);
+    wait_for(
+        "the transcript read again",
+        Duration::from_secs(30),
+        || async { runtime.transcript_rounds() >= 2 },
+    )
+    .await?;
+    assert_eq!(activity(app, id).await, Some(Activity::NeedsAttention));
+    Ok(())
+}
+
+/// SPEC-472 ATN-010 (#1221): Yulius restarts (an update freezes every agent mid-turn) while a
+/// session asks its person something. The new server never saw the notice that flagged the
+/// task; the person answers, the agent goes on, and its work still makes the task Working: it
+/// does not read "Needs your action · its question is in the terminal" over a working session
+/// until the turn ends.
+#[test]
+fn a_notice_is_answered_by_the_agents_work_after_a_restart() -> TestResult {
+    a_restart_after(
+        noticing_agent(),
+        async |app, data| task_flagged_by_a_notice(app, data).await,
+        async |_| Ok(()),
+        async |app, id| {
+            still_flagged_after_the_replay(app, id).await?;
+            assert_eq!(
+                support::attention(app, id.as_str()).await?["kind"],
+                "terminal",
+                "the flag still says what it is"
+            );
+            app.send_input(id, b"/tool\r").await?;
+            wait_for(
+                "Working with the agent's work",
+                Duration::from_secs(30),
+                || async { activity(app, id).await == Some(Activity::Working) },
+            )
+            .await?;
+            assert!(support::attention(app, id.as_str()).await?.is_null());
+            Ok(())
+        },
+    )
+}
+
+/// SPEC-472 ATN-010: what the session's work does not answer before a restart, it does not
+/// answer after one: a worker's permission prompt stays through the main session's work, as
+/// while Yulius watches (STA-003).
+#[test]
+fn a_workers_notice_is_not_answered_by_the_agents_work_after_a_restart() -> TestResult {
+    a_restart_after(
+        noticing_agent(),
+        async |app, data| task_flagged_by_a_notice_of(app, data, "worker_permission_prompt").await,
+        async |_| Ok(()),
+        async |app, id| {
+            still_flagged_after_the_replay(app, id).await?;
+            app.send_input(id, b"/tool\r").await?;
+            wait_for("the agent's work", Duration::from_secs(30), || {
+                screen_contains(app, id, "TOOL")
+            })
+            .await?;
+            transcript_read(app, id).await?;
+            assert_eq!(
+                activity(app, id).await,
+                Some(Activity::NeedsAttention),
+                "a worker's ask is not the session's to answer"
+            );
+            Ok(())
+        },
+    )
+}
+
+/// SPEC-472 ATN-010: the flag a notice raised before a restart was replaced without a word and
+/// another matter flagged the task afterwards. The agent's work after the restart does not lift
+/// that flag: the reason kept with the notice's flag speaks for that flag only.
+#[test]
+fn a_flag_raised_after_a_notices_is_not_lifted_after_a_restart() -> TestResult {
+    a_restart_after(
+        noticing_agent(),
+        async |app, data| {
+            let id = task_flagged_by_a_notice(app, data).await?;
+            let store = &app.deps.store;
+            store
+                .set_activity(&id, Some(Activity::Working), app.now())
+                .await?;
+            store
+                .set_activity(&id, Some(Activity::NeedsAttention), app.now())
+                .await?;
+            Ok(id)
+        },
+        async |_| Ok(()),
+        async |app, id| {
+            still_flagged_after_the_replay(app, id).await?;
+            assert!(support::attention(app, id.as_str()).await?.is_null());
+            app.send_input(id, b"/tool\r").await?;
+            wait_for("the agent's work", Duration::from_secs(30), || {
+                screen_contains(app, id, "TOOL")
+            })
+            .await?;
+            transcript_read(app, id).await?;
+            assert_eq!(
+                activity(app, id).await,
+                Some(Activity::NeedsAttention),
+                "another matter's flag stays"
+            );
+            Ok(())
+        },
+    )
 }
 
 /// SPEC-469 GPW-004: Yulius restarts while a session whose goal Claude Code paused waits for a
