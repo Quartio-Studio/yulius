@@ -92,6 +92,22 @@ struct Env {
     args: MoveHelperArgs,
 }
 
+/// A fake command still running when a test ends (it failed half way) is ended with it: left
+/// alone it would run on, holding the test run's output open.
+impl Drop for Env {
+    fn drop(&mut self) {
+        if let Some(pid) = std::fs::read_to_string(self.bin.join("command.pid"))
+            .ok()
+            .and_then(|pid| pid.trim().parse::<i32>().ok())
+        {
+            let _ = nix::sys::signal::kill(
+                nix::unistd::Pid::from_raw(pid),
+                nix::sys::signal::Signal::SIGKILL,
+            );
+        }
+    }
+}
+
 impl Env {
     fn new() -> Result<Self, Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
@@ -783,12 +799,12 @@ exit 2"#,
 #[test]
 fn a_child_that_outlives_the_command_does_not_hold_the_helper() -> TestResult {
     let env = Env::new()?;
-    env.does(r#"(sleep 30 &) ; exit 0"#)?;
+    env.does(r#"(sleep 6 &) ; exit 0"#)?;
     env.request(&plan("0123abcd-orphan"))?;
     let started = Instant::now();
     env.run()?;
     assert!(
-        started.elapsed() < Duration::from_secs(20),
+        started.elapsed() < Duration::from_secs(4),
         "{:?}",
         started.elapsed()
     );
