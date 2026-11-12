@@ -3512,4 +3512,34 @@ mod moves {
         let _ = h.app.resume_round().await;
         until_move_tried(&h, &task).await
     }
+
+    /// SPEC-479 SWQ-003: a held turn is released in place only where a process holds it. A
+    /// task that waits for capacity without one (its run is gone) is started, not set running
+    /// with nothing to run it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_paused_task_without_a_process_is_not_released_in_place() -> TestResult {
+        use axum::http::StatusCode;
+        use yulius_app::model::PauseKind;
+        use yulius_app::ports::store::AttemptUpdate;
+        let (h, task) = on_the_test_clock(true).await?;
+        second_subscription(&h).await?;
+        assert_eq!(hook(&h, Some("first")).await?, StatusCode::OK);
+        paused(&h, &task, PauseKind::Turn).await?;
+        let store = &h.app.deps.store;
+        let run = store.live_attempt(&task).await?.ok_or("the run")?;
+        let ended = AttemptUpdate {
+            ended_at: Some(h.app.now()),
+            ..AttemptUpdate::default()
+        };
+        store
+            .transition_attempt(&run.id, AttemptState::Lost, &ended)
+            .await?;
+        let _ = h.app.resume_round().await;
+        assert_ne!(
+            state(&h.app, &task).await,
+            Some((TaskStatus::Running, Some(Activity::Waiting))),
+            "nothing would run it"
+        );
+        Ok(())
+    }
 }
