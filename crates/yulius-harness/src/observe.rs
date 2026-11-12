@@ -10,7 +10,7 @@ use std::collections::{HashSet, VecDeque};
 use yulius_domain::agent_cli::QueueChange;
 use yulius_domain::task::GoalOutcome;
 use yulius_domain::time::Timestamp;
-use yulius_domain::usage::TokenUsage;
+use yulius_domain::usage::{LimitScope, TokenUsage};
 
 /// Maximum number of recent Claude message ids remembered for de-duplication.
 pub const MESSAGE_ID_MEMORY: usize = 65_536;
@@ -62,6 +62,9 @@ pub enum Observed {
         /// Length of the limited window in minutes — 300 for the five-hour session, 10080 for
         /// the weekly one — when the provider said which.
         window_minutes: Option<u32>,
+        /// What the limit binds: the subscription, or the models of one family (a per-model
+        /// weekly cap, or the model's allowance of usage credits; SPEC-464).
+        scope: LimitScope,
         /// When Claude Code recorded it (the record's `timestamp`), if parseable: tells a new
         /// limit from one in a conversation's history (SPEC-074 SUP-002).
         at: Option<Timestamp>,
@@ -555,12 +558,14 @@ mod tests {
                 resets_at: None,
                 message: "first".into(),
                 window_minutes: None,
+                scope: LimitScope::Account,
                 at: None,
             },
             Observed::LimitReached {
                 resets_at: Some(Timestamp(5)),
                 message: "limit".into(),
                 window_minutes: Some(300),
+                scope: LimitScope::Account,
                 at: None,
             },
         ]);
@@ -677,6 +682,7 @@ mod tests {
             resets_at: None,
             message: "limit".into(),
             window_minutes: None,
+            scope: LimitScope::Account,
             at: Some(Timestamp(120 * S)),
         });
         // Lines after the limit do not extend the closed turn.
@@ -744,6 +750,7 @@ mod tests {
             resets_at: None,
             message: "limit".into(),
             window_minutes: None,
+            scope: LimitScope::Account,
             at: Some(Timestamp(60 * S)),
         });
         assert_eq!((acc.usage().input, acc.usage().output), (Some(13), Some(7)));

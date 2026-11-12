@@ -2682,6 +2682,70 @@ async fn a_usage_limit_moves_the_cockpit_to_a_subscription_with_capacity() -> Te
     Ok(())
 }
 
+/// SPEC-464 UCL-008: the Superagent runs the default model. Refused for that model's usage
+/// credits (the record of Claude Code 2.1.322, with the allowance's reset), it moves like at any
+/// usage limit, and the limit is kept as the model's on its subscription: the week keeps its
+/// reading and no limit of the whole subscription is recorded.
+#[tokio::test]
+async fn a_superagent_out_of_usage_credits_moves_to_another_subscription() -> TestResult {
+    let f = fixture_with(false, None).await?;
+    insert_account(&f.h, "acc-a", "token-a", 5.0).await?;
+    insert_account(&f.h, "acc-b", TOKEN, 60.0).await?;
+    let served = serve(f.h.router.clone()).await?;
+    let id = cockpit_id(&f, &f.alice).await?;
+    let mut socket = attach(served.addr, &id, &f.alice).await?;
+    let mut screen = String::new();
+    read_until(&mut socket, &mut screen, "ready").await?;
+    assert_eq!(printed(&screen, "token")?, "token-a");
+
+    let project = project_of(&screen)?;
+    std::fs::create_dir_all(&project)?;
+    let transcript = project.join("conv-1.jsonl");
+    let refusal = transcript_record(
+        "assistant",
+        "refused",
+        Some("u1"),
+        6,
+        &json!({"isApiErrorMessage": true, "error": "rate_limit",
+            "apiError": "model_requires_usage_credits", "apiErrorStatus": 429,
+            "apiErrorParams": {"rate_limit_info": {"status": "rejected",
+                "resetsAt": 1_791_400_000, "rateLimitType": "seven_day_overage_included",
+                "overageStatus": "rejected", "overageDisabledReason": "out_of_credits",
+                "isUsingOverage": false}},
+            "message": {"id": "msg_refused", "role": "assistant", "model": "<synthetic>",
+                "content": [{"type": "text",
+                    "text": "You're out of usage credits. /model to switch models."}]}}),
+    );
+    std::fs::write(
+        &transcript,
+        [prompt_record("u1", None, 5), refusal].concat(),
+    )?;
+
+    let exit = read_message(&mut socket, "exit").await?;
+    assert_eq!(exit["status"], "switched", "{exit}");
+    let again = other_cockpit(&f, &id).await?;
+    let mut socket = attach(served.addr, &again, &f.alice).await?;
+    let mut screen = String::new();
+    read_until(&mut socket, &mut screen, "ready").await?;
+    assert_eq!(printed(&screen, "token")?, TOKEN);
+    assert_eq!(printed(&screen, "interrupted")?, "1");
+    let stepped = std::fs::read_to_string(&transcript)?;
+    assert!(
+        !stepped.contains("refused") && stepped.contains("\"u1\""),
+        "{stepped}"
+    );
+    let usage = usage_of(&f.h, "acc-a").await?;
+    assert_eq!(usage["weekly_fable"]["used_percent"], 100.0, "{usage}");
+    assert_eq!(
+        usage["weekly_fable"]["resets_at"], 1_791_400_000_000_i64,
+        "{usage}"
+    );
+    assert_eq!(usage["secondary"]["used_percent"], 5.0, "{usage}");
+    assert_eq!(usage["limit_reached"], false, "{usage}");
+    f.h.app.end_all_shells().await;
+    Ok(())
+}
+
 /// SPEC-146 SHE-002 (#346): a usage limit in a Superagent whose process cannot be ended (the end
 /// request is lost and `terminate` fails) starts no second one on the same conversation: the old
 /// one stays live on its subscription, the panel finds it, and its viewer is told why.

@@ -363,6 +363,50 @@ mod tests {
         chain(text).into_iter().map(|(u, _)| u).collect()
     }
 
+    /// SPEC-464, task #438 on 2026-11-11 (Claude Code 2.1.311): a tool result answered by the
+    /// refusal of a model whose usage credits are used up, then a person's "continue" answered
+    /// the same way. The step back drops the refusals, the goal's pause notices and the records
+    /// closing those turns, and keeps the tool result and the prompt, so the resumed session
+    /// redoes the request on the next subscription.
+    #[test]
+    fn step_back_removes_a_usage_credits_refusal() -> Result<(), Box<dyn std::error::Error>> {
+        let refusal = |uuid: &str, parent: &str| {
+            record(
+                "assistant",
+                uuid,
+                Some(parent),
+                &json!({"isApiErrorMessage": true, "error": "rate_limit",
+                "apiError": "model_requires_usage_credits", "apiErrorStatus": 429,
+                "message": {"id": format!("msg_{uuid}"), "role": "assistant",
+                    "model": "<synthetic>", "content": [{"type": "text",
+                    "text": "You're out of usage credits. /model to switch models."}]}}),
+            )
+        };
+        let paused =
+            "Goal paused \u{b7} the request was rate limited \u{b7} send a message to retry";
+        let text = [
+            prompt("u1", "root", "first"),
+            tool_use("a1", "u1"),
+            tool_result("r1", "a1"),
+            refusal("e1", "r1"),
+            system("n1", "e1", "informational", paused),
+            system("d1", "n1", "turn_duration", ""),
+            prompt("u2", "d1", "continue"),
+            refusal("e2", "u2"),
+            system("n2", "e2", "informational", paused),
+            system("d2", "n2", "turn_duration", ""),
+        ]
+        .concat();
+        let stepped = step_back(&text).ok_or("a refusal in the tail")?;
+        assert_eq!(uuids(&stepped), ["u1", "a1", "r1", "u2"], "{stepped}");
+        assert_eq!(chain(&stepped)[3].1.as_deref(), Some("r1"), "u2 relinked");
+        assert!(
+            !stepped.contains("model_requires_usage_credits") && !stepped.contains("Goal paused")
+        );
+        assert_eq!(step_back(&stepped), None);
+        Ok(())
+    }
+
     /// Task #25 (2026-10-12): a prompt, then a task notification, each answered by the limit;
     /// the step back keeps both messages, drops the errors and Claude Code's notices, and the
     /// chain from the newest record reaches the last answered turn.

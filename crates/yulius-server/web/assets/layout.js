@@ -445,8 +445,9 @@ export function renderStatus(data) {
   let health = { tone: 'ok', icon: 'check', text: 'Everything is running normally' };
   if (data.contained === false) health = { tone: 'warn', icon: 'shield', text: 'Not isolated: agent sessions run without an OS sandbox' };
   if (hot) health = { tone: 'warn', icon: 'warn', text: 'The machine is under heavy load' };
-  // Every subscription at its limit: tasks wait for the first window reset (ROT-010).
-  if (accounts.length && accounts.every((a) => a.status === 'limited')) health = { tone: 'warn', icon: 'clock', text: 'No subscription has capacity left: tasks continue when a window resets' };
+  // Every subscription at a limit: tasks wait for the first window reset (ROT-010). A limit may
+  // be the default model's alone (SPEC-464), so the line does not say that nothing runs.
+  if (accounts.length && accounts.every((a) => a.status === 'limited')) health = { tone: 'warn', icon: 'clock', text: 'Every subscription is at a usage limit: tasks continue when a window resets' };
   if (troubled.length) health = { tone: 'warn', icon: 'warn', text: `${troubled.length} ${troubled.length === 1 ? 'subscription needs' : 'subscriptions need'} attention` };
 
   const facts = [
@@ -730,6 +731,9 @@ export function accountUsage(account, { foldable = false, open = false, rename =
     // Per-model weekly caps, when the plan has them (they bind only tasks of that model).
     usage.weekly_opus ? usageRow({ ...usage.weekly_opus, window_minutes: null }, 'Opus this week') : null,
     usage.weekly_sonnet ? usageRow({ ...usage.weekly_sonnet, window_minutes: null }, 'Sonnet this week') : null,
+    // Fable runs on a weekly allowance of usage credits no reading shows: the row appears once
+    // Claude reported it used up, full until its reset (SPEC-464).
+    usage.weekly_fable ? usageRow({ ...usage.weekly_fable, window_minutes: null }, 'Fable this week') : null,
     h('div', { class: 'account-foot' },
       account.in_use_by ? h('span', { class: 'status-count live' }, h('span', { class: 'live-dot' }), `${account.in_use_by} ${account.in_use_by === 1 ? 'task' : 'tasks'} on this subscription`) : h('span', null, 'No tasks right now'),
       h('span', null, usage.observed_at ? `Updated ${relLong(usage.observed_at)}` : 'Usage is read every few minutes')));

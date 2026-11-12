@@ -453,11 +453,13 @@ impl TranscriptWatch for Watch {
                         resets_at,
                         message,
                         window_minutes,
+                        scope,
                         at,
                     } => out.push(Observation::LimitReached {
                         resets_at,
                         message,
                         window_minutes,
+                        scope,
                         at,
                     }),
                     Observed::AccessLost { message, at } => {

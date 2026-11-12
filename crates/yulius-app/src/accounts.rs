@@ -287,6 +287,9 @@ pub fn usage_view(usage: &AccountUsage) -> AccountUsageView {
         secondary: usage.secondary.as_ref().map(window_view),
         weekly_opus: usage.weekly_opus.as_ref().map(window_view),
         weekly_sonnet: usage.weekly_sonnet.as_ref().map(window_view),
+        weekly_fable: usage.weekly_fable.as_ref().map(window_view),
+        limit_reached: usage.limit_reached,
+        limit_resets_at: usage.limit_resets_at.map(rfc3339),
         observed_at: usage.observed_at.map(rfc3339),
     }
 }
@@ -531,8 +534,13 @@ impl App {
     }
 
     fn publish_account(&self, view: AccountView) {
-        self.events
-            .publish(None, true, UiEvent::AccountUpdated { account: view });
+        self.events.publish(
+            None,
+            true,
+            UiEvent::AccountUpdated {
+                account: Box::new(view),
+            },
+        );
     }
 
     pub(crate) async fn publish_account_id(&self, id: &AccountId) {
@@ -668,10 +676,19 @@ impl App {
             .map(Secret)
             .ok_or_else(|| UsageFailure::new("the stored credential cannot be read"))?;
         match self.deps.usage.fetch(account.provider, &credential).await {
-            Ok(mut usage) => {
-                usage.observed_at = Some(self.now());
-                self.record_account_usage(&account.id, &usage).await;
-                self.record_usage_samples(&account.id, &usage, crate::model::USAGE_FROM_PROBE)
+            Ok(mut reading) => {
+                let now = self.now();
+                reading.observed_at = Some(now);
+                // A reading replaces the windows it carries; a model's own window it does not
+                // carry (a limit Claude reported for it) stays until its reset (SPEC-464). What
+                // is stored is read now, under the lock: a limit may have been recorded during
+                // the request (#72).
+                self.change_account_usage(&account.id, |stored| {
+                    Some(reading.keeping_unread(&stored, now))
+                })
+                .await;
+                // What the provider said, not what was kept beside it.
+                self.record_usage_samples(&account.id, &reading, crate::model::USAGE_FROM_PROBE)
                     .await;
                 Ok(())
             }
@@ -1578,8 +1595,26 @@ impl App {
     async fn store_credential(&self, account: &AccountId, secret: &Secret) -> AppResult<()> {
         let sealed = self.deps.crypto.seal(secret.expose().as_bytes())?;
         let store = &self.deps.store;
-        if store.account(account).await?.is_none() {
+        let _writing = self.capacity.usage_writes.lock().await;
+        let Some(record) = store.account(account).await? else {
             return Err(AppError::NotFound);
+        };
+        // A model's limit Claude reported to the previous sign-in is not this one's (it may be
+        // another Claude account, or the same one with credits again), and no usage reading
+        // would end it before its reset (SPEC-464 UCL-004). Dropped before the credential is
+        // stored, so the new sign-in is never seen with the old one's limit.
+        let usage = account_usage(&record);
+        let known = usage.without_model_windows();
+        if known != usage {
+            store
+                .set_account_state(
+                    account,
+                    record.status,
+                    Some(&usage_json::to_json(&known)),
+                    record.last_error.as_deref(),
+                    self.now(),
+                )
+                .await?;
         }
         store
             .set_account_credential(account, &sealed, AccountStatus::Ok, self.now())
@@ -1753,6 +1788,36 @@ mod tests {
             Some("1970-01-01T00:00:00Z")
         );
         assert!(known.secondary.is_none());
+        // A model's own weekly window is shown as its own, never as the week (SPEC-464).
+        let fable = usage_view(&AccountUsage {
+            weekly_fable: Some(UsageWindow {
+                used_percent: Some(100.0),
+                window_minutes: Some(10_080),
+                resets_at: Some(Timestamp(0)),
+            }),
+            ..AccountUsage::default()
+        });
+        assert_eq!(
+            fable.weekly_fable.as_ref().and_then(|w| w.used_percent),
+            Some(100.0)
+        );
+        assert!(fable.secondary.is_none() && fable.weekly_opus.is_none());
+        assert!(
+            !fable.limit_reached,
+            "a model's limit is not the subscription's"
+        );
+        // A limit of the whole subscription is shown as one, with its end when Claude named it:
+        // "Run #N on…" refuses every task for it (SPEC-464).
+        let whole = usage_view(&AccountUsage {
+            limit_reached: true,
+            limit_resets_at: Some(Timestamp(0)),
+            ..AccountUsage::default()
+        });
+        assert!(whole.limit_reached);
+        assert_eq!(
+            whole.limit_resets_at.as_deref(),
+            Some("1970-01-01T00:00:00Z")
+        );
     }
 
     #[test]

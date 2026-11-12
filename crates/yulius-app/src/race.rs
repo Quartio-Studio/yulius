@@ -122,6 +122,13 @@ pub enum Point {
     /// The start-up reconciliation (SPEC-458): every run on record was gone through; the sweep
     /// of tasks without a run has not begun. The path is the data directory.
     ReconcileSweep,
+    /// A change of a subscription's stored usage (SPEC-464: a provider's reading, a session's
+    /// reading, a limit Claude reported): the stored usage was read under the lock such changes
+    /// take; nothing is written yet. The path is the account id.
+    UsageRead,
+    /// A usage limit Claude reported (SPEC-464) is about to be recorded on its subscription: its
+    /// stored usage is not read yet. The path is the account id.
+    LimitRecord,
     /// A turn's end (SPEC-461) looked at the background work of a session on an older Claude
     /// Code, whatever it found; who typed and what pauses it are not read again yet. The path is
     /// the task id.

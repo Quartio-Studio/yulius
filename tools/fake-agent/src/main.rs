@@ -8,7 +8,8 @@
 //! fake-agent [--mode echo|flood|ignore-term|fork-child|exit-early|sleep]
 //!            [--bytes N] [--code N] [--seconds N] [--ignore-term]
 //!            [--session-id ID] [--transcript PATH [--transcript-kind claude]]
-//!            [--limit-after N [--access-lost]] [--report-env NAME]... [--tui]
+//!            [--limit-after N [--access-lost | --credits-out [--credits-reset-s S]]]
+//!            [--report-env NAME]... [--tui]
 //!            [--hooks YULIUS_EXE] [--goal-background SECONDS]
 //!            [--goal-agent SECONDS [--goal-agent-interim SECONDS]]
 //!            [--goal-monitor SECONDS [--goal-monitor-ends]] [--goal-verdict met|failed|none]
@@ -56,7 +57,15 @@
 //! `LIMIT REACHED` and appends a usage-limit record after N turns, shaped like Claude Code
 //! 2.1.292's (`apiError: "usage_limit_reached"`, `resetsAt` one hour ahead); later turns only repeat
 //! `LIMIT REACHED`. With `--access-lost` that record is instead the refusal of a lapsed
-//! subscription, shaped like Claude Code 2.1.311's (`error: "oauth_org_not_allowed"`, 403). With `--limit-continues-ms MS` the agent then continues the cut turn by itself
+//! subscription, shaped like Claude Code 2.1.311's (`error: "oauth_org_not_allowed"`, 403). With
+//! `--credits-out` it is the refusal of a model that runs on usage credits once they are used up
+//! ("You're out of usage credits. /model to switch models."), shaped like Claude Code 2.1.311's
+//! (`apiError: "model_requires_usage_credits"`, no `rate_limit_info`) and followed, as in a goal
+//! session, by the notice `Goal paused · the request was rate limited` and the record closing the
+//! turn; with `--credits-reset-s S` it is shaped like 2.1.322's, whose `rate_limit_info` says the
+//! allowance (`seven_day_overage_included`) resets S seconds ahead. Each later line then appends
+//! its prompt and another such refusal; with `--limit-after 0` the first line already does (a
+//! session resumed on a subscription that still refuses it). With `--limit-continues-ms MS` the agent then continues the cut turn by itself
 //! like Claude Code's "continuing automatically" at the reset (#276): MS later it appends a hidden
 //! `isMeta` prompt and an assistant `tool_use` record and prints `CONTINUED`, and MS after that it
 //! appends the answer ending the turn and prints `DONE continued`; with
@@ -339,6 +348,8 @@ struct Options {
     limit_continues_ms: Option<u64>,
     limit_continues_answer_only: bool,
     access_lost: bool,
+    credits_out: bool,
+    credits_reset_s: Option<i64>,
     idle_compact_ms: Option<u64>,
     trust_prompt: bool,
 }
@@ -408,6 +419,8 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
         limit_continues_ms: None,
         limit_continues_answer_only: false,
         access_lost: false,
+        credits_out: false,
+        credits_reset_s: None,
         idle_compact_ms: None,
         trust_prompt: false,
     };
@@ -582,6 +595,11 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
             }
             "--limit-continues-answer-only" => options.limit_continues_answer_only = true,
             "--access-lost" => options.access_lost = true,
+            "--credits-out" => options.credits_out = true,
+            "--credits-reset-s" => {
+                let seconds: i64 = parse_number(&flag, args.next())?;
+                options.credits_reset_s = Some(seconds.clamp(1, 10 * 365 * 24 * 3600));
+            }
             "--prompt" => options.prompt = Some(args.next().ok_or("--prompt needs a text")?),
             other => return Err(format!("unknown argument {other:?}")),
         }
@@ -1278,6 +1296,47 @@ impl Transcript {
         });
         self.last_uuid = Some(uuid);
         self.append(&[record])
+    }
+
+    /// The refusal of a model that runs on usage credits once they are used up, as Claude Code
+    /// 2.1.311 records it; with `reset_s` as 2.1.322 does, whose `rate_limit_info` says when the
+    /// model's allowance resets. Goal mode's pause notice and the record closing the turn follow.
+    fn credits_out(&mut self, reset_s: Option<i64>) -> io::Result<()> {
+        let timestamp = rfc3339(now_ms());
+        let uuid = format!("fake-{}-{}-credits-out", self.session_id, self.turns);
+        let mut record = self.claude_envelope("assistant", &uuid, &timestamp);
+        record["isApiErrorMessage"] = json!(true);
+        record["error"] = json!("rate_limit");
+        record["apiError"] = json!("model_requires_usage_credits");
+        record["apiErrorStatus"] = json!(429);
+        record["errorDetails"] = json!(
+            "429 {\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"message\":\"This \
+             request would exceed your account's rate limit. Please try again later.\"}}"
+        );
+        if let Some(reset_s) = reset_s {
+            record["apiErrorParams"] = json!({"rate_limit_info": {"status": "rejected",
+                "resetsAt": now_ms() / 1000 + reset_s,
+                "rateLimitType": "seven_day_overage_included", "overageStatus": "rejected",
+                "overageDisabledReason": "out_of_credits", "isUsingOverage": false}});
+        }
+        record["message"] = json!({
+            "id": format!("msg_fake_credits_out_{}", self.turns),
+            "type": "message",
+            "role": "assistant",
+            "model": "<synthetic>",
+            "content": [{"type": "text",
+                "text": "You're out of usage credits. /model to switch models."}],
+            "stop_reason": "stop_sequence",
+            "usage": {"input_tokens": 0, "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0, "output_tokens": 0}
+        });
+        self.last_uuid = Some(uuid);
+        self.append(&[record])?;
+        self.notice(
+            "Goal paused \u{b7} the request was rate limited \u{b7} send a message to retry",
+            "notice",
+        )?;
+        self.turn_duration(250)
     }
 
     /// The refusal of a lapsed subscription (Claude Code 2.1.311).
@@ -2378,7 +2437,11 @@ fn echo_loop(options: &Options, session_id: &str) -> io::Result<i32> {
     let keys = Keys::start(options, hooks.clone())?;
     let keys = keys.as_ref();
     status_line(options, hooks.as_ref())?;
-    let mut state = EchoState::default();
+    let mut state = EchoState {
+        // Out of usage credits from the first message on (`--credits-out --limit-after 0`).
+        limited: options.credits_out && options.limit_after == Some(0),
+        ..EchoState::default()
+    };
     if let (true, Some(hooks)) = (options.session_start, &hooks) {
         hooks.session_start();
     }
@@ -2528,7 +2591,18 @@ fn echo_loop(options: &Options, session_id: &str) -> io::Result<i32> {
             _ if line.starts_with("/compact") => {
                 compact(options, &line, transcript.as_ref(), &mut state)?;
             }
-            _ if state.limited => say("LIMIT REACHED")?,
+            _ if state.limited => {
+                say("LIMIT REACHED")?;
+                // Out of usage credits, every later message gets its own refusal, as each
+                // message does in Claude Code until the model runs again.
+                if options.credits_out
+                    && let Some(transcript) = transcript.as_ref()
+                    && let Ok(mut t) = transcript.lock()
+                {
+                    t.begin(&line)?;
+                    t.credits_out(options.credits_reset_s)?;
+                }
+            }
             _ if line.starts_with("/goal ") && (transcript.is_some() || hooks.is_some()) => {
                 state.turns += 1;
                 goal_turn(options, &line, transcript.as_ref(), hooks.as_ref())?;
@@ -2624,6 +2698,8 @@ fn echo_message(
         {
             if options.access_lost {
                 t.access_lost()?;
+            } else if options.credits_out {
+                t.credits_out(options.credits_reset_s)?;
             } else {
                 t.limit()?;
             }
