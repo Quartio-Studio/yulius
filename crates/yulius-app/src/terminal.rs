@@ -1,6 +1,7 @@
 //! Terminal viewers: attach, input, resize, who sets the size, and permission re-checks
 //! (SPEC-002 §7.7, AC-TSK-6, ACC-008; the size policy is [`crate::hub::control`]).
 
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -212,8 +213,33 @@ impl App {
             }
             // A prompt submitted soon after is this person's (TSK-013).
             self.record_typing(&attach.task_id, &ctx.user.id);
+            // What they type may stay in the prompt box, unsent: the run's folder keeps that
+            // for a restarted server (SPEC-480 DRF-009). Before the key is passed on, so the
+            // prompt it may submit removes the mark after it was written.
+            if !attach.runtime.draft_marked.swap(true, Ordering::SeqCst) {
+                self.mark_draft(&attach.task_id, &attach.runtime).await;
+            }
         }
         self.send_input(&attach.task_id, data).await
+    }
+
+    /// Writes the mark of a person's possible draft into the folder of the task's live run
+    /// (SPEC-480 DRF-009). A mark that could not be written is tried again at the next key.
+    async fn mark_draft(&self, task_id: &TaskId, runtime: &TaskRuntime) {
+        let typed = runtime.typed_at_ms.load(Ordering::SeqCst);
+        let marked = match self.deps.store.live_attempt(task_id).await {
+            Ok(Some(attempt)) => {
+                crate::supervisor::mark_person_typed(Path::new(&attempt.run_dir), typed)
+            }
+            Ok(None) => false,
+            Err(err) => {
+                tracing::warn!(task = %task_id, error = %err, "could not find the run to record a person's draft in");
+                false
+            }
+        };
+        if !marked {
+            runtime.draft_marked.store(false, Ordering::SeqCst);
+        }
     }
 
     /// The size the viewer's window fits now (write access). The terminal takes it when this

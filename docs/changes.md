@@ -27,6 +27,32 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   written later than two seconds); a person's own switch or stop and a turn a limit cuts
   carry nothing over. The tests' fake agent can play an entry that is never taken out
   (`/stuck`), one that is handed on alone (`/alone`) and a limit that cuts a handed-on turn.
+- A message Yulius types into a session no longer lands on a person's unsent draft (SPEC-480,
+  task #463, ADR-0309, issue #1199). Yulius held a message back only while someone had typed in
+  the last minute; an older draft got the message pasted behind it and was sent with it, as one
+  prompt. Now nothing is typed while someone typed into the task's terminal since its prompt
+  box was last empty, however long ago: a person's `task_message`, a pull request's news,
+  "Yulius is back; continue" and the MCP watch's texts all wait. `task_message` answers with
+  the reason at once. For a message of Yulius's own the task reads Needs your action and its
+  terminal says so once the person's last key is ten minutes old; the next prompt sent from
+  the box releases it. Every key counts, because Yulius sees keys and not the box, so a session
+  someone typed into without leaving text also waits for one prompt. A draft typed before a
+  restart of Yulius counts too: the run's folder keeps its mark (`person-typed`), so the wake
+  after an outage does not land on it.
+- `yulius instance migrate`, going on from a recorded start, no longer ends well while processes
+  of a stopped old unit still run (SPEC-478, task #460, issue #1178). The server's unit has
+  `KillMode=process`: a unit stopped by hand keeps its agents, terminals and sandbox engines
+  running in its cgroup, unfrozen, beside a new instance that has queued the same tasks. The
+  run read only `ActiveState`, said "does not run here any more", recorded the move and ended
+  with exit 0. It now asks what a stopped unit left (`ControlGroup` and the group's
+  `cgroup.events`, for the server's unit and its sessions unit): while processes of it run, a
+  `FAIL` line names the units and `systemctl kill --kill-who=all --signal=SIGKILL <units>`, the
+  run ends with exit 1, kills nothing and records nothing, so the same command asks again and
+  goes on once they are gone. The move's lines now spell the option `--kill-who`, which also
+  runs on an old host before systemd 252 (`--kill-whom` is refused there). With no cgroup, an empty one or processes the kernel holds frozen
+  the "make sure" line and exit 0 stay. Seen with the real command on an Ubuntu 26.04 guest
+  (systemd 259), before and after; on Ubuntu 24.04 (systemd 255) a `systemctl stop` of the
+  frozen old unit is enough to reach the state.
 - The first `sudo yulius host setup` on a fresh host no longer fails its Docker smoke test
   (SPEC-477, task #459, ADR-0308, issue #1160). The setup starts `yulius.service` and runs the
   smoke seconds later; the starting server adopted the smoke's throwaway sandbox like a holder of

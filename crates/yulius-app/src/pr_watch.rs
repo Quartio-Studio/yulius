@@ -30,7 +30,7 @@ use crate::delivery::{delivery_profile, past_merge};
 use crate::error::AppError;
 use crate::merge_train::Hold;
 use crate::model::{SandboxRecord, TaskRecord};
-use crate::task_message::Typed;
+use crate::task_message::{Sender, Typed};
 
 /// How often the watch runs: an event reaches the task within it.
 pub const WATCH_EVERY: Duration = Duration::from_secs(20);
@@ -459,7 +459,7 @@ impl App {
                     let text = crate::task_message::clean_message(&text);
                     let paste = format!("\x1b[200~{text}\x1b[201~");
                     match self
-                        .type_into_session(&task, paste.as_bytes(), Typed::Prompt)
+                        .type_into_session(&task, paste.as_bytes(), Typed::Prompt, Sender::Yulius)
                         .await
                     {
                         Ok(()) => {
@@ -467,8 +467,9 @@ impl App {
                             typed.push((task.id.clone(), text));
                             next
                         }
-                        // Not ready for input, or a person is typing: the next pass tries again.
-                        // The pull request it saw open is kept, so its merge is still told.
+                        // Not ready for input, or a person is typing or may have a draft in
+                        // the prompt box (SPEC-480): the next pass tries again. The pull request
+                        // it saw open is kept, so its merge is still told.
                         Err(AppError::Conflict(why)) => {
                             tracing::debug!(task = %task.id, why, "a pull request notice waits");
                             untold(told, &next)

@@ -250,6 +250,7 @@ impl App {
     pub fn record_typing(&self, task: &TaskId, user: &UserId) {
         let runtime = self.runtime(task);
         runtime.typed_at_ms.store(self.now().0, Ordering::SeqCst);
+        runtime.typed_seen.store(true, Ordering::SeqCst);
         if let Ok(mut who) = runtime.typed_by.lock() {
             *who = Some(user.clone());
         }
@@ -264,6 +265,24 @@ impl App {
             return None;
         }
         Some(runtime.typed_by.lock().ok().and_then(|who| who.clone()))
+    }
+
+    /// Why Yulius types no message into the task's session now, when a person holds its
+    /// prompt box ([`policy::box_held`], SPEC-480): they typed into it since the box was last
+    /// empty, or in the last minute. Only a person's keystrokes count, not what Yulius typed
+    /// itself ([`App::has_draft`] counts that too, for a restart).
+    pub(crate) fn box_held(&self, task: &TaskId) -> Option<policy::BoxHeld> {
+        let runtime = self.runtime(task);
+        policy::box_held(
+            self.now().0,
+            runtime.typed_at_ms.load(Ordering::SeqCst),
+            runtime.box_emptied_ms.load(Ordering::SeqCst),
+        )
+    }
+
+    /// Whether a person's draft may sit in the task's prompt box now ([`Self::box_held`]).
+    pub(crate) fn persons_draft_holds(&self, task: &TaskId) -> bool {
+        matches!(self.box_held(task), Some(policy::BoxHeld::Draft { .. }))
     }
 
     /// `POST /api/sandboxes/{sid}/intake/check` (TSK-011, SPEC-188): whether a new task's

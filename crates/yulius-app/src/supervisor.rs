@@ -163,6 +163,15 @@ pub struct TaskRuntime {
     /// launch, or the last prompt submitted from it. What was typed after that may still sit
     /// there (SPEC-468 CCF-010, CCF-011).
     pub(crate) box_emptied_ms: AtomicI64,
+    /// The keystroke ([`Self::typed_at_ms`]) whose possible draft the session's terminal said a
+    /// message of Yulius's own waits for (SPEC-480 DRF-006): one line per keystroke.
+    pub(crate) draft_told_ms: AtomicI64,
+    /// The run's folder holds the mark of a person's possible draft (`person-typed`, SPEC-480
+    /// DRF-009), so that a draft's keystrokes write it once.
+    pub(crate) draft_marked: AtomicBool,
+    /// This server saw a person type into the run. Until it did, a draft is known from its
+    /// mark alone, and a prompt that goes on is not known to follow it (DRF-009).
+    pub(crate) typed_seen: AtomicBool,
     /// When the prompt whose hook is being answered emptied the prompt box (ms): worked out at
     /// its first request and taken into [`Self::box_emptied_ms`] when the prompt goes on, so a
     /// prompt that is held and then blocked, which Claude Code puts back into the box, empties
@@ -437,6 +446,9 @@ impl TaskRuntime {
     /// queued went with its process (SPEC-471 CCQ-001).
     pub(crate) fn run_starts(&self, now_ms: i64) {
         self.box_emptied_ms.store(now_ms, Ordering::SeqCst);
+        // Its folder is new: no draft is marked there (SPEC-480 DRF-009).
+        self.draft_marked.store(false, Ordering::SeqCst);
+        self.typed_seen.store(false, Ordering::SeqCst);
         self.prompt_held.store(false, Ordering::SeqCst);
         self.with_queue(|queue| *queue = yulius_domain::agent_cli::Queue::default());
         self.queue_unread.store(false, Ordering::SeqCst);
@@ -495,6 +507,9 @@ impl TaskRuntime {
             typed_at_ms: AtomicI64::new(0),
             message_typed_ms: AtomicI64::new(0),
             box_emptied_ms: AtomicI64::new(0),
+            draft_told_ms: AtomicI64::new(0),
+            draft_marked: AtomicBool::new(false),
+            typed_seen: AtomicBool::new(false),
             submit_emptied_ms: AtomicI64::new(0),
             prompt_held: AtomicBool::new(false),
             typed_by: Mutex::new(None),
@@ -778,6 +793,41 @@ pub(crate) fn session_started_marked(run_dir: &Path) -> bool {
 pub(crate) fn mark_session_started(run_dir: &Path) {
     if let Err(err) = write_private_file(&run_dir.join(SESSION_STARTED_FILE), b"") {
         tracing::warn!(run_dir = %run_dir.display(), error = %err, "could not record the session start");
+    }
+}
+
+/// File in a run directory while a person's draft may sit in the run's prompt box (SPEC-480
+/// DRF-009): the time (ms) of the keystroke that began it. Written at a person's first keystroke
+/// after the box was last empty and removed when a prompt submitted from the box empties it, so
+/// a restarted server still knows of a draft typed before it.
+const PERSON_TYPED_FILE: &str = "person-typed";
+
+/// When the person's draft that may sit in the prompt box of the run in `run_dir` was begun
+/// (ms); 0 when none is marked.
+pub(crate) fn person_typed_marked(run_dir: &Path) -> i64 {
+    std::fs::read_to_string(run_dir.join(PERSON_TYPED_FILE))
+        .ok()
+        .and_then(|text| text.trim().parse::<i64>().ok())
+        .map_or(0, |at| at.max(0))
+}
+
+/// Records that a person began a draft in the run in `run_dir` at `at`; whether it was written.
+/// Through a synced temporary file, so a crash leaves no mark or a whole one.
+pub(crate) fn mark_person_typed(run_dir: &Path, at: i64) -> bool {
+    let written = crate::outage::write_time(&run_dir.join(PERSON_TYPED_FILE), at);
+    if let Err(err) = &written {
+        tracing::warn!(run_dir = %run_dir.display(), error = %err, "could not record a person's draft");
+    }
+    written.is_ok()
+}
+
+/// The prompt box of the run in `run_dir` was emptied: no draft is marked any more.
+pub(crate) fn clear_person_typed(run_dir: &Path) {
+    match std::fs::remove_file(run_dir.join(PERSON_TYPED_FILE)) {
+        Err(err) if err.kind() != std::io::ErrorKind::NotFound => {
+            tracing::warn!(run_dir = %run_dir.display(), error = %err, "could not clear a person's draft mark");
+        }
+        _ => {}
     }
 }
 
@@ -4058,6 +4108,15 @@ impl App {
             // Only ever set here: a SessionStart hook served meanwhile is not undone.
             if session_started_marked(Path::new(&attempt.run_dir)) {
                 runtime.session_started.store(true, Ordering::SeqCst);
+            }
+            // A draft a person typed before this server started may still sit in the prompt
+            // box: its mark says since when (SPEC-480 DRF-009). A keystroke this server saw is
+            // newer and stays.
+            // Never later than now: a time ahead of the clock would never grow old.
+            let drafted = person_typed_marked(Path::new(&attempt.run_dir)).min(self.now().0);
+            if drafted > 0 {
+                runtime.typed_at_ms.fetch_max(drafted, Ordering::SeqCst);
+                runtime.draft_marked.store(true, Ordering::SeqCst);
             }
             let reattached = match host_token {
                 Some(token) => self

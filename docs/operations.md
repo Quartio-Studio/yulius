@@ -867,6 +867,36 @@ SPEC-461), with no root step and no sign-in again:
   release. A failed check is logged ("Claude Code was not updated"), shown on the card and tried
   again an hour later; the server's egress needs `registry.npmjs.org` on port 443.
 
+### Messages Yulius types into a session
+
+Yulius types into a running task's session: a person's message sent through their Superagent
+or their own agent (`task_message`), what happens to the task's pull request, "Yulius is back;
+continue" after an outage, and `/mcp reconnect yulius` when the session's Yulius tools went
+silent. It types none of them while a person's draft may sit in the session's prompt box
+(SPEC-480, [decision 0309](decisions/0309-yulius-types-nothing-onto-a-persons-possible-draft.md)):
+
+- **When a message waits.** Someone typed into the task's terminal since its prompt box was
+  last empty (the session's start, or the last prompt sent from the box), however long ago.
+  Yulius sees keys and sent prompts, not the box, so every key counts until the next prompt is
+  sent: also an answer to one of Claude Code's dialogs, or Escape. Typed behind a draft, the
+  message and the unfinished text would be sent as one prompt. For a minute after any key
+  nothing is typed either.
+- **Who is told.** A message sent with `task_message` is refused with that reason at once, and
+  the Superagent or the person's agent says so. A message of Yulius's own waits and is tried
+  again (a pull request's news every 20 seconds; the wake after an outage until 10 minutes
+  after the start, then it is dropped). Once the person's last key is 10 minutes old, the task
+  reads **Needs your action** ("Yulius has a message for this session and does not type it…")
+  and its terminal says the same in one line; a wake that is dropped says so at its last try,
+  whatever the key's age. A flagged task is not idle, so a finished one does not count as done
+  for the tasks chained after it until its person sent a prompt.
+- **What ends it.** Send what you typed in the task's terminal, or clear it and send any
+  prompt (`continue` will do). Yulius types its message after the next prompt sent from there;
+  it never sends or clears a person's text.
+- A restart of Yulius does not forget a draft: the key that begins one leaves `person-typed`
+  (its time) in the run's folder (`<data>/runs/…`), removed when a prompt is sent from the
+  box, and a restarted server reads it when it reattaches the run. A draft it knows from
+  that file alone stays one until a prompt is sent after a key typed since the restart.
+
 ### Docker in sandboxes
 
 Each isolated sandbox has its own Docker engine (SPEC-187,
@@ -1799,15 +1829,41 @@ stay, the server's unit is disabled, and the checklist names the units that ran 
 instance (what their agents did meanwhile is on the old host only). If a unit cannot be frozen,
 that is a `FAIL` line with the reason, the two commands to run and, for a freeze that keeps
 failing, the commands that stop the old instance for good (`systemctl stop` and `systemctl kill
---kill-whom=all --signal=SIGKILL` of both units); nothing is thawed then either, and a freeze
+--kill-who=all --signal=SIGKILL` of both units); nothing is thawed then either, and a freeze
 that did not complete within a minute is left on its way. A server's unit that has stopped
 (`inactive` or `failed`) is not frozen by systemd: its sessions unit is frozen where it still
 runs, and both are named for you to make sure nothing of the old instance is left. A server's
 unit that systemd reports on its way up or down is not taken for stopped (a sessions unit that
-is being stopped counts as ended). A unit that was frozen is named also when the other could not
+is being stopped counts as ended once no process of it is left, see below). A unit that was frozen is named also when the other could not
 be. When the new instance answers
 and does not run, `--abort` is the way back; when the new host does not answer the question,
 nothing is touched and the same command asks again once it does.
+
+A unit that does not run is asked what it left before the run says so. The server's unit has
+`KillMode=process` (§3), so a `systemctl stop` of it ends the server alone: what the server
+started in the unit's own cgroup stays there and runs on, unfrozen, beside the new instance (on
+a host without a sessions unit that is every agent, terminal and sandbox engine; with one,
+whatever the server started outside it), and systemd freezes nothing of a unit that is not
+active. (systemd 259 refuses to stop a frozen unit; systemd 255, Ubuntu 24.04, thaws it and
+stops it, so there one `systemctl stop` of the frozen old unit is enough to get here.) While
+processes of such a unit run (the server's unit when it is `inactive` or `failed`; a sessions
+unit that has stopped or is being stopped; the group's `cgroup.events` says `populated 1` and
+not `frozen 1`), the run ends with a `FAIL` line that names the units and the command that ends
+those processes, and exit 1:
+
+```sh
+sudo systemctl kill --kill-who=all --signal=SIGKILL yulius.service
+```
+
+(`--kill-who` is the option's name before systemd 252, which calls it `--kill-whom` and still
+takes the older spelling: the lines of a move name the one that runs on every release.)
+
+The run kills nothing itself and records nothing: run the command the line names (what the old
+instance holds stays on its disk), then the same `yulius instance migrate` command again. It
+asks again each time and goes on to the finish once nothing is left. A stopped unit without a
+cgroup (the old host was restarted, or the stop left nothing), with an empty one, or whose
+processes the kernel holds frozen gets the "make sure" line and the run goes on, as before.
+When systemd does not answer the question, the run fails saying so and asks again next time.
 
 Not part of a move: packages installed inside sandboxes keep their files; on another release the
 checklist names those sandboxes. The sandbox base is built for the new host while preparing, so

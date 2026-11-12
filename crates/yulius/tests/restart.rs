@@ -534,7 +534,7 @@ fn a_task_that_went_idle_during_the_outage_is_woken_once() -> TestResult {
         let mut woken = Vec::new();
         let mut settle: Option<Instant> = None;
         while Instant::now() < deadline && settle.is_none_or(|at| Instant::now() < at) {
-            woken.extend(app.wake_after_outage(down_since, started).await);
+            woken.extend(app.wake_after_outage(down_since, started, false).await);
             if !woken.is_empty() && settle.is_none() {
                 settle = Some(Instant::now() + Duration::from_secs(2));
             }
@@ -550,7 +550,11 @@ fn a_task_that_went_idle_during_the_outage_is_woken_once() -> TestResult {
         })
         .await?;
         // Once: its woken turn closed after this start.
-        assert!(app.wake_after_outage(down_since, started).await.is_empty());
+        assert!(
+            app.wake_after_outage(down_since, started, false)
+                .await
+                .is_empty()
+        );
         assert!(
             !screen(&app, &quiet).contains("Yulius is back"),
             "{}",

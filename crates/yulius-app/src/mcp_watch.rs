@@ -20,7 +20,7 @@ use yulius_domain::time::Timestamp;
 
 use crate::context::App;
 use crate::error::AppError;
-use crate::task_message::Typed;
+use crate::task_message::{Sender, Typed};
 
 /// A task's MCP silent this long (ms) was dropped by Claude Code: its bridge pings every minute.
 pub const SILENT_AFTER_MS: i64 = 3 * 60 * 1000;
@@ -289,12 +289,17 @@ impl App {
             };
             if let Some((text, what)) = text {
                 let paste = format!("\x1b[200~{text}\x1b[201~");
-                match self.type_into_session(&task, paste.as_bytes(), what).await {
+                match self
+                    .type_into_session(&task, paste.as_bytes(), what, Sender::Yulius)
+                    .await
+                {
                     Ok(()) => {
                         tracing::info!(task = %task.id, "typed {text:?}: its Yulius MCP was silent");
                         typed.push((task.id.clone(), action));
                     }
-                    // Not ready for input, or a person is typing: tried again at the next pass.
+                    // Not ready for input, or a person is typing or may have a draft in the
+                    // prompt box (SPEC-480; the command too would be submitted behind it): tried
+                    // again at the next pass.
                     Err(AppError::Conflict(why)) => {
                         tracing::debug!(task = %task.id, why, "{text:?} waits");
                         continue;
