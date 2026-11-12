@@ -112,6 +112,11 @@ export function createTerminalView(options) {
       if (view) view.focus();
       else focusWanted = true;
     },
+    /** As the core's: the keyboard for an answer, said in the terminal's notice once it shows. */
+    answerHere() {
+      if (view) view.answerHere();
+      else focusWanted = true;
+    },
     refit() {
       if (view) view.refit();
     },

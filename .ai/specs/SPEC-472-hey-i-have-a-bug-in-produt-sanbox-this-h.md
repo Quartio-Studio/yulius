@@ -127,7 +127,7 @@ in the terminal. Reply shows that the terminal took the keyboard.
 - [x] Write the fix spec and the regression test that fails
 - [x] A flag keeps its reason: the store column, the API field and the gate's flag
 - [x] Every flag Yulius raises says why, and a notice's flag carries Claude Code's words
-- [ ] The task view shows the reason and Reply says the terminal took the keyboard
+- [x] The task view shows the reason and Reply says the terminal took the keyboard
 - [ ] Docs, ADR-0306 and the changes entry true to the fix
 - [ ] Independent review in a fresh session, findings fixed test-first
 
