@@ -472,6 +472,81 @@ switch of a task left at its limit by a refused automatic switch also resumes pa
 ([SPEC-072](../.ai/specs/SPEC-072-fix-276-277-278-usage-limit-resume-respe.md),
 [decision 0058](decisions/0058-the-clis-own-continuation-ends-a-limit-pause.md)).
 
+### What a limit binds
+
+A limit Claude reports binds either the subscription or the models of one family
+([SPEC-464](../.ai/specs/SPEC-464-we-still-have-healthy-subscribtionsbut-w.md),
+[decision 0301](decisions/0301-a-models-usage-credits-are-a-limit-of-that-model.md)). The harness
+reads which from the limit record (`LimitScope`). The 5-hour and weekly windows are the
+subscription's. A per-model weekly cap (`seven_day_opus`, `seven_day_sonnet`) is that family's.
+The weekly allowance of usage credits (`seven_day_overage_included`, a bucket per model; Fable
+runs on one) is the limit of the model the task is launched with, the default model when it
+names none. So is Claude Code's refusal "You're out of usage credits"
+(`apiError: "model_requires_usage_credits"`), which Claude Code 2.1.311 writes without a window
+or a reset. A record that carries only the text is the model's when the text names the model or
+a way to another one ("/model to switch models"), else the subscription's.
+
+A model's limit fills that family's own weekly window in the stored usage (`weekly_opus`,
+`weekly_sonnet`, `weekly_fable`), at 100 % until the reset Claude named. The pool's policy counts
+that window only for tasks of that family, so other models still run on the subscription, and the
+subscription is usable for the model again the moment the window resets. A reset is believed only
+as far as a window lasts, a week and a day ahead (`LIMIT_RESET_MAX_MS`): the limit record comes
+from the session's transcript, which is the agent's own file. Without a believable reset the
+window is full with no reset time. A family that has no window of its own (Haiku, an unknown
+name) gets the subscription's limit instead (`limit_reached`), which the provider's next reading
+replaces.
+
+Such a window ends at its reset, at a new sign-in of the subscription (it was the previous
+sign-in's) or with a provider's reading: one that carries the window replaces it (the usage
+endpoint reports the Opus and Sonnet caps when the plan has them; nothing reports the allowance of
+usage credits), and one that does not keeps it only while its reset is ahead, so a window without
+a reset ends with the next provider's reading. A session's reading replaces the 5-hour and weekly
+windows only. A subscription reads `limited` while the default model cannot run on it. A reported
+limit, a session's reading and a provider's reading read, change and store a subscription's usage
+through one helper under one lock (`App::change_account_usage`, `CapacityState::usage_writes`),
+which a new sign-in takes too; it is never held across a request to the provider, so a limit
+recorded while a reading is under way is kept.
+
+A model's limit nothing says the end of, with no subscription the task can go to, makes the task
+wait, and the provider's reading that ends it lets the pool try the task once
+(`BLIND_LIMIT_RETRIES`). Refused the same way again before the model answered (`BlindLimits`),
+the task is not started on that subscription at each of its readings, so no session is restarted
+every few minutes with nobody told. What follows depends on what is known. When another
+subscription says when it resets, the task waits for that reset and the pool leaves the refusing
+subscription out for the waiting task, whatever its readings say meanwhile
+(`rotation::decide_leaving_out`). When nothing says when the task can go on, its session stays
+at the refusal and Yulius asks a person (`task.limit_without_end`). Two starts on that
+subscription remain possible, one each: once no reset is known any more (the other subscription
+was removed or needs a sign-in) it is a candidate again, and a task that went on elsewhere and
+is refused there may be sent back by that limit's own decision; refused again, the task waits
+or asks as above. The count is the task's and in memory: an answer from the model clears it, and
+so does a restart of Yulius. Only a model's limit is bounded this way
+(`ReportedLimit::without_an_end`): a provider's reading shows the windows of the subscription's
+own limit.
+
+Yulius's request says the task does not go on by itself, like the one for a goal Claude Code
+paused, and ends the same way ([decision 0304](decisions/0304-a-request-yulius-opens-for-a-goal-pause-ends-when-the-agent-works-again.md)):
+when the session's agent works again, or sooner when Yulius takes the task on at a usage limit
+(`TakenOn`): it runs the session on past the limit, or pauses the task and resumes it by itself.
+The audit log says which (`task.needs_you.resolved`).
+
+```mermaid
+flowchart TD
+    R["Claude Code's limit record<br/>(usage_limit_reached, or model_requires_usage_credits)"] --> S{"What it binds<br/>(LimitScope)"}
+    S -->|"the subscription:<br/>five_hour, seven_day, unknown"| A["5-hour or weekly window full,<br/>limit in effect until the reset"]
+    S -->|"one model family:<br/>seven_day_opus, seven_day_sonnet (named),<br/>seven_day_overage_included (the task's model)"| K{"Reset named,<br/>at most 8 days ahead?"}
+    K -->|yes| M["that family's weekly window full<br/>until the reset; other windows kept"]
+    K -->|no| A2["that family's window full, no reset:<br/>a provider's reading ends it"]
+    A --> P["Pool: the task moves past the cut turn,<br/>or waits and resumes at the reset"]
+    M --> P
+    A2 --> B{"Nowhere to go, and refused<br/>again after one retry?"}
+    B -->|no| P
+    B -->|yes| W{"Does another subscription<br/>say when it resets?"}
+    W -->|yes| L["The task waits for that reset;<br/>the pool leaves this subscription out for it"]
+    W -->|no| N["The session stays at the refusal:<br/>Yulius asks a person"]
+    U["Usage reading"] -->|"a provider's: replaces the windows it carries,<br/>keeps other per-model windows until their reset.<br/>A session's: the 5-hour and weekly windows only"| M
+```
+
 ```mermaid
 sequenceDiagram
     participant C as Claude Code (account A)
@@ -562,7 +637,17 @@ over the record that closes the turn, which otherwise settles it as Your turn
 A failed goal check is retried the same way, and a notice ends the wait for a goal verdict. A goal
 cleared, achieved or failed while a retry is armed settles the closed turn, since no check-in
 comes. Spent retries, or a pause on an API error, end the turn and put the task in Needs you with a
-request. A restart's replay folds the last notice the same way.
+request. A restart's replay folds the last notice the same way. A pause that follows a usage limit
+or a refused subscription in the same turn is not such a pause: Claude Code answers a model
+refused for its usage credits with "Goal paused · the request was rate limited", and the limit
+path already moves the task or resumes it at the reset, so nobody is asked
+([decision 0301](decisions/0301-a-models-usage-credits-are-a-limit-of-that-model.md)). Its notice
+is held meanwhile (`LimitGoalPause`): when the switch past the limit is refused before it ends the
+session, the session stays at the refusal, and the held pause puts the task in Needs you after
+all; a later move past the limit ends that request and says so in the audit log
+(`task.needs_you.resolved`). It is asked and audited once per limit: an audit entry written at or
+after Claude Code recorded the limit says the limit was asked about, so a restart that reads the
+same pause again only puts the task back under Needs you.
 
 That request says the task does not go on by itself, so it ends when the session does go on
 ([SPEC-469](../.ai/specs/SPEC-469-even-if-it-woke-up-it-still-has-needs-yo.md),
@@ -577,7 +662,13 @@ from the task's state, which a restart of Yulius forgot. That time stands only w
 still reads the flag it belongs to (`standing_notice_ms`): a status change replaces a flag
 without a word, and one raised later is not answered by work. The replay after a restart folds when
 the agent first worked after the last pause (`TranscriptFacts::worked_since_goal_pause`): the
-request ends, and the task the pause flagged follows its session.
+request ends, and the task the pause flagged follows its session. The request Yulius opens for a
+usage limit nothing says the end of follows the same rule (`STALLED_ACTIONS`, one flag helper
+`flag_stalled`), and so does a goal pause's asked at a limit; a limit that cut the turn counts as
+a pause there, so work before it answers nothing. A request of an earlier goal pause that such a
+limit overtook therefore ends by what Yulius does at the limit: a move past it or a wait it
+resumes from ends the request, and at a refused move the session is at a refusal again and the
+request stays.
 
 ```mermaid
 stateDiagram-v2
@@ -586,6 +677,8 @@ stateDiagram-v2
     Retrying --> Working: the goal check-in prompt (or a person's)
     Retrying --> NeedsYou: "Goal paused after 3 automatic retries"
     Working --> NeedsYou: "Goal paused · the API rejected the last request" (no retry)
+    Working --> Working: a pause after a usage limit of the same turn (the limit path moves the task)
+    Working --> NeedsYou: that pause, when the move past the limit is refused
     Retrying --> Waiting: /goal clear (no check-in comes)
     NeedsYou --> Working: a person sends a message
     NeedsYou --> Working: the agent works again (the request ends by itself)

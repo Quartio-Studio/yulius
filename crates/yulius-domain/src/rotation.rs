@@ -305,6 +305,31 @@ pub fn decide(input: &RotationInput, trigger: Trigger) -> (Decision, DecisionRea
     }
 }
 
+/// [`decide`] for a task the pool keeps off `left_out`: the subscription that refused it at a
+/// limit nothing says the end of, again right after its retry (SPEC-464 UCL-010). While a reset
+/// of another subscription is known to wait for, `left_out` counts as limited with no known
+/// reset, whatever a reading said since: the task waits for that reset and is not started on
+/// `left_out` at every reading. With no reset known, nothing would ever take the task on, so
+/// `left_out` is a candidate like any other.
+#[must_use]
+pub fn decide_leaving_out(
+    input: &RotationInput,
+    trigger: Trigger,
+    left_out: &AccountId,
+) -> (Decision, DecisionReason) {
+    let mut without = input.clone();
+    for account in &mut without.accounts {
+        if &account.id == left_out {
+            account.usage.limit_reached = true;
+            account.usage.limit_resets_at = None;
+        }
+    }
+    match decide(&without, trigger.clone()) {
+        (Decision::Wait { until: None }, _) => decide(input, trigger),
+        decided => decided,
+    }
+}
+
 fn find<'a>(input: &'a RotationInput, id: &AccountId) -> Option<&'a AccountView> {
     input.accounts.iter().find(|a| &a.id == id)
 }
@@ -669,6 +694,141 @@ mod tests {
         assert_eq!(ModelFamily::of(Some("sonnet")), ModelFamily::Sonnet);
         assert_eq!(ModelFamily::of(Some("haiku")), ModelFamily::Any);
         assert_eq!(ModelFamily::of(None), ModelFamily::Any);
+        Ok(())
+    }
+
+    /// SPEC-464 UCL-010: a subscription that refused a task again at a limit nothing says the end
+    /// of is left out for that task while another subscription's reset is known to wait for,
+    /// whatever its own reading says since. With no reset known it is a candidate again.
+    #[test]
+    fn a_subscription_left_out_is_not_chosen_while_a_reset_is_known() -> Result<(), IdError> {
+        let refusing = id("refusing")?;
+        let mut later = usage(10.0, 100.0, Some(40));
+        later.limit_reached = true;
+        later.limit_resets_at = Some(NOW.plus_millis(40 * HOUR));
+        // Its reading shows room again; the other one is out until its reset in 40 hours.
+        let known = input(
+            None,
+            vec![
+                account("refusing", usage(0.0, 10.0, Some(100)))?,
+                account("later", later)?,
+            ],
+        )?;
+        assert_eq!(
+            switched_to(&decide(&known, Trigger::Start).0),
+            Some("refusing")
+        );
+        let (decision, _) = decide_leaving_out(&known, Trigger::Start, &refusing);
+        assert_eq!(
+            decision,
+            Decision::Wait {
+                until: Some(NOW.plus_millis(40 * HOUR))
+            }
+        );
+        // A paused task that still has its process there is not released in place either.
+        let mut held = known.clone();
+        held.current = Some(refusing.clone());
+        let (decision, _) = decide_leaving_out(&held, Trigger::Proactive, &refusing);
+        assert!(
+            matches!(decision, Decision::Wait { until: Some(_) }),
+            "{decision:?}"
+        );
+        // What is stored of an earlier limit of the subscription left out says nothing: one that
+        // ended does not make it a candidate, and one still ahead is no reset to wait for.
+        for stale_hours in [-1, 30] {
+            let mut stale = known.clone();
+            stale.accounts[0].usage.limit_reached = true;
+            stale.accounts[0].usage.limit_resets_at = Some(NOW.plus_millis(stale_hours * HOUR));
+            let (decision, _) = decide_leaving_out(&stale, Trigger::Start, &refusing);
+            assert_eq!(
+                decision,
+                Decision::Wait {
+                    until: Some(NOW.plus_millis(40 * HOUR))
+                },
+                "{stale_hours} h"
+            );
+        }
+        // A subscription with room takes the task, left out or not.
+        let mut room = known.clone();
+        room.accounts
+            .push(account("third", usage(20.0, 20.0, Some(100)))?);
+        let (decision, _) = decide_leaving_out(&room, Trigger::Start, &refusing);
+        assert_eq!(switched_to(&decision), Some("third"));
+        // Nothing known to wait for: it is tried again rather than never.
+        let mut unknown = usage(10.0, 100.0, None);
+        unknown.limit_reached = true;
+        let blind = input(
+            None,
+            vec![
+                account("refusing", usage(0.0, 10.0, Some(100)))?,
+                account("later", unknown)?,
+            ],
+        )?;
+        let (decision, _) = decide_leaving_out(&blind, Trigger::Start, &refusing);
+        assert_eq!(switched_to(&decision), Some("refusing"));
+        Ok(())
+    }
+
+    /// SPEC-464 (production 2026-11-11): a subscription whose Fable allowance is used up takes no
+    /// Fable task until the allowance resets, though its 5-hour and weekly windows have the most
+    /// room, and still takes a task of another model. When every subscription is out, the task
+    /// waits for the first allowance to reset.
+    #[test]
+    fn a_fable_allowance_binds_only_fable_tasks() -> Result<(), IdError> {
+        let out = |resets_in_hours: i64| -> AccountUsage {
+            let mut usage = usage(0.0, 61.0, Some(100));
+            usage.record_limit(
+                // As the harness reads the refusal: the limit of the model the session runs.
+                crate::usage::ReportedLimit {
+                    scope: crate::usage::LimitScope::Model(None),
+                    window_minutes: Some(crate::usage::WEEKLY_WINDOW_MINUTES),
+                    resets_at: Some(NOW.plus_millis(resets_in_hours * HOUR)),
+                },
+                ModelFamily::Fable,
+                NOW,
+            );
+            usage
+        };
+        let busy = account("busy", usage(41.0, 80.0, Some(100)))?;
+        let mut rotation = input(None, vec![account("out", out(40))?, busy.clone()])?;
+        // Another model's task goes where the windows have the most room.
+        assert_eq!(
+            switched_to(&decide(&rotation, Trigger::Start).0),
+            Some("out")
+        );
+        rotation.family = ModelFamily::of(Some("claude-fable-5-2"));
+        assert_eq!(rotation.family, ModelFamily::Fable);
+        assert_eq!(
+            switched_to(&decide(&rotation, Trigger::Start).0),
+            Some("busy")
+        );
+        // A Fable task on it moves at its turn boundary, as at 98 % of any window.
+        rotation.current = Some(id("out")?);
+        assert_eq!(
+            switched_to(&decide(&rotation, Trigger::Proactive).0),
+            Some("busy")
+        );
+        // Every subscription out: the wait ends at the first reset, and the subscription is
+        // usable from that moment.
+        let mut all_out = input(
+            Some("out"),
+            vec![account("out", out(40))?, account("later", out(90))?],
+        )?;
+        all_out.family = ModelFamily::Fable;
+        assert_eq!(
+            decide(&all_out, Trigger::LimitReached),
+            (
+                Decision::Wait {
+                    until: Some(NOW.plus_millis(40 * HOUR))
+                },
+                DecisionReason::NoCapacity
+            )
+        );
+        all_out.now = NOW.plus_millis(40 * HOUR);
+        assert_eq!(
+            decide(&all_out, Trigger::Proactive),
+            (Decision::Stay, DecisionReason::CurrentUsable)
+        );
         Ok(())
     }
 
