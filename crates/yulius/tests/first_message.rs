@@ -61,6 +61,32 @@ pub(crate) async fn start_with(
     probe: Arc<ScriptedUsage>,
     configure: impl FnOnce(&mut AppConfig),
 ) -> Result<(Arc<App>, u16), BoxError> {
+    start_on(data, fake, agent, port, probe, Arc::new(SystemClock), configure).await
+}
+
+/// The system clock plus an offset (ms) the test moves: real processes and their hooks keep
+/// their pace while minutes pass for the server. Start it behind and move it forward: a hook's
+/// time is the earlier of its client's and the server's, so the times the server keeps stay in
+/// order.
+pub(crate) struct ShiftedClock(pub(crate) std::sync::atomic::AtomicI64);
+
+impl yulius_app::ports::Clock for ShiftedClock {
+    fn now(&self) -> Timestamp {
+        let system = SystemClock.now().0;
+        Timestamp(system + self.0.load(std::sync::atomic::Ordering::SeqCst))
+    }
+}
+
+/// [`start_with`] on the clock `clock`.
+pub(crate) async fn start_on(
+    data: &Path,
+    fake: &Path,
+    agent: FakeAgentOptions,
+    port: u16,
+    probe: Arc<ScriptedUsage>,
+    clock: Arc<dyn yulius_app::ports::Clock>,
+    configure: impl FnOnce(&mut AppConfig),
+) -> Result<(Arc<App>, u16), BoxError> {
     let socket = tokio::net::TcpSocket::new_v4()?;
     socket.set_reuseaddr(true)?;
     socket.bind(SocketAddr::from(([127, 0, 0, 1], port)))?;
@@ -73,7 +99,7 @@ pub(crate) async fn start_with(
     configure(&mut config);
     let deps = Deps {
         store: Arc::new(SqliteStore::open(&data.join("yulius.db"))?),
-        clock: Arc::new(SystemClock),
+        clock,
         crypto: Arc::new(MasterKeyCrypto::from_key(&[7u8; 32])?),
         github: Arc::new(support::FakeGitHub::default()),
         session_host: Arc::new(PtySessionHost::new(exe.clone())),
@@ -150,7 +176,7 @@ pub(crate) fn screen(app: &App, id: &TaskId) -> String {
     app.runtime(id).hub.screen_text()
 }
 
-async fn activity(app: &App, id: &TaskId) -> Option<Activity> {
+pub(crate) async fn activity(app: &App, id: &TaskId) -> Option<Activity> {
     app.deps
         .store
         .task(id)
@@ -161,7 +187,7 @@ async fn activity(app: &App, id: &TaskId) -> Option<Activity> {
 }
 
 /// The notices sent to the task's viewers so far on `watch`.
-fn notices(watch: &mut tokio::sync::broadcast::Receiver<HubFrame>) -> Vec<String> {
+pub(crate) fn notices(watch: &mut tokio::sync::broadcast::Receiver<HubFrame>) -> Vec<String> {
     let mut out = Vec::new();
     while let Ok(frame) = watch.try_recv() {
         if let HubFrame::Notice(text) = frame {

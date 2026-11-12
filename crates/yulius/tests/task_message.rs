@@ -4,7 +4,8 @@
 
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
+use std::sync::atomic::{AtomicI64, Ordering};
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use yulius_app::auth::{AuthContext, TokenGrant};
@@ -17,13 +18,15 @@ use yulius_app::remote::RemoteCaller;
 use yulius_contracts::mcp::RpcRequest;
 use yulius_domain::ids::{SandboxId, TaskId, UserId};
 use yulius_domain::permission::TokenScope;
-use yulius_domain::task::TaskStatus;
+use yulius_app::terminal::TerminalAttach;
+use yulius_domain::task::{Activity, TaskStatus};
 use yulius_ptyhost::test_support::locate_fake_agent;
 
 use yulius_app::model::TaskMode;
 
 use crate::first_message::{
-    data_dir, hooked, new_task, runtime, screen, start, start_with, stop, wait_for,
+    ShiftedClock, activity, data_dir, hooked, new_task, notices, runtime, screen, start, start_on,
+    start_with, stop, wait_for,
 };
 use crate::pool_supervision::{ScriptedUsage, seed};
 use crate::support::agents::FakeAgentOptions;
@@ -320,6 +323,198 @@ fn a_persons_draft_keeps_the_message_out() -> TestResult {
         assert!(audited(&data, &id)?.is_empty());
         stop(&app, &id).await
     })
+}
+
+const MINUTE: i64 = 60_000;
+
+/// [`app`] on a clock the test moves, which starts `behind_ms` behind the system's.
+async fn app_behind(data: &Path, behind_ms: i64) -> Result<(Arc<App>, Arc<ShiftedClock>), Error> {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let clock = Arc::new(ShiftedClock(AtomicI64::new(-behind_ms)));
+    let probe = Arc::new(ScriptedUsage::default());
+    let (app, _) = start_on(data, &fake, fake_agent(), 0, probe, clock.clone(), |_| {}).await?;
+    Ok((app, clock))
+}
+
+/// A writer's terminal on `id` for the person `caller` acts for: what they type goes the way a
+/// viewer's keys go.
+async fn terminal(
+    app: &Arc<App>,
+    caller: &ProjectCaller,
+    id: &TaskId,
+) -> Result<(AuthContext, TerminalAttach), Error> {
+    let ctx = AuthContext {
+        user: app.deps.store.user(&caller.user).await?.ok_or("user")?,
+        csrf_token: None,
+        session_hash: None,
+        token: None,
+    };
+    let attach = app
+        .terminal_open(&ctx, id.as_str(), Some((120, 40)))
+        .await?;
+    Ok((ctx, attach))
+}
+
+/// Whether the agent read `line` as a prompt of its own (the fake agent answers each prompt
+/// with `ECHO: <prompt>`).
+fn read_alone(app: &App, id: &TaskId, line: &str) -> bool {
+    let answer = format!("ECHO: {line}");
+    screen(app, id).lines().any(|shown| shown.trim() == answer)
+}
+
+/// SPEC-480 AC1 (DRF-001, DRF-004; issue #1199): text a person typed into the prompt box and
+/// did not send keeps a message out however long ago they typed it. Two minutes later the
+/// Superagent's message is refused with the reason, and the agent got neither text. Once the
+/// person sent theirs, the message arrives as a prompt of its own. The message used to be
+/// pasted behind a draft older than a minute and submitted with it.
+#[test]
+fn a_persons_draft_keeps_the_message_out_however_old() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let (app, clock) = app_behind(&data, 2 * MINUTE).await?;
+        let (id, caller) = running(&app, &data).await?;
+        let (ctx, attach) = terminal(&app, &caller, &id).await?;
+        // They type half a prompt and leave it; two minutes pass.
+        app.terminal_input(&ctx, &attach, b"half a thought", false)
+            .await?;
+        clock.0.store(0, Ordering::SeqCst);
+
+        let message = json!({"task_id": id.as_str(), "text": "Go on"});
+        let Err(refused) = app.tool_task_message(&caller, &message).await else {
+            // What the agent read: the person's text and the message, as one prompt.
+            wait_for("what the agent read", Duration::from_secs(30), || async {
+                screen(&app, &id).contains("ECHO: half a thought")
+            })
+            .await?;
+            return Err(format!(
+                "the message was typed onto the person's draft and submitted with it:\n{}",
+                screen(&app, &id)
+            )
+            .into());
+        };
+        assert!(
+            matches!(&refused, AppError::Conflict(why) if why.contains("prompt box")),
+            "{refused:?}"
+        );
+        // Whatever reaches the agent shows within a second; nothing did.
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let shown = screen(&app, &id);
+        assert!(!shown.contains("ECHO: half a thought"), "{shown}");
+        assert!(!shown.contains("Message from admin"), "{shown}");
+        assert!(audited(&data, &id)?.is_empty());
+
+        // They send it: the agent reads it alone, and the prompt box is empty again.
+        app.terminal_input(&ctx, &attach, b"\r", false).await?;
+        wait_for("the person's prompt", Duration::from_secs(30), || async {
+            read_alone(&app, &id, "half a thought")
+        })
+        .await?;
+        // The minute after their Enter passes (DRF-002), and the same message is typed.
+        clock.0.store(MINUTE + 1_000, Ordering::SeqCst);
+        let answer = app.tool_task_message(&caller, &message).await?;
+        assert_eq!(answer["delivered"], "sent", "{answer}");
+        wait_for("the message", Duration::from_secs(30), || async {
+            read_alone(
+                &app,
+                &id,
+                "Message from admin (through their Superagent):",
+            )
+        })
+        .await?;
+        assert_eq!(audited(&data, &id)?.len(), 1);
+        app.terminal_leave(&attach).await;
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-480 AC2, AC4 (DRF-003, DRF-005, DRF-006, DRF-007): a message of Yulius's own (here the
+/// MCP watch's `/mcp reconnect yulius`, a command) waits for a person's draft. Two minutes
+/// after their last key nothing is typed and nobody is told; eleven minutes after it the task
+/// is flagged with the reason and its terminal says so, once. After the person sent their text
+/// the next pass types the command, which the agent reads alone.
+#[test]
+fn a_message_of_yulius_waits_for_a_persons_draft_and_tells_them() -> TestResult {
+    use yulius_app::mcp_watch::{RECONNECT_TEXT, WatchAction, WatchBounds};
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let (app, clock) = app_behind(&data, 13 * MINUTE).await?;
+        let (id, caller) = running(&app, &data).await?;
+        wait_for("the first turn's end", Duration::from_secs(30), || async {
+            activity(&app, &id).await.is_some_and(Activity::is_idle)
+        })
+        .await?;
+        let (ctx, attach) = terminal(&app, &caller, &id).await?;
+        let mut watch = app.runtime(&id).hub.watch();
+        let bounds = WatchBounds {
+            silent_after_ms: 1_000,
+            reconnect_gap_ms: 60_000,
+            ..WatchBounds::new(yulius_domain::time::Timestamp(0))
+        };
+        app.terminal_input(&ctx, &attach, b"half a thought", false)
+            .await?;
+
+        // Two minutes later its Yulius MCP has long been silent, and the reconnect waits.
+        clock.0.store(-11 * MINUTE, Ordering::SeqCst);
+        assert!(app.watch_mcp(&bounds).await.is_empty());
+        assert_eq!(support::attention(&app, id.as_str()).await?, Value::Null);
+        let mut said = notices(&mut watch);
+        assert!(said.is_empty(), "told within ten minutes: {said:?}");
+
+        // Eleven minutes after their last key the person is told, once.
+        clock.0.store(-2 * MINUTE, Ordering::SeqCst);
+        for _ in 0..2 {
+            assert!(app.watch_mcp(&bounds).await.is_empty());
+        }
+        assert_eq!(
+            support::attention(&app, id.as_str()).await?,
+            json!({
+                "kind": "yulius",
+                "problem": "Yulius has a message for this session and does not type it: \
+                            someone typed in the terminal and sent no prompt since, so their \
+                            text may still be in the prompt box.",
+                "action": "Send what you typed in the terminal, or clear it and send any \
+                           prompt. Yulius types its message after the next prompt sent from \
+                           there.",
+                "link": null,
+            })
+        );
+        said.extend(notices(&mut watch));
+        assert_eq!(said.len(), 1, "{said:?}");
+        assert!(said[0].contains("Yulius holds a message"), "{said:?}");
+        // Whatever reaches the agent shows within a second; nothing did.
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let shown = screen(&app, &id);
+        assert!(!shown.contains("ECHO: half a thought"), "{shown}");
+        assert!(!shown.contains("ECHO: /mcp"), "{shown}");
+
+        // They send it; the minute after their Enter passes; the next pass types the command.
+        app.terminal_input(&ctx, &attach, b"\r", false).await?;
+        wait_for("the person's prompt", Duration::from_secs(30), || async {
+            read_alone(&app, &id, "half a thought")
+        })
+        .await?;
+        clock.0.store(-MINUTE + 1_000, Ordering::SeqCst);
+        // Passes run until the turn of the person's prompt has closed.
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let mut typed = Vec::new();
+        while typed.is_empty() && Instant::now() < deadline {
+            typed = app.watch_mcp(&bounds).await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert_eq!(typed, vec![(id.clone(), WatchAction::Reconnect)]);
+        wait_for("the command read alone", Duration::from_secs(30), || async {
+            read_alone(&app, &id, RECONNECT_TEXT)
+        })
+        .await?;
+        app.terminal_leave(&attach).await;
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
 }
 
 /// SPEC-230 TMS-004: a Superagent's message never goes into Claude Code's folder-trust dialog
