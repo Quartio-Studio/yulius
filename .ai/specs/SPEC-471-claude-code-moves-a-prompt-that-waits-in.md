@@ -1,6 +1,6 @@
 ---
 yulius-task: 0f4fe3a4-dc39-4a2f-be7c-6c6ed3323677
-status: in-progress
+status: done
 ---
 
 # SPEC-471: Claude Code moves: a prompt that waits in Claude Code's queue keeps the session
@@ -101,7 +101,7 @@ Where things are in Yulius:
 - [x] A hand-over counts until its turn shows, and a prompt that just went on is waited for (CCQ-003, CCQ-004)
 - [x] SPEC-461, SPEC-468, ADR-0293, the guides and the changes log say so (CCQ-006)
 - [x] Mutation checks, gate and the whole e2e suite green, evidence recorded
-- [ ] Independent review answered
+- [x] Independent review answered
 
 ## Acceptance criteria
 
