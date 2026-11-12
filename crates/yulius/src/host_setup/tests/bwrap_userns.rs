@@ -622,6 +622,33 @@ fn yulius_earlier_profile_gives_way_to_a_rule_it_reads() {
     assert_eq!(item(&lines), (HostOutcome::Failed, failed.as_str()));
     assert!(state(&fake) == before, "{:#?}", fake.log);
 
+    // AppArmor does not let Yulius's profile go: nothing is proven without it, and the line
+    // says what AppArmor holds before it names theirs.
+    let mut fake = set_up(noble());
+    fake.file(HAND_WRITTEN, &confined);
+    fake.reboot();
+    fake.failing.push((
+        "/usr/sbin/apparmor_parser -R /etc/apparmor.d/yulius-bwrap",
+        Some(1),
+        "apparmor_parser: Unable to remove \"yulius-bwrap\".  Permission denied",
+    ));
+    let before = state(&fake);
+    let lines = run(&mut fake, Mode::Setup);
+    assert_eq!(
+        item(&lines),
+        (
+            HostOutcome::Failed,
+            format!(
+                "loaded /etc/apparmor.d/bwrap again, but bwrap cannot start a user namespace as \
+                 yulius with /etc/apparmor.d/bwrap (bwrap: setting up uid map: Permission \
+                 denied); AppArmor still holds Yulius's profile (apparmor_parser: Unable to \
+                 remove \"yulius-bwrap\".  Permission denied); {THEIRS}"
+            )
+            .as_str()
+        )
+    );
+    assert!(state(&fake) == before, "{:#?}", fake.log);
+
     // A file of Yulius's that a person's link disables is theirs to keep: not even unloaded.
     let mut fake = set_up(noble());
     fake.file(HAND_WRITTEN, &confined);
