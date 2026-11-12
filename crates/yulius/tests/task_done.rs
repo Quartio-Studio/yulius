@@ -4893,6 +4893,94 @@ fn a_flag_raised_after_the_goal_pause_is_not_lifted_by_the_agents_work() -> Test
     Ok(())
 }
 
+/// A finished goal task whose session then asks the person something (Claude Code's permission
+/// prompt, through its `Notification` hook): it reads Needs you, flagged by that notice.
+async fn task_flagged_by_a_notice(app: &Arc<App>, data: &Path) -> Result<TaskId, BoxError> {
+    let (sandbox, user) = seed(app, data).await?;
+    let id = goal_task(app, &sandbox, &user, "Merge on green").await?;
+    wait_for("Done", Duration::from_secs(90), || async {
+        activity(app, &id).await == Some(Activity::Done)
+    })
+    .await?;
+    app.send_input(&id, b"/notify permission_prompt\r").await?;
+    wait_for("the notice's flag", Duration::from_secs(30), || async {
+        activity(app, &id).await == Some(Activity::NeedsAttention)
+    })
+    .await?;
+    Ok(id)
+}
+
+/// STA-003, end to end (SPEC-469, review round 2: no test sent a notice and then agent work):
+/// the person answers the permission prompt, which is no prompt of theirs to the agent, and the
+/// agent goes on. Its work after the notice makes the task Working.
+#[test]
+fn a_notice_is_answered_by_the_agents_next_work() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            hooks: true,
+            ..FakeAgentOptions::default()
+        };
+        let (app, _) = start(&data, &fake, agent, 0).await?;
+        let id = task_flagged_by_a_notice(&app, &data).await?;
+        app.send_input(&id, b"/tool\r").await?;
+        wait_for(
+            "Working with the agent's work",
+            Duration::from_secs(30),
+            || async { activity(&app, &id).await == Some(Activity::Working) },
+        )
+        .await?;
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-469 (review round 2), the notice's side of the rule the goal pause shares: the notice's
+/// flag is replaced without a word (a status change) and another matter flags the task later.
+/// The agent's next work does not lift that flag: the notice's time is stale.
+#[test]
+fn a_flag_raised_after_a_notices_is_not_lifted_by_the_agents_work() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            hooks: true,
+            ..FakeAgentOptions::default()
+        };
+        let (app, _) = start(&data, &fake, agent, 0).await?;
+        let id = task_flagged_by_a_notice(&app, &data).await?;
+        // Later than the notice's flag by more than the clock's step.
+        transcript_read(&app, &id).await?;
+        let store = &app.deps.store;
+        store
+            .set_activity(&id, Some(Activity::Working), app.now())
+            .await?;
+        store
+            .set_activity(&id, Some(Activity::NeedsAttention), app.now())
+            .await?;
+        app.send_input(&id, b"/tool\r").await?;
+        wait_for("the agent's work", Duration::from_secs(30), || {
+            screen_contains(&app, &id, "TOOL")
+        })
+        .await?;
+        transcript_read(&app, &id).await?;
+        assert_eq!(
+            activity(&app, &id).await,
+            Some(Activity::NeedsAttention),
+            "another matter's flag stays"
+        );
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// SPEC-469 GPW-004: Yulius restarts while a session whose goal Claude Code paused waits for a
 /// person (Needs you, with the request). `down` runs while no server does, with the session's
 /// transcript; `check` runs with the new server, once it reattached the run.
