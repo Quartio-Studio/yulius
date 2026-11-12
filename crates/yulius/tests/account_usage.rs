@@ -78,6 +78,27 @@ impl UsageProbe for FakeProbe {
             }),
         }
     }
+
+    async fn model_answer(
+        &self,
+        _: Provider,
+        _: &Secret,
+        _: &str,
+    ) -> Result<yulius_domain::usage::ModelAnswer, UsageFailure> {
+        still_refused().await
+    }
+}
+
+/// Asked about a stored limit (SPEC-473), Claude still refuses the model and names no reset: the
+/// limit stays as it is stored.
+async fn still_refused() -> Result<yulius_domain::usage::ModelAnswer, UsageFailure> {
+    Ok(yulius_domain::usage::ModelAnswer {
+        refused: Some(yulius_domain::usage::ReportedLimit {
+            scope: yulius_domain::usage::LimitScope::Model(None),
+            ..yulius_domain::usage::ReportedLimit::default()
+        }),
+        ..yulius_domain::usage::ModelAnswer::default()
+    })
 }
 
 /// A usage request during which a running task observes the account's limit (the transcript
@@ -285,6 +306,8 @@ async fn a_sign_in_that_cannot_read_usage_is_not_an_error() -> TestResult {
     )
     .await?;
     assert_eq!(refreshed.status, StatusCode::OK, "{:?}", refreshed.body);
+    // The answer says that Claude gave no usage reading (SPEC-473 RFR-013).
+    assert_eq!(refreshed.body["usage_read"], false, "{:?}", refreshed.body);
     assert!(
         refreshed.body["last_error"].is_null(),
         "{:?}",

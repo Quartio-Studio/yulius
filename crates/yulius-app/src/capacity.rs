@@ -112,6 +112,9 @@ pub struct CapacityState {
     /// marks a subscription refused takes it too, so no usage write stores the status it read
     /// before (#1211). Never held across a request to the provider.
     pub(crate) usage_writes: tokio::sync::Mutex<()>,
+    /// The deadline of a refresh in milliseconds when a test set one (0: the default,
+    /// [`crate::accounts::USAGE_REFRESH_DEADLINE`]).
+    pub(crate) refresh_deadline_ms: std::sync::atomic::AtomicU64,
 }
 
 /// A window of Claude Code's status line input as a usage window of `minutes`; `None` without a
@@ -243,16 +246,27 @@ impl App {
         account: &AccountId,
         change: impl FnOnce(AccountUsage) -> Option<AccountUsage> + Send,
     ) -> Option<AccountUsage> {
+        self.change_usage_of(account, |_, usage| change(usage))
+            .await
+    }
+
+    /// [`Self::change_account_usage`] for a change that also depends on the account as it is
+    /// stored now (its sign-in), read under the same lock.
+    pub(crate) async fn change_usage_of(
+        &self,
+        account: &AccountId,
+        change: impl FnOnce(&crate::model::AccountRecord, AccountUsage) -> Option<AccountUsage> + Send,
+    ) -> Option<AccountUsage> {
         let _writing = self.capacity.usage_writes.lock().await;
-        let stored = match self.deps.store.account(account).await {
-            Ok(Some(record)) => account_usage(&record),
+        let record = match self.deps.store.account(account).await {
+            Ok(Some(record)) => record,
             _ => return None,
         };
         crate::race::reached(
             crate::race::Point::UsageRead,
             std::path::Path::new(account.as_str()),
         );
-        let usage = change(stored)?;
+        let usage = change(&record, account_usage(&record))?;
         self.record_account_usage(account, &usage).await;
         Some(usage)
     }
@@ -383,7 +397,9 @@ impl App {
     /// `claude setup-token` sign-in can see: the usage endpoint refuses it. The five-hour and
     /// weekly windows replace the stored ones (per-model caps and a reported limit stay); stored
     /// when they changed — at once for a move of a point or more, a reset or the threshold, else
-    /// at most every 15 s — and sampled for the burn rate at most every 5 minutes.
+    /// at most every 15 s — and sampled for the burn rate at most every 5 minutes. Only a
+    /// reading that carries both windows says when the usage was read
+    /// ([`AccountUsage::observed_at`]).
     pub(crate) async fn session_usage(&self, account: &AccountId, limits: &RateLimits) {
         let now = self.now();
         let five_hour = session_window(limits.five_hour, 5 * 60, now);
@@ -398,7 +414,12 @@ impl App {
             .change_account_usage(account, |mut usage| {
                 usage.primary = five_hour.or(usage.primary);
                 usage.secondary = seven_day.or(usage.secondary);
-                usage.observed_at = Some(now);
+                // Claude Code's status line carries a window only while the API reports it
+                // and its reset has not passed. A reading of one window is stored, but it is
+                // no reading of the usage: the provider is asked for the rest (SPEC-473).
+                if five_hour.is_some() && seven_day.is_some() {
+                    usage.observed_at = Some(now);
+                }
                 Some(usage)
             })
             .await;
@@ -681,6 +702,31 @@ impl App {
             Ok(d) => d,
             Err(_) => return Resume::Waiting(None),
         };
+        // A turn held at its Stop is not moved over a prompt that waits in Claude Code's queue,
+        // which would go with the process: the hold is released in place, the Stop is asked
+        // again and decides as any turn's end does (SPEC-479 SWQ-003). The lines written so
+        // far are read first, as at a turn's end.
+        if matches!(decision, Decision::Switch { .. })
+            && has_process
+            && pause.kind == PauseKind::Turn
+            && self.prompt_waits_in_held_turn(&task.id).await
+        {
+            crate::race::reached(
+                crate::race::Point::HeldTurnProbed,
+                std::path::Path::new(task.id.as_str()),
+            );
+            // The pause may have ended while the lines were read (its person typed into the
+            // held turn): only the pause that was read is released.
+            if !self.pause_open(pause).await {
+                return Resume::Gone;
+            }
+            tracing::info!(
+                task = %task.id,
+                "the held turn is not moved to another subscription: a prompt waits in Claude Code's queue"
+            );
+            self.release_in_place(&task, pause).await;
+            return Resume::Resumed;
+        }
         match decision {
             // Still no capacity, but nobody is held any more: the CLI gave the hook up.
             Decision::Wait { .. } if self.hold_given_up(pause) => {
@@ -762,6 +808,15 @@ impl App {
                 Resume::Resumed
             }
         }
+    }
+
+    /// Whether a move of the task's session, whose turn is held at its Stop, would lose a
+    /// prompt ([`Self::prompt_waits_for_turns_end`]), asked once the lines written so far
+    /// were read.
+    async fn prompt_waits_in_held_turn(&self, task_id: &TaskId) -> bool {
+        let prompts_before = self.prompts_passed(task_id);
+        self.await_transcript_read(task_id).await;
+        self.prompt_waits_for_turns_end(task_id, prompts_before)
     }
 
     /// Whether `pause` is still the task's open pause.

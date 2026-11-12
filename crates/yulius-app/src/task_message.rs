@@ -7,14 +7,17 @@
 //! - a running task gets it typed into its session as one bracketed paste, labelled with the
 //!   person and the channel it came through (SPEC-322), then a separate Enter; Claude Code
 //!   queues a message submitted while the agent works (TMS-003). From the paste to its
-//!   submit the session is not restarted on a newer Claude Code (SPEC-468 CCF-011); the
-//!   wait in Claude Code's queue after that is not covered (issue #1204). Control characters
+//!   submit the session is not restarted on a newer Claude Code (SPEC-468 CCF-011), nor
+//!   while the message waits in Claude Code's queue after that (SPEC-471). Control characters
 //!   other than line breaks and tabs never reach the TUI;
 //! - nothing is typed before Claude Code's session started (its SessionStart hook, also read
 //!   from the run's marker after a restart, or the goal typist's fallback for a CLI without it),
-//!   while it asks a person whether to trust the folder, while a person typed in the last minute (their
-//!   draft is theirs), while Yulius types the first message, or while another message is typed;
-//!   other states are refused with their name (TMS-004);
+//!   while it asks a person whether to trust the folder, while a person's draft may sit in the
+//!   prompt box (they typed since it was last empty, however long ago: their draft is theirs,
+//!   SPEC-480) or they typed in the last minute, while Yulius types the first message, or while
+//!   another message is typed; other states are refused with their name (TMS-004). A sender is
+//!   told why; for a message of Yulius's own that waits for a draft, its person is told after
+//!   ten minutes (SPEC-480 DRF-006);
 //! - the person needs write access; every message is audited `task.messaged` without its text
 //!   (TMS-005); a typed message ends the task's open `needs_you` (TMS-006).
 
@@ -24,8 +27,11 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use yulius_contracts::api::tasks::QueueMessage;
-use yulius_domain::task::TaskStatus;
+use yulius_domain::ids::TaskId;
+use yulius_domain::intake::BoxHeld;
+use yulius_domain::task::{Activity, TaskStatus};
 
+use crate::attention::AttentionRecord;
 use crate::context::App;
 use crate::coordination::{Channel, ProjectCaller};
 use crate::error::{AppError, AppResult};
@@ -83,6 +89,46 @@ pub(crate) enum Typed {
     /// so nothing of it waits anywhere.
     Command,
 }
+
+/// Who has a message typed into a session ([`App::type_into_session`]): who is told when a
+/// person's possible draft holds it back (SPEC-480).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Sender {
+    /// A person, through their Superagent or their own agent: the refusal is their answer
+    /// (DRF-004).
+    Person,
+    /// Yulius itself (a pull request's news, the wake after an outage, the MCP watch): the
+    /// message waits in its watch, and the session's person is told once their last keystroke
+    /// is ten minutes old (DRF-005, DRF-006).
+    Yulius,
+    /// Yulius itself, at the last try of a message it gives up after it (the wake after an
+    /// outage): the session's person is told whatever the age of their keystroke (DRF-006).
+    YuliusLastTry,
+}
+
+impl Sender {
+    /// Whether the session's person is told that the message waits for their possible draft.
+    fn tells_person(self, held: BoxHeld) -> bool {
+        match self {
+            Self::Person => false,
+            Self::Yulius => held.tells_person(),
+            Self::YuliusLastTry => matches!(held, BoxHeld::Draft { .. }),
+        }
+    }
+}
+
+/// What the task says when a message of Yulius's own waits for a person's possible draft
+/// (SPEC-480 DRF-006).
+const DRAFT_HOLDS_PROBLEM: &str = "Yulius has a message for this session and does not type it: \
+    someone typed in the terminal and sent no prompt since, so their text may still be in the \
+    prompt box.";
+/// What the person does about [`DRAFT_HOLDS_PROBLEM`].
+const DRAFT_HOLDS_ACTION: &str = "Send what you typed in the terminal, or clear it and send \
+    any prompt. Yulius types its message after the next prompt sent from there.";
+/// The same, as one line in the session's terminal.
+const DRAFT_HOLDS_NOTICE: &str = "Yulius holds a message for this session: text typed here was \
+    not sent and may still be in the prompt box. Send it, or clear it and send any prompt, and \
+    Yulius types its message.";
 
 /// Clears a run's "a message is being typed" mark when the typing ends, even if the call is
 /// dropped half-way.
@@ -204,7 +250,8 @@ impl App {
         channel: Channel,
         text: &str,
     ) -> AppResult<()> {
-        self.type_into_session(task, &message_paste(login, channel, text), Typed::Prompt)
+        let paste = message_paste(login, channel, text);
+        self.type_into_session(task, &paste, Typed::Prompt, Sender::Person)
             .await?;
         // The person spoke to the task (through their Superagent or their own agent): what it
         // asked them is answered.
@@ -213,14 +260,17 @@ impl App {
     }
 
     /// Types `paste` (one bracketed paste) and then Enter into the running task's session, once
-    /// it takes typed text (TMS-004): its session started, no person typed in the last minute,
-    /// and nothing else is being typed. Also Yulius's own "Yulius is back; continue" (SPEC-358
-    /// MSB-007). `what` says whether Claude Code will submit it as a prompt.
+    /// it takes typed text (TMS-004): its session started, no person's draft may sit in its
+    /// prompt box and none typed in the last minute (SPEC-480), and nothing else is being
+    /// typed. Also Yulius's own "Yulius is back; continue" (SPEC-358 MSB-007). `what` says
+    /// whether Claude Code will submit it as a prompt, `from` who is told when a person's
+    /// possible draft holds it back.
     pub(crate) async fn type_into_session(
         &self,
         task: &TaskRecord,
         paste: &[u8],
         what: Typed,
+        from: Sender,
     ) -> AppResult<()> {
         let runtime = self.existing_runtime(&task.id).ok_or_else(|| {
             AppError::Conflict(format!("task #{} has no live session", task.number))
@@ -254,12 +304,33 @@ impl App {
                 )));
             }
         }
-        if self.typed_recently(&task.id).is_some() {
-            return Err(AppError::Conflict(format!(
-                "a person typed into task #{}'s terminal in the last minute and may have a draft \
-                 there: try again later, or tell the person",
-                task.number
-            )));
+        // The person's draft is theirs, however old (SPEC-480 DRF-001): pasted behind it, the
+        // message and their unfinished text would be submitted as one prompt. Yulius sees keys,
+        // not the box, so a keystroke since the box was last empty counts until the next prompt
+        // is submitted from it; the one who can act is told instead (DRF-004, DRF-006).
+        let typed = runtime.typed_at_ms.load(Ordering::SeqCst);
+        let emptied = runtime.box_emptied_ms.load(Ordering::SeqCst);
+        match yulius_domain::intake::box_held(self.now().0, typed, emptied) {
+            Some(held @ BoxHeld::Draft { .. }) => {
+                if from.tells_person(held) {
+                    self.tell_of_held_message(task, typed).await;
+                }
+                return Err(AppError::Conflict(format!(
+                    "a person typed into task #{}'s terminal and sent no prompt since, so \
+                     their text may still be in its prompt box and nothing is typed behind it: \
+                     tell the person to send it, or to clear it and send any prompt, then try \
+                     again",
+                    task.number
+                )));
+            }
+            Some(BoxHeld::AtKeyboard) => {
+                return Err(AppError::Conflict(format!(
+                    "a person typed into task #{}'s terminal in the last minute: try again in \
+                     a minute, or tell the person",
+                    task.number
+                )));
+            }
+            None => {}
         }
         if runtime.typing_message.swap(true, Ordering::SeqCst) {
             return Err(AppError::Conflict(format!(
@@ -293,6 +364,69 @@ impl App {
             ))
         })?;
         Ok(())
+    }
+
+    /// Tells the session's person that a message of Yulius's own waits for what they typed at
+    /// `typed` (SPEC-480 DRF-006): the task is flagged with the reason and its terminal says
+    /// so. The watches try again at every pass: a task that reads the flag keeps it, one whose
+    /// flag ended meanwhile (a turn's end settles a flagged task) is flagged again, and the
+    /// terminal gets its line once per keystroke.
+    async fn tell_of_held_message(&self, task: &TaskRecord, typed: i64) {
+        let reason = AttentionRecord::yulius(DRAFT_HOLDS_PROBLEM, DRAFT_HOLDS_ACTION);
+        if let Err(err) = self.flag_attention(&task.id, reason).await {
+            // Not told: the next pass tries again.
+            tracing::warn!(task = %task.id, error = %err, "could not flag the task whose draft holds a message");
+            return;
+        }
+        let runtime = self.runtime(&task.id);
+        if runtime.draft_told_ms.swap(typed, Ordering::SeqCst) != typed {
+            runtime.hub.notice(DRAFT_HOLDS_NOTICE.to_owned());
+            tracing::info!(task = %task.id, "a message waits for a person's draft: the task is flagged");
+        }
+    }
+
+    /// Ends the flag that says a message of Yulius's own waits for a person's draft
+    /// ([`Self::tell_of_held_message`]) once no draft holds the prompt box (SPEC-480 DRF-007).
+    /// A prompt that starts a turn sets the task Working, which ends every flag; one that starts
+    /// none (`/compact`, a prompt answered after its turn ended) leaves the task as it was, so
+    /// the flag would outlast its reason and keep the pull-request watch quiet (a flagged task
+    /// gets nothing typed). Only this flag, and only while the task still reads it.
+    pub(crate) async fn settle_draft_flag(&self, task_id: &TaskId) {
+        let runtime = self.runtime(task_id);
+        let held = runtime.attention_lock.lock().await;
+        let store = &self.deps.store;
+        let flagged = match store.task_attention(task_id).await {
+            Ok(Some((reason, flagged)))
+                if reason == AttentionRecord::yulius(DRAFT_HOLDS_PROBLEM, DRAFT_HOLDS_ACTION) =>
+            {
+                flagged
+            }
+            Ok(_) => return,
+            Err(err) => {
+                tracing::warn!(task = %task_id, error = %err, "reading a flag's reason failed");
+                return;
+            }
+        };
+        let next = if runtime.turn_in_progress() {
+            Activity::Working
+        } else {
+            Activity::after_clean_turn(runtime.goal_achieved.load(Ordering::SeqCst))
+        };
+        let from = (Some(Activity::NeedsAttention), flagged);
+        match store
+            .set_activity_from(task_id, from, Some(next), self.now())
+            .await
+        {
+            Ok(true) => {
+                drop(held);
+                tracing::info!(task = %task_id, "the prompt box was emptied: the flag of a held message ends");
+                self.publish_task(task_id).await;
+            }
+            Ok(false) => {}
+            Err(err) => {
+                tracing::warn!(task = %task_id, error = %err, "could not end the flag of a held message");
+            }
+        }
     }
 }
 

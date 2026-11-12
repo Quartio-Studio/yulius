@@ -21,8 +21,8 @@ use yulius_contracts::events::UiEvent;
 use yulius_contracts::mcp::{ToolDescriptor, text_result};
 use yulius_domain::ids::SandboxId;
 use yulius_domain::permission::Action;
-use yulius_domain::task::Activity;
 
+use crate::attention::AttentionRecord;
 use crate::auth::AuthContext;
 use crate::context::App;
 use crate::error::{AppError, AppResult};
@@ -386,15 +386,28 @@ impl App {
         let task = user.task().map(|task| task.id.clone());
         let request = browser.request_user_action(&params.tab_id, &params.reason, task.as_ref())?;
         let store = &self.deps.store;
-        if let Some(task) = &task {
-            let task = store.task(task).await?.ok_or(AppError::NotFound)?;
-            self.set_task_activity(&task, Activity::NeedsAttention)
-                .await?;
-        }
         let sandbox = store
             .sandbox(user.sandbox())
             .await?
             .ok_or(AppError::NotFound)?;
+        let link = self.browser_tab_link(&sandbox.slug, &params.tab_id);
+        if let Some(task) = &task {
+            // The task says it too, with the tab (SPEC-472): the event below reaches only the
+            // viewers connected now, and a page opened later reads the tabs only with its
+            // Browser panel open.
+            self.flag_attention(
+                task,
+                AttentionRecord::yulius(
+                    &format!(
+                        "The agent asks you to act in the sandbox's browser: {}",
+                        request.reason
+                    ),
+                    "Open the browser tab and do what it asks.",
+                )
+                .on_page(&link),
+            )
+            .await?;
+        }
         self.events.publish(
             Some(sandbox.id.clone()),
             false,
@@ -406,7 +419,7 @@ impl App {
             },
         );
         let result = RequestUserActionResult {
-            link: self.browser_tab_link(&sandbox.slug, &params.tab_id),
+            link,
             tab_id: params.tab_id,
         };
         let mut value = to_value(&result)?;

@@ -882,6 +882,7 @@ async fn account_crud_permissions_usage_and_removal_in_use() -> TestResult {
         (Method::PATCH, path.clone(), Some(json!({"label": "x"}))),
         (Method::DELETE, path.clone(), None),
         (Method::POST, format!("{path}/relogin"), None),
+        (Method::POST, format!("{path}/usage"), None),
     ] {
         let r = call(&s.h.router, method.clone(), &uri, body, &alice).await?;
         assert_eq!(r.status, StatusCode::FORBIDDEN, "{method} {uri}");

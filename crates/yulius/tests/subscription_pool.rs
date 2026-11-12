@@ -1051,6 +1051,78 @@ async fn a_running_but_idle_subscription_is_read_again_when_its_reading_is_old()
     Ok(())
 }
 
+/// SPEC-473 RFR-006, RFR-009: Claude Code's status line carries a window "only while the API
+/// reports it and its resets_at has not passed", so a session's reading may hold one window
+/// only. It is stored, but it is no reading of the usage: the time the usage was read stays
+/// where it was. So the round asks the provider about a subscription whose sessions report one
+/// window, however often they report it ("two subscriptions with live runs had no 5-hour
+/// reading at all"), and its card does not say "read just now" over a window nobody read. A
+/// session's reading with both windows is a reading, and the round leaves it alone.
+#[tokio::test]
+async fn the_round_reads_what_the_sessions_do_not_report() -> TestResult {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let h = harness_with(HarnessOptions {
+        usage: Some(Arc::new(CountingProbe(Arc::clone(&calls)))),
+        ..HarnessOptions::default()
+    })?;
+    seed(&h).await?;
+    advance(&h, 10 * HOUR);
+    let account = add_account(&h, "acc-busy", None).await?;
+    running_task(&h, TaskMode::Prompt, &account).await?;
+    let week_resets = now(&h).plus_millis(90 * HOUR);
+    let week_only = |week: f64| {
+        json!({"session_id": "session-1", "model": {"id": "m"}, "rate_limits": {
+            "seven_day": {"used_percentage": week, "resets_at": week_resets.0 / 1000}}})
+    };
+    let stored = || async {
+        let record = h.store.account(&account).await?.ok_or("account")?;
+        let usage: serde_json::Value =
+            serde_json::from_str(record.usage_json.as_deref().ok_or("usage")?)?;
+        Ok::<_, Box<dyn std::error::Error>>(usage)
+    };
+
+    // The session reports the week only, again and again.
+    status_line(&h.internal, week_only(18.0)).await?;
+    advance(&h, 30_000);
+    status_line(&h.internal, week_only(19.5)).await?;
+    let usage = stored().await?;
+    assert_eq!(usage["secondary"]["used_percent"], 19.5, "{usage}");
+    assert!(usage["primary"].is_null(), "{usage}");
+    assert!(
+        usage["observed_at"].is_null(),
+        "one window is no reading of the usage: {usage}"
+    );
+    let mut not_before = std::collections::HashMap::new();
+    h.app.refresh_usage_round(&mut not_before).await;
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "the provider is asked");
+    let usage = stored().await?;
+    assert_eq!(usage["primary"]["used_percent"], 55.0, "{usage}");
+    assert_eq!(usage["observed_at"], now(&h).0, "{usage}");
+
+    // Past the round's own pace: a session's reading with both windows is a reading of the
+    // usage, so the round leaves the subscription alone.
+    advance(&h, 6 * 60_000);
+    let read_at = now(&h);
+    status_line(
+        &h.internal,
+        rate_limits(42.0, read_at.plus_millis(2 * HOUR), 20.0, week_resets),
+    )
+    .await?;
+    assert_eq!(stored().await?["observed_at"], read_at.0);
+    h.app.refresh_usage_round(&mut not_before).await;
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "read by the session");
+
+    // One window again: the reading ages, and the round asks.
+    advance(&h, 2 * 60_000);
+    status_line(&h.internal, week_only(21.0)).await?;
+    let usage = stored().await?;
+    assert_eq!(usage["secondary"]["used_percent"], 21.0, "{usage}");
+    assert_eq!(usage["observed_at"], read_at.0, "{usage}");
+    h.app.refresh_usage_round(&mut not_before).await;
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    Ok(())
+}
+
 /// Answers every request with the 5-hour window at 55 % and the weekly Opus cap at 30 %.
 struct OpusCapProbe;
 

@@ -16,10 +16,12 @@
 //! `stop_hook_summary` and `turn_duration` ("Brewed for 51s") that close it.
 
 use serde_json::{Map, Value};
+use yulius_domain::agent_cli::QueueChange;
 use yulius_domain::task::GoalOutcome;
 use yulius_domain::time::Timestamp;
 use yulius_domain::usage::{
-    LimitScope, ModelFamily, SESSION_WINDOW_MINUTES, TokenUsage, WEEKLY_WINDOW_MINUTES,
+    CREDITS_ALLOWANCE_CLAIM, LimitScope, ReportedLimit, SESSION_WINDOW_MINUTES, TokenUsage,
+    WEEKLY_WINDOW_MINUTES,
 };
 
 use crate::json::{bool_of, obj_of, owned_str, parse_object, shorten, str_of, u64_of};
@@ -81,17 +83,6 @@ const ACCESS_PHRASES: [&str; 3] = [
     "invalid api key",
 ];
 
-/// The window of Claude's `rateLimitType` (`five_hour`, `seven_day`, `seven_day_opus`, …).
-fn window_of_type(kind: &str) -> Option<u32> {
-    if kind == "five_hour" {
-        Some(SESSION_WINDOW_MINUTES)
-    } else if kind.starts_with("seven_day") {
-        Some(WEEKLY_WINDOW_MINUTES)
-    } else {
-        None
-    }
-}
-
 /// The window a lower-case limit text names ("session limit", "5-hour limit", "weekly limit").
 fn window_of_text(lower: &str) -> Option<u32> {
     if lower.contains("session limit") || lower.contains("5-hour") || lower.contains("five-hour") {
@@ -120,22 +111,6 @@ const USAGE_LIMIT_API_ERROR: &str = "usage_limit_reached";
 /// without `rate_limit_info`; 2.1.322 adds it, with `rateLimitType`
 /// `seven_day_overage_included` when the model's weekly allowance was used up.
 const CREDITS_API_ERROR: &str = "model_requires_usage_credits";
-
-/// The `rateLimitType` of the weekly allowance of usage credits included for a model that
-/// otherwise runs on them: a bucket per model, which Claude Code 2.1.322 calls the "Fable limit"
-/// after the one model that has it today.
-const CREDITS_ALLOWANCE_TYPE: &str = "seven_day_overage_included";
-
-/// What Claude's `rateLimitType` binds: the subscription, or the models of one family. The
-/// allowance of usage credits is the bucket of the model the request ran, whichever that is.
-fn scope_of_type(kind: &str) -> LimitScope {
-    match kind {
-        "seven_day_opus" => LimitScope::Model(Some(ModelFamily::Opus)),
-        "seven_day_sonnet" => LimitScope::Model(Some(ModelFamily::Sonnet)),
-        CREDITS_ALLOWANCE_TYPE => LimitScope::Model(None),
-        _ => LimitScope::Account,
-    }
-}
 
 /// Lower-case marks of a too-long prompt in an error record: Claude Code's own text ("Prompt is
 /// too long", its `PROMPT_TOO_LONG` constant), the API's error (`errorDetails`) or its code.
@@ -231,6 +206,7 @@ pub fn observe_versioned(line: &str) -> (Vec<Observed>, Option<String>) {
         Some("assistant") => observe_assistant(&record),
         Some("attachment") => observe_attachment(&record),
         Some("system") => observe_system(&record),
+        Some("queue-operation") => observe_queue(&record),
         Some(_) => Vec::new(),
         None => return (vec![Observed::Malformed], None),
     };
@@ -250,6 +226,25 @@ pub fn record_time(line: &str) -> Option<Timestamp> {
         .as_ref()
         .and_then(|record| str_of(record, "timestamp"))
         .and_then(parse_rfc3339)
+}
+
+/// What a `queue-operation` record says happened to Claude Code's queue (SPEC-471 CCQ-001).
+/// Claude Code 2.1.322 writes one when a prompt entered while a turn runs, or a notification of
+/// its own, is put into the queue (`enqueue`, with its text), handed on to a turn of its own
+/// once the running turn ended (`dequeue`, nothing else), or taken out without one: into the
+/// running turn at a tool result, to another agent, dropped (`remove`, with a `reason`), or
+/// back into the prompt box (`popAll`, `popOne`). The record carries no `isSidechain` and no
+/// `version`: it is written to the session's own file only. An operation not known here is
+/// read as nothing.
+fn observe_queue(record: &Map<String, Value>) -> Vec<Observed> {
+    let change = match str_of(record, "operation") {
+        Some("enqueue") => QueueChange::Added,
+        Some("dequeue") => QueueChange::HandedOn,
+        Some("remove" | "popAll" | "popOne") => QueueChange::Taken,
+        _ => return Vec::new(),
+    };
+    let at = str_of(record, "timestamp").and_then(parse_rfc3339);
+    vec![Observed::Queue { change, at }]
 }
 
 /// The session goal's state from a `goal_status` attachment (see the module docs).
@@ -666,23 +661,20 @@ fn structured_limit(record: &Map<String, Value>, text: &str) -> Option<Observed>
         return None;
     }
     let kind = info.and_then(|i| str_of(i, "rateLimitType"));
-    let scope = match kind.map(scope_of_type) {
-        Some(scope @ LimitScope::Model(_)) => scope,
-        // The refusal is the model's whichever window the response claimed.
-        _ if credits => LimitScope::Model(None),
-        _ => LimitScope::Account,
-    };
-    // A credits refusal's `resetsAt` is the reset of the window the response claimed: only the
-    // allowance's own says when the model runs again.
-    let resets_at = info
-        .filter(|_| !credits || kind == Some(CREDITS_ALLOWANCE_TYPE))
+    // What the record's claim binds, its window and its reset, by the rule the usage probe
+    // reads a refused response with (`ReportedLimit::of_refusal`): a credits refusal is the
+    // model's whichever window the response claimed, and only the allowance's own reset says
+    // when the model runs again.
+    let claimed = info
         .and_then(|i| i.get("resetsAt"))
         .and_then(Value::as_i64)
         .and_then(from_epoch_seconds);
-    let window_minutes = kind
-        .and_then(window_of_type)
-        .or_else(|| window_of_text(&text.to_lowercase()))
-        .filter(|_| !credits || kind == Some(CREDITS_ALLOWANCE_TYPE));
+    let limit = ReportedLimit::of_refusal(kind, credits, claimed);
+    let (scope, resets_at) = (limit.scope, limit.resets_at);
+    let window_minutes = limit.window_minutes.or_else(|| {
+        window_of_text(&text.to_lowercase())
+            .filter(|_| !credits || kind == Some(CREDITS_ALLOWANCE_CLAIM))
+    });
     let message = if text.trim().is_empty() {
         "usage limit reached"
     } else {
@@ -758,6 +750,7 @@ fn limit_signal(text: &str) -> Option<Observed> {
 #[cfg(test)]
 mod tests {
     use yulius_domain::time::Timestamp;
+    use yulius_domain::usage::ModelFamily;
 
     /// Deterministic xorshift generator for randomized tests (no extra dependency).
     struct Rng(u64);
@@ -1774,6 +1767,80 @@ mod tests {
             serde_json::json!({"origin": {"kind": "task-notification"}, "promptSource": "system"}),
         );
         assert_eq!(wake, vec![session, Observed::UserTurn { at, wake: true }]);
+    }
+
+    /// SPEC-471 CCQ-001: the records Claude Code 2.1.322 wrote about its queue when it ran
+    /// against a stub of the model API (their ids shortened): each is one change of the queue,
+    /// and nothing else is.
+    #[test]
+    fn queue_records_are_changes_of_the_queue() {
+        // What changed, without the record's time.
+        let change = |line: &str| {
+            let (observed, version) = observe_versioned(line);
+            let changes: Vec<Observed> = observed
+                .into_iter()
+                .map(|one| match one {
+                    Observed::Queue { change, .. } => Observed::Queue { change, at: None },
+                    other => other,
+                })
+                .collect();
+            (changes, version)
+        };
+        let one = |change: QueueChange| (vec![Observed::Queue { change, at: None }], None);
+        assert_eq!(
+            change(
+                r#"{"type":"queue-operation","operation":"enqueue","timestamp":"2026-11-12T05:56:52.726Z","sessionId":"b38662ec","content":"second"}"#
+            ),
+            one(QueueChange::Added)
+        );
+        // The record's own time is kept: a hand-over is told from the lines written before it.
+        assert_eq!(
+            observe_line(
+                r#"{"type":"queue-operation","operation":"dequeue","timestamp":"2026-11-12T05:59:32.594Z","sessionId":"19203f97"}"#
+            ),
+            vec![Observed::Queue {
+                change: QueueChange::HandedOn,
+                at: parse_rfc3339("2026-11-12T05:59:32.594Z"),
+            }]
+        );
+        assert!(parse_rfc3339("2026-11-12T05:59:32.594Z").is_some());
+        assert_eq!(
+            change(
+                r#"{"type":"queue-operation","operation":"dequeue","timestamp":"2026-11-12T05:59:32.594Z","sessionId":"19203f97"}"#
+            ),
+            one(QueueChange::HandedOn)
+        );
+        assert_eq!(
+            change(
+                r#"{"type":"queue-operation","operation":"remove","timestamp":"2026-11-12T05:56:55.452Z","sessionId":"b38662ec","content":"second","reason":"absorbed_mid_turn","commandUuid":"052fb0ee","deliveryId":"3ba9db56"}"#
+            ),
+            one(QueueChange::Taken)
+        );
+        assert_eq!(
+            change(
+                r#"{"type":"queue-operation","operation":"popAll","timestamp":"2026-11-12T05:59:24.320Z","sessionId":"ba29703f","content":"second"}"#
+            ),
+            one(QueueChange::Taken)
+        );
+        // Read in the binary, not seen in a run: one waiting prompt taken back into the box.
+        assert_eq!(
+            change(r#"{"type":"queue-operation","operation":"popOne","content":"x"}"#),
+            one(QueueChange::Taken)
+        );
+        // An enqueue of something that is no text (an image) has no content.
+        assert_eq!(
+            change(r#"{"type":"queue-operation","operation":"enqueue","sessionId":"s"}"#),
+            one(QueueChange::Added)
+        );
+        // What is not known changes nothing; neither does another record that names one.
+        for line in [
+            r#"{"type":"queue-operation","operation":"reorder","sessionId":"s"}"#,
+            r#"{"type":"queue-operation","sessionId":"s"}"#,
+            r#"{"type":"queue-operation","operation":7}"#,
+            r#"{"type":"last-prompt","operation":"enqueue"}"#,
+        ] {
+            assert_eq!(change(line), (Vec::new(), None), "{line}");
+        }
     }
 
     /// SPEC-468 CCF-005: the agent writes its own transcript, and a line may be 4 MiB. The

@@ -4896,13 +4896,23 @@ fn a_flag_raised_after_the_goal_pause_is_not_lifted_by_the_agents_work() -> Test
 /// A finished goal task whose session then asks the person something (Claude Code's permission
 /// prompt, through its `Notification` hook): it reads Needs you, flagged by that notice.
 async fn task_flagged_by_a_notice(app: &Arc<App>, data: &Path) -> Result<TaskId, BoxError> {
+    task_flagged_by_a_notice_of(app, data, "permission_prompt").await
+}
+
+/// [`task_flagged_by_a_notice`], for a notice of `kind` (its `notification_type`).
+async fn task_flagged_by_a_notice_of(
+    app: &Arc<App>,
+    data: &Path,
+    kind: &str,
+) -> Result<TaskId, BoxError> {
     let (sandbox, user) = seed(app, data).await?;
     let id = goal_task(app, &sandbox, &user, "Merge on green").await?;
     wait_for("Done", Duration::from_secs(90), || async {
         activity(app, &id).await == Some(Activity::Done)
     })
     .await?;
-    app.send_input(&id, b"/notify permission_prompt\r").await?;
+    app.send_input(&id, format!("/notify {kind}\r").as_bytes())
+        .await?;
     wait_for("the notice's flag", Duration::from_secs(30), || async {
         activity(app, &id).await == Some(Activity::NeedsAttention)
             && screen_contains(app, &id, "NOTIFIED").await
@@ -4981,6 +4991,252 @@ fn a_flag_raised_after_a_notices_is_not_lifted_by_the_agents_work() -> TestResul
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
+}
+
+/// The task token of the run whose agent lives under `data`, read from that agent's own
+/// environment (`YULIUS_TASK_TOKEN`): what its tools authenticate with.
+#[cfg(target_os = "linux")]
+fn agent_token(data: &Path) -> Result<String, BoxError> {
+    let under = data.to_string_lossy().into_owned();
+    for entry in std::fs::read_dir("/proc")?.flatten() {
+        let Ok(env) = std::fs::read(entry.path().join("environ")) else {
+            continue;
+        };
+        let vars: Vec<String> = env
+            .split(|byte| *byte == 0)
+            .map(|var| String::from_utf8_lossy(var).into_owned())
+            .collect();
+        if !vars.iter().any(|var| var.contains(&under)) {
+            continue;
+        }
+        if let Some(token) = vars
+            .iter()
+            .find_map(|var| var.strip_prefix("YULIUS_TASK_TOKEN="))
+        {
+            return Ok(token.to_owned());
+        }
+    }
+    Err("no process of this run holds a task token".into())
+}
+
+/// SPEC-472 ATN-011 (review round 2): the agent asked for a secret (Needs you: answer it on the
+/// Secrets page), then Claude Code asks the person something. The flag is the question's from
+/// then on. The person answers the question first and the agent works on: that work answers
+/// the flag, as it does for a question on an unflagged task, so the task does not keep reading
+/// "its question is in the terminal" over no question. The secret's answer afterwards finds no
+/// flag to end.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_question_that_took_a_secret_requests_flag_over_is_answered_by_the_agents_work() -> TestResult {
+    use yulius_app::auth::AuthContext;
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let (app, _) = start(&data, &fake, noticing_agent(), 0).await?;
+        let (sandbox, user) = seed(&app, &data).await?;
+        let id = goal_task(&app, &sandbox, &user, "Merge on green").await?;
+        wait_for("Done", Duration::from_secs(90), || async {
+            activity(&app, &id).await == Some(Activity::Done)
+        })
+        .await?;
+        let ctx = AuthContext {
+            user: app.deps.store.user(&user).await?.ok_or("user")?,
+            csrf_token: None,
+            session_hash: None,
+            token: None,
+        };
+        let secret = app
+            .create_agent_secret(
+                &ctx,
+                sandbox.as_str(),
+                &serde_json::from_value(serde_json::json!({
+                    "name": "DEPLOY_KEY",
+                    "description": "Deploy key",
+                    "value": "deploy-key-123456",
+                    "auto_allow": false,
+                }))?,
+            )
+            .await?;
+        // The run's agent asks for the secret's hosts, with its own token.
+        let asked = app
+            .mcp_handle(
+                &agent_token(&data)?,
+                serde_json::from_value(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "secret_request_hosts",
+                        "arguments": {"secret": "DEPLOY_KEY", "hosts": ["api.deploy.test"]},
+                    },
+                }))?,
+            )
+            .await
+            .ok_or("no answer to the tool call")?;
+        let answer = serde_json::to_value(&asked)?;
+        assert!(
+            answer["error"].is_null() && answer["result"]["isError"] != true,
+            "{answer}"
+        );
+        let why = || support::attention(&app, id.as_str());
+        assert_eq!(activity(&app, &id).await, Some(Activity::NeedsAttention));
+        assert_eq!(
+            why().await?["action"],
+            "Answer it on the Secrets page.",
+            "the request's flag"
+        );
+
+        app.send_input(&id, b"/notify permission_prompt\r").await?;
+        wait_for("the question's reason", Duration::from_secs(30), || async {
+            screen_contains(&app, &id, "NOTIFIED").await
+                && why().await.is_ok_and(|why| why["kind"] == "terminal")
+        })
+        .await?;
+        // What the agent does next is later than the notice by more than the clock's step.
+        transcript_read(&app, &id).await?;
+        app.send_input(&id, b"/tool\r").await?;
+        wait_for(
+            "Working with the agent's work",
+            Duration::from_secs(30),
+            || async { activity(&app, &id).await == Some(Activity::Working) },
+        )
+        .await?;
+        assert!(why().await?.is_null(), "no flag, no reason");
+
+        // The request still waits on the Secrets page; its answer changes nothing of the task.
+        app.answer_host_request(
+            &ctx,
+            &secret.id,
+            &serde_json::from_value(
+                serde_json::json!({"allow": true, "hosts": ["api.deploy.test"]}),
+            )?,
+        )
+        .await?;
+        assert_eq!(activity(&app, &id).await, Some(Activity::Working));
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// A hooked agent with a transcript, as the notice tests run it.
+fn noticing_agent() -> FakeAgentOptions {
+    FakeAgentOptions {
+        transcript: true,
+        hooks: true,
+        ..FakeAgentOptions::default()
+    }
+}
+
+/// The new server read the session's transcript again and the task still reads Needs you: a
+/// replay lifts no flag.
+async fn still_flagged_after_the_replay(app: &Arc<App>, id: &TaskId) -> TestResult {
+    let runtime = app.runtime(id);
+    wait_for(
+        "the transcript read again",
+        Duration::from_secs(30),
+        || async { runtime.transcript_rounds() >= 2 },
+    )
+    .await?;
+    assert_eq!(activity(app, id).await, Some(Activity::NeedsAttention));
+    Ok(())
+}
+
+/// SPEC-472 ATN-010 (#1221): Yulius restarts (an update freezes every agent mid-turn) while a
+/// session asks its person something. The new server never saw the notice that flagged the
+/// task; the person answers, the agent goes on, and its work still makes the task Working: it
+/// does not read "Needs your action · its question is in the terminal" over a working session
+/// until the turn ends.
+#[test]
+fn a_notice_is_answered_by_the_agents_work_after_a_restart() -> TestResult {
+    a_restart_after(
+        noticing_agent(),
+        async |app, data| task_flagged_by_a_notice(app, data).await,
+        async |_| Ok(()),
+        async |app, id| {
+            still_flagged_after_the_replay(app, id).await?;
+            assert_eq!(
+                support::attention(app, id.as_str()).await?["kind"],
+                "terminal",
+                "the flag still says what it is"
+            );
+            app.send_input(id, b"/tool\r").await?;
+            wait_for(
+                "Working with the agent's work",
+                Duration::from_secs(30),
+                || async { activity(app, id).await == Some(Activity::Working) },
+            )
+            .await?;
+            assert!(support::attention(app, id.as_str()).await?.is_null());
+            Ok(())
+        },
+    )
+}
+
+/// SPEC-472 ATN-010: what the session's work does not answer before a restart, it does not
+/// answer after one: a worker's permission prompt stays through the main session's work, as
+/// while Yulius watches (STA-003).
+#[test]
+fn a_workers_notice_is_not_answered_by_the_agents_work_after_a_restart() -> TestResult {
+    a_restart_after(
+        noticing_agent(),
+        async |app, data| task_flagged_by_a_notice_of(app, data, "worker_permission_prompt").await,
+        async |_| Ok(()),
+        async |app, id| {
+            still_flagged_after_the_replay(app, id).await?;
+            app.send_input(id, b"/tool\r").await?;
+            wait_for("the agent's work", Duration::from_secs(30), || {
+                screen_contains(app, id, "TOOL")
+            })
+            .await?;
+            transcript_read(app, id).await?;
+            assert_eq!(
+                activity(app, id).await,
+                Some(Activity::NeedsAttention),
+                "a worker's ask is not the session's to answer"
+            );
+            Ok(())
+        },
+    )
+}
+
+/// SPEC-472 ATN-010: the flag a notice raised before a restart was replaced without a word and
+/// another matter flagged the task afterwards. The agent's work after the restart does not lift
+/// that flag: the reason kept with the notice's flag speaks for that flag only.
+#[test]
+fn a_flag_raised_after_a_notices_is_not_lifted_after_a_restart() -> TestResult {
+    a_restart_after(
+        noticing_agent(),
+        async |app, data| {
+            let id = task_flagged_by_a_notice(app, data).await?;
+            let store = &app.deps.store;
+            store
+                .set_activity(&id, Some(Activity::Working), app.now())
+                .await?;
+            store
+                .set_activity(&id, Some(Activity::NeedsAttention), app.now())
+                .await?;
+            Ok(id)
+        },
+        async |_| Ok(()),
+        async |app, id| {
+            still_flagged_after_the_replay(app, id).await?;
+            assert!(support::attention(app, id.as_str()).await?.is_null());
+            app.send_input(id, b"/tool\r").await?;
+            wait_for("the agent's work", Duration::from_secs(30), || {
+                screen_contains(app, id, "TOOL")
+            })
+            .await?;
+            transcript_read(app, id).await?;
+            assert_eq!(
+                activity(app, id).await,
+                Some(Activity::NeedsAttention),
+                "another matter's flag stays"
+            );
+            Ok(())
+        },
+    )
 }
 
 /// SPEC-469 GPW-004: Yulius restarts while a session whose goal Claude Code paused waits for a

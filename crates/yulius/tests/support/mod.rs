@@ -1366,6 +1366,21 @@ pub struct HarnessOptions {
     pub crypto: Option<Arc<dyn yulius_app::ports::Crypto>>,
 }
 
+/// Why a task reads `needs_attention`, as its API view says it (`attention`, SPEC-472): null
+/// when the view says nothing.
+pub async fn attention(
+    app: &App,
+    task: &str,
+) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    let id = yulius_domain::ids::TaskId::parse(task)?;
+    let task = app.deps.store.task(&id).await?.ok_or("task")?;
+    let summary = serde_json::to_value(app.task_summary(&task).await?)?;
+    Ok(summary
+        .get("attention")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null))
+}
+
 /// The harness's master-key crypto.
 pub fn test_crypto() -> Result<MasterKeyCrypto, Box<dyn std::error::Error>> {
     Ok(MasterKeyCrypto::from_key(&[9u8; 32])?)

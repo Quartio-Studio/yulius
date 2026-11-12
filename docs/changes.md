@@ -6,6 +6,158 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-12
 
+- `yulius instance migrate` no longer calls a move finished while its old instance is not held
+  (SPEC-481, task #461, issue #1179, ADR-0311). A run whose new instance had taken over while the
+  old unit could not be frozen or disabled printed `FAIL … must be frozen and disabled now` and
+  ended with exit 1 once; the same command again said "finished" with exit 0 without a look at the
+  old unit, and `--status` showed that. Every run of a move that is recorded as moved now asks
+  systemd again, also long after the finish: no unit of the old instance runs unfrozen, no unit of
+  it that does not run left processes, and `systemctl is-enabled` says `disabled` (or `static`, a
+  unit without `[Install]`). While that does not hold, the run repeats the failed line (what it
+  found, the commands, "The move is not finished until then") under **Cutover**, ends with exit 1,
+  and `--status` shows it; once it holds, the run says `ok` for the old instance and "finished". A
+  later run only looks and changes nothing of the old instance; the steps after the cutover and the
+  finish are done either way, for they are the new instance's. The look after a start is the same
+  one, so a unit that was stopped while the new instance started is asked what it left instead of
+  being told to freeze. A resumed start that finds the old unit stopped with nothing left also asks
+  whether it is disabled, and the line for a new host that stopped answering names `--abort` with
+  its condition (only once the new instance is known to be stopped). The commands a line names for
+  a freeze that keeps failing (`systemctl stop`, `systemctl kill`) now name only the units that are
+  not frozen, also in the resumed start's lines: on systemd 259 a frozen unit whose processes are
+  killed stays frozen on its way to a restart, out of reach of a thaw, a start and `--abort` until
+  its host restarts (measured on the server's own unit).
+- A move to another subscription at a turn's end no longer loses what waits in Claude Code's
+  queue (SPEC-479, task #462, ADR-0310, #1194). A message typed into a working session (a
+  person's through their Superagent, a pull request's news) or a prompt its person entered
+  meanwhile waits in a queue inside Claude Code's process until the turn ends; when the pool
+  moved the session at that end, the process ended with it and the sender had been told
+  "sent". The move now waits while such a prompt waits, as it already waits for background
+  work: the session answers it where it was entered (the gate blocks there, where it blocks)
+  and the next turn's end moves it. On a subscription at its limit that turn is refused and
+  continued past the limit on the next one, like any turn a limit cuts. A turn held for
+  capacity is released in place instead of moved while a prompt waits. The count is the one
+  of SPEC-471; new in it is what a turn's end left: an entry its closing record found still
+  waiting when that end had handed nothing on (Claude Code leaves some of its own
+  notifications in the queue for good). It keeps no move, so a session with such an entry
+  stays only until a turn's end hands nothing on. A prompt behind a notification, a slash
+  command or a `!` line is not left: Claude Code hands those on alone and the prompt one
+  end later (the review found this with the real 2.1.322; the first rule lost that prompt).
+  In this instance's sessions with queue records no hand-over ever took a left-over entry. The restart on a newer Claude Code still counts every entry. The limits of
+  SPEC-471 stay (a prompt entered in the moment after the turn's end decided, a record
+  written later than two seconds); a person's own switch or stop and a turn a limit cuts
+  carry nothing over. The tests' fake agent can play an entry that is never taken out
+  (`/stuck`), one that is handed on alone (`/alone`) and a limit that cuts a handed-on turn.
+- A message Yulius types into a session no longer lands on a person's unsent draft (SPEC-480,
+  task #463, ADR-0309, issue #1199). Yulius held a message back only while someone had typed in
+  the last minute; an older draft got the message pasted behind it and was sent with it, as one
+  prompt. Now nothing is typed while someone typed into the task's terminal since its prompt
+  box was last empty, however long ago: a person's `task_message`, a pull request's news,
+  "Yulius is back; continue" and the MCP watch's texts all wait. `task_message` answers with
+  the reason at once. For a message of Yulius's own the task reads Needs your action and its
+  terminal says so once the person's last key is ten minutes old; the next prompt sent from
+  the box releases it. Every key counts, because Yulius sees keys and not the box, so a session
+  someone typed into without leaving text also waits for one prompt. A draft typed before a
+  restart of Yulius counts too: the run's folder keeps its mark (`person-typed`), so the wake
+  after an outage does not land on it.
+- `yulius instance migrate`, going on from a recorded start, no longer ends well while processes
+  of a stopped old unit still run (SPEC-478, task #460, issue #1178). The server's unit has
+  `KillMode=process`: a unit stopped by hand keeps its agents, terminals and sandbox engines
+  running in its cgroup, unfrozen, beside a new instance that has queued the same tasks. The
+  run read only `ActiveState`, said "does not run here any more", recorded the move and ended
+  with exit 0. It now asks what a stopped unit left (`ControlGroup` and the group's
+  `cgroup.events`, for the server's unit and its sessions unit): while processes of it run, a
+  `FAIL` line names the units and `systemctl kill --kill-who=all --signal=SIGKILL <units>`, the
+  run ends with exit 1, kills nothing and records nothing, so the same command asks again and
+  goes on once they are gone. The move's lines now spell the option `--kill-who`, which also
+  runs on an old host before systemd 252 (`--kill-whom` is refused there). With no cgroup, an empty one or processes the kernel holds frozen
+  the "make sure" line and exit 0 stay. Seen with the real command on an Ubuntu 26.04 guest
+  (systemd 259), before and after; on Ubuntu 24.04 (systemd 255) a `systemctl stop` of the
+  frozen old unit is enough to reach the state.
+- The first `sudo yulius host setup` on a fresh host no longer fails its Docker smoke test
+  (SPEC-477, task #459, ADR-0308, issue #1160). The setup starts `yulius.service` and runs the
+  smoke seconds later; the starting server adopted the smoke's throwaway sandbox like a holder of
+  a previous server process and replaced the refusing Docker front of its Docker-off holder with
+  an engine front, so the step "a sandbox without Docker answers why" read a live engine. A
+  starting server now leaves `docker-smoke-<pid>` and its production holder alone while that
+  smoke's process runs. The same holds for a server restarted while an operator's `sudo yulius
+  doctor --docker-smoke` runs, which failed that smoke the same way.
+- The Subscriptions page reads usage and limit state again on request (SPEC-473, task #451,
+  ADR-0307). Each signed-in subscription's card has **Refresh**, and the page has **Refresh
+  all**. A refresh reads the usage and then asks Claude about each limit stored for the
+  subscription, one request of one output token with the model that limit binds. When the model
+  answers, the limit ends at once and the tasks that wait for it go on: a person who bought
+  usage credits no longer waits for the allowance's reset. When Claude still refuses, a limit
+  recorded without a reset gets the one Claude names. When Claude does not answer, the refresh
+  says why in one sentence and the limit stays. Each card starts with how old its usage reading
+  is ("Usage read 3 min ago"; one older than 10 minutes is marked, also in a folded row) and
+  names each used-up window with its reset: the 5-hour window, the week, a model's allowance
+  ("Fable this week"), or a limit Claude reported without saying when it resets. That is worked
+  out when the card is shown and again every second, so a card stops saying "Limit reached" the
+  moment its window resets, and a subscription at 100 % of a window no longer reads ready
+  because its last reading stored `ok`. The reading's time (`usage.observed_at`) now means that
+  both windows were read: a session's reading of one window and a limit Claude reports no
+  longer make a card say "just now", and the background round reads the window such sessions
+  do not report. The round does not read a model's allowance ahead of its limit; ADR-0307
+  states the cost.
+- A restart on a newer Claude Code no longer loses what waits in Claude Code's queue (SPEC-471,
+  task #454, #1204; amends SPEC-461 CCM-013, SPEC-468 and ADR-0293). A prompt entered while the
+  agent works (a person's, a message sent through a Superagent, a pull request's news) waits in
+  a queue inside Claude Code's process until the turn ends, and a resumed session does not get
+  that queue back; the restart at a turn's end used to end the process with the prompt, and a
+  message's sender had been told "sent". Yulius now reads the queue from the records Claude
+  Code writes about it into the transcript, per run, and leaves a session with a non-empty
+  queue where it is, at a turn's end the gate blocks as at a clean one; it moves at a later
+  turn's end. A queue that was just handed on counts until its turn shows, and for two
+  seconds after a prompt went on the session stays too, since Claude Code writes that record
+  a moment after the prompt's hook. Claude Code's own notifications of finished background
+  work wait in the same queue and count; it leaves some of them there for good, and such a
+  session gets the newer version at its next start (the server's log says what keeps a
+  session). Two limits stay: a prompt entered in the moment after a turn's end decided to
+  restart, and a write of Claude Code's slower than those two seconds. Checked with the real Claude Code 2.1.322 against a local stub of
+  the model API before the design (turns with tool calls included: a waiting prompt is taken
+  into the running turn at the next tool result). The tests' fake agent can now queue prompts
+  in Claude Code's order (`--queue-prompts`). Not in this change: a subscription switch at a
+  turn's end still loses a queued prompt (#1194; fixed by SPEC-479, above).
+
+- A task that reads "Needs your action" says why, and Reply shows where the answer goes
+  (SPEC-472, task #455, ADR-0306, #1221). The bar over a flagged task's terminal read "The agent
+  needs your attention. Its question is in the terminal below." for every such task, and its
+  Reply changed nothing on screen. That is true for one way to the flag, Claude Code's own
+  question. Yulius raises the flag itself when the Stop gate gave up after three blocks, a goal
+  was never set, Claude Code still asks whether to trust the folder, a restart cut the first
+  message, a full context could not be recovered, a session could not be ended, or the agent
+  asked for a secret or for an action in the sandbox browser; none of these puts a question in
+  the terminal, and each said why only in a notice that the viewers connected at that moment saw
+  for six seconds (a secret request said nothing, a browser request told only the pages that
+  heard it). The flag now keeps its reason with the task (`tasks.attention`, migration 0053; the
+  task's API view has `attention`), written by the statement that raises the flag and read only
+  while the task still reads that flag. The bar shows a reason of Yulius's own as it shows a
+  request: Needs you, Problem, To do, and Open for the page where it is answered (the Secrets
+  page, the browser tab). Claude Code's question keeps its sentence, with Claude Code's own
+  words, and a flag without a reason says "Look at its terminal below." and claims no question;
+  the task row's hidden line follows. Reply gives the terminal the keyboard and the terminal says
+  so ("The terminal has the keyboard: answer there."); a read-only terminal says why instead. A
+  second cause of the same sight is fixed with it: the agent's work answers a flag that Claude
+  Code's question raised, but only by a time the server kept in memory, so after an instance
+  update (which freezes agents mid-turn) such a task stayed "Needs your action" over a working
+  session until its turn ended. The reason now says that work answers the flag, and a run that
+  is watched again takes the flag's time back. A reason follows the owner of its flag: a
+  secret request's flag that Claude Code's question or the gate takes over says that matter,
+  not "Answer it on the Secrets page" after the secret was answered, and a flag that waits for
+  two secret requests opens the tab of the one still waiting. Whose flag it is is kept with
+  the reason, so after an update a secret request's answer still ends its flag (it stayed
+  until the turn's end before), and a question that took the flag over is answered by the
+  agent's work. A flag raised before this update
+  has no reason until it ends. Left as they are: a worker's permission prompt still ends only at the turn's
+  end or a typed message (nothing says when its dialog was answered; its bar now says what was
+  asked), and a second ask on a flagged task (#1200).
+- The CI test of the security job's independence no longer fails under load (SPEC-454, task #436;
+  delivered by task #457, SPEC-475; #1079).
+  `local_ci::the_security_job_and_the_others_never_cancel_each_other` queued two runs whose held
+  jobs competed for the fixture's three job slots, so it passed or failed by the order in which
+  they took them and by the fixture's 8 s job limit. Now the integration branch's run and the
+  pull request's first run pass before the test holds any job, the test asserts that, and its
+  jobs have a limit of an hour: only the test ends them. Nothing in the product changes.
 - Moving from Settings → Instance: three notes of the review that approved it, answered after the
   merge (SPEC-470, task #447, follow-up of #1214). The card no longer says "A move to … is
   recorded" over the checklist of a move that was aborted or finished: it says the last move is

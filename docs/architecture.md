@@ -208,6 +208,10 @@ superseding [0140](decisions/0140-isolated-sandboxes-have-no-container-engine-ag
   upgrade (a run older than the engine, adoption with Docker on, a recreated socket), then a
   production run in the sandbox's production holder (its own engine, `docker buildx build
   --load`, `docker save`/`docker load`, a bind of its files) that a sandbox run cannot reach.
+  While its process runs, its sandbox `docker-smoke-<pid>` and that production holder are the
+  smoke's alone: a server that starts meanwhile does not adopt them (`Manager::adopt` skips them
+  by the leftovers scan's name rule and its own process check), so its Docker-off holder keeps
+  its refusing front ([ADR-0308](decisions/0308-a-running-docker-smoke-tests-sandbox-is-the-smokes-alone.md)).
 
 ```mermaid
 flowchart LR
@@ -329,9 +333,16 @@ as its service user ([SPEC-421](../.ai/specs/SPEC-421-claude-should-autoupdate-w
   is restarted on the newer one through the subscription switch (reason `claude_code`), at the
   Stop hook of a turn it works on after, or once an idle prompt-mode session's turn has settled.
   A session stays while a goal its person set in it is open, while a draft may sit in its
-  prompt box (typed since its last prompt, by a person or by Yulius; a prompt that waits in
-  Claude Code's queue is not known, issue #1204) and while another restart of its task is under
-  way; an idle one that is restarted is idle again from its launch on, with what its goal left
+  prompt box (typed since its last prompt, by a person or by Yulius), while something waits in
+  Claude Code's queue and while another restart of its task is under way. The queue (a prompt
+  entered while a turn runs, Claude Code's own notifications) lives in the process's memory and
+  a resumed session does not get it back; the transcript watcher reads it from the
+  `queue-operation` records (`Observation::Queue`, counted per run in
+  `yulius_domain::agent_cli::Queue`, a hand-over counted until its turn shows, a reattached
+  run not known until it was read again), and a turn's end asks it after it read the turn's
+  lines, stays for two seconds after a prompt went on, whose record is written a moment
+  later, and logs the fact that keeps a session that is due (`kept_by`)
+  ([SPEC-471](../.ai/specs/SPEC-471-claude-code-moves-a-prompt-that-waits-in.md)); an idle one that is restarted is idle again from its launch on, with what its goal left
   (`IdleRest` in `supervisor.rs`), and the notification center remembers what a task read
   through a switch ([SPEC-468](../.ai/specs/SPEC-468-claude-code-moves-the-last-review-s-left.md)).
   A restart whose session does not reach its SessionStart hook (the launch fails, the process
@@ -500,8 +511,11 @@ Such a window ends at its reset, at a new sign-in of the subscription (it was th
 sign-in's) or with a provider's reading: one that carries the window replaces it (the usage
 endpoint reports the Opus and Sonnet caps when the plan has them; nothing reports the allowance of
 usage credits), and one that does not keeps it only while its reset is ahead, so a window without
-a reset ends with the next provider's reading. A session's reading replaces the 5-hour and weekly
-windows only. A subscription reads `limited` while the default model cannot run on it. A reported
+a reset ends with the next provider's reading. The reading of a refresh asked for on the
+Subscriptions page is the exception: it keeps such a window, and Claude's answer decides
+([below](#asking-claude-about-a-stored-limit)). A session's reading replaces the 5-hour and weekly
+windows only. A subscription reads `limited` while the default model cannot run on it; that
+status is written with the usage, and a page works the state out again when it shows it. A reported
 limit, a session's reading and a provider's reading read, change and store a subscription's usage
 through one helper under one lock (`App::change_account_usage`, `CapacityState::usage_writes`),
 which a new sign-in takes too; it is never held across a request to the provider, so a limit
@@ -549,6 +563,8 @@ flowchart TD
     W -->|yes| L["The task waits for that reset;<br/>the pool leaves this subscription out for it"]
     W -->|no| N["The session stays at the refusal:<br/>Yulius asks a person"]
     U["Usage reading"] -->|"a provider's: replaces the windows it carries,<br/>keeps other per-model windows until their reset.<br/>A session's: the 5-hour and weekly windows only"| M
+    Q["Refresh on the Subscriptions page:<br/>Claude is asked with the model the limit binds"] -->|"refused: the reset it names"| M
+    Q -->|"it ran: the limit ends"| P
 ```
 
 ```mermaid
@@ -566,6 +582,76 @@ sequenceDiagram
     H->>T: step back: drop errors and notices, relink parentUuid
     H->>N: claude --resume id (flag set, no prompt)
     N->>T: the lost turn, redone
+```
+
+### Asking Claude about a stored limit
+
+No usage reading shows a model's allowance of usage credits, so a limit stored for a model would
+hold until its reset even after a person bought credits. The Subscriptions page's Refresh asks
+([SPEC-473](../.ai/specs/SPEC-473-subscriptions-page-refresh-now-one-and-a.md),
+[decision 0307](decisions/0307-a-refresh-asks-claude-about-a-stored-limit-and-the-round-reads-no-allowance-ahead.md)).
+`POST /api/admin/accounts/{id}/usage` (`App::refresh_account_usage`) reads the usage, then sends
+one request of one output token for each limit stored and in effect, with the model that limit
+binds (`UsageProbe::model_answer`): a model of each family whose own weekly window is used up, and
+the default model for a limit of the whole subscription (`AccountUsage::families_at_a_limit`). A
+window the reading of that call itself carried is not asked about: the reading is Claude's word
+on it. The answer says whether a usage reading came of it (`usage_read`).
+
+The response's status is the answer, as Claude Code reads its own responses. A response that ran
+ends the limit, whatever its headers say (one that ran on bought credits still carries
+`unified-status: rejected`), and nothing is stored about the model's allowance. HTTP 429 that
+names a limit, by its claim or by a body that asks for usage credits, is recorded like a limit a
+session reports (`ReportedLimit::of_refusal`, the rule the harness uses for Claude Code's limit
+record): the window is full until the reset the answer names, so a limit stored without a reset
+gets one. Anything else is no answer: the refresh fails with one sentence and the limit stays.
+
+An answer is applied under the usage lock (`App::change_usage_of`), and only while the sign-in it
+was asked with and the limit it was asked about are still the ones stored; a usage reading is
+stored only for the sign-in it was asked with, too. The whole call has one
+deadline of 25 s, under the 30 s the web client waits; each step stores whole or not at all, so
+a call that is cut off leaves what its finished steps stored. The background round asks about no
+limit: reading a model's allowance ahead of its limit would cost a request of that model for
+every reading, drawn from the allowance it measures or from credits a person bought.
+
+`usage.observed_at` is the time the subscription's own windows were last read: by the provider,
+by a session whose reading carried both, or with an answer that carried both. A session's
+reading of one window (Claude Code's status line has a window only while the API reports it and
+its reset has not passed) and a limit Claude reports do not move it. So a card's age is the age
+of its windows, and the round, which skips a subscription read in the last 90 s, asks the
+provider for one whose sessions report one window.
+
+In the web UI, `assets/usage.js` (`limitsNow`) works out from the windows and their resets what
+a subscription's usage means at the moment it is shown: whether the default model can run, which
+windows are used up, and how old the reading is. The card (`accountUsage`: Subscriptions page,
+Status panel, Dashboard) draws that and works it out again every second while it is on the page,
+so it stops saying "Limit reached" the moment a window resets; the Status panel's counts and
+"Run #N on…" ask the same function. The page sends its readings through one queue: three
+subscriptions at a time, one request per subscription, and its own reading of an old card once
+per visit.
+
+```mermaid
+sequenceDiagram
+    participant P as Subscriptions page (queue of 3)
+    participant A as App (refresh_account_usage)
+    participant U as Usage probe
+    participant C as Claude
+    P->>A: POST /api/admin/accounts/{id}/usage (Refresh, or one of Refresh all)
+    A->>U: fetch
+    U->>C: GET /api/oauth/usage, else POST /v1/messages (cheapest model, 1 token)
+    A->>A: store the reading (keeps a model's window without a reset)
+    loop each limit stored and in effect
+        A->>U: model_answer(the model the limit binds)
+        U->>C: POST /v1/messages (that model, 1 token)
+        alt it ran
+            C-->>A: the limit ends, waiting tasks resume
+        else 429 that names a limit
+            C-->>A: the window is full until the reset named
+        else no answer
+            C-->>A: 502 with one sentence, the limit stays
+        end
+    end
+    A-->>P: AccountView (or 502 at the 25 s deadline)
+    P->>P: the card works out its state, age and used-up windows by the clock
 ```
 
 ## Moving a task off its subscription
@@ -1043,7 +1129,8 @@ the pull request watch (`pr_watch.rs`) looks at each running, unpaused task whos
 run holding it, the armed slot, the train, a merge of its head into `origin/<integration>` with
 the merge drivers, cached per head and integration commit), and types into its session, as one
 bracketed paste through `type_into_session`, cleaned of control characters and never while a
-person must act first (a prompt on screen, `needs_you`):
+person must act first (a prompt on screen, `needs_you`) or may have a draft in the prompt box
+(SPEC-480: the notice stays untold and is tried again):
 
 - a red run at its head (each failed job, its exit code and up to 5 failing test names read from
   the kept failures, and the `ci_status` run and job), or one that errored;
@@ -1582,8 +1669,15 @@ one bracketed paste labelled with the person and the caller's channel ("through 
 Superagent", or "through their own agent" for the remote MCP; SPEC-322), then a separate Enter, refused before Claude Code's
 session started (SessionStart, whose `session-started` marker in the run folder `reconcile`
 reads for a reattached run, or half the goal-ready timeout after the spawn, `spawned_ms`),
-while a person typed
-in the last minute (`typed_recently`), while Claude Code's folder-trust dialog shows
+while a person's draft may sit in its prompt box (they typed since the box was last empty,
+however long ago) or they typed in the last minute (`App::box_held`, `policy::box_held`;
+[SPEC-480](../.ai/specs/SPEC-480-a-message-yulius-types-lands-on-a-person.md),
+[decision 0309](decisions/0309-yulius-types-nothing-onto-a-persons-possible-draft.md): the
+sender is told, and for a message of Yulius's own, which waits in its watch, the task is flagged
+and its terminal says so once the person's last key is ten minutes old; the key that begins a
+possible draft leaves `person-typed` in the run folder, removed when a prompt is submitted from
+the box and read by `reconcile` for a reattached run), while Claude Code's
+folder-trust dialog shows
 (`trust_prompt_shown`), while Yulius types the first message or while another
 message is typed (`TaskRuntime::typing_message`); audited `task.messaged`
 ([SPEC-230](../.ai/specs/SPEC-230-superagent-should-be-able-to-prompt-task.md),
@@ -2740,7 +2834,16 @@ merge"), even with a complete plan and a tested pull request; only an achieved g
 
 While a goal is open, a clean Stop reads idle only after the goal verdict (or the turn record, or
 20 s). A proactive switch waits for any of this background work
-([ADR-0063](decisions/0063-background-work-and-goal-verdict-from-the-transcript.md)):
+([ADR-0063](decisions/0063-background-work-and-goal-verdict-from-the-transcript.md)), and for a
+prompt that waits in Claude Code's queue, which would go with the process: `hook_stop` asks
+`prompt_waits_for_turns_end` once the turn's lines were read and answers the Stop as on a
+subscription that stays; a turn held for capacity is released in place instead of moved
+(`resume_paused`). What a turn's closing record found waiting at an end that handed nothing
+on (`Queue::turn_closed`, `Queue::hands_on`) was left by Claude Code and keeps no move; an
+end that handed something on marks nothing, since what waits behind an entry Claude Code
+hands on alone leaves one end later
+([SPEC-479](../.ai/specs/SPEC-479-a-subscription-switch-at-a-turn-s-end-lo.md),
+[ADR-0310](decisions/0310-a-move-to-another-subscription-at-a-turns-end-waits-for-what-claude-code-still-queues.md)):
 
 ```mermaid
 flowchart LR
@@ -2752,9 +2855,42 @@ flowchart LR
     stop -.->|"goal open: until the verdict,\nthe turn record or 20 s"| working
     verdict["goal verdict: not met"] --> working
     work["assistant work after the stop"] --> working
-    notice["notice that asks a person"] --> attention["needs_attention"]
-    attention -.->|"agent works on"| working
+    notice["notice that asks a person"] -->|"reason: terminal,\nClaude Code's words"| attention["needs_attention\n+ its reason"]
+    own["Yulius's own flag: the gate gave up,\nno goal, a full context, a secret\nor browser request, …"] -->|"reason: yulius,\nproblem, to do, page"| attention
+    attention -.->|"a notice's flag:\nagent works on"| working
 ```
+
+A `needs_attention` flag keeps its reason with the task
+([SPEC-472](../.ai/specs/SPEC-472-hey-i-have-a-bug-in-produt-sanbox-this-h.md),
+[ADR-0306](decisions/0306-a-needs-attention-flag-keeps-its-reason.md)). Claude Code's notice is one
+way to the flag and the only one that puts a question on the terminal. Yulius raises it itself
+when the Stop gate gave up, a goal was never set, Claude Code still asks whether to trust the
+folder, a restart cut the first message, a full context could not be recovered, a session could
+not be ended, or the agent asked for a secret or for an action in the sandbox browser. Each of
+these says why in a notice of the task's terminal, which reaches the viewers connected at that
+moment and shows for six seconds. So the statement that raises the flag
+(`TaskStore::flag_attention`) writes the reason into `tasks.attention`: who asks (`terminal` or
+`yulius`), the problem, what to do, the page where to do it, and the flag's time. It is read
+only while the task is running, reads `needs_attention` and has not changed state since that
+time (`task_attention`), so no other statement has to clear it; a task that is already flagged
+keeps its flag and its reason. One flag changes owner, and its reason follows: a secret
+request's flag that another matter takes over (the request's answer then leaves it) says that
+matter's reason, and one that waits for several requests points at one still open
+(`replace_attention`: the same flag and time, another reason). The reason also records that a
+flag is a secret request's (`answer_ends`), so the request's answer ends it after a restart of
+Yulius as before one. The task's view carries it as `attention`, and the task view's
+bar shows it: a reason of Yulius's own as a request is shown (Problem, To do, Open), Claude
+Code's question as "Its question is in the terminal below" with Claude Code's words, and a flag
+without a reason as "Look at its terminal below". Reply gives the terminal the keyboard and the
+terminal's notice says so.
+
+The reason also says whether the session's own work answers the flag (STA-003: Claude Code's
+question, which the person answers in the terminal with no prompt to the agent; not a worker's
+prompt). The time of such a flag is kept in the server's memory, and an instance update freezes
+every agent mid-turn: a run that is watched again takes the time back from the flag
+(`watch_answerable_flag`), so the task reads Working once the person answered and the agent goes
+on, after a restart as before one. The same holds for a question that took a secret request's
+flag over.
 
 Needs you means a person has to act. An idle agent that stopped reads "Your turn" under Needs you only
 while its work is visibly unfinished: plan steps open, or a goal that Claude Code last recorded as set,
@@ -3243,8 +3379,12 @@ and the receipts are stored (`/var/lib/yulius-migrate/state.json`, `copy/`); eve
 facts and acts if needed, so the same command continues a move. A run that goes on from a
 recorded start asks the new instance first and never ends well with both running: whatever
 unit of the old instance (the server's, its sessions unit) runs unfrozen beside a new instance
-that has taken over is frozen again, to stay, or the run fails saying so (SPEC-467). The copy
-carries a mark
+that has taken over is frozen again, to stay, or the run fails saying so (SPEC-467). The
+state file says that the new instance has taken over (`Moved`) and that the finish was done
+(`finished`), never that the old instance is held: every run of a moved move asks systemd
+(`Move::old_hold`: no unit runs unfrozen, `freeze::left_running` finds nothing, and
+`freeze::disabled` reads `systemctl is-enabled`), and says "finished" only while it is; a later
+run changes nothing of the old instance (SPEC-481, ADR-0311). The copy carries a mark
 (`move-pending.json`): the first start that finds it queues the tasks whose runs were lost with the
 old host (`yulius-app::host_move`).
 

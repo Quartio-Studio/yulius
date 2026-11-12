@@ -179,10 +179,53 @@ pub const SHORT_PROMPT_WORDS: usize = 3;
 /// recently; other turns are Claude Code's own (goal continuations, background agents) or
 /// Yulius's (the first prompt, continuations).
 pub const TYPED_WINDOW_MS: i64 = 60_000;
+/// A person whose possible draft holds a message of Yulius's own back is told once their last
+/// keystroke is this old (SPEC-480 DRF-006): before that they may still be writing.
+pub const DRAFT_TOLD_MS: i64 = 10 * 60_000;
 /// Largest task goal, user prompt and step list given to Jev (each), in bytes.
 pub const STATE_PART_BYTES: usize = 8 * 1024;
 /// Most steps listed in a scope question.
 pub const STATE_MAX_STEPS: usize = 40;
+
+/// Why Yulius types nothing into a session's prompt box now: a person holds it (SPEC-480).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoxHeld {
+    /// A person typed into the session since its prompt box was last empty, `typed_ms_ago`: what
+    /// they typed may still sit there, unsent, however long ago that was (DRF-001).
+    Draft {
+        /// How long ago their last keystroke was (ms).
+        typed_ms_ago: i64,
+    },
+    /// A person typed in the last minute and what they typed was sent: they are at the
+    /// keyboard (DRF-002).
+    AtKeyboard,
+}
+
+impl BoxHeld {
+    /// Whether the person is told that a message of Yulius's own waits (DRF-006): their
+    /// possible draft is at least [`DRAFT_TOLD_MS`] old.
+    #[must_use]
+    pub fn tells_person(self) -> bool {
+        matches!(self, Self::Draft { typed_ms_ago } if typed_ms_ago >= DRAFT_TOLD_MS)
+    }
+}
+
+/// Whether a person holds a session's prompt box at `now_ms`, so that Yulius types no message
+/// into it (SPEC-480 DRF-001, DRF-002). `typed_at_ms` is a person's last keystroke (0: none),
+/// `box_emptied_ms` when the box was last known empty (its run's start, or the last prompt
+/// submitted from it; [`crate::agent_cli::is_draft`]). Yulius sees keys, not the box: every
+/// keystroke after the box was emptied counts, also one that left no text there.
+#[must_use]
+pub fn box_held(now_ms: i64, typed_at_ms: i64, box_emptied_ms: i64) -> Option<BoxHeld> {
+    if typed_at_ms <= 0 {
+        return None;
+    }
+    let typed_ms_ago = now_ms.saturating_sub(typed_at_ms);
+    if crate::agent_cli::is_draft(typed_at_ms, box_emptied_ms) {
+        return Some(BoxHeld::Draft { typed_ms_ago });
+    }
+    (typed_ms_ago <= TYPED_WINDOW_MS).then_some(BoxHeld::AtKeyboard)
+}
 
 /// The verdict on a new task's prompt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -531,6 +574,41 @@ pub const SENT_HOLD_TTL_MS: i64 = 10 * 60 * 1000;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SPEC-480 AC3 (DRF-001, DRF-002, DRF-006): a keystroke after the prompt box was last
+    /// empty holds messages at any age; one that was sent holds them for a minute; the person
+    /// is told from ten minutes on.
+    #[test]
+    fn a_persons_draft_holds_the_prompt_box_however_old() {
+        const MIN: i64 = 60_000;
+        let now = 100 * MIN;
+        assert_eq!(box_held(now, 0, 0), None, "nobody typed");
+        assert_eq!(box_held(now, 0, now - MIN), None, "nobody typed");
+        // Typed after the box was emptied (or with no time known for that): a draft, at any age.
+        for ago in [0, 1_000, MIN, MIN + 1, 9 * MIN, 90 * MIN] {
+            for emptied in [0, now - 95 * MIN] {
+                let held = box_held(now, now - ago, emptied);
+                assert_eq!(held, Some(BoxHeld::Draft { typed_ms_ago: ago }), "{ago}");
+            }
+        }
+        // Typed and then sent (the box was emptied at or after the last key): a minute.
+        for (ago, held) in [
+            (1_000, Some(BoxHeld::AtKeyboard)),
+            (MIN, Some(BoxHeld::AtKeyboard)),
+            (MIN + 1, None),
+            (90 * MIN, None),
+        ] {
+            assert_eq!(box_held(now, now - ago, now - ago), held, "{ago}");
+            assert_eq!(box_held(now, now - ago, now - ago + 30), held, "{ago}");
+        }
+        // The person is told once their last key is ten minutes old, never while at the keyboard.
+        let draft = |typed_ms_ago| BoxHeld::Draft { typed_ms_ago };
+        assert!(!draft(0).tells_person());
+        assert!(!draft(DRAFT_TOLD_MS - 1).tells_person());
+        assert!(draft(DRAFT_TOLD_MS).tells_person());
+        assert!(draft(90 * MIN).tells_person());
+        assert!(!BoxHeld::AtKeyboard.tells_person());
+    }
 
     fn answer(choice: &str, probabilities: &[(&str, f64)]) -> ChoiceAnswer {
         ChoiceAnswer {

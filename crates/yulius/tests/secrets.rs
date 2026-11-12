@@ -2817,6 +2817,16 @@ async fn agents_request_hosts_and_people_allow_them() -> TestResult {
         task.activity,
         Some(yulius_domain::task::Activity::NeedsAttention)
     );
+    // The task says what its person does, and where (SPEC-472 ATN-004).
+    assert_eq!(
+        support::attention(&w.h.app, "t1").await?,
+        json!({
+            "kind": "yulius",
+            "problem": "The agent asked for a secret, and a person has to answer its request.",
+            "action": "Answer it on the Secrets page.",
+            "link": body["link"],
+        })
+    );
     let listed = tool_text(&mcp_tool(&w.h, TOKEN_S1, "secrets_list", json!({})).await?);
     assert_eq!(
         listed["secrets"][0]["requested_hosts"],
@@ -3180,6 +3190,74 @@ async fn an_agents_host_request_is_announced_to_open_secrets_pages() -> TestResu
     let asked = ask("GLOBAL_KEY", "global.test").await?;
     assert_eq!(asked["isError"], false, "{asked}");
     assert_eq!(announced.take(), vec![None]);
+    Ok(())
+}
+
+/// SPEC-472 ATN-011: a task that asked for two secrets keeps its flag after the first answer
+/// (SPEC-213 SRA-002), and the flag then points at the request that still waits: here the
+/// project's secret is answered and the one of every sandbox, on another tab of the Secrets
+/// page, still waits.
+#[tokio::test]
+async fn a_flag_points_at_the_secret_request_that_still_waits() -> TestResult {
+    let w = world().await?;
+    let created = add_agent_secret(
+        &w,
+        &w.writer,
+        "s1",
+        json!({"name": "VIDOC_API_KEY", "description": "API key for Vidoc", "value": "vidoc-key-123456", "auto_allow": false}),
+    )
+    .await?;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    let id = created.body["id"].as_str().ok_or("id")?.to_owned();
+    let global = add_agent_secret(
+        &w,
+        &w.admin,
+        "s1",
+        json!({"scope": "instance", "name": "GLOBAL_KEY", "description": "Shared", "value": "global-value-123", "auto_allow": false}),
+    )
+    .await?;
+    assert_eq!(global.status, StatusCode::CREATED, "{}", global.body);
+    let global_id = global.body["id"].as_str().ok_or("id")?.to_owned();
+    let ask = |secret: &str, host: &str| {
+        mcp_tool(
+            &w.h,
+            TOKEN_S1,
+            "secret_request_hosts",
+            json!({"secret": secret, "hosts": [host]}),
+        )
+    };
+    let link = |why: &Value| why["link"].as_str().unwrap_or_default().to_owned();
+
+    let asked = ask("VIDOC_API_KEY", "api.vidoc.test").await?;
+    assert_eq!(asked["isError"], false, "{asked}");
+    let why = support::attention(&w.h.app, "t1").await?;
+    assert!(
+        link(&why).ends_with("/s/app/secrets?section=agents"),
+        "{why}"
+    );
+    let asked = ask("GLOBAL_KEY", "global.test").await?;
+    assert_eq!(asked["isError"], false, "{asked}");
+    // Two wait; the flag still says the first.
+    let why = support::attention(&w.h.app, "t1").await?;
+    assert!(
+        link(&why).ends_with("/s/app/secrets?section=agents"),
+        "{why}"
+    );
+
+    // The project's is answered: the flag stays for the other, and opens its tab.
+    let allowed = answer_request(&w, &w.writer, &id, true, &["api.vidoc.test"]).await?;
+    assert_eq!(allowed.status, StatusCode::OK, "{}", allowed.body);
+    let why = support::attention(&w.h.app, "t1").await?;
+    assert_eq!(why["action"], "Answer it on the Secrets page.", "{why}");
+    assert!(
+        link(&why).ends_with("/s/app/secrets?section=global"),
+        "{why}"
+    );
+
+    // The last one answered: the flag and its reason go.
+    let allowed = answer_request(&w, &w.admin, &global_id, true, &["global.test"]).await?;
+    assert_eq!(allowed.status, StatusCode::OK, "{}", allowed.body);
+    assert!(support::attention(&w.h.app, "t1").await?.is_null());
     Ok(())
 }
 

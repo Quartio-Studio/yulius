@@ -148,8 +148,10 @@ watching, steering and unblocking.
   DO budget", the Superagent passes the message on (task agents cannot): a task that has not
   started gets it in its request, a running one gets it typed into its session as "Message from
   alice (through their Superagent)" (or "(through their own agent)" when the person's own agent
-  sends it through the remote MCP, SPEC-322), unless someone typed there in the last minute or
-  the task still asks a person whether to trust its folder (SPEC-230). When a usage limit cuts its
+  sends it through the remote MCP, SPEC-322), unless someone typed there in the last minute, text
+  they typed and did not send may still be in its prompt box (however old, SPEC-480: such a
+  message is not typed behind a person's draft, and for a message of Yulius's own the task
+  says so after ten minutes), or the task still asks a person whether to trust its folder (SPEC-230). When a usage limit cuts its
   turn, it moves to a subscription with capacity and goes on with the turn, as a task does; the
   panel follows it. It has the project's MCP servers, as a task does, and an agent secret one of
   them or a command prints shows there as `[secret:NAME]` (SPEC-147). It uses the agent vault as
@@ -239,7 +241,13 @@ watching, steering and unblocking.
   A task is its owner's: Yulius acts on GitHub for it with their credentials (the agent's own Git
   and `gh` use a narrowed App token), so only they change it. Its owner can **pause** a running task and resume it later: the agent
   stops where it is without being told (as an update pauses every task) and goes on from there; a
-  paused task, and one an update holds, reads Paused in the lists and says why. Others
+  paused task, and one an update holds, reads Paused in the lists and says why. A task that
+  reads **Needs your action** says why in the bar over its terminal, whenever it is opened:
+  what is wrong, what to do, and the page where to do it when Yulius flagged the task itself
+  (the Stop gate gave up, no goal was set, a session is full, the agent asked for a secret or
+  for an action in the sandbox browser), and "Its question is in the terminal below" only for
+  Claude Code's own question; Reply puts the keyboard in the terminal and says so (SPEC-472).
+  Others
   watch it as its live transcript (printed as the Sessions view prints a session, in the
   terminal's colours, following its newest lines until they scroll up), see whose it is
   in the view and in the sidebar, and can ask the owner for control; once handed over, it acts as
@@ -253,7 +261,13 @@ watching, steering and unblocking.
   on a weekly allowance of them) is at that model's limit: its tasks of that model move on or
   wait for the reset by themselves, the pool sends it no such task until then whatever its
   5-hour and weekly usage read, and nobody is asked to send "continue"; its card shows the
-  allowance as "Fable this week", and a task of another model can still be run on it. When
+  allowance as "Fable this week", and a task of another model can still be run on it. Every
+  card says how old its usage reading is and which window is used up with its reset (the
+  5-hour window, the week, or a model's allowance), worked out when it is shown: it stops
+  saying "Limit reached" the moment the window resets. An administrator presses Refresh on a
+  card, or Refresh all, to read the usage again and to have Claude asked whether a limit it
+  reported still holds: after buying credits the limit ends at once and the tasks that wait
+  for it go on (SPEC-473). When
   Claude does not say when such a limit ends and no other subscription can take the task,
   Yulius tries it once more after the provider's next usage reading. Refused again, the task
   waits for another subscription's reset when one is known, and otherwise asks a person

@@ -266,6 +266,7 @@ function seed(params) {
       // Paused for subscription capacity: when the earliest window resets (ROT-010).
       resumes_at: status === 'waiting_capacity' ? new Date(Date.now() + 38 * MIN).toISOString() : null,
       ...(extra.mode ? { mode: extra.mode } : {}),
+      ...(extra.attention ? { attention: extra.attention } : {}),
       // Background shells the idle agent left running (TSK-014).
       background_shells: extra.shells ?? null,
       background_shells_since: extra.shells ? new Date(Date.now() - 12 * MIN).toISOString() : null,
@@ -286,7 +287,9 @@ function seed(params) {
     t('sb_studio', 12, 'Checkout API', 'claude', 'running', 'working', { done: 2, updated: 20e3, working: 2 * HOUR + 14 * MIN, prompt: `# Checkout API\n\nBuild the checkout endpoint:\n\n- Stripe payment intents\n- an idempotency key per order\n\n@${MOCK_ATTACHMENTS}/checkout-error.png\n@${MOCK_ATTACHMENTS}/notes.txt\n@${MOCK_ATTACHMENTS}/old-mockup.png` }),
     // Finished its turn with a tested pull request (checks green) and a complete plan: "Done" (#35, #139).
     t('sb_studio', 11, '3D model viewer', 'claude', 'running', 'waiting', { done: 7, current: false, author: 'anna-q', owner: 'mkarp', delivery: { stage: 'pr_open', environment: null, pr: pr(221, '3D model viewer', 'open', 'dev', 'success') } }),
-    t('sb_studio', 10, 'AWS login for deploy', 'claude', 'running', 'needs_attention', { done: 4 }),
+    // Its agent asked for a sign-in in the sandbox browser (the request `askBrowserSignIn` sends):
+    // the flag says so itself, with the tab, for a page that never hears the request (SPEC-472).
+    t('sb_studio', 10, 'AWS login for deploy', 'claude', 'running', 'needs_attention', { done: 4, attention: { kind: 'yulius', problem: 'The agent asks you to act in the sandbox\'s browser: Sign in to AWS so task #10 can deploy', action: 'Open the browser tab and do what it asks.', link: `${ORIGIN}/s/studio/browser?tab=tab-aws` } }),
     t('sb_studio', 9, 'Move to the next account', 'claude', 'switching', null, { done: 3, working: 3 * HOUR }),
     t('sb_studio', 8, 'Nightly feedback digest', 'claude', 'queued', null, { origin: 'automation', noSteps: true }),
     t('sb_studio', 7, 'Search indexing', 'claude', 'waiting_capacity', null, { done: 1 }),
@@ -479,6 +482,8 @@ function summary(task) {
     owner: { ...ownerOf(task) }, control_request: task.controlRequest ? { by: { ...task.controlRequest.by }, at: task.controlRequest.at } : null,
     // What the agent asked a person to do (`needs_you`, SPEC-134).
     needs_you: task.needs_you ? { ...task.needs_you } : null,
+    // Why it reads needs_attention (SPEC-472): the flag's reason, only while it reads that flag.
+    attention: task.status === 'running' && task.activity === 'needs_attention' && task.attention ? { ...task.attention } : null,
     steps: stepsSummary(task), archived: task.archived, account_label: task.account_label,
     resumes_at: task.status === 'waiting_capacity' ? task.resumes_at || null : null,
     // No Claude account usable (SPEC-246): it waits for one, not for capacity.
@@ -790,7 +795,12 @@ function touch(db, task, changes = {}) {
   Object.assign(task, changes, { updated_at: changes.updated_at || new Date().toISOString() });
   // Out of `closed` it starts: it has had a run from then on, as on the server (SPEC-153).
   if (task.status !== 'closed') Object.assign(task, { neverRan: false, awaitsStart: false });
-  if (task.status !== status || task.activity !== activity) task.state_since = task.updated_at;
+  if (task.status !== status || task.activity !== activity) {
+    task.state_since = task.updated_at;
+    // A flag's reason goes with its flag, as on the server (SPEC-472): a change of state that
+    // brings no reason leaves none.
+    if (!('attention' in changes)) delete task.attention;
+  }
   task.working_since = workingSince(task);
   recount(db);
   emit(db, { type: 'task.updated', task: summary(task) });
@@ -3907,8 +3917,15 @@ route('DELETE', `/api/admin/accounts/${ID}`, ({ db, p }) => {
   }
   return json(204);
 });
-// Refreshes the provider's usage windows; an account that must sign in again gets the provider's 502.
-route('POST', `/api/admin/accounts/${ID}/usage`, ({ db, p }) => {
+// Reads the provider's usage windows again and asks about the limits stored for the account
+// (SPEC-473); an account that must sign in again gets the provider's 502. A test scripts what
+// Claude answers per account in `db.usageAnswers[id]`: `{ fail: sentence }` (502, the sentence
+// kept as the usage note unless `note: false`), `{ unread: true }` (no usage reading: the account
+// as it is, `usage_read: false`), or `{ usage, status, at }` (what the reading and the answers
+// leave stored, read at `at`: now when left out). A request
+// waits for `db.usageGate` (a promise) when a test set one; `usageInFlight` and
+// `usageMostInFlight` count the requests under way.
+route('POST', `/api/admin/accounts/${ID}/usage`, async ({ db, p }) => {
   adminOnly(db);
   const account = db.accounts.find((a) => a.id === p[0]);
   if (!account) fail(404, 'not_found', 'not found');
@@ -3916,9 +3933,18 @@ route('POST', `/api/admin/accounts/${ID}/usage`, ({ db, p }) => {
   // its sign-in error stays.
   if (db.unsignedAccounts.has(account.id)) fail(409, 'conflict', 'the account is not signed in yet');
   if (account.status === 'relogin' || account.status === 'pending_login') fail(502, 'upstream', account.last_error || 'the provider refused the usage request; sign in again');
-  account.usage = { ...account.usage, observed_at: new Date().toISOString() };
+  db.usageInFlight = (db.usageInFlight || 0) + 1;
+  db.usageMostInFlight = Math.max(db.usageMostInFlight || 0, db.usageInFlight);
+  try { await db.usageGate; } finally { db.usageInFlight -= 1; }
+  const answer = (db.usageAnswers || {})[account.id] || {};
+  if (answer.fail) {
+    if (answer.note !== false) account.last_error = `usage: ${answer.fail}`;
+    fail(502, 'upstream', answer.fail);
+  }
   account.last_error = null;
-  return account;
+  if (answer.unread) return { ...account, usage_read: false };
+  Object.assign(account, { status: answer.status || account.status, usage: { ...(answer.usage || account.usage), observed_at: answer.at || new Date().toISOString() } });
+  return { ...account, usage_read: true };
 });
 route('POST', `/api/admin/accounts/${ID}/relogin`, ({ db, p }) => {
   adminOnly(db);

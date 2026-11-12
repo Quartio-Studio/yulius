@@ -115,6 +115,11 @@ pub struct AccountView {
     /// Tokens Yulius observed on this account in the last 7 days.
     #[serde(default)]
     pub tokens_7d: Option<TokenTotalsView>,
+    /// Only in the answer of `POST /api/admin/accounts/{id}/usage`: whether Claude gave a
+    /// usage reading this time (`false` for a sign-in that may not read its usage, whose
+    /// windows are then as they were; SPEC-473).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage_read: Option<bool>,
 }
 
 /// Token totals of an account's runs; `None` values are unknown (runs without usage data).

@@ -1456,6 +1456,8 @@ impl Manager {
     }
 
     /// Adopts holders a previous server process started; removes the records of dead ones.
+    /// The holders of a Docker smoke test that still runs are left to it (`smoke_runs`,
+    /// ADR-0308).
     pub async fn adopt(&self) -> usize {
         let root = self.config.data_dir.join("runtime").join("sandboxes");
         let Ok(entries) = std::fs::read_dir(&root) else {
@@ -1464,6 +1466,10 @@ impl Manager {
         let mut adopted = 0;
         for entry in entries.flatten().take(10_000) {
             let sandbox = entry.file_name().to_string_lossy().into_owned();
+            if smoke_runs(&sandbox) {
+                tracing::info!(sandbox, "left to the Docker smoke test that runs");
+                continue;
+            }
             if self.adopt_one(&sandbox).await {
                 adopted += 1;
             }
@@ -1927,6 +1933,16 @@ impl Manager {
     }
 }
 
+/// Whether `sandbox` is the throwaway sandbox of a Docker smoke test that still runs, or its
+/// production holder: `docker-smoke-<pid>[.prod]` (the leftovers scan's name rule) while process
+/// `<pid>` lives. A server that starts beside the smoke must not take them (SPEC-477 SMK-001,
+/// ADR-0308, #1160): the smoke starts its holder with Docker off and reads the refusal, and an
+/// adopting server replaced that refusing front with its own engine front. Once the process is
+/// gone they are holders like any other.
+fn smoke_runs(sandbox: &str) -> bool {
+    yulius_domain::leftovers::smoke_pid(sandbox).is_some_and(crate::holder::exists)
+}
+
 /// What [`Manager::keep_front`] does with a sandbox's front.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum FrontAction {
@@ -2230,6 +2246,16 @@ while True:
         docker: Result<(), String>,
         engine: bool,
     ) -> Result<Arc<Manager>, Box<dyn std::error::Error>> {
+        adopting_as(data, "s1", docker, engine)
+    }
+
+    /// [`adopting`] for the holder of `sandbox`.
+    fn adopting_as(
+        data: &Path,
+        sandbox: &str,
+        docker: Result<(), String>,
+        engine: bool,
+    ) -> Result<Arc<Manager>, Box<dyn std::error::Error>> {
         use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
         let exe = data.join("fake-yulius");
         if !exe.exists() {
@@ -2242,7 +2268,7 @@ while True:
         config.docker = docker;
         config.delegation = Some(delegation(data)?);
         let manager = Manager::new(config);
-        let state = StatePaths::new(manager.state_dir("s1"));
+        let state = StatePaths::new(manager.state_dir(sandbox));
         std::fs::create_dir_all(&state.dir)?;
         let dockerd = manager.bases.path("base-1").join("usr/bin");
         std::fs::create_dir_all(&dockerd)?;
@@ -2250,6 +2276,7 @@ while True:
         let me = std::process::id();
         let ns = |kind| crate::holder::ns_inode(me, kind).ok_or("no namespace");
         let record = HolderRecord {
+            sandbox: sandbox.to_owned(),
             inner_pid: me,
             bwrap_pid: 0,
             user_ns: ns("user")?,
@@ -2263,8 +2290,13 @@ while True:
     }
 
     async fn ask_front(manager: &Manager) -> std::io::Result<String> {
+        ask_front_of(manager, "s1").await
+    }
+
+    /// What the front of `sandbox` answers at its socket.
+    async fn ask_front_of(manager: &Manager, sandbox: &str) -> std::io::Result<String> {
         use tokio::io::AsyncReadExt as _;
-        let socket = StatePaths::new(manager.state_dir("s1")).docker_socket();
+        let socket = StatePaths::new(manager.state_dir(sandbox)).docker_socket();
         let mut stream = tokio::net::UnixStream::connect(socket).await?;
         let mut text = String::new();
         tokio::time::timeout(Duration::from_secs(10), stream.read_to_string(&mut text))
@@ -2394,6 +2426,80 @@ while True:
         assert_eq!(same.adopt().await, 1);
         assert_eq!(front_of(&same).await.map(|f| f.pid), Some(back.pid));
         kill(back.pid);
+        Ok(())
+    }
+
+    /// #1160 (SPEC-477 SMK-001): a server that starts while a Docker smoke test runs leaves the
+    /// smoke's sandbox to it (the first `yulius host setup` starts `yulius.service` seconds
+    /// before its smoke). Adopted, the smoke's Docker-off holder got this server's engine front
+    /// in place of the refusal the smoke must read, and the server kept both holders in its
+    /// upkeep. A smoke whose process is gone left ordinary holders: adopted as before.
+    #[tokio::test]
+    async fn a_starting_server_leaves_a_running_smoke_tests_holders_alone()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let data = tempfile::tempdir()?;
+        // The smoke is this process: its Docker-off holder with the refusing front, and its
+        // production holder.
+        let smoke = format!("docker-smoke-{}", std::process::id());
+        let production = production_holder(&smoke);
+        let own = adopting_as(data.path(), &smoke, Err(DOCKER_OFF.into()), false)?;
+        adopting_as(data.path(), &production, Ok(()), false)?;
+        // The server beside it has Docker on and a sandbox of its own.
+        let server = adopting(data.path(), Ok(()), false)?;
+        // From here fronts run: nothing returns or asserts until they are ended below.
+        let own_adopted = own.adopt_one(&smoke).await;
+        let refusing = own.docker_front(&smoke).await;
+
+        // The server starts.
+        let adopted = server.adopt().await;
+        let mut known: Vec<String> = lock(&server.sandboxes).keys().cloned().collect();
+        known.sort();
+        let answer = ask_front_of(&own, &smoke).await;
+        let refusing_runs = refusing
+            .as_ref()
+            .is_some_and(|front| crate::holder::exists(front.pid));
+        let production_front = StatePaths::new(server.state_dir(&production))
+            .docker_record()
+            .exists();
+        // Also the fronts a server without the rule started.
+        for sandbox in ["s1", smoke.as_str(), production.as_str()] {
+            let state = StatePaths::new(server.state_dir(sandbox));
+            if let Ok(front) = read_json::<DockerFrontRecord>(&state.docker_record()) {
+                kill(front.pid);
+            }
+        }
+        if let Some(front) = &refusing {
+            kill(front.pid);
+        }
+        assert!(own_adopted, "the smoke adopts its own holder");
+        assert_eq!(refusing.map(|f| f.mode).as_deref(), Some("refuse"));
+        assert_eq!(answer?, format!("mode:refuse:{DOCKER_OFF}"));
+        assert!(refusing_runs, "the smoke's refusing front was not stopped");
+        assert_eq!(
+            known,
+            ["s1"],
+            "only the server's own sandbox is in its upkeep"
+        );
+        assert_eq!(adopted, 1);
+        assert!(!production_front, "the production holder got no front");
+
+        // A smoke that ended (its process is gone) left holders like any other.
+        let mut ended = std::process::Command::new("true").spawn()?;
+        let pid = ended.id();
+        ended.wait()?;
+        let left = format!("docker-smoke-{pid}");
+        let restarted = adopting_as(data.path(), &left, Ok(()), false)?;
+        std::fs::remove_dir_all(server.state_dir(&smoke))?;
+        std::fs::remove_dir_all(server.state_dir(&production))?;
+        let adopted = restarted.adopt().await;
+        let front = restarted.docker_front(&left).await;
+        for sandbox in ["s1", left.as_str()] {
+            if let Some(front) = restarted.docker_front(sandbox).await {
+                kill(front.pid);
+            }
+        }
+        assert_eq!(adopted, 2, "the server's sandbox and the ended smoke's");
+        assert_eq!(front.map(|f| f.mode).as_deref(), Some("engine"));
         Ok(())
     }
 

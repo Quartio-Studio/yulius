@@ -1437,9 +1437,11 @@ impl Fixture {
 /// the scan; both run to the end and report. Fail-fast among the other jobs stays.
 #[tokio::test]
 async fn the_security_job_and_the_others_never_cancel_each_other() -> TestResult {
-    let f = fixture_with(false, |data| {
-        format!(
-            r#"[[ci.jobs]]
+    let f = fixture_tuned(
+        false,
+        |data| {
+            format!(
+                r#"[[ci.jobs]]
 name = "security"
 command = 'if [ -f fail-security ]; then exit 1; fi; while [ ! -f "{release}" ]; do sleep 0.05; done'
 
@@ -1451,14 +1453,38 @@ command = 'if [ -f fail-quality ]; then exit 1; fi; while [ ! -f "{release}" ]; 
 name = "e2e"
 command = 'while [ ! -f "{release}" ]; do sleep 0.05; done'
 "#,
-            release = data.join("release").display()
-        )
-    })
+                release = data.join("release").display()
+            )
+        },
+        None,
+        // Only the test ends a held job: the fixture's 8 s limit ended the jobs before a slow
+        // host had shown them running (#1079).
+        |config| config.ci.job_timeout = Duration::from_secs(3600),
+    )
     .await?;
     let release = f.data.join("release");
+    // The other runs go first, released: the integration branch's and the pull request's at its
+    // present head. Held, the branch's three jobs kept the job slots from the run under test
+    // until their limit ended them (#1079).
+    std::fs::write(&release, "")?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    f.all_passed(2).await?;
+    std::fs::remove_file(&release)?;
     // The scan fails at once; quality and e2e are still running when it does.
     let first = f.push_feature("fail-security", Some("x\n"))?;
     f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    // Only this run will hold jobs: every other run has passed, so none competes with it for the
+    // job slots (#1079).
+    let overview = f.get("/api/sandboxes/s1/ci").await?;
+    assert!(
+        overview["runs"]
+            .as_array()
+            .ok_or("runs")?
+            .iter()
+            .all(|r| r["sha"] == first.as_str() || r["state"] == "passed"),
+        "every other run must have passed before this one holds its jobs: {overview}"
+    );
     f.until_jobs(
         &first,
         &[

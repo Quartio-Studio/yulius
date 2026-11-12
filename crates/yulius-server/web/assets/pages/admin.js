@@ -2,7 +2,7 @@
 // subscription pool with the login terminal, and the GitHub App connection (manifest flow).
 
 import { enc } from '../api.js';
-import { h, icon, badge, openModal, field, invalid, toast, confirmDialog, errorToast, toggle, setChildren, emptyState, skeleton, bar, pollPaused, keepFocus } from '../dom.js';
+import { h, icon, badge, openModal, field, invalid, toast, confirmDialog, errorToast, toggle, setChildren, emptyState, skeleton, bar, pollPaused } from '../dom.js';
 import { href } from '../router.js';
 import { openSandboxDialog } from '../actions.js';
 import { claudeConnected, CONNECT_PATH } from '../claude.js';
@@ -11,6 +11,7 @@ import { usd } from '../charts.js';
 import { createTerminalView } from '../terminal.js';
 import { CLOSE_REVOKED } from '../termsocket.js';
 import { accountUsage, capacityPanel } from '../layout.js';
+import { limitsNow } from '../usage.js';
 import { pageFrame, loader, dataTable, createButton } from './common.js';
 import { recoveryCodeCard } from './auth.js';
 import { BRAND } from '../brand.js';
@@ -354,11 +355,14 @@ export function openLoginTerminal(ctx, { loginId, account, onFinish }) {
 export function mountAccountsPage(ctx, route) {
   if (!ctx.isInstanceAdmin()) return forbidden(ctx, 'Subscriptions');
   // One name for one thing (#147): a Claude "subscription" (the API's account).
-  const frame = pageFrame({ title: 'Subscriptions', sub: `Claude subscriptions in one pool: ${BRAND.name} places, switches and pauses tasks by itself`, actions: [createButton('Add subscription', () => add())] });
+  // Reads every signed-in subscription again (SPEC-473 RFR-014). Off, without losing the
+  // keyboard, while it runs and when none is signed in.
+  const refreshAllButton = h('button', { type: 'button', class: 'btn refresh-all', onClick: () => refreshAll() }, icon('refresh', { size: 14 }), h('span', null, 'Refresh all'));
+  const frame = pageFrame({ title: 'Subscriptions', sub: `Claude subscriptions in one pool: ${BRAND.name} places, switches and pauses tasks by itself`, actions: [refreshAllButton, createButton('Add subscription', () => add())] });
   const capacityHost = h('section', { class: 'card card-pad stack', 'aria-label': 'Capacity' },
     h('h2', { class: 'card-title' }, 'Capacity'), skeleton('Loading the capacity…', 3));
   const host = h('div');
-  frame.body.append(capacityHost, host, h('p', { class: 'muted xs' }, `Tasks don't belong to a subscription: ${BRAND.name} starts each one on the subscription whose capacity expires soonest and moves it to another one by itself, at the end of a turn, when its subscription reaches 98%. A task pauses only when no subscription has capacity left — without telling the agent — and continues by itself, oldest first, when a window resets or a subscription is added. You can run a task on a subscription you choose from the task, and removing a subscription moves its tasks to another one. Usage comes from the running tasks, so an idle subscription shows it once a task runs on it.`));
+  frame.body.append(capacityHost, host, h('p', { class: 'muted xs' }, `Tasks don't belong to a subscription: ${BRAND.name} starts each one on the subscription whose capacity expires soonest and moves it to another one by itself, at the end of a turn, when its subscription reaches 98%. A task pauses only when no subscription has capacity left — without telling the agent — and continues by itself, oldest first, when a window resets or a subscription is added. You can run a task on a subscription you choose from the task, and removing a subscription moves its tasks to another one. Each card says when its usage was last read; Refresh reads it again and asks Claude whether a limit it reported still holds.`));
 
   // Resolves true once the panel shows the capacity, false when it says it is not available.
   const loadCapacity = () => ctx.api.get('/api/capacity').then((view) => {
@@ -411,16 +415,137 @@ export function mountAccountsPage(ctx, route) {
   // leaving it, so the field itself says that it is gone.
   host.addEventListener('yulius:edit-closed', flush);
 
+  // Every reading the page asks for goes through one queue (SPEC-473 RFR-015): three
+  // subscriptions at a time and one request per subscription at a time, so a second ask joins
+  // the first. What it knows survives a redraw of the list (the cards ask it when they are
+  // drawn) and is dropped with the page.
+  const READ_AT_ONCE = 3;
+  /** The subscriptions as the list last drew them, by id: what an answer is written into. */
+  const shown = new Map();
+  /** The readings queued or under way, by subscription id: `{ promise, asked }`. */
+  const reads = new Map();
+  /** What the page has to say about a subscription's last refresh of this visit, by id. */
+  const notes = new Map();
+  /** The subscriptions the page read by itself this visit (their reading was old). */
+  const readByItself = new Set();
+  const queued = [];
+  let reading = 0;
+  let readingAll = false;
+  const NO_NEW_READING = 'Claude gave no new usage reading: it shares this subscription’s usage only with its running tasks.';
+  /** A subscription that is signed in can be read; one that needs a sign-in offers that instead. */
+  const signedIn = (account) => !['pending_login', 'relogin'].includes(account.status);
+  /** Draws again what the card of `id` says about its reading (the card asks the queue). */
+  const redraw = (id) => {
+    const card = [...host.querySelectorAll('[data-account]')].find((el) => el.dataset.account === id);
+    const live = card && card.querySelector('.account-card');
+    if (live) live.dispatchEvent(new CustomEvent('yulius:usage-changed'));
+  };
+  /** A card on the page offers Refresh: a signed-in subscription is shown (not while the list loads, nor when it could not be read). */
+  const anyToRead = () => Boolean(host.querySelector('.account-refresh'));
+  const paintRefreshAll = () => {
+    const none = !anyToRead();
+    // What it does stays in its name while it runs ("Reading… all subscriptions").
+    setChildren(refreshAllButton.lastElementChild, readingAll ? ['Reading…', h('span', { class: 'sr-only' }, ' all subscriptions')] : 'Refresh all');
+    // Why it is off is said only over cards that are shown with none signed in.
+    const why = none && !readingAll && host.querySelector('.account-card') ? 'No subscription is signed in' : null;
+    for (const [name, value] of [['aria-busy', readingAll ? 'true' : null], ['aria-disabled', readingAll || none ? 'true' : null], ['title', why]]) {
+      if (value === null) refreshAllButton.removeAttribute(name);
+      else refreshAllButton.setAttribute(name, value);
+    }
+  };
+  const startReads = () => {
+    while (reading < READ_AT_ONCE && queued.length) {
+      const { id, done } = queued.shift();
+      reading += 1;
+      ctx.api.post(`/api/admin/accounts/${enc(id)}/usage`).then((fresh) => ({ fresh }), (error) => ({ error })).then((outcome) => {
+        reading -= 1;
+        const asked = reads.get(id).asked;
+        reads.delete(id);
+        if (!gone) {
+          const account = shown.get(id);
+          // The answer says whether Claude gave a usage reading (a sign-in that may not read
+          // its usage is not a failure). Not told by the reading's time: the server writes it
+          // to the second, and two readings may share one.
+          const unread = Boolean(outcome.fresh) && outcome.fresh.usage_read === false;
+          if (outcome.fresh && account) Object.assign(account, { status: outcome.fresh.status, usage: outcome.fresh.usage, last_error: outcome.fresh.last_error });
+          // What a person asked for is said on the card for the visit; the page's own reading
+          // of an old card says nothing.
+          if (asked && outcome.error) notes.set(id, outcome.error.message);
+          else if (asked && unread) notes.set(id, NO_NEW_READING);
+          else if (outcome.fresh) notes.delete(id);
+          outcome.unread = unread;
+          redraw(id);
+        }
+        done(outcome);
+        startReads();
+      });
+    }
+  };
+  /** Reads the subscription `id` again; `asked` when a person asked for it. Resolves with `{ fresh, unread }` or `{ error }`. */
+  const read = (id, asked) => {
+    const under = reads.get(id);
+    if (under) {
+      under.asked = under.asked || asked;
+      return under.promise;
+    }
+    const entry = { asked, promise: null };
+    entry.promise = new Promise((done) => { queued.push({ id, done }); });
+    reads.set(id, entry);
+    redraw(id);
+    startReads();
+    return entry.promise;
+  };
+  /** Refresh on one card (RFR-013): what came of it is a toast, and the card says the rest. */
+  const refreshOne = async (account) => {
+    const outcome = await read(account.id, true);
+    if (gone) return;
+    const name = (shown.get(account.id) || account).label;
+    if (outcome.error) {
+      errorToast(outcome.error, `Couldn’t refresh ${name}`);
+      // The card is drawn from what the server has now: the list is read again.
+      refresh();
+    } else if (outcome.unread) toast(`Claude gave no new usage reading for ${name}.`);
+    else toast(`Usage of ${name} read again.`, { kind: 'ok' });
+    loadCapacity();
+  };
+  async function refreshAll() {
+    // Off (it runs already, or no card on the page can be read): a press does nothing.
+    if (refreshAllButton.getAttribute('aria-disabled') === 'true') return;
+    const accounts = [...shown.values()].filter(signedIn);
+    readingAll = true;
+    paintRefreshAll();
+    const outcomes = await Promise.all(accounts.map((account) => read(account.id, true)));
+    readingAll = false;
+    if (gone) return;
+    paintRefreshAll();
+    const failed = outcomes.filter((outcome) => outcome.error).length;
+    const readAgain = outcomes.filter((outcome) => outcome.fresh && !outcome.unread).length;
+    const all = accounts.length;
+    const subscriptions = all === 1 ? 'subscription' : 'subscriptions';
+    if (failed) {
+      toast(`${failed} of ${all} ${subscriptions} could not be read: each card says why.`, { kind: 'error', timeout: 8000 });
+      refresh();
+    } else if (readAgain === all) toast(`Usage read again for ${all} ${subscriptions}.`, { kind: 'ok' });
+    // Those Claude gave no reading for are not counted as read again; their cards say so.
+    else if (readAgain === 0) toast('Claude gave no new usage reading: each card says so.');
+    else toast(`Usage read again for ${readAgain} of ${all} ${subscriptions}: Claude gave no new reading for the rest.`);
+    loadCapacity();
+  }
+
   // Capacity is read beside the subscriptions, so the panel above them is in place before they
   // land (SPEC-120). Each later render (after an add or a removal) reads it again, and so does
   // the first one when that read failed.
   const firstCapacity = loadCapacity();
   let rendered = false;
-  const reload = loader(host, 'the subscriptions', () => ctx.api.get('/api/admin/accounts'), (list) => {
+  // Refresh all follows what the list shows: painted once each read of the list is on the page.
+  paintRefreshAll();
+  const reload = loader(host, 'the subscriptions', () => ctx.api.get('/api/admin/accounts').finally(() => setTimeout(paintRefreshAll, 0)), (list) => {
     if (rendered) loadCapacity();
     else firstCapacity.then((shown) => { if (!shown) loadCapacity(); });
     rendered = true;
     const accounts = (Array.isArray(list) ? list : []).sort((a, b) => (a.label || '').localeCompare(b.label || ''));
+    shown.clear();
+    for (const account of accounts) shown.set(account.id, account);
     if (accounts.length === 0) return emptyState({ iconName: 'user', title: 'No subscriptions yet', text: 'Add a Claude subscription for the agents; you finish Claude’s own sign-in in a terminal here.', action: createButton('Add subscription', () => add()) });
     return h('div', { class: 'grid-2' }, accounts.map((account) => {
       // The name is edited in place (SPEC-244 SUB-001); the server trims and validates it.
@@ -435,18 +560,20 @@ export function mountAccountsPage(ctx, route) {
         Object.assign(account, fresh);
         toast(account.email ? `Email of ${account.label} is now ${account.email}.` : `Email of ${account.label} removed.`, { kind: 'ok' });
       };
-      // Provider windows (refreshed in the background) and what Yulius observed (ROT-009).
-      const usageHost = h('div', null, accountUsage(account, { rename, setEmail, showEmail: true }), tokenTotals(account));
-      const stale = !account.usage || !account.usage.observed_at || Date.now() - Date.parse(account.usage.observed_at) > 10 * 60 * 1000;
-      if (account.status !== 'pending_login' && stale) {
-        ctx.api.post(`/api/admin/accounts/${enc(account.id)}/usage`).then((fresh) => {
-          Object.assign(account, fresh);
-          // The answer draws the card's head again: a pencil that has the keyboard keeps it (an
-          // idle subscription's usage stays old, so this follows every list read; SPEC-463).
-          if (usageHost.querySelector('.account-rename-input')) defer();
-          else keepFocus(usageHost, () => setChildren(usageHost, accountUsage(account, { rename, setEmail, showEmail: true }), tokenTotals(account)));
-        }).catch(() => {});
+      // Provider windows (refreshed in the background) and what Yulius observed (ROT-009). The
+      // card asks the queue whether it is being read and what the last refresh came to, so
+      // both survive a redraw of the list; an answer draws only what the card says about its
+      // usage, so a name or an email being typed stays (SPEC-463, SPEC-473).
+      const refreshing = signedIn(account) ? { busy: () => reads.has(account.id), run: () => refreshOne(account) } : null;
+      // A reading that may be out of date, or none yet: the page reads it by itself, once per
+      // visit, however often the list is drawn (RFR-015). Asked for before the card is drawn,
+      // so the card says "Reading…" from its first look.
+      const { stale } = limitsNow(account);
+      if (signedIn(account) && (stale || !(account.usage && account.usage.observed_at)) && !readByItself.has(account.id)) {
+        readByItself.add(account.id);
+        read(account.id, false).then((outcome) => { if (!gone && outcome.fresh) loadCapacity(); });
       }
+      const usageHost = h('div', { dataset: { account: account.id } }, accountUsage(account, { rename, setEmail, showEmail: true, refresh: refreshing, note: () => notes.get(account.id) || null }), tokenTotals(account));
       const broken = ['relogin', 'error', 'pending_login'].includes(account.status);
       return h('div', { class: 'card card-pad stack' },
         usageHost,
@@ -499,6 +626,9 @@ export function mountAccountsPage(ctx, route) {
   const off = ctx.store.on('account', refresh);
   const destroy = () => {
     gone = true;
+    // The readings that wait are dropped with the page (never sent; whoever waits for one is
+    // told nothing came of it); those under way end unheard.
+    for (const { done } of queued.splice(0)) done({});
     off();
   };
   // Settings → "Add subscription" lands here with ?add=1: open the dialog right away.

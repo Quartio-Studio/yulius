@@ -116,6 +116,8 @@ pub struct TranscriptFacts {
     /// turn is not woken after an outage; one answered before it (a blocked Stop, after which the
     /// turn went on) was not (SPEC-358 MSB-007).
     pub turn_moved_at: Option<yulius_domain::time::Timestamp>,
+    /// What waits in Claude Code's queue, as the lines read so far say (SPEC-471 CCQ-001).
+    pub queue: yulius_domain::agent_cli::Queue,
 }
 
 impl TranscriptFacts {
@@ -141,6 +143,8 @@ impl TranscriptFacts {
         match observation {
             Observation::UserTurn { wake, .. } => {
                 self.turn_open = Some(true);
+                // The turn of what Claude Code handed on from its queue began (SPEC-471).
+                self.queue.turn_seen();
                 self.goal_retry = None;
                 self.limit_goal_pause = None;
                 // Claude Code's own wake-up keeps an achieved goal.
@@ -155,9 +159,13 @@ impl TranscriptFacts {
             } => {
                 self.turn_open = Some(false);
                 self.background_agents = background_agents.unwrap_or(0);
+                // What still waits in the queue was left by this turn's end (SPEC-479).
+                self.queue.turn_closed();
             }
             Observation::TurnComplete { at } => {
                 self.turn_open = Some(false);
+                // An answer written after a hand-over is of the turn it started (SPEC-471).
+                self.queue.work_seen(*at);
                 self.context_full = false;
                 // A sub-agent's turn end (no time) says nothing about the session's limit.
                 self.limit_pending &= at.is_none();
@@ -218,6 +226,7 @@ impl TranscriptFacts {
                 // says the end of (UCL-010). SPEC-469's rule for a pause.
                 self.worked_since_goal_pause = None;
             }
+            Observation::Queue(change, at) => self.queue.record(*change, *at),
             Observation::Session { .. }
             | Observation::CompactFailed
             | Observation::BackgroundStarted { .. }
@@ -227,6 +236,8 @@ impl TranscriptFacts {
             // continued the turn (STA-005).
             Observation::AgentWork { at } => {
                 self.turn_open = Some(true);
+                // Work written after a hand-over is of the turn it started (SPEC-471).
+                self.queue.work_seen(*at);
                 self.goal_retry = None;
                 self.limit_goal_pause = None;
                 self.context_full = false;
@@ -977,6 +988,10 @@ impl App {
         runtime
             .background_agents
             .store(facts.background_agents, Ordering::SeqCst);
+        // What waits in Claude Code's queue is what the run's lines say (SPEC-471 CCQ-001):
+        // known from here on.
+        runtime.with_queue(|queue| *queue = facts.queue);
+        runtime.queue_unread.store(false, Ordering::SeqCst);
         // The agent worked after Claude Code's last goal pause while nobody watched: the request
         // made for that pause is answered (SPEC-469 GPW-004).
         if facts.worked_since_goal_pause.is_some() {
@@ -1568,6 +1583,116 @@ mod tests {
         at: None,
     };
 
+    /// SPEC-471 CCQ-001, CCQ-003: the lines of a run say what waits in Claude Code's queue,
+    /// in the order Claude Code 2.1.322 writes them: the prompt's `enqueue` while a turn runs;
+    /// after the Stop that ends the turn the `dequeue`, the ended turn's `turn_duration`, and
+    /// only then the prompt record of the turn that took the prompt.
+    #[test]
+    fn the_queue_is_folded_from_its_records() {
+        use yulius_domain::agent_cli::QueueChange::{Added, HandedOn, Taken};
+        let queued = |facts: &TranscriptFacts| (facts.queue.waiting(), facts.queue.holds());
+        let answer = Observation::TurnComplete {
+            at: Some(Timestamp(5)),
+        };
+        let work = Observation::AgentWork {
+            at: Some(Timestamp(6)),
+        };
+        assert_eq!(queued(&reduce(&[PROMPT])), (0, false));
+        let waiting = [PROMPT, Observation::Queue(Added, None), answer.clone()];
+        assert_eq!(queued(&reduce(&waiting)), (1, true));
+        // Handed on: the turn that ended closes, and nothing of the new one shows yet.
+        let mut lines = waiting.to_vec();
+        lines.extend([Observation::Queue(HandedOn, None), ENDED]);
+        assert_eq!(
+            queued(&reduce(&lines)),
+            (0, true),
+            "between the two records"
+        );
+        // The ended turn's own late lines are not the new turn.
+        lines.extend([work, Observation::TurnInterrupted { at: None }]);
+        assert_eq!(queued(&reduce(&lines)), (0, true));
+        lines.push(PROMPT);
+        assert_eq!(queued(&reduce(&lines)), (0, false), "its turn began");
+        // Taken into the running turn at a tool result: no turn of its own follows.
+        let taken = [
+            PROMPT,
+            Observation::Queue(Added, None),
+            Observation::Queue(Taken, None),
+        ];
+        assert_eq!(queued(&reduce(&taken)), (0, false));
+        // A prompt Claude Code scheduled for itself is handed on with a record that is read as
+        // no prompt: the model's first line written after the hand-over shows its turn. The
+        // ended turn's lines were written before it.
+        let handed_on = Observation::Queue(HandedOn, Some(Timestamp(100)));
+        let scheduled = |then: Observation| {
+            reduce(&[
+                Observation::Queue(Added, None),
+                handed_on.clone(),
+                ENDED,
+                then,
+            ])
+        };
+        let work_at = |ms| Observation::AgentWork {
+            at: Some(Timestamp(ms)),
+        };
+        let answer_at = |ms| Observation::TurnComplete {
+            at: Some(Timestamp(ms)),
+        };
+        assert_eq!(queued(&scheduled(work_at(99))), (0, true), "the old turn");
+        assert_eq!(queued(&scheduled(work_at(101))), (0, false));
+        assert_eq!(queued(&scheduled(answer_at(99))), (0, true), "the old turn");
+        assert_eq!(queued(&scheduled(answer_at(101))), (0, false));
+        let sub_agent = Observation::TurnComplete { at: None };
+        assert_eq!(queued(&scheduled(sub_agent)), (0, true), "no time, no word");
+        // Claude Code's own wake-up is a turn that took what was handed on.
+        let woken = [
+            Observation::Queue(Added, None),
+            Observation::Queue(HandedOn, None),
+            Observation::UserTurn {
+                at: Some(Timestamp(9)),
+                wake: true,
+            },
+        ];
+        assert_eq!(queued(&reduce(&woken)), (0, false));
+    }
+
+    /// SPEC-479 SWQ-002: a reattached run's lines say what a turn's end left in Claude Code's
+    /// queue. The closing record of a turn marks what still waits; a Stop a hook blocked wrote
+    /// none, so a prompt that waits through it is not marked.
+    #[test]
+    fn what_a_turns_end_left_in_the_queue_is_folded() {
+        use yulius_domain::agent_cli::QueueChange::{Added, HandedOn};
+        let queued = |facts: &TranscriptFacts| {
+            let queue = facts.queue;
+            (queue.waiting(), queue.left_over(), queue.hands_on())
+        };
+        let answer = Observation::TurnComplete {
+            at: Some(Timestamp(5)),
+        };
+        // A prompt waits while the turn's answer is written (and its Stop is blocked).
+        let mut lines = vec![PROMPT, Observation::Queue(Added, None), answer.clone()];
+        assert_eq!(queued(&reduce(&lines)), (1, 0, true));
+        // The turn ends with the entry still there: it was left.
+        lines.push(ENDED);
+        assert_eq!(queued(&reduce(&lines)), (1, 1, false));
+        // A prompt entered in the next turn is handed on at its end, before the closing record.
+        lines.extend([PROMPT, Observation::Queue(Added, None), answer]);
+        assert_eq!(queued(&reduce(&lines)), (2, 1, true));
+        lines.extend([Observation::Queue(HandedOn, None), ENDED, PROMPT]);
+        assert_eq!(queued(&reduce(&lines)), (1, 1, false));
+        // An entry Claude Code hands on alone, and a prompt behind it: the closing record of
+        // the end that handed the entry on finds the prompt waiting and marks nothing.
+        let behind = [
+            PROMPT,
+            Observation::Queue(Added, None),
+            Observation::Queue(Added, None),
+            Observation::Queue(HandedOn, None),
+            ENDED,
+            PROMPT,
+        ];
+        assert_eq!(queued(&reduce(&behind)), (1, 0, true));
+    }
+
     /// SPEC-358 MSB-007: the time of the last record closing a session's turn, its answer or its
     /// `turn_duration`; a prompt, an interrupt or a sub-agent's answer is not one.
     #[test]
@@ -1946,6 +2071,7 @@ mod tests {
                 worked_since_goal_pause: None,
                 turn_closed_at: None,
                 turn_moved_at: Some(Timestamp(1)),
+                queue: yulius_domain::agent_cli::Queue::default(),
             }
         );
         // Typed again after the goal: a new open turn, the goal no longer counts.

@@ -973,6 +973,17 @@ async fn user_action_requests_mark_the_task_notify_viewers_and_return_a_link() -
         // The task needs attention and the UI stream carries the request.
         let task = f.h.store.task(&TaskId::parse("t1")?).await?.ok_or("task")?;
         assert_eq!(task.activity, Some(Activity::NeedsAttention));
+        // The task says it too, with the tab: a page opened later hears no event, and reads
+        // the tabs only with its Browser panel open (SPEC-472 ATN-004).
+        assert_eq!(
+            support::attention(&f.h.app, "t1").await?,
+            json!({
+                "kind": "yulius",
+                "problem": "The agent asks you to act in the sandbox's browser: Log in to AWS",
+                "action": "Open the browser tab and do what it asks.",
+                "link": body["link"],
+            })
+        );
         let mut saw_request = false;
         let mut saw_task = false;
         while let Ok(Ok(envelope)) =

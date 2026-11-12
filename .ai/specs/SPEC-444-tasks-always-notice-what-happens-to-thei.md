@@ -49,7 +49,8 @@ the sandbox's task list.
     `delivery_status` and the task page show it: nobody types it.
   - Conflicts are found only when Yulius tries DLV-203 on an armed, green pull request.
 - **What exists to build on.** `type_into_session` (SPEC-230 TMS-004: refuses while a person typed
-  in the last minute, before the session started, while another message is typed); the MCP watch
+  in the last minute, and since SPEC-480 while their draft may sit in the prompt box, before the
+  session started, while another message is typed); the MCP watch
   (`mcp_watch.rs`), a 30 s pass over live tasks with a pure `decide`; CI records with each job's
   failing tests' output (SPEC-145); the armed slot's outcome and note and the merge train's notes
   (SPEC-441); `merged_text` (MQ-009); the PreToolUse guard (`guard_client.rs`).
@@ -58,7 +59,7 @@ the sandbox's task list.
 
 | ID | Requirement | Evidence |
 | --- | --- | --- |
-| PRN-001 | **A watch, not a wait.** Every 20 seconds Yulius looks at each running task whose delivery has an open pull request, from its own records and its clone only (no GitHub request, except reading the merged head once for the merge notice). What needs the task is typed into its session as one bracketed paste starting "Yulius, about your pull request #N:", whatever the session's check-ins or waits. A session that cannot take input now (a person typed in the last minute, not started, paused or held by an update, another message being typed) gets it on a later pass, and so does one where a person must act first (a permission prompt or question on screen, an open `needs_you`): the paste would answer it. The pasted text is cleaned of control characters. | `pr_watch::tests`; `pr_watch::a_task_with_no_wait_is_told_each_event_once` |
+| PRN-001 | **A watch, not a wait.** Every 20 seconds Yulius looks at each running task whose delivery has an open pull request, from its own records and its clone only (no GitHub request, except reading the merged head once for the merge notice). What needs the task is typed into its session as one bracketed paste starting "Yulius, about your pull request #N:", whatever the session's check-ins or waits. A session that cannot take input now (a person typed in the last minute or, since SPEC-480, may have a draft in the prompt box, not started, paused or held by an update, another message being typed) gets it on a later pass, and so does one where a person must act first (a permission prompt or question on screen, an open `needs_you`): the paste would answer it. The pasted text is cleaned of control characters. | `pr_watch::tests`; `pr_watch::a_task_with_no_wait_is_told_each_event_once` |
 | PRN-002 | **A red run.** A failed run at the pull request's head names each failed job with its exit code, up to 5 failing test names per job, and where to read the log (`ci_status` with the run id and job), then: fix it test-first on this branch. A run that errored says it could not run (not the code), that Yulius reruns it once by itself, else `ci_rerun`. | `pr_watch::tests::a_red_run_names_jobs_tests_and_the_log` |
 | PRN-003 | **A red merge candidate.** A failed run of a merge candidate holding the pull request says so with its jobs and tests, that Yulius bisects it and tells the pull request that breaks it, and to keep hands off meanwhile. | `pr_watch::tests::a_red_candidate_says_hands_off` |
 | PRN-004 | **A conflict.** When the pull request's head conflicts with the integration branch as Yulius's clone last fetched it (Git's merge with the repository's merge drivers), the task is told once per head: merge the integration branch in with `git merge`, resolve, rerun the tests, commit, end the turn; never rebase or force-push. | `pr_watch::a_task_with_no_wait_is_told_each_event_once` |

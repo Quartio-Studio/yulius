@@ -27,10 +27,10 @@ use yulius_contracts::api::admin::{
 };
 use yulius_contracts::events::UiEvent;
 use yulius_contracts::terminal::TerminalServerMsg;
-use yulius_domain::harness::Provider;
+use yulius_domain::harness::{DEFAULT_CLAUDE_MODEL, OFFERED_CLAUDE_MODELS, Provider};
 use yulius_domain::ids::AccountId;
 use yulius_domain::time::Timestamp;
-use yulius_domain::usage::{AccountUsage, UsageWindow};
+use yulius_domain::usage::{AccountUsage, ModelFamily, UsageWindow};
 use zeroize::Zeroize;
 
 use crate::auth::{AuthContext, rfc3339};
@@ -331,6 +331,7 @@ pub fn account_view(account: &AccountRecord, live: &[AttemptRecord]) -> AccountV
         in_use_by: in_use_count(&account.id, live),
         tokens_24h: None,
         tokens_7d: None,
+        usage_read: None,
     }
 }
 
@@ -381,7 +382,8 @@ const DAY_MS: i64 = 24 * 60 * 60 * 1000;
 pub const USAGE_NOTE_PREFIX: &str = "usage: ";
 /// Back-off after a failed usage request that gave no `Retry-After` (ROT-009).
 pub const USAGE_BACKOFF_MS: i64 = 30 * 60 * 1000;
-/// A usage round skips a subscription read (by a session or the provider) this recently.
+/// A usage round skips a subscription whose usage was read (by a session or the provider) this
+/// recently ([`AccountUsage::observed_at`]).
 pub const USAGE_FRESH_MS: i64 = 90 * 1000;
 /// Opening the subscriptions list asks for a usage round at most this often (F 2026-10-11:
 /// "usage should be updated more often + every time someone loads its screen").
@@ -394,6 +396,20 @@ pub const USAGE_NOT_SHARED_BACKOFF_MS: i64 = DAY_MS;
 pub const USAGE_READ_EVERY_MS: i64 = 5 * 60 * 1000;
 /// Longest back-off taken from a provider's `Retry-After`.
 pub const USAGE_BACKOFF_MAX_MS: i64 = 2 * 60 * 60 * 1000;
+/// The longest a refresh waits for the provider (SPEC-473 RFR-003): under the 30 s the web
+/// client waits for an answer, so the page always gets one.
+pub const USAGE_REFRESH_DEADLINE: Duration = Duration::from_secs(25);
+/// What a refresh says when the subscription was signed in again while its usage was read
+/// (SPEC-473 RFR-005).
+pub const SIGNED_IN_MEANWHILE: &str =
+    "This subscription was signed in again while its usage was read; refresh it once more.";
+/// What a refresh says when its deadline passed (SPEC-473 RFR-003).
+pub const REFRESH_TOO_SLOW: &str =
+    "Claude took too long to answer; what it had answered by then is stored.";
+/// What a refresh says when the provider did not answer the question about a stored limit
+/// (SPEC-473 RFR-004).
+pub const LIMIT_UNASKED: &str =
+    "Claude did not answer when asked whether the limit still holds; the limit stays as it was.";
 
 fn validate_label(label: &str) -> AppResult<String> {
     let label = label.trim();
@@ -529,6 +545,23 @@ impl App {
         self.logins.token_grace_ms.store(ms, Ordering::SeqCst);
     }
 
+    fn usage_refresh_deadline(&self) -> Duration {
+        match self.capacity.refresh_deadline_ms.load(Ordering::SeqCst) {
+            0 => USAGE_REFRESH_DEADLINE,
+            ms => Duration::from_millis(ms),
+        }
+    }
+
+    /// Overrides [`USAGE_REFRESH_DEADLINE`] for this instance (tests).
+    pub fn set_usage_refresh_deadline(&self, deadline: Duration) {
+        let ms = u64::try_from(deadline.as_millis())
+            .unwrap_or(u64::MAX)
+            .max(1);
+        self.capacity
+            .refresh_deadline_ms
+            .store(ms, Ordering::SeqCst);
+    }
+
     fn logins_dir(&self) -> PathBuf {
         self.config.data_dir.join("logins")
     }
@@ -614,8 +647,11 @@ impl App {
             .collect())
     }
 
-    /// Asks the provider for the account's current usage windows and stores them (ROT-009).
-    /// A failure is recorded as the account's last error and returned.
+    /// Asks the provider for the account's current usage windows and stores them (ROT-009),
+    /// then asks it about each usage limit stored for the account, so that a limit a person
+    /// lifted ends now and one recorded without a reset gets it (SPEC-473,
+    /// `ask_about_limits`). A failure of either is recorded as the account's usage note
+    /// and returned; what was stored about the limit stays.
     ///
     /// # Errors
     /// `Forbidden` for non-admins, `NotFound`, `Conflict` without a credential, `Upstream` when
@@ -634,14 +670,25 @@ impl App {
                 "the account is not signed in yet".into(),
             ));
         }
-        // A sign-in that may not read usage is not a failure: its sessions report it (ADR-17).
-        if let Err(failure) = self.fetch_and_record_usage(&account).await
-            && failure.kind != UsageFailureKind::NotShared
-        {
-            return Err(AppError::Upstream(failure.message));
-        }
+        // One deadline for the reading and the questions: a provider that hangs ends the
+        // refresh with a sentence, and what its finished steps stored stays (each one stores
+        // under the usage lock, or nothing).
+        let refreshed = tokio::time::timeout(
+            self.usage_refresh_deadline(),
+            self.read_usage_and_limits(&account),
+        )
+        .await;
+        let refreshed = match refreshed {
+            Ok(refreshed) => refreshed,
+            Err(_) => {
+                self.note_usage(&account, Some(REFRESH_TOO_SLOW)).await;
+                Err(UsageFailure::new(REFRESH_TOO_SLOW))
+            }
+        };
+        let usage_read = refreshed.map_err(|failure| AppError::Upstream(failure.message))?;
         let updated = store.account(&id).await?.ok_or(AppError::NotFound)?;
         let mut view = account_view(&updated, &self.working_attempts().await?);
+        view.usage_read = Some(usage_read);
         let now = self.now();
         view.tokens_24h = Some(totals_view(
             store
@@ -660,21 +707,187 @@ impl App {
         Ok(view)
     }
 
-    /// Asks the provider for one account's usage and stores it; a failure becomes the account's
-    /// last error and keeps the last known usage (ROT-009).
-    async fn fetch_and_record_usage(&self, account: &AccountRecord) -> Result<(), UsageFailure> {
+    /// A refresh's two steps (SPEC-473): the usage is read, then the provider is asked about
+    /// each limit stored for the account. A reading the provider will not give for now (the
+    /// sign-in may not read usage, or the request is throttled) does not stop the questions; a
+    /// refused sign-in or a request that failed does. A sign-in that may not read usage is not
+    /// a failure: its sessions report it (ADR-17).
+    ///
+    /// `Ok` says whether the usage was read: by the reading, or with an answer that carried
+    /// both of the subscription's windows.
+    async fn read_usage_and_limits(&self, account: &AccountRecord) -> Result<bool, UsageFailure> {
+        let (reading, unread) = match self.fetch_and_record_usage(account, true).await {
+            // The reading came back for a sign-in that is no longer the stored one: nothing
+            // was stored, and nothing is asked with a sign-in the person just replaced.
+            Ok(None) => return Err(UsageFailure::new(SIGNED_IN_MEANWHILE)),
+            Ok(reading) => (reading, None),
+            Err(failure)
+                if matches!(
+                    failure.kind,
+                    UsageFailureKind::NotShared | UsageFailureKind::Throttled
+                ) =>
+            {
+                (None, Some(failure))
+            }
+            Err(failure) => return Err(failure),
+        };
+        let answered = self.ask_about_limits(&account.id, reading.as_ref()).await?;
+        match unread {
+            Some(failure) if failure.kind == UsageFailureKind::Throttled => Err(failure),
+            _ => Ok(reading.is_some() || answered),
+        }
+    }
+
+    /// One provider's reading of `id`'s usage now, as the background round makes it: no
+    /// back-off, no skip of a fresh reading, and no question about the stored limits (that is
+    /// [`Self::refresh_account_usage`]).
+    ///
+    /// # Errors
+    /// The provider's failure; one for an account that is gone or not signed in.
+    pub async fn read_account_usage(&self, id: &AccountId) -> Result<(), UsageFailure> {
+        let account = self
+            .deps
+            .store
+            .account(id)
+            .await
+            .ok()
+            .flatten()
+            .ok_or_else(|| UsageFailure::new("the account is not there"))?;
+        self.fetch_and_record_usage(&account, false)
+            .await
+            .map(|_| ())
+    }
+
+    /// Sets the usage note of `account` (`Some`: one sentence, stored with its prefix) or
+    /// clears it (`None`), unless the subscription was signed in again since `account` was
+    /// read: the note would be about the previous sign-in. Under the usage lock, which a
+    /// sign-in takes too.
+    async fn note_usage(&self, account: &AccountRecord, sentence: Option<&str>) {
+        let _writing = self.capacity.usage_writes.lock().await;
+        let store = &self.deps.store;
+        match store.account(&account.id).await {
+            Ok(Some(current)) if current.credential == account.credential => {}
+            _ => return,
+        }
+        let _ = match sentence {
+            Some(sentence) => {
+                let note = format!("{USAGE_NOTE_PREFIX}{sentence}");
+                store.set_usage_error(&account.id, &note, self.now()).await
+            }
+            None => store.clear_usage_error(&account.id, self.now()).await,
+        };
+    }
+
+    /// The account's stored credential, opened.
+    fn usage_credential(&self, account: &AccountRecord) -> Result<Secret, UsageFailure> {
         let sealed = account
             .credential
             .as_ref()
             .ok_or_else(|| UsageFailure::new("the account is not signed in yet"))?;
-        let credential = self
-            .deps
+        self.deps
             .crypto
             .open(sealed)
             .ok()
             .and_then(|bytes| String::from_utf8(bytes).ok())
             .map(Secret)
-            .ok_or_else(|| UsageFailure::new("the stored credential cannot be read"))?;
+            .ok_or_else(|| UsageFailure::new("the stored credential cannot be read"))
+    }
+
+    /// Asks the provider about each usage limit stored for the account `id` and in effect,
+    /// with the model that limit binds (SPEC-473 RFR-003): a model of each family whose own
+    /// weekly window is used up, and the default model for a limit of the whole subscription.
+    /// The answer ends the limit or gives it its reset
+    /// ([`AccountUsage::record_model_answer`]). At most one request per family that has a
+    /// window, one after another; nothing is asked when no limit is stored.
+    ///
+    /// Each question is asked with the sign-in stored at that moment, about the limit stored at
+    /// that moment, and its answer is applied under the usage lock only while both are still
+    /// the ones stored: a limit Claude reported to a session meanwhile is newer than the
+    /// answer, and a new sign-in's limits are not the previous one's (RFR-005). A failure stops
+    /// the questions, becomes the account's usage note and leaves what is stored.
+    ///
+    /// A window that `reading`, the usage reading of this refresh, itself carried is not asked
+    /// about: the reading is the provider's word on it, and an answer "the model ran" (on
+    /// credits a person bought) would end a window the next reading stores again.
+    ///
+    /// `Ok` says whether an answer that carried both of the subscription's windows was
+    /// applied: that is a reading of the usage too.
+    async fn ask_about_limits(
+        &self,
+        id: &AccountId,
+        reading: Option<&AccountUsage>,
+    ) -> Result<bool, UsageFailure> {
+        let default = crate::capacity::default_family();
+        let stored = || async { self.deps.store.account(id).await.ok().flatten() };
+        let families = match stored().await {
+            Some(record) => account_usage(&record).families_at_a_limit(self.now(), default),
+            None => return Ok(false),
+        };
+        let mut read = false;
+        for family in families {
+            if reading.is_some_and(|reading| reading.model_window(family).is_some()) {
+                continue;
+            }
+            let Some(record) = stored().await else {
+                return Ok(read);
+            };
+            let asked_about = account_usage(&record);
+            // The default model for its own family, else the first one offered of the family.
+            let model = std::iter::once(DEFAULT_CLAUDE_MODEL)
+                .chain(OFFERED_CLAUDE_MODELS)
+                .find(|model| ModelFamily::of(Some(model)) == family);
+            let (Some(model), true) = (
+                model,
+                asked_about
+                    .families_at_a_limit(self.now(), default)
+                    .contains(&family),
+            ) else {
+                continue;
+            };
+            let credential = self.usage_credential(&record)?;
+            let answer = match self
+                .deps
+                .usage
+                .model_answer(record.provider, &credential, model)
+                .await
+            {
+                Ok(answer) => answer,
+                Err(mut failure) => {
+                    if failure.kind != UsageFailureKind::Rejected {
+                        LIMIT_UNASKED.clone_into(&mut failure.message);
+                    }
+                    self.note_usage(&record, Some(&failure.message)).await;
+                    return Err(failure);
+                }
+            };
+            let now = self.now();
+            let applied = self
+                .change_usage_of(id, |current, mut usage| {
+                    let same = current.credential == record.credential
+                        && usage.stored_limit(family) == asked_about.stored_limit(family);
+                    same.then(|| {
+                        usage.record_model_answer(answer, family, now);
+                        usage
+                    })
+                })
+                .await;
+            read |= applied.is_some() && answer.five_hour.is_some() && answer.seven_day.is_some();
+        }
+        Ok(read)
+    }
+
+    /// Asks the provider for one account's usage and stores it (`Ok(Some)` with the reading as
+    /// the provider gave it; `Ok(None)` when the subscription was signed in again during the
+    /// request, so the reading was not stored); a failure becomes the account's
+    /// last error and keeps the last known usage (ROT-009). `asking`: Claude is asked about
+    /// the stored limits next, so the reading leaves a model's limit without a reset to that
+    /// answer ([`AccountUsage::keeping_asked`]).
+    async fn fetch_and_record_usage(
+        &self,
+        account: &AccountRecord,
+        asking: bool,
+    ) -> Result<Option<AccountUsage>, UsageFailure> {
+        let credential = self.usage_credential(account)?;
         match self.deps.usage.fetch(account.provider, &credential).await {
             Ok(mut reading) => {
                 let now = self.now();
@@ -682,35 +895,38 @@ impl App {
                 // A reading replaces the windows it carries; a model's own window it does not
                 // carry (a limit Claude reported for it) stays until its reset (SPEC-464). What
                 // is stored is read now, under the lock: a limit may have been recorded during
-                // the request (#72).
-                self.change_account_usage(&account.id, |stored| {
-                    Some(reading.keeping_unread(&stored, now))
-                })
-                .await;
+                // the request (#72). A reading is the sign-in's it was asked with: when the
+                // subscription was signed in again meanwhile, it is not stored (SPEC-473).
+                let stored = self
+                    .change_usage_of(&account.id, |current, stored| {
+                        (current.credential == account.credential).then(|| {
+                            if asking {
+                                reading.keeping_asked(&stored, now)
+                            } else {
+                                reading.keeping_unread(&stored, now)
+                            }
+                        })
+                    })
+                    .await;
+                if stored.is_none() {
+                    return Ok(None);
+                }
                 // What the provider said, not what was kept beside it.
                 self.record_usage_samples(&account.id, &reading, crate::model::USAGE_FROM_PROBE)
                     .await;
-                Ok(())
+                Ok(Some(reading))
             }
             Err(failure) if failure.kind == UsageFailureKind::NotShared => {
                 // Not an error: the sessions on this subscription report its usage. An earlier
                 // note about usage goes away; other errors stay.
-                let _ = self
-                    .deps
-                    .store
-                    .clear_usage_error(&account.id, self.now())
-                    .await;
+                self.note_usage(account, None).await;
                 Err(failure)
             }
             Err(failure) if failure.kind == UsageFailureKind::Throttled => {
                 // Not an error: the provider asks to wait (the round backs off for its
                 // Retry-After) and the last reading stays with its time. A note here sat on
                 // every subscription at once (F 2026-10-11); an earlier one goes away.
-                let _ = self
-                    .deps
-                    .store
-                    .clear_usage_error(&account.id, self.now())
-                    .await;
+                self.note_usage(account, None).await;
                 Err(failure)
             }
             Err(failure) => {
@@ -718,12 +934,7 @@ impl App {
                 // read (a task's limit hit during the request), and must stay (#72). The
                 // `usage:` prefix marks it as a note about usage, not a broken account; it never
                 // replaces a sign-in or re-login error written meanwhile.
-                let message = format!("{USAGE_NOTE_PREFIX}{}", failure.message);
-                let _ = self
-                    .deps
-                    .store
-                    .set_usage_error(&account.id, &message, self.now())
-                    .await;
+                self.note_usage(account, Some(&failure.message)).await;
                 Err(failure)
             }
         }
@@ -758,14 +969,17 @@ impl App {
             // A reading from moments ago needs no request. That covers a running session, which
             // reports as it works; a running task that is idle reports nothing, so its reading
             // ages and is asked for again (production, #4: a task in use is no reason to skip).
+            // A session that reports one window only does not make the reading fresh
+            // (`App::session_usage`), so what it does not report is asked for (SPEC-473
+            // RFR-006).
             if account_usage(account)
                 .observed_at
                 .is_some_and(|at| now.millis_since(at) < USAGE_FRESH_MS)
             {
                 continue;
             }
-            match self.fetch_and_record_usage(account).await {
-                Ok(()) => {
+            match self.fetch_and_record_usage(account, false).await {
+                Ok(_) => {
                     // An idle subscription is read from a real request: ask again in minutes.
                     not_before.insert(account.id.clone(), now.plus_millis(USAGE_READ_EVERY_MS));
                 }
@@ -1392,7 +1606,7 @@ impl App {
                 // The email of the Claude account just signed in (SPEC-244 SUB-003); a
                 // temporary failure is left to the background round.
                 self.record_account_email(&account).await;
-                let _ = self.fetch_and_record_usage(&account).await;
+                let _ = self.read_account_usage(&account.id).await;
             }
         }
     }

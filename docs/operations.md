@@ -805,10 +805,24 @@ SPEC-461), with no root step and no sign-in again:
   sent prompts, not the box, so anything typed and not sent counts, and so does a prompt Yulius
   holds for its person's choice, which Claude Code keeps in the box). A message Yulius types
   into the session (one sent through a Superagent, a pull request's news) counts in the same way
-  until Claude Code submits it, which it does at once. Not covered: a prompt entered while the
-  agent works, a person's or such a message, waits in Claude Code's queue until the turn ends,
-  and a restart at that turn's end loses it (issue #1204; a person's is safe while they typed in
-  the last minute). It tries once per version, one restart of a task at a time. A goal session
+  until Claude Code submits it, which it does at once. A prompt entered while the agent works,
+  a person's or such a message, waits in Claude Code's queue until the turn ends (or is taken
+  into the running turn at its next tool result), and a resumed session does not get that queue
+  back: while something waits there the session is not restarted, at a turn's end the gate
+  blocks as at a clean one, and it moves at a later turn's end. Yulius knows the queue from the
+  records Claude Code writes about it into the session's transcript; Claude Code's own
+  notifications of finished background work wait there too and count. For two seconds after a
+  prompt went on the session stays as well, because that record is written a moment later
+  (about a tenth of a second). A session that keeps its version for longer than expected (the
+  Claude Code card lists it) holds an entry Claude Code never takes out, which it does with
+  some notifications of work a sub-agent started, or one Yulius counted wrongly: it moves at
+  its next start, so stop and continue moves it at once. The server's log says at each turn's
+  end what keeps a session that is due ("the session is not restarted on the newer Claude
+  Code at this turn's end", with `why`). Two things can still lose a prompt: one entered in
+  the moment between a turn's end deciding to restart and the task reading "Continuing"
+  (a message sent through Yulius is refused from then on), and a host so loaded that Claude
+  Code takes longer than those two seconds to write where a prompt went. It tries once per
+  version, one restart of a task at a time. A goal session
   moves at a turn it works on after, while its goal is set and not yet achieved; an idle one,
   and a goal task that is Done, keep their version until their next start. A prompt-mode session
   in which a person set a goal of their own (`/goal …` in its terminal) keeps its version while
@@ -853,6 +867,36 @@ SPEC-461), with no root step and no sign-in again:
   release. A failed check is logged ("Claude Code was not updated"), shown on the card and tried
   again an hour later; the server's egress needs `registry.npmjs.org` on port 443.
 
+### Messages Yulius types into a session
+
+Yulius types into a running task's session: a person's message sent through their Superagent
+or their own agent (`task_message`), what happens to the task's pull request, "Yulius is back;
+continue" after an outage, and `/mcp reconnect yulius` when the session's Yulius tools went
+silent. It types none of them while a person's draft may sit in the session's prompt box
+(SPEC-480, [decision 0309](decisions/0309-yulius-types-nothing-onto-a-persons-possible-draft.md)):
+
+- **When a message waits.** Someone typed into the task's terminal since its prompt box was
+  last empty (the session's start, or the last prompt sent from the box), however long ago.
+  Yulius sees keys and sent prompts, not the box, so every key counts until the next prompt is
+  sent: also an answer to one of Claude Code's dialogs, or Escape. Typed behind a draft, the
+  message and the unfinished text would be sent as one prompt. For a minute after any key
+  nothing is typed either.
+- **Who is told.** A message sent with `task_message` is refused with that reason at once, and
+  the Superagent or the person's agent says so. A message of Yulius's own waits and is tried
+  again (a pull request's news every 20 seconds; the wake after an outage until 10 minutes
+  after the start, then it is dropped). Once the person's last key is 10 minutes old, the task
+  reads **Needs your action** ("Yulius has a message for this session and does not type it…")
+  and its terminal says the same in one line; a wake that is dropped says so at its last try,
+  whatever the key's age. A flagged task is not idle, so a finished one does not count as done
+  for the tasks chained after it until its person sent a prompt.
+- **What ends it.** Send what you typed in the task's terminal, or clear it and send any
+  prompt (`continue` will do). Yulius types its message after the next prompt sent from there;
+  it never sends or clears a person's text.
+- A restart of Yulius does not forget a draft: the key that begins one leaves `person-typed`
+  (its time) in the run's folder (`<data>/runs/…`), removed when a prompt is sent from the
+  box, and a restarted server reads it when it reattaches the run. A draft it knows from
+  that file alone stays one until a prompt is sent after a key typed since the restart.
+
 ### Docker in sandboxes
 
 Each isolated sandbox has its own Docker engine (SPEC-187,
@@ -881,7 +925,9 @@ from a sandbox, and no daemon needs to run on the host.
   Run as root, it always runs as the data directory's owner in a delegated transient unit
   (`systemd-run`), never in the root shell's own cgroup (SPEC-202, #617), and refuses a data
   directory root owns. It uses the current base, and removes its throwaway sandbox
-  (`docker-smoke-<pid>`) at the end. It prints one plain line per check and exits 0 only when
+  (`docker-smoke-<pid>`) at the end. A server that starts or restarts while it runs leaves that
+  sandbox alone (ADR-0308), so it passes right after `host setup` started the service and beside a
+  running server. It prints one plain line per check and exits 0 only when
   sandboxes get Docker: a run older than the engine gets the socket, its refusal names the reason,
   then `docker run --rm hello-world`, a `docker build` and a two-service `docker compose up` in that
   run, a recreated socket, and `DOCKER_HOST` in a new run. It needs Docker Hub (`hello-world`,
@@ -1104,7 +1150,33 @@ Vidoc off, it also says `Vidoc scans are switched off for the instance`.
    terminal in the browser. They form one pool with nothing to configure: Yulius places them on the capacity that expires soonest, moves them at
    98% at a turn boundary, pauses them (without telling the agent) only while no subscription has
    capacity left and resumes them by itself. The capacity panel there and on the Dashboard says
-   when to add subscriptions (SPEC-002 ADR-17). Claude's sign-in here (`claude setup-token`) may
+   when to add subscriptions (SPEC-002 ADR-17). A message sent while a task is about to move
+   is not lost (SPEC-479, ADR-0310): a prompt entered while the agent works, a person's or one
+   Yulius types for a person (a message through a Superagent, a pull request's news), waits in
+   Claude Code's queue until the turn ends, and a resumed session does not get that queue
+   back. So a move at a turn's end waits while such a prompt waits: the session answers it on
+   the subscription it is on, and the next turn's end moves it. Where the gate blocks a turn's
+   end it blocks there, on the same subscription. On a subscription at its limit Claude
+   refuses that turn and the session continues it on the next subscription, like any turn a
+   limit cuts. A task that waits for capacity at its turn's end with a prompt waiting stays as
+   it is; when another subscription gets room it goes on in place first and moves a turn
+   later. Yulius knows the queue from the records Claude Code writes into the transcript, as
+   for a restart on a newer Claude Code ("Claude Code updates" above); an entry a turn's end
+   left in the queue when it handed nothing on (Claude Code leaves some of its own
+   notifications there for good) keeps no move, so such a session stays only until a turn's
+   end hands nothing on, usually one. A prompt that waits behind a notification of finished
+   background work, a slash command or a `!` line is not such an entry: Claude Code hands
+   those on alone and the prompt one turn's end later, and the session stays until then. The
+   server's log says when a
+   move waits ("the session is not moved to another subscription at this turn's end"). A
+   message sent while the task reads "Continuing" is refused ("try again once it runs"), so
+   its sender knows. What can still be lost: a prompt entered in the moment between a turn's
+   end deciding to move and the task reading "Continuing", a prompt whose record Claude Code
+   takes longer than two seconds to write, a prompt that waits at the moment an entry a turn's
+   end had left in the queue leaves it after all, alone (a notification delivered to a
+   sub-agent: Yulius then takes the prompt for the entry that was left), and what waits in
+   the queue when a person moves or stops the task themselves or when a usage limit cuts the
+   turn (Yulius carries nothing over). Claude's sign-in here (`claude setup-token`) may
    not read Claude's usage endpoint (it lacks the `user:profile` scope), so a subscription's usage
    shows once a task runs on it: the running sessions report it through Claude Code's status line.
    A subscription Claude refuses (a cancelled or downgraded plan) is marked "Sign in again" with
@@ -1114,11 +1186,16 @@ Vidoc off, it also says `Vidoc scans are switched off for the instance`.
    allowance of them beside the 5-hour and weekly windows) is at that model's limit: its card
    reads "Limit reached" with "Fable this week" at 100 % until the reset Claude named, its tasks
    of that model move on or wait for the reset by themselves, and tasks of other models still
-   run on it. A usage reading does not end that limit, so one lifted early (credits bought)
-   holds until its reset or until the subscription is signed in again. When Claude names no
-   reset (an older Claude Code, or credits switched off), the card shows no reset time, the
-   provider's next reading of the subscription ends the limit (a session's own reading does
-   not), and a task with nowhere else to go is tried once more. Refused again, it waits for
+   run on it. A usage reading does not end that limit. After buying credits, press **Refresh**
+   on the subscription's card (or **Refresh all**): Yulius asks Claude with that model, and
+   when the model answers the limit ends at once and the tasks that wait for it go on
+   (SPEC-473, ADR-0307); otherwise it holds until its reset or until the subscription is signed
+   in again. Each card says how old its usage reading is (one older than 10 minutes is marked
+   "may be out of date") and which window is used up with its reset, worked out when the card
+   is shown. When Claude names no reset (an older Claude Code, or credits switched off), the
+   card says "Claude did not say when it resets"; Refresh then gets the reset from Claude's
+   refusal, the background round's next reading of the subscription ends the limit (a
+   session's own reading does not), and a task with nowhere else to go is tried once more. Refused again, it waits for
    another subscription's reset when one is known, off the subscription that refused it;
    otherwise it is under Needs you (audit `task.limit_without_end`) until a person runs it
    elsewhere or sends it a message, until its agent works again because the limit is over, or
@@ -1695,9 +1772,13 @@ itself, not a signal
 and not a lost terminal. If the new instance does not come up, it is stopped and disabled, and
 only then is the old one thawed; the copy there was started and must be removed (`rm -rf` the
 data directory on the new host) before the next run. If the new host stops answering at that
-point, the old instance stays frozen: run the command again when it answers. Once the new
+point, the old instance stays frozen: run the command again when it answers (`--abort` only once
+the new instance is known to be stopped: it thaws the old one). Once the new
 instance reports the build it has taken over: the old unit stays frozen and is disabled, and
 whatever fails after that (the helper, the Docker smoke) is a line to act on, never a rollback.
+That includes the old unit itself: when it cannot be frozen or disabled, the move stands, the
+run goes on to its finish and ends with exit 1, and the move is not finished until the old
+instance is held ([The old instance held](#the-old-instance-held), below).
 
 **After.** The flow waits for `https://<new host>/healthz`, reads what the new instance did with
 the tasks that were live (its first start puts them back in the queue, whoever owns them; tasks a
@@ -1753,16 +1834,96 @@ stands: whatever unit of the old instance runs (thawed or started by hand) is fr
 stay, the server's unit is disabled, and the checklist names the units that ran beside the new
 instance (what their agents did meanwhile is on the old host only). If a unit cannot be frozen,
 that is a `FAIL` line with the reason, the two commands to run and, for a freeze that keeps
-failing, the commands that stop the old instance for good (`systemctl stop` and `systemctl kill
---kill-whom=all --signal=SIGKILL` of both units); nothing is thawed then either, and a freeze
+failing, the commands that stop for good the units that could not be frozen (`systemctl stop`
+and `systemctl kill --kill-who=all --signal=SIGKILL` of them; a unit that is frozen is never
+named there, see [The old instance held](#the-old-instance-held)); nothing is thawed then
+either, and a freeze
 that did not complete within a minute is left on its way. A server's unit that has stopped
 (`inactive` or `failed`) is not frozen by systemd: its sessions unit is frozen where it still
-runs, and both are named for you to make sure nothing of the old instance is left. A server's
+runs, and the server's unit is named for you to make sure nothing of it is left (the frozen
+sessions unit is held as it is and is not named). A server's
 unit that systemd reports on its way up or down is not taken for stopped (a sessions unit that
-is being stopped counts as ended). A unit that was frozen is named also when the other could not
+is being stopped counts as ended once no process of it is left, see below). A unit that was frozen is named also when the other could not
 be. When the new instance answers
 and does not run, `--abort` is the way back; when the new host does not answer the question,
 nothing is touched and the same command asks again once it does.
+
+A unit that does not run is asked what it left before the run says so. The server's unit has
+`KillMode=process` (§3), so a `systemctl stop` of it ends the server alone: what the server
+started in the unit's own cgroup stays there and runs on, unfrozen, beside the new instance (on
+a host without a sessions unit that is every agent, terminal and sandbox engine; with one,
+whatever the server started outside it), and systemd freezes nothing of a unit that is not
+active. (systemd 259 refuses to stop a frozen unit; systemd 255, Ubuntu 24.04, thaws it and
+stops it, so there one `systemctl stop` of the frozen old unit is enough to get here.) While
+processes of such a unit run (the server's unit when it is `inactive` or `failed`; a sessions
+unit that has stopped or is being stopped; the group's `cgroup.events` says `populated 1` and
+not `frozen 1`), the run ends with a `FAIL` line that names the units and the command that ends
+those processes, and exit 1:
+
+```sh
+sudo systemctl kill --kill-who=all --signal=SIGKILL yulius.service
+```
+
+(`--kill-who` is the option's name before systemd 252, which calls it `--kill-whom` and still
+takes the older spelling: the lines of a move name the one that runs on every release.)
+
+The run kills nothing itself and records nothing: run the command the line names (what the old
+instance holds stays on its disk), then the same `yulius instance migrate` command again. It
+asks again each time and goes on to the finish once nothing is left. (That is a run that goes
+on from a recorded start. When the look after a start or a later run finds the same, the move
+is already recorded and its finish is done or goes on; the line and the command are the same,
+and the move is not finished until nothing is left: below.) A stopped unit without a
+cgroup (the old host was restarted, or the stop left nothing), with an empty one, or whose
+processes the kernel holds frozen gets the "make sure" line and the run goes on, as before.
+When systemd does not answer the question, the run fails saying so and asks again next time.
+Such a unit must be disabled too: when `systemctl is-enabled` does not say so, the run adds a
+`FAIL` line with `systemctl disable yulius.service` and ends with exit 1 (below).
+
+#### The old instance held
+
+Once the new instance has taken over, the move is finished only while the old one is held, and
+no record says that it is: every run of the same command asks systemd again, also long after
+the finish (SPEC-481, ADR-0311). Held means all of this:
+
+- no unit of it runs unfrozen: the server's unit and its sessions unit are frozen, or the
+  server's unit has stopped (`inactive` or `failed`) and its sessions unit does not run
+  unfrozen;
+- no unit of it that does not run left processes that run (the question above);
+- `systemctl is-enabled yulius.service` says `disabled` (or `static`, for a unit of your own
+  without an `[Install]` section, which nothing enables), so a restart of the old host does not
+  start it beside the new instance.
+
+Held: the run says `ok` for the old instance and `finished`, with exit 0. Not held, or systemd
+does not answer: a `FAIL` line under **Cutover** says what was found and what to run, the run
+ends with exit 1 and says nothing of "finished", and `--status` shows that line until a run
+finds the instance held:
+
+```sh
+sudo systemctl freeze yulius.service yulius-sandboxes.service   # the units the line names
+sudo systemctl disable yulius.service
+sudo yulius instance migrate root@new-host                      # looks again
+```
+
+For a unit that runs unfrozen the line also names the way out of a freeze that keeps failing:
+`systemctl stop` and the kill above of the units that are not frozen, then the disable. A
+frozen unit is never named there, and do not stop or kill one yourself: systemd 259 refuses to
+stop a frozen unit, and after a kill of its processes the unit stays frozen on its way to a
+restart, where no thaw, no start and no `--abort` reaches it until the host restarts. For a
+stopped unit that left processes the line names the kill; for a stopped unit that is still
+enabled, the disable alone. When systemd does not say what the units do, the line names no command: nothing
+is known to be wrong, so run the same command again when it answers.
+
+A run that finds the move recorded as moved only looks: it freezes, thaws, stops and disables
+nothing of the old instance (it cannot ask the new one once its key is gone, and you may have
+gone back by hand). For the same reason its line says that the new instance has taken over,
+not that it runs, and names the other way: `sudo yulius instance migrate --abort`, once the
+new instance is stopped. The steps after the cutover and the finish (the tasks, the old
+URL's redirect, the key, the firewall on the new host) do not wait for the old instance: a run
+that finds the move not yet finished does them whether or not it is held, and ends with exit 1
+when it is not. So after a run that ended with `FAIL … must be frozen and disabled now`, the
+same command says the same and ends with exit 1 until the old instance is held; and a move that
+was finished long ago fails the same way when its old unit was thawed, started or enabled
+since.
 
 Not part of a move: packages installed inside sandboxes keep their files; on another release the
 checklist names those sandboxes. The sandbox base is built for the new host while preparing, so
@@ -2415,6 +2576,12 @@ move is continued or aborted from there, or with the command.
 
 ### Notes for specific upgrades
 
+- Upgrading to flags that say why (SPEC-472, ADR-0306, 2026-11-12): migration 0053 adds
+  `tasks.attention`. Nothing to do. A task that was flagged "Needs your action" before the update
+  has no reason kept: its bar reads "The agent needs your attention. Look at its terminal below."
+  until that flag ends (a typed message, or the turn's end), and a flag that Claude Code's own
+  question raised before the update is not yet lifted by the agent's work. Flags raised from then
+  on say why, and keep saying it across later updates.
 - Upgrading to sessions in their own unit (SPEC-458, ADR-0298, 2026-11-11). **On a host with
   systemd 258 or later (Ubuntu 26.04: `systemctl --version`), do the first step before Update
   now.** On systemd 257 and earlier (Ubuntu 24.04) the update needs nothing first; run `sudo

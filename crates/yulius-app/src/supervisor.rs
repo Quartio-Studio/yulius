@@ -24,8 +24,9 @@ use yulius_domain::task::{
     Activity, AttemptState, STOP_INTERRUPT_GRACE_MS, StopReason, TaskEvent, TaskStatus,
 };
 use yulius_domain::time::Timestamp;
-use yulius_domain::usage::{AccountUsage, ModelFamily, ReportedLimit};
+use yulius_domain::usage::{AccountUsage, FULL_PERCENT, ModelFamily, ReportedLimit};
 
+use crate::attention::AttentionRecord;
 use crate::auth::hex_token;
 use crate::context::App;
 use crate::error::{AppError, AppResult};
@@ -43,9 +44,6 @@ use crate::usage_json;
 
 /// Boxed `Send` future (breaks recursive async cycles between start, pump and finalize).
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
-
-/// A usage window that is used up, in percent.
-const FULL_PERCENT: f64 = 100.0;
 
 /// Default PTY size before the first viewer reports its size.
 pub const DEFAULT_SIZE: (u16, u16) = (120, 40);
@@ -158,13 +156,22 @@ pub struct TaskRuntime {
     /// When Yulius last typed a message into the session for it to submit (ms, 0 = never): a
     /// person's message, a pull request's news (`type_into_session`). It counts as a draft
     /// until its submit, which Claude Code makes at Yulius's own Enter. The wait in Claude
-    /// Code's queue while a turn runs comes after that and is not known here (SPEC-468
-    /// CCF-011, issue #1204).
+    /// Code's queue while a turn runs comes after that: [`Self::queue`] knows it (SPEC-468
+    /// CCF-011, SPEC-471).
     pub(crate) message_typed_ms: AtomicI64,
     /// When the session's prompt box was last known empty (ms, 0 = not known): its run's
     /// launch, or the last prompt submitted from it. What was typed after that may still sit
     /// there (SPEC-468 CCF-010, CCF-011).
     pub(crate) box_emptied_ms: AtomicI64,
+    /// The keystroke ([`Self::typed_at_ms`]) whose possible draft the session's terminal said a
+    /// message of Yulius's own waits for (SPEC-480 DRF-006): one line per keystroke.
+    pub(crate) draft_told_ms: AtomicI64,
+    /// The run's folder holds the mark of a person's possible draft (`person-typed`, SPEC-480
+    /// DRF-009), so that a draft's keystrokes write it once.
+    pub(crate) draft_marked: AtomicBool,
+    /// This server saw a person type into the run. Until it did, a draft is known from its
+    /// mark alone, and a prompt that goes on is not known to follow it (DRF-009).
+    pub(crate) typed_seen: AtomicBool,
     /// When the prompt whose hook is being answered emptied the prompt box (ms): worked out at
     /// its first request and taken into [`Self::box_emptied_ms`] when the prompt goes on, so a
     /// prompt that is held and then blocked, which Claude Code puts back into the box, empties
@@ -175,7 +182,7 @@ pub struct TaskRuntime {
     /// for days) leaves this set until the run's next prompt is answered, which then counts as
     /// the held one going on: the session reads as holding a draft until the prompt after
     /// that is submitted, never as holding none. A new run holds none
-    /// ([`Self::prompt_box_starts_empty`]).
+    /// ([`Self::run_starts`]).
     pub(crate) prompt_held: AtomicBool,
     /// Whose personal MCP servers the current run was started with (SPEC-332 MSC-009): a live
     /// run keeps its MCP configuration, so a hand-over restarts it, and only that person messages
@@ -318,6 +325,21 @@ pub struct TaskRuntime {
     /// The clean Stop (ms) whose turn waits for the goal verdict before it reads idle (0 = none).
     /// Whoever takes it settles that turn (SPEC-079 BGW-005).
     pub(crate) verdict_stop_ms: crate::finish::VerdictSlot,
+    /// What waits in Claude Code's queue, as the run's `queue-operation` records say: a prompt
+    /// entered while a turn runs, or a notification of its own, which the process holds in
+    /// memory alone, so a restart loses it (SPEC-471 CCQ-001). A run starts with none.
+    pub(crate) queue: Mutex<yulius_domain::agent_cli::Queue>,
+    /// When a prompt from the session's prompt box last went on to Claude Code (ms, 0 = none in
+    /// this run): where it went (a turn of its own, or the queue) is written a moment later
+    /// (SPEC-471 CCQ-004).
+    pub(crate) prompt_passed_ms: AtomicI64,
+    /// How many prompts from the prompt box went on so far (it only grows): a turn's end that
+    /// looks at the session reads it twice and so sees that one went on meanwhile (SPEC-471
+    /// CCQ-004).
+    pub(crate) prompts_passed: AtomicU64,
+    /// The run was reattached after a restart of the server and its lines were not read again
+    /// yet: what waits in Claude Code's queue is not known (SPEC-471 CCQ-001).
+    pub(crate) queue_unread: AtomicBool,
     /// Polls of the transcript watcher so far: the Stop hook waits for one more before it decides
     /// a switch, so the lines written before the Stop are read (SPEC-079 BGW-004).
     pub(crate) watch_polls: AtomicU64,
@@ -418,11 +440,48 @@ impl TaskRuntime {
             .max(self.message_typed_ms.load(Ordering::SeqCst))
     }
 
-    /// A run starts at `now_ms`: its prompt box is empty, and no prompt of it is held (one held
-    /// in the run before went with that run's hook client; SPEC-468 CCF-010).
-    pub(crate) fn prompt_box_starts_empty(&self, now_ms: i64) {
+    /// A run starts at `now_ms`, in a new process: its prompt box is empty, and no prompt of
+    /// it is held (one held in the run before went with that run's hook client; SPEC-468
+    /// CCF-010). Nothing waits in its queue and no prompt of it went on: what the run before
+    /// queued went with its process (SPEC-471 CCQ-001).
+    pub(crate) fn run_starts(&self, now_ms: i64) {
         self.box_emptied_ms.store(now_ms, Ordering::SeqCst);
+        // Its folder is new: no draft is marked there (SPEC-480 DRF-009).
+        self.draft_marked.store(false, Ordering::SeqCst);
+        self.typed_seen.store(false, Ordering::SeqCst);
         self.prompt_held.store(false, Ordering::SeqCst);
+        self.with_queue(|queue| *queue = yulius_domain::agent_cli::Queue::default());
+        self.queue_unread.store(false, Ordering::SeqCst);
+        self.prompt_passed_ms.store(0, Ordering::SeqCst);
+    }
+
+    /// What the run's lines said so far about Claude Code's queue.
+    pub(crate) fn queue(&self) -> yulius_domain::agent_cli::Queue {
+        self.queue.lock().map(|queue| *queue).unwrap_or_default()
+    }
+
+    /// Whether Claude Code's queue may hold something a restart would lose: its records say
+    /// so, or they were not read yet ([`Self::queue_unread`]), or what they said cannot be
+    /// read (a poisoned lock): not known counts as holding.
+    pub(crate) fn queue_may_hold(&self) -> bool {
+        self.queue_unread.load(Ordering::SeqCst)
+            || self.queue.lock().map_or(true, |queue| queue.holds())
+    }
+
+    /// Whether Claude Code's queue may hold something a turn's end hands on, which a move of
+    /// the session at that end would lose (SPEC-479 SWQ-001): its records say so, or they were
+    /// not read yet, or what they said cannot be read. An entry a turn's end left behind does
+    /// not count ([`yulius_domain::agent_cli::Queue::hands_on`]).
+    pub(crate) fn queue_may_hand_on(&self) -> bool {
+        self.queue_unread.load(Ordering::SeqCst)
+            || self.queue.lock().map_or(true, |queue| queue.hands_on())
+    }
+
+    /// Changes what is known of the queue.
+    pub(crate) fn with_queue(&self, change: impl FnOnce(&mut yulius_domain::agent_cli::Queue)) {
+        if let Ok(mut queue) = self.queue.lock() {
+            change(&mut queue);
+        }
     }
 
     pub(crate) fn new() -> Self {
@@ -448,6 +507,9 @@ impl TaskRuntime {
             typed_at_ms: AtomicI64::new(0),
             message_typed_ms: AtomicI64::new(0),
             box_emptied_ms: AtomicI64::new(0),
+            draft_told_ms: AtomicI64::new(0),
+            draft_marked: AtomicBool::new(false),
+            typed_seen: AtomicBool::new(false),
             submit_emptied_ms: AtomicI64::new(0),
             prompt_held: AtomicBool::new(false),
             typed_by: Mutex::new(None),
@@ -497,6 +559,10 @@ impl TaskRuntime {
             goal_open: AtomicBool::new(false),
             goal_unfinished: AtomicBool::new(false),
             verdict_stop_ms: crate::finish::VerdictSlot::default(),
+            queue: Mutex::default(),
+            prompt_passed_ms: AtomicI64::new(0),
+            prompts_passed: AtomicU64::new(0),
+            queue_unread: AtomicBool::new(false),
             watch_polls: AtomicU64::new(0),
             replay_transcript: AtomicBool::new(false),
             session_end: Mutex::new(None),
@@ -730,6 +796,41 @@ pub(crate) fn mark_session_started(run_dir: &Path) {
     }
 }
 
+/// File in a run directory while a person's draft may sit in the run's prompt box (SPEC-480
+/// DRF-009): the time (ms) of the keystroke that began it. Written at a person's first keystroke
+/// after the box was last empty and removed when a prompt submitted from the box empties it, so
+/// a restarted server still knows of a draft typed before it.
+const PERSON_TYPED_FILE: &str = "person-typed";
+
+/// When the person's draft that may sit in the prompt box of the run in `run_dir` was begun
+/// (ms); 0 when none is marked.
+pub(crate) fn person_typed_marked(run_dir: &Path) -> i64 {
+    std::fs::read_to_string(run_dir.join(PERSON_TYPED_FILE))
+        .ok()
+        .and_then(|text| text.trim().parse::<i64>().ok())
+        .map_or(0, |at| at.max(0))
+}
+
+/// Records that a person began a draft in the run in `run_dir` at `at`; whether it was written.
+/// Through a synced temporary file, so a crash leaves no mark or a whole one.
+pub(crate) fn mark_person_typed(run_dir: &Path, at: i64) -> bool {
+    let written = crate::outage::write_time(&run_dir.join(PERSON_TYPED_FILE), at);
+    if let Err(err) = &written {
+        tracing::warn!(run_dir = %run_dir.display(), error = %err, "could not record a person's draft");
+    }
+    written.is_ok()
+}
+
+/// The prompt box of the run in `run_dir` was emptied: no draft is marked any more.
+pub(crate) fn clear_person_typed(run_dir: &Path) {
+    match std::fs::remove_file(run_dir.join(PERSON_TYPED_FILE)) {
+        Err(err) if err.kind() != std::io::ErrorKind::NotFound => {
+            tracing::warn!(run_dir = %run_dir.display(), error = %err, "could not clear a person's draft mark");
+        }
+        _ => {}
+    }
+}
+
 /// Writes `bytes` to `path` readable by the owner only.
 pub(crate) fn write_private_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write as _;
@@ -865,9 +966,31 @@ enum InputReady {
     TrustUnanswered,
 }
 
-/// Said when the trust dialog is still shown at the end of the wait.
-const TRUST_UNANSWERED: &str = "Claude Code still asks whether to trust this folder, so Yulius typed nothing. Answer it in \
-     the terminal";
+/// Said when the trust dialog is still shown at the end of the wait: what is wrong, and how its
+/// person's part begins.
+const TRUST_UNANSWERED: &str =
+    "Claude Code still asks whether to trust this folder, so Yulius typed nothing";
+const TRUST_ANSWER: &str = "Answer it in the terminal";
+
+/// What a task whose goal was never set says: the notice for its terminal, and the reason kept
+/// with its flag (SPEC-472). `why` is what went wrong; `first` is what its person does before a
+/// goal can be typed at all (answer the trust question), when there is such a thing.
+fn goal_missing(why: &str, first: Option<&str>) -> (String, AttentionRecord) {
+    let notice = format!(
+        "{why}{}. The task has no goal yet: type `/goal` and the request in the terminal, or stop \
+         and continue the task.",
+        first.map(|first| format!(". {first}")).unwrap_or_default()
+    );
+    let action = match first {
+        Some(first) => {
+            format!("{first}, then type `/goal` and the request, or stop and continue the task.")
+        }
+        None => "Type `/goal` and the request in the terminal, or stop and continue the task."
+            .to_owned(),
+    };
+    let reason = AttentionRecord::yulius(&format!("{why}. The task has no goal yet."), &action);
+    (notice, reason)
+}
 
 /// Whether `screen` shows Claude Code's folder-trust dialog.
 pub(crate) fn trust_prompt_shown(screen: &str) -> bool {
@@ -1769,7 +1892,7 @@ impl App {
         // Typing from now on, once viewers can write to this run, is a person's draft in it
         // (SPEC-068): its prompt box starts empty (SPEC-468 CCF-010).
         let typed_before = runtime.typed_at_ms.load(Ordering::SeqCst);
-        runtime.prompt_box_starts_empty(self.now().0);
+        runtime.run_starts(self.now().0);
         self.attach_run(&task.id, &attempt, &host_token).await?;
         // The new run learns its goal from its own lines, and an idle one writes none: what the
         // old run read of the goal still says what the agent left.
@@ -1831,10 +1954,8 @@ impl App {
                     InputReady::Ready => app.type_opening(&task_id, &attempt_id, opening).await,
                     InputReady::Gone => {}
                     InputReady::TrustUnanswered => {
-                        app.runtime(&task_id).hub.notice(format!(
-                            "{TRUST_UNANSWERED}, then type the task's first message."
-                        ));
-                        app.flag_task(&task_id).await;
+                        app.trust_unanswered(&task_id, ", then type the task's first message.")
+                            .await;
                     }
                 }
                 // A run that is gone leaves the flag to the task's next start, which sets it
@@ -1886,22 +2007,39 @@ impl App {
         })
     }
 
-    /// The goal was never taken by the session: the task needs a person, said in its terminal.
+    /// The goal was never taken by the session: the task needs a person, said in its terminal
+    /// and by the task itself.
     async fn goal_not_taken(&self, task_id: &TaskId, why: &str) {
-        self.runtime(task_id).hub.notice(format!(
-            "{why}. The task has no goal yet: type `/goal` and the request in the terminal, or stop \
-             and continue the task."
-        ));
-        self.flag_task(task_id).await;
+        self.goal_never_set(task_id, why, None).await;
     }
 
-    /// Marks the task as needing a person (what for is said in its terminal).
-    async fn flag_task(&self, task_id: &TaskId) {
-        if let Ok(Some(task)) = self.deps.store.task(task_id).await
-            && let Err(err) = self
-                .set_task_activity(&task, Activity::NeedsAttention)
-                .await
-        {
+    /// [`Self::goal_not_taken`], with what the person does `first`, before a goal can be typed.
+    async fn goal_never_set(&self, task_id: &TaskId, why: &str, first: Option<&str>) {
+        let (notice, reason) = goal_missing(why, first);
+        self.runtime(task_id).hub.notice(notice);
+        self.flag_task(task_id, reason).await;
+    }
+
+    /// Claude Code still asks whether to trust the folder once the time to answer it is over
+    /// (SPEC-106 OTR-002): the task needs a person, told what happens `then`.
+    async fn trust_unanswered(&self, task_id: &TaskId, then: &str) {
+        self.runtime(task_id)
+            .hub
+            .notice(format!("{TRUST_UNANSWERED}. {TRUST_ANSWER}{then}"));
+        self.flag_task(
+            task_id,
+            AttentionRecord::yulius(
+                &format!("{TRUST_UNANSWERED}."),
+                &format!("{TRUST_ANSWER}{then}"),
+            ),
+        )
+        .await;
+    }
+
+    /// Marks the task as needing a person, for `reason`: what its terminal said to the viewers
+    /// there, kept for whoever opens the task later (SPEC-472).
+    async fn flag_task(&self, task_id: &TaskId, reason: AttentionRecord) {
+        if let Err(err) = self.flag_attention(task_id, reason).await {
             tracing::warn!(task = %task_id, error = %err, "could not flag the task");
         }
     }
@@ -1927,17 +2065,18 @@ impl App {
         } else {
             ""
         };
-        self.runtime(task_id).hub.notice(format!(
-            "Yulius restarted while it typed this task's first message, so the first message was \
-             never sent and may be half typed in the prompt box. Complete it (paste the attached \
-             images again if they are missing; the task's request lists them) and press Enter.{goal}"
-        ));
-        if let Err(err) = self
-            .set_task_activity(&task, Activity::NeedsAttention)
-            .await
-        {
-            tracing::warn!(task = %task_id, error = %err, "could not flag the task");
-        }
+        let problem = "Yulius restarted while it typed this task's first message, so the first \
+                       message was never sent and may be half typed in the prompt box.";
+        let action = format!(
+            "Complete it (paste the attached images again if they are missing; the task's \
+             request lists them) and press Enter.{goal}"
+        );
+        // No viewer is connected when a server starts: the task itself has to say it.
+        self.runtime(task_id)
+            .hub
+            .notice(format!("{problem} {action}"));
+        self.flag_task(task_id, AttentionRecord::yulius(problem, &action))
+            .await;
     }
 
     /// Waits until the attempt's TUI reads input: Claude Code's SessionStart hook arrived and
@@ -2154,10 +2293,11 @@ impl App {
                 InputReady::Ready => {}
                 InputReady::Gone => return,
                 InputReady::TrustUnanswered => {
-                    app.runtime(&task_id).hub.notice(format!(
-                        "{TRUST_UNANSWERED}; the task starts by itself once it is answered."
-                    ));
-                    app.flag_task(&task_id).await;
+                    app.trust_unanswered(
+                        &task_id,
+                        "; the task starts by itself once it is answered.",
+                    )
+                    .await;
                     launch_goal_settled(&run_dir);
                     return;
                 }
@@ -2216,7 +2356,8 @@ impl App {
             let started = tokio::time::Instant::now();
             let mut typed_before = typed_before;
             let unanswered = || async {
-                app.goal_not_taken(&task_id, TRUST_UNANSWERED).await;
+                app.goal_never_set(&task_id, TRUST_UNANSWERED, Some(TRUST_ANSWER))
+                    .await;
             };
             match app
                 .wait_input_ready(&task_id, &attempt_id, started, true, &mut typed_before)
@@ -2642,17 +2783,14 @@ impl App {
         if let Ok(mut failed) = runtime.end_failed.lock() {
             *failed = Some((attempt.id.clone(), err.to_string()));
         }
-        runtime.hub.notice(format!(
+        let problem = format!(
             "Yulius could not end this session ({err}). It still counts as running, so the task \
-             cannot be deleted. Stop the task again to retry."
-        ));
-        if let Ok(Some(task)) = self.deps.store.task(task_id).await
-            && let Err(err) = self
-                .set_task_activity(&task, Activity::NeedsAttention)
-                .await
-        {
-            tracing::warn!(task = %task_id, error = %err, "could not flag the task");
-        }
+             cannot be deleted."
+        );
+        let action = "Stop the task again to retry.";
+        runtime.hub.notice(format!("{problem} {action}"));
+        self.flag_task(task_id, AttentionRecord::yulius(&problem, action))
+            .await;
     }
 
     async fn mark_lost(
@@ -3957,8 +4095,10 @@ impl App {
                 .ok()
                 .and_then(|b| b.try_into().ok());
             // The run's transcript so far is history: its watcher catches up on it (TSK-014).
+            // Until it did, what waits in Claude Code's queue is not known (SPEC-471 CCQ-001).
             let runtime = self.runtime(&attempt.task_id);
             runtime.replay_transcript.store(true, Ordering::SeqCst);
+            runtime.queue_unread.store(true, Ordering::SeqCst);
             // Before the run is attached, so no message is typed meanwhile (SPEC-230): when it
             // was spawned, and whether its session started (a SessionStart this server did not
             // see left its marker).
@@ -3969,6 +4109,15 @@ impl App {
             if session_started_marked(Path::new(&attempt.run_dir)) {
                 runtime.session_started.store(true, Ordering::SeqCst);
             }
+            // A draft a person typed before this server started may still sit in the prompt
+            // box: its mark says since when (SPEC-480 DRF-009). A keystroke this server saw is
+            // newer and stays.
+            // Never later than now: a time ahead of the clock would never grow old.
+            let drafted = person_typed_marked(Path::new(&attempt.run_dir)).min(self.now().0);
+            if drafted > 0 {
+                runtime.typed_at_ms.fetch_max(drafted, Ordering::SeqCst);
+                runtime.draft_marked.store(true, Ordering::SeqCst);
+            }
             let reattached = match host_token {
                 Some(token) => self
                     .attach_run(&attempt.task_id, &attempt, &token)
@@ -3977,9 +4126,9 @@ impl App {
                 None => false,
             };
             if !reattached {
-                self.runtime(&attempt.task_id)
-                    .replay_transcript
-                    .store(false, Ordering::SeqCst);
+                let runtime = self.runtime(&attempt.task_id);
+                runtime.replay_transcript.store(false, Ordering::SeqCst);
+                runtime.queue_unread.store(false, Ordering::SeqCst);
             }
             if reattached {
                 tracing::info!(task = %attempt.task_id, "reattached live run");
@@ -4264,6 +4413,9 @@ impl App {
         // A request for a goal pause that is still open (made before this server started) is
         // answered by this run's work, like one made while it is watched (SPEC-469 GPW-004).
         self.watch_goal_pause_request(&task_id).await;
+        // So is a flag that the session's work answers (a notice's), raised before this server
+        // started: its reason says so (SPEC-472 ATN-010).
+        self.watch_answerable_flag(&task_id).await;
         let mut session_id = attempt.provider_session_id.clone();
         let mut watch = None;
         let mut last_drift_check = Timestamp(0);
@@ -4462,6 +4614,15 @@ impl App {
         {
             blind.answered();
         }
+        // A line of the model written after a hand-over is of the turn the hand-over started,
+        // which a prompt Claude Code scheduled for itself begins with no prompt record read
+        // here (SPEC-471 CCQ-003). Said to the queue once the line was applied below, as a
+        // prompt record's turn is: such a prompt has had its hook by then, so the task reads
+        // Working either way.
+        let worked = match &observation {
+            Observation::AgentWork { at } | Observation::TurnComplete { at } => *at,
+            _ => None,
+        };
         match observation {
             Observation::LimitReached {
                 resets_at,
@@ -4535,6 +4696,8 @@ impl App {
                 // settles, after this prompt started its turn (SPEC-453 TPO-001).
                 let _order = runtime.turn_order.lock().await;
                 if at.is_some_and(|at| at.0 <= runtime.last_stop_ms.load(Ordering::SeqCst)) {
+                    // Its turn came and went: what Claude Code handed on had it (SPEC-471).
+                    runtime.with_queue(yulius_domain::agent_cli::Queue::turn_seen);
                     return;
                 }
                 crate::race::reached(
@@ -4570,6 +4733,9 @@ impl App {
                     .await;
                 self.publish_task(task_id).await;
                 self.keep_working_stretch(task_id, stretch).await;
+                // Only now, with the task reading Working: the turn of what Claude Code handed
+                // on from its queue is known, so the hand-over is over (SPEC-471 CCQ-003).
+                runtime.with_queue(yulius_domain::agent_cli::Queue::turn_seen);
             }
             Observation::TurnComplete { at } => {
                 if let Some(at) = at {
@@ -4606,6 +4772,9 @@ impl App {
                 if let Some(at) = at {
                     runtime.turn_closed_ms.fetch_max(at.0, Ordering::SeqCst);
                 }
+                // What still waits in Claude Code's queue was left by this turn's end: it is
+                // not handed on at a later one (SPEC-479 SWQ-002).
+                runtime.with_queue(yulius_domain::agent_cli::Queue::turn_closed);
                 self.background_agents_observed(task_id, background_agents.unwrap_or(0))
                     .await;
                 self.turn_record_seen(task_id, at).await;
@@ -4642,8 +4811,11 @@ impl App {
             Observation::BackgroundResumable { id } => {
                 self.background_resumable(task_id, id).await;
             }
+            // In the order of the lines: the count is ahead of nothing the watcher applied.
+            Observation::Queue(change, at) => runtime.with_queue(|queue| queue.record(change, at)),
             Observation::Session { .. } => {}
         }
+        runtime.with_queue(|queue| queue.work_seen(worked));
     }
 
     /// Applies the pool policy for a running task and acts on the decision (SPEC-001 §7.4):
@@ -4846,9 +5018,80 @@ mod tests {
         let runtime = super::TaskRuntime::new();
         runtime.typed_at_ms.store(5_000, Ordering::SeqCst);
         runtime.prompt_held.store(true, Ordering::SeqCst);
-        runtime.prompt_box_starts_empty(7_000);
+        runtime.run_starts(7_000);
         assert_eq!(runtime.box_emptied_ms.load(Ordering::SeqCst), 7_000);
         assert!(!runtime.prompt_held.load(Ordering::SeqCst));
+    }
+
+    /// SPEC-471 CCQ-001: what the run before left in Claude Code's queue went with its process,
+    /// and a resumed session does not get it back: a run starts with an empty queue and with
+    /// no prompt that just went on.
+    #[test]
+    fn a_new_run_starts_with_an_empty_queue() {
+        use std::sync::atomic::Ordering;
+        use yulius_domain::agent_cli::QueueChange;
+        let runtime = super::TaskRuntime::new();
+        runtime.with_queue(|queue| queue.record(QueueChange::Added, None));
+        runtime.with_queue(|queue| queue.record(QueueChange::HandedOn, None));
+        runtime.with_queue(|queue| queue.record(QueueChange::Added, None));
+        runtime.prompt_passed_ms.store(6_500, Ordering::SeqCst);
+        assert!(runtime.queue().holds());
+        runtime.run_starts(7_000);
+        assert_eq!(runtime.queue(), yulius_domain::agent_cli::Queue::default());
+        assert_eq!(runtime.prompt_passed_ms.load(Ordering::SeqCst), 0);
+        assert!(!runtime.queue_may_hold());
+        // A run reattached after a restart of the server: not known until its lines were read,
+        // which counts as holding; the next launch starts a process whose queue is empty.
+        runtime.queue_unread.store(true, Ordering::SeqCst);
+        assert!(runtime.queue_may_hold(), "not known counts as holding");
+        runtime.run_starts(8_000);
+        assert!(!runtime.queue_may_hold());
+    }
+
+    /// SPEC-471 CCQ-001: what the queue's records said cannot be read any more once a thread
+    /// died holding them: that is "not known", which counts as holding something.
+    #[test]
+    fn a_queue_that_cannot_be_read_counts_as_holding() {
+        let runtime = std::sync::Arc::new(super::TaskRuntime::new());
+        assert!(!runtime.queue_may_hold());
+        let dying = std::sync::Arc::clone(&runtime);
+        let died = std::thread::spawn(move || {
+            let _held = dying.queue.lock();
+            std::panic::resume_unwind(Box::new("a thread dies with the queue's lock"));
+        })
+        .join();
+        assert!(died.is_err());
+        assert!(runtime.queue.is_poisoned());
+        assert!(runtime.queue_may_hold());
+    }
+
+    /// SPEC-479 SWQ-001, SWQ-002: what a move at a turn's end asks of the queue. An entry that
+    /// waits counts until a turn's closing record found it waiting; a queue that is not known
+    /// (a reattached run not read yet, a lock a thread died with) counts; a new run has none.
+    #[test]
+    fn a_move_asks_the_queue_for_what_a_turns_end_hands_on() {
+        use std::sync::atomic::Ordering;
+        use yulius_domain::agent_cli::{Queue, QueueChange};
+        let runtime = std::sync::Arc::new(super::TaskRuntime::new());
+        assert!(!runtime.queue_may_hand_on());
+        runtime.with_queue(|queue| queue.record(QueueChange::Added, None));
+        assert!(runtime.queue_may_hand_on());
+        runtime.with_queue(Queue::turn_closed);
+        assert!(!runtime.queue_may_hand_on(), "left by a turn's end");
+        assert!(runtime.queue_may_hold(), "the restart's rule counts it");
+        runtime.queue_unread.store(true, Ordering::SeqCst);
+        assert!(runtime.queue_may_hand_on(), "not known counts");
+        runtime.run_starts(8_000);
+        assert!(!runtime.queue_may_hand_on());
+        assert_eq!(runtime.queue().left_over(), 0);
+        let dying = std::sync::Arc::clone(&runtime);
+        let died = std::thread::spawn(move || {
+            let _held = dying.queue.lock();
+            std::panic::resume_unwind(Box::new("a thread dies with the queue's lock"));
+        })
+        .join();
+        assert!(died.is_err());
+        assert!(runtime.queue_may_hand_on());
     }
 
     /// Review of SPEC-332 (round 3): a person's switch and a hand-over may come mid-turn, so they
@@ -4906,6 +5149,52 @@ mod tests {
         assert!(!super::trust_prompt_shown(
             "\u{276f} Try \"refactor <filepath>\""
         ));
+    }
+
+    /// SPEC-472 ATN-004, ATN-006: a goal that was never set says in its terminal what it said
+    /// before, and its flag keeps what is wrong apart from what to do. Behind an unanswered
+    /// trust question the to-do starts there.
+    #[test]
+    fn a_goal_never_set_says_what_is_wrong_and_what_to_do() {
+        let (notice, reason) =
+            super::goal_missing("Claude Code did not take the task's goal", None);
+        assert_eq!(
+            notice,
+            "Claude Code did not take the task's goal. The task has no goal yet: type `/goal` and \
+             the request in the terminal, or stop and continue the task."
+        );
+        assert_eq!(
+            reason.problem.as_deref(),
+            Some("Claude Code did not take the task's goal. The task has no goal yet.")
+        );
+        assert_eq!(
+            reason.action.as_deref(),
+            Some("Type `/goal` and the request in the terminal, or stop and continue the task.")
+        );
+        assert!(reason.link.is_none() && !reason.work_answers);
+
+        let (notice, reason) =
+            super::goal_missing(super::TRUST_UNANSWERED, Some(super::TRUST_ANSWER));
+        assert_eq!(
+            notice,
+            "Claude Code still asks whether to trust this folder, so Yulius typed nothing. Answer \
+             it in the terminal. The task has no goal yet: type `/goal` and the request in the \
+             terminal, or stop and continue the task."
+        );
+        assert_eq!(
+            reason.problem.as_deref(),
+            Some(
+                "Claude Code still asks whether to trust this folder, so Yulius typed nothing. \
+                 The task has no goal yet."
+            )
+        );
+        assert_eq!(
+            reason.action.as_deref(),
+            Some(
+                "Answer it in the terminal, then type `/goal` and the request, or stop and \
+                 continue the task."
+            )
+        );
     }
 
     /// SPEC-117 ONE-003: a launch prompt that is a `/goal` sets the goal; any other prompt, or

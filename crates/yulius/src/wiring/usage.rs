@@ -23,7 +23,11 @@ use serde_json::Value;
 use yulius_app::model::Secret;
 use yulius_app::ports::usage::{UsageFailure, UsageFailureKind, UsageProbe, plausible_email};
 use yulius_domain::harness::Provider;
-use yulius_domain::usage::{AccountUsage, UsageWindow};
+use yulius_domain::time::Timestamp;
+use yulius_domain::usage::{
+    AccountUsage, LimitScope, ModelAnswer, ReportedLimit, SESSION_WINDOW_MINUTES, UsageWindow,
+    WEEKLY_WINDOW_MINUTES,
+};
 
 const CLAUDE_API: &str = "https://api.anthropic.com";
 const USAGE_PATH: &str = "/api/oauth/usage";
@@ -62,6 +66,18 @@ impl ProviderUsage {
         Ok(Self {
             http,
             base: CLAUDE_API.to_owned(),
+        })
+    }
+
+    /// A probe that asks `base` (`http://127.0.0.1:PORT`) instead of Claude's API: a local
+    /// stand-in in tests.
+    ///
+    /// # Errors
+    /// When the HTTP client cannot be built.
+    pub fn at(base: impl Into<String>) -> Result<Self, String> {
+        Ok(Self {
+            base: base.into(),
+            ..Self::new()?
         })
     }
 
@@ -151,47 +167,133 @@ pub fn parse_profile_email(body: &Value) -> Option<String> {
         .and_then(plausible_email)
 }
 
-/// Claude's `anthropic-ratelimit-unified-{5h,7d}-{utilization,reset}` headers: utilization is a
-/// fraction (0.37 = 37 %), reset is Unix seconds. The same numbers Claude Code's status line shows.
+/// A header's value as text.
+fn header<'a>(headers: &'a reqwest::header::HeaderMap, name: &str) -> Option<&'a str> {
+    headers.get(name).and_then(|v| v.to_str().ok())
+}
+
+/// A header that holds a time in Unix seconds.
+fn header_time(headers: &reqwest::header::HeaderMap, name: &str) -> Option<Timestamp> {
+    header(headers, name)
+        .and_then(|v| v.trim().parse::<i64>().ok())
+        .and_then(|s| s.checked_mul(1000))
+        .map(Timestamp)
+}
+
+/// One window of Claude's `anthropic-ratelimit-unified-{key}-{utilization,reset}` headers:
+/// utilization is a fraction (0.37 = 37 %), reset is Unix seconds. `key` is `5h` or `7d`.
+fn header_window(
+    headers: &reqwest::header::HeaderMap,
+    key: &str,
+    minutes: u32,
+) -> Option<UsageWindow> {
+    let used = header(
+        headers,
+        &format!("anthropic-ratelimit-unified-{key}-utilization"),
+    )?
+    .trim()
+    .parse::<f64>()
+    .ok()
+    .filter(|u| u.is_finite() && *u >= 0.0)?;
+    Some(UsageWindow {
+        used_percent: Some(used.min(1.0) * 100.0),
+        window_minutes: Some(minutes),
+        resets_at: header_time(headers, &format!("anthropic-ratelimit-unified-{key}-reset")),
+    })
+}
+
+/// Claude's `anthropic-ratelimit-unified-{5h,7d}-{utilization,reset}` headers as a usage
+/// reading. The same numbers Claude Code's status line shows.
 pub fn parse_rate_limit_headers(headers: &reqwest::header::HeaderMap) -> Option<AccountUsage> {
-    let get = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
-    let window = |key: &str, minutes: u32| -> Option<UsageWindow> {
-        let used = get(&format!("anthropic-ratelimit-unified-{key}-utilization"))?
-            .trim()
-            .parse::<f64>()
-            .ok()
-            .filter(|u| u.is_finite() && *u >= 0.0)?;
-        let resets_at = get(&format!("anthropic-ratelimit-unified-{key}-reset"))
-            .and_then(|v| v.trim().parse::<i64>().ok())
-            .and_then(|s| s.checked_mul(1000))
-            .map(yulius_domain::time::Timestamp);
-        Some(UsageWindow {
-            used_percent: Some(used.min(1.0) * 100.0),
-            window_minutes: Some(minutes),
-            resets_at,
-        })
-    };
     let usage = AccountUsage {
-        primary: window("5h", 5 * 60),
-        secondary: window("7d", 7 * 24 * 60),
+        primary: header_window(headers, "5h", SESSION_WINDOW_MINUTES),
+        secondary: header_window(headers, "7d", WEEKLY_WINDOW_MINUTES),
         ..AccountUsage::default()
     };
     (usage.primary.is_some() || usage.secondary.is_some()).then_some(usage)
 }
 
+/// Whether the body of a refused response says the model needs usage credits
+/// (`error.details.error_code: "credits_required"`, as Claude Code 2.1.322 reads it).
+fn credits_required(body: &[u8]) -> bool {
+    serde_json::from_slice::<Value>(body).is_ok_and(|v| {
+        v.pointer("/error/details/error_code")
+            .and_then(Value::as_str)
+            == Some("credits_required")
+    })
+}
+
+/// What a response to a one-token request of a model says about that model (SPEC-473
+/// RFR-001), read as Claude Code 2.1.322 reads its own responses.
+///
+/// A response that ran says the model runs, whatever its headers say: one that ran on usage
+/// credits beyond the plan carries `unified-status: rejected` beside `overage-status: allowed`.
+/// HTTP 429 is a refusal for a usage limit when it names one, by its claim
+/// (`anthropic-ratelimit-unified-representative-claim`) or by a body that asks for usage
+/// credits; the limit's reset is `anthropic-ratelimit-unified-reset`, and for a model's own
+/// limit that names none, the reset of its allowance (`7d_oi-reset`). A 429 that names no limit
+/// is a throttle. The 5-hour and weekly windows the headers carry are read in either case.
+/// The utilization of the model's allowance (`7d_oi-utilization`) is not: a model that ran
+/// has no limit to store, whatever its allowance reads ([`AccountUsage::record_model_answer`]).
+///
+/// # Errors
+/// What is no answer about the limit: a throttle, a refused sign-in (HTTP 401), any other
+/// status.
+pub fn parse_model_answer(
+    status: u16,
+    headers: &reqwest::header::HeaderMap,
+    body: &[u8],
+) -> Result<ModelAnswer, UsageFailure> {
+    let answer = ModelAnswer {
+        refused: None,
+        five_hour: header_window(headers, "5h", SESSION_WINDOW_MINUTES),
+        seven_day: header_window(headers, "7d", WEEKLY_WINDOW_MINUTES),
+    };
+    match status {
+        200..=299 => Ok(answer),
+        429 => {
+            let claim = header(headers, "anthropic-ratelimit-unified-representative-claim")
+                .map(str::trim)
+                .filter(|claim| !claim.is_empty());
+            let credits = credits_required(body);
+            if claim.is_none() && !credits {
+                return Err(throttled(header(headers, "retry-after")));
+            }
+            let mut limit = ReportedLimit::of_refusal(
+                claim,
+                credits,
+                header_time(headers, "anthropic-ratelimit-unified-reset"),
+            );
+            if limit.scope == LimitScope::Model(None) {
+                limit.resets_at = limit
+                    .resets_at
+                    .or_else(|| header_time(headers, "anthropic-ratelimit-unified-7d_oi-reset"));
+            }
+            Ok(ModelAnswer {
+                refused: Some(limit),
+                ..answer
+            })
+        }
+        401 => Err(UsageFailure::of(UsageFailureKind::Rejected, REJECTED)),
+        _ => Err(UsageFailure::new(TRY_AGAIN)),
+    }
+}
+
 impl ProviderUsage {
-    /// Reads usage the way Claude Code does: from the rate-limit headers of an API response, for
-    /// sign-ins the usage endpoint refuses (`setup-token`, no `user:profile`). One request of one
-    /// output token on the cheapest model.
-    async fn read_headers(&self, credential: &Secret) -> Result<AccountUsage, UsageFailure> {
-        let response = self
-            .http
+    /// One request of one output token with `model`: the least that makes Claude answer with
+    /// the rate-limit headers of the subscription and of that model.
+    async fn ask(
+        &self,
+        credential: &Secret,
+        model: &str,
+    ) -> Result<reqwest::Response, UsageFailure> {
+        self.http
             .post(format!("{}{MESSAGES_PATH}", self.base))
             .bearer_auth(credential.expose().trim())
             .header("anthropic-beta", "oauth-2025-04-20")
             .header("anthropic-version", "2023-06-01")
             .json(&serde_json::json!({
-                "model": PROBE_MODEL,
+                "model": model,
                 "max_tokens": 1,
                 "system": "You are Claude Code, Anthropic's official CLI for Claude.",
                 "messages": [{"role": "user", "content": "hi"}]
@@ -201,7 +303,14 @@ impl ProviderUsage {
             .map_err(|e| {
                 tracing::debug!(error = %e.without_url(), "usage header request failed");
                 UsageFailure::new(TRY_AGAIN)
-            })?;
+            })
+    }
+
+    /// Reads usage the way Claude Code does: from the rate-limit headers of an API response, for
+    /// sign-ins the usage endpoint refuses (`setup-token`, no `user:profile`). One request of one
+    /// output token on the cheapest model.
+    async fn read_headers(&self, credential: &Secret) -> Result<AccountUsage, UsageFailure> {
+        let response = self.ask(credential, PROBE_MODEL).await?;
         let status = response.status().as_u16();
         // A limited subscription answers 429 and still carries the headers.
         if (response.status().is_success() || status == 429)
@@ -258,6 +367,39 @@ impl UsageProbe for ProviderUsage {
                     }
                     Err(f) => Err(f),
                 }
+            }
+        }
+    }
+
+    async fn model_answer(
+        &self,
+        provider: Provider,
+        credential: &Secret,
+        model: &str,
+    ) -> Result<ModelAnswer, UsageFailure> {
+        match provider {
+            Provider::Anthropic => {
+                let response = self.ask(credential, model).await?;
+                let status = response.status().as_u16();
+                let headers = response.headers().clone();
+                // Only a refusal's body is read: it says whether the model needs usage credits.
+                let body = if status == 429 {
+                    response.bytes().await.unwrap_or_default()
+                } else {
+                    Default::default()
+                };
+                let body = if body.len() > MAX_BODY {
+                    &[][..]
+                } else {
+                    &body[..]
+                };
+                parse_model_answer(status, &headers, body).inspect_err(|failure| {
+                    tracing::debug!(
+                        status,
+                        kind = ?failure.kind,
+                        "a question about a model's limit got no answer"
+                    );
+                })
             }
         }
     }
@@ -339,6 +481,232 @@ mod tests {
         let usage = parse_rate_limit_headers(&odd).ok_or("odd")?;
         assert_eq!(usage.primary.and_then(|w| w.used_percent), Some(100.0));
         assert!(usage.secondary.is_none());
+        Ok(())
+    }
+
+    fn headers(pairs: &[(&'static str, &'static str)]) -> reqwest::header::HeaderMap {
+        let mut map = reqwest::header::HeaderMap::new();
+        for (name, value) in pairs {
+            map.insert(*name, reqwest::header::HeaderValue::from_static(value));
+        }
+        map
+    }
+
+    const CLAIM: &str = "anthropic-ratelimit-unified-representative-claim";
+    const RESET: &str = "anthropic-ratelimit-unified-reset";
+    const ALLOWANCE_RESET: &str = "anthropic-ratelimit-unified-7d_oi-reset";
+    const CREDITS_BODY: &[u8] = br#"{"type":"error","error":{"type":"rate_limit_error","message":"credits","details":{"error_code":"credits_required","disabled_reason":"out_of_credits"}}}"#;
+
+    /// SPEC-473 RFR-001: a model that ran says so by the response's status, with the 5-hour
+    /// and weekly windows its headers carry. What they say of the model's allowance (`7d_oi`)
+    /// is not read: a model that ran has no limit to store.
+    #[test]
+    fn a_model_that_ran_is_read_with_the_windows_of_its_answer() -> Result<(), String> {
+        let answer = parse_model_answer(
+            200,
+            &headers(&[
+                ("anthropic-ratelimit-unified-status", "allowed"),
+                ("anthropic-ratelimit-unified-5h-utilization", "0.25"),
+                ("anthropic-ratelimit-unified-5h-reset", "1790000000"),
+                ("anthropic-ratelimit-unified-7d-utilization", "0.5"),
+                ("anthropic-ratelimit-unified-7d_oi-utilization", "0.42"),
+                (ALLOWANCE_RESET, "1790600000"),
+            ]),
+            b"{}",
+        )
+        .map_err(|f| f.message)?;
+        assert_eq!(answer.refused, None);
+        let five = answer.five_hour.ok_or("the 5-hour window")?;
+        assert_eq!(five.used_percent, Some(25.0));
+        assert_eq!(five.window_minutes, Some(300));
+        assert_eq!(five.resets_at, Some(Timestamp(1_790_000_000_000)));
+        let seven = answer.seven_day.ok_or("the weekly window")?;
+        assert_eq!(seven.used_percent, Some(50.0));
+        assert_eq!(seven.window_minutes, Some(7 * 24 * 60));
+        assert_eq!(seven.resets_at, None);
+
+        // A response that ran on usage credits beyond the plan says `rejected` in its headers
+        // and still names a claim: the status of the response is what says the model ran.
+        let overage = parse_model_answer(
+            201,
+            &headers(&[
+                ("anthropic-ratelimit-unified-status", "rejected"),
+                ("anthropic-ratelimit-unified-overage-status", "allowed"),
+                (CLAIM, "seven_day_overage_included"),
+                (RESET, "1790000000"),
+                ("anthropic-ratelimit-unified-7d_oi-utilization", "1.0"),
+            ]),
+            CREDITS_BODY,
+        )
+        .map_err(|f| f.message)?;
+        assert_eq!(overage, ModelAnswer::default());
+
+        // No headers at all: the model ran, and nothing was read.
+        assert_eq!(
+            parse_model_answer(200, &headers(&[]), b"").map_err(|f| f.message)?,
+            ModelAnswer::default()
+        );
+        Ok(())
+    }
+
+    /// SPEC-473 RFR-001: a refusal names its limit by the response's claim and its reset by
+    /// `unified-reset`; a refusal for usage credits is the model's whatever it claims, and then
+    /// only the allowance's own reset says when the model runs again.
+    #[test]
+    fn a_refused_model_is_read_with_its_claim_and_reset() -> Result<(), String> {
+        use yulius_domain::usage::ModelFamily;
+        let refused = |pairs: &[(&'static str, &'static str)], body: &[u8]| {
+            parse_model_answer(429, &headers(pairs), body)
+                .map_err(|f| f.message)?
+                .refused
+                .ok_or_else(|| "a refusal".to_owned())
+        };
+        let week = Some(7 * 24 * 60);
+        let at = |seconds: i64| Some(Timestamp(seconds * 1000));
+
+        assert_eq!(
+            refused(
+                &[(CLAIM, "seven_day_overage_included"), (RESET, "1790000000")],
+                b""
+            )?,
+            ReportedLimit {
+                scope: LimitScope::Model(None),
+                window_minutes: week,
+                resets_at: at(1_790_000_000),
+            }
+        );
+        assert_eq!(
+            refused(&[(CLAIM, "five_hour"), (RESET, "1790000000")], b"{}")?,
+            ReportedLimit {
+                scope: LimitScope::Account,
+                window_minutes: Some(300),
+                resets_at: at(1_790_000_000),
+            }
+        );
+        assert_eq!(
+            refused(&[(CLAIM, " seven_day_opus "), (RESET, "1790000000")], b"")?,
+            ReportedLimit {
+                scope: LimitScope::Model(Some(ModelFamily::Opus)),
+                window_minutes: week,
+                resets_at: at(1_790_000_000),
+            }
+        );
+        // Refused for usage credits while the response claims the 5-hour window: the model's
+        // limit, and the reset is the allowance's own, not the 5-hour window's.
+        assert_eq!(
+            refused(
+                &[
+                    (CLAIM, "five_hour"),
+                    (RESET, "1790000000"),
+                    (ALLOWANCE_RESET, "1790600000"),
+                ],
+                CREDITS_BODY
+            )?,
+            ReportedLimit {
+                scope: LimitScope::Model(None),
+                window_minutes: None,
+                resets_at: at(1_790_600_000),
+            }
+        );
+        // The body alone says it, and nothing says when.
+        assert_eq!(
+            refused(&[], CREDITS_BODY)?,
+            ReportedLimit {
+                scope: LimitScope::Model(None),
+                window_minutes: None,
+                resets_at: None,
+            }
+        );
+        // The allowance's claim without `unified-reset`: its own reset header.
+        assert_eq!(
+            refused(
+                &[
+                    (CLAIM, "seven_day_overage_included"),
+                    (ALLOWANCE_RESET, "1790600000"),
+                ],
+                b""
+            )?
+            .resets_at,
+            at(1_790_600_000)
+        );
+        // The claim's reset comes first when both are there.
+        assert_eq!(
+            refused(
+                &[
+                    (CLAIM, "seven_day_overage_included"),
+                    (RESET, "1790000000"),
+                    (ALLOWANCE_RESET, "1790600000"),
+                ],
+                b""
+            )?
+            .resets_at,
+            at(1_790_000_000)
+        );
+        // The allowance's reset is not the 5-hour window's.
+        assert_eq!(
+            refused(
+                &[(CLAIM, "five_hour"), (ALLOWANCE_RESET, "1790600000")],
+                b""
+            )?
+            .resets_at,
+            None
+        );
+        // A reset that is no number is no reset.
+        assert_eq!(
+            refused(&[(CLAIM, "seven_day"), (RESET, "soon")], b"")?.resets_at,
+            None
+        );
+        // The windows a refusal carries are read beside it.
+        let answer = parse_model_answer(
+            429,
+            &headers(&[
+                (CLAIM, "seven_day_overage_included"),
+                ("anthropic-ratelimit-unified-5h-utilization", "0.3"),
+                ("anthropic-ratelimit-unified-7d-utilization", "0.7"),
+            ]),
+            b"",
+        )
+        .map_err(|f| f.message)?;
+        assert_eq!(answer.five_hour.and_then(|w| w.used_percent), Some(30.0));
+        assert_eq!(answer.seven_day.and_then(|w| w.used_percent), Some(70.0));
+        Ok(())
+    }
+
+    /// SPEC-473 RFR-001: what is no answer about the limit is a failure with its kind and one
+    /// plain sentence: a throttle (a 429 that names no limit), a refused sign-in, anything
+    /// else.
+    #[test]
+    fn an_answer_that_says_nothing_about_the_limit_is_a_failure() -> Result<(), String> {
+        let failure = |status: u16, pairs: &[(&'static str, &'static str)], body: &[u8]| {
+            parse_model_answer(status, &headers(pairs), body)
+                .err()
+                .ok_or_else(|| format!("{status} is a failure"))
+        };
+        let throttle = failure(
+            429,
+            &[("retry-after", "30")],
+            br#"{"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}"#,
+        )?;
+        assert_eq!(throttle.kind, UsageFailureKind::Throttled);
+        assert_eq!(throttle.retry_after, Some(Duration::from_secs(30)));
+        // An empty claim names no limit; a body that is no JSON says nothing of credits.
+        for (pairs, body) in [
+            (&[(CLAIM, "  ")][..], &b""[..]),
+            (&[][..], &b"credits_required"[..]),
+            (
+                &[][..],
+                &br#"{"error":{"details":{"error_code":"something_else"}}}"#[..],
+            ),
+        ] {
+            assert_eq!(failure(429, pairs, body)?.kind, UsageFailureKind::Throttled);
+        }
+        assert_eq!(failure(401, &[], b"")?.kind, UsageFailureKind::Rejected);
+        // A claim on anything but a refusal is not one.
+        for status in [400, 403, 404, 500, 529] {
+            let other = failure(status, &[(CLAIM, "five_hour")], CREDITS_BODY)?;
+            assert_eq!(other.kind, UsageFailureKind::Unavailable, "{status}");
+            assert!(!other.message.contains("HTTP"), "{}", other.message);
+        }
         Ok(())
     }
 

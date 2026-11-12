@@ -8,7 +8,9 @@ Amends [ADR-0266](0266-yulius-keeps-claude-code-current-in-its-data-directory.md
 channel (`stable`), what a release must be before it becomes current, and "a running process keeps
 its binary until its next start". The rules of the move were refined on 2026-11-11 by
 [SPEC-468](../../.ai/specs/SPEC-468-claude-code-moves-the-last-review-s-left.md) (task #452):
-what else keeps a session where it is, and that an idle restart is no news.
+what else keeps a session where it is, and that an idle restart is no news; and on 2026-11-12 by
+[SPEC-471](../../.ai/specs/SPEC-471-claude-code-moves-a-prompt-that-waits-in.md) (task #454,
+issue #1204): what waits in Claude Code's queue keeps the session.
 
 ## Context
 
@@ -42,8 +44,17 @@ knows as plain text (2.1.322 holds `claude-fable-5-2` 26 times, 2.1.311 not once
   included), a person typed in the last minute or left a draft (typed since the session's last
   prompt), a message Yulius typed into it is not submitted yet, or a goal its person set in a
   prompt-mode session is open (Yulius could not follow it across the restart); once per version,
-  one restart of a task at a time. A prompt that waits in Claude Code's queue (entered while a
-  turn runs) is not known to Yulius and is lost by such a restart (issue #1204). An idle session
+  one restart of a task at a time. Nor while something waits in Claude Code's queue: a prompt
+  entered while a turn runs (a person's, or a message Yulius typed) and Claude Code's own
+  notifications are kept in the process's memory alone, and a resumed session does not get them
+  back. Yulius reads the queue from the `queue-operation` records Claude Code writes into the
+  transcript (`enqueue`, `dequeue`, `remove`, `popAll`, `popOne`), counted per run and not
+  known, which counts as holding, until a run reattached after a restart of the server was
+  read again; an entry that was handed on counts until its turn shows (its prompt record, or
+  the model's first line written after the hand-over); and for two seconds after a prompt
+  from the prompt box went on, or when one goes on while the turn's end looks, the session
+  stays as well, since that record is written a moment after the prompt's hook. Such a
+  session moves at a later turn's end, and the server's log names what kept it (SPEC-471). An idle session
   that is restarted reads as it did before, so nobody is notified again. A version a session could
   not continue on gets no further moves: the restart could not start, or the restarted session
   ended by itself or stayed silent for two minutes before it started. A restart refused before it
@@ -65,9 +76,23 @@ knows as plain text (2.1.322 holds `claude-fable-5-2` 26 times, 2.1.311 not once
   typed again, which starts work in a task that was waiting for its person.
 - **A new restart path for the move.** The switch already checks that the new run can start
   before it ends the old one, yields to a stop or close, and refuses to end background work.
+- **Knowing Claude Code's queue from Yulius's own hooks** (SPEC-471): a mark at a prompt hook
+  that arrives while a turn is open, cleared by the queued prompt's record. It needs Yulius's
+  reading of "a turn is open", which is late after an interrupt; a prompt taken into the
+  running turn at a tool result, or back into the prompt box, writes a different record; and
+  it does not know Claude Code's notifications. A mark that is never cleared keeps a session
+  for good. The transcript's `queue-operation` records are Claude Code's own count.
+- **Carrying the queue over a restart** by typing the `enqueue` records' texts into the
+  resumed session (SPEC-471): the move can wait, so it does; a subscription switch that cannot
+  wait is issue #1194.
 
 ## Consequences
 
+- Claude Code leaves some of its own notifications in its queue for good (those of work a
+  sub-agent started; about 2 in 100 of this instance's sessions held one): such a session
+  never moves at a turn's end and gets the newer version at its next start. So does one with
+  an operation Yulius does not know, or one cleared in its terminal with entries waiting: a
+  count that is too high errs toward staying (SPEC-471).
 - Sandboxes get each Claude Code release within an hour of its publication, and running tasks at
   the end of their next turn. A release that breaks sessions reaches them sooner than under
   `stable`. Choosing Stable then keeps later releases away but does not move `current` back; Off

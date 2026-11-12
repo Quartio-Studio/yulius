@@ -97,7 +97,7 @@ impl Host for Fake {
                 0,
                 next(&self.sessions).unwrap_or_else(|| "LoadState=not-found\n".into()),
             )),
-            "show" => Ok((0, next(&self.shows).unwrap_or_default())),
+            "show" => Ok((code, next(&self.shows).unwrap_or_default())),
             "is-active" => {
                 let mut answers = self.helper.borrow_mut();
                 let out = if answers.len() > 1 {
@@ -233,6 +233,21 @@ fn a_stopped_unit_with_processes_is_refused() -> TestResult {
     fake.files.insert(
         format!("/sys/fs/cgroup{CGROUP}/cgroup.events"),
         "populated 1\nfrozen 0\n".into(),
+    );
+    let err = run(&fake).err().ok_or("expected an error")?;
+    assert!(err.contains("still run"), "{err}");
+    assert!(fake.calls().is_empty());
+    Ok(())
+}
+
+/// The export copies what a stopped unit's processes may still write once thawed: it refuses
+/// them also while the kernel holds them frozen (unlike [`left_running`], SPEC-478).
+#[test]
+fn a_stopped_unit_with_frozen_processes_is_refused_too() -> TestResult {
+    let mut fake = Fake::new(&[("inactive", "running")]);
+    fake.files.insert(
+        format!("/sys/fs/cgroup{CGROUP}/cgroup.events"),
+        "populated 1\nfrozen 1\n".into(),
     );
     let err = run(&fake).err().ok_or("expected an error")?;
     assert!(err.contains("still run"), "{err}");
@@ -852,4 +867,175 @@ fn a_signal_thaws_every_unit_the_export_froze() {
         "the second is tried although the first failed"
     );
     assert!(why.contains("thaw yulius-sandboxes.service") && why.contains("thaw yulius.service"));
+}
+
+/// The kernel's word of a unit's cgroup and everything below it.
+fn events(fake: &mut Fake, cgroup: &str, said: &str) {
+    fake.files
+        .insert(format!("/sys/fs/cgroup{cgroup}/cgroup.events"), said.into());
+}
+
+/// SPEC-478 RSL-001: a unit that has stopped is asked what it left. Real answers: Ubuntu 26.04,
+/// systemd 259 (the spec's Evidence).
+#[test]
+fn a_stopped_unit_is_named_while_its_processes_run() -> TestResult {
+    // Stopped by hand (`inactive`) or by its start limit (`failed`): `KillMode=process` left
+    // what it started, in subgroups, so only `populated` tells.
+    for active in ["inactive", "failed"] {
+        let mut fake = Fake::new(&[(active, "running")]);
+        events(&mut fake, CGROUP, "populated 1\nfrozen 0\n");
+        assert_eq!(left_running(&mut fake, UNIT)?, [UNIT], "{active}");
+        // Only asked.
+        assert!(fake.calls().is_empty());
+    }
+
+    // An empty group, one that is gone by the time it is read, and no group at all (what
+    // systemd says once nothing is left, and after a restart of the host).
+    let mut fake = Fake::new(&[("inactive", "running")]);
+    events(&mut fake, CGROUP, "populated 0\nfrozen 0\n");
+    assert!(left_running(&mut fake, UNIT)?.is_empty());
+    let mut fake = Fake::new(&[("inactive", "running")]);
+    assert!(left_running(&mut fake, UNIT)?.is_empty());
+    let mut fake = Fake::new(&[]);
+    fake.shows.borrow_mut().push_back(
+        "LoadState=loaded\nActiveState=inactive\nFreezerState=running\nControlGroup=\n".into(),
+    );
+    // Not the root group's file, which says `populated 1` on every host.
+    events(&mut fake, "", "populated 1\nfrozen 0\n");
+    assert!(left_running(&mut fake, UNIT)?.is_empty());
+
+    // What the kernel holds frozen does not run. The kernel's word, not systemd's: systemd 259
+    // keeps saying `FreezerState=frozen` of a unit that failed while frozen, and says
+    // `running` of a group that was frozen behind its back.
+    for freezer in ["frozen", "running"] {
+        let mut fake = Fake::new(&[("failed", freezer)]);
+        events(&mut fake, CGROUP, "populated 1\nfrozen 1\n");
+        assert!(left_running(&mut fake, UNIT)?.is_empty(), "{freezer}");
+        let mut fake = Fake::new(&[("failed", freezer)]);
+        events(&mut fake, CGROUP, "populated 1\nfrozen 0\n");
+        assert_eq!(left_running(&mut fake, UNIT)?, [UNIT], "{freezer}");
+    }
+
+    // A unit that runs is not this question, whatever its group holds: whether it is frozen
+    // is systemd's to say.
+    for active in ["active", "activating", "reloading"] {
+        let mut fake = Fake::new(&[(active, "running")]).with_sessions(&[(active, "running")]);
+        events(&mut fake, CGROUP, "populated 1\nfrozen 0\n");
+        events(&mut fake, SESSIONS_CGROUP, "populated 1\nfrozen 0\n");
+        assert!(left_running(&mut fake, UNIT)?.is_empty(), "{active}");
+    }
+    Ok(())
+}
+
+/// SPEC-478 RSL-001 beside SPEC-458: the sessions unit is asked the same way, also while a stop
+/// of it is on its way.
+#[test]
+fn a_stopped_sessions_unit_is_named_while_its_processes_run() -> TestResult {
+    for active in ["inactive", "failed", "deactivating"] {
+        let mut fake = Fake::new(&[("inactive", "running")]).with_sessions(&[(active, "running")]);
+        events(&mut fake, SESSIONS_CGROUP, "populated 1\nfrozen 0\n");
+        assert_eq!(left_running(&mut fake, UNIT)?, [SESSIONS], "{active}");
+        // Both, the server's first.
+        events(&mut fake, CGROUP, "populated 1\nfrozen 0\n");
+        assert_eq!(left_running(&mut fake, UNIT)?, [UNIT, SESSIONS], "{active}");
+    }
+    // A host without a sessions unit.
+    let mut fake = Fake::new(&[("inactive", "running")]);
+    events(&mut fake, SESSIONS_CGROUP, "populated 1\nfrozen 0\n");
+    assert!(left_running(&mut fake, UNIT)?.is_empty());
+    Ok(())
+}
+
+/// SPEC-478 RSL-003: a systemd that does not answer has not said "nothing is left".
+#[test]
+fn what_a_stopped_unit_left_is_not_guessed() {
+    // `systemctl show` fails for the server's unit.
+    let mut fake = Fake::new(&[("inactive", "running")]);
+    fake.codes.insert("show".into(), 1);
+    events(&mut fake, CGROUP, "populated 0\nfrozen 0\n");
+    let Err(why) = left_running(&mut fake, UNIT) else {
+        panic!("systemd did not say");
+    };
+    assert!(
+        why.contains("`systemctl show yulius.service` failed"),
+        "{why}"
+    );
+
+    // It answers for the server's unit and not for its sessions unit.
+    let mut fake = Fake::new(&[("inactive", "running")]);
+    fake.sessions_silent = true;
+    let Err(why) = left_running(&mut fake, UNIT) else {
+        panic!("systemd did not say");
+    };
+    assert!(why.contains("Failed to connect to bus"), "{why}");
+}
+
+/// A host whose `systemctl` gives one answer, and what it was asked.
+struct Says(Result<(i32, &'static str), &'static str>, Vec<String>);
+
+impl Host for Says {
+    fn systemctl(&mut self, args: &[&str]) -> Result<(i32, String), String> {
+        self.1.push(args.join(" "));
+        self.0
+            .map(|(code, said)| (code, said.to_owned()))
+            .map_err(str::to_owned)
+    }
+
+    fn read(&self, _: &Path) -> Option<String> {
+        None
+    }
+
+    fn sleep(&mut self, _: Duration) {}
+}
+
+/// SPEC-481 HLD-001: a unit is known not to start with its host only when systemd says so.
+/// Every other answer, no answer and a `systemctl` that did not run are quoted, not guessed.
+#[test]
+fn only_a_unit_systemd_says_has_no_enablement_is_disabled() {
+    // The word decides, not the exit code: `is-enabled` exits 1 for `disabled` and `masked`
+    // and 0 for `static`, a unit without an `[Install]` section, which has no enablement of
+    // its own either (a link made by hand makes it `enabled`; measured on systemd 259).
+    for (code, said) in [
+        (1, "disabled\n"),
+        (0, "static\n"),
+        (1, "masked\n"),
+        (1, "masked-runtime\n"),
+        (1, "disabled"),
+        (1, "  disabled  \n"),
+    ] {
+        let mut host = Says(Ok((code, said)), Vec::new());
+        assert_eq!(disabled(&mut host, UNIT), Ok(()), "{said:?}");
+        // Asked, and nothing else.
+        assert_eq!(host.1, ["is-enabled yulius.service"]);
+    }
+    for (code, said, quoted) in [
+        (0, "enabled\n", "says `enabled`"),
+        (0, "enabled-runtime\n", "says `enabled-runtime`"),
+        (1, "linked\n", "says `linked`"),
+        (0, "alias\n", "says `alias`"),
+        (0, "indirect\n", "says `indirect`"),
+        (0, "generated\n", "says `generated`"),
+        (1, "bad\n", "says `bad`"),
+        (4, "not-found\n", "says `not-found`"),
+        // A word that only begins like one that counts.
+        (1, "disabled-runtime\n", "says `disabled-runtime`"),
+        (0, "static-runtime\n", "says `static-runtime`"),
+        // One unit is asked, so the first line is its answer.
+        (0, "enabled\ndisabled\n", "says `enabled`"),
+        // An exit code alone is not the word, whichever it is.
+        (1, "", "says nothing (exit 1)"),
+        (0, "\n", "says nothing (exit 0)"),
+    ] {
+        let mut host = Says(Ok((code, said)), Vec::new());
+        assert_eq!(
+            disabled(&mut host, UNIT),
+            Err(quoted.to_owned()),
+            "{said:?}"
+        );
+    }
+    let mut host = Says(Err("systemctl: No such file or directory"), Vec::new());
+    assert_eq!(
+        disabled(&mut host, UNIT),
+        Err("did not run (systemctl: No such file or directory)".to_owned())
+    );
 }

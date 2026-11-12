@@ -20,6 +20,8 @@
 //!            [--interrupts] [--rate-limits-file PATH] [--session-start] [--opening-turn-ms MS]
 //!            [--cli-version-file PATH] [--exit-at-start-file PATH] [--stuck-at-start-file PATH]
 //!            [--turn-hold-file PATH] [--resume-record]
+//!            [--queue-prompts [--queue-record-file PATH] [--queue-handover-file PATH]
+//!            [--queue-turn-file PATH]]
 //!            [--echo-turn-ms MS] [--context-full-after N] [--compact-fails] [--compact-hangs]
 //!            [--prompt TEXT] [--limit-continues-ms MS [--limit-continues-answer-only]]
 //!            [--idle-compact-ms MS] [--trust-prompt] [--goal-api-errors N [--goal-retry-ms MS]
@@ -160,6 +162,54 @@
 //! ends only once PATH exists (bounded by 60 s), so a test says when a turn ends instead of a
 //! timer.
 //!
+//! `--queue-prompts` makes an echoed turn take the lines entered while it runs as Claude Code
+//! 2.1.322 takes prompts entered during a turn (seen with the real tool against a stub of the
+//! model API, SPEC-471). The turn's prompt record is written at its start. A line entered while
+//! the turn runs (while it is held, or while one of its Stop hooks is answered) gets its
+//! `UserPromptSubmit` hook at once and, unless the hook blocks it, a `queue-operation` record
+//! `enqueue` with its text, and prints `QUEUED: <line>`; it is not answered yet. A Stop answer
+//! that blocks releases nothing: the turn goes on (Claude Code's "Stop hook feedback" record
+//! and another answer) to another Stop. After the Stop that lets the turn end, the waiting
+//! lines are handed on together: one `dequeue` record each, then the ended turn's closing
+//! records, then one `user` record each (`promptSource: "queued"`) and one turn that answers
+//! them all (`ECHO: <line>` each), with no further prompt hook; lines entered during that turn
+//! wait in the same way. Without the option a line is read, and its hook run, only after the
+//! turn before it, as ever. `--queue-record-file PATH` writes a waiting line's `enqueue`
+//! record only once PATH exists (Claude Code's record reaches the file about 100 ms after it
+//! is made, so a turn's end can come before it). `--queue-handover-file PATH` hands the queue
+//! on only once PATH exists, and `--queue-turn-file PATH` starts the handed-on turn (its
+//! prompt records) only once PATH exists, after the `dequeue` records; all three are bounded
+//! by 60 s, so a test says when each happens. The agent says when it waits: `TURN HELD` (for
+//! `--turn-hold-file`, at each turn that finds the file missing), `QUEUE HELD` and `QUEUED
+//! TURN HELD`. A command line (`/exit`, `/work …`) entered during such a turn is queued like
+//! any other text and echoed. `--limit-after N` is not applied to the turn of a line entered
+//! at rest; it cuts a handed-on turn that would be the Nth or a later one: its prompt records
+//! are written, then `LIMIT REACHED` and the limit's record, with no answer and no Stop hook
+//! (a turn a usage limit cuts in Claude Code runs none), and what was entered meanwhile stays
+//! unanswered. A waiting line that begins with `/stuck ` stands for an entry Claude Code never
+//! takes out of its queue, as it does with some of its own notifications (SPEC-479): its
+//! `enqueue` record with the rest of the line, no prompt hook, `QUEUED: <rest>`; no turn's end
+//! hands it on and it is never answered. A waiting line that begins with `/alone ` stands for
+//! an entry Claude Code hands on alone, as it does with a notification of its own, a slash
+//! command and a `!` line (seen with 2.1.322, SPEC-479): its `enqueue` record with the rest of
+//! the line and no prompt hook when it is entered. The queue is handed on in the order of its
+//! lines: the lines up to the first `/alone ` one leave together, that one leaves alone when it
+//! is the first, and the rest waits, through the ended turn's closing records, for the next
+//! turn's end. At its hand-over come its `dequeue`, the closing records, its prompt hook, a
+//! prompt record with `promptSource: "system"` and a turn that answers it. A waiting line
+//! that begins with `/scheduled ` stands for a prompt Claude Code scheduled for itself, in
+//! the order seen with 2.1.322: when it fires, a `scheduled_task_fire` record and the
+//! `enqueue` of the rest of the line, with no prompt hook (nobody pressed Enter); at the
+//! hand-over the `dequeue`, then its `UserPromptSubmit` hook with the plain text, then a
+//! prompt record that is `isMeta` (`promptSource: "system"`), which Yulius reads as no
+//! prompt. Its turn starts with a tool call before it answers; a block of its hook is not
+//! played. Not as Claude
+//! Code: a waiting line's prompt hook is answered before the agent goes on, so a turn never
+//! reaches its Stop while such a hook is unanswered. Claude Code does (seen with 2.1.322: a
+//! turn's Stop hook ran and returned while a prompt's hook was still held; the prompt's
+//! `enqueue` came when its hook returned, and its turn right after). Tool calls, and with
+//! them a waiting line taken into the running turn, are not played either.
+//!
 //! `--resume-record`: at its start the agent writes a record a real Claude Code writes before
 //! any prompt when it resumes a session whose turn was interrupted: a meta user record with
 //! its version (the transcript then names the version before any prompt, SPEC-461).
@@ -237,6 +287,29 @@ const CHECK_CAUSE: &str = "the goal check could not complete";
 const GOAL_RETRIES: u32 = 3;
 const MAX_HOOK_OUTPUT: u64 = 1024 * 1024;
 const MAX_WORK_MS: u64 = 60_000;
+/// Most lines entered and not yet taken by the agent (`--queue-prompts`): the reader waits.
+const MAX_ENTERED: usize = 64;
+/// Most Stops of one turn that a block sends on to another (a hook that always blocks).
+const MAX_STOP_BLOCKS: u32 = 16;
+/// How a waiting line begins that stands for a prompt Claude Code scheduled for itself.
+const SCHEDULED: &str = "/scheduled ";
+
+/// How a waiting line begins that stands for an entry Claude Code never takes out of its
+/// queue (some of its own notifications).
+const STUCK: &str = "/stuck ";
+
+/// How a waiting line begins that stands for an entry Claude Code hands on alone (a
+/// notification of its own, a slash command, a `!` line).
+const ALONE: &str = "/alone ";
+
+/// What a waiting line says: itself, or the prompt a `/scheduled` line stands for, or the
+/// entry a `/stuck` or an `/alone` line stands for.
+fn said(line: &str) -> &str {
+    line.strip_prefix(SCHEDULED)
+        .or_else(|| line.strip_prefix(STUCK))
+        .or_else(|| line.strip_prefix(ALONE))
+        .unwrap_or(line)
+}
 /// How long a paused session waits for `--paused-wake-file`: a test may restart its server in
 /// between, and a leaked fixture still ends.
 const MAX_PAUSED_WAKE_MS: u64 = 120_000;
@@ -309,6 +382,10 @@ struct Options {
     exit_at_start_file: Option<PathBuf>,
     stuck_at_start_file: Option<PathBuf>,
     turn_hold_file: Option<PathBuf>,
+    queue_prompts: bool,
+    queue_record_file: Option<PathBuf>,
+    queue_handover_file: Option<PathBuf>,
+    queue_turn_file: Option<PathBuf>,
     resume_record: bool,
     context_full_after: Option<u64>,
     compact_fails: bool,
@@ -376,6 +453,10 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
         exit_at_start_file: None,
         stuck_at_start_file: None,
         turn_hold_file: None,
+        queue_prompts: false,
+        queue_record_file: None,
+        queue_handover_file: None,
+        queue_turn_file: None,
         resume_record: false,
         context_full_after: None,
         compact_fails: false,
@@ -531,6 +612,25 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
             "--turn-hold-file" => {
                 options.turn_hold_file =
                     Some(args.next().ok_or("--turn-hold-file needs a path")?.into());
+            }
+            "--queue-prompts" => options.queue_prompts = true,
+            "--queue-record-file" => {
+                options.queue_record_file = Some(
+                    args.next()
+                        .ok_or("--queue-record-file needs a path")?
+                        .into(),
+                );
+            }
+            "--queue-handover-file" => {
+                options.queue_handover_file = Some(
+                    args.next()
+                        .ok_or("--queue-handover-file needs a path")?
+                        .into(),
+                );
+            }
+            "--queue-turn-file" => {
+                options.queue_turn_file =
+                    Some(args.next().ok_or("--queue-turn-file needs a path")?.into());
             }
             "--resume-record" => options.resume_record = true,
             "--context-full-after" => {
@@ -827,6 +927,63 @@ impl Transcript {
         user["message"] = json!({"role": "user", "content": prompt});
         self.last_uuid = Some(uuid);
         self.append(&[user])
+    }
+
+    /// A `queue-operation` record as Claude Code 2.1.322 writes it: `enqueue` with the entry's
+    /// text, `dequeue` with nothing else (`--queue-prompts`).
+    fn queue_operation(&self, operation: &str, content: Option<&str>) -> io::Result<()> {
+        let mut record = json!({"type": "queue-operation", "operation": operation,
+            "timestamp": rfc3339(now_ms()), "sessionId": self.session_id});
+        if let Some(content) = content {
+            record["content"] = json!(content);
+        }
+        self.append(&[record])
+    }
+
+    /// The prompt record of a line that waited in the queue, at the start of the turn that
+    /// takes it: a prompt someone entered, or with `/scheduled ` one Claude Code scheduled
+    /// for itself, whose record is `isMeta` (as 2.1.322 writes it), or with `/alone ` an
+    /// entry of Claude Code's own (`promptSource: "system"`).
+    fn queued_prompt(&mut self, line: &str) -> io::Result<()> {
+        self.turns += 1;
+        let uuid = format!("fake-{}-{}-u", self.session_id, self.turns);
+        let mut user = self.claude_envelope("user", &uuid, &rfc3339(now_ms()));
+        if line.starts_with(SCHEDULED) {
+            user["isMeta"] = json!(true);
+            user["promptSource"] = json!("system");
+            user["queuePriority"] = json!("later");
+        } else if line.starts_with(ALONE) {
+            // As a notification of Claude Code's own is recorded.
+            user["promptSource"] = json!("system");
+        } else {
+            user["promptSource"] = json!("queued");
+        }
+        user["message"] = json!({"role": "user", "content": said(line)});
+        self.last_uuid = Some(uuid);
+        self.append(&[user])
+    }
+
+    /// The record Claude Code 2.1.322 writes when a prompt it scheduled for itself fires.
+    fn scheduled_fire(&self) -> io::Result<()> {
+        let uuid = format!("fake-{}-fire-{}", self.session_id, now_ms());
+        let mut fire = self.claude_envelope("system", &uuid, &rfc3339(now_ms()));
+        fire["subtype"] = json!("scheduled_task_fire");
+        fire["isMeta"] = json!(false);
+        self.append(&[fire])
+    }
+
+    /// A Stop hook blocked the turn's end: Claude Code's record of the hook's reason, and the
+    /// answer the model gives to it.
+    fn stop_feedback(&mut self, reason: &str) -> io::Result<()> {
+        self.turns += 1;
+        let uuid = format!("fake-{}-{}-feedback", self.session_id, self.turns);
+        let mut meta = self.claude_envelope("user", &uuid, &rfc3339(now_ms()));
+        meta["isMeta"] = json!(true);
+        meta["message"] = json!({"role": "user",
+            "content": format!("Stop hook feedback:\n{reason}")});
+        self.last_uuid = Some(uuid);
+        self.append(&[meta])?;
+        self.answer("Stop hook feedback", "AGAIN")
     }
 
     /// The answer that ends a `/work` turn.
@@ -1377,17 +1534,288 @@ impl Hooks {
     }
 
     fn stop(&self) -> io::Result<()> {
-        let answer = run_hook(
-            &self.exe,
-            "Stop",
-            &json!({"session_id": self.session_id, "hook_event_name": "Stop",
-                "stop_hook_active": false}),
-        );
-        if answer.contains("\"block\"") {
+        if self.stop_answer(false).contains("\"block\"") {
             say("STOP BLOCKED")?;
         }
         Ok(())
     }
+
+    /// What the Stop hook answered; `active` says a Stop of this turn was blocked before.
+    fn stop_answer(&self, active: bool) -> String {
+        run_hook(
+            &self.exe,
+            "Stop",
+            &json!({"session_id": self.session_id, "hook_event_name": "Stop",
+                "stop_hook_active": active}),
+        )
+    }
+}
+
+/// The lines entered into the agent, read by a thread of their own (`--queue-prompts`), so a
+/// turn takes the ones entered while it runs.
+struct Entered(std::sync::mpsc::Receiver<String>);
+
+impl Entered {
+    fn start() -> Self {
+        let (lines, entered) = std::sync::mpsc::sync_channel(MAX_ENTERED);
+        std::thread::spawn(move || {
+            let stdin = io::stdin();
+            let mut input = stdin.lock();
+            while let Ok(Some(line)) = read_message(&mut input) {
+                if lines.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+        Self(entered)
+    }
+
+    /// The next line, waiting for it; `None` at the input's end.
+    fn next(&self) -> Option<String> {
+        self.0.recv().ok()
+    }
+
+    /// A line entered meanwhile, if one was.
+    fn meanwhile(&self) -> Option<String> {
+        self.0.try_recv().ok()
+    }
+}
+
+/// The lines that wait for the running turn's end (`--queue-prompts`), as Claude Code's queue.
+struct Waiting<'a> {
+    options: &'a Options,
+    transcript: Option<&'a Arc<Mutex<Transcript>>>,
+    hooks: Option<&'a Hooks>,
+    entered: &'a Entered,
+    lines: Vec<String>,
+    /// `enqueue` records still to be written (`--queue-record-file`).
+    records: Vec<std::thread::JoinHandle<()>>,
+}
+
+impl Waiting<'_> {
+    /// Takes the lines entered meanwhile: each gets its prompt hook now, at its Enter, and
+    /// then waits, with its `enqueue` record.
+    fn take_entered(&mut self) -> io::Result<()> {
+        while let Some(line) = self.entered.meanwhile() {
+            // What Claude Code scheduled for itself, and a notification of its own, were
+            // typed by nobody: no prompt hook.
+            // An entry Claude Code hands on alone gets its hook at its hand-over.
+            let stuck = line.starts_with(STUCK);
+            let scheduled = line.starts_with(SCHEDULED);
+            let typed = !scheduled && !stuck && !line.starts_with(ALONE);
+            if let Some(reason) = self.hooks.filter(|_| typed).and_then(|h| h.prompt(&line)) {
+                say(&format!("PROMPT BLOCKED: {reason}"))?;
+                continue;
+            }
+            if let Some(transcript) = self.transcript {
+                let (transcript, text) = (Arc::clone(transcript), said(&line).to_owned());
+                let held = self.options.queue_record_file.clone();
+                let record = move || {
+                    if let Some(file) = &held {
+                        wait_for_file(file, MAX_WORK_MS);
+                    }
+                    if let Ok(t) = transcript.lock() {
+                        if scheduled {
+                            let _ = t.scheduled_fire();
+                        }
+                        let _ = t.queue_operation("enqueue", Some(&text));
+                    }
+                };
+                // Held: written by a thread of its own, so the turn goes on meanwhile.
+                if self.options.queue_record_file.is_some() {
+                    self.records.push(std::thread::spawn(record));
+                } else {
+                    record();
+                }
+            }
+            say(&format!("QUEUED: {}", said(&line)))?;
+            // A stuck entry has its record and nothing more: no turn's end hands it on.
+            if !stuck {
+                self.lines.push(line);
+            }
+        }
+        Ok(())
+    }
+
+    /// Takes entered lines until `done`.
+    fn until(&mut self, mut done: impl FnMut() -> bool) -> io::Result<()> {
+        while !done() {
+            self.take_entered()?;
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        self.take_entered()
+    }
+
+    /// Takes entered lines until `file` exists (bounded by [`MAX_WORK_MS`]); nothing without
+    /// one.
+    fn until_file(&mut self, file: Option<&PathBuf>, held: &str) -> io::Result<()> {
+        let Some(file) = file else {
+            return Ok(());
+        };
+        if !file.exists() {
+            say(held)?;
+        }
+        let started = std::time::Instant::now();
+        self.until(|| file.exists() || started.elapsed() >= Duration::from_millis(MAX_WORK_MS))
+    }
+
+    /// Runs the Stop hook, taking the lines entered while it is answered; the reason when it
+    /// blocks.
+    fn stop(&mut self, active: bool) -> io::Result<Option<String>> {
+        let Some(hooks) = self.hooks.cloned() else {
+            return Ok(None);
+        };
+        let stop = std::thread::spawn(move || hooks.stop_answer(active));
+        self.until(|| stop.is_finished())?;
+        let answer: Value =
+            serde_json::from_str(&stop.join().unwrap_or_default()).unwrap_or_default();
+        Ok(
+            (answer.get("decision").and_then(Value::as_str) == Some("block")).then(|| {
+                let reason = answer.get("reason").and_then(Value::as_str);
+                reason.unwrap_or_default().to_owned()
+            }),
+        )
+    }
+
+    /// Hands waiting lines on once the turn ended: every `enqueue` record written, then a
+    /// `dequeue` for each line that leaves. As Claude Code does (seen with 2.1.322), in the
+    /// order they were entered: the lines up to the first `/alone ` one leave together, or
+    /// that one alone when it is the first. The rest waits for the next turn's end. The
+    /// lines that left, which the next turn answers.
+    fn hand_on(&mut self) -> io::Result<Vec<String>> {
+        for record in self.records.drain(..) {
+            let _ = record.join();
+        }
+        let alone = self.lines.iter().position(|line| line.starts_with(ALONE));
+        let leave = match alone {
+            Some(0) => 1,
+            Some(before) => before,
+            None => self.lines.len(),
+        };
+        if let Some(transcript) = self.transcript
+            && let Ok(t) = transcript.lock()
+        {
+            for _ in 0..leave {
+                t.queue_operation("dequeue", None)?;
+            }
+        }
+        Ok(self.lines.drain(..leave).collect())
+    }
+}
+
+/// An echoed message in Claude Code's order (`--queue-prompts`, see the module docs): its turn,
+/// and the turns of the lines entered while it and they ran.
+fn queued_echo(
+    options: &Options,
+    line: &str,
+    transcript: Option<&Arc<Mutex<Transcript>>>,
+    hooks: Option<&Hooks>,
+    state: &mut EchoState,
+    entered: &Entered,
+) -> io::Result<()> {
+    let write = |record: &mut dyn FnMut(&mut Transcript) -> io::Result<()>| match transcript {
+        Some(transcript) => match transcript.lock() {
+            Ok(mut t) => record(&mut t),
+            Err(_) => Ok(()),
+        },
+        None => Ok(()),
+    };
+    let mut waiting = Waiting {
+        options,
+        transcript,
+        hooks,
+        entered,
+        lines: Vec::new(),
+        records: Vec::new(),
+    };
+    let mut turn = vec![line.to_owned()];
+    write(&mut |t| t.begin(line))?;
+    loop {
+        // The turn runs: what is entered now waits for its end.
+        let started = std::time::Instant::now();
+        let runs = Duration::from_millis(options.echo_turn_ms);
+        waiting.until(|| started.elapsed() >= runs)?;
+        waiting.until_file(options.turn_hold_file.as_ref(), "TURN HELD")?;
+        let prompts: Vec<&str> = turn.iter().map(|one| said(one)).collect();
+        let answers: Vec<String> = prompts.iter().map(|one| format!("ECHO: {one}")).collect();
+        for answer in &answers {
+            say(answer)?;
+        }
+        state.turns += 1;
+        state.echoed += turn.len() as u64;
+        write(&mut |t| t.answer(&prompts.join("\n"), &answers.join("\n")))?;
+        // A Stop that is blocked sends the turn on, and releases nothing.
+        let mut blocks = 0;
+        while let Some(reason) = waiting.stop(blocks > 0)? {
+            say("STOP BLOCKED")?;
+            blocks += 1;
+            if blocks > MAX_STOP_BLOCKS {
+                break;
+            }
+            write(&mut |t| t.stop_feedback(&reason))?;
+        }
+        let took = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        if waiting.lines.is_empty() {
+            write(&mut |t| t.close_turn(took, 0))?;
+            return status_line(options, hooks);
+        }
+        // The turn ended: the lines that waited are handed on together, and get one turn.
+        waiting.until_file(options.queue_handover_file.as_ref(), "QUEUE HELD")?;
+        turn = waiting.hand_on()?;
+        write(&mut |t| t.close_turn(took, 0))?;
+        status_line(options, hooks)?;
+        waiting.until_file(options.queue_turn_file.as_ref(), "QUEUED TURN HELD")?;
+        // What Claude Code scheduled for itself gets its prompt hook here, after the
+        // `dequeue` and before its prompt record, and its turn works before it answers.
+        let scheduled: Vec<&str> = turn
+            .iter()
+            .filter(|one| one.starts_with(SCHEDULED))
+            .map(|one| said(one))
+            .collect();
+        // So does an entry Claude Code hands on alone.
+        let hooked = turn
+            .iter()
+            .filter(|one| one.starts_with(SCHEDULED) || one.starts_with(ALONE));
+        for prompt in hooked {
+            let _ = hooks.and_then(|h| h.prompt(said(prompt)));
+        }
+        write(&mut |t| turn.iter().try_for_each(|one| t.queued_prompt(one)))?;
+        // The limit cuts the handed-on turn (`--limit-after`): its prompts are recorded and
+        // not answered, and a turn the limit cuts runs no Stop hook.
+        if options
+            .limit_after
+            .is_some_and(|limit| state.turns + 1 >= limit)
+        {
+            state.turns += 1;
+            return limit_reached(options, transcript, state);
+        }
+        if !scheduled.is_empty() {
+            write(&mut |t| t.tool_use())?;
+        }
+    }
+}
+
+/// A usage limit stops the agent (`--limit-after`): `LIMIT REACHED` and the limit's record, or
+/// the refusal `--access-lost` or `--credits-out` stands for.
+fn limit_reached(
+    options: &Options,
+    transcript: Option<&Arc<Mutex<Transcript>>>,
+    state: &mut EchoState,
+) -> io::Result<()> {
+    state.limited = true;
+    say("LIMIT REACHED")?;
+    if let Some(transcript) = transcript
+        && let Ok(mut t) = transcript.lock()
+    {
+        if options.access_lost {
+            t.access_lost()?;
+        } else if options.credits_out {
+            t.credits_out(options.credits_reset_s)?;
+        } else {
+            t.limit()?;
+        }
+    }
+    Ok(())
 }
 
 /// Starts a background shell shaped like Claude Code's Bash tool (`run_in_background`) and wakes
@@ -2170,6 +2598,7 @@ fn echo_loop(options: &Options, session_id: &str) -> io::Result<i32> {
             keys,
         )?;
     }
+    let entered = options.queue_prompts.then(Entered::start);
     if let Some(prompt) = &options.prompt {
         if prompt.starts_with("/goal ") && (transcript.is_some() || hooks.is_some()) {
             // Claude Code runs a slash command given as its prompt argument (SPEC-117).
@@ -2182,13 +2611,20 @@ fn echo_loop(options: &Options, session_id: &str) -> io::Result<i32> {
                 transcript.as_ref(),
                 hooks.as_ref(),
                 &mut state,
+                entered.as_ref(),
             )?;
         }
     }
-    let stdin = io::stdin();
-    let mut input = stdin.lock();
+    // Read directly, or through a thread of their own so that a turn takes the lines entered
+    // while it runs (`--queue-prompts`).
+    let mut direct = entered.is_none().then(|| io::stdin().lock());
+    let mut next = || match (&entered, &mut direct) {
+        (Some(entered), _) => Ok(entered.next()),
+        (None, Some(input)) => read_message(input),
+        (None, None) => Ok(None),
+    };
     let mut to_drop = options.drop_lines;
-    while let Some(line) = read_message(&mut input)? {
+    while let Some(line) = next()? {
         // A submit the TUI lost (`--drop-lines`): the first typed lines never reach the agent.
         if to_drop > 0 && !line.is_empty() {
             to_drop -= 1;
@@ -2324,6 +2760,7 @@ fn echo_loop(options: &Options, session_id: &str) -> io::Result<i32> {
                 transcript.as_ref(),
                 hooks.as_ref(),
                 &mut state,
+                entered.as_ref(),
             )?,
         }
     }
@@ -2358,6 +2795,7 @@ fn echo_message(
     transcript: Option<&Arc<Mutex<Transcript>>>,
     hooks: Option<&Hooks>,
     state: &mut EchoState,
+    entered: Option<&Entered>,
 ) -> io::Result<()> {
     if let Some(reason) = hooks.and_then(|h| h.prompt(line)) {
         return say(&format!("PROMPT BLOCKED: {reason}"));
@@ -2378,6 +2816,9 @@ fn echo_message(
         }
         return status_line(options, hooks);
     }
+    if let Some(entered) = entered {
+        return queued_echo(options, line, transcript, hooks, state, entered);
+    }
     std::thread::sleep(Duration::from_millis(options.echo_turn_ms));
     hold_turn(options);
     let answer = format!("ECHO: {line}");
@@ -2393,19 +2834,7 @@ fn echo_message(
         .limit_after
         .is_some_and(|limit| state.turns >= limit)
     {
-        state.limited = true;
-        say("LIMIT REACHED")?;
-        if let Some(transcript) = transcript
-            && let Ok(mut t) = transcript.lock()
-        {
-            if options.access_lost {
-                t.access_lost()?;
-            } else if options.credits_out {
-                t.credits_out(options.credits_reset_s)?;
-            } else {
-                t.limit()?;
-            }
-        }
+        limit_reached(options, transcript, state)?;
         if let (Some(ms), Some(transcript)) = (options.limit_continues_ms, transcript) {
             continue_after_limit(
                 ms,
@@ -2735,6 +3164,10 @@ mod tests {
         assert!(parse(&["--exit-at-start-file"]).is_err());
         assert!(parse(&["--stuck-at-start-file"]).is_err());
         assert!(parse(&["--turn-hold-file"]).is_err());
+        assert!(parse(&["--queue-prompts"]).is_ok_and(|o| o.queue_prompts));
+        assert!(parse(&["--queue-record-file"]).is_err());
+        assert!(parse(&["--queue-handover-file"]).is_err());
+        assert!(parse(&["--queue-turn-file"]).is_err());
         assert!(parse(&["--paused-wake-file"]).is_err());
         assert!(parse(&["--pause-hold-file"]).is_err());
         assert!(parse(&["--paused-wake-hidden"]).is_ok_and(|o| o.paused_wake_hidden));
