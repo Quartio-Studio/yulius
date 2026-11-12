@@ -61,7 +61,16 @@ pub(crate) async fn start_with(
     probe: Arc<ScriptedUsage>,
     configure: impl FnOnce(&mut AppConfig),
 ) -> Result<(Arc<App>, u16), BoxError> {
-    start_on(data, fake, agent, port, probe, Arc::new(SystemClock), configure).await
+    start_on(
+        data,
+        fake,
+        agent,
+        port,
+        probe,
+        Arc::new(SystemClock),
+        configure,
+    )
+    .await
 }
 
 /// The system clock plus an offset (ms) the test moves: real processes and their hooks keep

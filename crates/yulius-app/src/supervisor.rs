@@ -163,6 +163,9 @@ pub struct TaskRuntime {
     /// launch, or the last prompt submitted from it. What was typed after that may still sit
     /// there (SPEC-468 CCF-010, CCF-011).
     pub(crate) box_emptied_ms: AtomicI64,
+    /// The keystroke ([`Self::typed_at_ms`]) whose possible draft its person was told about: a
+    /// message of Yulius's own waits for it (SPEC-480 DRF-006). Told once per keystroke.
+    pub(crate) draft_told_ms: AtomicI64,
     /// When the prompt whose hook is being answered emptied the prompt box (ms): worked out at
     /// its first request and taken into [`Self::box_emptied_ms`] when the prompt goes on, so a
     /// prompt that is held and then blocked, which Claude Code puts back into the box, empties
@@ -486,6 +489,7 @@ impl TaskRuntime {
             typed_at_ms: AtomicI64::new(0),
             message_typed_ms: AtomicI64::new(0),
             box_emptied_ms: AtomicI64::new(0),
+            draft_told_ms: AtomicI64::new(0),
             submit_emptied_ms: AtomicI64::new(0),
             prompt_held: AtomicBool::new(false),
             typed_by: Mutex::new(None),

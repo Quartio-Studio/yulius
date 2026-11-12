@@ -15,10 +15,10 @@ use yulius_app::error::AppError;
 use yulius_app::needs_you::NeedsYouRecord;
 use yulius_app::ports::store::TaskStore;
 use yulius_app::remote::RemoteCaller;
+use yulius_app::terminal::TerminalAttach;
 use yulius_contracts::mcp::RpcRequest;
 use yulius_domain::ids::{SandboxId, TaskId, UserId};
 use yulius_domain::permission::TokenScope;
-use yulius_app::terminal::TerminalAttach;
 use yulius_domain::task::{Activity, TaskStatus};
 use yulius_ptyhost::test_support::locate_fake_agent;
 
@@ -415,11 +415,7 @@ fn a_persons_draft_keeps_the_message_out_however_old() -> TestResult {
         let answer = app.tool_task_message(&caller, &message).await?;
         assert_eq!(answer["delivered"], "sent", "{answer}");
         wait_for("the message", Duration::from_secs(30), || async {
-            read_alone(
-                &app,
-                &id,
-                "Message from admin (through their Superagent):",
-            )
+            read_alone(&app, &id, "Message from admin (through their Superagent):")
         })
         .await?;
         assert_eq!(audited(&data, &id)?.len(), 1);
@@ -506,9 +502,11 @@ fn a_message_of_yulius_waits_for_a_persons_draft_and_tells_them() -> TestResult 
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
         assert_eq!(typed, vec![(id.clone(), WatchAction::Reconnect)]);
-        wait_for("the command read alone", Duration::from_secs(30), || async {
-            read_alone(&app, &id, RECONNECT_TEXT)
-        })
+        wait_for(
+            "the command read alone",
+            Duration::from_secs(30),
+            || async { read_alone(&app, &id, RECONNECT_TEXT) },
+        )
         .await?;
         app.terminal_leave(&attach).await;
         stop(&app, &id).await

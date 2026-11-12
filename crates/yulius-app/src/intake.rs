@@ -266,6 +266,19 @@ impl App {
         Some(runtime.typed_by.lock().ok().and_then(|who| who.clone()))
     }
 
+    /// Why Yulius types no message into the task's session now, when a person holds its
+    /// prompt box ([`policy::box_held`], SPEC-480): they typed into it since the box was last
+    /// empty, or in the last minute. Only a person's keystrokes count, not what Yulius typed
+    /// itself ([`App::has_draft`] counts that too, for a restart).
+    pub(crate) fn box_held(&self, task: &TaskId) -> Option<policy::BoxHeld> {
+        let runtime = self.runtime(task);
+        policy::box_held(
+            self.now().0,
+            runtime.typed_at_ms.load(Ordering::SeqCst),
+            runtime.box_emptied_ms.load(Ordering::SeqCst),
+        )
+    }
+
     /// `POST /api/sandboxes/{sid}/intake/check` (TSK-011, SPEC-188): whether a new task's
     /// prompt mixes separate workstreams, and whether it is broad work to propose as a
     /// supertask. Jev gets both questions at once; a prompt under 40 words is not asked about a

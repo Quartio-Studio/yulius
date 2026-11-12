@@ -18,7 +18,8 @@ use yulius_domain::task::TaskStatus;
 use yulius_domain::time::Timestamp;
 
 use crate::context::App;
-use crate::task_message::Typed;
+use crate::error::AppError;
+use crate::task_message::{Sender, Typed};
 
 /// The file holding when Yulius was last alive (milliseconds since the epoch).
 pub const ALIVE_FILE: &str = "alive-at";
@@ -259,7 +260,7 @@ impl App {
             }
             let paste = format!("\x1b[200~{WAKE_TEXT}\x1b[201~");
             match self
-                .type_into_session(&task, paste.as_bytes(), Typed::Prompt)
+                .type_into_session(&task, paste.as_bytes(), Typed::Prompt, Sender::Yulius)
                 .await
             {
                 Ok(()) => {
@@ -268,6 +269,11 @@ impl App {
                         .store(started.0, Ordering::SeqCst);
                     tracing::info!(task = %task.id, "woken after Yulius's outage");
                     woken.push(task.id.clone());
+                }
+                // Not ready for input, or a person may have a draft in its prompt box
+                // (SPEC-480): the next pass tries again, until the wakes end.
+                Err(AppError::Conflict(why)) => {
+                    tracing::debug!(task = %task.id, why, "the wake after the outage waits");
                 }
                 Err(err) => {
                     tracing::warn!(task = %task.id, error = %err, "could not wake the task after the outage");
