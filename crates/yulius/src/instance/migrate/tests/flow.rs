@@ -58,6 +58,9 @@ struct Systemd {
     no_disable: bool,
     /// `systemctl enable` fails.
     no_enable: bool,
+    /// The server's unit has no `[Install]` section (it is wanted through a link made by
+    /// hand): once that link is gone `is-enabled` says `static`, never `disabled`.
+    no_install: bool,
     /// systemd does not answer `show`.
     silent: bool,
     /// Looks (`show`) answered since the last `freeze`; `None` before one.
@@ -180,6 +183,11 @@ impl freeze::Host for FakeSystemd {
             }
             "is-active" => Ok((3, "inactive\n".into())),
             // A look: nothing changes and no event is noted.
+            // Only the server's unit can be enabled: its sessions unit has no `[Install]`, and
+            // the fake has no other unit.
+            "is-enabled" if of_sessions => Ok((0, "static\n".into())),
+            "is-enabled" if args.last() != Some(&"yulius.service") => Ok((4, "not-found\n".into())),
+            "is-enabled" if unit.disabled && unit.no_install => Ok((0, "static\n".into())),
             "is-enabled" if unit.disabled => Ok((1, "disabled\n".into())),
             "is-enabled" => Ok((0, "enabled\n".into())),
             verb => {
@@ -263,7 +271,9 @@ struct FakeRemote {
     down: bool,
     /// How often the key was tried ([`Remote::reachable`]).
     asked: u32,
-    /// Steps tried although the key's file is gone: `ssh` can only complain about it.
+    /// Steps tried although the key's file is gone. Without it `ssh` falls back to root's own
+    /// identities, and nothing of a move goes over another identity than its one-time key
+    /// (SPEC-460 MIG-010).
     keyless: u32,
     /// The key's file was deleted on the old host ([`Remote::forget`]).
     deleted: bool,
@@ -1644,11 +1654,13 @@ fn a_recorded_start_freezes_whatever_unit_runs_beside_the_new_instance() -> Test
         ),
         "{shown}"
     );
+    // The server's unit is frozen and is not named: systemd 259 refuses to stop a frozen unit,
+    // and one whose processes are killed stays frozen on its way to a restart, out of reach
+    // of a thaw, a start and the abort until its host restarts (SPEC-481, measured).
     assert!(
         shown.contains(
-            "stop it for good instead: `systemctl stop yulius.service \
-             yulius-sandboxes.service; systemctl kill --kill-who=all --signal=SIGKILL \
-             yulius.service yulius-sandboxes.service`"
+            "stop it for good instead: `systemctl stop yulius-sandboxes.service; systemctl kill \
+             --kill-who=all --signal=SIGKILL yulius-sandboxes.service`"
         ),
         "{shown}"
     );
@@ -3022,6 +3034,17 @@ fn an_old_unit_that_cannot_be_disabled_is_thawed_and_nothing_starts() -> TestRes
 const MUST_HOLD: &str = "It must be frozen and disabled now that the new instance runs: \
                          `systemctl freeze yulius.service; systemctl disable yulius.service`, \
                          then run the command again.";
+/// The same in a later run, which did not ask the new instance.
+const MUST_HOLD_LATER: &str = "It must be frozen and disabled now that the new instance has taken \
+                               over: `systemctl freeze yulius.service; systemctl disable \
+                               yulius.service`, then run the command again.";
+/// The way out of a freeze that keeps failing, as a later run names it: with the disable.
+const STOP_FOR_GOOD_LATER: &str = "stop it for good instead: `systemctl stop yulius.service; \
+                                   systemctl kill --kill-who=all --signal=SIGKILL yulius.service; \
+                                   systemctl disable yulius.service`";
+/// The other way a later run names: it cannot know that the new instance still runs.
+const OR_GO_BACK: &str = "The move is not finished until then. To go back to this host instead: \
+                          `yulius instance migrate --abort`, once the new instance is stopped";
 /// What every line of an old instance that is not held says of the move.
 const NOT_FINISHED: &str = "The move is not finished";
 /// What a run says of a finished move.
@@ -3075,6 +3098,11 @@ fn looks_and_finishes(s: &mut Setup, says: &str) -> TestResult {
     assert!(shown.contains(says), "{shown}");
     assert!(shown.contains(FINISHED), "{shown}");
     assert!(!shown.contains(NOT_FINISHED), "{shown}");
+    // Said under the cutover's heading, as a failed look is.
+    assert!(
+        shown.contains("\nCutover\nok       old instance"),
+        "{shown}"
+    );
     let status = s.status()?;
     assert_eq!(status.phase, "done");
     assert_eq!(outcome(&status, "old instance"), Some(HostOutcome::Ok));
@@ -3110,7 +3138,8 @@ fn a_move_whose_old_unit_was_not_held_is_not_finished_until_it_is() -> TestResul
     // The same command, twice: the line again, and nothing is touched.
     for _ in 0..2 {
         looks_and_fails(&mut s, found)?;
-        assert!(s.shown().contains(MUST_HOLD), "{}", s.shown());
+        assert!(s.shown().contains(MUST_HOLD_LATER), "{}", s.shown());
+        assert!(s.shown().contains(OR_GO_BACK), "{}", s.shown());
         // Frozen, so no way out of a failing freeze is offered.
         assert!(!s.shown().contains("stop it for good"), "{}", s.shown());
     }
@@ -3120,6 +3149,8 @@ fn a_move_whose_old_unit_was_not_held_is_not_finished_until_it_is() -> TestResul
         "{first}"
     );
     assert!(first.contains(NOT_FINISHED), "{first}");
+    // That run had just asked the new instance: it names no way back.
+    assert!(!first.contains("--abort"), "{first}");
     // A person ran the named command, and the disable worked.
     s.world.systemd.lock().map_err(|e| e.to_string())?.disabled = true;
     looks_and_finishes(&mut s, HELD_FROZEN)?;
@@ -3138,10 +3169,11 @@ fn a_move_whose_old_unit_was_not_held_is_not_finished_until_it_is() -> TestResul
     for _ in 0..2 {
         looks_and_fails(&mut s, found)?;
         let shown = s.shown();
-        assert!(shown.contains(MUST_HOLD), "{shown}");
+        assert!(shown.contains(MUST_HOLD_LATER), "{shown}");
         // No freeze was tried by this run, so the line itself names the way out of one that
-        // keeps failing.
-        assert!(shown.contains(STOP_FOR_GOOD), "{shown}");
+        // keeps failing, with the disable, and the way back.
+        assert!(shown.contains(STOP_FOR_GOOD_LATER), "{shown}");
+        assert!(shown.contains(OR_GO_BACK), "{shown}");
         assert_eq!(s.old_unit(), (false, true));
     }
     assert!(first.contains(found), "{first}");
@@ -3191,7 +3223,9 @@ fn a_finished_move_whose_old_instance_no_longer_holds_fails_until_it_does() -> T
         // systemd does not answer: not knowing is not held.
         (
             |unit| unit.silent = true,
-            "systemd does not say what yulius.service does. It must be frozen and disabled now",
+            "systemd does not say what yulius.service does, so the old instance is not known \
+             to be frozen and disabled. The move is not finished: run the command again when it \
+             answers",
             |unit| unit.silent = false,
             HELD_FROZEN,
         ),
@@ -3259,6 +3293,11 @@ fn a_finished_move_whose_old_instance_no_longer_holds_fails_until_it_does() -> T
         let status = s.status()?;
         let said = line(&status, "old instance").ok_or("no line")?;
         assert!(said.detail.starts_with(found), "{}", said.detail);
+        // Nothing is known to be wrong while systemd does not answer: no command is named.
+        if found.starts_with("systemd does not say") {
+            assert!(!said.detail.contains("systemctl"), "{}", said.detail);
+            assert!(!said.detail.contains("--abort"), "{}", said.detail);
+        }
         looks_and_fails(&mut s, found)?;
         done(&mut *s.world.systemd.lock().map_err(|e| e.to_string())?);
         looks_and_finishes(&mut s, held)?;
@@ -3273,6 +3312,34 @@ fn a_finished_move_whose_old_instance_no_longer_holds_fails_until_it_does() -> T
         unit.stopped = true;
     }
     looks_and_finishes(&mut s, HELD_DOWN)?;
+    Ok(())
+}
+
+/// SPEC-481 HLD-001: a server's unit without an `[Install]` section (an operator's own, wanted
+/// through a link made by hand) answers `static` once that link is gone, and no `systemctl
+/// disable` changes that word. It has no enablement of its own, as a disabled unit has none:
+/// such a move ends well and stays finished.
+#[test]
+fn a_unit_without_an_install_section_is_held_once_its_link_is_gone() -> TestResult {
+    let mut s = setup()?;
+    s.world
+        .systemd
+        .lock()
+        .map_err(|e| e.to_string())?
+        .no_install = true;
+    assert_eq!(s.run()?, 0, "{}", s.shown());
+    assert!(
+        s.shown().contains("stays frozen and is disabled"),
+        "{}",
+        s.shown()
+    );
+    looks_and_finishes(&mut s, HELD_FROZEN)?;
+    // Wanted again through a link made by hand: `enabled`, and not held.
+    s.world.systemd.lock().map_err(|e| e.to_string())?.disabled = false;
+    looks_and_fails(
+        &mut s,
+        "yulius.service is frozen, but `systemctl is-enabled yulius.service` says `enabled`",
+    )?;
     Ok(())
 }
 
@@ -3294,12 +3361,26 @@ fn a_later_run_looks_at_the_sessions_unit_too() -> TestResult {
             "`systemctl freeze yulius.service yulius-sandboxes.service; systemctl disable \
              yulius.service`, then run the command again. If a freeze keeps failing (systemd \
              freezes only a unit that runs), stop it for good instead: `systemctl stop \
-             yulius.service yulius-sandboxes.service; systemctl kill --kill-who=all \
-             --signal=SIGKILL yulius.service yulius-sandboxes.service`. The move is not \
-             finished until then"
+             yulius-sandboxes.service; systemctl kill --kill-who=all --signal=SIGKILL \
+             yulius-sandboxes.service; systemctl disable yulius.service`. The move is not \
+             finished until then. To go back to this host instead: `yulius instance migrate \
+             --abort`, once the new instance is stopped"
         ),
         "{shown}"
     );
+    // Both thawed: both are named.
+    s.world.systemd.lock().map_err(|e| e.to_string())?.frozen = false;
+    looks_and_fails(&mut s, "yulius.service is not frozen as a whole")?;
+    assert!(
+        s.shown().contains(
+            "stop it for good instead: `systemctl stop yulius.service yulius-sandboxes.service; \
+             systemctl kill --kill-who=all --signal=SIGKILL yulius.service \
+             yulius-sandboxes.service; systemctl disable yulius.service`"
+        ),
+        "{}",
+        s.shown()
+    );
+    s.world.systemd.lock().map_err(|e| e.to_string())?.frozen = true;
     sessions(&s, true)?;
     looks_and_finishes(&mut s, HELD_FROZEN)?;
 
@@ -3342,10 +3423,10 @@ fn a_moved_move_is_finished_there_and_not_called_finished_while_the_old_unit_run
     let shown = s.shown();
     let found = "yulius.service is not frozen as a whole. It must be frozen and disabled now";
     assert!(
-        shown.contains(found) && shown.contains(MUST_HOLD),
+        shown.contains(found) && shown.contains(MUST_HOLD_LATER),
         "{shown}"
     );
-    assert!(shown.contains(STOP_FOR_GOOD), "{shown}");
+    assert!(shown.contains(STOP_FOR_GOOD_LATER), "{shown}");
     assert!(!shown.contains(FINISHED), "{shown}");
     assert_eq!(
         outcome(&s.status()?, "old instance"),
@@ -3592,7 +3673,7 @@ fn a_finish_that_was_done_but_not_recorded_is_found_done() -> TestResult {
         );
         assert!(!shown.contains("Run the command again"), "{shown}");
         // Nothing is deleted a second time, and nothing is tried over a key that is gone
-        // (`ssh` would only complain about it before the line that says all is done).
+        // (nothing of a move goes over another identity than its key, SPEC-460 MIG-010).
         assert!(!shown.contains("one-time key (old host)"), "{shown}");
         assert_eq!(s.remote.keyless, 0);
         let state = State::load(&s.opts.state_dir).ok_or("no state")?;

@@ -991,16 +991,19 @@ impl Host for Says {
 /// SPEC-481 HLD-001: a unit is known not to start with its host only when systemd says so.
 /// Every other answer, no answer and a `systemctl` that did not run are quoted, not guessed.
 #[test]
-fn only_a_unit_systemd_calls_disabled_or_masked_is_disabled() {
-    // `is-enabled` exits 1 for these and 0 for the next group: the word decides, not the code.
-    for said in [
-        "disabled\n",
-        "masked\n",
-        "masked-runtime\n",
-        "disabled",
-        "  disabled  \n",
+fn only_a_unit_systemd_says_has_no_enablement_is_disabled() {
+    // The word decides, not the exit code: `is-enabled` exits 1 for `disabled` and `masked`
+    // and 0 for `static`, a unit without an `[Install]` section, which has no enablement of
+    // its own either (a link made by hand makes it `enabled`; measured on systemd 259).
+    for (code, said) in [
+        (1, "disabled\n"),
+        (0, "static\n"),
+        (1, "masked\n"),
+        (1, "masked-runtime\n"),
+        (1, "disabled"),
+        (1, "  disabled  \n"),
     ] {
-        let mut host = Says(Ok((1, said)), Vec::new());
+        let mut host = Says(Ok((code, said)), Vec::new());
         assert_eq!(disabled(&mut host, UNIT), Ok(()), "{said:?}");
         // Asked, and nothing else.
         assert_eq!(host.1, ["is-enabled yulius.service"]);
@@ -1008,8 +1011,7 @@ fn only_a_unit_systemd_calls_disabled_or_masked_is_disabled() {
     for (code, said, quoted) in [
         (0, "enabled\n", "says `enabled`"),
         (0, "enabled-runtime\n", "says `enabled-runtime`"),
-        (0, "static\n", "says `static`"),
-        (0, "linked\n", "says `linked`"),
+        (1, "linked\n", "says `linked`"),
         (0, "alias\n", "says `alias`"),
         (0, "indirect\n", "says `indirect`"),
         (0, "generated\n", "says `generated`"),
@@ -1017,6 +1019,9 @@ fn only_a_unit_systemd_calls_disabled_or_masked_is_disabled() {
         (4, "not-found\n", "says `not-found`"),
         // A word that only begins like one that counts.
         (1, "disabled-runtime\n", "says `disabled-runtime`"),
+        (0, "static-runtime\n", "says `static-runtime`"),
+        // One unit is asked, so the first line is its answer.
+        (0, "enabled\ndisabled\n", "says `enabled`"),
         // An exit code alone is not the word, whichever it is.
         (1, "", "says nothing (exit 1)"),
         (0, "\n", "says nothing (exit 0)"),
