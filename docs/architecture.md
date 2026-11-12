@@ -1129,7 +1129,8 @@ the pull request watch (`pr_watch.rs`) looks at each running, unpaused task whos
 run holding it, the armed slot, the train, a merge of its head into `origin/<integration>` with
 the merge drivers, cached per head and integration commit), and types into its session, as one
 bracketed paste through `type_into_session`, cleaned of control characters and never while a
-person must act first (a prompt on screen, `needs_you`):
+person must act first (a prompt on screen, `needs_you`) or may have a draft in the prompt box
+(SPEC-480: the notice stays untold and is tried again):
 
 - a red run at its head (each failed job, its exit code and up to 5 failing test names read from
   the kept failures, and the `ci_status` run and job), or one that errored;
@@ -1668,8 +1669,15 @@ one bracketed paste labelled with the person and the caller's channel ("through 
 Superagent", or "through their own agent" for the remote MCP; SPEC-322), then a separate Enter, refused before Claude Code's
 session started (SessionStart, whose `session-started` marker in the run folder `reconcile`
 reads for a reattached run, or half the goal-ready timeout after the spawn, `spawned_ms`),
-while a person typed
-in the last minute (`typed_recently`), while Claude Code's folder-trust dialog shows
+while a person's draft may sit in its prompt box (they typed since the box was last empty,
+however long ago) or they typed in the last minute (`App::box_held`, `policy::box_held`;
+[SPEC-480](../.ai/specs/SPEC-480-a-message-yulius-types-lands-on-a-person.md),
+[decision 0309](decisions/0309-yulius-types-nothing-onto-a-persons-possible-draft.md): the
+sender is told, and for a message of Yulius's own, which waits in its watch, the task is flagged
+and its terminal says so once the person's last key is ten minutes old; the key that begins a
+possible draft leaves `person-typed` in the run folder, removed when a prompt is submitted from
+the box and read by `reconcile` for a reattached run), while Claude Code's
+folder-trust dialog shows
 (`trust_prompt_shown`), while Yulius types the first message or while another
 message is typed (`TaskRuntime::typing_message`); audited `task.messaged`
 ([SPEC-230](../.ai/specs/SPEC-230-superagent-should-be-able-to-prompt-task.md),

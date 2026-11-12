@@ -4,7 +4,8 @@
 
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
+use std::sync::atomic::{AtomicI64, Ordering};
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use yulius_app::auth::{AuthContext, TokenGrant};
@@ -14,18 +15,20 @@ use yulius_app::error::AppError;
 use yulius_app::needs_you::NeedsYouRecord;
 use yulius_app::ports::store::TaskStore;
 use yulius_app::remote::RemoteCaller;
+use yulius_app::terminal::TerminalAttach;
 use yulius_contracts::mcp::RpcRequest;
 use yulius_domain::ids::{SandboxId, TaskId, UserId};
 use yulius_domain::permission::TokenScope;
-use yulius_domain::task::TaskStatus;
+use yulius_domain::task::{Activity, TaskStatus};
 use yulius_ptyhost::test_support::locate_fake_agent;
 
 use yulius_app::model::TaskMode;
 
 use crate::first_message::{
-    data_dir, hooked, new_task, runtime, screen, start, start_with, stop, wait_for,
+    ShiftedClock, activity, data_dir, hooked, new_task, notices, runtime, screen, start, start_on,
+    start_with, stop, wait_for,
 };
-use crate::pool_supervision::{ScriptedUsage, seed};
+use crate::pool_supervision::{HOUR, ScriptedUsage, refresh, seed, usage};
 use crate::support::agents::FakeAgentOptions;
 use crate::support::{
     self, TestResult, add_sandbox, harness_configured, perms, seed_task, user_with_token,
@@ -322,6 +325,334 @@ fn a_persons_draft_keeps_the_message_out() -> TestResult {
     })
 }
 
+const MINUTE: i64 = 60_000;
+
+/// What a task says while a message of Yulius's own waits for its person's draft (SPEC-480
+/// DRF-006).
+fn held_message_flag() -> Value {
+    json!({
+        "kind": "yulius",
+        "problem": "Yulius has a message for this session and does not type it: someone typed \
+                    in the terminal and sent no prompt since, so their text may still be in the \
+                    prompt box.",
+        "action": "Send what you typed in the terminal, or clear it and send any prompt. Yulius \
+                   types its message after the next prompt sent from there.",
+        "link": null,
+    })
+}
+
+/// The one line the session's terminal gets with that flag.
+const HELD_MESSAGE_NOTICE: &str = "Yulius holds a message for this session: text typed here was \
+    not sent and may still be in the prompt box. Send it, or clear it and send any prompt, and \
+    Yulius types its message.";
+
+/// [`app`] on a clock the test moves, which starts `behind_ms` behind the system's.
+async fn app_behind(data: &Path, behind_ms: i64) -> Result<(Arc<App>, Arc<ShiftedClock>), Error> {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let clock = Arc::new(ShiftedClock(AtomicI64::new(-behind_ms)));
+    let probe = Arc::new(ScriptedUsage::default());
+    let (app, _) = start_on(data, &fake, fake_agent(), 0, probe, clock.clone(), |_| {}).await?;
+    Ok((app, clock))
+}
+
+/// A writer's terminal on `id` for the person `caller` acts for: what they type goes the way a
+/// viewer's keys go.
+async fn terminal(
+    app: &Arc<App>,
+    caller: &ProjectCaller,
+    id: &TaskId,
+) -> Result<(AuthContext, TerminalAttach), Error> {
+    let ctx = AuthContext {
+        user: app.deps.store.user(&caller.user).await?.ok_or("user")?,
+        csrf_token: None,
+        session_hash: None,
+        token: None,
+    };
+    let attach = app
+        .terminal_open(&ctx, id.as_str(), Some((120, 40)))
+        .await?;
+    Ok((ctx, attach))
+}
+
+/// Whether the agent read `line` as a prompt of its own (the fake agent answers each prompt
+/// with `ECHO: <prompt>`).
+fn read_alone(app: &App, id: &TaskId, line: &str) -> bool {
+    let answer = format!("ECHO: {line}");
+    screen(app, id).lines().any(|shown| shown.trim() == answer)
+}
+
+/// SPEC-480 AC1, AC4 (DRF-001, DRF-004; issue #1199): text a person typed into the prompt box
+/// and did not send keeps a message out however long ago they typed it. Two minutes later, and
+/// eleven, the Superagent's message is refused with the reason, the agent got neither text,
+/// and the task is not flagged (the sender was told). Once the person sent theirs, the message
+/// arrives as a prompt of its own. The message used to be pasted behind a draft older than a
+/// minute and submitted with it.
+#[test]
+fn a_persons_draft_keeps_the_message_out_however_old() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let (app, clock) = app_behind(&data, 11 * MINUTE).await?;
+        let (id, caller) = running(&app, &data).await?;
+        let (ctx, attach) = terminal(&app, &caller, &id).await?;
+        let mut watch = app.runtime(&id).hub.watch();
+        // They type half a prompt and leave it; two minutes pass.
+        app.terminal_input(&ctx, &attach, b"half a thought", false)
+            .await?;
+        clock.0.store(-9 * MINUTE, Ordering::SeqCst);
+
+        let message = json!({"task_id": id.as_str(), "text": "Go on"});
+        let Err(refused) = app.tool_task_message(&caller, &message).await else {
+            // What the agent read: the person's text and the message, as one prompt.
+            wait_for("what the agent read", Duration::from_secs(30), || async {
+                screen(&app, &id).contains("ECHO: half a thought")
+            })
+            .await?;
+            return Err(format!(
+                "the message was typed onto the person's draft and submitted with it:\n{}",
+                screen(&app, &id)
+            )
+            .into());
+        };
+        let why = format!(
+            "a person typed into task #{}'s terminal and sent no prompt since, so their text may \
+             still be in its prompt box and nothing is typed behind it: tell the person to send \
+             it, or to clear it and send any prompt, then try again",
+            app.deps.store.task(&id).await?.ok_or("task")?.number
+        );
+        assert!(
+            matches!(&refused, AppError::Conflict(said) if *said == why),
+            "{refused:?}"
+        );
+        // Eleven minutes after their last key it is refused all the same, and its sender is
+        // the one who was told: no flag, no line in the terminal.
+        clock.0.store(0, Ordering::SeqCst);
+        let again = app.tool_task_message(&caller, &message).await.err();
+        assert!(
+            matches!(&again, Some(AppError::Conflict(why)) if why.contains("prompt box")),
+            "{again:?}"
+        );
+        assert_eq!(support::attention(&app, id.as_str()).await?, Value::Null);
+        assert_eq!(notices(&mut watch), Vec::<String>::new());
+        // Whatever reaches the agent shows within a second; nothing did.
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let shown = screen(&app, &id);
+        assert!(!shown.contains("ECHO: half a thought"), "{shown}");
+        assert!(!shown.contains("Message from admin"), "{shown}");
+        assert!(audited(&data, &id)?.is_empty());
+
+        // They send it: the agent reads it alone, and the prompt box is empty again.
+        app.terminal_input(&ctx, &attach, b"\r", false).await?;
+        wait_for("the person's prompt", Duration::from_secs(30), || async {
+            read_alone(&app, &id, "half a thought")
+        })
+        .await?;
+        // The minute after their Enter passes (DRF-002), and the same message is typed.
+        clock.0.store(MINUTE + 1_000, Ordering::SeqCst);
+        let answer = app.tool_task_message(&caller, &message).await?;
+        assert_eq!(answer["delivered"], "sent", "{answer}");
+        wait_for("the message", Duration::from_secs(30), || async {
+            read_alone(&app, &id, "Message from admin (through their Superagent):")
+        })
+        .await?;
+        assert_eq!(audited(&data, &id)?.len(), 1);
+        app.terminal_leave(&attach).await;
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-480 AC2, AC4 (DRF-003, DRF-005, DRF-006, DRF-007): a message of Yulius's own (here the
+/// MCP watch's `/mcp reconnect yulius`, a command) waits for a person's draft. Two minutes
+/// after their last key nothing is typed and nobody is told; eleven minutes after it the task
+/// is flagged with the reason and its terminal says so, once. After the person sent their text
+/// the next pass types the command, which the agent reads alone.
+#[test]
+fn a_message_of_yulius_waits_for_a_persons_draft_and_tells_them() -> TestResult {
+    use yulius_app::mcp_watch::{RECONNECT_TEXT, WatchAction, WatchBounds};
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let (app, clock) = app_behind(&data, 13 * MINUTE).await?;
+        let (id, caller) = running(&app, &data).await?;
+        wait_for("the first turn's end", Duration::from_secs(30), || async {
+            activity(&app, &id).await.is_some_and(Activity::is_idle)
+        })
+        .await?;
+        let (ctx, attach) = terminal(&app, &caller, &id).await?;
+        let mut watch = app.runtime(&id).hub.watch();
+        let bounds = WatchBounds {
+            silent_after_ms: 1_000,
+            reconnect_gap_ms: 60_000,
+            ..WatchBounds::new(yulius_domain::time::Timestamp(0))
+        };
+        app.terminal_input(&ctx, &attach, b"half a thought", false)
+            .await?;
+
+        // Two minutes later its Yulius MCP has long been silent, and the reconnect waits.
+        clock.0.store(-11 * MINUTE, Ordering::SeqCst);
+        assert!(app.watch_mcp(&bounds).await.is_empty());
+        assert_eq!(support::attention(&app, id.as_str()).await?, Value::Null);
+        let mut said = notices(&mut watch);
+        assert!(said.is_empty(), "told within ten minutes: {said:?}");
+
+        // Eleven minutes after their last key the person is told, once.
+        clock.0.store(-2 * MINUTE, Ordering::SeqCst);
+        for _ in 0..2 {
+            assert!(app.watch_mcp(&bounds).await.is_empty());
+        }
+        assert_eq!(
+            support::attention(&app, id.as_str()).await?,
+            held_message_flag()
+        );
+        said.extend(notices(&mut watch));
+        assert_eq!(said, [HELD_MESSAGE_NOTICE]);
+        // A flag that ended while the command still waits (a turn's end settles a flagged
+        // task) is raised again at the next pass; the terminal has its line already.
+        let flagged = support::attention(&app, id.as_str()).await?;
+        app.deps
+            .store
+            .set_activity(&id, Some(Activity::Waiting), app.now())
+            .await?;
+        assert_eq!(support::attention(&app, id.as_str()).await?, Value::Null);
+        assert!(app.watch_mcp(&bounds).await.is_empty());
+        assert_eq!(support::attention(&app, id.as_str()).await?, flagged);
+        assert_eq!(notices(&mut watch), Vec::<String>::new());
+        // Whatever reaches the agent shows within a second; nothing did.
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let shown = screen(&app, &id);
+        assert!(!shown.contains("ECHO: half a thought"), "{shown}");
+        assert!(!shown.contains("ECHO: /mcp"), "{shown}");
+
+        // They send it: the flag ends with the hold. The minute after their Enter passes, and
+        // the next pass types the command.
+        app.terminal_input(&ctx, &attach, b"\r", false).await?;
+        wait_for("the person's prompt", Duration::from_secs(30), || async {
+            read_alone(&app, &id, "half a thought")
+        })
+        .await?;
+        wait_for("the flag's end", Duration::from_secs(30), || async {
+            matches!(support::attention(&app, id.as_str()).await, Ok(Value::Null))
+        })
+        .await?;
+        clock.0.store(-MINUTE + 1_000, Ordering::SeqCst);
+        // Passes run until the turn of the person's prompt has closed.
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let mut typed = Vec::new();
+        while typed.is_empty() && Instant::now() < deadline {
+            typed = app.watch_mcp(&bounds).await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert_eq!(typed, vec![(id.clone(), WatchAction::Reconnect)]);
+        wait_for(
+            "the command read alone",
+            Duration::from_secs(30),
+            || async { read_alone(&app, &id, RECONNECT_TEXT) },
+        )
+        .await?;
+        app.terminal_leave(&attach).await;
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-480 AC7 (DRF-006; review round 1): the wake after an outage is given up ten minutes
+/// after the start, so at its last pass a wake that a person's draft holds tells them, however
+/// young their keystroke is: here two minutes, at which an earlier pass says nothing. The task
+/// used to stay idle with nobody told. Their prompt then continues the session, and no wake
+/// follows it. The server is restarted, as after an outage: a run's last turn is known from its
+/// transcript only when it was read again.
+#[test]
+fn the_last_wake_after_an_outage_tells_the_person_of_their_draft() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let first = runtime()?;
+    let (port, id, caller) = first.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let (app, port) = start(&data, &fake, fake_agent(), 0, probe).await?;
+        let (id, caller) = running(&app, &data).await?;
+        wait_for("the first turn's end", Duration::from_secs(30), || async {
+            activity(&app, &id).await.is_some_and(Activity::is_idle)
+        })
+        .await?;
+        Ok::<_, Error>((port, id, caller))
+    })?;
+    first.shutdown_timeout(Duration::from_secs(5));
+
+    let rt = runtime()?;
+    rt.block_on(async {
+        let clock = Arc::new(ShiftedClock(AtomicI64::new(-3 * MINUTE)));
+        let probe = Arc::new(ScriptedUsage::default());
+        let (app, _) = start_on(
+            &data,
+            &fake,
+            fake_agent(),
+            port,
+            probe,
+            clock.clone(),
+            |_| {},
+        )
+        .await?;
+        app.reconcile().await?;
+        // Its transcript was read again: its last turn's end is known.
+        wait_for(
+            "the transcript read again",
+            Duration::from_secs(30),
+            || async { !app.claude_queue_holds(&id) },
+        )
+        .await?;
+        // As after an outage in which that turn closed: Yulius never answered its Stop.
+        let run_dir = app
+            .deps
+            .store
+            .live_attempt(&id)
+            .await?
+            .ok_or("run")?
+            .run_dir;
+        std::fs::write(Path::new(&run_dir).join("stop-answered"), "1")?;
+        let down_since = yulius_domain::time::Timestamp(1);
+        let started = yulius_domain::time::Timestamp(i64::MAX / 2);
+        let (ctx, attach) = terminal(&app, &caller, &id).await?;
+        let mut watch = app.runtime(&id).hub.watch();
+        app.terminal_input(&ctx, &attach, b"half a thought", false)
+            .await?;
+        clock.0.store(-MINUTE, Ordering::SeqCst);
+
+        // A pass that is not the last waits and says nothing; the last one tells the person.
+        let woken = app.wake_after_outage(down_since, started, false).await;
+        assert!(woken.is_empty(), "{woken:?}");
+        assert_eq!(support::attention(&app, id.as_str()).await?, Value::Null);
+        assert_eq!(notices(&mut watch), Vec::<String>::new());
+        let woken = app.wake_after_outage(down_since, started, true).await;
+        assert!(woken.is_empty(), "{woken:?}");
+        assert_eq!(
+            support::attention(&app, id.as_str()).await?,
+            held_message_flag()
+        );
+        assert_eq!(notices(&mut watch), [HELD_MESSAGE_NOTICE]);
+        // Whatever reaches the agent shows within a second; nothing did.
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let shown = screen(&app, &id);
+        assert!(!shown.contains("ECHO: half a thought"), "{shown}");
+        assert!(!shown.contains("Yulius is back"), "{shown}");
+
+        // Their prompt continues the session and ends the flag.
+        app.terminal_input(&ctx, &attach, b"\r", false).await?;
+        wait_for("the person's prompt", Duration::from_secs(30), || async {
+            read_alone(&app, &id, "half a thought")
+                && activity(&app, &id).await.is_some_and(Activity::is_idle)
+        })
+        .await?;
+        assert_eq!(support::attention(&app, id.as_str()).await?, Value::Null);
+        app.terminal_leave(&attach).await;
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// SPEC-230 TMS-004: a Superagent's message never goes into Claude Code's folder-trust dialog
 /// of a goal run (whose goal is its launch prompt, so no first message is being typed): only a
 /// person answers it (ONE-005). The call is refused and nothing is typed.
@@ -428,6 +759,9 @@ enum BeforeRestart {
     TrustDialog,
     /// A running task.
     Running,
+    /// A running task into whose prompt box its person typed "half a thought" and did not
+    /// send it.
+    Draft,
 }
 
 /// Runs `before` on a first server with `agent` (waiting until its run was spawned more than
@@ -447,7 +781,9 @@ fn restarted(
         let probe = Arc::new(ScriptedUsage::default());
         let (app, port) = start(data, &fake, agent.clone(), 0, probe).await?;
         let (id, caller) = match before {
-            BeforeRestart::TrustWords | BeforeRestart::Running => running(&app, data).await?,
+            BeforeRestart::TrustWords | BeforeRestart::Running | BeforeRestart::Draft => {
+                running(&app, data).await?
+            }
             BeforeRestart::TrustDialog => {
                 let (sandbox, user) = seed(&app, data, &["a-only"]).await?;
                 let id = new_task(&app, &sandbox, &user, "Make it blue", TaskMode::Goal).await?;
@@ -456,6 +792,12 @@ fn restarted(
         };
         if matches!(before, BeforeRestart::TrustWords) {
             app.send_input(&id, b"Yes, I trust this folder\r").await?;
+        }
+        if matches!(before, BeforeRestart::Draft) {
+            let (ctx, attach) = terminal(&app, &caller, &id).await?;
+            app.terminal_input(&ctx, &attach, b"half a thought", false)
+                .await?;
+            app.terminal_leave(&attach).await;
         }
         wait_for(
             "the screen before the restart",
@@ -512,6 +854,330 @@ fn a_run_reattached_after_a_restart_takes_messages() -> TestResult {
             screen(&app, &id).contains("ECHO: Message from admin")
         })
         .await?;
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-480 AC6 (DRF-009; review round 1): a draft typed before a restart of the server still
+/// keeps a message out after it. The keystroke that began it is kept in the run folder, which
+/// the restarted server reads; the server used to know keystrokes in memory alone, and typed
+/// behind such a draft. The person's next prompt removes the mark.
+#[test]
+fn a_draft_typed_before_a_restart_still_keeps_the_message_out() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let shown = "half a thought";
+    let before = BeforeRestart::Draft;
+    let (rt, app, id, caller) = restarted(&data, &fake_agent(), before, 0, 600_000, shown)?;
+    rt.block_on(async {
+        let Err(refused) = send(&app, &caller, &id).await else {
+            wait_for("what the agent read", Duration::from_secs(30), || async {
+                screen(&app, &id).contains("ECHO: half a thought")
+            })
+            .await?;
+            return Err(format!(
+                "the message was typed onto a draft from before the restart:\n{}",
+                screen(&app, &id)
+            )
+            .into());
+        };
+        assert!(
+            matches!(&refused, AppError::Conflict(why) if why.contains("prompt box")),
+            "{refused:?}"
+        );
+        let run_dir = app
+            .deps
+            .store
+            .live_attempt(&id)
+            .await?
+            .ok_or("run")?
+            .run_dir;
+        let mark = Path::new(&run_dir).join("person-typed");
+        assert!(mark.exists(), "the draft's mark is kept in the run folder");
+        // They send it: the agent reads it alone, and the mark goes with the draft.
+        let (ctx, attach) = terminal(&app, &caller, &id).await?;
+        app.terminal_input(&ctx, &attach, b"\r", false).await?;
+        wait_for("the person's prompt", Duration::from_secs(30), || async {
+            read_alone(&app, &id, "half a thought") && !mark.exists()
+        })
+        .await?;
+        app.terminal_leave(&attach).await;
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-480 AC10 (DRF-009; review round 2): a mark that outlived its draft (the server did not
+/// remember writing it) leaves the run folder with the next prompt that empties the box, here
+/// a message Yulius types: a restarted server would otherwise hold messages for a draft that
+/// is not there.
+#[test]
+fn a_stale_mark_leaves_the_run_folder_with_the_next_prompt() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let (app, clock) = app_behind(&data, 2 * MINUTE).await?;
+        let (id, caller) = running(&app, &data).await?;
+        let run_dir = app
+            .deps
+            .store
+            .live_attempt(&id)
+            .await?
+            .ok_or("run")?
+            .run_dir;
+        let mark = Path::new(&run_dir).join("person-typed");
+        // Their prompt writes the mark and removes it again.
+        let (ctx, attach) = terminal(&app, &caller, &id).await?;
+        app.terminal_input(&ctx, &attach, b"one", false).await?;
+        assert!(mark.exists(), "the first key of a draft marks it");
+        app.terminal_input(&ctx, &attach, b"\r", false).await?;
+        wait_for("the person's prompt", Duration::from_secs(30), || async {
+            read_alone(&app, &id, "one") && !mark.exists()
+        })
+        .await?;
+        app.terminal_leave(&attach).await;
+        // A mark the server does not remember, and the minute after their Enter has passed.
+        std::fs::write(&mark, app.now().0.to_string())?;
+        clock.0.store(0, Ordering::SeqCst);
+        let answer = send(&app, &caller, &id).await?;
+        assert_eq!(answer["delivered"], "sent", "{answer}");
+        wait_for("the mark's removal", Duration::from_secs(30), || async {
+            !mark.exists()
+        })
+        .await?;
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-480 AC10 (DRF-009; review round 2): a mark whose time is ahead of the clock (a clock
+/// set back, a damaged file) is read as typed now by the server that reattaches the run, so
+/// it grows old: eleven minutes later its person is told. A time in the future never did.
+#[test]
+fn a_mark_ahead_of_the_clock_is_read_as_typed_now() -> TestResult {
+    use yulius_app::mcp_watch::WatchBounds;
+    let (_dir, data) = data_dir()?;
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let first = runtime()?;
+    let (port, id) = first.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let (app, port) = start(&data, &fake, fake_agent(), 0, probe).await?;
+        let (id, caller) = running(&app, &data).await?;
+        wait_for("the first turn's end", Duration::from_secs(30), || async {
+            activity(&app, &id).await.is_some_and(Activity::is_idle)
+        })
+        .await?;
+        let (ctx, attach) = terminal(&app, &caller, &id).await?;
+        app.terminal_input(&ctx, &attach, b"half a thought", false)
+            .await?;
+        app.terminal_leave(&attach).await;
+        let run_dir = app
+            .deps
+            .store
+            .live_attempt(&id)
+            .await?
+            .ok_or("run")?
+            .run_dir;
+        let ahead = app.now().0 + 24 * 60 * MINUTE;
+        std::fs::write(Path::new(&run_dir).join("person-typed"), ahead.to_string())?;
+        Ok::<_, Error>((port, id))
+    })?;
+    first.shutdown_timeout(Duration::from_secs(5));
+
+    let rt = runtime()?;
+    rt.block_on(async {
+        let clock = Arc::new(ShiftedClock(AtomicI64::new(0)));
+        let probe = Arc::new(ScriptedUsage::default());
+        let (app, _) = start_on(
+            &data,
+            &fake,
+            fake_agent(),
+            port,
+            probe,
+            clock.clone(),
+            |_| {},
+        )
+        .await?;
+        app.reconcile().await?;
+        // Its transcript was read again: the watch knows that no turn is open.
+        wait_for(
+            "the transcript read again",
+            Duration::from_secs(30),
+            || async {
+                screen(&app, &id).contains("half a thought") && !app.claude_queue_holds(&id)
+            },
+        )
+        .await?;
+        let bounds = WatchBounds {
+            silent_after_ms: 1_000,
+            reconnect_gap_ms: 60_000,
+            ..WatchBounds::new(yulius_domain::time::Timestamp(0))
+        };
+        // Eleven minutes later (the run was spawned on the system's clock, so this one goes
+        // ahead of it).
+        clock.0.store(11 * MINUTE, Ordering::SeqCst);
+        assert!(app.watch_mcp(&bounds).await.is_empty());
+        assert_eq!(
+            support::attention(&app, id.as_str()).await?,
+            held_message_flag()
+        );
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// A running task whose person submitted "first" while its only subscription had no room, so
+/// the prompt is held at its submit, and then typed "more" behind it without sending it.
+async fn a_draft_behind_a_held_prompt(
+    app: &Arc<App>,
+    data: &Path,
+    probe: &ScriptedUsage,
+) -> Result<(TaskId, ProjectCaller), Error> {
+    let (id, caller) = running(app, data).await?;
+    wait_for("the first turn's end", Duration::from_secs(30), || async {
+        activity(app, &id).await.is_some_and(Activity::is_idle)
+    })
+    .await?;
+    probe.set("a-only", usage(99.0, 4 * HOUR, 30.0, 100));
+    refresh(app, &caller.user, "a-only").await?;
+    let (ctx, attach) = terminal(app, &caller, &id).await?;
+    app.terminal_input(&ctx, &attach, b"first", false).await?;
+    app.terminal_input(&ctx, &attach, b"\r", false).await?;
+    wait_for("the held prompt", Duration::from_secs(60), || async {
+        matches!(
+            app.deps.store.open_pause(&id).await,
+            Ok(Some(pause)) if pause.kind == yulius_app::model::PauseKind::Prompt
+        )
+    })
+    .await?;
+    app.terminal_input(&ctx, &attach, b"more", false).await?;
+    app.terminal_leave(&attach).await;
+    Ok((id, caller))
+}
+
+/// The subscription has room again and the held prompt goes on: the agent reads "first", without
+/// the "more" typed behind it.
+async fn the_held_prompt_goes_on(
+    app: &Arc<App>,
+    caller: &ProjectCaller,
+    id: &TaskId,
+    probe: &ScriptedUsage,
+) -> TestResult {
+    probe.set("a-only", usage(0.0, 5 * HOUR, 30.0, 100));
+    refresh(app, &caller.user, "a-only").await?;
+    let _ = app.resume_round().await;
+    let went_on = wait_for(
+        "the held prompt going on",
+        Duration::from_secs(20),
+        // The terminal's echo of "more" stands before the answer, on its line.
+        || async { screen(app, id).contains("moreECHO: first") },
+    )
+    .await;
+    let pause = app
+        .deps
+        .store
+        .open_pause(id)
+        .await
+        .map(|p| p.map(|p| p.kind));
+    let attempts = app.deps.store.attempts(id).await.map(|a| a.len());
+    went_on.map_err(|err| {
+        format!(
+            "{err}: pause {pause:?}, attempts {attempts:?}, screen:\n{}",
+            screen(app, id)
+        )
+        .into()
+    })
+}
+
+/// The draft "more" still keeps a message out of `id`, and its mark is in the run folder.
+async fn the_draft_behind_it_still_holds(
+    app: &Arc<App>,
+    data: &Path,
+    caller: &ProjectCaller,
+    id: &TaskId,
+) -> TestResult {
+    let Err(refused) = send(app, caller, id).await else {
+        wait_for("what the agent read", Duration::from_secs(30), || async {
+            screen(app, id).contains("ECHO: more")
+        })
+        .await?;
+        return Err(format!(
+            "the message was typed onto the draft behind the held prompt:\n{}",
+            screen(app, id)
+        )
+        .into());
+    };
+    assert!(
+        matches!(&refused, AppError::Conflict(why) if why.contains("prompt box")),
+        "{refused:?}"
+    );
+    let run_dir = app.deps.store.live_attempt(id).await?.ok_or("run")?.run_dir;
+    assert!(
+        Path::new(&run_dir).join("person-typed").exists(),
+        "the draft's mark left the run folder with the held prompt"
+    );
+    // Whatever reaches the agent shows within a second; nothing did.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let shown = screen(app, id);
+    assert!(!shown.contains("ECHO: more"), "{shown}");
+    assert!(audited(data, id)?.is_empty());
+    Ok(())
+}
+
+/// SPEC-480 AC9 (DRF-009; review round 2): what a person types behind a prompt that is held at
+/// its submit is a draft of its own. When the held prompt goes on, the box is empty as of its
+/// submit, not as of now: the draft still holds a message, and its mark stays in the run
+/// folder.
+#[test]
+fn a_draft_behind_a_held_prompt_keeps_its_mark_when_the_prompt_goes_on() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let (app, _) = start(&data, &fake, fake_agent(), 0, probe.clone()).await?;
+        let (id, caller) = a_draft_behind_a_held_prompt(&app, &data, &probe).await?;
+        the_held_prompt_goes_on(&app, &caller, &id, &probe).await?;
+        the_draft_behind_it_still_holds(&app, &data, &caller, &id).await?;
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-480 AC9 (DRF-009; review round 2): the same across a restart of the server while the
+/// prompt is held. The restarted server knows the draft from its mark alone and does not know
+/// that the prompt its hook client asks about again was submitted before the draft: it used
+/// to read that prompt as a new submit, which emptied the box, and typed behind the draft.
+/// A draft known from its mark alone stays one until a prompt follows a key this server saw.
+#[test]
+fn a_draft_behind_a_prompt_held_across_a_restart_still_keeps_the_message_out() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let first = runtime()?;
+    let (port, id, caller) = first.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let (app, port) = start(&data, &fake, fake_agent(), 0, probe.clone()).await?;
+        let (id, caller) = a_draft_behind_a_held_prompt(&app, &data, &probe).await?;
+        Ok::<_, Error>((port, id, caller))
+    })?;
+    first.shutdown_timeout(Duration::from_secs(5));
+
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let (app, _) = start(&data, &fake, fake_agent(), port, probe.clone()).await?;
+        app.reconcile().await?;
+        wait_for("the reattached screen", Duration::from_secs(30), || async {
+            screen(&app, &id).contains("more")
+        })
+        .await?;
+        the_held_prompt_goes_on(&app, &caller, &id, &probe).await?;
+        the_draft_behind_it_still_holds(&app, &data, &caller, &id).await?;
         stop(&app, &id).await
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
