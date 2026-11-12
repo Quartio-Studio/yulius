@@ -928,6 +928,10 @@ fn the_shipped_units_start_the_helper_on_the_request_file() {
     // real host).
     let unit_section = service.split("[Service]").next().unwrap_or_default();
     assert!(has(unit_section, "StartLimitIntervalSec=0"));
+    // A stop of the unit reaches the helper alone, which tells the command; systemd's default
+    // (every process of the unit at once) would end the step in flight under a command that
+    // has to finish a cutover it began.
+    assert!(has(service, "KillMode=mixed"));
     // The command reads the whole host and writes the proxy's configuration: nothing here
     // may hide the file system from it, and no list of targets is set for everyone.
     for line in service.lines().map(str::trim) {

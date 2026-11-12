@@ -2308,14 +2308,16 @@ Environment=HOME=/root
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 TimeoutStartSec=infinity
 TimeoutStopSec=10min
+KillMode=mixed
 UMask=0022
 ```
 
 The unit has no start timeout (a copy takes as long as the data needs) and no file system
 sandboxing: the command reads the whole host, writes the proxy's configuration and freezes units,
-as it does from a root shell. A stop of the unit, or a shutdown, reaches the command as SIGTERM:
-before the new instance's start is ordered it thaws the old instance and ends; after that it
-finishes the cutover, for which it has ten minutes. `StartLimitIntervalSec=0` keeps the helper
+as it does from a root shell. A stop of the unit, or a shutdown, reaches the helper alone
+(`KillMode=mixed`), which tells the command with SIGTERM: before the new instance's start is
+ordered it thaws the old instance and ends; after that it finishes the cutover, for which it has
+ten minutes. What is left of the unit's processes then is killed. `StartLimitIntervalSec=0` keeps the helper
 listening when requests come quickly: with systemd's default (5 starts in 10 s) a sixth request
 fails the path unit as well, and a failed path unit takes no request until root runs `systemctl
 reset-failed yulius-migrate.service yulius-migrate.path` and starts it again.

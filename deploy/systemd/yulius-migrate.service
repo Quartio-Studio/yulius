@@ -27,10 +27,13 @@ Environment=YULIUS_MIGRATE_UPDATE_SERVICE=yulius-update.service
 Environment=HOME=/root
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # A copy takes as long as the data needs: no bound on the run. A stop (or a shutdown) reaches the
-# command as SIGTERM: before the new instance's start is ordered it thaws the old one and ends;
-# after that it finishes the cutover, for which it gets ten minutes.
+# helper alone (KillMode=mixed), which tells the command: before the new instance's start is
+# ordered it thaws the old one and ends; after that it finishes the cutover, for which it gets
+# ten minutes. With systemd's default every process of the unit would be signalled at once, and
+# the step in flight (an ssh to the new host) would end under a cutover that has to finish.
 TimeoutStartSec=infinity
 TimeoutStopSec=10min
+KillMode=mixed
 # The command reads the whole host (its packages, units, proxy and firewall), writes the proxy's
 # configuration and freezes units, as it does from a root shell: no file system sandboxing here.
 UMask=0022
