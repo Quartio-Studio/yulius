@@ -86,10 +86,19 @@ async fn read_request(sock: &mut tokio::net::TcpStream) -> (String, String) {
     }
 }
 
-/// A stand-in for Claude's API on a local port. The usage endpoint refuses the sign-in, as it
-/// does for every `setup-token`; a messages request is answered by `answer(model)`, and only
-/// when it is the probe's: the stored credential as a bearer token and one output token.
+/// A stand-in for Claude's API on a local port whose usage endpoint refuses the sign-in, as it
+/// does for every `setup-token`.
 async fn claude(
+    answer: impl Fn(&str) -> String + Send + Sync + 'static,
+) -> Result<(String, Asked), Box<dyn std::error::Error>> {
+    claude_whose_usage_says(reply("403 Forbidden", &[], ""), answer).await
+}
+
+/// A stand-in for Claude's API on a local port. The usage endpoint answers `usage`; a messages
+/// request is answered by `answer(model)`, and only when it is the probe's: the stored
+/// credential as a bearer token and one output token.
+async fn claude_whose_usage_says(
+    usage: String,
     answer: impl Fn(&str) -> String + Send + Sync + 'static,
 ) -> Result<(String, Asked), Box<dyn std::error::Error>> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
@@ -101,7 +110,7 @@ async fn claude(
             let (head, body) = read_request(&mut sock).await;
             let response = if head.starts_with("GET /api/oauth/usage") {
                 note(&seen, "usage");
-                reply("403 Forbidden", &[], "")
+                usage.clone()
             } else if head.starts_with("POST /v1/messages") {
                 let request: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
                 let model = request["model"].as_str().unwrap_or("").to_owned();
@@ -301,13 +310,21 @@ async fn a_refresh_gives_a_limit_recorded_without_a_reset_its_reset() -> TestRes
     );
     assert_eq!(asked(&seen), ["usage", CHEAPEST, DEFAULT]);
 
-    // The background round's reading keeps the window now that it has a reset.
+    // The background round's reading keeps the window now that it has a reset, and asks
+    // nothing about it (RFR-007): no request with the default model.
+    h.clock
+        .0
+        .fetch_add(10 * 60_000, std::sync::atomic::Ordering::SeqCst);
     h.app
         .refresh_usage_round(&mut std::collections::HashMap::new())
         .await;
     assert_eq!(
         stored(&h, "a-blind").await?.weekly_fable,
         Some(full_week(Some(4_000_000_000_000)))
+    );
+    assert_eq!(
+        asked(&seen),
+        ["usage", CHEAPEST, DEFAULT, "usage", CHEAPEST]
     );
     Ok(())
 }
@@ -512,6 +529,162 @@ async fn another_models_window_is_asked_about_with_that_model() -> TestResult {
     );
     assert_eq!(refreshed.body["status"], "ok", "the default model runs");
     assert_eq!(asked(&seen), ["usage", CHEAPEST, "claude-opus-5-5"]);
+    Ok(())
+}
+
+/// RFR-004: a usage reading Claude will not give for now (the usage endpoint throttles and the
+/// cheapest model's request fails) does not stop the question about the limit: the default
+/// model answers, so the limit ends. The refresh still says that the usage was not read, with
+/// the wait Claude asked for, and stores no note for a throttle.
+#[tokio::test]
+async fn a_throttled_reading_still_asks_about_the_limit() -> TestResult {
+    let (base, seen) = claude_whose_usage_says(
+        reply("429 Too Many Requests", &[("retry-after", "120")], ""),
+        |model| {
+            if model == DEFAULT {
+                reply("200 OK", &[], "{}")
+            } else {
+                reply("500 Internal Server Error", &[], "")
+            }
+        },
+    )
+    .await?;
+    let h = harness_at(base).await?;
+    let admin = setup_superadmin_creds(&h).await?;
+    let in_two_days = h.app.now().0 + 2 * DAY_MS;
+    account(
+        &h,
+        "a-out",
+        &AccountUsage {
+            weekly_fable: Some(full_week(Some(in_two_days))),
+            ..AccountUsage::default()
+        },
+    )
+    .await?;
+    let refreshed = refresh(&h, &admin, "a-out").await?;
+    assert_eq!(
+        refreshed.status,
+        StatusCode::BAD_GATEWAY,
+        "{:?}",
+        refreshed.body
+    );
+    let said = refreshed.body.to_string();
+    assert!(
+        said.contains("Usage updates again in about 2 min."),
+        "{said}"
+    );
+    let record = h
+        .store
+        .account(&AccountId::parse("a-out")?)
+        .await?
+        .ok_or("the account")?;
+    assert_eq!(
+        yulius_app::accounts::account_usage(&record),
+        AccountUsage::default(),
+        "the limit ends, and nothing else was read"
+    );
+    assert_eq!(record.status, AccountStatus::Ok);
+    assert_eq!(record.last_error, None, "a throttle leaves no note");
+    assert_eq!(asked(&seen), ["usage", CHEAPEST, DEFAULT]);
+    Ok(())
+}
+
+/// RFR-004: a sign-in Claude refuses, or a usage request that fails, ends the refresh at
+/// once: nothing is asked about the limit with a sign-in that does not work, and the limit
+/// stays.
+#[tokio::test]
+async fn a_reading_that_fails_ends_the_refresh_before_any_question() -> TestResult {
+    for (usage, sentence) in [
+        (
+            "401 Unauthorized",
+            "Claude did not accept this subscription's sign-in. If its tasks fail too, sign in again.",
+        ),
+        (
+            "500 Internal Server Error",
+            "Usage could not be read just now; it updates again in a few minutes.",
+        ),
+    ] {
+        let (base, seen) = claude_whose_usage_says(reply(usage, &[], ""), |_| ran(&[])).await?;
+        let h = harness_at(base).await?;
+        let admin = setup_superadmin_creds(&h).await?;
+        let limited = AccountUsage {
+            weekly_fable: Some(full_week(Some(h.app.now().0 + 2 * DAY_MS))),
+            ..AccountUsage::default()
+        };
+        account(&h, "a-out", &limited).await?;
+        let refreshed = refresh(&h, &admin, "a-out").await?;
+        assert_eq!(refreshed.status, StatusCode::BAD_GATEWAY, "{usage}");
+        assert!(refreshed.body.to_string().contains(sentence), "{usage}");
+        assert_eq!(stored(&h, "a-out").await?, limited, "{usage}");
+        assert_eq!(asked(&seen), ["usage"], "{usage}");
+    }
+    Ok(())
+}
+
+/// A probe that cannot read usage and never answers a question about a model.
+struct NeverAnswers;
+
+#[async_trait]
+impl UsageProbe for NeverAnswers {
+    async fn fetch(&self, _: Provider, _: &Secret) -> Result<AccountUsage, UsageFailure> {
+        Err(UsageFailure::not_shared())
+    }
+
+    async fn model_answer(
+        &self,
+        _: Provider,
+        _: &Secret,
+        _: &str,
+    ) -> Result<ModelAnswer, UsageFailure> {
+        std::future::pending().await
+    }
+}
+
+/// RFR-003: a refresh has one deadline, shorter than the page waits for its answer. A
+/// question Claude never answers ends there with one sentence, kept as the usage note, and
+/// the limit stays as it was.
+#[tokio::test]
+async fn a_refresh_ends_at_its_deadline() -> TestResult {
+    let h = harness_with(HarnessOptions {
+        usage: Some(Arc::new(NeverAnswers)),
+        ..HarnessOptions::default()
+    })?;
+    let admin = setup_superadmin_creds(&h).await?;
+    assert_eq!(
+        yulius_app::accounts::USAGE_REFRESH_DEADLINE,
+        std::time::Duration::from_secs(25),
+        "under the 30 s the web client waits"
+    );
+    h.app
+        .set_usage_refresh_deadline(std::time::Duration::from_millis(300));
+    let limited = AccountUsage {
+        weekly_fable: Some(full_week(Some(h.app.now().0 + 2 * DAY_MS))),
+        ..AccountUsage::default()
+    };
+    account(&h, "a-slow", &limited).await?;
+    let refreshed = tokio::time::timeout(
+        std::time::Duration::from_secs(20),
+        refresh(&h, &admin, "a-slow"),
+    )
+    .await??;
+    assert_eq!(
+        refreshed.status,
+        StatusCode::BAD_GATEWAY,
+        "{:?}",
+        refreshed.body
+    );
+    let sentence = "Claude took too long to answer; what it had answered by then is stored.";
+    assert!(refreshed.body.to_string().contains(sentence));
+    let record = h
+        .store
+        .account(&AccountId::parse("a-slow")?)
+        .await?
+        .ok_or("the account")?;
+    assert_eq!(yulius_app::accounts::account_usage(&record), limited);
+    assert_eq!(
+        record.last_error.as_deref(),
+        Some(format!("usage: {sentence}").as_str())
+    );
     Ok(())
 }
 

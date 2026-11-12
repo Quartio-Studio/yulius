@@ -381,8 +381,8 @@ const DAY_MS: i64 = 24 * 60 * 60 * 1000;
 pub const USAGE_NOTE_PREFIX: &str = "usage: ";
 /// Back-off after a failed usage request that gave no `Retry-After` (ROT-009).
 pub const USAGE_BACKOFF_MS: i64 = 30 * 60 * 1000;
-/// A usage round skips a subscription read (by a session or the provider) this recently, when
-/// that reading has both of its windows ([`AccountUsage::has_both_windows`]).
+/// A usage round skips a subscription whose usage was read (by a session or the provider) this
+/// recently ([`AccountUsage::observed_at`]).
 pub const USAGE_FRESH_MS: i64 = 90 * 1000;
 /// Opening the subscriptions list asks for a usage round at most this often (F 2026-10-11:
 /// "usage should be updated more often + every time someone loads its screen").
@@ -395,6 +395,9 @@ pub const USAGE_NOT_SHARED_BACKOFF_MS: i64 = DAY_MS;
 pub const USAGE_READ_EVERY_MS: i64 = 5 * 60 * 1000;
 /// Longest back-off taken from a provider's `Retry-After`.
 pub const USAGE_BACKOFF_MAX_MS: i64 = 2 * 60 * 60 * 1000;
+/// The longest a refresh waits for the provider (SPEC-473 RFR-003): under the 30 s the web
+/// client waits for an answer, so the page always gets one.
+pub const USAGE_REFRESH_DEADLINE: Duration = Duration::from_secs(25);
 /// What a refresh says when the provider did not answer the question about a stored limit
 /// (SPEC-473 RFR-004).
 pub const LIMIT_UNASKED: &str =
@@ -532,6 +535,11 @@ impl App {
     pub fn set_account_login_token_grace(&self, grace: Duration) {
         let ms = u64::try_from(grace.as_millis()).unwrap_or(u64::MAX).max(1);
         self.logins.token_grace_ms.store(ms, Ordering::SeqCst);
+    }
+
+    /// Overrides [`USAGE_REFRESH_DEADLINE`] for this instance (tests).
+    pub fn set_usage_refresh_deadline(&self, deadline: Duration) {
+        let _ = deadline;
     }
 
     fn logins_dir(&self) -> PathBuf {
@@ -869,13 +877,12 @@ impl App {
             // A reading from moments ago needs no request. That covers a running session, which
             // reports as it works; a running task that is idle reports nothing, so its reading
             // ages and is asked for again (production, #4: a task in use is no reason to skip).
-            // A session may report one window only: the one it does not report, or one past
-            // its reset, is asked for however fresh the rest is (SPEC-473 RFR-006).
-            let usage = account_usage(account);
-            if usage.has_both_windows(now)
-                && usage
-                    .observed_at
-                    .is_some_and(|at| now.millis_since(at) < USAGE_FRESH_MS)
+            // A session that reports one window only does not make the reading fresh
+            // (`App::session_usage`), so what it does not report is asked for (SPEC-473
+            // RFR-006).
+            if account_usage(account)
+                .observed_at
+                .is_some_and(|at| now.millis_since(at) < USAGE_FRESH_MS)
             {
                 continue;
             }

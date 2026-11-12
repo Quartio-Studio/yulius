@@ -185,9 +185,6 @@ pub struct ModelAnswer {
     pub five_hour: Option<UsageWindow>,
     /// The weekly window as the answer read it, when it carried one.
     pub seven_day: Option<UsageWindow>,
-    /// The model's weekly allowance of usage credits as the answer read it, when it carried
-    /// one.
-    pub allowance: Option<UsageWindow>,
 }
 
 /// An account's latest usage snapshot. `Default` is "nothing known".
@@ -211,7 +208,10 @@ pub struct AccountUsage {
     pub limit_reached: bool,
     /// When the reached limit resets; `None` when unknown.
     pub limit_resets_at: Option<Timestamp>,
-    /// When this snapshot was observed; `None` when unknown.
+    /// When the subscription's own windows were last read: by the provider, by a session
+    /// whose reading carried both, or with an answer about a model that carried both
+    /// (SPEC-473 RFR-009). A limit Claude reports and a reading of one window change what is
+    /// stored without being a reading of the usage. `None` when it was never read.
     pub observed_at: Option<Timestamp>,
 }
 
@@ -265,8 +265,8 @@ impl AccountUsage {
     ///   windows untouched.
     ///
     /// The reset is the one the report says believably ([`ReportedLimit::believed_reset`]).
+    /// A reported limit is not a reading of the usage: [`Self::observed_at`] stays.
     pub fn record_limit(&mut self, limit: ReportedLimit, family: ModelFamily, now: Timestamp) {
-        self.observed_at = Some(now);
         let resets_at = limit.believed_reset(now);
         let full = |minutes: u32| UsageWindow {
             used_percent: Some(100.0),
@@ -295,12 +295,13 @@ impl AccountUsage {
 
     /// Records Claude's answer at `now` to a request of a model of `family`, asked to learn
     /// whether a limit stored for that model still holds (SPEC-473). The 5-hour and weekly
-    /// windows the answer carried replace the stored ones, like any reading.
+    /// windows the answer carried replace the stored ones, and an answer that carried both is
+    /// a reading of the usage ([`Self::observed_at`]).
     ///
-    /// - The model ran: a limit of the subscription ends, and the family's own window becomes
-    ///   the allowance the answer read while that is below 100 %, else nothing. A model that
-    ///   runs with its allowance used up runs on usage credits a person bought, and a window
-    ///   stored full would keep it off the subscription until the allowance resets.
+    /// - The model ran: a limit of the subscription ends, and so does the family's own
+    ///   window. Nothing is stored in its place, whatever the answer says of the model's
+    ///   allowance: a model that runs with its allowance used up runs on usage credits a
+    ///   person bought, and no reading would replace a window stored below its limit.
     /// - It was refused: recorded like a limit a session reports ([`Self::record_limit`]), so
     ///   a window stored without a reset gets the one the answer names. An answer that names
     ///   no believable reset keeps the one stored for the window it fills, while that is
@@ -311,16 +312,16 @@ impl AccountUsage {
         family: ModelFamily,
         now: Timestamp,
     ) {
-        self.observed_at = Some(now);
+        if answer.five_hour.is_some() && answer.seven_day.is_some() {
+            self.observed_at = Some(now);
+        }
         self.primary = answer.five_hour.or(self.primary);
         self.secondary = answer.seven_day.or(self.secondary);
         let Some(limit) = answer.refused else {
             self.limit_reached = false;
             self.limit_resets_at = None;
             if let Some(slot) = self.model_slot(family) {
-                *slot = answer
-                    .allowance
-                    .filter(|w| w.known_percent().is_some_and(|p| p < FULL_PERCENT));
+                *slot = None;
             }
             return;
         };
@@ -440,18 +441,6 @@ impl AccountUsage {
 
     fn windows(&self) -> impl Iterator<Item = &UsageWindow> {
         self.binding_windows(ModelFamily::Any)
-    }
-
-    /// Whether both of the subscription's own windows are read and current at `now`: the
-    /// 5-hour and the weekly one are there, and neither is past its reset. A session's reading
-    /// may carry one of them only (Claude Code's status line has a window only while the API
-    /// reports it and its reset has not passed), which leaves the other for a provider's
-    /// reading (SPEC-473 RFR-006).
-    #[must_use]
-    pub fn has_both_windows(&self, now: Timestamp) -> bool {
-        [self.primary, self.secondary]
-            .iter()
-            .all(|window| window.is_some_and(|w| !w.is_reset(now)))
     }
 
     /// Highest reported window percentage, ignoring reset times; `None` when no window
@@ -678,8 +667,10 @@ mod tests {
     #[test]
     fn a_models_limit_is_its_own_window() {
         let week = window(Some(61.0), Some(9_000_000));
+        let read = Some(Timestamp(900_000));
         let mut usage = AccountUsage {
             secondary: Some(week),
+            observed_at: read,
             ..AccountUsage::default()
         };
         // The family the report names wins over the one the session runs.
@@ -699,7 +690,10 @@ mod tests {
         assert_eq!(usage.secondary, Some(week), "the week keeps its reading");
         assert_eq!(usage.weekly_opus, None);
         assert!(!usage.limit_reached && !usage.limit_in_effect(NOW));
-        assert_eq!(usage.observed_at, Some(NOW));
+        assert_eq!(
+            usage.observed_at, read,
+            "a reported limit is not a reading of the usage (SPEC-473 RFR-009)"
+        );
         assert!(usage.exhausted_for(NOW, 98.0, ModelFamily::Fable));
         assert!(!usage.exhausted_for(NOW, 98.0, ModelFamily::Opus));
         assert!(!usage.exhausted(NOW, 98.0));
@@ -1005,72 +999,43 @@ mod tests {
         }
     }
 
-    fn ran(allowance: Option<UsageWindow>) -> ModelAnswer {
-        ModelAnswer {
-            allowance,
-            ..ModelAnswer::default()
-        }
-    }
-
     /// SPEC-473 RFR-002: Claude's answer to a request of a model ends the limit stored for that
-    /// model when the model ran, also with its allowance used up (it runs on credits a person
-    /// bought), and stores an allowance read ahead of the limit.
+    /// model when the model ran. Nothing is stored in its place: the model may run on credits
+    /// a person bought with its allowance used up, and a window stored just below its limit
+    /// would keep the pool away with no reading to replace it.
     #[test]
     fn a_model_that_ran_ends_the_limit_stored_for_it() {
         let fable = ModelFamily::Fable;
         let week = window(Some(61.0), Some(9_000_000));
+        let read = Some(Timestamp(900_000));
         let stored = AccountUsage {
             secondary: Some(week),
             weekly_fable: Some(full_week(Some(5_000_000))),
             weekly_opus: Some(full_week(Some(6_000_000))),
             limit_reached: true,
             limit_resets_at: Some(Timestamp(7_000_000)),
+            observed_at: read,
             ..AccountUsage::default()
         };
 
         let mut usage = stored;
-        usage.record_model_answer(ran(None), fable, NOW);
+        usage.record_model_answer(ModelAnswer::default(), fable, NOW);
         assert_eq!(usage.weekly_fable, None, "the model's limit ends");
         assert!(!usage.limit_reached, "and a limit of the subscription");
         assert_eq!(usage.limit_resets_at, None);
-        assert_eq!(usage.observed_at, Some(NOW));
         assert_eq!(usage.secondary, Some(week), "what it did not read stays");
         assert_eq!(
             usage.weekly_opus, stored.weekly_opus,
             "another model's limit is not this answer's"
         );
         assert!(!usage.exhausted_for(NOW, 98.0, fable));
+        assert_eq!(
+            usage.observed_at, read,
+            "an answer without the windows is no reading of the usage"
+        );
 
-        // The allowance the answer read, ahead of the limit: stored like any reading.
-        let ahead = UsageWindow {
-            used_percent: Some(42.0),
-            window_minutes: Some(WEEKLY_WINDOW_MINUTES),
-            resets_at: Some(Timestamp(8_000_000)),
-        };
-        let mut usage = stored;
-        usage.record_model_answer(ran(Some(ahead)), fable, NOW);
-        assert_eq!(usage.weekly_fable, Some(ahead));
-
-        // Used up and the model ran all the same: nothing is stored, or the model would stay
-        // off the subscription until the allowance resets.
-        for percent in [100.0, 130.0] {
-            let mut usage = stored;
-            let out = UsageWindow {
-                used_percent: Some(percent),
-                ..ahead
-            };
-            usage.record_model_answer(ran(Some(out)), fable, NOW);
-            assert_eq!(usage.weekly_fable, None, "{percent}");
-        }
-        let mut usage = stored;
-        let unknown = UsageWindow {
-            used_percent: None,
-            ..ahead
-        };
-        usage.record_model_answer(ran(Some(unknown)), fable, NOW);
-        assert_eq!(usage.weekly_fable, None, "an unread allowance is none");
-
-        // The windows of the subscription the answer carried are a reading like any other.
+        // The windows of the subscription the answer carried replace the stored ones, and an
+        // answer that carried both is a reading of the usage; one window alone is not.
         let five = window(Some(12.0), Some(2_000_000));
         let seven = window(Some(70.0), Some(9_500_000));
         let mut usage = stored;
@@ -1084,10 +1049,27 @@ mod tests {
             NOW,
         );
         assert_eq!((usage.primary, usage.secondary), (Some(five), Some(seven)));
+        assert_eq!(usage.observed_at, Some(NOW));
+        for one in [
+            ModelAnswer {
+                five_hour: Some(five),
+                ..ModelAnswer::default()
+            },
+            ModelAnswer {
+                seven_day: Some(seven),
+                ..ModelAnswer::default()
+            },
+        ] {
+            let mut usage = stored;
+            usage.record_model_answer(one, fable, NOW);
+            assert_eq!(usage.observed_at, read, "{one:?}");
+            assert_eq!(usage.primary, one.five_hour);
+            assert_eq!(usage.secondary, one.seven_day.or(stored.secondary));
+        }
 
         // A family without a window of its own: only the subscription's limit ends.
         let mut usage = stored;
-        usage.record_model_answer(ran(Some(ahead)), ModelFamily::Any, NOW);
+        usage.record_model_answer(ModelAnswer::default(), ModelFamily::Any, NOW);
         assert!(!usage.limit_reached);
         assert_eq!(usage.weekly_fable, stored.weekly_fable);
     }
@@ -1119,7 +1101,10 @@ mod tests {
         );
         assert_eq!(blind.weekly_fable, Some(full_week(Some(5_000_000))));
         assert!(!blind.limit_reached, "still only that model's");
-        assert_eq!(blind.observed_at, Some(NOW));
+        assert_eq!(
+            blind.observed_at, None,
+            "a refusal is no reading of the usage"
+        );
 
         // No reset in the answer: the stored one stays, and a newer one replaces it.
         let mut dated = AccountUsage {

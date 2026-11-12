@@ -181,8 +181,7 @@ fn header_time(headers: &reqwest::header::HeaderMap, name: &str) -> Option<Times
 }
 
 /// One window of Claude's `anthropic-ratelimit-unified-{key}-{utilization,reset}` headers:
-/// utilization is a fraction (0.37 = 37 %), reset is Unix seconds. `key` is `5h`, `7d`, or
-/// `7d_oi` for a model's weekly allowance of usage credits, as Claude Code 2.1.322 reads them.
+/// utilization is a fraction (0.37 = 37 %), reset is Unix seconds. `key` is `5h` or `7d`.
 fn header_window(
     headers: &reqwest::header::HeaderMap,
     key: &str,
@@ -233,7 +232,9 @@ fn credits_required(body: &[u8]) -> bool {
 /// (`anthropic-ratelimit-unified-representative-claim`) or by a body that asks for usage
 /// credits; the limit's reset is `anthropic-ratelimit-unified-reset`, and for a model's own
 /// limit that names none, the reset of its allowance (`7d_oi-reset`). A 429 that names no limit
-/// is a throttle. The windows the headers carry are read in either case.
+/// is a throttle. The 5-hour and weekly windows the headers carry are read in either case.
+/// The utilization of the model's allowance (`7d_oi-utilization`) is not: a model that ran
+/// has no limit to store, whatever its allowance reads ([`AccountUsage::record_model_answer`]).
 ///
 /// # Errors
 /// What is no answer about the limit: a throttle, a refused sign-in (HTTP 401), any other
@@ -247,7 +248,6 @@ pub fn parse_model_answer(
         refused: None,
         five_hour: header_window(headers, "5h", SESSION_WINDOW_MINUTES),
         seven_day: header_window(headers, "7d", WEEKLY_WINDOW_MINUTES),
-        allowance: header_window(headers, "7d_oi", WEEKLY_WINDOW_MINUTES),
     };
     match status {
         200..=299 => Ok(answer),
@@ -393,7 +393,13 @@ impl UsageProbe for ProviderUsage {
                 } else {
                     &body[..]
                 };
-                parse_model_answer(status, &headers, body)
+                parse_model_answer(status, &headers, body).inspect_err(|failure| {
+                    tracing::debug!(
+                        status,
+                        kind = ?failure.kind,
+                        "a question about a model's limit got no answer"
+                    );
+                })
             }
         }
     }
@@ -491,12 +497,11 @@ mod tests {
     const ALLOWANCE_RESET: &str = "anthropic-ratelimit-unified-7d_oi-reset";
     const CREDITS_BODY: &[u8] = br#"{"type":"error","error":{"type":"rate_limit_error","message":"credits","details":{"error_code":"credits_required","disabled_reason":"out_of_credits"}}}"#;
 
-    /// SPEC-473 RFR-001: a model that ran says so by the response's status, with the windows
-    /// its headers carry: the 5-hour and weekly ones, and the model's weekly allowance of
-    /// usage credits (`7d_oi`, which only that model's responses carry).
+    /// SPEC-473 RFR-001: a model that ran says so by the response's status, with the 5-hour
+    /// and weekly windows its headers carry. What they say of the model's allowance (`7d_oi`)
+    /// is not read: a model that ran has no limit to store.
     #[test]
-    fn a_model_that_ran_is_read_with_its_allowance() -> Result<(), String> {
-        use yulius_domain::time::Timestamp;
+    fn a_model_that_ran_is_read_with_the_windows_of_its_answer() -> Result<(), String> {
         let answer = parse_model_answer(
             200,
             &headers(&[
@@ -511,28 +516,30 @@ mod tests {
         )
         .map_err(|f| f.message)?;
         assert_eq!(answer.refused, None);
-        assert_eq!(answer.five_hour.and_then(|w| w.used_percent), Some(25.0));
-        assert_eq!(answer.seven_day.and_then(|w| w.used_percent), Some(50.0));
-        let allowance = answer.allowance.ok_or("the allowance")?;
-        assert!((allowance.used_percent.ok_or("percent")? - 42.0).abs() < 1e-9);
-        assert_eq!(allowance.window_minutes, Some(7 * 24 * 60));
-        assert_eq!(allowance.resets_at, Some(Timestamp(1_790_600_000_000)));
+        let five = answer.five_hour.ok_or("the 5-hour window")?;
+        assert_eq!(five.used_percent, Some(25.0));
+        assert_eq!(five.window_minutes, Some(300));
+        assert_eq!(five.resets_at, Some(Timestamp(1_790_000_000_000)));
+        let seven = answer.seven_day.ok_or("the weekly window")?;
+        assert_eq!(seven.used_percent, Some(50.0));
+        assert_eq!(seven.window_minutes, Some(7 * 24 * 60));
+        assert_eq!(seven.resets_at, None);
 
-        // A response that ran on usage credits beyond the plan says `rejected` in its headers:
-        // the status of the response is what says the model ran.
+        // A response that ran on usage credits beyond the plan says `rejected` in its headers
+        // and still names a claim: the status of the response is what says the model ran.
         let overage = parse_model_answer(
             201,
             &headers(&[
                 ("anthropic-ratelimit-unified-status", "rejected"),
                 ("anthropic-ratelimit-unified-overage-status", "allowed"),
                 (CLAIM, "seven_day_overage_included"),
+                (RESET, "1790000000"),
                 ("anthropic-ratelimit-unified-7d_oi-utilization", "1.0"),
             ]),
             CREDITS_BODY,
         )
         .map_err(|f| f.message)?;
-        assert_eq!(overage.refused, None);
-        assert_eq!(overage.allowance.and_then(|w| w.used_percent), Some(100.0));
+        assert_eq!(overage, ModelAnswer::default());
 
         // No headers at all: the model ran, and nothing was read.
         assert_eq!(
@@ -547,8 +554,7 @@ mod tests {
     /// only the allowance's own reset says when the model runs again.
     #[test]
     fn a_refused_model_is_read_with_its_claim_and_reset() -> Result<(), String> {
-        use yulius_domain::time::Timestamp;
-        use yulius_domain::usage::{LimitScope, ModelFamily, ReportedLimit};
+        use yulius_domain::usage::ModelFamily;
         let refused = |pairs: &[(&'static str, &'static str)], body: &[u8]| {
             parse_model_answer(429, &headers(pairs), body)
                 .map_err(|f| f.message)?
@@ -656,13 +662,13 @@ mod tests {
             &headers(&[
                 (CLAIM, "seven_day_overage_included"),
                 ("anthropic-ratelimit-unified-5h-utilization", "0.3"),
-                ("anthropic-ratelimit-unified-7d_oi-utilization", "1"),
+                ("anthropic-ratelimit-unified-7d-utilization", "0.7"),
             ]),
             b"",
         )
         .map_err(|f| f.message)?;
         assert_eq!(answer.five_hour.and_then(|w| w.used_percent), Some(30.0));
-        assert_eq!(answer.allowance.and_then(|w| w.used_percent), Some(100.0));
+        assert_eq!(answer.seven_day.and_then(|w| w.used_percent), Some(70.0));
         Ok(())
     }
 
