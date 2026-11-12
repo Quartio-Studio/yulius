@@ -1577,7 +1577,9 @@ restorable attributes. Only when they are equal is the copy marked and the new i
 (`host setup`'s remaining items, `systemctl enable` and `start`, then it must report the old
 host's build). Until that start any failure, Ctrl-C or SIGTERM thaws the old instance, which runs
 on as before, and the copy on the new host stays marked unfinished (the next run removes it and
-copies again). Once the start is ordered nothing thaws the old instance by itself, not a signal
+copies again); an instance that systemd does not report frozen as a whole right after the
+freeze is thawed too, before anything is copied, and the line says what systemd said (the
+server's unit does not run, a unit of it runs unfrozen, or no answer). Once the start is ordered nothing thaws the old instance by itself, not a signal
 and not a lost terminal. If the new instance does not come up, it is stopped and disabled, and
 only then is the old one thawed; the copy there was started and must be removed (`rm -rf` the
 data directory on the new host) before the next run. If the new host stops answering at that
@@ -1601,7 +1603,10 @@ more (`ok` when GitHub accepts the callback by now, else the link and the values
 still holds a frozen copy with `master.key` and every secret. On the new instance, Settings →
 Instance → Address then shows where it came from, when, what its first start did with the tasks,
 and whether GitHub accepts the new address (the note about the move is read from
-`<data>/moved.json`; remove the file to drop it).
+`<data>/moved.json`; remove the file to drop it). A later run that finds the key already deleted
+on the old host (the finish was done and only its record was lost) records the finish and says
+so, whether or not the new host answers; it asks the new host nothing more, so the GitHub App is
+named with its link and values as in the plan.
 
 **Abort.** `sudo yulius instance migrate --abort` on the old host stops and disables the new
 instance (through the key while the move is not finished; afterwards the key is gone: stop it
@@ -1615,10 +1620,33 @@ Laptops whose `yulius remote` had already followed the move point at the stopped
 commands say where the sign-in came from, and `yulius remote login <old URL>` signs in there
 again, with a token ([remote control](remote-control.md#2-connect-your-agent)).
 
-A run that hangs after the start was ordered ignores Ctrl-C on purpose (it must not thaw the old
-instance beside a new one). End it with `kill -9`, then run the same command again (it decides
-from the new instance's state) or `--abort`: a start still in flight on the new host finds the
-abort's stop and starts nothing.
+The run that ordered the start ignores Ctrl-C, SIGTERM and a lost terminal from then on, on
+purpose (it must not thaw the old instance beside a new one). If it hangs, end it with `kill -9`,
+then run the same command again or `--abort`: a start still in flight on the new host finds the
+abort's stop and starts nothing. A run that goes on from a recorded start watches no signal:
+Ctrl-C ends it at once and thaws nothing (also when it had just frozen a unit of the old
+instance again), and the same command goes on again.
+
+The same command after a run that ended there plans and copies nothing; the new instance's state
+decides. A new host that cannot be reached is waited for: the run fails saying so, touches
+nothing and asks for no key again (only a key that is missing on the old host or refused by the
+new one is added anew). With the old instance still frozen as a whole (the server's unit and its
+sessions unit) the run orders the start again and goes on as above. With a unit of it no longer
+frozen it starts nothing and only asks the new instance. When that reports the build, the move
+stands: whatever unit of the old instance runs (thawed or started by hand) is frozen again, to
+stay, the server's unit is disabled, and the checklist names the units that ran beside the new
+instance (what their agents did meanwhile is on the old host only). If a unit cannot be frozen,
+that is a `FAIL` line with the reason, the two commands to run and, for a freeze that keeps
+failing, the commands that stop the old instance for good (`systemctl stop` and `systemctl kill
+--kill-whom=all --signal=SIGKILL` of both units); nothing is thawed then either, and a freeze
+that did not complete within a minute is left on its way. A server's unit that has stopped
+(`inactive` or `failed`) is not frozen by systemd: its sessions unit is frozen where it still
+runs, and both are named for you to make sure nothing of the old instance is left. A server's
+unit that systemd reports on its way up or down is not taken for stopped (a sessions unit that
+is being stopped counts as ended). A unit that was frozen is named also when the other could not
+be. When the new instance answers
+and does not run, `--abort` is the way back; when the new host does not answer the question,
+nothing is touched and the same command asks again once it does.
 
 Not part of a move: packages installed inside sandboxes keep their files; on another release the
 checklist names those sandboxes. The sandbox base is built for the new host while preparing, so
@@ -1656,7 +1684,9 @@ yulius-sandboxes.service yulius.service`. `--move` keeps the old instance
 frozen and disables its unit after a successful export, so it never runs beside the new one (both
 would run the same agents against the same repositories); undo with `sudo systemctl thaw
 yulius.service yulius-sandboxes.service && sudo systemctl enable yulius.service`. Left out, because the new host makes its
-own: `system/` (the sandbox base), `runtime/`, `update/`, `claude-code/` (Claude Code for this host's platform, downloaded again), `yulius.db-shm`, sockets and FIFOs. It is
+own: `system/` (the sandbox base), `runtime/`, `update/`, `claude-code/` (Claude Code for this host's platform, downloaded again), `yulius.db-shm`, sockets and FIFOs, and a
+`.yulius-limits-adapt` the instance still holds from an import of its own (every import writes
+that mark anew, below). It is
 refused (exit 2, nothing frozen) while the update helper runs (checked again once frozen and
 before the copy's checksum), from a Yulius terminal (it would freeze itself), and while the
 service is stopped but its agents still run (start it first).

@@ -4,7 +4,9 @@
 
 Accepted. Specified in [SPEC-333](../../.ai/specs/SPEC-333-this-api-error-should-trigger-retry-and.md);
 task #317, issue #927. Refines [ADR-0212](0212-a-turn-whose-stop-yulius-never-answered-settles-at-its-record.md)
-for the turns Claude Code retries.
+for the turns Claude Code retries. Refined by
+[0304](0304-a-request-yulius-opens-for-a-goal-pause-ends-when-the-agent-works-again.md): the
+request also ends when the session's agent works again.
 
 ## Context
 
