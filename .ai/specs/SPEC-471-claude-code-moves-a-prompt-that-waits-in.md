@@ -32,10 +32,12 @@ What Claude Code does, seen with the installed 2.1.322 run in a PTY against a lo
 model API (hooks that log their time and what the transcript holds at that moment; Evidence
 lists the runs):
 
-- A prompt entered while a turn runs gets its `UserPromptSubmit` hook 11 to 37 ms after its
-  Enter. When the hook returned, Claude Code writes a `queue-operation` record `enqueue` with
-  the text. A record reaches the transcript file about 100 ms after it was made, so the record
-  is not in the file while the prompt's own hook runs.
+- A prompt entered while a turn runs gets its `UserPromptSubmit` hook 5 to 15 ms after its
+  Enter (a hook that only logs has answered 31 to 43 ms after the Enter, which is what issue
+  #1204's "23 to 33 ms" measured). When the hook returned, Claude Code writes a
+  `queue-operation` record `enqueue` with the text, also when the hook took seconds. A record
+  reaches the transcript file about 100 ms after it was made, so the record is not in the file
+  while the prompt's own hook runs.
 - In a turn with tool calls a waiting prompt is taken into the running turn at the next tool
   result: a `remove` record (reason `absorbed_mid_turn`, with the text) and an `attachment`
   record `queued_command`; the model reads the prompt inside the tool result. No further hook,
@@ -54,8 +56,9 @@ lists the runs):
   and `popOne`. The records carry `timestamp` and `sessionId`, no `version` and no
   `isSidechain`; they are in the session's own file.
 
-What this instance's real sessions show (1,585 transcript files, 415 with queue records;
-counted by scripts, metadata only): 5,252 `enqueue`, 3,939 `dequeue`, 1,297 `remove` (1,270
+What this instance's real sessions showed before the design (1,585 transcript files, sub-agents'
+included, 415 with queue records; counted by scripts, metadata only; the files change by the
+hour, and Evidence has the figures of the watcher's own code over a later set): 5,252 `enqueue`, 3,939 `dequeue`, 1,297 `remove` (1,270
 `absorbed_mid_turn`, 26 `delivered_to_agent`, 1 `dropped_by_hook`). Claude Code queues its own
 task notifications too (in an idle session an `enqueue` and a `dequeue` 30 ms apart, then a
 `user` record with `promptSource: "system"`). The count never goes below zero. Counted over a
@@ -83,7 +86,7 @@ Where things are in Yulius:
 | ID | Requirement |
 | --- | --- |
 | CCQ-001 | **Yulius knows what waits in Claude Code's queue.** The watcher reads the `queue-operation` records of the run at hand: `enqueue` adds an entry, `dequeue` hands one on to a turn of its own, `remove`, `popAll` and `popOne` take one out without one. The count never goes below zero and an operation Yulius does not know changes nothing. A run starts with an empty queue: a resumed session's earlier lines are not read as the run's, and what the run before left waiting went with its process. A run reattached after a restart of the server knows the same from its own lines. |
-| CCQ-002 | **A session with something in its queue is not restarted for a newer Claude Code**, at a Stop the gate blocks or a goal session works on, and idle after a clean Stop. Every entry counts: a person's prompt, a message Yulius typed, Claude Code's own notification. The session moves at a later turn's end, once the queue is empty, or at its next start. A prompt taken into the running turn at a tool result is no longer waiting. The queue is asked after the turn end read the turn's lines, not in its first cheap check: a count the watcher has not caught up with decides nothing. |
+| CCQ-002 | **A session with something in its queue is not restarted for a newer Claude Code**, at a Stop the gate blocks or a goal session works on, and idle after a clean Stop. Every entry counts: a person's prompt, a message Yulius typed, Claude Code's own notification. The session moves at a later turn's end, once the queue is empty, or at its next start. A prompt taken into the running turn at a tool result is no longer waiting. The queue is asked once the turn's end read the turn's lines. |
 | CCQ-003 | **A hand-over is not rest.** From a `dequeue` until the prompt record of the turn it starts was read, the session counts as holding that entry: between the two its queue reads empty while the turn that took the prompt is not known yet. |
 | CCQ-004 | **A prompt that just went on keeps the session.** Claude Code writes where a prompt went (a turn of its own, or its queue) once the prompt's hook returned, and the record reaches the file a moment later. A turn's end less than `claude_code_queue_record_ms` (1 s by default) after a prompt from the prompt box went on leaves the session where it is, and so does one during whose look at the session such a prompt goes on: the record may not be in the lines read. The session moves at a later turn's end. Claude Code's own wake-ups come through no prompt box and change nothing here. |
 | CCQ-005 | **The fake agent can queue prompts as Claude Code does** (`--queue-prompts`): a line entered while an echoed turn runs gets its prompt hook at once and an `enqueue` record; a Stop that is blocked releases nothing and the turn goes on to another Stop; after the Stop that ends the turn all waiting lines are handed on with one `dequeue` each and answered in one turn, each with its `user` record (`promptSource: "queued"`), with no further prompt hook. Tests can hold the record of a waiting line, the hand-over and the start of the handed-on turn. Without the option the agent is as before. |
@@ -97,7 +100,7 @@ Where things are in Yulius:
 - [x] A turn's end leaves a session with a waiting prompt where it is: the gate's block and the clean Stop (CCQ-002)
 - [x] A hand-over counts until its turn shows, and a prompt that just went on is waited for (CCQ-003, CCQ-004)
 - [x] SPEC-461, SPEC-468, ADR-0293, the guides and the changes log say so (CCQ-006)
-- [ ] Mutation checks, gate and the whole e2e suite green, evidence recorded
+- [x] Mutation checks, gate and the whole e2e suite green, evidence recorded
 - [ ] Independent review answered
 
 ## Acceptance criteria
@@ -202,8 +205,14 @@ Where things are in Yulius:
   version until its next start (stop and continue moves it at once), and the card lists it.
   Nothing is lost by that.
 - **The count is not asked in the cheap first check.** The watcher reads once a second, so at
-  a Stop that follows a hand-over by less than that the count still names the entry that was
-  just handed on. The careful look reads the turn's lines first and asks then.
+  a Stop that follows a hand-over or a take-in by less than that the count still names the
+  entry that just left the queue. The careful look reads the turn's lines first and asks
+  then, so such a session moves at that turn's end and not one turn later. No test tells this
+  from asking in both checks (Evidence, the mutant that survived): the two differ only in
+  that second, which cannot be arranged without holding the watcher, and asking in both would
+  err toward staying. The price is the look itself (one round of the watcher, up to two
+  seconds inside the Stop's request) at each turn's end of a session that is due to move and
+  has a prompt waiting.
 - **A hand-over is kept until the prompt record of its turn.** The `dequeue` and the `user`
   record are written some 10 ms apart, usually in one write; between them the queue is empty
   and no turn shows. Only the prompt record ends it: the ended turn's own late lines (its
@@ -244,3 +253,88 @@ Where things are in Yulius:
   restart of the server CCQ-004 knows no earlier prompt. A run reattached then knows its queue
   once its lines were read again, a moment after the server started.
 - **ADR-0293 is amended in place**, as SPEC-468 did: the rule refines that decision.
+
+## Evidence
+
+- **The real tool, before the design** (2026-11-12, the installed Claude Code 2.1.322 in a PTY,
+  its own home and config directory, `ANTHROPIC_BASE_URL` at a local stub of the Messages API
+  that streams text or answers with a `tool_use`, hooks that log their time and the queue
+  records the transcript holds at that moment, a tail that logs when each record reaches the
+  file; no account, nothing leaves the host). Ten scenarios, each run once or twice:
+  `one-queued`, `two-queued`, `tool-queued` (a prompt entered while a tool runs),
+  `tool-two-queued`, `tool-late-queued` (after the last tool result), `stop-block-tool-queued`
+  (the Stop blocked once), `pop-up` (Up arrow), `pop-esc` (Escape), `held-stop-kill-resume`
+  (the Stop held, SIGTERM, `claude --resume`), `slow-hook-queued` (a prompt hook that answers
+  after 6 s: its `enqueue` is made 2 ms after the hook returned, not before). Context states
+  what they showed. Over all runs the hook of a prompt entered while a turn ran began 5 to
+  15 ms after its Enter (11 prompts), and a queue record reached the file 67 to 108 ms after
+  its own time (21 records). The scripts are not in the repository (they drive
+  a local install); the record shapes they produced are the fixtures of
+  `queue_records_are_changes_of_the_queue`.
+- **The watcher's own code over real transcripts, after the change** (a throwaway `#[ignore]`
+  test, removed again: `HarnessAdapter::watch` from the start of each file, every observation
+  folded with `TranscriptFacts::fold`):
+  - the probe's transcripts (ten files of nine scenarios, the ones run by then) read as the
+    scenarios ran: `one-queued` is prompt, `enqueue`
+    (1 waits), `dequeue` (0 wait, handed on), the ended turn's `turn_duration` (still handed
+    on), the queued prompt (nothing held); `pop-esc` keeps the hand-over through the
+    interrupted turn's line; `tool-queued` and `pop-up` end with nothing held after their
+    `remove` and `popAll`; `held-stop-kill-resume` ends with one entry waiting, which is the
+    record a resumed run does not read;
+  - 417 session files of this instance (2026-11-12, counts only): 408 hold queue records,
+    5,014 `enqueue`, 3,744 `dequeue`, 1,254 `remove`; a direct count of the same files gives
+    the same three numbers, so the watcher reads every one. No removal ever came with nothing
+    counted. Most entries waiting at once: 6. Of 4,252 turn ends, 41 came just after a
+    hand-over (something had waited through that turn's Stop), 47 with an entry still counted
+    (in 12 sessions) and 4 with both. Files are read whole here, with no reset at a restart,
+    so the 47 include what a restarted process left behind. 14 files end with the queue
+    holding something.
+  - by the Claude Code version that wrote them: 2.1.292 (360 sessions), 2.1.311 (32) and
+    2.1.322 (18) write the same records with the same fields (`operation`, `sessionId`,
+    `timestamp`, the text, and for `remove` its `reason` and ids). Only 2.1.322 was run.
+- **Tests, each seen failing first.** Without the rule (logs kept outside the repository):
+  the four tests in Claude Code's order failed with "the session was restarted with a prompt
+  in its queue" and "with 1 in its queue", "with 2 in its queue" (AC2 to AC5); the three tests
+  of CCQ-004 failed before it was built (AC7); the domain, harness, fold and runtime tests
+  failed against stubs (AC1); two of the fake agent's three tests failed on the unknown
+  option, and the third, which pins the old order without the option, passes with and without
+  the change (AC8).
+  The hand-over's test (AC6) passed when written, since the count already kept a hand-over:
+  its failure is mutants 8 and 10 below.
+  `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^claude_code_(moves|admin)::/)'`
+  at the final source: 44 passed. `cargo nextest run -p fake-agent`: 24 passed, three times.
+- **Mutations** (a script over 20 mutants, each applied alone, its tests run, reverted with
+  `git checkout`): 19 caught.
+  1. the queue not asked: the five tests of AC2 to AC6 fail;
+  2. the queue asked in the first cheap check as well: **survived** (see Decisions, "The count
+     is not asked in the cheap first check": no arranged case tells the two apart);
+  3. and 4. a `dequeue` not counted: the domain tests, and with real processes the session
+     never moves after the hand-over;
+  5. a `remove` not counted; 6. the count going below zero (wrapping): the domain test;
+  7. and 8. a hand-over not kept: the domain test, and AC6 with real processes;
+  9. the ended turn's closing record ending a hand-over: the fold's test;
+  10. a hand-over ended when its prompt record is read, before the task reads Working: AC6;
+  11. a turn that came and went not ending its hand-over: AC4 never moves;
+  12. the watcher not applying queue records: AC2;
+  13. a new run keeping the old count: `a_resumed_run_starts_with_an_empty_queue`;
+  14. a replay not applied: `a_reattached_run_knows_what_waits_in_its_queue`;
+  15. the time after a prompt not asked: both tests of AC7's bound;
+  16. a prompt during the look not asked, and 17. such a prompt not counted: AC7's look;
+  18. the bound compared the wrong way: the domain test;
+  19. an `enqueue` not read, and 20. `popAll` read as an entry put in: the harness test.
+- **Gate.** `scripts/dev ci` at 808a5e9f (every code and test change of this task): exit 0.
+  `cargo check`, `fmt --check`, clippy `-D warnings` on Linux and for `aarch64-apple-darwin`,
+  nextest 3975 passed / 16 skipped, doctests, `cargo deny` (advisories, bans, licenses, sources
+  ok), `cargo shear`, `cargo doc`. After it come a merge of `dev` (#1220, the instance move's
+  page: none of this change's files; `cargo check --workspace --all-targets` clean after it)
+  and this section.
+- **e2e.** The whole suite at 808a5e9f (`npx e2e run`): 82 files passed, 1 skipped; 985 tests
+  passed, 1 skipped. This change touches no page.
+- **Security scan.** Disabled: `yulius security-scan` says "Security scan disabled: Vidoc is
+  turned off in Yulius"; nothing was scanned, which is not a pass.
+- **Not tested here.** A restart Yulius makes of a real, signed-in Claude Code session (no
+  subscription can be signed in for a test): the fake agent stands in, in the order the real
+  tool was seen to have. Claude Code 2.1.292 and 2.1.311 were not run; their transcripts in
+  this instance hold the same records. `popOne` and the `remove` reasons `dropped_by_hook`,
+  `cleared_on_cancel` and `delivered_to_agent` were read in the binary and (two of them) seen
+  in real sessions, not produced in a run.
