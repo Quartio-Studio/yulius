@@ -520,7 +520,9 @@ own limit.
 
 Yulius's request says the task does not go on by itself, like the one for a goal Claude Code
 paused, and ends the same way ([decision 0304](decisions/0304-a-request-yulius-opens-for-a-goal-pause-ends-when-the-agent-works-again.md)):
-when the session's agent works again, or sooner when the task goes on past the limit.
+when the session's agent works again, or sooner when Yulius takes the task on at a usage limit
+(`TakenOn`): it runs the session on past the limit, or pauses the task and resumes it by itself.
+The audit log says which (`task.needs_you.resolved`).
 
 ```mermaid
 flowchart TD
@@ -657,7 +659,10 @@ the agent first worked after the last pause (`TranscriptFacts::worked_since_goal
 request ends, and the task the pause flagged follows its session. The request Yulius opens for a
 usage limit nothing says the end of follows the same rule (`STALLED_ACTIONS`, one flag helper
 `flag_stalled`), and so does a goal pause's asked at a limit; a limit that cut the turn counts as
-a pause there, so work before it answers nothing.
+a pause there, so work before it answers nothing. A request of an earlier goal pause that such a
+limit overtook therefore ends by what Yulius does at the limit: a move past it or a wait it
+resumes from ends the request, and at a refused move the session is at a refusal again and the
+request stays.
 
 ```mermaid
 stateDiagram-v2

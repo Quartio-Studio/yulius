@@ -22,8 +22,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   reset (or one further ahead than a window lasts, which is not believed), the limit ends with
   the provider's next reading; a task with nowhere else to go is tried once more, and refused
   again it waits for another subscription's reset when one is known, or asks a person, instead
-  of being restarted at every reading; that request ends by itself when the task goes on past
-  the limit or its agent works again. The API's `usage` gains `limit_reached` and
+  of being restarted at every reading; that request ends by itself when its agent works again
+  or Yulius takes the task on at a limit (moves it past the limit, or pauses it to resume it). The API's `usage` gains `limit_reached` and
   `limit_resets_at` (a limit of the whole subscription). A limit a person lifts early (bought
   credits) stays until its reset or a new sign-in for now; the Subscriptions page's manual
   refresh is task #451.

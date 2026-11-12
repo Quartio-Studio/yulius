@@ -92,8 +92,14 @@ wrong:
   ([ADR-0304](0304-a-request-yulius-opens-for-a-goal-pause-ends-when-the-agent-works-again.md)).
   It says "the task does not go on by itself", as the request for a goal Claude Code paused
   does. Both end when the session's agent works again, whatever woke it, live and after a
-  restart of Yulius, and sooner when the task goes on past the limit that cut its turn; the
-  audit log says which (`task.needs_you.resolved`). A request the agent made stays.
+  restart of Yulius, and sooner when Yulius takes the task on at the limit that cut its turn
+  (`TakenOn`): it runs the session on past the limit, or pauses the task and resumes it by
+  itself. The audit log says which (`task.needs_you.resolved`). A request the agent made stays.
+  In the transcript's replay a limit that cut the turn counts as a pause, so that work before
+  it answers no request asked at it. A request of an earlier goal pause, answered by work that
+  such a limit then overtook while Yulius was down, is therefore ended by what Yulius does at
+  the limit, not by that work: at a refused move the session is at a refusal again, and the
+  request, which says to send it a message, stays.
 - **A goal pause at a limit is the limit's.** A pause notice that follows a usage limit or a
   refused subscription in the same turn opens no Needs you and writes no
   `task.goal_retries_spent` while Yulius takes the task on, live (`goal_retry_observed`, by the

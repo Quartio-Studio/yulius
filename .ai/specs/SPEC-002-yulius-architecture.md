@@ -724,8 +724,9 @@ until their reset. A reset is believed at most a week and a day ahead (the recor
 own file); without one the window is full until the provider's next reading, and a task with
 nowhere to go is tried once more; refused again, it waits for another subscription's known reset
 off the refusing one (`rotation::decide_leaving_out`), or a person is asked
-(`task.limit_without_end`), with a request that ends when the agent works again or the task goes
-on past the limit (ADR-0304). Every change of a subscription's stored usage takes one lock
+(`task.limit_without_end`), with a request that ends when the agent works again or Yulius takes
+the task on at a limit, by a move or a wait it resumes from (ADR-0304). Every change of a
+subscription's stored usage takes one lock
 (`App::change_account_usage`).
 
 **Where the readings come from (F 2026-10-10, #143).** The usage endpoint needs the OAuth scope
