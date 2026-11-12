@@ -173,8 +173,8 @@ pub struct Queue {
     /// When Claude Code recorded the last of the hand-overs that are not over, if every one of
     /// their records said when.
     handed_on_at: Option<Timestamp>,
-    /// How many of the entries that wait a turn's closing record found waiting: Claude Code had
-    /// its hand-over at that turn's end and left them (SPEC-479 SWQ-002).
+    /// How many of the entries that wait were left by a turn's end: its closing record found
+    /// them waiting and that end had handed nothing on (SPEC-479 SWQ-002).
     left_over: u32,
 }
 
@@ -203,10 +203,16 @@ impl Queue {
     }
 
     /// The record that closes a turn was read (Claude Code's `turn_duration`, written after
-    /// the `dequeue` records of that turn's end and not at a Stop a hook blocks): what still
-    /// waits was not handed on at a turn's end, and is not at a later one (SPEC-479 SWQ-002).
+    /// the `dequeue` records of that turn's end and not at a Stop a hook blocks). When that
+    /// end handed nothing on, what still waits was left by it: Claude Code hands on whatever
+    /// it will hand on, so it is not handed on at a later end either. An end that did hand
+    /// something on says nothing about the rest: Claude Code hands a notification of its own,
+    /// a slash command or a `!` line on alone, and a prompt behind it at the next turn's end
+    /// (SPEC-479 SWQ-002).
     pub fn turn_closed(&mut self) {
-        self.left_over = self.waiting;
+        if !self.handing_on {
+            self.left_over = self.waiting;
+        }
     }
 
     /// The prompt record of a turn was read: what was handed on has its turn.
