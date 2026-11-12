@@ -2069,13 +2069,15 @@ impl<'a> Move<'a> {
                     // nothing of its sessions runs unfrozen (any more). What a stopped unit
                     // left is asked before that is called "does not run".
                     self.nothing_left_running()?;
-                    let units = self.old_units();
+                    // The stopped server's unit alone is named: its sessions unit, where it
+                    // runs, is frozen here, and a frozen unit is never named to be stopped
+                    // or killed (`unfrozen_units`, SPEC-481 HLD-009).
                     self.manual(
                         "old instance",
                         format!(
                             "{unit} does not run here any more, and the new instance runs. Make \
-                             sure nothing of the old one runs here: `systemctl stop {units}; \
-                             {KILL_ALL} {units}; systemctl disable {unit}`"
+                             sure nothing of the old one runs here: `systemctl stop {unit}; \
+                             {KILL_ALL} {unit}; systemctl disable {unit}`"
                         ),
                     );
                     // Asked, not sent: nothing of a unit a person is told to look at is
