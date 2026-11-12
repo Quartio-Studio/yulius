@@ -163,8 +163,8 @@ pub struct TaskRuntime {
     /// launch, or the last prompt submitted from it. What was typed after that may still sit
     /// there (SPEC-468 CCF-010, CCF-011).
     pub(crate) box_emptied_ms: AtomicI64,
-    /// The keystroke ([`Self::typed_at_ms`]) whose possible draft its person was told about: a
-    /// message of Yulius's own waits for it (SPEC-480 DRF-006). Told once per keystroke.
+    /// The keystroke ([`Self::typed_at_ms`]) whose possible draft the session's terminal said a
+    /// message of Yulius's own waits for (SPEC-480 DRF-006): one line per keystroke.
     pub(crate) draft_told_ms: AtomicI64,
     /// When the prompt whose hook is being answered emptied the prompt box (ms): worked out at
     /// its first request and taken into [`Self::box_emptied_ms`] when the prompt goes on, so a

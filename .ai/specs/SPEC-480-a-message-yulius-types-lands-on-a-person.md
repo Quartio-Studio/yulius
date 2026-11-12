@@ -75,9 +75,10 @@ why at once; a message of Yulius's own waits, and after a bound the person is to
   a possible draft whose last keystroke is at least 10 minutes old (`policy::DRAFT_TOLD_MS`),
   the task is flagged Needs your action with the reason (Yulius has a message for the session
   and does not type it over text that may still be in the prompt box; send it, or clear it and
-  send any prompt) and its terminal gets one line saying the same. Once per keystroke: typing
-  again starts the 10 minutes anew. Before that Yulius waits silently: the person may still be
-  writing. A session a person typed into without leaving a draft is thus not served by a guess:
+  send any prompt) and its terminal gets one line saying the same, once per keystroke: typing
+  again starts the 10 minutes anew. A flag that ended while the message still waits (a turn's
+  end settles a flagged task) is raised again at the watch's next try. Before the 10 minutes
+  Yulius waits silently: the person may still be writing. A session a person typed into without leaving a draft is thus not served by a guess:
   its sender is told at once, and its person within 10 minutes of their last key plus one pass
   of the watch that has the message (20 s for a pull request's news).
 - DRF-007 (it ends by itself). The next prompt submitted from the session's prompt box, by
@@ -108,7 +109,8 @@ why at once; a message of Yulius's own waits, and after a bound the person is to
 - AC2 (DRF-003, DRF-005, DRF-006, DRF-007). With real processes: an idle task whose Yulius MCP
   is silent and whose person typed a draft 11 minutes ago gets no `/mcp reconnect yulius`: the
   command is not typed, the task reads Needs your action with the reason of DRF-006 and its
-  terminal says so once (a second pass adds no line). After the person sends their text the
+  terminal says so once (a second pass adds no line; a flag that ended is raised again by the
+  next pass, without a second line). After the person sends their text the
   next pass types the command, which the agent reads alone. Fails on dev: the watch types the
   command behind the draft.
 - AC3 (DRF-001, DRF-002, DRF-006; pure rule). `policy::box_held`: no keystroke holds nothing; a

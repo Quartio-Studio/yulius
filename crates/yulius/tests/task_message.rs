@@ -505,6 +505,17 @@ fn a_message_of_yulius_waits_for_a_persons_draft_and_tells_them() -> TestResult 
               types its message."
             ]
         );
+        // A flag that ended while the command still waits (a turn's end settles a flagged
+        // task) is raised again at the next pass; the terminal has its line already.
+        let flagged = support::attention(&app, id.as_str()).await?;
+        app.deps
+            .store
+            .set_activity(&id, Some(Activity::Waiting), app.now())
+            .await?;
+        assert_eq!(support::attention(&app, id.as_str()).await?, Value::Null);
+        assert!(app.watch_mcp(&bounds).await.is_empty());
+        assert_eq!(support::attention(&app, id.as_str()).await?, flagged);
+        assert_eq!(notices(&mut watch), Vec::<String>::new());
         // Whatever reaches the agent shows within a second; nothing did.
         tokio::time::sleep(Duration::from_secs(1)).await;
         let shown = screen(&app, &id);

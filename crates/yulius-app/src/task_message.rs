@@ -350,24 +350,23 @@ impl App {
     }
 
     /// Tells the session's person that a message of Yulius's own waits for what they typed
-    /// (SPEC-480 DRF-006): the task is flagged with the reason and its terminal says so. Once
-    /// per keystroke: the watches try again at every pass, and typing again starts anew.
+    /// (SPEC-480 DRF-006): the task is flagged with the reason and its terminal says so. The
+    /// watches try again at every pass: a task that reads the flag keeps it, one whose flag
+    /// ended meanwhile (a turn's end settles a flagged task) is flagged again, and the terminal
+    /// gets its line once per keystroke.
     async fn tell_of_held_message(&self, task: &TaskRecord) {
-        let runtime = self.runtime(&task.id);
-        let typed = runtime.typed_at_ms.load(Ordering::SeqCst);
-        let told = runtime.draft_told_ms.swap(typed, Ordering::SeqCst);
-        if told == typed {
-            return;
-        }
         let reason = AttentionRecord::yulius(DRAFT_HOLDS_PROBLEM, DRAFT_HOLDS_ACTION);
         if let Err(err) = self.flag_attention(&task.id, reason).await {
             // Not told: the next pass tries again.
             tracing::warn!(task = %task.id, error = %err, "could not flag the task whose draft holds a message");
-            runtime.draft_told_ms.store(told, Ordering::SeqCst);
             return;
         }
-        runtime.hub.notice(DRAFT_HOLDS_NOTICE.to_owned());
-        tracing::info!(task = %task.id, "a message waits for a person's draft: the task is flagged");
+        let runtime = self.runtime(&task.id);
+        let typed = runtime.typed_at_ms.load(Ordering::SeqCst);
+        if runtime.draft_told_ms.swap(typed, Ordering::SeqCst) != typed {
+            runtime.hub.notice(DRAFT_HOLDS_NOTICE.to_owned());
+            tracing::info!(task = %task.id, "a message waits for a person's draft: the task is flagged");
+        }
     }
 }
 
