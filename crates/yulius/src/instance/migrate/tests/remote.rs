@@ -3,6 +3,8 @@ use std::path::Path;
 use crate::instance::migrate::remote::*;
 use crate::instance::migrate::target::Reply;
 
+type TestResult = Result<(), Box<dyn std::error::Error>>;
+
 #[test]
 fn a_destination_is_a_user_and_a_host_and_never_an_option() {
     for good in [
@@ -92,4 +94,21 @@ fn the_reply_is_the_last_marked_line_of_a_steps_output() {
     assert_eq!(parse_reply("apt said things\n"), None);
     assert_eq!(parse_reply("YULIUS-REPLY not json\n"), None);
     assert_eq!(parse_reply("YULIUS-REPLY {}\n"), Some(Reply::default()));
+}
+
+#[test]
+fn a_connection_without_its_key_says_so_and_a_forgotten_key_is_such_a_one() -> TestResult {
+    // The wording a move's finish tells "deleted here" by (SPEC-467 LFT-004); `ssh` is not run.
+    let dir = tempfile::tempdir()?;
+    let mut ssh = Ssh::new("root@new-host", 22, dir.path(), "yulius-migrate-ab12");
+    assert!(ssh.reachable().is_err_and(|why| why.contains(NO_KEY)));
+    // What a finish leaves: no key, no public half, no known hosts.
+    for name in ["key", "key.pub", "known_hosts"] {
+        std::fs::write(dir.path().join(name), "x")?;
+    }
+    ssh.forget();
+    assert_eq!(std::fs::read_dir(dir.path())?.count(), 0);
+    assert!(ssh.reachable().is_err_and(|why| why.contains(NO_KEY)));
+    assert!(!NO_KEY.contains(KEY_REFUSED));
+    Ok(())
 }

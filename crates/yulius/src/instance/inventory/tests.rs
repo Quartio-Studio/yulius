@@ -180,6 +180,49 @@ fn what_the_new_host_adds_at_the_top_is_not_counted() -> TestResult {
     Ok(())
 }
 
+/// SPEC-467 LFT-005: an import whose first start never consumed its limits mark leaves it on
+/// what later becomes the old host of a move. The import writes its own on the new host, at
+/// another time: were the mark part of the copy, the proof would fail after the whole copy.
+#[test]
+fn a_limits_mark_left_on_the_old_host_is_not_the_copy() -> TestResult {
+    const MARK: &str = yulius_app::limits::ADAPT_MARK;
+    let long_ago = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+    let (src, dst) = (tempfile::tempdir()?, tempfile::tempdir()?);
+    tree(src.path())?;
+    fs::write(src.path().join(MARK), b"")?;
+    fs::File::options()
+        .write(true)
+        .open(src.path().join(MARK))?
+        .set_modified(long_ago)?;
+    let target = dst.path().join("data");
+    let (m, old) = copy(src.path(), &target)?;
+    // The import's own mark is there, written now.
+    let installed = fs::symlink_metadata(target.join(MARK))?;
+    assert!(installed.is_file() && installed.mtime() != 1_700_000_000);
+    let new = of_copy(&target, &same_ids(&m), &old)?;
+    assert_eq!(difference(&old, &new), None, "{old:?}\n{new:?}");
+    // Counted on neither host: the same folders and entries as without it.
+    let names: Vec<&str> = old.folders.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(
+        names,
+        [".", "master.key", "sandboxes", "sysroots", "yulius.db"]
+    );
+    assert_eq!((old.entries, new.entries), (13, 13));
+
+    // Whatever sits at that name: a directory there travels as little, and the import still
+    // ends with its own mark instead of failing on it after the whole copy.
+    let (src, dst) = (tempfile::tempdir()?, tempfile::tempdir()?);
+    tree(src.path())?;
+    fs::create_dir_all(src.path().join(MARK).join("below"))?;
+    let target = dst.path().join("data");
+    let (m, old) = copy(src.path(), &target)?;
+    assert!(fs::symlink_metadata(target.join(MARK))?.is_file());
+    let new = of_copy(&target, &same_ids(&m), &old)?;
+    assert_eq!(difference(&old, &new), None, "{old:?}\n{new:?}");
+    assert_eq!(old.entries, 13);
+    Ok(())
+}
+
 fn entry(path: &str, kind: Kind, uid: u32, gid: u32, mode: u32) -> Entry {
     Entry {
         path: path.as_bytes().to_vec(),
