@@ -5,7 +5,8 @@
 //! again (SPEC-202 RSB-001) through `systemd-run --uid=<the data directory's owner> -p
 //! Delegate=yes -p DelegateSubgroup=server --wait --pipe` ([`systemd_run_argv`]); as anyone
 //! else outside one it says so. Inside, with the current base, it creates a throwaway sandbox
-//! (`docker-smoke-<pid>`, next to the real ones but adopted by nobody else) and:
+//! (`docker-smoke-<pid>`, next to the real ones; while this process runs, a server that starts
+//! does not adopt it: `Manager::adopt`, ADR-0308) and:
 //!
 //! 1. starts its holder with Docker off, and a run that has no Docker directory (a run started
 //!    before ADR-0158); the run must get the directory and the refusal must name the reason;
