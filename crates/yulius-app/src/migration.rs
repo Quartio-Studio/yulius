@@ -103,27 +103,27 @@ impl Facts {
     }
 
     /// Whose the checklist file is. The helper never touches it (a run the command refuses
-    /// must change nothing), so its time tells: the command stamps it in whole seconds.
+    /// must change nothing); the command writes into it the id of the request it answers, so
+    /// the run's own checklist is known exactly, whatever the clock says and however the run
+    /// ended (the command also refuses, exit 2, after a line that says why).
     fn whose(&self) -> Option<Whose> {
         let status = self.files.status.as_ref()?;
         let Some(run) = &self.files.helper else {
             return Some(Whose::Command);
         };
+        if status.request.as_deref() == Some(run.id.as_str()) {
+            return Some(Whose::Run);
+        }
+        // Another run's. One that names no request was started on the host: after the
+        // helper's last run ended it is the command line's, before that it was there already.
         let written = i64::try_from(status.updated_at)
             .unwrap_or(i64::MAX)
             .saturating_mul(1000);
-        // A run that was refused wrote none: the helper refused the request, or the command
-        // refused before it changed anything (exit 2). So nothing is this run's then, also
-        // when another run wrote in the very second this one began.
-        let refused = run.state == MoveHelperState::Refused
-            || (run.state == MoveHelperState::Ended && run.exit_code == Some(2));
-        Some(if run.ended_at.is_some_and(|ended| written > ended) {
+        let later = status.request.is_none() && run.ended_at.is_some_and(|ended| written > ended);
+        Some(if later {
             Whose::Command
-        } else if refused || written.saturating_add(999) < run.started_at {
-            // Or the whole second it was written in had passed when the run began.
-            Whose::Earlier
         } else {
-            Whose::Run
+            Whose::Earlier
         })
     }
 

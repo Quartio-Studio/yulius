@@ -147,6 +147,14 @@ impl FakeMoveHelper {
 
     /// The command's checklist.
     fn checklist(&self, phase: &str, lines: &[(&str, HostOutcome)], key: Option<&str>, at_ms: i64) {
+        // As the command does: a run the helper started names the request it answers; a run
+        // started on the host (no helper run in flight) names none.
+        let request = self.helper.lock().ok().and_then(|helper| {
+            helper
+                .as_ref()
+                .filter(|run| run.state == MoveHelperState::Running)
+                .map(|run| run.id.clone())
+        });
         if let Ok(mut status) = self.status.lock() {
             *status = Some(MoveStatus {
                 id: "ab12cd34".into(),
@@ -159,6 +167,7 @@ impl FakeMoveHelper {
                 updated_at: u64::try_from(at_ms / 1000).unwrap_or(0),
                 public_key: key.map(str::to_owned),
                 new_url: Some("https://new.example".into()),
+                request,
             });
         }
     }
@@ -977,6 +986,26 @@ async fn a_refused_run_has_no_checklist_of_its_own() -> TestResult {
     let refused = i.view().await?;
     assert_eq!(refused["run"]["state"], "refused");
     assert_eq!(refused["move"]["earlier"], true);
+
+    // A plan the command refused after it wrote why (this host cannot be moved from: exit 2
+    // with a checklist of its own, in the second it began) is that run's.
+    assert_eq!(i.ask(plan()).await?.status, StatusCode::ACCEPTED);
+    i.helper.takes(i.now())?;
+    i.helper
+        .checklist("Plan", &[("old host", HostOutcome::Failed)], None, i.now());
+    i.helper.ends(Some(2), i.now());
+    let own = i.view().await?;
+    assert_eq!(
+        own["move"]["earlier"], false,
+        "the run's own refusal as another move's"
+    );
+    assert_eq!(own["move"]["lines"][0]["name"], "old host");
+    // And the next request's run, refused without a word in the same second, has none: what
+    // is there names the run before it.
+    assert_eq!(i.ask(plan()).await?.status, StatusCode::ACCEPTED);
+    i.helper.takes(i.now())?;
+    i.helper.ends(Some(2), i.now());
+    assert_eq!(i.view().await?["move"]["earlier"], true);
 
     // A run that failed a step (exit 1) in that second wrote the checklist itself.
     assert_eq!(i.ask(plan()).await?.status, StatusCode::ACCEPTED);

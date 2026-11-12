@@ -172,6 +172,9 @@ pub fn command_args(args: &MoveHelperArgs, request: &MoveRequest) -> Vec<String>
         // the move's one-time key, which a person adds on the new host, reaches it. Without
         // this the service user would reach every host that trusts root's own keys.
         "--no-sign-in".to_owned(),
+        // The request this run answers: the command writes it into its checklist, so the
+        // server tells this run's from another's. An id holds letters, digits and hyphens.
+        format!("--request-id={}", request.id),
     ]);
     if request.action == MoveAction::Abort {
         return argv;

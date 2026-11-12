@@ -373,6 +373,10 @@ enum InstanceAction {
         /// the key's line for a person to add there. The move helper runs the command so.
         #[arg(long = "no-sign-in")]
         no_sign_in: bool,
+        /// The id of the request this run answers (the move helper sets it): it is written
+        /// into the status, so that readers tell this run's checklist from another's.
+        #[arg(long = "request-id", value_name = "ID", value_parser = request_id)]
+        request_id: Option<String>,
         /// Print the recorded move and its checklist.
         #[arg(long, conflicts_with_all = ["abort", "target"])]
         status: bool,
@@ -878,6 +882,7 @@ fn main() -> ExitCode {
                     yes,
                     max_downtime,
                     no_sign_in,
+                    request_id,
                     status,
                     abort,
                     data_dir,
@@ -898,6 +903,7 @@ fn main() -> ExitCode {
                 state_dir,
                 max_downtime,
                 no_sign_in,
+                request: request_id,
             },
             if status {
                 yulius::instance::migrate::Action::Status
@@ -949,6 +955,15 @@ where
     }
 }
 
+/// A request's id as the move helper passes it: the request's own rule.
+fn request_id(text: &str) -> Result<String, String> {
+    if yulius_app::migration::rules::valid_id(text) {
+        Ok(text.to_owned())
+    } else {
+        Err("8 to 64 letters, digits or hyphens".into())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use clap::{CommandFactory, Parser as _};
@@ -995,6 +1010,7 @@ mod tests {
                         data_disk,
                         max_downtime,
                         no_sign_in,
+                        request_id,
                         yes,
                         status,
                         abort,
@@ -1017,6 +1033,8 @@ mod tests {
             assert_eq!(max_downtime, None);
             // Root's helper is nobody's sign-in: only the move's own key reaches the new host.
             assert!(no_sign_in, "{action:?}");
+            // And says which request it answers, for the checklist it writes.
+            assert_eq!(request_id.as_deref(), Some("0123abcd-request"));
             assert!(!status && !abort);
             assert_eq!(data_dir, std::path::Path::new("/srv/yulius"));
             assert_eq!(service, "yulius-b.service");
@@ -1037,6 +1055,7 @@ mod tests {
                     yes,
                     abort,
                     no_sign_in,
+                    request_id,
                     service,
                     state_dir,
                     ..
@@ -1046,6 +1065,7 @@ mod tests {
             return Err("not `instance migrate`".into());
         };
         assert!(abort && !yes && no_sign_in);
+        assert_eq!(request_id.as_deref(), Some("0123abcd-request"));
         assert_eq!(target, None);
         assert_eq!(service, "yulius-b.service");
         assert_eq!(state_dir, std::path::Path::new("/srv/yulius-migrate"));

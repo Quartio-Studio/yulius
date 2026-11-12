@@ -22,6 +22,9 @@ pub struct MoveStatus {
     pub public_key: Option<String>,
     /// The new public URL, once decided.
     pub new_url: Option<String>,
+    /// The id of the request the run that wrote it answered; `None` for a run started on the
+    /// host.
+    pub request: Option<String>,
 }
 
 /// The move helper's files.

@@ -299,6 +299,8 @@ fn the_command_gets_each_value_as_one_argument() -> TestResult {
     let env = Env::new()?;
     let mut expected = vec!["instance".to_owned(), "migrate".to_owned()];
     expected.extend(env.unit_options());
+    // The request it answers, for the checklist the command writes.
+    expected.push("--request-id=0123abcd-plan".into());
     expected.extend(
         [
             "--ssh-port=2222",
@@ -320,6 +322,7 @@ fn the_command_gets_each_value_as_one_argument() -> TestResult {
     };
     let mut expected = vec!["instance".to_owned(), "migrate".to_owned()];
     expected.extend(env.unit_options());
+    expected.push("--request-id=0123abcd-move".into());
     expected.extend(["--ssh-port=2222", "--yes", "--", "root@new.example"].map(str::to_owned));
     assert_eq!(command_args(&env.args, &moved), expected);
 
@@ -330,6 +333,7 @@ fn the_command_gets_each_value_as_one_argument() -> TestResult {
         "--abort".to_owned(),
     ];
     expected.extend(env.unit_options());
+    expected.push("--request-id=0123abcd-abort".into());
     let args = command_args(&env.args, &abort("0123abcd-abort"));
     assert_eq!(args, expected);
     assert!(!args.iter().any(|arg| arg == "--yes"));
