@@ -210,6 +210,7 @@ async fn seed_records(app: &App) -> Result<(SandboxId, UserId), Box<dyn std::err
             updated_at: Timestamp(1),
             email: None,
             email_checked_at: None,
+            email_typed: false,
         })
         .await?;
     Ok((sandbox.id, user.id))
@@ -487,6 +488,7 @@ async fn add_account(app: &App, id: &str) -> Result<AccountId, Box<dyn std::erro
             updated_at: Timestamp(1),
             email: None,
             email_checked_at: None,
+            email_typed: false,
         })
         .await?;
     Ok(account)

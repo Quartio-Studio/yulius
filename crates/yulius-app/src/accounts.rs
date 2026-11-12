@@ -37,12 +37,12 @@ use crate::auth::{AuthContext, rfc3339};
 use crate::context::App;
 use crate::error::{AppError, AppResult};
 use crate::hub::{Hub, Subscription};
-use crate::model::{AccountRecord, AccountStatus, AttemptRecord, Secret};
+use crate::model::{AccountChange, AccountRecord, AccountStatus, AttemptRecord, Secret};
 use crate::ports::harness::OutputMasker;
 use crate::ports::session::{
     Containment, LaunchPlan, RunEvent, RunExit, RunInspection, RunReader, RunSignal, RunWriter,
 };
-use crate::ports::usage::{UsageFailure, UsageFailureKind};
+use crate::ports::usage::{EMAIL_MAX, UsageFailure, UsageFailureKind, plausible_email};
 use crate::usage_json;
 
 /// Maximum duration of one login before its process is stopped.
@@ -324,6 +324,7 @@ pub fn account_view(account: &AccountRecord, live: &[AttemptRecord]) -> AccountV
         usage: usage_view(&account_usage(account)),
         last_error: account.last_error.clone(),
         email: account.email.clone(),
+        email_typed: account.email_typed,
         in_use_by: in_use_count(&account.id, live),
         tokens_24h: None,
         tokens_7d: None,
@@ -400,6 +401,20 @@ fn validate_label(label: &str) -> AppResult<String> {
         )));
     }
     Ok(label.to_owned())
+}
+
+/// The email a person typed for an account (SPEC-463 EML-003), trimmed: `None` when it is empty
+/// (the email is removed), else an address by the rule Claude's own answer passes.
+fn validate_typed_email(email: &str) -> AppResult<Option<String>> {
+    if email.trim().is_empty() {
+        return Ok(None);
+    }
+    plausible_email(email).map(Some).ok_or_else(|| {
+        AppError::Invalid(format!(
+            "email must be an address like name@example.com, at most {EMAIL_MAX} characters \
+             (empty removes it)"
+        ))
+    })
 }
 
 fn human_duration(d: Duration) -> String {
@@ -785,6 +800,7 @@ impl App {
             updated_at: now,
             email: None,
             email_checked_at: None,
+            email_typed: false,
         };
         store.insert_account(&account).await?;
         let session = match self.start_login(&account).await {
@@ -811,10 +827,12 @@ impl App {
         })
     }
 
-    /// Renames an account (the only thing to change: the pool has no priorities or switches).
+    /// Renames an account, sets the email a person typed for it or removes that email (SPEC-463):
+    /// all there is to change, the pool has no priorities or switches. Both fields are checked
+    /// before either is written, and the audit entry never holds the address.
     ///
     /// # Errors
-    /// `NotFound`, `Invalid`, `Forbidden`.
+    /// `NotFound`, `Invalid` (a bad name or address, or nothing to change), `Forbidden`.
     pub async fn update_account(
         &self,
         ctx: &AuthContext,
@@ -823,17 +841,34 @@ impl App {
     ) -> AppResult<AccountView> {
         self.require_instance_admin(ctx)?;
         let account = self.load_account(id).await?;
-        let label = validate_label(&req.label)?;
+        let change = AccountChange {
+            label: req.label.as_deref().map(validate_label).transpose()?,
+            email: req.email.as_deref().map(validate_typed_email).transpose()?,
+        };
+        let mut changed = Vec::new();
+        if let Some(label) = &change.label {
+            changed.push(format!("label={label:?}"));
+        }
+        match &change.email {
+            Some(Some(_)) => changed.push("email=set".to_owned()),
+            Some(None) => changed.push("email=removed".to_owned()),
+            None => {}
+        }
+        if changed.is_empty() {
+            return Err(AppError::Invalid(
+                "nothing to change: give `label`, `email` or both".into(),
+            ));
+        }
         let now = self.now();
         let store = &self.deps.store;
-        store.update_account(&account.id, &label, now).await?;
+        store.update_account(&account.id, &change, now).await?;
         store
             .audit(
                 now,
                 &actor(ctx),
                 "account.updated",
                 Some(account.id.as_str()),
-                Some(&format!("label={label:?}")),
+                Some(&changed.join(" ")),
             )
             .await?;
         let updated = store

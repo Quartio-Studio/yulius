@@ -144,6 +144,7 @@ async fn seed(app: &App, data: &Path) -> Result<(SandboxId, UserRecord), BoxErro
             updated_at: Timestamp(1),
             email: None,
             email_checked_at: None,
+            email_typed: false,
         })
         .await?;
     let origin = data.join("origin.git");
