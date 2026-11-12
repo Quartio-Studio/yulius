@@ -4749,6 +4749,8 @@ function migrationState(mode) {
     // `holdAt = 'Prepare' | 'frozen'`: a move stays in its preparation, or frozen, for as long
     // as a test looks at that state; any other value lets it go on.
     holdAt: null,
+    // `probeHangs = true`: while frozen, a request that follows no redirect is never answered.
+    probeHangs: false,
   };
 }
 
@@ -5444,6 +5446,9 @@ async function handleFetchAfterLatency(db, url, init) {
     const m = db.migration;
     if (m.frozen && new URL(url, ORIGIN).pathname === MOVE_API) m.missed += 1;
     if (init.redirect === 'manual' && m.frozen) {
+      // Without a proxy in front, a frozen instance takes the connection and never answers
+      // (`probeHangs`): the request ends only when the page gives it up.
+      if (m.probeHangs && !m.redirects) return new Promise(() => {});
       // The old host's proxy still answers: with its redirect once the move ended there, else
       // that its upstream (the frozen instance) does not answer.
       return m.redirects ? { type: 'opaqueredirect', status: 0, ok: false, text: async () => '' } : json(502, {});

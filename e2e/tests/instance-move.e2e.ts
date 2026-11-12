@@ -220,6 +220,33 @@ test('when the old address redirects, the card links to the instance at its new 
   expect(await axeViolations(browser)).toEqual([]);
 });
 
+// MVB-035: a frozen instance without a proxy in front takes a connection and never answers it.
+// The card says the freeze at once and keeps trying; it does not wait for the question whether
+// this address redirects, which gets no answer either. (Found by a real move between two hosts:
+// the card stayed on "Moving…" for as long as the instance was frozen.)
+test('a frozen instance that never answers is said at once, and the card keeps trying', async ({ app, browser, screen }) => {
+  await app.open(mock('/admin/instance', QUICK));
+  const c = card(screen);
+  await firstShown(c.getByRole('button', 'Show the plan'));
+  await pace(browser, 60);
+  await showThePlan(screen);
+  await browser.evaluate(() => {
+    const m = (window as unknown as { __yuliusMock: { migration: { probeHangs: boolean; holdAt: string | null } } }).__yuliusMock.migration;
+    m.probeHangs = true;
+    m.holdAt = 'frozen';
+  });
+  await runMigration(screen);
+  await expect(c.getByText(`Yulius is frozen while its data is copied to ${HOST}.`)).toBeVisible({ timeout: 15000 });
+  await expect(c.getByText(`Moving to ${HOST}`)).toBeHidden();
+  // It still asks: the mock counts the reads that found nothing, also after the first one.
+  const missed = () => browser.evaluate(() => (window as unknown as MoveMock).__yuliusMock.migration.missed);
+  const before = await missed();
+  await expect.poll(missed, { timeout: 20000 }).toBeGreaterThan(before + 1);
+  // And it shows the new instance once that answers here.
+  await holdAt(browser, null);
+  await expect(c.getByText('The move finished: Yulius now runs on the new host.')).toBeVisible({ timeout: 20000 });
+});
+
 // MVB-036: only a new address the move could have decided (`https://host`) becomes a link.
 test('a new address that is not an https host is not linked', async ({ app, browser, screen }) => {
   await app.open(mock('/admin/instance', `&move=redirect${QUICK}`));

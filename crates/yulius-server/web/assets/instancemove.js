@@ -15,6 +15,8 @@ const API = '/api/admin/instance/migration';
 const POLL_MS = 3000;
 /** A read while a move runs gives up this early: a frozen server answers nothing at all. */
 const FOLLOW_TIMEOUT_MS = 8000;
+/** The question whether this address redirects gives up this early, for the same reason. */
+const PROBE_TIMEOUT_MS = 5000;
 /** The route of this page, for the link to it at the new address. */
 const PAGE = '/admin/instance';
 
@@ -429,13 +431,21 @@ export function moveCard(ctx) {
     if (frozen || inFlight(shown)) timer = setTimeout(() => load(), pollMs);
   }
 
-  /** Whether this address answers with a redirect now: the old URL leads to the new instance. */
+  /**
+   * Whether this address answers with a redirect now: the old URL leads to the new instance. A
+   * frozen instance without a proxy in front takes the connection and never answers, so the
+   * question is given up after a while.
+   */
   async function redirects() {
+    const controller = new AbortController();
+    const giveUp = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
     try {
-      const response = await ctx.api.transport.fetch('/healthz', { method: 'GET', redirect: 'manual', cache: 'no-store', credentials: 'omit' });
+      const response = await ctx.api.transport.fetch('/healthz', { method: 'GET', redirect: 'manual', cache: 'no-store', credentials: 'omit', signal: controller.signal });
       return Boolean(response && response.type === 'opaqueredirect');
     } catch {
       return false;
+    } finally {
+      clearTimeout(giveUp);
     }
   }
 
@@ -454,11 +464,16 @@ export function moveCard(ctx) {
       show(view);
     } else if (followed && (failure.status === 0 || failure.status >= 502)) {
       // Nothing answers while a move runs: the instance is frozen for the copy, or already
-      // answers elsewhere.
+      // answers elsewhere. Said at once; whether this address redirects by now is asked beside
+      // it, and a redirect that was seen stays said until something answers here.
       frozen = true;
-      redirected = await redirects();
-      if (gone || mine !== latest) return;
       render();
+      const moved = redirected || await redirects();
+      if (gone || mine !== latest) return;
+      if (moved !== redirected) {
+        redirected = moved;
+        render();
+      }
     } else if (!shown) {
       setChildren(body, loadError(`Couldn’t load the move: ${failure.message}`, () => load()));
       return;
