@@ -1,11 +1,11 @@
 ---
 yulius-task: 719087ff-c914-4241-bf1d-1d0a477a2041
-status: in-progress
+status: done
 ---
 
 # SPEC-470: Run migration: the button in Settings → Instance
 
-Status: in progress (merged as #1214; the second review round's notes follow in a second pull request)
+Status: done (merged as #1214; the second review round's notes in a second pull request)
 Date: 2026-11-11
 Owner: Yulius task #447 (slice D of #442)
 Scope authorization: task #447, asked by the project's owner: "A superadmin starts the move from
@@ -258,7 +258,7 @@ Settings → Instance
 - [x] Operations guide §7 and §8, API, architecture, product summary, changes
 - [x] Gates green and the independent review answered
 - [x] Review round 1 answered: no sign-in with root's own keys, a refused run keeps the recorded checklist, the rest
-- [ ] Review round 2's notes answered: a finished move's checklist is not "recorded", a refused run has none of its own, handled ids survive a damaged file
+- [x] Review round 2's notes answered: a finished move's checklist is not "recorded", a refused run has none of its own, handled ids survive a damaged file
 
 ## Acceptance criteria
 
@@ -461,7 +461,7 @@ Settings → Instance
   Finish, the abort that brings the build, a run without a sign-in); the walk (`migrate/` is
   left out).
 - **Mutation checks** (`target/evidence/mutate.py`: one change at a time on a clean tree, the
-  part's tests run, the file restored). 185 written, 183 fail a test:
+  part's tests run, the file restored). 191 written, 189 fail a test:
 
   | Part | Written | Fail a test | Note |
   | --- | --- | --- | --- |
@@ -471,6 +471,7 @@ Settings → Instance
   | Helper | 38 | 36 | see below |
   | Command (this change's parts) | 22 | 22 | |
   | Review round 1 (command 10, helper 8, application 9, adapter 1, card 4) | 32 | 32 | 1 survived first (the repeated write without its id): an assertion added in `7ebf3937` |
+  | Review round 2's notes (application 3, helper 2, card 1) | 6 | 6 | |
 
   The helper's two: one pointed at a condition that the record of a taken request already
   covered, which showed that a failed record was ignored (the fix in `148f3182` removes the
@@ -555,8 +556,20 @@ Settings → Instance
 - **Issues.** #1196 (the plan's own update check looks for `active` only) and #1201 (the update
   helper's units have the start limit this change switches off for its own), both in code this
   change did not write; #1202 (a field for `--max-downtime` on the page).
-- **Independent review, after round 1.** The head that is merged is reviewed again; that
-  verdict is recorded with the merge, because a commit after an approval would void it.
+- **Independent review, round 2** (the same reviewer, on `d4c748a2`; its own run of the gate,
+  3911 tests passed, and of the card's e2e file, 11 of 11): approve. It checked every answer
+  to round 1 and found them to hold, and left one minor note and two nits in this change's
+  code. That head was merged as #1214 on its own green Yulius CI run.
+- **After the merge: round 2's notes**, in a second pull request, each with a test that failed
+  first (`64b8df96`): the note over an earlier checklist said "A move to … is recorded" also
+  when that move was over (e2e: an abort, then a request the helper refuses); a checklist
+  another run wrote in the second a refused run began was taken for the refused run's
+  (`a_refused_run_has_no_checklist_of_its_own`: `earlier` was false); the helper's record of
+  handled ids was taken for empty when a part of it was no text (the first request ran again),
+  and one that cannot be read was written over. Six mutations of these fixes all fail a test.
+  Gate at `3804c711`: exit 0, 3912 tests run, 3912 passed, 16 skipped; the full e2e suite:
+  82 files passed, 1 skipped, 981 tests passed, 1 skipped. Its review is recorded with its
+  merge.
 - **Not tested.**
   - A move to another public URL behind a real reverse proxy with a certificate: the guests have
     no proxy. The card's notice for an address that redirects was shown on the real page with a
