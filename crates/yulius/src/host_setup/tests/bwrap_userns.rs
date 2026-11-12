@@ -801,9 +801,9 @@ fn an_unread_rule_that_fails_gets_no_second_profile() {
     assert!(fake.has(PROFILE_FILE) && fake.profiles.contains_key("yulius-bwrap"));
 }
 
-/// BNS-012: theirs is adopted only where bwrap starts with no profile of Yulius's at all, and
-/// then none is left: the file goes whichever run wrote it, so the next run finds nothing to
-/// do (BNS-004).
+/// BNS-012: theirs is adopted only where bwrap starts with Yulius's profile out of AppArmor,
+/// and then no file of it is left either, whichever run wrote it: the next run finds nothing
+/// to do (BNS-004).
 #[test]
 fn an_adopted_rule_leaves_no_file_of_yulius() {
     let adopted = "loaded the profiles of /etc/apparmor.d as a boot does: bwrap starts a user \
