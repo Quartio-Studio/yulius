@@ -84,6 +84,8 @@ struct Profile {
     unconfined: bool,
     /// It allows `userns`.
     userns: bool,
+    /// It attaches by a glob for many programs: AppArmor prefers a profile that names the path.
+    broad: bool,
 }
 
 /// The profiles a file declares, read as the measurements need them (not the item's own parser).
@@ -93,7 +95,11 @@ fn profiles_in(text: &str) -> Vec<(String, Profile)> {
         .map(|header| {
             let name = header.split(' ').next().unwrap_or_default().to_owned();
             let profile = Profile {
-                bwrap: header.contains(" /usr/bin/bwrap "),
+                // The last two are spellings the item's own reading does not know.
+                bwrap: [" /usr/bin/bwrap ", " /{usr,}/bin/bwrap ", " /usr/bin/* "]
+                    .iter()
+                    .any(|path| header.contains(path)),
+                broad: header.contains(" /usr/bin/* "),
                 unconfined: header.contains("flags=(unconfined)"),
                 userns: ["  userns,\n", "  allow userns,\n", "{ userns, }"]
                     .iter()
@@ -229,15 +235,27 @@ impl Fake {
         }
         // AppArmor's unit loads every file of its directory that no `disable/` link names.
         self.profiles.clear();
+        self.load_directory();
+    }
+
+    /// `apparmor_parser -r /etc/apparmor.d`: what a boot loads. `false` when it refuses a file
+    /// (one whose text says `# broken`); the others are loaded all the same.
+    fn load_directory(&mut self) -> bool {
         let enabled: Vec<PathBuf> = self
             .files
             .keys()
             .filter(|p| p.parent() == Some(Path::new(APPARMOR_D)))
             .cloned()
             .collect();
+        let mut read = true;
         for file in enabled {
-            self.load_profiles(&file);
+            if self.files[&file].0.contains("# broken") {
+                read = false;
+            } else {
+                self.load_profiles(&file);
+            }
         }
+        read
     }
 
     /// `apparmor_parser -r <file>`: `false` when a `disable/` link makes it skip the file.
@@ -269,6 +287,9 @@ impl Fake {
             "1",
         );
         let attached: Vec<&Profile> = self.profiles.values().filter(|p| p.bwrap).collect();
+        // A profile that names the path outweighs a glob for many programs.
+        let named: Vec<&Profile> = attached.iter().copied().filter(|p| !p.broad).collect();
+        let attached = if named.is_empty() { attached } else { named };
         match attached.as_slice() {
             // Its children run under a profile that denies every capability.
             [one] if !one.unconfined => Err("mount: /tmp: permission denied."),
@@ -711,6 +732,21 @@ impl Host for Fake {
                 match self.bwrap_proof() {
                     Ok(()) => ok(""),
                     Err(why) => fail(1, why),
+                }
+            }
+            ["/usr/sbin/apparmor_parser", "-r", APPARMOR_D] => {
+                // BNS-012: a cold cache and many profiles take longer than a command's usual
+                // bound.
+                assert_eq!(cmd.timeout, std::time::Duration::from_secs(300));
+                if self.parser_fails {
+                    fail(1, "AppArmor parser error: Could not open 'abi/4.0'")
+                } else if self.load_directory() {
+                    ok("")
+                } else {
+                    fail(
+                        1,
+                        "AppArmor parser error: syntax error, unexpected end of file",
+                    )
                 }
             }
             ["/usr/sbin/apparmor_parser", "-r", file] => {

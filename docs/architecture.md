@@ -558,6 +558,21 @@ cleared, achieved or failed while a retry is armed settles the closed turn, sinc
 comes. Spent retries, or a pause on an API error, end the turn and put the task in Needs you with a
 request. A restart's replay folds the last notice the same way.
 
+That request says the task does not go on by itself, so it ends when the session does go on
+([SPEC-469](../.ai/specs/SPEC-469-even-if-it-woke-up-it-still-has-needs-yo.md),
+[decision 0304](decisions/0304-a-request-yulius-opens-for-a-goal-pause-ends-when-the-agent-works-again.md),
+#1183): at the agent's first work after the pause (`AgentWork`, or the session's own answer),
+whatever woke it: Claude Code's wake-up, a prompt Yulius typed, a session Yulius restarted, or no
+prompt anyone sees. A prompt alone ends nothing, since the API may refuse it again. Only the
+request Yulius opened ends this way (`end_task_needs_you_asking`, by its action in one statement);
+a request the agent made stays. The pause's flag is answered by work like a notice's
+(`notice_attention_ms`); a run that starts while the request is open takes the flag's time back
+from the task's state, which a restart of Yulius forgot. That time stands only while the task
+still reads the flag it belongs to (`standing_notice_ms`): a status change replaces a flag
+without a word, and one raised later is not answered by work. The replay after a restart folds when
+the agent first worked after the last pause (`TranscriptFacts::worked_since_goal_pause`): the
+request ends, and the task the pause flagged follows its session.
+
 ```mermaid
 stateDiagram-v2
     [*] --> Working
@@ -567,6 +582,8 @@ stateDiagram-v2
     Working --> NeedsYou: "Goal paused · the API rejected the last request" (no retry)
     Retrying --> Waiting: /goal clear (no check-in comes)
     NeedsYou --> Working: a person sends a message
+    NeedsYou --> Working: the agent works again (the request ends by itself)
+    NeedsYou --> NeedsYou: a woken turn the API refuses again (the request stays)
     note right of Retrying: reads Working; the turn record does not settle it
 ```
 
@@ -2026,7 +2043,8 @@ sandbox's Docker engine, production runs their production holder's (ADR-0208; th
 `<data>/cd/<sandbox>/runs`, which that engine binds), and both reach any Internet host over TCP
 (SSH included) through their holder's network. A run has no lane and no retry: a deploy is not assumed repeatable, so one left by a
 restart is recorded as an error. `needs_you` (table column `tasks.needs_you`) puts a task in Needs
-you until a person writes to it; its request (what happened, the problem, what to do or decide) is
+you until a person writes to it (a request Yulius opened itself also ends when what it describes
+does, [ADR-0304](decisions/0304-a-request-yulius-opens-for-a-goal-pause-ends-when-the-agent-works-again.md)); its request (what happened, the problem, what to do or decide) is
 stored as JSON there ([ADR-0221](decisions/0221-a-needs-you-request-reads-what-happened-problem-to-do.md)). `POST …/cd/{env}/deploy` answers only once the run is recorded,
 after the checks and production's promotion (seconds to a minute), so the CD page opens the Deploy
 dialog as soon as the person confirms, saying what is being checked and promoted with the time so
