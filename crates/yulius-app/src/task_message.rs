@@ -6,8 +6,10 @@
 //!   message of the Superagent's person (SPEC-052, TMS-002);
 //! - a running task gets it typed into its session as one bracketed paste, labelled with the
 //!   person and the channel it came through (SPEC-322), then a separate Enter; Claude Code
-//!   queues a message submitted while the agent works (TMS-003). Control characters other than
-//!   line breaks and tabs never reach the TUI;
+//!   queues a message submitted while the agent works (TMS-003). From the paste to its
+//!   submit the session is not restarted on a newer Claude Code (SPEC-468 CCF-011); the
+//!   wait in Claude Code's queue after that is not covered (issue #1204). Control characters
+//!   other than line breaks and tabs never reach the TUI;
 //! - nothing is typed before Claude Code's session started (its SessionStart hook, also read
 //!   from the run's marker after a restart, or the goal typist's fallback for a CLI without it),
 //!   while it asks a person whether to trust the folder, while a person typed in the last minute (their
@@ -68,6 +70,18 @@ pub fn message_paste(login: &str, channel: Channel, text: &str) -> Vec<u8> {
     let login = clean_message(login);
     let through = through(channel);
     format!("\x1b[200~Message from {login} (through {through}):\n\n{text}\x1b[201~").into_bytes()
+}
+
+/// What Yulius types into a session ([`App::type_into_session`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Typed {
+    /// A message for the agent, which Claude Code submits as a prompt: from the paste to that
+    /// submit it sits in the session's prompt box, and a restart would lose it (SPEC-468
+    /// CCF-011).
+    Prompt,
+    /// A command Claude Code runs itself (`/mcp reconnect yulius`): no prompt is submitted,
+    /// so nothing of it waits anywhere.
+    Command,
 }
 
 /// Clears a run's "a message is being typed" mark when the typing ends, even if the call is
@@ -190,7 +204,7 @@ impl App {
         channel: Channel,
         text: &str,
     ) -> AppResult<()> {
-        self.type_into_session(task, &message_paste(login, channel, text))
+        self.type_into_session(task, &message_paste(login, channel, text), Typed::Prompt)
             .await?;
         // The person spoke to the task (through their Superagent or their own agent): what it
         // asked them is answered.
@@ -201,8 +215,13 @@ impl App {
     /// Types `paste` (one bracketed paste) and then Enter into the running task's session, once
     /// it takes typed text (TMS-004): its session started, no person typed in the last minute,
     /// and nothing else is being typed. Also Yulius's own "Yulius is back; continue" (SPEC-358
-    /// MSB-007).
-    pub(crate) async fn type_into_session(&self, task: &TaskRecord, paste: &[u8]) -> AppResult<()> {
+    /// MSB-007). `what` says whether Claude Code will submit it as a prompt.
+    pub(crate) async fn type_into_session(
+        &self,
+        task: &TaskRecord,
+        paste: &[u8],
+        what: Typed,
+    ) -> AppResult<()> {
         let runtime = self.existing_runtime(&task.id).ok_or_else(|| {
             AppError::Conflict(format!("task #{} has no live session", task.number))
         })?;
@@ -249,7 +268,20 @@ impl App {
             )));
         }
         let _typing = Typing(&runtime.typing_message);
-        self.send_input(&task.id, paste).await?;
+        // From here a message is in the session's prompt box and not submitted, and a restart
+        // would lose it (SPEC-468 CCF-011). Stamped before it is typed: its submit comes after
+        // (Claude Code runs the prompt hook some 30 ms after the Enter below, also while a
+        // turn runs). A command submits nothing, and a text that could not be typed is nowhere.
+        let before = runtime.message_typed_ms.load(Ordering::SeqCst);
+        if what == Typed::Prompt {
+            runtime
+                .message_typed_ms
+                .store(self.now().0, Ordering::SeqCst);
+        }
+        if let Err(err) = self.send_input(&task.id, paste).await {
+            runtime.message_typed_ms.store(before, Ordering::SeqCst);
+            return Err(err);
+        }
         tokio::time::sleep(SUBMIT_DELAY).await;
         // The text is in the prompt box but not sent: said, so a retry does not send it twice.
         self.send_input(&task.id, b"\r").await.map_err(|err| {

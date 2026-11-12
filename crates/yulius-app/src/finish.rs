@@ -514,6 +514,16 @@ pub fn is_typed_prompt(prompt: Option<&str>) -> bool {
         .is_some_and(|p| !p.is_empty() && !p.starts_with('<') && !is_compact_command(p))
 }
 
+/// Whether a `UserPromptSubmit` prompt came through the session's prompt box, typed by a person
+/// or by Yulius (a command like `/compact` too), which a submit empties; Claude Code's own
+/// wake-ups (they start with `<`) do not pass through it (SPEC-468 CCF-010).
+#[must_use]
+pub fn from_prompt_box(prompt: Option<&str>) -> bool {
+    prompt
+        .map(str::trim_start)
+        .is_some_and(|p| !p.is_empty() && !p.starts_with('<'))
+}
+
 /// Whether a submitted prompt starts a turn of the agent: anything but the compaction command,
 /// after which Claude Code compacts the conversation and runs no turn, so nothing would ever end
 /// it (SPEC-085 STT-005).
@@ -2156,6 +2166,24 @@ mod tests {
         )));
         assert!(!is_typed_prompt(Some("   ")));
         assert!(!is_typed_prompt(None));
+    }
+
+    /// SPEC-468 CCF-010: a prompt a person or Yulius submitted came through the prompt box and
+    /// emptied it, a command that starts no work too; Claude Code's own wake-up did not.
+    #[test]
+    fn prompts_from_the_prompt_box_are_told_from_wakeups() {
+        for typed in [
+            "more tests please",
+            "/goal Ship it",
+            "/compact keep the plan",
+        ] {
+            assert!(from_prompt_box(Some(typed)), "{typed}");
+        }
+        assert!(!from_prompt_box(Some(
+            "<task-notification>\n<task-id>b1</task-id>"
+        )));
+        assert!(!from_prompt_box(Some("   ")));
+        assert!(!from_prompt_box(None), "a hook without its prompt");
     }
 
     /// SPEC-085 STT-005: `/compact` typed into the session (its `UserPromptSubmit`, should Claude

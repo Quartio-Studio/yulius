@@ -327,18 +327,20 @@ impl Old {
 /// freeze: what systemd said, not more (SPEC-467 LFT-001).
 fn not_frozen_after_freeze(unit: &str, old: Option<Old>) -> String {
     match old {
-        // Stopped since the plan: found before the copy, not after it.
+        // Stopped since the plan: found before the frozen pass, not after it.
         Some(old) if !old.active => format!(
             "{unit} is not running any more: start it (`systemctl start {unit}`), so the move \
              can freeze everything it runs"
         ),
         Some(_) => format!(
             "{unit} runs and is not frozen as a whole (a unit of it was thawed or started from \
-             outside right after the freeze): nothing is copied. Run the command again"
+             outside right after the freeze): nothing is copied frozen and the staged copy \
+             stays. Run the command again"
         ),
         None => format!(
             "systemd does not say whether {unit} is frozen as a whole (`systemctl show` failed \
-             right after the freeze): nothing is copied. Run the command again when it answers"
+             right after the freeze): nothing is copied frozen and the staged copy stays. Run \
+             the command again when it answers"
         ),
     }
 }
@@ -1632,8 +1634,8 @@ impl<'a> Move<'a> {
         let mut held = self.freeze()?;
         let state = self.old_unit();
         if !state.is_some_and(|old| old.all_frozen) {
-            // Found before the copy, not after it. The move takes the freeze's end first, so
-            // what is said and thawed here is the only answer to it.
+            // Found before the frozen pass, not after it. The move takes the freeze's end
+            // first, so what is said and thawed here is the only answer to it.
             let covered: Vec<String> = held.covered().iter().rev().cloned().collect();
             self.claim(held);
             let why = not_frozen_after_freeze(&unit, state);

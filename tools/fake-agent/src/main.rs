@@ -118,6 +118,11 @@
 //! before anything else it writes its own line "No response requested." (the model `<synthetic>`,
 //! `stop_reason: stop_sequence`), which is no work of the agent.
 //!
+//! `/notify <type>` (with `--hooks`) runs Claude Code's `Notification` hook with that
+//! `notification_type`, as when it asks the person something (`permission_prompt`), and prints
+//! `NOTIFIED`. `/tool` is the agent going on with no prompt, as after the person answered a
+//! permission prompt: it appends one tool call to the transcript and prints `TOOL`.
+//!
 //! `--hooks YULIUS_EXE` runs Claude Code's hooks as configured by Yulius:
 //! `YULIUS_EXE hook claude UserPromptSubmit` before and `… Stop` after each turn, with the hook
 //! JSON on stdin (the hook client reads `YULIUS_URL` and `YULIUS_TASK_TOKEN` from the inherited
@@ -1276,6 +1281,16 @@ impl Hooks {
         );
     }
 
+    /// `Notification` of `kind` (its `notification_type`), as when Claude Code asks the person.
+    fn notification(&self, kind: &str) {
+        run_hook(
+            &self.exe,
+            "Notification",
+            &json!({"session_id": self.session_id, "hook_event_name": "Notification",
+                "notification_type": kind, "message": "Claude needs your permission to use Bash"}),
+        );
+    }
+
     /// `SessionEnd` with `reason`.
     fn session_end(&self, reason: &str) {
         run_hook(
@@ -2129,6 +2144,20 @@ fn echo_loop(options: &Options, session_id: &str) -> io::Result<i32> {
                 return Ok(3);
             }
             "/size" => say(&format!("SIZE {}", terminal_size()))?,
+            "/tool" => {
+                if let Some(transcript) = &transcript
+                    && let Ok(mut t) = transcript.lock()
+                {
+                    t.tool_use()?;
+                }
+                say("TOOL")?;
+            }
+            _ if line.starts_with("/notify ") => {
+                if let Some(hooks) = &hooks {
+                    hooks.notification(line["/notify ".len()..].trim());
+                }
+                say("NOTIFIED")?;
+            }
             _ if line.starts_with("/clear ") => {
                 let id = line["/clear ".len()..].trim().to_owned();
                 if let Some(hooks) = &hooks {
