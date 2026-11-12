@@ -467,7 +467,7 @@ Settings → Instance
   Finish, the abort that brings the build, a run without a sign-in); the walk (`migrate/` is
   left out).
 - **Mutation checks** (`target/evidence/mutate.py`: one change at a time on a clean tree, the
-  part's tests run, the file restored). 191 written, 189 fail a test:
+  part's tests run, the file restored). 198 written, 196 fail a test:
 
   | Part | Written | Fail a test | Note |
   | --- | --- | --- | --- |
@@ -477,7 +477,8 @@ Settings → Instance
   | Helper | 38 | 36 | see below |
   | Command (this change's parts) | 22 | 22 | |
   | Review round 1 (command 10, helper 8, application 9, adapter 1, card 4) | 32 | 32 | 1 survived first (the repeated write without its id): an assertion added in `7ebf3937` |
-  | Review round 2's notes (application 3, helper 2, card 1) | 6 | 6 | |
+  | Review round 2's notes (application 3, helper 2, card 1) | 6 | 6 | the application's three were of a rule that the next row's replaced |
+  | The request's id (application 4, command 1, helper 1, the option 1) | 7 | 7 | |
 
   The helper's two: one pointed at a condition that the record of a taken request already
   covered, which showed that a failed record was ignored (the fix in `148f3182` removes the
@@ -567,15 +568,33 @@ Settings → Instance
   to round 1 and found them to hold, and left one minor note and two nits in this change's
   code. That head was merged as #1214 on its own green Yulius CI run.
 - **After the merge: round 2's notes**, in a second pull request, each with a test that failed
-  first (`64b8df96`): the note over an earlier checklist said "A move to … is recorded" also
-  when that move was over (e2e: an abort, then a request the helper refuses); a checklist
-  another run wrote in the second a refused run began was taken for the refused run's
-  (`a_refused_run_has_no_checklist_of_its_own`: `earlier` was false); the helper's record of
-  handled ids was taken for empty when a part of it was no text (the first request ran again),
-  and one that cannot be read was written over. Six mutations of these fixes all fail a test.
-  Gate at `3804c711`: exit 0, 3912 tests run, 3912 passed, 16 skipped; the full e2e suite:
-  82 files passed, 1 skipped, 981 tests passed, 1 skipped. Its review is recorded with its
-  merge.
+  first. `64b8df96`: the note over an earlier checklist said "A move to … is recorded" also
+  when that move was over (e2e: an abort, then a request the helper refuses); the helper's
+  record of handled ids was taken for empty when a part of it was no text (the first request
+  ran again), and one that cannot be read was written over.
+  - The third note (a checklist another run wrote in the second a refused run began was taken
+    for the refused run's) was first answered by a rule that a refused run has none of its
+    own. The review of this pull request (the same reviewer, on `1a6c37f7`; its gate and the
+    card's e2e file green) asked for changes: the command also ends with exit 2 after a line
+    that says why, and that line then read as another move's. `65ac8ffb`, `1ff70586`: the
+    helper passes `--request-id`, the command writes it into `status.json`, and the server
+    compares ids (`a_refused_run_has_no_checklist_of_its_own` with the review's case,
+    `the_status_names_the_request_a_run_answers`, the helper's and the command's argument
+    tests).
+  - On a real host (`1ff70586`): a plan's `status.json` names the id in `helper.json`
+    (`earlier` false); a plan for another host, refused with exit 2, leaves the file naming
+    the plan before it (`earlier` true); and the review's case, a plan asked while the unit was
+    frozen: the command wrote "old host: failed: yulius.service is frozen …", ended with exit
+    2, and the view said `earlier` false.
+  - Thirteen mutations of the follow-up's fixes were written (six of the first answers, seven
+    of the id rule), each failing a test when it was run; three of the six changed the rule
+    that was replaced.
+  - Gate at `fefae0a4`: exit 0, 3954 tests run, 3954 passed, 16 skipped. The full e2e suite
+    there: 983 passed, 1 skipped, 2 failed, both in files this change does not touch and both
+    known to fail under load (#1171 `cd.e2e.ts`, #1217 `menus.e2e.ts`; the machine was shared,
+    load 11); those two files alone passed three times in a row (55 tests), and the card's
+    file passed in every run (11 tests). The suite passed whole at `3804c711` (981 tests),
+    after which no file of the page changed. Its review is recorded with its merge.
 - **Not tested.**
   - A move to another public URL behind a real reverse proxy with a certificate: the guests have
     no proxy. The card's notice for an address that redirects was shown on the real page with a
