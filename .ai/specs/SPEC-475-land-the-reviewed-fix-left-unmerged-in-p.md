@@ -113,8 +113,8 @@ says what was done, and `repo_hygiene` shows nothing of this task or of #436 lef
   pull request's fifteen commits and their messages (thirteen up to the approved `6022027e`,
   then two merges of `dev`), so "the test is the reviewed one" is a fact Git shows (`git diff
   d1835270 HEAD -- crates/yulius/tests/local_ci.rs` is empty), and the squash merge into `dev`
-  makes one commit of it either way. A cherry-pick or a copied diff would have
-  to be compared by hand. Alternative, reviving #1162 itself (merging `dev` into its branch):
+  makes one commit of it either way. A cherry-pick or a copied diff would have to be compared
+  by hand. Alternative, reviving #1162 itself (merging `dev` into its branch):
   rejected, because that branch and pull request belong to a closed task: Yulius delivers and
   merges only the pull request of a running task's own branch, which is how #1162 was stranded.
 - **SPEC-454 stays as it is.** It is the fix's record, `status: done`, with task #436's id. This
@@ -172,8 +172,8 @@ here differs from it as follows, with the command that shows each.
   lists what else changed in that code: `run_disk_max` and `lanes` read from the limits in
   force (`cd.rs`, `environment.rs`, `mod.rs`), nothing in the domain's plan or the capacity.
   The fixture runs through more than that (the tests' support code, the store with migrations
-  0050 to 0052, `context.rs`, the router). The review read those commits' diffs: none touches
-  runs, slots, limits, the plan, Git or the process host.
+  0050 to 0052, `context.rs`, the router). The review read those paths' diffs: apart from
+  #1163's own limits code there, none touches CI runs, slots, the plan, Git or the process host.
 
 ## Evidence
 
@@ -193,8 +193,9 @@ here differs from it as follows, with the command that shows each.
     "every other run must have passed before this one holds its jobs".
   - With the limit back at 8 s: failed under R1 after 81.0 s (`quality` and `e2e` in `error`,
     "timed out: ran 8 s, its time limit", no wait) and under R1b after 73.5 s (`security` in
-    `error`, the same reason). Without a probe it passed 2 of 2 (1.6 s): only a slow poll shows
-    this half, as SPEC-454 says.
+    `error`, the same reason). Without a probe it passed 2 of 2 (1.6 s): only a wait longer
+    than 8 s shows this half, as SPEC-454 says (a slow poll here; in the review also a job that
+    starts late).
 - **SPEC-454's probes on today's slot code** (not committed; R1: no poll for 20 s before the
   first wait, R1b: no poll for 12 s before the second phase's wait, R2: the pull request's
   `security` and `e2e` and the branch's `e2e` ask for their slot 500 ms late).
@@ -229,8 +230,8 @@ here differs from it as follows, with the command that shows each.
   the others, a failed `quality` also cancels `security`, no fail-fast among the others, the
   failed scan not published while the others run) each made the test fail; with `security`,
   `quality` or `e2e` asking for its slot 3 s late, and with `security` and `e2e` 9 s late, it
-  passed; with only the hour (SPEC-454's R3) 1 of 4 runs failed after 60.8 s; 32 of 32
-  concurrent copies passed. Findings:
+  passed; with only the hour (the equivalent of SPEC-454's R3) 1 of 4 runs failed after
+  60.8 s; 32 of 32 concurrent copies passed. Findings:
   - Minor, own code: this spec did not say that #1163's two tests hold jobs under the 8 s
     limit too, so SPEC-454's nine read as today's list. Added to Context.
   - Minor, not from this change (`9080cf3e`, #851): `until_jobs` checks its deadline only once
@@ -248,9 +249,17 @@ here differs from it as follows, with the command that shows each.
   - Nit, the author's call, not taken: an assertion on the job limit (see Decisions).
   - Nit, no change asked: "only the test ends a held job" is short for SPEC-454 NCT-002's "its
     release file, or the fail-fast it checks".
-- **Final review.** The same reviewer looks at the commit that answers round 1, which changes
-  only this spec. Its verdict and that head are in the pull request and on the issue: a commit
-  recording them here could not be the head it reviewed.
+- **Independent review, round 2** (the same reviewer, on `30c98ee5`, the commit that answers
+  round 1): approve. It ran the repository check and the scripts' own tests at that head and
+  carried the cargo gate over from `1f971341`, having compared everything the gate reads: the
+  commit changes this spec only. Four nits, all taken: a sentence here gave the review's
+  reading one word too many ("limits": #1163's own limits code is in those paths); the
+  Evidence and a Decision disagreed on what shows the limit's half; "reported on issue #1079"
+  was not true yet (it is since the comment of 2026-11-12 on the issue, with both findings and
+  their evidence); a label ("the equivalent of SPEC-454's R3") and a line wrap.
+- **Final review.** The same reviewer looks at the commit that answers round 2, which again
+  changes only this spec. Its verdict and that head are in the pull request and on the issue:
+  a commit recording them here could not be the head it reviewed.
 - **Limits, and what was not tested.**
   - Yulius CI's own load cannot be produced on demand; the forced slot order, the slow polls
     and the load run stand for it, as in SPEC-454.
