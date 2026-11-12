@@ -1870,6 +1870,7 @@ mod moves {
             turn_that_stays(&s, "one").await?;
             release(&s, &version, "2.1.322")?;
             let started = reached(Point::ClaudeMoveStarted, &s.id);
+            let restarted = decided(&s.id);
             turn(&s, "two").await?;
             second_run_live(&s).await?;
             wait_for(
@@ -1884,7 +1885,9 @@ mod moves {
             );
             let ctx = s.ctx().await?;
             assert_eq!(s.app.claude_code_view(&ctx).await?.moves_stopped, None);
-            // Its later end, by itself, says nothing about the version either.
+            // Its later end, by itself, says nothing about the version either. The restart is
+            // over first: a session's start can be noticed before its run takes input.
+            until_decided(&restarted).await?;
             s.app.send_input(&s.id, b"/crash\r").await?;
             wait_for("the session's end", Duration::from_secs(60), || async {
                 state(&s.app, &s.id)
