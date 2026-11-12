@@ -108,8 +108,9 @@ pub struct CapacityState {
     /// Held while a subscription's stored usage is read, changed and written back
     /// ([`App::change_account_usage`]: a limit Claude reported, a session's reading, a
     /// provider's reading; and a new sign-in), so none of them writes over what another stored
-    /// meanwhile: a limit recorded during a reading stays (SPEC-464 UCL-004). Never held across
-    /// a request to the provider.
+    /// meanwhile: a limit recorded during a reading stays (SPEC-464 UCL-004). The write that
+    /// marks a subscription refused takes it too, so no usage write stores the status it read
+    /// before (#1211). Never held across a request to the provider.
     pub(crate) usage_writes: tokio::sync::Mutex<()>,
 }
 

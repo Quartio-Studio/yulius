@@ -129,6 +129,12 @@ pub enum Point {
     /// A usage limit Claude reported (SPEC-464) is about to be recorded on its subscription: its
     /// stored usage is not read yet. The path is the account id.
     LimitRecord,
+    /// A subscription's usage is about to be stored (SPEC-464, #1211): its status was read, to
+    /// be stored with the usage; nothing is written yet. The path is the account id.
+    UsageStatusRead,
+    /// A subscription Claude refused for good is about to be marked as needing a new sign-in
+    /// (#1211): nothing is read or written yet. The path is the account id.
+    AccessLostRecord,
     /// A turn's end (SPEC-461) looked at the background work of a session on an older Claude
     /// Code, whatever it found; who typed and what pauses it are not read again yet. The path is
     /// the task id.

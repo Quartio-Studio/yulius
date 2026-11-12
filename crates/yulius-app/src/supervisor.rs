@@ -128,8 +128,6 @@ pub struct TaskRuntime {
     /// The current run called a Yulius hook: its Stop hook is the turn boundary that decides
     /// switches and pauses, not the transcript (SPEC-002 §7.5).
     pub(crate) hooks_seen: AtomicBool,
-    /// Last seen limit reset time (ms, 0 = unknown).
-    pub limit_resets_at: AtomicI64,
     /// The current run's last turn ended at a usage limit: no prompt or agent work since
     /// (SPEC-072 LRS-002). A person's switch then resumes past the limit even without a `limit`
     /// pause (an automatic switch after the limit was refused).
@@ -467,7 +465,6 @@ impl TaskRuntime {
             last_input_ms: AtomicI64::new(0),
             proactive_switch: AtomicBool::new(false),
             hooks_seen: AtomicBool::new(false),
-            limit_resets_at: AtomicI64::new(0),
             at_limit: AtomicBool::new(false),
             limit_goal_pause: Mutex::new(crate::goal_retry::LimitGoalPause::None),
             limit_at_ms: AtomicI64::new(0),
@@ -4158,6 +4155,10 @@ impl App {
             }
             _ => None,
         };
+        crate::race::reached(
+            crate::race::Point::UsageStatusRead,
+            Path::new(account.as_str()),
+        );
         // Nor does it erase why it needs one (SPEC-447 MOV-005).
         let kept_error = needs_sign_in.as_ref().and_then(|(_, error)| error.clone());
         let status = if let Some((status, _)) = needs_sign_in {
@@ -4193,8 +4194,16 @@ impl App {
 
     /// A subscription the provider refused for good: it needs a new sign-in, with the provider's
     /// text as its error. The pool no longer places tasks on it, the usage round skips it, and
-    /// paused tasks are reconsidered for the subscriptions left.
+    /// paused tasks are reconsidered for the subscriptions left. A usage write under way
+    /// finishes first, so that it never stores what it read before this.
     pub(crate) async fn record_access_lost(&self, account: &AccountId, message: &str) {
+        crate::race::reached(
+            crate::race::Point::AccessLostRecord,
+            Path::new(account.as_str()),
+        );
+        // Under the lock every write of the subscription's usage takes: such a write reads the
+        // status and stores it back with the usage, and would store `ok` over this (#1211).
+        let _writing = self.capacity.usage_writes.lock().await;
         if let Err(err) = self
             .deps
             .store
@@ -4504,9 +4513,6 @@ impl App {
                     let family = self.task_family(task_id).await;
                     self.record_limit(account, limit, family).await;
                 }
-                runtime
-                    .limit_resets_at
-                    .store(resets_at.map_or(0, |t| t.0), Ordering::SeqCst);
                 let app = self.clone();
                 let tid = task_id.clone();
                 let account = attempt.account_id.clone();
@@ -4523,7 +4529,6 @@ impl App {
                 tracing::warn!(task = %task_id, %message, "subscription access refused");
                 runtime.end_turn(self.now());
                 runtime.limit_cut_the_turn(at);
-                runtime.limit_resets_at.store(0, Ordering::SeqCst);
                 let mut refused = None;
                 if let Some(account) = &attempt.account_id {
                     refused = match self.deps.store.account(account).await {

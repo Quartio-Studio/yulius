@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-12
 
+- A subscription Claude refuses for good while its usage is being stored stays "needs a new
+  sign-in" (SPEC-464's follow-up, task #449, #1211). A usage write stores the status it read
+  together with the usage; one that had read `ok` just before the refusal stored `ok` over it,
+  so the pool placed a task there once more. The refusal's write now takes the lock every usage
+  write takes. In the same change, the reason the audit log gives when Yulius answers a "send
+  the task a message" request by taking the task on (`task.needs_you.resolved`) holds for a
+  refused subscription as for a usage limit.
+
 - A superadmin moves the instance to another host from Settings → Instance (SPEC-470, task #447,
   ADR-0305; slice D of the move). The card **Move to another host** takes the new host, its SSH
   port, a public URL and data disks and shows the plan of `yulius instance migrate`: first the line
@@ -51,8 +59,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   the provider's next reading; a task with nowhere else to go is tried once more, and refused
   again it waits for another subscription's reset when one is known, or asks a person, instead
   of being restarted at every reading; that request ends by itself when its agent works again
-  or Yulius takes the task on at a limit (moves it past the limit, or pauses it to resume it). The API's `usage` gains `limit_reached` and
-  `limit_resets_at` (a limit of the whole subscription). A limit a person lifts early (bought
+  or Yulius takes the task on at a limit (moves it past the limit, or pauses it to resume it).
+  The API's `usage` gains `limit_reached` and `limit_resets_at` (a limit of the whole
+  subscription). A limit a person lifts early (bought
   credits) stays until its reset or a new sign-in for now; the Subscriptions page's manual
   refresh is task #451.
 - The restart of a running task on a newer Claude Code keeps a goal a person set and a draft in
