@@ -1783,6 +1783,27 @@ be. When the new instance answers
 and does not run, `--abort` is the way back; when the new host does not answer the question,
 nothing is touched and the same command asks again once it does.
 
+A unit that has stopped is asked what it left before the run says that it does not run. The
+server's unit has `KillMode=process` (§3), so a `systemctl stop` of it ends the server alone:
+the agents, terminals and sandbox engines it started stay in the unit's cgroup and run on,
+unfrozen, beside the new instance, and systemd freezes nothing of a unit that is not active.
+(systemd 259 refuses to stop a frozen unit; systemd 255, Ubuntu 24.04, thaws it and stops it, so
+there one `systemctl stop` of the frozen old unit is enough to get here.) While processes of a
+stopped unit run (the server's unit, or a sessions unit that does not run; the group's
+`cgroup.events` says `populated 1` and not `frozen 1`), the run ends with a `FAIL` line that
+names the units and the command that ends those processes, and exit 1:
+
+```sh
+sudo systemctl kill --kill-whom=all --signal=SIGKILL yulius.service
+```
+
+The run kills nothing itself and records nothing: run the command the line names (what the old
+instance holds stays on its disk), then the same `yulius instance migrate` command again. It
+asks again each time and goes on to the finish once nothing is left. A stopped unit without a
+cgroup (the old host was restarted, or the stop left nothing), with an empty one, or whose
+processes the kernel holds frozen gets the "make sure" line and the run goes on, as before.
+When systemd does not answer the question, the run fails saying so and asks again next time.
+
 Not part of a move: packages installed inside sandboxes keep their files; on another release the
 checklist names those sandboxes. The sandbox base is built for the new host while preparing, so
 a host that cannot run sandboxes is found before anything freezes.

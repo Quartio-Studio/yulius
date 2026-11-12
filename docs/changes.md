@@ -6,6 +6,19 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-12
 
+- `yulius instance migrate`, going on from a recorded start, no longer ends well while processes
+  of a stopped old unit still run (SPEC-478, task #460, issue #1178). The server's unit has
+  `KillMode=process`: a unit stopped by hand keeps its agents, terminals and sandbox engines
+  running in its cgroup, unfrozen, beside a new instance that has queued the same tasks. The
+  run read only `ActiveState`, said "does not run here any more", recorded the move and ended
+  with exit 0. It now asks what a stopped unit left (`ControlGroup` and the group's
+  `cgroup.events`, for the server's unit and its sessions unit): while processes of it run, a
+  `FAIL` line names the units and `systemctl kill --kill-whom=all --signal=SIGKILL <units>`, the
+  run ends with exit 1, kills nothing and records nothing, so the same command asks again and
+  goes on once they are gone. With no cgroup, an empty one or processes the kernel holds frozen
+  the "make sure" line and exit 0 stay. Seen with the real command on an Ubuntu 26.04 guest
+  (systemd 259), before and after; on Ubuntu 24.04 (systemd 255) a `systemctl stop` of the
+  frozen old unit is enough to reach the state.
 - The Subscriptions page reads usage and limit state again on request (SPEC-473, task #451,
   ADR-0307). Each signed-in subscription's card has **Refresh**, and the page has **Refresh
   all**. A refresh reads the usage and then asks Claude about each limit stored for the
