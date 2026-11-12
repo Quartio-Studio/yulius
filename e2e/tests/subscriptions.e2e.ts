@@ -27,7 +27,9 @@ test('the subscriptions page shows the pool capacity and nothing to manage but a
   await expect(screen.getByRole('button', 'Sign in again')).toBeVisible();
   // No priority, ordering or on/off controls remain (only the account list's Remove buttons).
   expect(await browser.evaluate(() => document.querySelectorAll('main input[type=number], main [role=switch]').length)).toBe(0);
-  await expect(screen.getByText('Refresh usage')).toBeHidden();
+  // Reading the usage again is offered for all and for each signed-in one (SPEC-473).
+  await expect(screen.getByRole('button', 'Refresh all')).toBeVisible();
+  await expect(screen.getByRole('button', 'Refresh usage of Claude #1')).toBeVisible();
   // A usage reading that failed for now is one quiet sentence, no HTTP codes (F 2026-10-10).
   await expect(screen.getByText('Usage updates again in about 12 min.')).toBeVisible();
   expect(await browser.evaluate(() => (document.querySelector('main') || document.body).innerText.includes('HTTP'))).toBe(false);
@@ -50,6 +52,564 @@ test('a subscription out of its model\'s usage credits shows that model\'s week 
   // A subscription Claude reported no such limit for has no such row.
   await expect(browser.locator('.card:has-text("mkarp@example.com") .usage-row:has-text("Fable this week")')).toHaveCount(0);
   expect(await axeViolations(browser)).toEqual([]);
+});
+
+/**
+ * What the card of the subscription `named` (a text on it) says, top down: its state, the
+ * reading's age, the used-up windows and the rows. `cards` selects the cards to look among.
+ */
+const cardSays = (browser: Browser, cards: string, named: string) => browser.evaluate(([css, text]) => {
+  const el = [...document.querySelectorAll(css)].find((card) => card.textContent!.includes(text))!;
+  const reading = el.querySelector('.account-reading');
+  return {
+    state: el.querySelector('.account-state')?.textContent ?? null,
+    // The body's first line: the first thing in the part the clock draws, which heads the body.
+    first: el.querySelector('.account-body > :first-child > :first-child')?.className ?? null,
+    age: reading?.querySelector('.account-age')?.textContent ?? null,
+    stale: reading?.getAttribute('data-stale') ?? null,
+    limits: [...el.querySelectorAll('.account-limit')].map((line) => line.textContent),
+    rows: [...el.querySelectorAll('.usage-row')].map((row) => [row.querySelector('.usage-name > span')?.textContent, row.querySelector('.usage-reset')?.textContent, row.querySelector('.usage-pct')?.textContent]),
+    foot: el.querySelector('.account-foot')?.textContent ?? null,
+  };
+}, [cards, named]);
+
+// SPEC-473 RFR-009, RFR-010: a card starts with how old its reading is and marks one that may be
+// out of date; under it, each used-up window is named with its reset. The foot no longer holds
+// the age. Claude spare's own reading by the page is held, so its card stays as old as it is.
+test('each card says how old its reading is and which window is used up (SPEC-473)', async ({ app, browser }) => {
+  await app.open(mock('/admin/accounts', '&ambient=0&holdpost=/api/admin/accounts/acc_x3/usage'));
+  await firstShown(browser.locator('main .account-card').first());
+  const fresh = await cardSays(browser, 'main .account-card', 'mkarp@example.com');
+  expect(fresh.first).toBe('account-reading');
+  expect(fresh.age).toBe('Usage read 2 min ago');
+  expect(fresh.stale).toBe('false');
+  expect(fresh.limits).toEqual([]);
+  expect(fresh.state).toBeNull();
+  expect(fresh.foot).toBe('1 task on this subscription');
+  const old = await cardSays(browser, 'main .account-card', 'Claude spare');
+  expect(old.age).toBe('Usage read 3 d ago · may be out of date');
+  expect(old.stale).toBe('true');
+  expect(old.foot).toBe('No tasks right now');
+  // Out of the default model's allowance: the line names that window and its reset.
+  const out = await cardSays(browser, 'main .account-card', 'studio@example.com');
+  expect(out.state).toBe('Limit reached');
+  expect(out.limits.length).toBe(1);
+  expect(out.limits[0]).toMatch(/^Fable this week used up · resets \S+ \d/);
+  // One that needs a sign-in and was never read has no reading to date.
+  const refused = await cardSays(browser, 'main .account-card', 'ops@example.com');
+  expect(refused.age).toBeNull();
+  expect(refused.state).toBe('Sign in again');
+  expect(await axeViolations(browser)).toEqual([]);
+});
+
+// SPEC-473 RFR-009, RFR-011: folded (the Dashboard, the Status panel), a row whose reading may be
+// out of date says so in its summary, with words for a screen reader; unfolded, its body starts
+// with the age like a card. A window past its reset shows as not read, never as its old percent.
+test('a folded subscription marks a reading that may be out of date, and a window past its reset reads as not read (SPEC-473)', async ({ app, browser }) => {
+  await app.open(mock('/s/studio', '&ambient=0'));
+  await browser.evaluate(() => {
+    type Account = { label: string; usage: Record<string, unknown> };
+    const db = (window as unknown as { __yuliusMock: { accounts: Account[] } }).__yuliusMock;
+    const four = db.accounts.find((a) => a.label === 'Claude #4')!;
+    four.usage = { ...four.usage, primary: { used_percent: 100, resets_at: new Date(Date.now() - 60e3).toISOString(), window_minutes: 300 } };
+    location.hash = '#/s/studio/dashboard';
+  });
+  await expect(browser.locator('.db-card .account-fold').first()).toBeVisible();
+  const marks = await browser.evaluate(() => Object.fromEntries([...document.querySelectorAll('.db-card .account-fold')].map((fold) => {
+    const mark = fold.querySelector('summary .account-stale');
+    return [fold.querySelector('.account-name strong')!.textContent, mark ? [mark.textContent, mark.getAttribute('title'), Boolean(mark.querySelector('svg'))] : null];
+  })));
+  expect(marks['Claude spare']).toEqual(['Usage read 3 d ago, may be out of date', 'Usage read 3 d ago, may be out of date', true]);
+  expect(marks['Claude #1']).toBeNull();
+  expect(marks['Claude #3']).toBeNull();
+  const rows = await glances(browser, '.db-card');
+  expect(rows.find((r) => r.label === 'Claude #4')!.lines.map((l) => l.pct)).toEqual(['—', '33%']);
+  expect(rows.find((r) => r.label === 'Claude #4')!.state).toBeNull();
+  await browser.locator('.db-card .account-fold:has-text("Claude spare") > summary').click();
+  const open = await cardSays(browser, '.db-card .account-fold', 'Claude spare');
+  expect(open.first).toBe('account-reading');
+  expect(open.age).toBe('Usage read 3 d ago · may be out of date');
+  await expect(browser.locator('.db-card .account-fold:has-text("Claude spare") summary .account-stale')).toBeHidden();
+  await browser.locator('.db-card .account-fold:has-text("Claude #4") > summary').click();
+  const reset = await cardSays(browser, '.db-card .account-fold', 'Claude #4');
+  expect(reset.rows[0]).toEqual(['5-hour window', 'Reset since this reading', '—']);
+  expect(reset.limits).toEqual([]);
+  expect(await axeViolations(browser)).toEqual([]);
+});
+
+/**
+ * Opens the Subscriptions page with Claude #4 stored `ok`, read just now, its 5-hour window at
+ * 100 % and resetting in ten minutes: at its limit until then, by the clock alone.
+ */
+async function openWithAWindowThatResetsInTenMinutes(app: { open: (path: string) => Promise<void> }, browser: Browser) {
+  await app.open(mock('/s/studio', '&ambient=0'));
+  await browser.evaluate(() => {
+    type Account = { label: string; status: string; usage: Record<string, unknown> };
+    const db = (window as unknown as { __yuliusMock: { accounts: Account[] } }).__yuliusMock;
+    const four = db.accounts.find((a) => a.label === 'Claude #4')!;
+    Object.assign(four, { status: 'ok', usage: { ...four.usage, primary: { used_percent: 100, resets_at: new Date(Date.now() + 10 * 60e3).toISOString(), window_minutes: 300 }, observed_at: new Date().toISOString() } });
+    location.hash = '#/admin/accounts';
+  });
+  await firstShown(browser.locator('main .account-card').first());
+}
+
+/**
+ * Eleven minutes pass on the page's clock (`Date.now`, which the cards read each second): past
+ * the reset above, with no test waiting on the wall clock.
+ */
+const elevenMinutesPass = (browser: Browser) => browser.evaluate(() => {
+  const real = Date.now.bind(Date);
+  Date.now = () => real() + 11 * 60e3;
+});
+
+const FOUR = 'main .card:has-text("pawel@example.com") .account-card';
+type Sent = { __yuliusMock: { sent?: Record<string, number>; asked?: Record<string, number> } };
+
+// SPEC-473 RFR-008, RFR-012: the card follows the clock. A subscription at 100 % of its 5-hour
+// window reads "Limit reached" though its last reading stored `ok`; the moment the window resets
+// the card stops saying so, with no reading and no list read; the row then says the window has
+// reset since.
+test('a card stops saying Limit reached the moment its window resets, with no new reading (SPEC-473)', async ({ app, browser }) => {
+  await openWithAWindowThatResetsInTenMinutes(app, browser);
+  // A card that has nothing new to say is not drawn again by the clock: its line stays the
+  // very element it was (marked here, looked at once the clock has gone on). Claude #3 was
+  // never read, so nothing on its card depends on the time.
+  await browser.evaluate(() => {
+    const card = [...document.querySelectorAll('main .account-card')].find((el) => el.textContent!.includes('ops@example.com'))!;
+    (card.querySelector('.account-error') as HTMLElement & { marked?: boolean }).marked = true;
+  });
+  const before = await cardSays(browser, 'main .account-card', 'pawel@example.com');
+  expect(before.state).toBe('Limit reached');
+  expect(before.limits.length).toBe(1);
+  expect(before.limits[0]).toMatch(/^5-hour window used up · resets at \d/);
+  expect(before.rows[0].slice(0, 1).concat(before.rows[0].slice(2))).toEqual(['5-hour window', '100% used']);
+  expect(before.age).toBe('Usage read just now');
+  expect(await axeViolations(browser)).toEqual([]);
+  await elevenMinutesPass(browser);
+  await expect(browser.locator(`${FOUR} .account-state`)).toBeHidden();
+  const after = await cardSays(browser, 'main .account-card', 'pawel@example.com');
+  // The reading aged with the clock too.
+  expect(after.age).toBe('Usage read 11 min ago · may be out of date');
+  expect(after.limits).toEqual([]);
+  expect(after.rows[0]).toEqual(['5-hour window', 'Reset since this reading', '—']);
+  expect(after.rows[1][2]).toBe('33% used');
+  // Nothing was read meanwhile: no usage request for it, and the list was read once.
+  const requests = await browser.evaluate(() => {
+    const db = (window as unknown as Sent).__yuliusMock;
+    return { usage: (db.sent ?? {})['POST /api/admin/accounts/acc_x1/usage'] ?? 0, list: (db.asked ?? {})['/api/admin/accounts'] ?? 0 };
+  });
+  expect(requests).toEqual({ usage: 0, list: 1 });
+  expect(await browser.evaluate(() => {
+    const card = [...document.querySelectorAll('main .account-card')].find((el) => el.textContent!.includes('ops@example.com'))!;
+    return (card.querySelector('.account-error') as HTMLElement & { marked?: boolean }).marked ?? false;
+  })).toBe(true);
+  expect(await axeViolations(browser)).toEqual([]);
+});
+
+// SPEC-473 RFR-012: the clock draws only what depends on it. A name being typed stays as it is,
+// with the keyboard in its field, while the card's state changes beside it.
+test('a name being edited survives the clock drawing its card again (SPEC-473)', async ({ app, browser, screen }) => {
+  await openWithAWindowThatResetsInTenMinutes(app, browser);
+  await screen.getByRole('button', 'Rename Claude #4').click();
+  const name = screen.getByRole('textbox', 'New name for Claude #4');
+  await name.fill('Half typed');
+  await expect(browser.locator(`${FOUR} .account-state`)).toHaveText('Limit reached');
+  await elevenMinutesPass(browser);
+  await expect(browser.locator(`${FOUR} .account-state`)).toBeHidden();
+  await expect(name).toBeFocused();
+  await expect(name).toHaveValue('Half typed');
+  await name.press('Escape');
+});
+
+// ---- Refresh, for one and for all (SPEC-473 RFR-013 to RFR-016)
+
+type Usage = {
+  __yuliusMock: {
+    accounts: { id: string; label: string; status: string; usage: Record<string, unknown>; last_error: string | null }[];
+    sent?: Record<string, number>;
+    asked?: Record<string, number>;
+    usageGate?: Promise<void> | null;
+    usageAnswers?: Record<string, { fail?: string; note?: boolean; unread?: boolean; usage?: Record<string, unknown>; status?: string; at?: string }>;
+    release?: () => void;
+    usageInFlight?: number;
+    usageMostInFlight?: number;
+  };
+  __openUsageGate?: () => void;
+};
+
+/** Every usage request from now on waits until `openUsageGate`. */
+const holdUsage = (browser: Browser) => browser.evaluate(() => {
+  const w = window as unknown as Usage;
+  w.__yuliusMock.usageGate = new Promise<void>((resolve) => { w.__openUsageGate = resolve; });
+});
+const openUsageGate = (browser: Browser) => browser.evaluate(() => {
+  const w = window as unknown as Usage;
+  w.__openUsageGate?.();
+  w.__yuliusMock.usageGate = null;
+});
+/** How often the page asked for the usage of each subscription, by its id. */
+const usageRequests = (browser: Browser) => browser.evaluate(() => {
+  const sent = (window as unknown as Usage).__yuliusMock.sent ?? {};
+  return Object.fromEntries(Object.entries(sent).flatMap(([what, times]) => {
+    const id = /^POST \/api\/admin\/accounts\/([^/]+)\/usage$/.exec(what)?.[1];
+    return id ? [[id, times]] : [];
+  }));
+});
+/** Opens the Subscriptions page and waits until its own reading of the one old card (Claude spare) is over. */
+async function openSubscriptions(app: { open: (path: string) => Promise<void> }, browser: Browser) {
+  await app.open(mock('/admin/accounts', '&ambient=0'));
+  await firstShown(browser.locator('main .account-card').first());
+  await expect.poll(async () => (await cardSays(browser, 'main .account-card', 'Claude spare')).age).toBe('Usage read just now');
+}
+/**
+ * How many toasts are on the page at this moment. A check that none is there looks once: one
+ * that retries for as long as a toast lives would pass over a toast that came and went.
+ */
+const toastsNow = (browser: Browser, css = '.toast') => browser.evaluate((css) => document.querySelectorAll(css).length, css);
+const refreshOf = (screen: Screen, name: string) => screen.getByRole('button', `Refresh usage of ${name}`);
+/** The Refresh button on the card that shows `who`, whatever it reads at the moment. */
+const refreshIn = (browser: Browser, who: string) => browser.locator(`main .card:has-text("${who}") .account-refresh`);
+/** A press that reaches the button's own handler, also while it is off (`aria-disabled`). */
+const press = (browser: Browser, css: string, who = '') => browser.evaluate(([css, who]) => {
+  [...document.querySelectorAll<HTMLElement>(css)].find((el) => !who || el.closest('.card')!.textContent!.includes(who))!.click();
+}, [css, who]);
+
+test('Refresh reads one subscription again: the button says so and keeps the keyboard, and the card shows the new reading (SPEC-473)', async ({ app, browser, screen }) => {
+  await openSubscriptions(app, browser);
+  await holdUsage(browser);
+  const button = refreshIn(browser, 'mkarp@example.com');
+  await expect(refreshOf(screen, 'Claude #1')).toHaveText('Refresh usage of Claude #1');
+  // The press is answered at once, not at the clock's next second: read in the same turn.
+  const atOnce = await browser.evaluate(() => {
+    const card = [...document.querySelectorAll('main .card')].find((el) => el.textContent!.includes('mkarp@example.com'))!;
+    card.querySelector<HTMLElement>('.account-refresh')!.focus();
+    card.querySelector<HTMLElement>('.account-refresh')!.click();
+    return card.querySelector('.account-refresh')!.textContent;
+  });
+  expect(atOnce).toBe('Reading… usage of Claude #1');
+  // It says that it is reading, by its text and by its name, and whose it is.
+  await expect(screen.getByRole('button', 'Reading… usage of Claude #1')).toBeVisible();
+  await expect(button).toHaveAttribute('aria-busy', 'true');
+  // Off without losing the keyboard, and a second press asks nothing more.
+  await expect(button).toHaveAttribute('aria-disabled', 'true');
+  await expect(button).toBeFocused();
+  await press(browser, 'main .account-refresh', 'mkarp@example.com');
+  await browser.keyboard.press('Enter');
+  expect((await cardSays(browser, 'main .account-card', 'mkarp@example.com')).age).toBe('Usage read 2 min ago');
+  expect(await axeViolations(browser)).toEqual([]);
+  await openUsageGate(browser);
+  await expect.poll(async () => (await cardSays(browser, 'main .account-card', 'mkarp@example.com')).age).toBe('Usage read just now');
+  await expect(browser.locator('.toast-ok .toast-msg:has-text("Usage of Claude #1 read again.")')).toBeVisible();
+  // Said once: the presses while it was reading started nothing of their own.
+  await expect(browser.locator('.toast-ok')).toHaveCount(1);
+  await expect(refreshOf(screen, 'Claude #1')).toBeVisible();
+  expect(await button.getAttribute('aria-busy')).toBeNull();
+  expect(await button.getAttribute('aria-disabled')).toBeNull();
+  await expect(button).toBeFocused();
+  expect((await usageRequests(browser)).acc_c1).toBe(1);
+  // One that needs a sign-in has no Refresh: its card offers the sign-in.
+  await expect(refreshOf(screen, 'Claude #3')).toHaveCount(0);
+  expect(await axeViolations(browser)).toEqual([]);
+});
+
+test('a refresh that Claude does not answer says why in one sentence, on a toast and on the card for the visit (SPEC-473)', async ({ app, browser, screen }) => {
+  await openSubscriptions(app, browser);
+  const sentence = 'Claude did not answer when asked whether the limit still holds; the limit stays as it was.';
+  // The server keeps the sentence as the usage note; here it does not, so what stays on the card
+  // is what the page itself keeps for the visit.
+  await browser.evaluate((fail) => { (window as unknown as Usage).__yuliusMock.usageAnswers = { acc_x1: { fail, note: false } }; }, sentence);
+  const button = refreshOf(screen, 'Claude #4');
+  await button.click();
+  await expect(browser.locator('.toast-error .toast-msg')).toHaveText(`Couldn’t refresh Claude #4: ${sentence}`);
+  const note = browser.locator('main .account-card:has-text("pawel@example.com") .account-note');
+  await expect(note).toHaveText(sentence);
+  await expect(button).toBeVisible();
+  expect(await browser.evaluate(() => (document.querySelector('main') || document.body).innerText.includes('HTTP'))).toBe(false);
+  expect((await cardSays(browser, 'main .account-card', 'pawel@example.com')).age).toBe('Usage read 4 min ago');
+  // The card was drawn from the list read again, and the sentence is still there.
+  await expect.poll(() => browser.evaluate(() => ((window as unknown as Usage).__yuliusMock.asked ?? {})['/api/admin/accounts'])).toBe(2);
+  await expect(note).toHaveText(sentence);
+  expect(await axeViolations(browser)).toEqual([]);
+  // A refresh that works takes it away.
+  await browser.evaluate(() => { (window as unknown as Usage).__yuliusMock.usageAnswers = {}; });
+  await button.click();
+  await expect(note).toHaveCount(0);
+  expect((await cardSays(browser, 'main .account-card', 'pawel@example.com')).age).toBe('Usage read just now');
+});
+
+test('a refresh that finds the limit gone draws the card ready and reads the capacity again (SPEC-473)', async ({ app, browser, screen }) => {
+  await openSubscriptions(app, browser);
+  expect((await cardSays(browser, 'main .account-card', 'studio@example.com')).state).toBe('Limit reached');
+  // Claude answers that the default model runs: nothing is stored about its allowance any more.
+  await browser.evaluate(() => {
+    const db = (window as unknown as Usage).__yuliusMock;
+    const { weekly_fable: _gone, ...usage } = db.accounts.find((a) => a.id === 'acc_x2')!.usage;
+    db.usageAnswers = { acc_x2: { status: 'ok', usage: { ...usage, primary: { used_percent: 12, resets_at: new Date(Date.now() + 3600e3).toISOString(), window_minutes: 300 } } } };
+  });
+  const capacityReads = () => browser.evaluate(() => ((window as unknown as Usage).__yuliusMock.asked ?? {})['/api/capacity'] ?? 0);
+  const before = await capacityReads();
+  // Read beside the list, and again after the page's own reading of the old card.
+  expect(before).toBe(2);
+  await refreshOf(screen, 'Claude #5').click();
+  await expect(browser.locator('.toast-ok .toast-msg:has-text("Usage of Claude #5 read again.")')).toBeVisible();
+  const after = await cardSays(browser, 'main .account-card', 'studio@example.com');
+  expect(after.state).toBeNull();
+  expect(after.limits).toEqual([]);
+  expect(after.age).toBe('Usage read just now');
+  expect(after.rows.map((row) => row[0])).toEqual(['5-hour window', 'This week']);
+  await expect.poll(capacityReads).toBe(before + 1);
+});
+
+test('a refresh for which Claude gives no usage reading says so on the card (SPEC-473)', async ({ app, browser, screen }) => {
+  await openSubscriptions(app, browser);
+  await browser.evaluate(() => { (window as unknown as Usage).__yuliusMock.usageAnswers = { acc_c1: { unread: true } }; });
+  await refreshOf(screen, 'Claude #1').click();
+  const note = browser.locator('main .account-card:has-text("mkarp@example.com") .account-note');
+  await expect(note).toHaveText('Claude gave no new usage reading: it shares this subscription’s usage only with its running tasks.');
+  await expect(browser.locator('.toast-msg:has-text("Claude gave no new usage reading for Claude #1.")')).toBeVisible();
+  expect(await toastsNow(browser, '.toast-error')).toBe(0);
+  expect(await toastsNow(browser, '.toast-ok')).toBe(0);
+  expect((await cardSays(browser, 'main .account-card', 'mkarp@example.com')).age).toBe('Usage read 2 min ago');
+});
+
+// The server writes a reading's time to the second, so two readings may carry the same time.
+// The answer itself says whether Claude gave a reading (`usage_read`): a second reading in the
+// same second is a reading, not "no new reading".
+test('a reading that carries the same time as the one before is still a reading (SPEC-473)', async ({ app, browser, screen }) => {
+  await openSubscriptions(app, browser);
+  await browser.evaluate(() => {
+    const db = (window as unknown as Usage).__yuliusMock;
+    db.usageAnswers = { acc_c1: { at: db.accounts.find((a) => a.id === 'acc_c1')!.usage.observed_at as string } };
+  });
+  await refreshOf(screen, 'Claude #1').click();
+  await expect(browser.locator('.toast-ok .toast-msg:has-text("Usage of Claude #1 read again.")')).toBeVisible();
+  await expect(browser.locator('main .account-card:has-text("mkarp@example.com") .account-note')).toHaveCount(0);
+});
+
+// The same for a subscription that was never read: no reading before, none after.
+test('a refresh of a subscription that was never read and still gets no reading says so (SPEC-473)', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio', '&ambient=0'));
+  await browser.evaluate(() => {
+    const db = (window as unknown as Usage).__yuliusMock;
+    const four = db.accounts.find((a) => a.id === 'acc_x1')!;
+    four.usage = { primary: null, secondary: null, observed_at: null };
+    db.usageAnswers = { acc_x1: { unread: true } };
+    const w = window as unknown as Usage;
+    w.__yuliusMock.usageGate = new Promise<void>((resolve) => { w.__openUsageGate = resolve; });
+    location.hash = '#/admin/accounts';
+  });
+  await firstShown(browser.locator('main .account-card').first());
+  // The card says that the page is reading it from its first look (the reading is held here);
+  // then that reading is over, and said nothing.
+  expect(await browser.evaluate(() => [...document.querySelectorAll('main .card')].find((el) => el.textContent!.includes('pawel@example.com'))!.querySelector('.account-refresh')!.textContent)).toBe('Reading… usage of Claude #4');
+  await openUsageGate(browser);
+  await expect(refreshOf(screen, 'Claude #4')).toBeVisible();
+  expect((await usageRequests(browser)).acc_x1).toBe(1);
+  const note = browser.locator('main .account-card:has-text("pawel@example.com") .account-note');
+  await expect(note).toHaveCount(0);
+  await refreshOf(screen, 'Claude #4').click();
+  await expect(note).toHaveText('Claude gave no new usage reading: it shares this subscription’s usage only with its running tasks.');
+  expect(await toastsNow(browser, '.toast-ok')).toBe(0);
+  expect((await cardSays(browser, 'main .account-card', 'pawel@example.com')).age).toBe('Usage not read yet');
+});
+
+test('Refresh all reads every signed-in subscription, three at a time, and says how it went (SPEC-473)', async ({ app, browser, screen }) => {
+  await openSubscriptions(app, browser);
+  const capacityBefore = await browser.evaluate(() => {
+    const db = (window as unknown as Usage).__yuliusMock;
+    db.sent = {};
+    db.usageMostInFlight = 0;
+    return (db.asked ?? {})['/api/capacity'] ?? 0;
+  });
+  await holdUsage(browser);
+  const all = browser.locator('.page-actions .refresh-all');
+  await screen.getByRole('button', 'Refresh all').click();
+  // What it does is in its name while it runs too.
+  await expect(all).toHaveText('Reading… all subscriptions');
+  await expect(all).toHaveAttribute('aria-busy', 'true');
+  await expect(all).toHaveAttribute('aria-disabled', 'true');
+  await expect(all).toBeFocused();
+  // Each card says that it is being read, and three requests are under way, not five.
+  await expect(refreshIn(browser, 'mkarp@example.com')).toHaveText('Reading… usage of Claude #1');
+  await expect(refreshIn(browser, 'Claude spare')).toHaveText('Reading… usage of Claude spare');
+  await expect.poll(() => browser.evaluate(() => (window as unknown as Usage).__yuliusMock.usageInFlight)).toBe(3);
+  // A press on a card meanwhile, and on the button again, join what is under way.
+  await press(browser, 'main .account-refresh', 'mkarp@example.com');
+  await press(browser, '.page-actions .refresh-all');
+  expect(await axeViolations(browser)).toEqual([]);
+  await openUsageGate(browser);
+  await expect(browser.locator('.toast-ok .toast-msg:has-text("Usage read again for 5 subscriptions.")')).toBeVisible();
+  // Said once, with nothing else: the presses meanwhile started nothing of their own.
+  await expect(browser.locator('.toast-ok')).toHaveCount(1);
+  await expect.poll(() => browser.evaluate(() => ((window as unknown as Usage).__yuliusMock.asked ?? {})['/api/capacity'])).toBe(capacityBefore + 1);
+  await expect(all).toHaveText('Refresh all');
+  expect(await all.getAttribute('aria-disabled')).toBeNull();
+  expect(await all.getAttribute('aria-busy')).toBeNull();
+  // Each signed-in one once; the one that needs a sign-in not at all.
+  expect(await usageRequests(browser)).toEqual({ acc_c1: 1, acc_c2: 1, acc_x1: 1, acc_x2: 1, acc_x3: 1 });
+  expect(await browser.evaluate(() => (window as unknown as Usage).__yuliusMock.usageMostInFlight)).toBe(3);
+  for (const who of ['mkarp@example.com', 'team@example.com', 'pawel@example.com', 'studio@example.com', 'Claude spare']) {
+    expect((await cardSays(browser, 'main .account-card', who)).age, who).toBe('Usage read just now');
+  }
+
+  // One of them cannot be read: the toast counts it and its card says why.
+  const sentence = 'Claude did not accept this subscription’s sign-in. If its tasks fail too, sign in again.';
+  await browser.evaluate((fail) => { (window as unknown as Usage).__yuliusMock.usageAnswers = { acc_c2: { fail } }; }, sentence);
+  await all.click();
+  await expect(browser.locator('.toast-error .toast-msg:has-text("1 of 5 subscriptions could not be read: each card says why.")')).toBeVisible();
+  await expect(browser.locator('main .account-card:has-text("team@example.com") .account-note')).toHaveText(sentence);
+  await expect(all).toHaveText('Refresh all');
+
+  // Claude gives no reading for one of them: the toast does not count it as read again.
+  await browser.evaluate(() => { (window as unknown as Usage).__yuliusMock.usageAnswers = { acc_x3: { unread: true } }; });
+  await all.click();
+  await expect(browser.locator('.toast-msg:has-text("Usage read again for 4 of 5 subscriptions: Claude gave no new reading for the rest.")')).toBeVisible();
+  await expect(browser.locator('main .account-card:has-text("Claude spare") .account-note')).toContainText('Claude gave no new usage reading');
+});
+
+test('Refresh all is off when no subscription is signed in, and one subscription is counted as one (SPEC-473)', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio', '&ambient=0'));
+  await browser.evaluate(() => {
+    const db = (window as unknown as Usage).__yuliusMock;
+    db.accounts.forEach((account, i) => { if (i > 0) account.status = 'relogin'; });
+    location.hash = '#/admin/accounts';
+  });
+  await firstShown(browser.locator('main .account-card').first());
+  const all = screen.getByRole('button', 'Refresh all');
+  await all.click();
+  await expect(browser.locator('.toast-ok .toast-msg:has-text("Usage read again for 1 subscription.")')).toBeVisible();
+  expect(await usageRequests(browser)).toEqual({ acc_c1: 1 });
+  // No reading for any: said as that, not as "read again for 0".
+  await browser.evaluate(() => { (window as unknown as Usage).__yuliusMock.usageAnswers = { acc_c1: { unread: true } }; });
+  await all.click();
+  await expect(browser.locator('.toast-msg:has-text("Claude gave no new usage reading: each card says so.")')).toBeVisible();
+  await expect(browser.locator('.toast-ok')).toHaveCount(1);
+  await browser.evaluate(() => { const db = (window as unknown as Usage).__yuliusMock; db.usageAnswers = {}; db.sent = { 'POST /api/admin/accounts/acc_c1/usage': 1 }; });
+  // None signed in: the button says so and asks nothing.
+  await browser.evaluate(() => {
+    const db = (window as unknown as Usage).__yuliusMock;
+    db.accounts[0].status = 'relogin';
+    location.hash = '#/s/studio';
+  });
+  await expect(screen.getByRole('heading', { level: 1 })).not.toHaveText('Subscriptions');
+  await browser.evaluate(() => { location.hash = '#/admin/accounts'; });
+  await firstShown(browser.locator('main .account-card').first());
+  await expect(all).toHaveAttribute('aria-disabled', 'true');
+  await expect(all).toHaveAttribute('title', 'No subscription is signed in');
+  expect(await all.getAttribute('aria-busy')).toBeNull();
+  await press(browser, '.page-actions .refresh-all');
+  await expect(all).toHaveText('Refresh all');
+  expect(await usageRequests(browser)).toEqual({ acc_c1: 1 });
+  expect(await axeViolations(browser)).toEqual([]);
+});
+
+// RFR-015: the page reads a card that may be out of date by itself once per visit. A redraw of the
+// list does not ask again, a failure of that reading says nothing, and a later Refresh does ask.
+test('the page reads an old card by itself once per visit and says nothing when that fails (SPEC-473)', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio', '&ambient=0'));
+  await browser.evaluate(() => {
+    (window as unknown as Usage).__yuliusMock.usageAnswers = { acc_x3: { fail: 'Usage could not be read just now; it updates again in a few minutes.', note: false } };
+    location.hash = '#/admin/accounts';
+  });
+  await firstShown(browser.locator('main .account-card').first());
+  await expect.poll(async () => (await usageRequests(browser)).acc_x3).toBe(1);
+  // The list is drawn again (a rename elsewhere): the old card is not asked for again. The
+  // cards on the page are marked, so the redraw is seen when a card without the mark is there.
+  await browser.evaluate(() => { for (const card of document.querySelectorAll('main .account-card')) (card as HTMLElement & { old?: boolean }).old = true; });
+  await screen.getByRole('button', 'Rename Claude #4').click();
+  await screen.getByRole('textbox', 'New name for Claude #4').fill('Claude four');
+  await screen.getByRole('textbox', 'New name for Claude #4').press('Enter');
+  await expect(screen.getByText('Subscription renamed to Claude four.')).toBeVisible();
+  await expect.poll(() => browser.evaluate(() => {
+    const cards = [...document.querySelectorAll('main .account-card')] as (HTMLElement & { old?: boolean })[];
+    return cards.length > 0 && cards.every((card) => !card.old);
+  }), { message: 'the list was never drawn again' }).toBe(true);
+  expect(await usageRequests(browser)).toEqual({ acc_x3: 1 });
+  expect(await toastsNow(browser, '.toast-error')).toBe(0);
+  await expect(browser.locator('main .account-card:has-text("Claude spare") .account-note')).toHaveCount(0);
+  expect((await cardSays(browser, 'main .account-card', 'Claude spare')).age).toBe('Usage read 3 d ago · may be out of date');
+  // Asked for by a person, the same failure is said.
+  await refreshOf(screen, 'Claude spare').click();
+  await expect(browser.locator('.toast-error .toast-msg')).toContainText('Couldn’t refresh Claude spare: Usage could not be read just now');
+  expect((await usageRequests(browser)).acc_x3).toBe(2);
+});
+
+// RFR-015: Refresh all joins a reading that is already under way (here the page's own reading of
+// the old card): one request for that subscription, and since a person now asked for it, what
+// comes of it is said on its card. The card's own button is off meanwhile.
+test('Refresh all joins a reading the page already has under way, and its card says how it went (SPEC-473)', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio', '&ambient=0'));
+  const sentence = 'Usage could not be read just now; it updates again in a few minutes.';
+  await browser.evaluate((fail) => {
+    const w = window as unknown as Usage;
+    w.__yuliusMock.usageAnswers = { acc_x3: { fail, note: false } };
+    w.__yuliusMock.usageGate = new Promise<void>((resolve) => { w.__openUsageGate = resolve; });
+    location.hash = '#/admin/accounts';
+  }, sentence);
+  await firstShown(browser.locator('main .account-card').first());
+  // The page's own reading of the old card is under way: its button says so and is off.
+  await expect(refreshIn(browser, 'Claude spare')).toHaveText('Reading… usage of Claude spare');
+  await press(browser, 'main .account-refresh', 'Claude spare');
+  await screen.getByRole('button', 'Refresh all').click();
+  await expect.poll(() => browser.evaluate(() => (window as unknown as Usage).__yuliusMock.usageInFlight)).toBe(3);
+  await openUsageGate(browser);
+  await expect(browser.locator('.toast-error .toast-msg')).toHaveText('1 of 5 subscriptions could not be read: each card says why.');
+  await expect(browser.locator('main .account-card:has-text("Claude spare") .account-note')).toHaveText(sentence);
+  expect((await usageRequests(browser)).acc_x3).toBe(1);
+  await expect(refreshOf(screen, 'Claude spare')).toBeVisible();
+});
+
+// RFR-015: the queue is dropped with the page. A card's Refresh and Refresh all have three
+// readings under way and two waiting when the page is left: the two are never sent, and the
+// three that end say nothing on the page the person went to, for the card or for all.
+test('leaving the Subscriptions page drops the readings that wait and says nothing of those that end (SPEC-473)', async ({ app, browser, screen }) => {
+  await openSubscriptions(app, browser);
+  await browser.evaluate(() => { (window as unknown as Usage).__yuliusMock.sent = {}; });
+  await holdUsage(browser);
+  await refreshOf(screen, 'Claude #1').click();
+  await screen.getByRole('button', 'Refresh all').click();
+  await expect.poll(() => browser.evaluate(() => (window as unknown as Usage).__yuliusMock.usageInFlight)).toBe(3);
+  await browser.evaluate(() => { location.hash = '#/s/studio'; });
+  await expect(screen.getByRole('heading', { level: 1 })).not.toHaveText('Subscriptions');
+  await openUsageGate(browser);
+  // The answers have come and every step that follows them has run.
+  await expect.poll(() => browser.evaluate(() => (window as unknown as Usage).__yuliusMock.usageInFlight)).toBe(0);
+  await browser.evaluate(() => new Promise((resolve) => { setTimeout(resolve, 0); }));
+  expect(await toastsNow(browser, '.toast')).toBe(0);
+  expect(await usageRequests(browser)).toEqual({ acc_c1: 1, acc_c2: 1, acc_x1: 1 });
+});
+
+// Refresh all does nothing before the list is there and when it could not be read, and says so
+// by being off.
+test('Refresh all is off until the subscriptions are shown, and when they could not be read (SPEC-473)', async ({ app, browser }) => {
+  await app.open(mock('/admin/accounts', '&ambient=0&hold=/api/admin/accounts'));
+  const all = browser.locator('.page-actions .refresh-all');
+  await expect(all).toHaveAttribute('aria-disabled', 'true');
+  expect(await all.getAttribute('title')).toBeNull();
+  await press(browser, '.page-actions .refresh-all');
+  expect(await toastsNow(browser, '.toast')).toBe(0);
+  await browser.evaluate(() => (window as unknown as Usage).__yuliusMock.release?.());
+  await firstShown(browser.locator('main .account-card').first());
+  await expect.poll(() => all.getAttribute('aria-disabled')).toBeNull();
+  expect(await axeViolations(browser)).toEqual([]);
+
+  await app.open(mock('/admin/accounts', '&ambient=0&fail=/api/admin/accounts'));
+  await expect(browser.locator('main .load-error')).toBeVisible();
+  await expect(all).toHaveAttribute('aria-disabled', 'true');
+  expect(await all.getAttribute('title')).toBeNull();
+  await press(browser, '.page-actions .refresh-all');
+  expect(await usageRequests(browser)).toEqual({});
+  expect(await toastsNow(browser, '.toast')).toBe(0);
+});
+
+test('only the Subscriptions page offers Refresh: the Dashboard and the Status panel show the same card without it (SPEC-473)', async ({ app, browser }) => {
+  await app.open(mock('/s/studio/dashboard', '&ambient=0'));
+  await expect(browser.locator('.db-card .account-fold').first()).toBeVisible();
+  await browser.locator('.db-card .account-fold:has-text("Claude #1") > summary').click();
+  await expect(browser.locator('.db-card .account-fold:has-text("Claude #1") .account-reading')).toHaveText('Usage read 2 min ago');
+  await browser.locator('.btn-status').click();
+  await expect(browser.locator('.status-pop .account-fold').first()).toBeVisible();
+  expect(await browser.evaluate(() => document.querySelectorAll('.account-refresh').length)).toBe(0);
 });
 
 test('a task shows its subscription and a person runs it on another (SPEC-447 MOV-001, MOV-004)', async ({ app, browser, screen }) => {
@@ -128,6 +688,9 @@ test('"Run #N on…" judges a subscription by the windows that bind the task\'s 
       windowPastItsReset: cannotTake({ status: 'ok', usage: { primary: w(100, past) } }, opus),
       needsSignIn: cannotTake({ status: 'relogin', usage: {} }, opus),
       room: cannotTake({ status: 'ok', usage: { primary: w(40), secondary: w(12) } }, { model: 'claude-fable-5-2' }),
+      // Stored "limited" at the last reading, and the window that made it so has reset since
+      // (SPEC-473 RFR-008): a task of no known model is no longer held back by the stored status.
+      storedLimitedPastItsReset: cannotTake({ status: 'limited', usage: { primary: w(10), weekly_fable: w(100, past) } }, {}),
     };
   });
   expect(reasons).toEqual({
@@ -142,7 +705,109 @@ test('"Run #N on…" judges a subscription by the windows that bind the task\'s 
     windowPastItsReset: null,
     needsSignIn: 'Needs a new sign-in',
     room: null,
+    storedLimitedPastItsReset: null,
   });
+});
+
+// SPEC-473 RFR-008: one function says what a subscription's stored usage means at a moment: whether
+// the default model can run, which windows are used up with their resets, and how old the reading
+// is. The stored status is the last reading's; the card, the Status panel and "Run #N on…" go by
+// this.
+test('what a subscription\'s usage means now is worked out from its windows (unit, in the page; SPEC-473)', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const read = await browser.evaluate(async () => {
+    const [{ limitsNow, percentNow, STALE_AFTER_MS }, { resetLabel }] = await Promise.all([import('/assets/usage.js' as string), import('/assets/format.js' as string)]);
+    const now = Date.parse('2026-11-12T12:00:00Z');
+    const iso = (ms: number) => new Date(now + ms).toISOString();
+    const ahead = iso(3 * 3600e3);
+    const past = iso(-60e3);
+    const resets = (at: string) => { const label = resetLabel(at, now); return `${label[0].toLowerCase()}${label.slice(1)}`; };
+    const w = (used: number, resets_at: string | null = ahead) => ({ used_percent: used, resets_at, window_minutes: 10080 });
+    const of = (status: string, usage: Record<string, unknown>) => {
+      const { state, limited, lines, age, stale } = limitsNow({ status, usage }, now);
+      return { state, limited, lines: lines.map((l: { text: string }) => l.text), age, stale };
+    };
+    return {
+      resets: resets(ahead),
+      staleAfterMin: STALE_AFTER_MS / 60e3,
+      room: of('ok', { primary: w(40), secondary: w(12), observed_at: iso(-2 * 60e3) }),
+      // A stored "ok" with a binding window at 100 % is at its limit now (evidence (b)).
+      fiveHour: of('ok', { primary: w(100), secondary: w(12), observed_at: iso(-30e3) }),
+      week: of('limited', { primary: w(10), secondary: w(100) }),
+      fable: of('limited', { primary: w(10), weekly_fable: w(100) }),
+      // Another model's window: its line, and the default model still runs here.
+      opus: of('ok', { primary: w(10), weekly_opus: w(100), weekly_sonnet: w(100, null) }),
+      noReset: of('limited', { weekly_fable: w(100, null) }),
+      // A limit of the whole subscription that no window shows, with and without its reset.
+      reported: of('limited', { primary: w(10), limit_reached: true, limit_resets_at: ahead }),
+      reportedBlind: of('limited', { limit_reached: true, limit_resets_at: null }),
+      // Shown by its window: said once.
+      reportedByItsWindow: of('limited', { primary: w(100), limit_reached: true, limit_resets_at: ahead }),
+      // Stored "limited", and everything that made it so has reset or ended since.
+      reset: of('limited', { primary: w(100, past), weekly_fable: w(100, past), limit_reached: true, limit_resets_at: past, observed_at: iso(-11 * 60e3) }),
+      several: of('limited', { primary: w(100), secondary: w(100), weekly_fable: w(100) }),
+      // A subscription that needs a sign-in keeps saying so, whatever its windows.
+      relogin: of('relogin', { primary: w(100) }),
+      pending: of('pending_login', {}),
+      // The reading's age, to the second it turns stale.
+      neverRead: of('ok', {}),
+      atTheEdge: of('ok', { observed_at: iso(-STALE_AFTER_MS) }),
+      pastTheEdge: of('ok', { observed_at: iso(-STALE_AFTER_MS - 1000) }),
+      // A window's percent is not known after its reset.
+      percents: [percentNow(w(55), now), percentNow(w(55, past), now), percentNow(w(55, null), now), percentNow(null, now), percentNow({ used_percent: null, resets_at: ahead }, now)],
+    };
+  });
+  const none = { state: 'ok', limited: false, lines: [] as string[] };
+  expect(read.staleAfterMin).toBe(10);
+  expect(read.resets).toMatch(/^resets at \d/);
+  expect(read.room).toEqual({ ...none, age: 'Usage read 2 min ago', stale: false });
+  expect(read.fiveHour).toEqual({ state: 'limited', limited: true, lines: [`5-hour window used up · ${read.resets}`], age: 'Usage read just now', stale: false });
+  expect(read.week).toEqual({ state: 'limited', limited: true, lines: [`This week used up · ${read.resets}`], age: 'Usage not read yet', stale: false });
+  expect(read.fable.lines).toEqual([`Fable this week used up · ${read.resets}`]);
+  expect(read.fable.limited).toBe(true);
+  expect(read.opus).toEqual({ ...none, lines: [`Opus this week used up · ${read.resets}`, 'Sonnet this week used up · Claude did not say when it resets'], age: 'Usage not read yet', stale: false });
+  expect(read.noReset.lines).toEqual(['Fable this week used up · Claude did not say when it resets']);
+  expect(read.reported).toEqual({ state: 'limited', limited: true, lines: [`Claude reported a usage limit · ${read.resets}`], age: 'Usage not read yet', stale: false });
+  expect(read.reportedBlind.lines).toEqual(['Claude reported a usage limit without saying when it resets']);
+  expect(read.reportedBlind.limited).toBe(true);
+  expect(read.reportedByItsWindow.lines).toEqual([`5-hour window used up · ${read.resets}`]);
+  expect(read.reset).toEqual({ ...none, age: 'Usage read 11 min ago', stale: true });
+  expect(read.several.lines).toEqual([`5-hour window used up · ${read.resets}`, `This week used up · ${read.resets}`, `Fable this week used up · ${read.resets}`]);
+  expect(read.relogin).toEqual({ state: 'relogin', limited: true, lines: [`5-hour window used up · ${read.resets}`], age: 'Usage not read yet', stale: false });
+  expect(read.pending.state).toBe('pending_login');
+  expect(read.neverRead).toEqual({ ...none, age: 'Usage not read yet', stale: false });
+  expect(read.atTheEdge).toEqual({ ...none, age: 'Usage read 10 min ago', stale: false });
+  expect(read.pastTheEdge.stale).toBe(true);
+  expect(read.percents).toEqual([55, null, 55, null, null]);
+});
+
+// SPEC-473 RFR-008: the Status panel counts and marks a subscription by what its windows say now,
+// not by the status stored at its last reading: one at 100 % of its 5-hour window is at the limit
+// though it was stored "ok" (the person's evidence), and one whose full window has reset is ready
+// though it was stored "limited".
+test('the Status panel goes by what the windows say now, not by the stored status (SPEC-473)', async ({ app, browser }) => {
+  await app.open(mock('/s/studio/git', '&ambient=0'));
+  await browser.evaluate(() => {
+    type Account = { label: string; status: string; usage: Record<string, unknown> };
+    const db = (window as unknown as { __yuliusMock: { accounts: Account[] } }).__yuliusMock;
+    const find = (label: string) => db.accounts.find((a) => a.label === label)!;
+    const ahead = new Date(Date.now() + 3600e3).toISOString();
+    const past = new Date(Date.now() - 60e3).toISOString();
+    const one = find('Claude #1');
+    one.usage = { ...one.usage, primary: { used_percent: 100, resets_at: ahead, window_minutes: 300 } };
+    const two = find('Claude #2');
+    Object.assign(two, { status: 'limited', usage: { ...two.usage, weekly_fable: { used_percent: 100, resets_at: past, window_minutes: 10080 } } });
+  });
+  await browser.locator('.btn-status').click();
+  await expect(browser.locator('.status-pop .account-fold').first()).toBeVisible();
+  const rows = await glances(browser, '.status-pop');
+  const state = (label: string) => rows.find((r) => r.label === label)!.state;
+  expect(state('Claude #1')).toBe('Limit reached');
+  expect(state('Claude #2')).toBeNull();
+  expect(state('Claude #5')).toBe('Limit reached');
+  const summary = (await sectionHeads(browser)).find((h) => h.title === 'Subscriptions')!.summary;
+  expect(summary).toBe('3 ready · 2 at the limit · 1 need attention');
+  expect(await axeViolations(browser)).toEqual([]);
 });
 
 // "Limit reached" also means only the default model's own window is used up (SPEC-464), so the
@@ -150,8 +815,11 @@ test('"Run #N on…" judges a subscription by the windows that bind the task\'s 
 test('the status line of a pool at its limits says so without claiming nothing runs (SPEC-464)', async ({ app, browser }) => {
   await app.open(mock('/s/studio', '&ambient=0'));
   await browser.evaluate(() => {
-    const db = (window as unknown as { __yuliusMock: { accounts: { status: string }[] } }).__yuliusMock;
-    for (const account of db.accounts) account.status = 'limited';
+    const db = (window as unknown as { __yuliusMock: { accounts: { status: string; usage: Record<string, unknown> }[] } }).__yuliusMock;
+    // Each one's 5-hour window is used up; what their last reading stored as status does not
+    // matter (SPEC-473 RFR-008).
+    const resets_at = new Date(Date.now() + 3600e3).toISOString();
+    db.accounts.forEach((account, i) => Object.assign(account, { status: i % 2 ? 'ok' : 'limited', usage: { primary: { used_percent: 100, resets_at, window_minutes: 300 }, secondary: null, observed_at: new Date().toISOString() } }));
   });
   await browser.locator('.btn-status').click();
   await expect(browser.locator('.status-pop .status-health')).toHaveText('Every subscription is at a usage limit: tasks continue when a window resets');

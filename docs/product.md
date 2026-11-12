@@ -259,7 +259,13 @@ watching, steering and unblocking.
   on a weekly allowance of them) is at that model's limit: its tasks of that model move on or
   wait for the reset by themselves, the pool sends it no such task until then whatever its
   5-hour and weekly usage read, and nobody is asked to send "continue"; its card shows the
-  allowance as "Fable this week", and a task of another model can still be run on it. When
+  allowance as "Fable this week", and a task of another model can still be run on it. Every
+  card says how old its usage reading is and which window is used up with its reset (the
+  5-hour window, the week, or a model's allowance), worked out when it is shown: it stops
+  saying "Limit reached" the moment the window resets. An administrator presses Refresh on a
+  card, or Refresh all, to read the usage again and to have Claude asked whether a limit it
+  reported still holds: after buying credits the limit ends at once and the tasks that wait
+  for it go on (SPEC-473). When
   Claude does not say when such a limit ends and no other subscription can take the task,
   Yulius tries it once more after the provider's next usage reading. Refused again, the task
   waits for another subscription's reset when one is known, and otherwise asks a person

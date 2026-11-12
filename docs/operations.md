@@ -1128,11 +1128,16 @@ Vidoc off, it also says `Vidoc scans are switched off for the instance`.
    allowance of them beside the 5-hour and weekly windows) is at that model's limit: its card
    reads "Limit reached" with "Fable this week" at 100 % until the reset Claude named, its tasks
    of that model move on or wait for the reset by themselves, and tasks of other models still
-   run on it. A usage reading does not end that limit, so one lifted early (credits bought)
-   holds until its reset or until the subscription is signed in again. When Claude names no
-   reset (an older Claude Code, or credits switched off), the card shows no reset time, the
-   provider's next reading of the subscription ends the limit (a session's own reading does
-   not), and a task with nowhere else to go is tried once more. Refused again, it waits for
+   run on it. A usage reading does not end that limit. After buying credits, press **Refresh**
+   on the subscription's card (or **Refresh all**): Yulius asks Claude with that model, and
+   when the model answers the limit ends at once and the tasks that wait for it go on
+   (SPEC-473, ADR-0307); otherwise it holds until its reset or until the subscription is signed
+   in again. Each card says how old its usage reading is (one older than 10 minutes is marked
+   "may be out of date") and which window is used up with its reset, worked out when the card
+   is shown. When Claude names no reset (an older Claude Code, or credits switched off), the
+   card says "Claude did not say when it resets"; Refresh then gets the reset from Claude's
+   refusal, the background round's next reading of the subscription ends the limit (a
+   session's own reading does not), and a task with nowhere else to go is tried once more. Refused again, it waits for
    another subscription's reset when one is known, off the subscription that refused it;
    otherwise it is under Needs you (audit `task.limit_without_end`) until a person runs it
    elsewhere or sends it a message, until its agent works again because the limit is over, or

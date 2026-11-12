@@ -116,6 +116,7 @@ mod ui_contract;
 mod update_supervision;
 mod uploads;
 mod usage_credits;
+mod usage_refresh;
 mod variables;
 mod vidoc_key;
 mod vidoc_switch;

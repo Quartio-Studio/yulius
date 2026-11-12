@@ -507,8 +507,11 @@ Such a window ends at its reset, at a new sign-in of the subscription (it was th
 sign-in's) or with a provider's reading: one that carries the window replaces it (the usage
 endpoint reports the Opus and Sonnet caps when the plan has them; nothing reports the allowance of
 usage credits), and one that does not keeps it only while its reset is ahead, so a window without
-a reset ends with the next provider's reading. A session's reading replaces the 5-hour and weekly
-windows only. A subscription reads `limited` while the default model cannot run on it. A reported
+a reset ends with the next provider's reading. The reading of a refresh asked for on the
+Subscriptions page is the exception: it keeps such a window, and Claude's answer decides
+([below](#asking-claude-about-a-stored-limit)). A session's reading replaces the 5-hour and weekly
+windows only. A subscription reads `limited` while the default model cannot run on it; that
+status is written with the usage, and a page works the state out again when it shows it. A reported
 limit, a session's reading and a provider's reading read, change and store a subscription's usage
 through one helper under one lock (`App::change_account_usage`, `CapacityState::usage_writes`),
 which a new sign-in takes too; it is never held across a request to the provider, so a limit
@@ -556,6 +559,8 @@ flowchart TD
     W -->|yes| L["The task waits for that reset;<br/>the pool leaves this subscription out for it"]
     W -->|no| N["The session stays at the refusal:<br/>Yulius asks a person"]
     U["Usage reading"] -->|"a provider's: replaces the windows it carries,<br/>keeps other per-model windows until their reset.<br/>A session's: the 5-hour and weekly windows only"| M
+    Q["Refresh on the Subscriptions page:<br/>Claude is asked with the model the limit binds"] -->|"refused: the reset it names"| M
+    Q -->|"it ran: the limit ends"| P
 ```
 
 ```mermaid
@@ -573,6 +578,76 @@ sequenceDiagram
     H->>T: step back: drop errors and notices, relink parentUuid
     H->>N: claude --resume id (flag set, no prompt)
     N->>T: the lost turn, redone
+```
+
+### Asking Claude about a stored limit
+
+No usage reading shows a model's allowance of usage credits, so a limit stored for a model would
+hold until its reset even after a person bought credits. The Subscriptions page's Refresh asks
+([SPEC-473](../.ai/specs/SPEC-473-subscriptions-page-refresh-now-one-and-a.md),
+[decision 0307](decisions/0307-a-refresh-asks-claude-about-a-stored-limit-and-the-round-reads-no-allowance-ahead.md)).
+`POST /api/admin/accounts/{id}/usage` (`App::refresh_account_usage`) reads the usage, then sends
+one request of one output token for each limit stored and in effect, with the model that limit
+binds (`UsageProbe::model_answer`): a model of each family whose own weekly window is used up, and
+the default model for a limit of the whole subscription (`AccountUsage::families_at_a_limit`). A
+window the reading of that call itself carried is not asked about: the reading is Claude's word
+on it. The answer says whether a usage reading came of it (`usage_read`).
+
+The response's status is the answer, as Claude Code reads its own responses. A response that ran
+ends the limit, whatever its headers say (one that ran on bought credits still carries
+`unified-status: rejected`), and nothing is stored about the model's allowance. HTTP 429 that
+names a limit, by its claim or by a body that asks for usage credits, is recorded like a limit a
+session reports (`ReportedLimit::of_refusal`, the rule the harness uses for Claude Code's limit
+record): the window is full until the reset the answer names, so a limit stored without a reset
+gets one. Anything else is no answer: the refresh fails with one sentence and the limit stays.
+
+An answer is applied under the usage lock (`App::change_usage_of`), and only while the sign-in it
+was asked with and the limit it was asked about are still the ones stored; a usage reading is
+stored only for the sign-in it was asked with, too. The whole call has one
+deadline of 25 s, under the 30 s the web client waits; each step stores whole or not at all, so
+a call that is cut off leaves what its finished steps stored. The background round asks about no
+limit: reading a model's allowance ahead of its limit would cost a request of that model for
+every reading, drawn from the allowance it measures or from credits a person bought.
+
+`usage.observed_at` is the time the subscription's own windows were last read: by the provider,
+by a session whose reading carried both, or with an answer that carried both. A session's
+reading of one window (Claude Code's status line has a window only while the API reports it and
+its reset has not passed) and a limit Claude reports do not move it. So a card's age is the age
+of its windows, and the round, which skips a subscription read in the last 90 s, asks the
+provider for one whose sessions report one window.
+
+In the web UI, `assets/usage.js` (`limitsNow`) works out from the windows and their resets what
+a subscription's usage means at the moment it is shown: whether the default model can run, which
+windows are used up, and how old the reading is. The card (`accountUsage`: Subscriptions page,
+Status panel, Dashboard) draws that and works it out again every second while it is on the page,
+so it stops saying "Limit reached" the moment a window resets; the Status panel's counts and
+"Run #N on…" ask the same function. The page sends its readings through one queue: three
+subscriptions at a time, one request per subscription, and its own reading of an old card once
+per visit.
+
+```mermaid
+sequenceDiagram
+    participant P as Subscriptions page (queue of 3)
+    participant A as App (refresh_account_usage)
+    participant U as Usage probe
+    participant C as Claude
+    P->>A: POST /api/admin/accounts/{id}/usage (Refresh, or one of Refresh all)
+    A->>U: fetch
+    U->>C: GET /api/oauth/usage, else POST /v1/messages (cheapest model, 1 token)
+    A->>A: store the reading (keeps a model's window without a reset)
+    loop each limit stored and in effect
+        A->>U: model_answer(the model the limit binds)
+        U->>C: POST /v1/messages (that model, 1 token)
+        alt it ran
+            C-->>A: the limit ends, waiting tasks resume
+        else 429 that names a limit
+            C-->>A: the window is full until the reset named
+        else no answer
+            C-->>A: 502 with one sentence, the limit stays
+        end
+    end
+    A-->>P: AccountView (or 502 at the 25 s deadline)
+    P->>P: the card works out its state, age and used-up windows by the clock
 ```
 
 ## Moving a task off its subscription

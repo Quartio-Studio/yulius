@@ -424,16 +424,18 @@ test("a subscription's usage answer that lands after a save leaves the keyboard 
   await name.fill('A spare');
   await name.press('Enter');
   await expect(screen.getByText('Subscription renamed to A spare.')).toBeVisible();
-  // The list is drawn again (the card is first now) and asks for the usage once more.
+  // The list is drawn again (the card is first now). The page asked for the old card's usage
+  // once and does not ask again at a redraw (SPEC-473 RFR-015).
   await expect.poll(async () => (await cards(browser))[0]?.name ?? null).toBe('A spare');
   await expect(screen.getByRole('button', 'Rename A spare')).toBeFocused();
-  const foot = browser.locator('main .account-card:has-text("A spare") .account-foot');
-  await expect(foot).toContainText('Updated 3 d ago');
-  await expect.poll(() => browser.evaluate(() => (window as unknown as Mock).__yuliusMock.sent?.['POST /api/admin/accounts/acc_x3/usage'] ?? 0)).toBe(2);
-  // The answers land and the card's head is drawn again: the keyboard is still on the pencil,
+  // The reading's age heads the card's body since SPEC-473; it was in the foot.
+  const foot = browser.locator('main .account-card:has-text("A spare") .account-reading');
+  await expect(foot).toContainText('Usage read 3 d ago');
+  await expect.poll(() => browser.evaluate(() => (window as unknown as Mock).__yuliusMock.sent?.['POST /api/admin/accounts/acc_x3/usage'] ?? 0)).toBe(1);
+  // The answer lands and the card shows the new reading: the keyboard is still on the pencil,
   // so Tab goes on to the email under the name.
   await browser.evaluate(() => (window as unknown as Mock).__yuliusMock.release());
-  await expect(foot).toContainText('Updated just now');
+  await expect(foot).toContainText('Usage read just now');
   await expect(screen.getByRole('button', 'Rename A spare')).toBeFocused();
   await browser.keyboard.press('Tab');
   await expect(screen.getByRole('button', 'Change the email of A spare')).toBeFocused();

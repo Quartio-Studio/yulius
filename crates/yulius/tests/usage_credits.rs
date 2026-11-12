@@ -5,8 +5,8 @@
 //! to send "continue". Real processes, as in `pool_supervision.rs`.
 
 use crate::pool_supervision::{
-    HOUR, ScriptedUsage, build_with, has_status, new_task, refresh, runtime, seed, stop, temp,
-    usage, wait_for,
+    HOUR, ScriptedUsage, build_with, has_status, new_task, reading, refresh, runtime, seed, stop,
+    temp, usage, wait_for,
 };
 use crate::subscription_moves::{live_run, notices, ready, run_accounts, running_on_first};
 use crate::support::agents::{FakeAgentOptions, limit_resume_problems};
@@ -28,7 +28,7 @@ use yulius_domain::harness::Harness;
 use yulius_domain::ids::{AccountId, SandboxId, TaskId, UserId};
 use yulius_domain::task::{Activity, TaskStatus};
 use yulius_domain::time::Timestamp;
-use yulius_domain::usage::{AccountUsage, UsageWindow};
+use yulius_domain::usage::{AccountUsage, ModelAnswer, UsageWindow};
 use yulius_ptyhost::test_support::locate_fake_agent;
 use yulius_store::crypto::MasterKeyCrypto;
 
@@ -147,7 +147,7 @@ fn a_reset_no_window_could_have_does_not_outlive_a_provider_reading() -> TestRes
             probe.clone(),
             refused_for_credits(Some(400 * 24 * 3600)),
         )?;
-        let (id, user) = running_on_first(&app, &probe, &data).await?;
+        let (id, _user) = running_on_first(&app, &probe, &data).await?;
         app.send_input(&id, b"hello\r").await?;
         live_run(&app, &id, 2).await?;
         assert_eq!(
@@ -162,7 +162,7 @@ fn a_reset_no_window_could_have_does_not_outlive_a_provider_reading() -> TestRes
         );
         assert_eq!(status, AccountStatus::Limited);
         probe.set("a-first", usage(0.0, 5 * HOUR, 10.0, 100));
-        refresh(&app, &user, "a-first").await?;
+        reading(&app, "a-first").await?;
         let (status, stored) = stored_usage(&app, "a-first").await?;
         assert!(stored["weekly_fable"].is_null(), "{stored}");
         assert_eq!(status, AccountStatus::Ok);
@@ -226,7 +226,7 @@ fn a_subscription_out_of_usage_credits_gets_no_task_until_they_reset() -> TestRe
             ..AccountUsage::default()
         };
         probe.set("a-first", week);
-        refresh(&app, &user, "a-first").await?;
+        reading(&app, "a-first").await?;
         let (status, usage) = stored_usage(&app, "a-first").await?;
         assert_eq!(usage["secondary"]["used_percent"], 61.0, "{usage}");
         assert_eq!(usage["weekly_fable"]["used_percent"], 100.0, "{usage}");
@@ -299,13 +299,13 @@ fn a_usage_credits_limit_binds_the_model_of_the_task_that_hit_it() -> TestResult
         let (sandbox, user) = seed(&app, &data, &["a-first", "b-second"]).await?;
         // Placed on a-first while b-second is nearly full; b-second is free again afterwards.
         probe.set("b-second", usage(99.0, 4 * HOUR, 30.0, 100));
-        refresh(&app, &user, "b-second").await?;
+        reading(&app, "b-second").await?;
         let opus = Some("claude-opus-5-5");
         let id = task_of_model(&app, &sandbox, &user, "Opus", opus).await?;
         ready(&app, &id).await?;
         assert_eq!(run_accounts(&app, &id).await, [Some("a-first".to_owned())]);
         probe.set("b-second", usage(0.0, 5 * HOUR, 30.0, 100));
-        refresh(&app, &user, "b-second").await?;
+        reading(&app, "b-second").await?;
 
         app.send_input(&id, b"hello\r").await?;
         live_run(&app, &id, 2).await?;
@@ -321,7 +321,7 @@ fn a_usage_credits_limit_binds_the_model_of_the_task_that_hit_it() -> TestResult
 
         // a-first has the most room of the week, and a reading of it keeps the model's limit.
         probe.set("a-first", usage(0.0, 5 * HOUR, 10.0, 50));
-        refresh(&app, &user, "a-first").await?;
+        reading(&app, "a-first").await?;
         let (status, stored) = stored_usage(&app, "a-first").await?;
         assert_eq!(stored["weekly_opus"]["used_percent"], 100.0, "{stored}");
         assert_eq!(stored["secondary"]["used_percent"], 10.0, "{stored}");
@@ -374,24 +374,20 @@ fn a_limit_reported_during_a_usage_reading_is_kept() -> TestResult {
         let (first, second) = ("held-reading-first", "held-reading-second");
         let (sandbox, user) = seed(&app, &data, &[first, second]).await?;
         probe.set(second, usage(99.0, 4 * HOUR, 30.0, 100));
-        refresh(&app, &user, second).await?;
+        reading(&app, second).await?;
         let id = new_task(&app, &sandbox, &user, "Read while limited").await?;
         ready(&app, &id).await?;
         assert_eq!(run_accounts(&app, &id).await, [Some(first.to_owned())]);
         probe.set(second, usage(0.0, 5 * HOUR, 30.0, 100));
-        refresh(&app, &user, second).await?;
+        reading(&app, second).await?;
 
         probe.set(first, usage(10.0, 4 * HOUR, 61.0, 100));
         let (read, go_on) = hold_point(Point::UsageRead, first);
         let (recording, pass) = hold_point(Point::LimitRecord, first);
         pass.send(())?;
         let reading = {
-            let (app, user) = (app.clone(), user.clone());
-            tokio::spawn(async move {
-                refresh(&app, &user, first)
-                    .await
-                    .map_err(|err| err.to_string())
-            })
+            let app = app.clone();
+            tokio::spawn(async move { reading(&app, first).await.map_err(|err| err.to_string()) })
         };
         point_reached(read).await?;
         app.send_input(&id, b"hello\r").await?;
@@ -444,24 +440,20 @@ fn a_subscription_refused_while_its_usage_is_stored_stays_refused() -> TestResul
         let (first, second) = ("held-status-first", "held-status-second");
         let (sandbox, user) = seed(&app, &data, &[first, second]).await?;
         probe.set(second, usage(99.0, 4 * HOUR, 30.0, 100));
-        refresh(&app, &user, second).await?;
+        reading(&app, second).await?;
         let id = new_task(&app, &sandbox, &user, "Refused while read").await?;
         ready(&app, &id).await?;
         assert_eq!(run_accounts(&app, &id).await, [Some(first.to_owned())]);
         probe.set(second, usage(0.0, 5 * HOUR, 30.0, 100));
-        refresh(&app, &user, second).await?;
+        reading(&app, second).await?;
 
         probe.set(first, usage(10.0, 4 * HOUR, 61.0, 100));
         let (read, go_on) = hold_point(Point::UsageStatusRead, first);
         let (marking, pass) = hold_point(Point::AccessLostRecord, first);
         pass.send(())?;
         let reading = {
-            let (app, user) = (app.clone(), user.clone());
-            tokio::spawn(async move {
-                refresh(&app, &user, first)
-                    .await
-                    .map_err(|err| err.to_string())
-            })
+            let app = app.clone();
+            tokio::spawn(async move { reading(&app, first).await.map_err(|err| err.to_string()) })
         };
         point_reached(read).await?;
         app.send_input(&id, b"hello\r").await?;
@@ -568,6 +560,93 @@ fn a_task_paused_for_usage_credits_resumes_at_their_reset_by_itself() -> TestRes
             "not before the reset: ended {} ms early",
             resets - ended.0
         );
+        needs_nobody(&app, &id).await?;
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-473: the person bought usage credits. The task waits in its `limit` pause for the
+/// allowance's reset, 40 hours ahead. A refresh that Claude does not answer leaves it waiting,
+/// with the limit as it was. Then the default model answers the refresh's question: the limit
+/// ends, and the pool resumes the task on the same subscription at once, past the refused turn
+/// and with nothing typed, long before the reset.
+#[test]
+fn a_refresh_that_finds_the_model_running_resumes_the_task_that_waits_for_its_reset() -> TestResult
+{
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let app = build_with(
+            &data,
+            &fake,
+            probe.clone(),
+            refused_for_credits(Some(40 * 3600)),
+        )?;
+        let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
+        app.start_capacity_loop();
+        let id = new_task(&app, &sandbox, &user, "Waits").await?;
+        ready(&app, &id).await?;
+        let started = app.now();
+        app.send_input(&id, b"hello\r").await?;
+        wait_for("the pause", Duration::from_secs(30), || async {
+            app.deps
+                .store
+                .pauses_since(started)
+                .await
+                .is_ok_and(|pauses| !pauses.is_empty())
+        })
+        .await?;
+        let (status, stored) = stored_usage(&app, "a-first").await?;
+        let resets = stored["weekly_fable"]["resets_at"]
+            .as_i64()
+            .ok_or("the reset")?;
+        assert_eq!(status, AccountStatus::Limited);
+
+        // Claude does not answer the question: the refresh fails and nothing changes.
+        probe.set("a-first", usage(10.0, 5 * HOUR, 20.0, 100));
+        let unanswered = refresh(&app, &user, "a-first").await;
+        assert!(
+            unanswered
+                .as_ref()
+                .is_err_and(|err| err.to_string().contains("the limit stays as it was")),
+            "{unanswered:?}"
+        );
+        let (status, stored) = stored_usage(&app, "a-first").await?;
+        assert_eq!(stored["weekly_fable"]["resets_at"], resets, "{stored}");
+        assert_eq!(stored["secondary"]["used_percent"], 20.0, "the reading");
+        assert_eq!(status, AccountStatus::Limited);
+        assert!(has_status(&app, &id, TaskStatus::WaitingCapacity).await);
+        assert_eq!(app.deps.store.attempts(&id).await?.len(), 1);
+
+        // The default model answers: the limit ends now, and the task goes on.
+        probe.answer("a-first", ModelAnswer::default());
+        refresh(&app, &user, "a-first").await?;
+        live_run(&app, &id, 2).await?;
+        let attempts = app.deps.store.attempts(&id).await?;
+        assert_eq!(
+            run_accounts(&app, &id).await[1].as_deref(),
+            Some("a-first"),
+            "the same subscription, before its allowance reset"
+        );
+        let problems = limit_resume_problems(Path::new(&attempts[1].run_dir), &data);
+        assert!(problems.is_empty(), "{problems:?}");
+        let pauses = app.deps.store.pauses_since(started).await?;
+        assert_eq!(pauses.len(), 1, "{pauses:?}");
+        assert_eq!(pauses[0].kind, PauseKind::Limit);
+        let ended = pauses[0].ended_at.ok_or("the pause ended")?;
+        assert!(
+            resets - ended.0 > 39 * HOUR,
+            "long before the reset: {} ms before it",
+            resets - ended.0
+        );
+        let (status, stored) = stored_usage(&app, "a-first").await?;
+        assert!(stored["weekly_fable"].is_null(), "{stored}");
+        assert_eq!(status, AccountStatus::Ok);
         needs_nobody(&app, &id).await?;
         stop(&app, &id).await?;
         Ok::<_, Box<dyn std::error::Error>>(())
@@ -751,7 +830,7 @@ async fn refused_twice(
 
     // A provider's reading ends the limit; the pool tries the task again, once.
     probe.set("a-first", usage(10.0, 4 * HOUR, 30.0, 100));
-    refresh(&app, &user, "a-first").await?;
+    reading(&app, "a-first").await?;
     let (status, stored) = stored_usage(&app, "a-first").await?;
     assert!(stored["weekly_fable"].is_null(), "{stored}");
     assert_eq!(status, AccountStatus::Ok);
@@ -847,7 +926,7 @@ fn a_limit_nothing_says_the_end_of_is_retried_once_then_asks_a_person() -> TestR
         );
 
         // Readings start nothing now: the task waits for its person.
-        refresh(&app, &user, "a-first").await?;
+        reading(&app, "a-first").await?;
         let _ = app.resume_round().await;
         assert_eq!(run_accounts(&app, &id).await.len(), 2);
         assert!(has_status(&app, &id, TaskStatus::Running).await);
@@ -1280,7 +1359,7 @@ fn a_subscriptions_own_limit_without_a_reset_waits_as_before() -> TestResult {
             ..FakeAgentOptions::default()
         };
         let app = build_with(&data, &fake, probe.clone(), agent)?;
-        let (id, user, transcript) = first_turn(&app, &data).await?;
+        let (id, _user, transcript) = first_turn(&app, &data).await?;
         let started = app.now();
         let refused = [Line::Prompt, Line::SessionLimit, Line::TurnDuration];
         append_lines(&transcript, "first", &refused)?;
@@ -1295,7 +1374,7 @@ fn a_subscriptions_own_limit_without_a_reset_waits_as_before() -> TestResult {
         assert_eq!(status, AccountStatus::Limited);
 
         probe.set("a-first", usage(10.0, 4 * HOUR, 30.0, 100));
-        refresh(&app, &user, "a-first").await?;
+        reading(&app, "a-first").await?;
         let _ = app.resume_round().await;
         live_run(&app, &id, 2).await?;
         append_lines(&transcript, "second", &refused)?;
@@ -1333,7 +1412,7 @@ fn a_task_refused_again_while_it_waits_keeps_its_pause() -> TestResult {
             ..FakeAgentOptions::default()
         };
         let app = build_with(&data, &fake, probe.clone(), agent)?;
-        let (id, user, transcript) = first_turn(&app, &data).await?;
+        let (id, _user, transcript) = first_turn(&app, &data).await?;
         let started = app.now();
         append_refused_turn(&transcript, "first")?;
         wait_for("the pause", Duration::from_secs(30), || {
@@ -1358,7 +1437,7 @@ fn a_task_refused_again_while_it_waits_keeps_its_pause() -> TestResult {
         assert!(has_status(&app, &id, TaskStatus::WaitingCapacity).await);
 
         probe.set("a-first", usage(10.0, 4 * HOUR, 30.0, 100));
-        refresh(&app, &user, "a-first").await?;
+        reading(&app, "a-first").await?;
         let _ = app.resume_round().await;
         live_run(&app, &id, 2).await?;
         assert_eq!(run_accounts(&app, &id).await[1].as_deref(), Some("a-first"));
@@ -1394,7 +1473,7 @@ fn a_limit_after_the_model_answered_again_has_its_own_retry() -> TestResult {
         })
         .await?;
         probe.set("a-first", usage(10.0, 4 * HOUR, 30.0, 100));
-        refresh(&app, &user, "a-first").await?;
+        reading(&app, "a-first").await?;
         let _ = app.resume_round().await;
         live_run(&app, &id, 2).await?;
 
@@ -1485,7 +1564,7 @@ fn a_task_refused_again_waits_for_a_known_reset_off_that_subscription() -> TestR
 
         // A reading ends the first subscription's limit: the one retry.
         probe.set("a-first", usage(10.0, 4 * HOUR, 30.0, 100));
-        refresh(&app, &user, "a-first").await?;
+        reading(&app, "a-first").await?;
         let _ = app.resume_round().await;
         live_run(&app, &id, 2).await?;
         assert_eq!(run_accounts(&app, &id).await[1].as_deref(), Some("a-first"));
@@ -1501,7 +1580,7 @@ fn a_task_refused_again_waits_for_a_known_reset_off_that_subscription() -> TestR
         .await?;
 
         // Its next reading shows room again, as each one will: the task stays off it.
-        refresh(&app, &user, "a-first").await?;
+        reading(&app, "a-first").await?;
         let (status, stored) = stored_usage(&app, "a-first").await?;
         assert!(stored["weekly_fable"].is_null(), "{stored}");
         assert_eq!(status, AccountStatus::Ok);

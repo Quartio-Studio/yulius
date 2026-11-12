@@ -739,6 +739,19 @@ body.resizing iframe, body.resizing canvas { pointer-events: none; }
 .usage-pct.tone-danger { color: var(--danger-fg); }
 .usage-pct.tone-unknown { color: var(--muted); }
 .account-foot { display: flex; justify-content: space-between; gap: 8px; color: var(--muted); font-size: var(--fs-xs); line-height: var(--lh-xs); }
+/* What the clock draws again in a card (SPEC-473): wrappers that take no box of their own. */
+.account-live { display: contents; }
+/* How old the reading is, first in the body, with Refresh at its end; then one line per used-up window. */
+.account-reading { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: var(--control-sm); color: var(--muted); font-size: var(--fs-xs); line-height: var(--lh-xs); }
+.account-age { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+.account-reading[data-stale="true"] .account-age { color: var(--warn-fg); }
+.account-refresh { flex: none; }
+.account-refresh[aria-disabled="true"] { opacity: 0.6; cursor: default; }
+.account-limit { display: flex; align-items: flex-start; gap: 6px; color: var(--text-2); font-size: var(--fs-sm); line-height: var(--lh-sm); }
+.account-limit .icon { flex: none; margin-top: 2px; color: var(--muted); }
+/* Folded, a reading that may be out of date: an icon beside the glance; open, the body says it. */
+.account-stale { display: inline-flex; align-items: center; flex: none; color: var(--warn-fg); }
+.account-fold[open] .account-stale { display: none; }
 
 /* live-updates outage notice (PERF-08): floats under the tab row, above the page */
 .conn-banner { position: fixed; z-index: var(--z-popover); top: calc(var(--tabrow-h) + 8px); left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 8px; max-width: calc(100vw - 16px); padding: 6px 6px 6px 12px; border: 1px solid var(--warn-border); border-radius: var(--radius-lg); background: var(--surface-2); color: var(--text); box-shadow: var(--shadow); font-size: var(--fs-sm); line-height: var(--lh-sm); }

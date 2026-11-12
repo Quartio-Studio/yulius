@@ -405,6 +405,23 @@ impl UsageProbe for ReadingProbe {
         })
     }
 
+    /// Asked about a stored limit by a refresh (SPEC-473): the model is still refused, with no
+    /// reset named, so the limit stays as it is stored.
+    async fn model_answer(
+        &self,
+        _: Provider,
+        _: &Secret,
+        _: &str,
+    ) -> Result<yulius_domain::usage::ModelAnswer, UsageFailure> {
+        Ok(yulius_domain::usage::ModelAnswer {
+            refused: Some(yulius_domain::usage::ReportedLimit {
+                scope: yulius_domain::usage::LimitScope::Model(None),
+                ..yulius_domain::usage::ReportedLimit::default()
+            }),
+            ..yulius_domain::usage::ModelAnswer::default()
+        })
+    }
+
     async fn account_email(&self, _: Provider, _: &Secret) -> Result<Option<String>, UsageFailure> {
         Ok(None)
     }
