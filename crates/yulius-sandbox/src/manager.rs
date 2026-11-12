@@ -1934,8 +1934,8 @@ impl Manager {
 }
 
 /// Whether `sandbox` is the throwaway sandbox of a Docker smoke test that still runs, or its
-/// production holder: `docker-smoke-<pid>[.prod]` while process `<pid>` lives (the leftovers
-/// scan's rule). A server that starts beside the smoke must not take them (SPEC-477 SMK-001,
+/// production holder: `docker-smoke-<pid>[.prod]` (the leftovers scan's name rule) while process
+/// `<pid>` lives. A server that starts beside the smoke must not take them (SPEC-477 SMK-001,
 /// ADR-0308, #1160): the smoke starts its holder with Docker off and reads the refusal, and an
 /// adopting server replaced that refusing front with its own engine front. Once the process is
 /// gone they are holders like any other.
@@ -2443,32 +2443,36 @@ while True:
         let smoke = format!("docker-smoke-{}", std::process::id());
         let production = production_holder(&smoke);
         let own = adopting_as(data.path(), &smoke, Err(DOCKER_OFF.into()), false)?;
-        assert!(
-            own.adopt_one(&smoke).await,
-            "the smoke adopts its own holder"
-        );
-        let refusing = own.docker_front(&smoke).await.ok_or("no front")?;
-        assert_eq!(refusing.mode, "refuse");
         adopting_as(data.path(), &production, Ok(()), false)?;
-
-        // The server starts beside it with Docker on, and has a sandbox of its own.
+        // The server beside it has Docker on and a sandbox of its own.
         let server = adopting(data.path(), Ok(()), false)?;
+        // From here fronts run: nothing returns or asserts until they are ended below.
+        let own_adopted = own.adopt_one(&smoke).await;
+        let refusing = own.docker_front(&smoke).await;
+
+        // The server starts.
         let adopted = server.adopt().await;
         let mut known: Vec<String> = lock(&server.sandboxes).keys().cloned().collect();
         known.sort();
         let answer = ask_front_of(&own, &smoke).await;
-        let refusing_runs = crate::holder::exists(refusing.pid);
+        let refusing_runs = refusing
+            .as_ref()
+            .is_some_and(|front| crate::holder::exists(front.pid));
         let production_front = StatePaths::new(server.state_dir(&production))
             .docker_record()
             .exists();
-        // The fronts a server without the rule started are ended before anything is asserted.
+        // Also the fronts a server without the rule started.
         for sandbox in ["s1", smoke.as_str(), production.as_str()] {
             let state = StatePaths::new(server.state_dir(sandbox));
             if let Ok(front) = read_json::<DockerFrontRecord>(&state.docker_record()) {
                 kill(front.pid);
             }
         }
-        kill(refusing.pid);
+        if let Some(front) = &refusing {
+            kill(front.pid);
+        }
+        assert!(own_adopted, "the smoke adopts its own holder");
+        assert_eq!(refusing.map(|f| f.mode).as_deref(), Some("refuse"));
         assert_eq!(answer?, format!("mode:refuse:{DOCKER_OFF}"));
         assert!(refusing_runs, "the smoke's refusing front was not stopped");
         assert_eq!(

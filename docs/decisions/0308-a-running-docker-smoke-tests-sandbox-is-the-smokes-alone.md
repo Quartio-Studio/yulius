@@ -24,10 +24,10 @@ each taking the other's front for a dead one and starting its own at the same so
 step "a sandbox without Docker answers why" read a live engine, or the server's next upkeep
 replaced the smoke's engine front under a running `docker compose up`. `yulius host setup` starts
 `yulius.service` on its first run and runs the smoke a second later, so the first setup of a
-fresh host failed its smoke (issue #1160), and so could the setup `yulius instance migrate` runs
-on a new host. A restart
-of the server during the smoke started from Settings → Instance met the same sandbox: that smoke
-is the server's child, which a restart does not end (`KillMode=process`).
+fresh host failed its smoke (issue #1160). A restart of the server while an operator's `sudo
+yulius doctor --docker-smoke` ran failed that smoke the same way. (`yulius instance migrate`
+waits until the new instance answers before its smoke, after the scan; and a server that stops
+in order ends the smoke it started for Settings → Instance, its child.)
 
 The leftovers scan, the smoke's own cleanup of interrupted smokes and the list of sandboxes on
 their own Docker already read `docker-smoke-<pid>` as the smoke's while process `<pid>` lives.
@@ -37,9 +37,10 @@ their own Docker already read `docker-smoke-<pid>` as the smoke's while process 
 While process `<pid>` runs, the sandbox `docker-smoke-<pid>` and its production holder
 `docker-smoke-<pid>.prod` belong to that smoke test alone. `Manager::adopt`, the scan a starting
 server runs, skips them: no entry in the server's upkeep, no relay, and their Docker front is
-neither stopped, replaced nor started. The rule is the name plus the live process
-(`yulius_domain::leftovers::smoke_pid` and the manager's process check), the one the leftovers scan
-uses. Once the process is gone the holders are like any other: the next server start adopts them,
+neither stopped, replaced nor started. The rule is the name plus the live process: the name rule
+the leftovers scan uses (`yulius_domain::leftovers::smoke_pid`) with the manager's own process
+check (`holder::exists`: the process can be signalled and is no zombie). Once the process is gone
+the holders are like any other: the next server start adopts them,
 the upkeep stops them when idle, and the paths that remove a stale smoke's files stay as they are.
 `Manager::adopt_one` stays unconditional: the smoke adopts and removes its own sandbox through it.
 
@@ -51,8 +52,12 @@ keeps to the same rule.
 - **The smoke restores its refusing front when it finds another.** It hides the fight and does not
   end it: the server keeps the holder in its upkeep and starts its engine front again, and every
   later phase of the smoke shares the holder with a second manager.
-- **`host setup` waits until the server answers before the smoke.** It narrows the window of the
-  first run only; a migration's new host and a restart during a smoke stay as they were.
+- **`host setup` waits until the server answers before the smoke.** `yulius instance migrate`
+  does, and its smoke is not affected. In `host setup` it would cover the first run only; a
+  server restarted while a hand-run smoke runs stays as it was.
+- **Also require `--docker-smoke` in the process's command line.** It would tell a reused process
+  id from a smoke, but the smoke also runs inside other programs (a test that calls it), and the
+  reused id only delays the adoption (Consequences).
 - **A marker file in the smoke's state directory.** A second way to say what the name already
   says, which the other readers would not know.
 - **The smoke keeps its sandbox outside the data directory's sandbox trees.** The smoke proves the
@@ -64,8 +69,12 @@ keeps to the same rule.
 - The first `host setup` of a fresh host passes its smoke, and a smoke's result no longer depends
   on a server starting beside it.
 - A smoke sandbox whose process id was taken by another long-lived process after the smoke was
-  killed is skipped by a starting server as long as that process lives, as the leftovers scan
-  already skips it; its holder then runs unmanaged until that process ends and a later server
+  killed (after a reboot low ids come back soon) is skipped by a starting server as long as that
+  process lives and the service user may signal it; the leftovers scan skips it for any live
+  process of that id. Its holder then runs unmanaged until that process ends and a later server
   start adopts it or the next smoke removes it.
+- A smoke that is killed after a starting server skipped it leaves a holder no server manages
+  until the next server start or the next smoke, as a smoke killed beside a long-running server
+  always did.
 - A new scan of `runtime/sandboxes` must use the same rule; the manager's test
   `a_starting_server_leaves_a_running_smoke_tests_holders_alone` holds it for `adopt`.

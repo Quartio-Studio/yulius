@@ -64,10 +64,19 @@ server.
 - **Why the tests missed it.** The manager's tests adopt one holder per data directory, and the
   smoke's own tests (`isolation_docker_live`) run it with no second manager on its data
   directory. Nothing ran a smoke next to a server that starts.
-- **What else the cause breaks.** Any server start while a smoke runs: `yulius instance migrate`
-  runs `host setup` (start, then smoke) on the new host; and the smoke started from Settings →
-  Instance is the server's child, which a restart of the server does not end (`KillMode=process`),
-  so the new server process met its sandbox the same way.
+- **What else the cause breaks.** Any server start while a smoke runs, so also a restart of
+  `yulius.service` (by hand, by an update, after a crash) while an operator's `sudo yulius doctor
+  --docker-smoke` runs: reproduced on the guest, see Evidence.
+- **What it does not break** (read from the code, found in review; neither was run):
+  - `yulius instance migrate` starts the new host's instance itself and waits until it reports
+    its build at the internal listener before it runs `host setup`'s smoke
+    (`crates/yulius/src/instance/migrate/target.rs`, `start`). The server binds that listener
+    after its adoption scan (the journal of the reproduction: "adopted sandbox holders" at
+    18:17:18.493, "yulius listening" at 18:17:18.553), so that smoke starts after the scan.
+  - The smoke started from Settings → Instance is the server's child, spawned with
+    `kill_on_drop(true)` (`run_smoke`, `crates/yulius/src/wiring/sandbox.rs`): a server that
+    stops in order ends it, and its sandbox is then a dead smoke's. Only a server that dies
+    without unwinding leaves that smoke running, and nobody reads its result any more.
 - **Reproduced** before any fix, see Evidence: the manager test of this spec fails on `dev`
   (`0dd7a58a5`) with the engine's answer where the refusal is expected, and the first `host
   setup` of a fresh Ubuntu 24.04.5 guest with the `dev` binary ends with `FAIL Docker smoke test`
@@ -86,7 +95,8 @@ server.
 - **SMK-003** `Manager::adopt_one` is unchanged: the smoke adopts its own holder through it
   (phase 2) and removes its sandbox through it at the end.
 - **SMK-004** The rule is one function next to `adopt`, built on `yulius_domain::leftovers::smoke_pid`
-  (the name rule the leftovers scan uses) and the manager's own process check.
+  (the name rule the leftovers scan uses) and the manager's own process check
+  (`holder::exists`: the process can be signalled and is no zombie).
 - **SMK-005** The smoke's module documentation, the architecture document, the operations
   guide and the change log say whose the smoke's sandbox is; the decision is recorded.
 
@@ -140,10 +150,18 @@ type, and the smoke's checks themselves.
   upkeep and start its engine front again.
 - **The name and the live process decide, as elsewhere.** No new marker file: `docker-smoke-<pid>`
   already carries its owner, and the leftovers scan and the smoke's own cleanup decide by the
-  same two facts. A sandbox id can never have that shape.
-- **Not by making `host setup` wait for the server.** Waiting until the server answers would
-  narrow the first run's window and leave every other server start beside a smoke (a migration's
-  new host, a restart during the page's smoke check) as it is.
+  same two facts. Each asks about the process in its own way (the leftovers scan: `/proc/<pid>`
+  exists; `stale_smokes`: a signal can be sent; the manager: a signal can be sent and it is no
+  zombie), so they differ for a zombie and for a process id reused by another user's process.
+  A sandbox id can never have that shape.
+- **The process id alone, not its command line.** The review proposed to also require
+  `--docker-smoke` in the process's command line, against a dead smoke's id reused by a
+  long-lived process. Not taken: the smoke also runs inside other programs (the
+  `isolation_docker_live` test calls `docker_smoke::smoke` in the test process), and the reused
+  id only delays the adoption until that process ends (ADR-0308, Consequences).
+- **Not by making `host setup` wait for the server.** `yulius instance migrate` does wait, which
+  is why its smoke is not affected. In `host setup` the wait would cover the first run and leave
+  a server restarted beside a hand-run smoke as it is.
 - **`adopt_one` stays unconditional.** The smoke adopts its own sandbox with it; the rule belongs
   to the scan that takes over "a previous server process's" holders.
 
@@ -234,9 +252,9 @@ from `dev` `0dd7a58a5` ("before") and from this branch at `8b5a87815`, the fix's
   step's detail is the first line of `docker info`, `Client: …`, on a passing run too.)
 - Same guest, later: `yulius doctor --docker-smoke` beside the running server: exit 0,
   `sandboxes get Docker on this host`. The smoke with `systemctl restart yulius.service` as soon
-  as its holder was recorded, three times: exit 0 each time. In two of them the restarted server
-  scanned during the smoke's Docker-off phase (the journal's line 0.36 s and 0.27 s before the
-  refusal step), in the first during phase 2:
+  as its holder was recorded, three times: exit 0 each time. Each time the restarted server
+  scanned during the smoke's Docker-off phase (the journal's line 0.31 s, 0.36 s and 0.27 s
+  before the refusal step's line). The second:
 
   ```
   18:26:45.291 restarted: active
@@ -271,7 +289,8 @@ from `dev` `0dd7a58a5` ("before") and from this branch at `8b5a87815`, the fix's
   comment on issue #1160 (this task opens no issue).
 
 **Not tested here.** Hosts other than Ubuntu 24.04 (the issue also saw 26.04 and Debian 13; the
-changed code has nothing of the host in it). `yulius instance migrate`'s setup on a new host and
-the smoke check of Settings → Instance during a restart were not run as such; the restart during
-a hand-run smoke exercises the same code (`Manager::adopt` at the server's start beside a live
-`docker-smoke-<pid>`).
+changed code has nothing of the host in it). That `yulius instance migrate`'s smoke and the
+smoke check of Settings → Instance are not affected is read from the code (Context), not run; a
+server killed without unwinding during the page's smoke check was not run either. The restart
+during a hand-run smoke exercises the code all of them share (`Manager::adopt` at the server's
+start beside a live `docker-smoke-<pid>`).

@@ -210,7 +210,7 @@ superseding [0140](decisions/0140-isolated-sandboxes-have-no-container-engine-ag
   --load`, `docker save`/`docker load`, a bind of its files) that a sandbox run cannot reach.
   While its process runs, its sandbox `docker-smoke-<pid>` and that production holder are the
   smoke's alone: a server that starts meanwhile does not adopt them (`Manager::adopt` skips them
-  by the leftovers scan's rule, the name plus the live process), so its Docker-off holder keeps
+  by the leftovers scan's name rule and its own process check), so its Docker-off holder keeps
   its refusing front ([ADR-0308](decisions/0308-a-running-docker-smoke-tests-sandbox-is-the-smokes-alone.md)).
 
 ```mermaid
