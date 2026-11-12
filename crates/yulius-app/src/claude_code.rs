@@ -364,6 +364,28 @@ impl App {
             .map_or(0, |runtime| runtime.queue().waiting())
     }
 
+    /// How many of the entries that wait in Claude Code's queue of the task's session a turn's
+    /// end left there (SPEC-479 SWQ-002). Public for tests.
+    #[must_use]
+    pub fn claude_queue_left_over(&self, task_id: &TaskId) -> u32 {
+        self.existing_runtime(task_id)
+            .map_or(0, |runtime| runtime.queue().left_over())
+    }
+
+    /// Whether a move of the task's session to another subscription at this turn's end would
+    /// lose a prompt (SPEC-479 SWQ-001): something waits in Claude Code's queue that a turn's
+    /// end hands on, or was handed on to a turn not seen yet, as the run's lines read so far
+    /// say; or a prompt from the prompt box went on so recently, or since `prompts_before` was
+    /// read (before the turn's lines were), that the record which says where it went may not be
+    /// among them (SPEC-471 CCQ-004). What a turn's end left in the queue keeps no move
+    /// (SWQ-002). Asked once the turn's lines were read, as the restart's rule is.
+    pub(crate) fn prompt_waits_for_turns_end(&self, task_id: &TaskId, prompts_before: u64) -> bool {
+        self.existing_runtime(task_id)
+            .is_some_and(|runtime| runtime.queue_may_hand_on())
+            || self.prompt_just_went_on(task_id)
+            || self.prompts_passed(task_id) != prompts_before
+    }
+
     /// What a turn's end knows about restarting the task's session, which runs `runs`, on
     /// `target`. All of it is cheap to read, so it is read again after the looks that take
     /// seconds; `looked` is what those looks found, `None` before them. Only after them is
@@ -405,7 +427,7 @@ impl App {
     }
 
     /// How many prompts from the prompt box of the task's session went on in its run.
-    fn prompts_passed(&self, task_id: &TaskId) -> u64 {
+    pub(crate) fn prompts_passed(&self, task_id: &TaskId) -> u64 {
         self.runtime(task_id).prompts_passed.load(Ordering::SeqCst)
     }
 

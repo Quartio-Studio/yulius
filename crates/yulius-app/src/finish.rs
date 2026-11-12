@@ -159,6 +159,8 @@ impl TranscriptFacts {
             } => {
                 self.turn_open = Some(false);
                 self.background_agents = background_agents.unwrap_or(0);
+                // What still waits in the queue was left by this turn's end (SPEC-479).
+                self.queue.turn_closed();
             }
             Observation::TurnComplete { at } => {
                 self.turn_open = Some(false);
@@ -1652,6 +1654,32 @@ mod tests {
             },
         ];
         assert_eq!(queued(&reduce(&woken)), (0, false));
+    }
+
+    /// SPEC-479 SWQ-002: a reattached run's lines say what a turn's end left in Claude Code's
+    /// queue. The closing record of a turn marks what still waits; a Stop a hook blocked wrote
+    /// none, so a prompt that waits through it is not marked.
+    #[test]
+    fn what_a_turns_end_left_in_the_queue_is_folded() {
+        use yulius_domain::agent_cli::QueueChange::{Added, HandedOn};
+        let queued = |facts: &TranscriptFacts| {
+            let queue = facts.queue;
+            (queue.waiting(), queue.left_over(), queue.hands_on())
+        };
+        let answer = Observation::TurnComplete {
+            at: Some(Timestamp(5)),
+        };
+        // A prompt waits while the turn's answer is written (and its Stop is blocked).
+        let mut lines = vec![PROMPT, Observation::Queue(Added, None), answer.clone()];
+        assert_eq!(queued(&reduce(&lines)), (1, 0, true));
+        // The turn ends with the entry still there: it was left.
+        lines.push(ENDED);
+        assert_eq!(queued(&reduce(&lines)), (1, 1, false));
+        // A prompt entered in the next turn is handed on at its end, before the closing record.
+        lines.extend([PROMPT, Observation::Queue(Added, None), answer]);
+        assert_eq!(queued(&reduce(&lines)), (2, 1, true));
+        lines.extend([Observation::Queue(HandedOn, None), ENDED, PROMPT]);
+        assert_eq!(queued(&reduce(&lines)), (1, 1, false));
     }
 
     /// SPEC-358 MSB-007: the time of the last record closing a session's turn, its answer or its

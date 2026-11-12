@@ -456,6 +456,15 @@ impl TaskRuntime {
             || self.queue.lock().map_or(true, |queue| queue.holds())
     }
 
+    /// Whether Claude Code's queue may hold something a turn's end hands on, which a move of
+    /// the session at that end would lose (SPEC-479 SWQ-001): its records say so, or they were
+    /// not read yet, or what they said cannot be read. An entry a turn's end left behind does
+    /// not count ([`yulius_domain::agent_cli::Queue::hands_on`]).
+    pub(crate) fn queue_may_hand_on(&self) -> bool {
+        self.queue_unread.load(Ordering::SeqCst)
+            || self.queue.lock().map_or(true, |queue| queue.hands_on())
+    }
+
     /// Changes what is known of the queue.
     pub(crate) fn with_queue(&self, change: impl FnOnce(&mut yulius_domain::agent_cli::Queue)) {
         if let Ok(mut queue) = self.queue.lock() {
@@ -4704,6 +4713,9 @@ impl App {
                 if let Some(at) = at {
                     runtime.turn_closed_ms.fetch_max(at.0, Ordering::SeqCst);
                 }
+                // What still waits in Claude Code's queue was left by this turn's end: it is
+                // not handed on at a later one (SPEC-479 SWQ-002).
+                runtime.with_queue(yulius_domain::agent_cli::Queue::turn_closed);
                 self.background_agents_observed(task_id, background_agents.unwrap_or(0))
                     .await;
                 self.turn_record_seen(task_id, at).await;
