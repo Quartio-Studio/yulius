@@ -468,6 +468,15 @@ impl TaskRuntime {
             || self.queue.lock().map_or(true, |queue| queue.holds())
     }
 
+    /// Whether Claude Code's queue may hold something a turn's end hands on, which a move of
+    /// the session at that end would lose (SPEC-479 SWQ-001): its records say so, or they were
+    /// not read yet, or what they said cannot be read. An entry a turn's end left behind does
+    /// not count ([`yulius_domain::agent_cli::Queue::hands_on`]).
+    pub(crate) fn queue_may_hand_on(&self) -> bool {
+        self.queue_unread.load(Ordering::SeqCst)
+            || self.queue.lock().map_or(true, |queue| queue.hands_on())
+    }
+
     /// Changes what is known of the queue.
     pub(crate) fn with_queue(&self, change: impl FnOnce(&mut yulius_domain::agent_cli::Queue)) {
         if let Ok(mut queue) = self.queue.lock() {
@@ -4791,6 +4800,9 @@ impl App {
                 if let Some(at) = at {
                     runtime.turn_closed_ms.fetch_max(at.0, Ordering::SeqCst);
                 }
+                // What still waits in Claude Code's queue was left by this turn's end: it is
+                // not handed on at a later one (SPEC-479 SWQ-002).
+                runtime.with_queue(yulius_domain::agent_cli::Queue::turn_closed);
                 self.background_agents_observed(task_id, background_agents.unwrap_or(0))
                     .await;
                 self.turn_record_seen(task_id, at).await;
@@ -5138,6 +5150,35 @@ mod tests {
         assert!(died.is_err());
         assert!(runtime.queue.is_poisoned());
         assert!(runtime.queue_may_hold());
+    }
+
+    /// SPEC-479 SWQ-001, SWQ-002: what a move at a turn's end asks of the queue. An entry that
+    /// waits counts until a turn's closing record found it waiting; a queue that is not known
+    /// (a reattached run not read yet, a lock a thread died with) counts; a new run has none.
+    #[test]
+    fn a_move_asks_the_queue_for_what_a_turns_end_hands_on() {
+        use std::sync::atomic::Ordering;
+        use yulius_domain::agent_cli::{Queue, QueueChange};
+        let runtime = std::sync::Arc::new(super::TaskRuntime::new());
+        assert!(!runtime.queue_may_hand_on());
+        runtime.with_queue(|queue| queue.record(QueueChange::Added, None));
+        assert!(runtime.queue_may_hand_on());
+        runtime.with_queue(Queue::turn_closed);
+        assert!(!runtime.queue_may_hand_on(), "left by a turn's end");
+        assert!(runtime.queue_may_hold(), "the restart's rule counts it");
+        runtime.queue_unread.store(true, Ordering::SeqCst);
+        assert!(runtime.queue_may_hand_on(), "not known counts");
+        runtime.run_starts(8_000);
+        assert!(!runtime.queue_may_hand_on());
+        assert_eq!(runtime.queue().left_over(), 0);
+        let dying = std::sync::Arc::clone(&runtime);
+        let died = std::thread::spawn(move || {
+            let _held = dying.queue.lock();
+            std::panic::resume_unwind(Box::new("a thread dies with the queue's lock"));
+        })
+        .join();
+        assert!(died.is_err());
+        assert!(runtime.queue_may_hand_on());
     }
 
     /// Review of SPEC-332 (round 3): a person's switch and a hand-over may come mid-turn, so they

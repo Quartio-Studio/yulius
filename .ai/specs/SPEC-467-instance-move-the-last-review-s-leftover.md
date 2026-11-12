@@ -109,8 +109,10 @@ messages and documents say what the code does.
   finish answered. The finish is recorded (`finished`), the checklist says so (`manual`: look at
   the new host's firewall once, and what to remove there if the key was deleted by hand instead)
   and the run ends with exit 0, whether or not the new URL answers from the old host (a DNS
-  record may still be open). No step is tried over the missing key: `ssh` could only complain
-  about it before the line that says all is done. A key the new host refuses stays as it was
+  record may still be open). No step is tried over the missing key: without the key's file
+  `ssh` falls back to root's own identities and may sign in with them, and nothing of a move
+  goes over another identity than its one-time key (SPEC-460 MIG-010; reason corrected by
+  SPEC-481). A key the new host refuses stays as it was
   (done when the new instance answers); a new host that cannot be reached with a key that still
   exists keeps "Run the command again".
 - LFT-005 **The import's limits mark is never the copy.** `yulius instance export` leaves a

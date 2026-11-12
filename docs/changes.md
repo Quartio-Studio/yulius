@@ -20,6 +20,47 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   and a limit binds that model. The Superagent follows the same rule. A task waits, or asks a
   person, only when neither model can run. While a subscription can still run Fable, tasks
   move there as before.
+- `yulius instance migrate` no longer calls a move finished while its old instance is not held
+  (SPEC-481, task #461, issue #1179, ADR-0311). A run whose new instance had taken over while the
+  old unit could not be frozen or disabled printed `FAIL … must be frozen and disabled now` and
+  ended with exit 1 once; the same command again said "finished" with exit 0 without a look at the
+  old unit, and `--status` showed that. Every run of a move that is recorded as moved now asks
+  systemd again, also long after the finish: no unit of the old instance runs unfrozen, no unit of
+  it that does not run left processes, and `systemctl is-enabled` says `disabled` (or `static`, a
+  unit without `[Install]`). While that does not hold, the run repeats the failed line (what it
+  found, the commands, "The move is not finished until then") under **Cutover**, ends with exit 1,
+  and `--status` shows it; once it holds, the run says `ok` for the old instance and "finished". A
+  later run only looks and changes nothing of the old instance; the steps after the cutover and the
+  finish are done either way, for they are the new instance's. The look after a start is the same
+  one, so a unit that was stopped while the new instance started is asked what it left instead of
+  being told to freeze. A resumed start that finds the old unit stopped with nothing left also asks
+  whether it is disabled, and the line for a new host that stopped answering names `--abort` with
+  its condition (only once the new instance is known to be stopped). The commands a line names for
+  a freeze that keeps failing (`systemctl stop`, `systemctl kill`) now name only the units that are
+  not frozen, also in the resumed start's lines: on systemd 259 a frozen unit whose processes are
+  killed stays frozen on its way to a restart, out of reach of a thaw, a start and `--abort` until
+  its host restarts (measured on the server's own unit).
+- A move to another subscription at a turn's end no longer loses what waits in Claude Code's
+  queue (SPEC-479, task #462, ADR-0310, #1194). A message typed into a working session (a
+  person's through their Superagent, a pull request's news) or a prompt its person entered
+  meanwhile waits in a queue inside Claude Code's process until the turn ends; when the pool
+  moved the session at that end, the process ended with it and the sender had been told
+  "sent". The move now waits while such a prompt waits, as it already waits for background
+  work: the session answers it where it was entered (the gate blocks there, where it blocks)
+  and the next turn's end moves it. On a subscription at its limit that turn is refused and
+  continued past the limit on the next one, like any turn a limit cuts. A turn held for
+  capacity is released in place instead of moved while a prompt waits. The count is the one
+  of SPEC-471; new in it is what a turn's end left: an entry its closing record found still
+  waiting when that end had handed nothing on (Claude Code leaves some of its own
+  notifications in the queue for good). It keeps no move, so a session with such an entry
+  stays only until a turn's end hands nothing on. A prompt behind a notification, a slash
+  command or a `!` line is not left: Claude Code hands those on alone and the prompt one
+  end later (the review found this with the real 2.1.322; the first rule lost that prompt).
+  In this instance's sessions with queue records no hand-over ever took a left-over entry. The restart on a newer Claude Code still counts every entry. The limits of
+  SPEC-471 stay (a prompt entered in the moment after the turn's end decided, a record
+  written later than two seconds); a person's own switch or stop and a turn a limit cuts
+  carry nothing over. The tests' fake agent can play an entry that is never taken out
+  (`/stuck`), one that is handed on alone (`/alone`) and a limit that cuts a handed-on turn.
 - A message Yulius types into a session no longer lands on a person's unsent draft (SPEC-480,
   task #463, ADR-0309, issue #1199). Yulius held a message back only while someone had typed in
   the last minute; an older draft got the message pasted behind it and was sent with it, as one
@@ -90,7 +131,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   the model API before the design (turns with tool calls included: a waiting prompt is taken
   into the running turn at the next tool result). The tests' fake agent can now queue prompts
   in Claude Code's order (`--queue-prompts`). Not in this change: a subscription switch at a
-  turn's end still loses a queued prompt (#1194).
+  turn's end still loses a queued prompt (#1194; fixed by SPEC-479, above).
 
 - A task that reads "Needs your action" says why, and Reply shows where the answer goes
   (SPEC-472, task #455, ADR-0306, #1221). The bar over a flagged task's terminal read "The agent
