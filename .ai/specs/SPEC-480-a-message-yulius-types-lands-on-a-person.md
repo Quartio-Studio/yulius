@@ -1,6 +1,6 @@
 ---
 yulius-task: 032d45a8-d265-4e1b-8ead-0fa92eb2e40e
-status: in-progress
+status: done
 ---
 
 # SPEC-480: A message Yulius types never lands on a person's unsent draft
@@ -109,8 +109,8 @@ after a bound the person is told.
 - [x] type_into_session holds every typed message while a person's draft may sit in the prompt box
 - [x] A held message of Yulius's own flags the task and says so in its terminal after ten minutes
 - [x] SPEC-230, ADR-0178, the guide, the architecture and the tool description say when a message waits
-- [ ] Review round 1 answered: a draft from before a restart holds messages, the last wake tells its person, the flag ends with its hold
-- [ ] The full gate passes on the final code and the spec carries the evidence
+- [x] Review round 1 answered: a draft from before a restart holds messages, the last wake tells its person, the flag ends with its hold
+- [x] The full gate passes on the final code and the spec carries the evidence
 
 ## Acceptance criteria
 
@@ -226,3 +226,74 @@ after a bound the person is told.
   since it asked (`context_full.rs`), so an older draft gets `/compact` behind it (found by the
   review, older code; reported on issue #1199). A CLI without the prompt hook never reports a
   submit: there a keystroke holds messages until the run ends.
+
+## Evidence
+
+Run in this task's worktree on 2026-11-12; logs under the ignored `target/evidence/`.
+
+- **Reproduced before the fix** (commit 0124f7360, tests only, code as on `dev` 0dd7a58a5):
+  `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^task_message::/)'`:
+  12 passed, 2 failed. `a_persons_draft_keeps_the_message_out_however_old` showed the agent's
+  screen: `ECHO: half a thoughtMessage from admin (through their Superagent):` … `Go on`, the
+  person's text and the message as one prompt.
+  `a_message_of_yulius_waits_for_a_persons_draft_and_tells_them` failed at its first pass: the
+  MCP watch typed its reconnect behind the draft.
+- **The restart case reproduced** (commit c19f5ce0c, before the mark):
+  `a_draft_typed_before_a_restart_still_keeps_the_message_out` failed with the same glued
+  prompt on the restarted server.
+- **After the fix**: the same command, 17 passed (the three new tests of this file with the
+  earlier 14); `claude_code_moves::moves::a_prompt_that_starts_no_turn_ends_the_flag_of_a_held_message`
+  passed; `cargo test -p yulius-domain a_persons_draft_holds`: 1 passed.
+- **Mutation checks by hand** (each restored and rebuilt afterwards; a restored file keeps an
+  older time, so it was touched before the next run):
+  1. no draft rule in `policy::box_held`: AC1, AC2 and the unit test fail;
+  2. `DRAFT_TOLD_MS = 0`: AC2 fails (told at two minutes);
+  3. nobody ever told: AC2 fails (no flag);
+  4. a sender's refusal flags too: AC1 fails (flag at eleven minutes);
+  5. the terminal told at every pass: AC2 fails (two lines);
+  6. a flag that ended is not raised again: AC2 fails;
+  7. the last wake tells only after ten minutes: AC7 fails;
+  8. every pass tells at any age: AC2 and AC7 fail;
+  9. the emptied box does not end the flag: AC8 fails;
+  10. the mark is not read at reattach: AC6 fails;
+  11. the mark stays after the box was emptied: AC6 fails.
+- **The gate**: `scripts/dev ci` at 26168d119 (the head of review round 1): exit 0, 4033 tests
+  passed, 16 skipped. Again at 9951d297a (the review's fixes and their documents): exit 0, 4036
+  tests passed, 16 skipped. After that only this spec changed (status, Plan, Evidence).
+- **Security scan**: `yulius security-scan` printed "Security scan disabled: Vidoc is turned
+  off in Yulius, for this project or the whole instance; nothing was scanned." Unrun, not
+  passed.
+- **Independent review, round 1** (a fresh session, head 26168d119, skill `om-code-review`):
+  "approve — no blocker or major finding in the change's own code". Its findings and what was
+  done:
+  - pre-existing, rated major: "keystroke and box-emptied times live in memory only. After a
+    server restart a draft typed before it is unknown, so every typist still pastes behind
+    it." Fixed here (DRF-009, AC6): it is this issue's defect for the typist that types only
+    after a restart, and this run opens no issues.
+  - own code, minor: "a wake refused for a draft is dropped ten minutes after the start with
+    nobody told." Fixed (DRF-006, AC7).
+  - own code, minor: "nothing ends the flag when the hold ends without a prompt that starts a
+    turn." Fixed (DRF-007, AC8).
+  - own code, minor: the spec was in progress without Evidence, and its last Plan item named
+    the review's verdict. This section; the Plan ends on what is done before the verdict.
+  - own code, minor: three statements in ADR-0309 and `docs/product.md` "go further than the
+    code". Scoped to messages through `type_into_session` and keystrokes Yulius saw; "rare"
+    is gone ("was not measured").
+  - own code, minor: "the test does not assert that the flag is gone after the person sends
+    their text". Asserted in AC2 and AC7.
+  - own code, nit: `tell_of_held_message` read the keystroke time again. It gets the time the
+    hold was judged by.
+  - own code, nit: SPEC-444, SPEC-230 and the decisions index named only the last minute.
+    Pointers to SPEC-480 added.
+  - direction: a flagged task is not idle, so a flagged finished task is not done for chained
+    tasks. Named in ADR-0309 and the guide as a consequence (read in the code, not run).
+  - pre-existing, minor: the `/compact` typist honours only keys typed since it asked.
+    Outside this change; reported in a comment on issue #1199 (Limits above).
+  A delta review of the final head follows this section's commit; its verdict is in the pull
+  request.
+- **Not tested here.** The real Claude Code: the fake agent stands in for it, and what Claude
+  Code does with keys and hooks is taken from SPEC-468 and SPEC-471, which ran 2.1.322. The
+  pull-request watch with a draft has no test of its own; it calls the same function with the
+  same sender as the MCP watch, which has one. That a flagged finished task is not done for
+  chained tasks was read in the code. The web UI is unchanged, so the end-to-end suite was not
+  run.
