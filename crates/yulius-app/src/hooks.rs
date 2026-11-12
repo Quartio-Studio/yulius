@@ -250,7 +250,9 @@ impl App {
             runtime.submit_emptied_ms.store(sent, Ordering::SeqCst);
         }
         let reply = self.answer_event(ctx, event, input, sent).await;
-        let held = matches!(reply, Ok(HookReply::Hold { .. }));
+        // A prompt that is held stays held through an answer that fails: the hook client, once
+        // it holds, asks again after one (and fails open only at a first request).
+        let held = matches!(reply, Ok(HookReply::Hold { .. })) || (sent_again && reply.is_err());
         // The box is taken as emptied once the prompt goes on, not while it is held: a prompt
         // Yulius blocks in the end (its scope check held it, TSK-013) never reaches the agent,
         // and Claude Code puts its text back into the box, so that submit emptied nothing.
