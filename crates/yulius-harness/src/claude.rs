@@ -269,7 +269,8 @@ fn observe_queue(record: &Map<String, Value>) -> Vec<Observed> {
         Some("remove" | "popAll" | "popOne") => QueueChange::Taken,
         _ => return Vec::new(),
     };
-    vec![Observed::Queue(change)]
+    let at = str_of(record, "timestamp").and_then(parse_rfc3339);
+    vec![Observed::Queue { change, at }]
 }
 
 /// The session goal's state from a `goal_status` attachment (see the module docs).
@@ -1801,14 +1802,36 @@ mod tests {
     /// and nothing else is.
     #[test]
     fn queue_records_are_changes_of_the_queue() {
-        let change = |line: &str| observe_versioned(line);
-        let one = |change: QueueChange| (vec![Observed::Queue(change)], None);
+        // What changed, without the record's time.
+        let change = |line: &str| {
+            let (observed, version) = observe_versioned(line);
+            let changes: Vec<Observed> = observed
+                .into_iter()
+                .map(|one| match one {
+                    Observed::Queue { change, .. } => Observed::Queue { change, at: None },
+                    other => other,
+                })
+                .collect();
+            (changes, version)
+        };
+        let one = |change: QueueChange| (vec![Observed::Queue { change, at: None }], None);
         assert_eq!(
             change(
                 r#"{"type":"queue-operation","operation":"enqueue","timestamp":"2026-11-12T05:56:52.726Z","sessionId":"b38662ec","content":"second"}"#
             ),
             one(QueueChange::Added)
         );
+        // The record's own time is kept: a hand-over is told from the lines written before it.
+        assert_eq!(
+            observe_line(
+                r#"{"type":"queue-operation","operation":"dequeue","timestamp":"2026-11-12T05:59:32.594Z","sessionId":"19203f97"}"#
+            ),
+            vec![Observed::Queue {
+                change: QueueChange::HandedOn,
+                at: parse_rfc3339("2026-11-12T05:59:32.594Z"),
+            }]
+        );
+        assert!(parse_rfc3339("2026-11-12T05:59:32.594Z").is_some());
         assert_eq!(
             change(
                 r#"{"type":"queue-operation","operation":"dequeue","timestamp":"2026-11-12T05:59:32.594Z","sessionId":"19203f97"}"#

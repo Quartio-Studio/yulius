@@ -162,6 +162,8 @@ impl TranscriptFacts {
             }
             Observation::TurnComplete { at } => {
                 self.turn_open = Some(false);
+                // An answer written after a hand-over is of the turn it started (SPEC-471).
+                self.queue.work_seen(*at);
                 self.context_full = false;
                 // A sub-agent's turn end (no time) says nothing about the session's limit.
                 self.limit_pending &= at.is_none();
@@ -222,7 +224,7 @@ impl TranscriptFacts {
                 // says the end of (UCL-010). SPEC-469's rule for a pause.
                 self.worked_since_goal_pause = None;
             }
-            Observation::Queue(change) => self.queue.record(*change),
+            Observation::Queue(change, at) => self.queue.record(*change, *at),
             Observation::Session { .. }
             | Observation::CompactFailed
             | Observation::BackgroundStarted { .. }
@@ -232,6 +234,8 @@ impl TranscriptFacts {
             // continued the turn (STA-005).
             Observation::AgentWork { at } => {
                 self.turn_open = Some(true);
+                // Work written after a hand-over is of the turn it started (SPEC-471).
+                self.queue.work_seen(*at);
                 self.goal_retry = None;
                 self.limit_goal_pause = None;
                 self.context_full = false;
@@ -1592,11 +1596,11 @@ mod tests {
             at: Some(Timestamp(6)),
         };
         assert_eq!(queued(&reduce(&[PROMPT])), (0, false));
-        let waiting = [PROMPT, Observation::Queue(Added), answer.clone()];
+        let waiting = [PROMPT, Observation::Queue(Added, None), answer.clone()];
         assert_eq!(queued(&reduce(&waiting)), (1, true));
         // Handed on: the turn that ended closes, and nothing of the new one shows yet.
         let mut lines = waiting.to_vec();
-        lines.extend([Observation::Queue(HandedOn), ENDED]);
+        lines.extend([Observation::Queue(HandedOn, None), ENDED]);
         assert_eq!(
             queued(&reduce(&lines)),
             (0, true),
@@ -1608,12 +1612,40 @@ mod tests {
         lines.push(PROMPT);
         assert_eq!(queued(&reduce(&lines)), (0, false), "its turn began");
         // Taken into the running turn at a tool result: no turn of its own follows.
-        let taken = [PROMPT, Observation::Queue(Added), Observation::Queue(Taken)];
+        let taken = [
+            PROMPT,
+            Observation::Queue(Added, None),
+            Observation::Queue(Taken, None),
+        ];
         assert_eq!(queued(&reduce(&taken)), (0, false));
+        // A prompt Claude Code scheduled for itself is handed on with a record that is read as
+        // no prompt: the model's first line written after the hand-over shows its turn. The
+        // ended turn's lines were written before it.
+        let handed_on = Observation::Queue(HandedOn, Some(Timestamp(100)));
+        let scheduled = |then: Observation| {
+            reduce(&[
+                Observation::Queue(Added, None),
+                handed_on.clone(),
+                ENDED,
+                then,
+            ])
+        };
+        let work_at = |ms| Observation::AgentWork {
+            at: Some(Timestamp(ms)),
+        };
+        let answer_at = |ms| Observation::TurnComplete {
+            at: Some(Timestamp(ms)),
+        };
+        assert_eq!(queued(&scheduled(work_at(99))), (0, true), "the old turn");
+        assert_eq!(queued(&scheduled(work_at(101))), (0, false));
+        assert_eq!(queued(&scheduled(answer_at(99))), (0, true), "the old turn");
+        assert_eq!(queued(&scheduled(answer_at(101))), (0, false));
+        let sub_agent = Observation::TurnComplete { at: None };
+        assert_eq!(queued(&scheduled(sub_agent)), (0, true), "no time, no word");
         // Claude Code's own wake-up is a turn that took what was handed on.
         let woken = [
-            Observation::Queue(Added),
-            Observation::Queue(HandedOn),
+            Observation::Queue(Added, None),
+            Observation::Queue(HandedOn, None),
             Observation::UserTurn {
                 at: Some(Timestamp(9)),
                 wake: true,

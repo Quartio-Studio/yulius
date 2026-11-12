@@ -4639,6 +4639,8 @@ impl App {
                 if !runtime.hooks_seen.load(Ordering::SeqCst) {
                     self.turn_ended(task_id, attempt.account_id.clone());
                 }
+                // An answer written after a hand-over ends the turn it started (SPEC-471).
+                runtime.with_queue(|queue| queue.work_seen(at));
             }
             Observation::TurnInterrupted { at } => {
                 // Esc or Ctrl+C stopped the turn: no Stop hook runs, the agent waits for input.
@@ -4670,6 +4672,10 @@ impl App {
                 // The agent works: a goal pause before it asks nobody any more (SPEC-469).
                 self.goal_pause_overtaken(task_id).await;
                 self.agent_worked(task_id, at).await;
+                // Work written after a hand-over is of the turn it started, which a prompt
+                // Claude Code scheduled for itself begins with no prompt record read here.
+                // After the task reads Working, as for a prompt record (SPEC-471 CCQ-003).
+                runtime.with_queue(|queue| queue.work_seen(at));
             }
             Observation::GoalRetry { armed, notice } => {
                 self.goal_retry_observed(task_id, armed, &notice).await;
@@ -4691,7 +4697,7 @@ impl App {
                 self.background_resumable(task_id, id).await;
             }
             // In the order of the lines: the count is ahead of nothing the watcher applied.
-            Observation::Queue(change) => runtime.with_queue(|queue| queue.record(change)),
+            Observation::Queue(change, at) => runtime.with_queue(|queue| queue.record(change, at)),
             Observation::Session { .. } => {}
         }
     }
@@ -4909,9 +4915,9 @@ mod tests {
         use std::sync::atomic::Ordering;
         use yulius_domain::agent_cli::QueueChange;
         let runtime = super::TaskRuntime::new();
-        runtime.with_queue(|queue| queue.record(QueueChange::Added));
-        runtime.with_queue(|queue| queue.record(QueueChange::HandedOn));
-        runtime.with_queue(|queue| queue.record(QueueChange::Added));
+        runtime.with_queue(|queue| queue.record(QueueChange::Added, None));
+        runtime.with_queue(|queue| queue.record(QueueChange::HandedOn, None));
+        runtime.with_queue(|queue| queue.record(QueueChange::Added, None));
         runtime.prompt_passed_ms.store(6_500, Ordering::SeqCst);
         assert!(runtime.queue().holds());
         runtime.prompt_box_starts_empty(7_000);

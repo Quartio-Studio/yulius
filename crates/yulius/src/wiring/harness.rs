@@ -448,7 +448,7 @@ impl TranscriptWatch for Watch {
                     Observed::ContextFull => out.push(Observation::ContextFull),
                     Observed::Compacted => out.push(Observation::Compacted),
                     Observed::CompactFailed => out.push(Observation::CompactFailed),
-                    Observed::Queue(change) => out.push(Observation::Queue(change)),
+                    Observed::Queue { change, at } => out.push(Observation::Queue(change, at)),
                     Observed::LimitReached {
                         resets_at,
                         message,
@@ -514,8 +514,9 @@ mod tests {
                 acc: UsageAccumulator::new(),
             };
             let seen = watch.poll().map_err(|err| err.to_string())?;
-            let added = Observation::Queue(QueueChange::Added);
-            Ok(seen.iter().filter(|one| **one == added).count())
+            let added =
+                |one: &&Observation| matches!(one, Observation::Queue(QueueChange::Added, Some(_)));
+            Ok(seen.iter().filter(added).count())
         };
         assert_eq!(queued(WatchFrom::Start)?, 2);
         assert_eq!(queued(WatchFrom::Since(resumed_at))?, 1);

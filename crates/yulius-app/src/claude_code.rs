@@ -15,8 +15,8 @@ use std::time::Duration;
 use yulius_contracts::api::updates::{ClaudeCodeBehind, ClaudeCodeRefused, ClaudeCodeView};
 use yulius_domain::agent_cli::{
     Channel, MoveFacts, NewestFacts, RegistryRead, Version, default_model_fix,
-    default_model_problem, gap_text, is_draft, lacks_default, moves_now, newest_lacking_default,
-    record_pending,
+    default_model_problem, gap_text, is_draft, kept_by, lacks_default, moves_now,
+    newest_lacking_default, record_pending,
 };
 use yulius_domain::harness::DEFAULT_CLAUDE_MODEL;
 use yulius_domain::ids::{AccountId, AttemptId, TaskId};
@@ -459,6 +459,7 @@ impl App {
             .move_facts(services, task_id, (runs, target), None)
             .await?;
         if !moves_now(&cheap) {
+            Self::log_kept(task_id, &cheap);
             return None;
         }
         // Background work started in this turn is known from its lines (SPEC-079 BGW-004); a
@@ -485,7 +486,23 @@ impl App {
         let facts = self
             .move_facts(services, task_id, (runs, target), Some(looked))
             .await?;
+        Self::log_kept(task_id, &facts);
         moves_now(&facts).then_some(target)
+    }
+
+    /// Says in the log what keeps a session that is due for the newer Claude Code where it
+    /// is: the Instance page lists such a task as one that moves when its turn ends, and
+    /// nothing else names the fact (a draft, something in Claude Code's queue, …).
+    fn log_kept(task_id: &TaskId, facts: &MoveFacts) {
+        if let Some(why) = kept_by(facts) {
+            tracing::info!(
+                task = %task_id,
+                runs = %facts.runs,
+                target = %facts.target,
+                why,
+                "the session is not restarted on the newer Claude Code at this turn's end"
+            );
+        }
     }
 
     /// Restarts the session of `task_id`, whose run is `from`, on Claude Code `version` in the
