@@ -1,6 +1,6 @@
 ---
 yulius-task: bec4e78a-38ca-448b-965f-c05492cbe528
-status: in-progress
+status: done
 ---
 
 # SPEC-456: Host setup makes bwrap able to create user namespaces (AppArmor)
@@ -129,7 +129,7 @@ the fix. Nobody writes an AppArmor rule by hand again.
 - [x] A profile for bwrap that Yulius does not read is found by what it does: proven beside the whole directory, Yulius's own taken back where bwrap does not start
 - [x] The review of that answered: an adopted profile leaves no file of Yulius's whichever run wrote it, a load of the directory that does not end fails the step
 - [x] Yulius's earlier profile gives way to a person's profile it reads as well; the second review's notes: a failure writes no file it need not, each line says what is on the host
-- [ ] The third review's notes: a disabled profile of Yulius's that AppArmor still holds is unloaded, two profiles on disk are named as they are, a refused unload or reload is said without guessing
+- [x] The third review's notes: a disabled profile of Yulius's that AppArmor still holds is unloaded, two profiles on disk are named as they are, a refused unload or reload is said without guessing
 
 ## Acceptance criteria
 
@@ -636,6 +636,77 @@ container: at `b74138b1` for the first runs, at `39c85810` for the runs after re
     removed or written back, and an earlier text that AppArmor refuses (the fake host's
     cases). A sandbox that starts during the third proof (the cost named in Decisions) was
     not provoked.
+- **The third review's notes** (BNS-006, BNS-012), the fifth pull request of this task. The
+  review that approved #1205 at `3a39c4d8` left six notes on that change and three on what
+  `dev` had before it. Each is answered:
+  - Its N1: a file this run wrote that cannot be removed after a failed third proof stays,
+    with its profile in AppArmor; that line had lost its test and has one again
+    (`a_taking_back_that_fails_is_said`).
+  - N2 and N3: a refused reload names Yulius's profile, and a refused unload says "AppArmor
+    did not let Yulius's profile go (…)" in place of "still holds": a file the parser cannot
+    read is refused whatever AppArmor holds. The fake host's unload refuses such a text now
+    (cases in `yulius_earlier_profile_gives_way_to_a_rule_it_reads`).
+  - N4: the number of proofs is asserted where AppArmor did not hold the profile, did not let
+    it go, or a link disables it, so the guard before the third proof has its mutation.
+  - N5: the four sentences (the guide and the acceptance criterion on when the next setup
+    adopts, the change entry on which file a failed proof leaves alone, the test list of the
+    block above).
+  - N6 is kept and reasoned in Decisions: beside a profile the item reads, the line quotes
+    what bwrap said with that profile alone.
+  - On `dev` before #1205: the undoing of a failed step says a reload that AppArmor refuses
+    (`a_directory_load_that_does_not_end_is_a_failed_step`); a profile of Yulius's that a
+    person's link disables and AppArmor still holds is unloaded
+    (`a_disabled_profile_of_yulius_that_is_still_loaded_is_unloaded`); two profiles on disk
+    are named while bwrap starts (`two_profiles_on_disk_are_named`).
+  - Test-first on the fake host: those three tests, the changed lines of
+    `a_taking_back_that_fails_is_said` and `what_cannot_be_put_back_is_said`, and the new
+    cases of `yulius_earlier_profile_gives_way_to_a_rule_it_reads` failed first (six tests).
+  - 49 mutations of the code as it is now, each taking one rule out, each fail a test
+    (`target/evidence/boot/mutate4.py`, `mutate4.log`, not in the repository): those of the
+    block above as far as their code stands, and new: a third proof where AppArmor did not
+    hold the profile or let it go; a linked profile's file removed on an adoption, loaded
+    again, or its unloading unsaid; a profile that no link disables treated as linked; two
+    profiles on disk credited to the person's, named against a link, or named for a text of
+    Yulius's file that is not this version's; a refused reload in the undoing unsaid.
+  - On real hosts: the same two guests (Ubuntu 24.04.5, AppArmor 4.0.1; Ubuntu 26.04.1,
+    AppArmor 5.0.2), restarted, with the binary built at `12e5f185` (`cargo build -p yulius`,
+    stripped; its sha256 starts `412070f84fb7e711` and is printed at the head of each log).
+    Script and logs in `target/evidence/boot` (`last1.sh`; `noble-last.log`,
+    `resolute-last.log`), not in the repository. Steps 1, 2 and 13 of the blocks above give
+    their lines again. New, the same on both (26.04 with the shipped profile's step in
+    front):
+    16. the production rule copied into the directory of a host that setup prepared, not
+       loaded: check, dry run and setup say ok, "bwrap starts a user namespace as yulius: a
+       profile for bwrap is in /etc/apparmor.d/bwrap (not written by Yulius, left as it is)
+       and in Yulius's /etc/apparmor.d/yulius-bwrap; AppArmor applies neither once it holds
+       both: after a boot, run `sudo yulius host setup` again", and write nothing. Once the
+       person's is loaded too, bwrap fails ("setting up uid map: Permission denied"), the
+       check fails, and setup adopts it and removes Yulius's file, as in step 13;
+    17. Yulius's profile disabled by a person's link and not unloaded, the production rule
+       loaded beside it: setup ends "loaded /etc/apparmor.d/bwrap again: bwrap starts a user
+       namespace as yulius with /etc/apparmor.d/bwrap; Yulius's own
+       (/etc/apparmor.d/yulius-bwrap), which a link disables, was still loaded and is
+       unloaded now"; only `bwrap` is loaded, Yulius's file and the link are as the person
+       left them (same inode and time), and a second run and a check are ok;
+    18. the same with a rule that does not let bwrap in: FAIL "… with /etc/apparmor.d/bwrap
+       (bwrap: Creating new namespace failed: Permission denied); Yulius's own (…), which a
+       link disables, was still loaded and is unloaded now; Yulius does not change a profile
+       it did not write: disable it (…)"; Yulius's file is untouched and not loaded;
+    19. Yulius's file made unreadable for the parser beside a rule that does not let bwrap
+       in, both loaded: by hand `apparmor_parser -R /etc/apparmor.d/yulius-bwrap` exits 1
+       with a parser error; setup fails with "… AppArmor did not let Yulius's profile go
+       (AppArmor parser error for /etc/apparmor.d/yulius-bwrap … syntax error, unexpected
+       end of file …); Yulius does not change a profile it did not write: disable it (…)",
+       and both profiles are loaded as before.
+  - Gates at the head that carries this section, `dev` merged in: `cargo check --workspace
+    --all-targets`, `cargo fmt --all -- --check`, `cargo clippy -p yulius --all-targets -- -D
+    warnings`, `cargo test -p yulius --lib` (567 pass), `python3
+    scripts/check_repository.py` and `spec_check` here; the whole gate (`scripts/dev ci`) and
+    e2e are Yulius CI's run on the pull request's head. The security scan is turned off for
+    this project (Vidoc): nothing was scanned.
+  - Not tested: on a real host, a reload that AppArmor refuses and a file that cannot be
+    removed or written back (the fake host's cases). A reboot between the steps of this block
+    (the reboot after an adoption is step 11 above).
 - **Met on the way, outside this change**: on every fresh host with cgroup delegation the first
   `host setup` ends with `FAIL Docker smoke test` in the step "a sandbox without Docker answers
   why" (a live engine answers the Docker-off run; a later `doctor --docker-smoke` passes): issue
