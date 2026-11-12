@@ -320,9 +320,9 @@ impl App {
 
     /// Whether something was typed into the task's session since its prompt box was last
     /// empty (its run's start, or the last prompt submitted from it), by a person or by Yulius
-    /// (a person's message, a pull request's news): it may still sit in the box, or in the
-    /// queue Claude Code keeps while a turn runs, and a restart would lose it (SPEC-468
-    /// CCF-010, CCF-011). Public for tests.
+    /// (a person's message, a pull request's news): it may still sit in the box, and a restart
+    /// would lose it (SPEC-468 CCF-010, CCF-011). A prompt submitted while a turn runs waits
+    /// in Claude Code's queue, which this does not know (issue #1204). Public for tests.
     #[must_use]
     pub fn has_draft(&self, task_id: &TaskId) -> bool {
         let runtime = self.runtime(task_id);

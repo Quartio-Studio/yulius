@@ -969,9 +969,9 @@ mod moves {
         // Its person types the next prompt and enters it; Yulius holds it.
         let next = "Also add a dark mode to the whole settings page";
         h.clock.0.fetch_add(1_000, Ordering::SeqCst);
-        h.app.record_input(&task, &alice, next.as_bytes());
+        h.app.record_typing(&task, &alice);
         h.clock.0.fetch_add(1_000, Ordering::SeqCst);
-        h.app.record_input(&task, &alice, b"\r");
+        h.app.record_typing(&task, &alice);
         h.clock.0.fetch_add(100, Ordering::SeqCst);
         let (status, answer) = hook_answered(&h, Some(next)).await?;
         assert_eq!(status, StatusCode::OK);
@@ -1007,9 +1007,9 @@ mod moves {
 
         // Its person types a prompt and enters it: no subscription has room, so it waits.
         let prompt = "Also add a dark mode to the whole settings page";
-        h.app.record_input(&task, &alice, prompt.as_bytes());
+        h.app.record_typing(&task, &alice);
         h.clock.0.fetch_add(1_000, Ordering::SeqCst);
-        h.app.record_input(&task, &alice, b"\r");
+        h.app.record_typing(&task, &alice);
         h.clock.0.fetch_add(100, Ordering::SeqCst);
         assert_eq!(hook(&h, Some(prompt)).await?, StatusCode::ACCEPTED);
         h.clock.0.fetch_add(10_000, Ordering::SeqCst);
@@ -1024,6 +1024,43 @@ mod moves {
         assert!(
             h.app.has_draft(&task),
             "the prompt is back in the prompt box"
+        );
+        Ok(())
+    }
+
+    /// SPEC-468 CCF-010 (review round 3): a prompt whose hook Yulius answers with an error
+    /// goes on all the same, since the hook client fails open: the box is empty. Here the task
+    /// is deleted while its prompt is answered.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_prompt_whose_hook_fails_was_submitted_all_the_same() -> TestResult {
+        use axum::http::StatusCode;
+        use yulius_app::ports::store::TaskStore as _;
+        let (h, task) = on_the_test_clock(false).await?;
+        let alice = UserId::parse("u-alice")?;
+        h.app.record_typing(&task, &alice);
+        assert!(h.app.has_draft(&task));
+        h.clock.0.fetch_add(1_000, Ordering::SeqCst);
+        let (store, gone) = (h.store.clone(), task.clone());
+        race::on(
+            Point::PromptTurnChecked,
+            Path::new(task.as_str()),
+            move || {
+                tokio::task::block_in_place(|| {
+                    let deleted =
+                        tokio::runtime::Handle::current().block_on(store.delete_task(&gone));
+                    assert!(matches!(deleted, Ok(true)), "{deleted:?}");
+                });
+            },
+        );
+        let status = hook(&h, Some("first")).await?;
+        assert_eq!(
+            status,
+            StatusCode::NOT_FOUND,
+            "the hook was answered with an error"
+        );
+        assert!(
+            !h.app.has_draft(&task),
+            "the prompt went on: what was typed before it is no draft"
         );
         Ok(())
     }
@@ -1149,128 +1186,18 @@ mod moves {
         .await
     }
 
-    /// A prompt-mode session whose first turn ("one") runs until `may_end` exists: its prompt
-    /// was submitted when this returns.
-    async fn session_in_a_held_turn(
-        data: &Path,
-        version: &Path,
-        may_end: &Path,
-    ) -> Result<Server, Box<dyn std::error::Error>> {
-        let options = FakeAgentOptions {
-            turn_hold_file: Some(may_end.to_path_buf()),
-            ..hooked()
-        };
-        let s = server(data, version, options, TaskMode::Prompt, "2.1.311").await?;
-        let submitted = reached(Point::PromptTurnChecked, &s.id);
-        s.app.send_input(&s.id, b"one\r").await?;
-        wait_for("the prompt's submit", Duration::from_secs(60), || async {
-            submitted.load(Ordering::SeqCst)
-        })
-        .await?;
-        Ok(s)
-    }
-
-    /// Waits until the server's clock reads a later millisecond: what is typed next is typed
-    /// after what was typed before, to the millisecond the server keeps.
-    async fn a_later_millisecond(app: &App) -> TestResult {
-        let before = app.now().0;
-        wait_for("a later millisecond", Duration::from_secs(5), || async {
-            app.now().0 > before
-        })
-        .await
-    }
-
-    /// Waits until the session's terminal printed `text`, reading `watch` into `shown`.
-    async fn until_printed(
-        watch: &mut tokio::sync::broadcast::Receiver<HubFrame>,
-        shown: &mut String,
-        text: &str,
-    ) -> TestResult {
-        wait_for(text, Duration::from_secs(60), || {
-            shown.push_str(&printed(watch));
-            let found = shown.contains(text);
-            async move { found }
-        })
-        .await
-    }
-
-    /// SPEC-468 CCF-010 (review round 2): a prompt entered while a turn runs waits in Claude
-    /// Code's queue, and its submit hook comes when it is handed on, long after its Enter. What
-    /// its person typed after that Enter is still in the prompt box. Through the viewer's own
-    /// path with real processes: the Enter is read from what the viewer sends.
-    #[test]
-    fn what_a_viewer_types_after_a_queued_prompts_enter_stays_a_draft() -> TestResult {
-        let (_dir, data) = data_dir()?;
-        let version = data.join("claude-version");
-        let may_end = data.join("turn-may-end");
-        let rt = runtime()?;
-        rt.block_on(async {
-            let s = session_in_a_held_turn(&data, &version, &may_end).await?;
-            let mut watch = s.app.runtime(&s.id).hub.subscribe().rx;
-            let ctx = s.ctx().await?;
-            let attach = s
-                .app
-                .terminal_open(&ctx, s.id.as_str(), Some((120, 40)))
-                .await?;
-            // While the turn runs its person enters the next prompt, then types on.
-            for keys in [b"two".as_slice(), b"\r", b"and a third thing"] {
-                s.app.terminal_input(&ctx, &attach, keys, false).await?;
-                a_later_millisecond(&s.app).await?;
-            }
-            assert!(s.app.has_draft(&s.id));
-            // The turn ends and the queued prompt is submitted and answered.
-            std::fs::write(&may_end, "")?;
-            let mut shown = String::new();
-            until_printed(&mut watch, &mut shown, "ECHO: two").await?;
-            assert!(
-                s.app.has_draft(&s.id),
-                "what was typed after the Enter is still in the box"
-            );
-            s.app.terminal_leave(&attach).await;
-            stop(&s.app, &s.id).await
-        })?;
-        rt.shutdown_timeout(Duration::from_secs(5));
-        Ok(())
-    }
-
-    /// SPEC-468 CCF-010, CCF-011 (review round 2): while a message Yulius typed waits in
-    /// Claude Code's queue, the task's person types a draft. The message's submit empties the
-    /// box as of Yulius's own Enter: the draft, typed after it, stays one.
-    #[test]
-    fn a_draft_typed_while_a_message_of_yulius_waits_stays_a_draft() -> TestResult {
-        let (_dir, data) = data_dir()?;
-        let version = data.join("claude-version");
-        let may_end = data.join("turn-may-end");
-        let rt = runtime()?;
-        rt.block_on(async {
-            let s = session_in_a_held_turn(&data, &version, &may_end).await?;
-            let mut watch = s.app.runtime(&s.id).hub.subscribe().rx;
-            let answer = told(&s.app, &s.sandbox, &s.user, &s.id).await?;
-            assert_eq!(answer["delivered"], "sent", "{answer}");
-            a_later_millisecond(&s.app).await?;
-            s.app.record_input(&s.id, &s.user, b"my own next prompt");
-            std::fs::write(&may_end, "")?;
-            let mut shown = String::new();
-            until_printed(&mut watch, &mut shown, "ECHO: Message from admin").await?;
-            assert!(
-                s.app.has_draft(&s.id),
-                "what was typed after Yulius's Enter is still in the box"
-            );
-            stop(&s.app, &s.id).await
-        })?;
-        rt.shutdown_timeout(Duration::from_secs(5));
-        Ok(())
-    }
-
-    /// SPEC-468 CCF-011: Claude Code keeps a message that is entered while a turn runs in a
-    /// queue of its process, and takes no queue over when a session is resumed. A message
-    /// Yulius typed for a person (here: through their Superagent) that is still queued when
-    /// the turn ends would be gone with the old process, after its person was told "sent".
-    /// Until Claude Code submits it, it is a draft: the turn's end, which the gate blocks,
+    /// SPEC-468 CCF-011: a message Yulius typed for a person (here: through their Superagent)
+    /// is a draft until it is submitted: a turn's end before that, which the gate blocks here,
     /// leaves the session where it is, the message gets its turn, and that turn's end
-    /// restarts the session. The restart used to come at the first turn's end.
+    /// restarts the session.
+    ///
+    /// This runs in the fake agent's order: it submits a line (the prompt hook) when it reads
+    /// it, after its turn. Claude Code submits at the Enter, also while a turn runs (seen with
+    /// 2.1.322), and then keeps the message in its queue until the turn ends. There this rule
+    /// covers the message from its paste to that submit only, and a restart at the turn's end
+    /// still loses it from the queue: issue #1204.
     #[test]
-    fn a_message_yulius_typed_that_is_not_submitted_yet_keeps_the_session() -> TestResult {
+    fn a_message_yulius_typed_keeps_the_session_until_its_submit() -> TestResult {
         let (_dir, data) = data_dir()?;
         let version = data.join("claude-version");
         let may_end = data.join("turn-may-end");
@@ -1293,7 +1220,7 @@ mod moves {
             })
             .await?;
             // Meanwhile the task's person tells it something through their Superagent: typed
-            // into the session, where it waits for the turn to end.
+            // into the session, where the fake agent reads it once its turn ended.
             let answer = told(&s.app, &s.sandbox, &s.user, &s.id).await?;
             assert_eq!(answer["delivered"], "sent", "{answer}");
             assert!(
@@ -1323,52 +1250,6 @@ mod moves {
             stop(&s.app, &s.id).await
         })?;
         rt.shutdown_timeout(Duration::from_secs(5));
-        Ok(())
-    }
-
-    /// SPEC-468 CCF-010 (review round 2): a prompt entered while a turn runs waits in Claude
-    /// Code's queue, and its submit hook comes when it is handed to the model, minutes after
-    /// its Enter. What its person typed after that Enter is still in the prompt box: the
-    /// submit empties the box as of the Enter, not as of the hook, which forgot that draft.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn what_is_typed_after_a_queued_prompts_enter_stays_a_draft() -> TestResult {
-        use axum::http::StatusCode;
-        let (h, task) = on_the_test_clock(false).await?;
-        let alice = UserId::parse("u-alice")?;
-
-        // A turn runs. Its person types the next prompt and enters it: Claude Code queues it.
-        assert_eq!(hook(&h, Some("first")).await?, StatusCode::OK);
-        h.clock.0.fetch_add(1_000, Ordering::SeqCst);
-        h.app.record_input(&task, &alice, b"second");
-        h.clock.0.fetch_add(1_000, Ordering::SeqCst);
-        h.app.record_input(&task, &alice, b"\r");
-        assert!(h.app.has_draft(&task), "entered, and not submitted yet");
-        // They type on, and do not send it.
-        h.clock.0.fetch_add(1_000, Ordering::SeqCst);
-        h.app.record_input(&task, &alice, b"third");
-        // Minutes later Claude Code hands the queued prompt on: its submit.
-        h.clock.0.fetch_add(5 * MINUTE, Ordering::SeqCst);
-        assert_eq!(hook(&h, Some("second")).await?, StatusCode::OK);
-        assert!(
-            h.app.has_draft(&task),
-            "what was typed after the Enter is still in the box"
-        );
-        // That turn's end leaves the session alone.
-        h.clock.0.fetch_add(5 * MINUTE, Ordering::SeqCst);
-        let probed = reached(Point::ClaudeMoveProbed, &task);
-        let flag = decided(&task);
-        assert_eq!(hook(&h, None).await?, StatusCode::OK);
-        until_decided(&flag).await?;
-        assert!(
-            !probed.load(Ordering::SeqCst) && !h.app.claude_move_cooling(&task),
-            "a session with a draft is not looked at, and no restart is tried"
-        );
-        // They send it: an Enter with nothing typed after it, and its submit follows.
-        h.clock.0.fetch_add(1_000, Ordering::SeqCst);
-        h.app.record_input(&task, &alice, b"\r");
-        h.clock.0.fetch_add(100, Ordering::SeqCst);
-        assert_eq!(hook(&h, Some("third")).await?, StatusCode::OK);
-        assert!(!h.app.has_draft(&task), "entered, then submitted");
         Ok(())
     }
 

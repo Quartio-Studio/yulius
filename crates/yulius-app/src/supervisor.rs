@@ -149,17 +149,14 @@ pub struct TaskRuntime {
     /// Who typed last.
     pub(crate) typed_by: Mutex<Option<yulius_domain::ids::UserId>>,
     /// When Yulius last typed a message into the session for it to submit (ms, 0 = never): a
-    /// person's message, a pull request's news (`type_into_session`). Until its submit it sits
-    /// in the prompt box, or in Claude Code's queue while a turn runs (SPEC-468 CCF-011).
+    /// person's message, a pull request's news (`type_into_session`). It counts as a draft
+    /// until its submit, which Claude Code makes at Yulius's own Enter. The wait in Claude
+    /// Code's queue while a turn runs comes after that and is not known here (SPEC-468
+    /// CCF-011, issue #1204).
     pub(crate) message_typed_ms: AtomicI64,
-    /// When an Enter was last typed into the session (ms, 0 = never): by a person (a
-    /// keystroke that ends with a carriage return) or by Yulius after a message it typed. A
-    /// prompt that waited in Claude Code's queue is submitted long after its Enter, and what
-    /// was typed in between is still in the prompt box (SPEC-468 CCF-010).
-    pub(crate) entered_ms: AtomicI64,
     /// When the session's prompt box was last known empty (ms, 0 = not known): its run's
     /// launch, or the last prompt submitted from it. What was typed after that may still sit
-    /// there, or in Claude Code's queue (SPEC-468 CCF-010, CCF-011).
+    /// there (SPEC-468 CCF-010, CCF-011).
     pub(crate) box_emptied_ms: AtomicI64,
     /// When the prompt whose hook is being answered emptied the prompt box (ms): worked out at
     /// its first request and taken into [`Self::box_emptied_ms`] when the prompt goes on, so a
@@ -439,7 +436,6 @@ impl TaskRuntime {
             merged_covers: Mutex::new(None),
             typed_at_ms: AtomicI64::new(0),
             message_typed_ms: AtomicI64::new(0),
-            entered_ms: AtomicI64::new(0),
             box_emptied_ms: AtomicI64::new(0),
             submit_emptied_ms: AtomicI64::new(0),
             prompt_held: AtomicBool::new(false),

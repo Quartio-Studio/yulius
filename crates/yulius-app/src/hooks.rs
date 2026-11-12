@@ -237,23 +237,17 @@ impl App {
             return self.answer_event(ctx, event, input, sent).await;
         }
         // A prompt submitted from the session's prompt box empties it: what was typed before
-        // it is no draft any more (SPEC-468 CCF-010). Once per submit, as of its first request:
-        // a prompt that is held (an update, a pause, no subscription with room) is sent again
-        // every few seconds, stamped anew, until it goes on, and what a person types meanwhile
-        // is a draft. A prompt that waited in Claude Code's queue is submitted long after its
-        // Enter: what was typed after that Enter is still in the box, which then counts as
-        // emptied at the Enter (`box_emptied_at`).
+        // it is no draft any more (SPEC-468 CCF-010). Claude Code runs this hook at the Enter,
+        // also for a prompt entered while a turn runs (seen with 2.1.322), so the hook's time
+        // is when the box was emptied. Once per submit, as of its first request: a prompt that
+        // is held (an update, a pause, no subscription with room) is sent again every few
+        // seconds, stamped anew, until it goes on, and what a person types meanwhile is a
+        // draft.
         let runtime = self.runtime(&ctx.task.id);
         let from_box = crate::finish::from_prompt_box(input.prompt.as_deref());
         let sent_again = runtime.prompt_held.load(Ordering::SeqCst);
         if from_box && !sent_again {
-            let emptied = yulius_domain::agent_cli::box_emptied_at(
-                sent,
-                runtime.entered_ms.load(Ordering::SeqCst),
-                runtime.last_typed_ms(),
-                runtime.box_emptied_ms.load(Ordering::SeqCst),
-            );
-            runtime.submit_emptied_ms.store(emptied, Ordering::SeqCst);
+            runtime.submit_emptied_ms.store(sent, Ordering::SeqCst);
         }
         let reply = self.answer_event(ctx, event, input, sent).await;
         let held = matches!(reply, Ok(HookReply::Hold { .. }));

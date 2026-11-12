@@ -255,19 +255,6 @@ impl App {
         }
     }
 
-    /// Records what `user` typed into `task`'s terminal now: that they typed
-    /// ([`Self::record_typing`]) and, when it ends with Enter, that the session's prompt box
-    /// was submitted from then (SPEC-468 CCF-010). A paste ends with its closing mark, not
-    /// with Enter.
-    pub fn record_input(&self, task: &TaskId, user: &UserId, data: &[u8]) {
-        self.record_typing(task, user);
-        if data.last() == Some(&b'\r') {
-            self.runtime(task)
-                .entered_ms
-                .store(self.now().0, Ordering::SeqCst);
-        }
-    }
-
     /// `Some(who)` when a person typed into the task's terminal within
     /// [`policy::TYPED_WINDOW_MS`].
     pub(crate) fn typed_recently(&self, task: &TaskId) -> Option<Option<UserId>> {

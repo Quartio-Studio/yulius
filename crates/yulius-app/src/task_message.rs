@@ -6,9 +6,10 @@
 //!   message of the Superagent's person (SPEC-052, TMS-002);
 //! - a running task gets it typed into its session as one bracketed paste, labelled with the
 //!   person and the channel it came through (SPEC-322), then a separate Enter; Claude Code
-//!   queues a message submitted while the agent works (TMS-003), in its process: until it
-//!   submits the message, the session is not restarted on a newer Claude Code (SPEC-468
-//!   CCF-011). Control characters other than line breaks and tabs never reach the TUI;
+//!   queues a message submitted while the agent works (TMS-003). From the paste to its
+//!   submit the session is not restarted on a newer Claude Code (SPEC-468 CCF-011); the
+//!   wait in Claude Code's queue after that is not covered (issue #1204). Control characters
+//!   other than line breaks and tabs never reach the TUI;
 //! - nothing is typed before Claude Code's session started (its SessionStart hook, also read
 //!   from the run's marker after a restart, or the goal typist's fallback for a CLI without it),
 //!   while it asks a person whether to trust the folder, while a person typed in the last minute (their
@@ -74,9 +75,9 @@ pub fn message_paste(login: &str, channel: Channel, text: &str) -> Vec<u8> {
 /// What Yulius types into a session ([`App::type_into_session`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Typed {
-    /// A message for the agent: Claude Code submits it as a prompt, at once or, while a turn
-    /// runs, from its queue. Until then it is in the session and a restart would lose it
-    /// (SPEC-468 CCF-011).
+    /// A message for the agent, which Claude Code submits as a prompt: from the paste to that
+    /// submit it sits in the session's prompt box, and a restart would lose it (SPEC-468
+    /// CCF-011).
     Prompt,
     /// A command Claude Code runs itself (`/mcp reconnect yulius`): no prompt is submitted,
     /// so nothing of it waits anywhere.
@@ -267,10 +268,10 @@ impl App {
             )));
         }
         let _typing = Typing(&runtime.typing_message);
-        // From here a message is in the session and not submitted: in its prompt box, or,
-        // while a turn runs, in Claude Code's queue, which a restart of the session would lose
-        // (SPEC-468 CCF-011). Stamped before it is typed: its submit comes after. A command
-        // submits nothing, and a text that could not be typed is nowhere.
+        // From here a message is in the session's prompt box and not submitted, and a restart
+        // would lose it (SPEC-468 CCF-011). Stamped before it is typed: its submit comes after
+        // (Claude Code runs the prompt hook some 30 ms after the Enter below, also while a
+        // turn runs). A command submits nothing, and a text that could not be typed is nowhere.
         let before = runtime.message_typed_ms.load(Ordering::SeqCst);
         if what == Typed::Prompt {
             runtime
@@ -291,9 +292,6 @@ impl App {
                 err.public_message()
             ))
         })?;
-        // The Enter that submits it, or enters it into the queue: what a person types from
-        // here on is not part of it (SPEC-468 CCF-010).
-        runtime.entered_ms.store(self.now().0, Ordering::SeqCst);
         Ok(())
     }
 }

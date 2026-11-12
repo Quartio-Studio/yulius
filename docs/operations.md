@@ -789,16 +789,17 @@ SPEC-461), with no root step and no sign-in again:
   same subscription, and says so in one line in its terminal. It waits while the session has
   background shells, agents or monitors (they would be lost; a `yulius wait` counts), while a
   person typed into it in the last minute, and while a draft may sit in its prompt box: a person
-  typed into it since its last prompt was sent (for a prompt that waited while the agent worked:
-  since it was entered), however long ago (Yulius sees keystrokes and sent prompts, not the box,
-  so anything typed and not sent counts, and so does a prompt Yulius holds for its person's
-  choice, which Claude Code keeps in the box). A message Yulius typed into the session counts in
-  the same way until Claude Code submits it (a message sent through a Superagent, a pull
-  request's news): while the agent works Claude Code queues it, and a restarted session would
-  not have it. It tries once per version, one restart of a task at a time. A goal session moves
-  at a turn it works on after, while its goal is set and not yet achieved; an idle one, and a
-  goal task that is Done, keep their version until their next start. A prompt-mode session in
-  which a person set a goal of their own (`/goal …` in its terminal) keeps its version while
+  typed into it since its last prompt was sent, however long ago (Yulius sees keystrokes and
+  sent prompts, not the box, so anything typed and not sent counts, and so does a prompt Yulius
+  holds for its person's choice, which Claude Code keeps in the box). A message Yulius types
+  into the session (one sent through a Superagent, a pull request's news) counts in the same way
+  until Claude Code submits it, which it does at once. Not covered: a prompt entered while the
+  agent works, a person's or such a message, waits in Claude Code's queue until the turn ends,
+  and a restart at that turn's end loses it (issue #1204; a person's is safe while they typed in
+  the last minute). It tries once per version, one restart of a task at a time. A goal session
+  moves at a turn it works on after, while its goal is set and not yet achieved; an idle one,
+  and a goal task that is Done, keep their version until their next start. A prompt-mode session
+  in which a person set a goal of their own (`/goal …` in its terminal) keeps its version while
   that goal is open: Yulius types nothing into such a session and learns of a goal only from
   what the new process writes, so after a restart it would not know the goal any more (Claude
   Code restores an open goal by itself when a session is resumed, at least since 2.1.292; Yulius
