@@ -3375,8 +3375,7 @@ state file says that the new instance has taken over (`Moved`) and that the fini
 (`finished`), never that the old instance is held: every run of a moved move asks systemd
 (`Move::old_hold`: no unit runs unfrozen, `freeze::left_running` finds nothing, and
 `freeze::disabled` reads `systemctl is-enabled`), and says "finished" only while it is; a later
-run changes nothing of the old instance (SPEC-481, ADR-0311). The copy
-carries a mark
+run changes nothing of the old instance (SPEC-481, ADR-0311). The copy carries a mark
 (`move-pending.json`): the first start that finds it queues the tasks whose runs were lost with the
 old host (`yulius-app::host_move`).
 

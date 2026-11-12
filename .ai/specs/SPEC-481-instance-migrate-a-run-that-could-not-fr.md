@@ -61,13 +61,14 @@ line until it holds.
 
 | ID | Requirement | Evidence |
 | --- | --- | --- |
-| HLD-001 | **Held.** The old instance of a move whose new instance has taken over is held when systemd says all of this: no unit of it runs unfrozen (the server's unit is frozen and its sessions unit, where it runs, is frozen; or the server's unit has stopped, `inactive` or `failed`, and its sessions unit does not run unfrozen); no unit of it that does not run has left processes that run (`freeze::left_running`); and `systemctl is-enabled` of the server's unit says `disabled`, `masked` or `masked-runtime`. An unanswered question is not held. | unit tests of `freeze::disabled`; the flow tests below |
-| HLD-002 | **Every later run looks.** A run that finds the move recorded as moved, finished or not, asks systemd as in HLD-001 before anything else of the move, and changes nothing of the old instance: it freezes, thaws, stops, starts, enables and disables nothing. Held: an `ok` line says how (frozen and disabled, or does not run and is disabled). Not held: a `FAIL` line under the heading `Cutover` says what was found and names the commands, as after the start (for a unit that runs unfrozen also the way out of a freeze that keeps failing, which the run that tried the freeze says once), and says that the move is not finished until then; the run ends with exit 1 and no "finished" line is printed. The phase of `status.json` is `Cutover` after every run whose look failed, also the run that started the new instance or did the finish, and `done` again once a run finds the instance held. | flow tests `a_move_whose_old_unit_was_not_held_is_not_finished_until_it_is`, `a_finished_move_whose_old_instance_no_longer_holds_fails_until_it_does`, `a_later_run_looks_at_the_sessions_unit_too`; the guest |
+| HLD-001 | **Held.** The old instance of a move whose new instance has taken over is held when systemd says all of this: no unit of it runs unfrozen (the server's unit is frozen and its sessions unit, where it runs, is frozen; or the server's unit has stopped, `inactive` or `failed`, and its sessions unit does not run unfrozen); no unit of it that does not run has left processes that run (`freeze::left_running`); and `systemctl is-enabled` of the server's unit says `disabled`, or `static` for a unit without an `[Install]` section (`freeze::disabled` also takes `masked` and `masked-runtime`, which the command never meets: a masked unit is not `loaded` and the move refuses it before the look). An unanswered question is not held. | unit test `only_a_unit_systemd_says_has_no_enablement_is_disabled`; flow test `a_unit_without_an_install_section_is_held_once_its_link_is_gone`; the flow tests below; the guest (G) |
+| HLD-002 | **Every later run looks.** A run that finds the move recorded as moved, finished or not, asks systemd as in HLD-001 before anything else of the move, and changes nothing of the old instance: it freezes, thaws, stops, starts, enables and disables nothing. Held: an `ok` line under the heading `Cutover` says how (frozen and disabled, or does not run and is disabled). Not held: a `FAIL` line there says what was found, that the old instance must be frozen and disabled now that the new instance has taken over (not "runs": this run did not ask it), the commands, for a unit that runs unfrozen the way out of a freeze that keeps failing (HLD-009, with the disable), that the move is not finished until then, and the way back (`yulius instance migrate --abort`, once the new instance is stopped). For a stopped unit that left processes the line names the kill, for a stopped unit that is not disabled the disable. When systemd does not say what the old units do, nothing is known to be wrong: the line says so and names no command but the same one again. The run ends with exit 1 and no "finished" line is printed. The phase of `status.json` is `Cutover` after every run whose look failed, also the run that started the new instance or did the finish, and `done` again once a run finds the instance held. | flow tests `a_move_whose_old_unit_was_not_held_is_not_finished_until_it_is`, `a_finished_move_whose_old_instance_no_longer_holds_fails_until_it_does`, `a_later_run_looks_at_the_sessions_unit_too`; the guest |
 | HLD-003 | **The finish is still done.** A run that finds the move moved and not finished goes on to the steps after the cutover and to the finish whether or not the old instance is held, as the run that started the new instance does. `finished` in the state file keeps its meaning (the finish was done: the key is gone); "finished" is said, with exit 0, only by a run that finds the finish done and the old instance held. | flow tests `a_moved_move_is_finished_there_and_not_called_finished_while_the_old_unit_runs`, `a_finish_that_did_not_reach_the_new_host_is_tried_again`; the guest (F) |
 | HLD-004 | **The look after a start is the same look.** `moved()` sends `systemctl disable` as before and then decides by HLD-001: the failed line when the instance is not held, also when a unit of it that does not run left processes. A server's unit that has stopped with nothing left is said as that, not as "stays frozen". | flow test `a_unit_stopped_while_the_new_instance_started_is_asked_what_it_left`; the existing tests of the failed line; the guest (A) |
 | HLD-005 | **A stopped unit must be disabled too.** A resumed start that finds the old server's unit stopped with nothing of it left and the new instance running keeps its `manual` line and records the move; when the unit is not known to be disabled a `FAIL` line names `systemctl disable <unit>`, the run ends with exit 1, and later runs look (HLD-002). | flow test `a_recorded_start_with_a_stopped_server_that_is_not_disabled_fails_until_it_is` |
 | HLD-006 | **`--abort` is named with its condition.** The line of `start()` for a new host that stopped answering says "`yulius instance migrate --abort` only once the new instance is known to be stopped", as the lines of SPEC-467 LFT-003 do. | flow test `a_lost_answer_to_the_start_is_decided_by_asking_the_new_host` |
 | HLD-007 | **A refused key with a silent URL is not "done there".** Held by a test (the behaviour is unchanged): the key stays on the old host, nothing is recorded as finished, and the run says to run the command again. | flow test `a_refused_key_with_a_silent_url_is_not_a_finish_found_done` |
+| HLD-009 | **A frozen unit is never named to be stopped or killed.** The commands a line names for a freeze that keeps failing (`systemctl stop …; systemctl kill --kill-who=all --signal=SIGKILL …`) name only units that are not frozen: in a later run's line the units systemd says are not frozen, in the resumed start's line (SPEC-467 LFT-002) the units whose freeze failed. | flow tests `a_later_run_looks_at_the_sessions_unit_too`, `a_recorded_start_freezes_whatever_unit_runs_beside_the_new_instance`; the guest (H) |
 | HLD-008 | `docs/operations.md` §7 ("Move the instance to another host") says what a later run does; `docs/changes.md` has the entry; ADR-0311 records what "finished" means. | the documents |
 
 ## Plan
@@ -141,10 +142,10 @@ that names the pull request.
   does: rejected for that reason; the resumed start freezes only after the new instance said
   that it runs.
 - **`is-enabled`, not the exit code of `disable`.** A look must not change anything, and
-  `systemctl disable` exiting 0 says that a command ran, not what holds now. `disabled`,
-  `masked` and `masked-runtime` are the answers that mean "does not start with the host";
-  every other answer, an empty one and an error are "not known to be disabled", and the line
-  quotes what systemd said. `moved()` still sends `disable` first and then decides by the same
+  `systemctl disable` exiting 0 says that a command ran, not what holds now. `disabled` and
+  `static` are the answers that mean "nothing enables it" (and `masked`, below); every other
+  answer, an empty one and an error are "not known to be disabled", and the line quotes what
+  systemd said. `moved()` still sends `disable` first and then decides by the same
   look, so one rule holds after a start and in every later run.
 - **The steps after the cutover do not wait for the old instance.** They are the new
   instance's (its firewall, its key, its tasks), and the look needs no key. So a run that fails
@@ -162,15 +163,59 @@ that names the pull request.
   way out. On the guest `systemctl freeze` of both units with the server's stopped exits 1
   ("Unit is not active") and freezes the sessions unit all the same, so the one line works in
   each of them.
-- **`masked` counts, though the unit `host setup` writes cannot be masked.** Its file is in
-  `/etc/systemd/system`, where `systemctl mask` refuses ("already exists", measured); a unit
-  from a package can be, and then `is-enabled` says `masked` (or `masked-runtime`) and the unit
-  does not start. Measured on the guest too: `systemctl disable` exits 0 for a masked unit
-  without removing its enablement, for a unit enabled with `--runtime` (it stays
-  `enabled-runtime`) and for a unit without `[Install]`: the exit code of `disable` is not the
-  answer, which is why the look reads `is-enabled`.
+- **`static` counts as disabled (review, minor 2).** A unit without an `[Install]` section
+  answers `static`, with exit 0, and no `systemctl disable` changes that word, so a line that
+  names the disable would be a dead end and a healthy move on such a host would never read
+  finished (before this change it did: `disable` exits 0). Measured: such a unit wanted through
+  a link made by hand answers `enabled`, and `disable` removes the link and leaves `static`. So
+  `static` says what `disabled` says: nothing enables the unit. Alternative, refusing it with a
+  line that tells the person to add an `[Install]` section: rejected, the unit is as held as
+  one can be. `enabled-runtime`, `linked`, `indirect` and `alias` stay "not known".
+- **`masked` is taken by the function and never met by the command (review, minor 3).** A
+  masked unit does not start, and `is-enabled` says `masked` or `masked-runtime` (measured with
+  a vendor unit). But a masked unit has `LoadState=masked`, and the move refuses a unit that is
+  not `loaded`, or whose file is not under `/etc/systemd/system` (where `systemctl mask`
+  refuses, "already exists"), before the look (`Profile::read`). So the guide names `disabled`
+  and `static` only; `freeze::disabled` keeps the word, for it is true of systemd. Measured
+  too: `systemctl disable` exits 0 for a masked unit without removing its enablement, for a
+  unit enabled with `--runtime` (it stays `enabled-runtime`) and for a unit without
+  `[Install]`: the exit code of `disable` is not the answer, which is why the look reads
+  `is-enabled`.
+- **A later run says "has taken over" and names the abort (review, minor 5).** It did not ask
+  the new instance. In the case this spec itself names (a person went back by hand), a line
+  that says "the new instance runs" and names a freeze would have the only running instance
+  frozen. The line states what is recorded and names both ways: hold the old instance, or go
+  back with `--abort` once the new instance is stopped. The run that started the new instance
+  had just asked it and keeps "runs".
+- **An unanswered systemd names no command in a later run (review, minor 4).** Nothing is known
+  to be wrong, and a freeze, a stop and a kill are not what to do on no information. The line
+  says that systemd did not answer and to run the command again, as the leftover question does.
+  After a start the line keeps the two commands (SPEC-467 "unknown is treated as running"): the
+  new instance had just been started.
+- **The way out of a failing freeze names only units that are not frozen, also in SPEC-467's
+  line (review, P1, pre-existing there).** The line named every unit of the old instance.
+  Measured on the guest with the real `yulius.service` frozen (systemd 259.5): `systemctl stop`
+  is refused ("Cannot perform operation on frozen unit"), `systemctl kill --kill-who=all
+  --signal=SIGKILL` exits 0, and the unit is left `activating (auto-restart)`,
+  `FreezerState=frozen`, without a cgroup; `systemctl thaw` says "Unit is not active", and
+  `start` and `enable --now` (what the abort sends) are refused until the host restarts. A
+  frozen unit is held as it is, so naming it gains nothing and can cost the way back. This
+  change would have repeated the line in every later run, so both places now go by one rule;
+  the later run's way out also ends with the disable (review, nit 6), since a person takes it
+  instead of the two commands.
+- **The look's line stands under the heading `Cutover`, held or not (review, nit 12).**
+- **What the review saw in code that was there before and this change leaves** (written in a
+  comment on issue #1179, with what was measured): a server's unit whose file in
+  `/etc/systemd/system` is a symlink passes the profile, and the cutover's `systemctl disable`
+  removes that link too, which leaves a frozen unit systemd no longer knows. It is the
+  cutover's disable since SPEC-460 and the profile's rule for what unit a move carries, not
+  what a later run says. The weak reason for not trying a step over a missing key (`ssh` "can
+  only complain") is replaced by the true one in the code's comment, two test comments and
+  SPEC-467 LFT-004, as the issue's comment asked.
+- **ADR-0311 follows 0309 without a 0310**: the number was given by `record_number`, which
+  reserves across parallel tasks.
 - **SPEC-478's failed case is left as it is** (nothing recorded, the move stays `Starting`): it
-  is safe either way, its pull request is not merged yet, and changing it is not this issue.
+  is safe either way, it merged as it is (#1232), and changing it is not this issue.
 
 ## Evidence
 

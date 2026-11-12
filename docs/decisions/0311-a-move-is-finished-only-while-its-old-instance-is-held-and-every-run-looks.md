@@ -33,15 +33,18 @@ healthy").
 - **Every run of a moved move asks systemd, with one look** (`Move::old_hold`): no unit of the
   old instance runs unfrozen (all frozen, or the server's unit stopped and its sessions unit
   not running unfrozen); no unit of it that does not run left processes that run
-  (`freeze::left_running`); and `systemctl is-enabled` of the server's unit says `disabled`,
-  `masked` or `masked-runtime` (`freeze::disabled`). An unanswered question is not held.
+  (`freeze::left_running`); and `systemctl is-enabled` of the server's unit says `disabled`
+  or `static` (`freeze::disabled`, which also takes `masked`). An unanswered question is not
+  held.
 - **"Finished" is said only by a run that finds the finish done and the old instance held.**
   Otherwise the run repeats the failed line (what it found, the commands, "The move is not
   finished until then"), ends with exit 1 and leaves that line in `status.json`, for
   `--status` and the page, with the phase `Cutover`.
 - **A later run only looks.** The run that starts the new instance sends `systemctl disable`
   and, going on from a recorded start, freezes what runs beside a new instance that just said
-  that it runs (SPEC-467). A run after it changes nothing of the old instance.
+  that it runs (SPEC-467). A run that finds the move recorded as moved changes nothing of the
+  old instance; its line says that the new instance has taken over, not that it runs, names
+  the abort as the way back, and names no command at all when systemd did not answer.
 - **The steps after the cutover never wait for the old instance.** The tasks, the redirect, the
   key and the firewall on the new host are done by the run that started the new instance and
   by a later run that finds the move not yet finished, whatever the look finds.
@@ -74,8 +77,11 @@ healthy").
   run.
 - A move that finished long ago is looked at whenever the command is run on the old host again;
   a wiped or retired old host is not asked (the command is not run there).
-- `systemctl is-enabled` states other than `disabled` and `masked` (`static`, `linked`,
-  `indirect`, …) count as "not known to be disabled", with systemd's word in the line. The unit
-  `host setup` writes has an `[Install]` section, so `disable` leaves it `disabled`.
+- `static` (a unit without `[Install]`) counts as disabled: nothing enables it, no `systemctl
+  disable` changes the word, and a link made by hand makes it `enabled` (measured). Other
+  states (`enabled-runtime`, `linked`, `indirect`, `alias`, …) count as "not known to be
+  disabled", with systemd's word in the line. The unit `host setup` writes has an `[Install]`
+  section, so `disable` leaves it `disabled`. A masked unit never reaches the look: the move
+  refuses a unit that is not `loaded` before it.
 - The old host's page reads the phase: `Cutover` with the failed line offers the abort, as for
   any move that is not finished.
