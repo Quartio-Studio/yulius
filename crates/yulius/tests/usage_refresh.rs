@@ -17,6 +17,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use yulius::wiring::usage::ProviderUsage;
 use yulius_app::model::{AccountRecord, AccountStatus, Sealed, Secret};
 use yulius_app::ports::store::AccountStore;
+use yulius_app::ports::store_ext::CapacityStore;
 use yulius_app::ports::usage::{UsageFailure, UsageProbe};
 use yulius_app::usage_json;
 use yulius_domain::harness::Provider;
@@ -251,6 +252,62 @@ async fn a_refresh_ends_a_models_limit_that_claude_no_longer_holds() -> TestResu
     assert_eq!(usage["secondary"]["used_percent"], 61.0);
     assert!(refreshed.body["last_error"].is_null());
     assert_eq!(asked(&seen), ["usage", CHEAPEST, DEFAULT]);
+    // The answer says that Claude gave a usage reading; the list's view says nothing of it.
+    assert_eq!(refreshed.body["usage_read"], true, "{:?}", refreshed.body);
+    let list = call(&h.router, Method::GET, "/api/admin/accounts", None, &admin).await?;
+    assert!(list.body[0].get("usage_read").is_none(), "{:?}", list.body);
+    Ok(())
+}
+
+/// RFR-016: the refresh is the instance administrators'. A member is refused before anything
+/// is asked of Claude or changed.
+#[tokio::test]
+async fn a_member_cannot_refresh_a_subscription() -> TestResult {
+    let (base, seen) = claude(|_| ran(&[])).await?;
+    let h = harness_at(base).await?;
+    let admin = setup_superadmin_creds(&h).await?;
+    let alice = support::admit_and_sign_in(&h, &admin, "alice", 11, false).await?;
+    let limited = AccountUsage {
+        weekly_fable: Some(full_week(Some(h.app.now().0 + 2 * DAY_MS))),
+        ..AccountUsage::default()
+    };
+    account(&h, "a-out", &limited).await?;
+    let refused = refresh(&h, &alice, "a-out").await?;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{:?}", refused.body);
+    assert_eq!(stored(&h, "a-out").await?, limited);
+    assert_eq!(asked(&seen), Vec::<String>::new());
+    Ok(())
+}
+
+/// RFR-003: a window the reading of this refresh itself carried is not asked about: the
+/// reading is Claude's word on it. Here the usage endpoint answers (a sign-in that may read
+/// it) with the Opus cap used up; asked, the Opus model would run on bought credits, the
+/// window would go, and the round's next reading would put it back.
+#[tokio::test]
+async fn a_window_the_reading_carried_is_not_asked_about() -> TestResult {
+    let usage = r#"{"five_hour":{"utilization":25.0,"resets_at":"2026-10-07T04:00:00Z"},
+        "seven_day":{"utilization":61.0,"resets_at":"2026-10-09T00:00:00Z"},
+        "seven_day_opus":{"utilization":100.0,"resets_at":"2026-10-09T00:00:00Z"}}"#;
+    let (base, seen) = claude_whose_usage_says(
+        reply("200 OK", &[("content-type", "application/json")], usage),
+        |_| ran(&[]),
+    )
+    .await?;
+    let h = harness_at(base).await?;
+    let admin = setup_superadmin_creds(&h).await?;
+    account(&h, "a-opus", &AccountUsage::default()).await?;
+    let refreshed = refresh(&h, &admin, "a-opus").await?;
+    assert_eq!(refreshed.status, StatusCode::OK, "{:?}", refreshed.body);
+    assert_eq!(
+        refreshed.body["usage"]["weekly_opus"]["used_percent"], 100.0,
+        "{:?}",
+        refreshed.body
+    );
+    assert_eq!(asked(&seen), ["usage"]);
+    // Stored by an earlier refusal and carried by this reading: the same.
+    let again = refresh(&h, &admin, "a-opus").await?;
+    assert_eq!(again.body["usage"]["weekly_opus"]["used_percent"], 100.0);
+    assert_eq!(asked(&seen), ["usage", "usage"]);
     Ok(())
 }
 
@@ -492,6 +549,10 @@ async fn a_limit_of_the_subscription_is_asked_about_with_the_default_model() -> 
     assert_eq!(usage["primary"]["used_percent"], 25.0, "{usage}");
     assert_eq!(refreshed.body["status"], "ok");
     assert_eq!(asked(&seen), ["usage", CHEAPEST, DEFAULT]);
+    // The answer carried both windows: that is a usage reading, though the reading itself
+    // gave none.
+    assert_eq!(refreshed.body["usage_read"], true, "{:?}", refreshed.body);
+    assert!(usage["observed_at"].is_string(), "{usage}");
     Ok(())
 }
 
@@ -769,27 +830,20 @@ enum Meanwhile {
     SignIn(Sealed),
 }
 
-/// A probe during whose question something else writes the account (once the test has given
-/// it the store and what), and that then answers `answer`: the model ran, until the test says
-/// otherwise. It cannot read usage.
+/// A probe during whose request something else writes the account (once the test has given
+/// it the store and what). The write comes during the question about a model, which it then
+/// answers with `answer` (the model ran, until the test says otherwise), with no usage to
+/// read; or, when the test gave it a `reading`, during the usage request, which it then
+/// answers with that reading.
 #[derive(Default)]
 struct AskedMeanwhile {
     writes: Mutex<Option<(yulius_store::SqliteStore, Meanwhile)>>,
     answer: Mutex<ModelAnswer>,
+    reading: Mutex<Option<AccountUsage>>,
 }
 
-#[async_trait]
-impl UsageProbe for AskedMeanwhile {
-    async fn fetch(&self, _: Provider, _: &Secret) -> Result<AccountUsage, UsageFailure> {
-        Err(UsageFailure::not_shared())
-    }
-
-    async fn model_answer(
-        &self,
-        _: Provider,
-        _: &Secret,
-        _: &str,
-    ) -> Result<ModelAnswer, UsageFailure> {
+impl AskedMeanwhile {
+    async fn write(&self) {
         let writes = self.writes.lock().ok().and_then(|slot| slot.clone());
         if let (Some((store, meanwhile)), Ok(id)) = (writes, AccountId::parse("a-raced")) {
             let _ = match meanwhile {
@@ -816,8 +870,73 @@ impl UsageProbe for AskedMeanwhile {
                 }
             };
         }
+    }
+}
+
+#[async_trait]
+impl UsageProbe for AskedMeanwhile {
+    async fn fetch(&self, _: Provider, _: &Secret) -> Result<AccountUsage, UsageFailure> {
+        let Some(reading) = self.reading.lock().ok().and_then(|slot| *slot) else {
+            return Err(UsageFailure::not_shared());
+        };
+        self.write().await;
+        Ok(reading)
+    }
+
+    async fn model_answer(
+        &self,
+        _: Provider,
+        _: &Secret,
+        _: &str,
+    ) -> Result<ModelAnswer, UsageFailure> {
+        if self.reading.lock().is_ok_and(|slot| slot.is_none()) {
+            self.write().await;
+        }
         Ok(self.answer.lock().map(|answer| *answer).unwrap_or_default())
     }
+}
+
+/// A usage reading is the sign-in's it was asked with too: one that comes back after the
+/// subscription was signed in again is not stored for the new sign-in, and the answer says
+/// that nothing was read.
+#[tokio::test]
+async fn a_reading_for_the_previous_sign_in_is_not_stored_for_a_new_one() -> TestResult {
+    let (h, probe, admin) = raced().await?;
+    account(&h, "a-raced", &AccountUsage::default()).await?;
+    let reading = AccountUsage {
+        primary: Some(UsageWindow {
+            used_percent: Some(42.0),
+            window_minutes: Some(300),
+            resets_at: None,
+        }),
+        ..AccountUsage::default()
+    };
+    if let (Ok(mut slot), Ok(mut read)) = (probe.writes.lock(), probe.reading.lock()) {
+        let other = h.app.deps.crypto.seal(b"another-sign-in")?;
+        *slot = Some((h.store.clone(), Meanwhile::SignIn(other)));
+        *read = Some(reading);
+    }
+    let refreshed = refresh(&h, &admin, "a-raced").await?;
+    assert_eq!(refreshed.status, StatusCode::OK, "{:?}", refreshed.body);
+    assert_eq!(refreshed.body["usage_read"], false, "{:?}", refreshed.body);
+    assert_eq!(stored(&h, "a-raced").await?, AccountUsage::default());
+    assert!(h.store.usage_samples(Timestamp(0)).await?.is_empty());
+
+    // With the sign-in unchanged the same reading is stored.
+    if let Ok(mut slot) = probe.writes.lock() {
+        *slot = None;
+    }
+    let refreshed = refresh(&h, &admin, "a-raced").await?;
+    assert_eq!(refreshed.body["usage_read"], true, "{:?}", refreshed.body);
+    assert_eq!(
+        stored(&h, "a-raced")
+            .await?
+            .primary
+            .and_then(|w| w.used_percent),
+        Some(42.0)
+    );
+    assert_eq!(h.store.usage_samples(Timestamp(0)).await?.len(), 1);
+    Ok(())
 }
 
 async fn raced()

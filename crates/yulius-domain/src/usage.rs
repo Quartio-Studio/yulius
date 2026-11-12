@@ -210,7 +210,7 @@ pub struct AccountUsage {
     pub limit_resets_at: Option<Timestamp>,
     /// When the subscription's own windows were last read: by the provider, by a session
     /// whose reading carried both, or with an answer about a model that carried both
-    /// (SPEC-473 RFR-009). A limit Claude reports and a reading of one window change what is
+    /// (SPEC-473 RFR-006). A limit Claude reports and a reading of one window change what is
     /// stored without being a reading of the usage. `None` when it was never read.
     pub observed_at: Option<Timestamp>,
 }
@@ -692,7 +692,7 @@ mod tests {
         assert!(!usage.limit_reached && !usage.limit_in_effect(NOW));
         assert_eq!(
             usage.observed_at, read,
-            "a reported limit is not a reading of the usage (SPEC-473 RFR-009)"
+            "a reported limit is not a reading of the usage (SPEC-473 RFR-006)"
         );
         assert!(usage.exhausted_for(NOW, 98.0, ModelFamily::Fable));
         assert!(!usage.exhausted_for(NOW, 98.0, ModelFamily::Opus));
@@ -984,7 +984,8 @@ mod tests {
             (LimitScope::Model(None), None, None)
         );
         assert_eq!(of(None, true), (LimitScope::Model(None), None, None));
-        // A per-model cap stays that family's, with its own reset, also on a credits refusal.
+        // A per-model cap stays that family's on a credits refusal, which says nothing of when
+        // the cap resets.
         assert_eq!(
             of(Some("seven_day_opus"), true),
             (LimitScope::Model(Some(ModelFamily::Opus)), None, None)
@@ -1181,7 +1182,26 @@ mod tests {
             Some(Timestamp(2_000_000))
         );
         assert!(own.limit_in_effect(NOW));
+        assert_eq!(own.limit_resets_at, Some(Timestamp(2_000_000)));
         assert_eq!(own.secondary, Some(seven));
+        // Refused again with no reset named: the reset stored for the subscription's limit and
+        // for the window it filled stays while it is ahead, and one that passed is not carried.
+        let unnamed = refused(LimitScope::Account, Some(SESSION_WINDOW_MINUTES), None);
+        own.record_model_answer(unnamed, fable, NOW);
+        assert_eq!(own.limit_resets_at, Some(Timestamp(2_000_000)));
+        assert_eq!(
+            own.primary.and_then(|w| w.resets_at),
+            Some(Timestamp(2_000_000))
+        );
+        assert!(!own.limit_in_effect(Timestamp(2_000_000)));
+        let mut ended = AccountUsage {
+            limit_reached: true,
+            limit_resets_at: Some(Timestamp(900_000)),
+            ..AccountUsage::default()
+        };
+        ended.record_model_answer(unnamed, fable, NOW);
+        assert_eq!(ended.limit_resets_at, None, "a passed reset is not carried");
+        assert!(ended.limit_in_effect(NOW));
         assert_eq!(
             own.weekly_fable,
             Some(full_week(Some(5_000_000))),

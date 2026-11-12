@@ -306,6 +306,8 @@ async fn a_sign_in_that_cannot_read_usage_is_not_an_error() -> TestResult {
     )
     .await?;
     assert_eq!(refreshed.status, StatusCode::OK, "{:?}", refreshed.body);
+    // The answer says that Claude gave no usage reading (SPEC-473 RFR-013).
+    assert_eq!(refreshed.body["usage_read"], false, "{:?}", refreshed.body);
     assert!(
         refreshed.body["last_error"].is_null(),
         "{:?}",
