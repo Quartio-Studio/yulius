@@ -3138,6 +3138,12 @@ fn a_move_whose_old_unit_was_not_held_is_not_finished_until_it_is() -> TestResul
         assert_eq!(s.old_unit(), (false, true));
     }
     assert!(first.contains(found), "{first}");
+    // The run that tried the freeze named the way out once, with the freeze's failure.
+    assert_eq!(
+        first.matches("stop it for good instead").count(),
+        1,
+        "{first}"
+    );
     // A person froze it.
     s.world.systemd.lock().map_err(|e| e.to_string())?.frozen = true;
     looks_and_finishes(&mut s, HELD_FROZEN)?;
