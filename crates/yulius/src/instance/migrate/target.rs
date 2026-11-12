@@ -2209,7 +2209,16 @@ pub fn receive() -> Reply {
 #[must_use]
 pub fn landed(landing: &crate::instance::import::Landing) -> String {
     let last = landing.mark.last.clone().unwrap_or_default();
-    let mut detail = if last.live {
+    let waiting = last.deferred.len() as u64;
+    let mut detail = if last.live && waiting > 0 {
+        // What was taken in and left out is not among the installed.
+        format!(
+            "pass {}: {} of {} entries installed and synced",
+            landing.mark.acked,
+            last.entries.saturating_sub(waiting),
+            last.entries
+        )
+    } else if last.live {
         format!(
             "pass {}: {} entries installed and synced",
             landing.mark.acked, last.entries

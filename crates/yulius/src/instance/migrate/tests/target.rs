@@ -1874,3 +1874,40 @@ fn a_watched_stream_passes_a_read_error() {
     let err = watched.read(&mut [0u8; 8]).err().map(|e| e.to_string());
     assert_eq!(err.as_deref(), Some("the disk is on fire"));
 }
+
+#[test]
+fn a_pass_s_line_counts_what_was_installed_apart_from_what_waits() {
+    use crate::instance::import::{Landed, Landing, Mark};
+    let landing = |entries: u64, deferred: Vec<u64>, live: bool| Landing {
+        manifest: Manifest::default(),
+        report: Default::default(),
+        mark: Mark {
+            version: 1,
+            stage: "s1".into(),
+            acked: 2,
+            last: Some(Landed {
+                entries,
+                deferred,
+                live,
+                complete: true,
+                ..Landed::default()
+            }),
+        },
+        removed: 0,
+    };
+    assert_eq!(
+        landed(&landing(5, Vec::new(), true)),
+        "pass 2: 5 entries installed and synced"
+    );
+    // What a warm pass took in and could not install is not among the installed.
+    assert_eq!(
+        landed(&landing(5, vec![1, 3], true)),
+        "pass 2: 3 of 5 entries installed and synced; 2 wait for the freeze (a directory is in \
+         their way)"
+    );
+    assert_eq!(
+        landed(&landing(4, Vec::new(), false)),
+        "4 changed entries installed, 0 removed that the old host no longer holds; checksum \
+         and length as announced"
+    );
+}

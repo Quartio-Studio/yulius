@@ -163,8 +163,30 @@ struct FakeRemote {
     cut: Option<usize>,
     /// What each stream held: whether it was read live, and its entries' paths.
     streams: Vec<(bool, Vec<String>)>,
+    /// The link is slow: every write of 64 KiB or more takes this long.
+    slow: Option<Duration>,
     /// What the new instance says of its GitHub App.
     github: Asked,
+}
+
+/// The fake link: what is written arrives, a large write after a while when it is slow.
+struct Link<'a> {
+    out: &'a mut Vec<u8>,
+    slow: Option<Duration>,
+}
+
+impl Write for Link<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if let Some(slow) = self.slow.filter(|_| bytes.len() >= 64 << 10) {
+            // Not a wait for anything: the time is what the test is about.
+            std::thread::sleep(slow);
+        }
+        self.out.write(bytes)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 fn step_name(request: &Request) -> String {
@@ -321,7 +343,10 @@ impl Remote for FakeRemote {
         write: &mut dyn FnMut(&mut dyn Write) -> io::Result<()>,
     ) -> Result<Reply, String> {
         let mut bytes = Vec::new();
-        let wrote = write(&mut bytes);
+        let wrote = write(&mut Link {
+            out: &mut bytes,
+            slow: self.slow,
+        });
         if let Some(cut) = self.cut.take() {
             bytes.truncate(cut);
         }
@@ -709,6 +734,7 @@ fn setup() -> Result<Setup, Box<dyn std::error::Error>> {
             churn: Vec::new(),
             cut: None,
             streams: Vec::new(),
+            slow: None,
             github: Ok(Some(facts("missing", NEW_URL))),
         },
         world: FakeWorld {
@@ -3197,5 +3223,35 @@ fn no_app_or_no_new_url_leaves_nothing_to_register() -> TestResult {
     assert!(github_lines(&s.status()?).is_empty());
     assert!(s.world.asked.is_empty());
     assert!(!s.events().contains(&"new: callback".to_owned()));
+    Ok(())
+}
+
+#[test]
+fn the_estimate_counts_in_full_what_waits_for_the_freeze_behind_a_directory() -> TestResult {
+    // After the first pass a directory becomes a file of half a megabyte. A warm pass removes
+    // no directory, so the new host leaves the file out and every pass sends it again, the
+    // frozen one too: its time is not a change that may not come again.
+    let mut s = setup()?;
+    s.remote.churn = vec![|root| {
+        let _ = fs::remove_dir_all(root.join("sysroots/sb"));
+        let _ = fs::write(root.join("sysroots/sb"), vec![7u8; 512 << 10]);
+    }];
+    // Two writes of the file's content, 0.6 s in all.
+    s.remote.slow = Some(Duration::from_millis(300));
+    assert_eq!(s.run()?, 0, "{}", s.shown());
+    let shown = s.shown();
+    assert!(
+        shown.contains("1 wait for the freeze (a directory is in their way)"),
+        "{shown}"
+    );
+    assert!(
+        shown.contains(
+            "what changes meanwhile takes about 1 s to send (1 s of it for entries that every \
+             pass sends: they change all the time, lie on another filesystem, or wait for the \
+             freeze behind a directory)"
+        ),
+        "{shown}"
+    );
+    assert_eq!(content(&s.remote.copy_dir)?, content(&s.opts.data_dir)?);
     Ok(())
 }
