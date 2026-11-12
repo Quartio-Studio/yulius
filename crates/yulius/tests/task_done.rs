@@ -4993,6 +4993,134 @@ fn a_flag_raised_after_a_notices_is_not_lifted_by_the_agents_work() -> TestResul
     Ok(())
 }
 
+/// The task token of the run whose agent lives under `data`, read from that agent's own
+/// environment (`YULIUS_TASK_TOKEN`): what its tools authenticate with.
+#[cfg(target_os = "linux")]
+fn agent_token(data: &Path) -> Result<String, BoxError> {
+    let under = data.to_string_lossy().into_owned();
+    for entry in std::fs::read_dir("/proc")?.flatten() {
+        let Ok(env) = std::fs::read(entry.path().join("environ")) else {
+            continue;
+        };
+        let vars: Vec<String> = env
+            .split(|byte| *byte == 0)
+            .map(|var| String::from_utf8_lossy(var).into_owned())
+            .collect();
+        if !vars.iter().any(|var| var.contains(&under)) {
+            continue;
+        }
+        if let Some(token) = vars
+            .iter()
+            .find_map(|var| var.strip_prefix("YULIUS_TASK_TOKEN="))
+        {
+            return Ok(token.to_owned());
+        }
+    }
+    Err("no process of this run holds a task token".into())
+}
+
+/// SPEC-472 ATN-011 (review round 2): the agent asked for a secret (Needs you: answer it on the
+/// Secrets page), then Claude Code asks the person something. The flag is the question's from
+/// then on. The person answers the question first and the agent works on: that work answers
+/// the flag, as it does for a question on an unflagged task, so the task does not keep reading
+/// "its question is in the terminal" over no question. The secret's answer afterwards finds no
+/// flag to end.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_question_that_took_a_secret_requests_flag_over_is_answered_by_the_agents_work() -> TestResult {
+    use yulius_app::auth::AuthContext;
+    use yulius_app::ports::store::UserStore as _;
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let (app, _) = start(&data, &fake, noticing_agent(), 0).await?;
+        let (sandbox, user) = seed(&app, &data).await?;
+        let id = goal_task(&app, &sandbox, &user, "Merge on green").await?;
+        wait_for("Done", Duration::from_secs(90), || async {
+            activity(&app, &id).await == Some(Activity::Done)
+        })
+        .await?;
+        let ctx = AuthContext {
+            user: app.deps.store.user(&user).await?.ok_or("user")?,
+            csrf_token: None,
+            session_hash: None,
+            token: None,
+        };
+        let secret = app
+            .create_agent_secret(
+                &ctx,
+                sandbox.as_str(),
+                &serde_json::from_value(serde_json::json!({
+                    "name": "DEPLOY_KEY",
+                    "description": "Deploy key",
+                    "value": "deploy-key-123456",
+                    "auto_allow": false,
+                }))?,
+            )
+            .await?;
+        // The run's agent asks for the secret's hosts, with its own token.
+        let asked = app
+            .mcp_handle(
+                &agent_token(&data)?,
+                serde_json::from_value(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "secret_request_hosts",
+                        "arguments": {"secret": "DEPLOY_KEY", "hosts": ["api.deploy.test"]},
+                    },
+                }))?,
+            )
+            .await
+            .ok_or("no answer to the tool call")?;
+        let answer = serde_json::to_value(&asked)?;
+        assert!(
+            answer["error"].is_null() && answer["result"]["isError"] != true,
+            "{answer}"
+        );
+        let why = || support::attention(&app, id.as_str());
+        assert_eq!(activity(&app, &id).await, Some(Activity::NeedsAttention));
+        assert_eq!(
+            why().await?["action"],
+            "Answer it on the Secrets page.",
+            "the request's flag"
+        );
+
+        app.send_input(&id, b"/notify permission_prompt\r").await?;
+        wait_for("the question's reason", Duration::from_secs(30), || async {
+            screen_contains(&app, &id, "NOTIFIED").await
+                && why().await.is_ok_and(|why| why["kind"] == "terminal")
+        })
+        .await?;
+        // What the agent does next is later than the notice by more than the clock's step.
+        transcript_read(&app, &id).await?;
+        app.send_input(&id, b"/tool\r").await?;
+        wait_for(
+            "Working with the agent's work",
+            Duration::from_secs(30),
+            || async { activity(&app, &id).await == Some(Activity::Working) },
+        )
+        .await?;
+        assert!(why().await?.is_null(), "no flag, no reason");
+
+        // The request still waits on the Secrets page; its answer changes nothing of the task.
+        app.answer_host_request(
+            &ctx,
+            &secret.id,
+            &serde_json::from_value(
+                serde_json::json!({"allow": true, "hosts": ["api.deploy.test"]}),
+            )?,
+        )
+        .await?;
+        assert_eq!(activity(&app, &id).await, Some(Activity::Working));
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// A hooked agent with a transcript, as the notice tests run it.
 fn noticing_agent() -> FakeAgentOptions {
     FakeAgentOptions {
