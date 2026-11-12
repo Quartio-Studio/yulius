@@ -166,4 +166,13 @@ test("the task's row says the reason's to-do, not to approve in the terminal", a
   await touchTask(browser, 'sb_studio', 12, { attention: GATE });
   await expect(row).toHaveCount(1);
   await expect(browser.locator('.sidebar .task-link[data-route="/s/studio/t/12"] .sr-only:has-text("Approve or answer in the terminal")')).toHaveCount(0);
+
+  // A flag whose request says it (a goal pause): the row says the request, not to look at the
+  // terminal beside "Needs you: …" (review round 1).
+  await touchTask(browser, 'sb_studio', 12, {
+    attention: null,
+    needs_you: { action: 'Send the task a message (for example "continue")', problem: 'the task does not go on by itself', decision: false, at: new Date().toISOString() },
+  });
+  await expect(browser.locator('.sidebar .task-link[data-route="/s/studio/t/12"] .sr-only:has-text("Send the task a message")')).toHaveCount(1);
+  await expect(browser.locator('.sidebar .task-link[data-route="/s/studio/t/12"] .sr-only:has-text("Look at its terminal")')).toHaveCount(0);
 });

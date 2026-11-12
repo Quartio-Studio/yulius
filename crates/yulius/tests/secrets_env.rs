@@ -440,9 +440,66 @@ async fn a_flag_raised_after_the_request_outlives_its_answer() -> TestResult {
     )
     .await?;
     assert_eq!(notice.status, StatusCode::OK, "{}", notice.body);
+    // The flag is the question's from now on, and so is what it says (SPEC-472 ATN-011): the
+    // secret's answer will not end it, so the secret's reason must not stay on it.
+    let question = json!({"kind": "terminal", "problem": "Pick one", "action": null, "link": null});
+    assert_eq!(support::attention(&w.h.app, "t1").await?, question);
     let allowed = answer(&w, &w.writer, true).await?;
     assert_eq!(allowed.status, StatusCode::OK, "{}", allowed.body);
     assert_eq!(task_activity(&w).await?, Some(Activity::NeedsAttention));
+    assert_eq!(
+        support::attention(&w.h.app, "t1").await?,
+        question,
+        "not the answered secret's page"
+    );
+    Ok(())
+}
+
+/// SPEC-472 ATN-011 (review round 1): whatever takes a secret request's flag over brings its
+/// own reason, also a matter the session's work does not answer (a worker's permission prompt),
+/// and the secret's later answer (here: dismissed) changes neither the flag nor what it says.
+#[tokio::test]
+async fn a_flag_that_takes_a_secret_requests_over_says_its_own_reason() -> TestResult {
+    use yulius_domain::task::Activity;
+    let w = world().await?;
+    let asked = support::mcp_tool(
+        &w.h,
+        TOKEN,
+        "secret_copy_to_env",
+        json!({"secrets": ["STRIPE_KEY"]}),
+    )
+    .await?;
+    assert_eq!(support::tool_text(&asked)["waiting"], json!(["STRIPE_KEY"]));
+    let secret = support::attention(&w.h.app, "t1").await?;
+    assert_eq!(
+        secret["action"], "Answer it on the Secrets page.",
+        "{secret}"
+    );
+    // A worker's permission prompt: a flag the session's work does not answer.
+    let notice = call(
+        &w.h.internal,
+        Method::POST,
+        "/hooks/claude/Notification",
+        Some(json!({"notification_type": "worker_permission_prompt", "message": "builder needs permission for Bash"})),
+        &Creds {
+            bearer: Some(TOKEN.into()),
+            ..Creds::default()
+        },
+    )
+    .await?;
+    assert_eq!(notice.status, StatusCode::OK, "{}", notice.body);
+    let worker = json!({
+        "kind": "terminal",
+        "problem": "builder needs permission for Bash",
+        "action": null,
+        "link": null,
+    });
+    assert_eq!(support::attention(&w.h.app, "t1").await?, worker);
+    // The flag's time is kept: it is the same flag, with another owner.
+    let dismissed = answer(&w, &w.writer, false).await?;
+    assert_eq!(dismissed.status, StatusCode::OK, "{}", dismissed.body);
+    assert_eq!(task_activity(&w).await?, Some(Activity::NeedsAttention));
+    assert_eq!(support::attention(&w.h.app, "t1").await?, worker);
     Ok(())
 }
 

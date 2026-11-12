@@ -206,6 +206,18 @@ mod tests {
         assert_eq!(AttentionRecord::terminal(Some(" \n ")).problem, None);
         assert_eq!(AttentionRecord::terminal(None).problem, None);
 
+        // Characters that change how a line is drawn without showing (review round 1): a bidi
+        // override would reverse the words that follow, a zero-width space hides a break.
+        let hidden = AttentionRecord::yulius(
+            "The agent asks: sign in\u{202e} txet siht\u{202c} now\u{200b}!\u{feff}",
+            "Open\u{2066} it\u{2069}.",
+        );
+        assert_eq!(
+            hidden.problem.as_deref(),
+            Some("The agent asks: sign in txet siht now!")
+        );
+        assert_eq!(hidden.action.as_deref(), Some("Open it."));
+
         let long = "é".repeat(MAX_PROBLEM_CHARS + 50);
         let cut = AttentionRecord::yulius(&long, "Do it.");
         let problem = cut.problem.as_deref().unwrap_or_default();
