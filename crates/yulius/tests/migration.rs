@@ -33,8 +33,6 @@ struct FakeMoveHelper {
     unwritable: AtomicBool,
     /// A write takes a while, as on a slow disk: another ask has time to come.
     slow: AtomicBool,
-    /// How often the request file was looked at.
-    looks: AtomicUsize,
     helper: Mutex<Option<MoveHelperStatus>>,
     status: Mutex<Option<MoveStatus>>,
     arrived: Mutex<Option<MoveChecklist>>,
@@ -68,7 +66,6 @@ impl MoveHelper for FakeMoveHelper {
     }
 
     fn pending(&self) -> Option<MoveRequest> {
-        self.looks.fetch_add(1, Ordering::SeqCst);
         self.pending.lock().ok()?.clone()
     }
 
@@ -240,18 +237,6 @@ impl Instance {
             .map(|entry| format!("{}: {}", entry.actor, entry.detail.unwrap_or_default()))
             .collect())
     }
-}
-
-/// Waits for what happens without a request: a bounded look every few milliseconds.
-async fn until(what: &str, mut met: impl FnMut() -> bool) -> TestResult {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while !met() {
-        if std::time::Instant::now() > deadline {
-            return Err(format!("timed out waiting until {what}").into());
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
-    Ok(())
 }
 
 fn plan() -> Value {
@@ -1013,50 +998,6 @@ async fn of_two_asks_at_once_one_is_written() -> TestResult {
     assert_eq!(i.helper.written().len(), 1);
     assert_eq!(i.audited(TARGET, "migration.planned").await?.len(), 1);
     Ok(())
-}
-
-/// MVB-020: a request the helper took leaves the data directory by itself, with nobody
-/// reading the view (the page was closed): a move copies that directory, and the request would
-/// arrive on the new host as one that waits there.
-#[tokio::test]
-async fn a_taken_request_is_removed_with_nobody_reading() -> TestResult {
-    let i = instance().await?;
-    assert_eq!(
-        i.ask(moving_after_plan(&i).await?).await?.status,
-        StatusCode::ACCEPTED
-    );
-    let asked = i.helper.written().pop().ok_or("nothing was written")?;
-    assert_eq!(asked.action, MoveAction::Move);
-    // Looked at, with nobody asking, and left alone while the helper has not taken it. (Three
-    // looks: one may be the last of the plan's request.)
-    let looks = i.helper.looks.load(Ordering::SeqCst);
-    until("the request was looked at", || {
-        i.helper.looks.load(Ordering::SeqCst) >= looks + 3
-    })
-    .await?;
-    assert_eq!(i.helper.written().len(), 2, "written again");
-    assert_eq!(
-        i.helper.cleared.load(Ordering::SeqCst),
-        1,
-        "the plan's only"
-    );
-    i.helper.takes(i.now())?;
-    until("the taken request is removed", || {
-        i.helper.pending().is_none()
-    })
-    .await?;
-    assert_eq!(
-        i.helper.written().last().map(|r| r.id.clone()),
-        Some(asked.id)
-    );
-    Ok(())
-}
-
-/// A plan of [`plan`] that ended well and was read, and the move of it.
-async fn moving_after_plan(i: &Instance) -> Result<Value, Box<dyn std::error::Error>> {
-    i.planned(&GOOD, None).await?;
-    assert_eq!(i.view().await?["can"]["move"], true);
-    Ok(moving())
 }
 
 /// MVB-020: on the host a move arrived at, its checklist; and a checklist written after the

@@ -5,12 +5,11 @@
 //! the old host after a move, and its database travels with the copy: a row "running" would
 //! arrive on the new host as a move of that host. So every answer is computed from the files
 //! the helper and the command keep outside the data directory, and from the request file, which
-//! the server removes once the helper took it, whether the view is read or not.
+//! is removed once the helper took it and which no copy of the data directory takes along.
 
 pub mod rules;
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use yulius_contracts::api::migration::{
     AskMigration, MigrationArrived, MigrationCan, MigrationMove, MigrationRequest, MigrationRun,
@@ -39,8 +38,6 @@ pub const RETRY_AFTER_MS: i64 = 5_000;
 pub const LOST_AFTER_MS: i64 = 60_000;
 /// A move is asked on a plan shown at most this long ago.
 pub const PLAN_VALID_MS: i64 = 3_600_000;
-/// How often a written request is looked at until the helper took it.
-const TAKEN_POLL: Duration = Duration::from_millis(250);
 /// The SSH port when the person names none.
 const SSH_PORT: u16 = 22;
 
@@ -313,36 +310,6 @@ fn read(helper: &dyn MoveHelper, now: i64) -> Files {
     }
 }
 
-/// Removes the request `id` once the helper took it, also when nobody reads the view meanwhile
-/// (the page was closed): a move copies the data directory, and a request left in it would
-/// arrive on the new host as one that waits there. Given up once its answer is no longer
-/// awaited; a request never taken goes when it is read (MVB-020).
-fn forget_once_taken(helper: Arc<dyn MoveHelper>, id: String) {
-    tokio::spawn(async move {
-        let waited = tokio::time::Instant::now();
-        let longest = Duration::from_millis(u64::try_from(ACK_WAIT_MS).unwrap_or(0));
-        while waited.elapsed() < longest {
-            tokio::time::sleep(TAKEN_POLL).await;
-            let (helper, id) = (Arc::clone(&helper), id.clone());
-            let waits = tokio::task::spawn_blocking(move || {
-                if helper.pending().is_none_or(|request| request.id != id) {
-                    return false;
-                }
-                let taken = helper.helper_status().is_some_and(|run| run.id == id);
-                if taken {
-                    helper.clear_request(&id);
-                }
-                !taken
-            })
-            .await
-            .unwrap_or(false);
-            if !waits {
-                return;
-            }
-        }
-    });
-}
-
 /// What a person typed, as the request holds it.
 fn asked(req: &AskMigration) -> Values {
     if req.action == MoveAction::Abort {
@@ -502,7 +469,7 @@ impl App {
             of_run.or_else(|| facts.files.status.as_ref().map(|s| s.target.clone()))
         });
         let written = {
-            let (helper, request) = (Arc::clone(&helper), request.clone());
+            let request = request.clone();
             tokio::task::spawn_blocking(move || helper.request(&request))
                 .await
                 .map_err(AppError::internal)?
@@ -510,7 +477,6 @@ impl App {
         written.map_err(|why| {
             AppError::Conflict(format!("the move's request could not be written: {why}"))
         })?;
-        forget_once_taken(helper, request.id.clone());
         let login = self.login_of(&ctx.user.id).await;
         let mut detail = format!("request {}", request.id);
         if let Some(port) = values.ssh_port {
