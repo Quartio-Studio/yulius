@@ -3118,14 +3118,27 @@ line. The new host's steps (`target.rs`) are Rust code over `host_setup::Host`, 
 same build, which the flow copies first (`yulius instance migrate-target`). The old host's profile
 (`profile.rs`: the unit and its drop-ins, key files, apt sources and the manual package list,
 software outside apt, the update helper, Caddy, ufw) is read live and fitted to the new host by
-pure rewrites (release codename, public URL, host name). The copy is the export's own stream into
-the import; both hosts then count the copy's inventory (`inventory.rs`: entries and bytes per
-top-level folder and a fingerprint over every entry's metadata, as the import installs it and in
-the old host's ids; the import's own limits mark is left out of the export and of both counts,
-`walk::left_out`), and the new instance is started only when they are equal. Only the move's
-identity and the cutover's progress are stored (`/var/lib/yulius-migrate/state.json`); every step
-reads the facts and acts if needed, so the same command continues a move. A run that goes on from
-a recorded start asks the new instance first and never ends well with both running: whatever
+pure rewrites (release codename, public URL, host name). The copy is the export's own stream,
+sent in passes into a staged copy (`warm.rs`; SPEC-465, ADR-0303): passes while the old instance
+runs, then one exact pass while it is frozen. The old host keeps a receipt for every path the new
+host took in and synced (`receipts.rs`: a digest of the entry's archive headers, its inode number
+and its inode's change time) and leaves an entry out only while its receipt matches; an entry
+earns one only when it last changed two seconds before its pass, which begins by syncing the
+filesystem. Receipts are believed only in the boot they were earned in and while the clock was
+not set back; otherwise they are dropped and the staged copy is filled again. A walk while the
+instance runs holds every directory it is in open and names its entries through it
+(`walk.rs`), so nothing a sandbox does to its own files leads the walk, which runs as root,
+outside the data directory. The new host's marker (`.yulius-import-incomplete`) holds the stage id, the count of
+streams and what the last one installed; it names a stream before its first entry, so a receive
+that dies costs the receipts and never the copy's truth. The frozen pass carries the digests of
+every path the old host holds, and the new host removes the rest. Both hosts then count the
+copy's inventory (`inventory.rs`: entries and bytes per top-level folder and a fingerprint over
+every entry's metadata, as the import installs it and in the old host's ids; the import's own
+limits mark is left out of every pass and of both counts, `walk::left_out`), and the new
+instance is started only when they are equal. Only the move's identity, the cutover's progress
+and the receipts are stored (`/var/lib/yulius-migrate/state.json`, `copy/`); every step reads the
+facts and acts if needed, so the same command continues a move. A run that goes on from a
+recorded start asks the new instance first and never ends well with both running: whatever
 unit of the old instance (the server's, its sessions unit) runs unfrozen beside a new instance
 that has taken over is frozen again, to stay, or the run fails saying so (SPEC-467). The copy
 carries a mark
@@ -3170,8 +3183,16 @@ sequenceDiagram
   G->>Y: registered or missing
   M->>O: Plan: what a person must do (the App's link and values), then "Proceed?"
   M->>T: Prepare: data disk, apt sources, packages, software, host items, unit, proxy
+  loop warm passes, the old instance runs
+    M->>T: marker of the staged copy (stage id, streams, last stream)
+    M->>M: receipts follow the marker, sync the data directory
+    M->>T: a pass: every entry without a matching receipt
+    T->>M: marker: entries installed and synced
+    M->>O: downtime: the estimated freeze (copy again while above --max-downtime)
+  end
   M->>D: systemctl freeze yulius.service
-  M->>T: the export's stream into the import
+  M->>T: the frozen pass: what changed, and every path the old host holds
+  T->>T: install, remove what is not among those paths
   T->>M: inventory of the copy
   alt inventories differ or a step fails
     M->>D: systemctl thaw (the old instance runs on)

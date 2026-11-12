@@ -12,7 +12,7 @@ use yulius_contracts::update::{HostLine, HostOutcome};
 use super::profile::{self, Release, SOURCES_DIR, TextFile, UNITS_DIR};
 use crate::host_setup::{self, Cmd, Host, Mode, Out};
 use crate::instance::Manifest;
-use crate::instance::import::INCOMPLETE;
+use crate::instance::import::{INCOMPLETE, Mark};
 use crate::instance::inventory::Inventory;
 
 /// The flow's own directory on both hosts (root, 0700).
@@ -25,9 +25,17 @@ pub const EXPECT_FILE: &str = "/var/lib/yulius-migrate/expect.json";
 /// running here (its connection or its caller died) finds it and never starts the unit.
 pub const STOPPED: &str = "/var/lib/yulius-migrate/stopped";
 /// The lock files of [`Hold`].
-const HOLD_FILES: [&str; 2] = ["flight.lock", "switch.lock"];
-/// How long a look at the instance's health waits for a Start that is still in flight.
+const HOLD_FILES: [&str; 3] = ["flight.lock", "switch.lock", "receive.lock"];
+/// How long a look at the instance's health waits for a Start that is still in flight, and a
+/// look at the staged copy's marker for a stream that is being closed.
 const FLIGHT_WAIT: Duration = Duration::from_secs(30 * 60);
+/// Written beside the lock of a stream being received: the old host went on without that
+/// stream, so its receiver closes it instead of waiting on a link that may be gone.
+const RECEIVE_STOP: &str = "receive.stop";
+/// How long a stream waits for one before it to be closed.
+const RECEIVE_WAIT: Duration = Duration::from_secs(120);
+/// How often a receive that gets no bytes asks whether it was told to stop.
+const RECEIVE_LOOK: Duration = Duration::from_secs(1);
 /// The reply's line on standard output; everything before it is a command's output.
 pub const REPLY: &str = "YULIUS-REPLY ";
 pub use yulius_app::host_move::{MOVE_PENDING, MOVED};
@@ -124,10 +132,18 @@ pub enum Request {
         /// The instance.
         setup: Setup,
     },
-    /// Make the data directory ready for a copy.
+    /// Make the data directory ready for a copy: empty, or holding the staged copy `stage`.
     DataDir {
         /// The instance.
         setup: Setup,
+        /// The staged copy this move goes on with; any other unfinished copy is removed.
+        #[serde(default)]
+        stage: Option<String>,
+    },
+    /// What the staged copy's marker says ([`Reply::stage`]), once no stream is being received.
+    Stage {
+        /// The data directory.
+        data_dir: PathBuf,
     },
     /// `host setup` up to the sandbox base, so the host is proven ready before the freeze.
     BeforeStart {
@@ -151,7 +167,7 @@ pub enum Request {
     /// Count the installed copy and name the sandboxes built on another release.
     Inventory {
         /// The copy's manifest (its ids).
-        manifest: Manifest,
+        manifest: Box<Manifest>,
         /// The old host's inventory.
         old: Inventory,
         /// The old host's release.
@@ -289,6 +305,9 @@ pub struct Reply {
     /// taken over.
     #[serde(default)]
     pub started: bool,
+    /// [`Request::Stage`]'s answer: the staged copy's marker, `None` when there is none.
+    #[serde(default)]
+    pub stage: Option<Mark>,
 }
 
 /// A part of `host setup` ([`host_setup::Run`]).
@@ -312,6 +331,9 @@ pub enum Hold {
     Switch,
     /// Nothing held: waits (bounded) until no Start is in flight.
     Landed,
+    /// Nothing held: tells a stream that is still being received ([`receiving`]) to close and
+    /// waits (bounded) until it has, so the marker read next is what the last stream left.
+    Received,
 }
 
 /// What a step needs beside the host: this process and its clock.
@@ -550,6 +572,11 @@ fn facts(
     f.zstd = sh(host, &["zstd", "--version"]).ok();
     f.mounted = mounted(host, data_dir).is_some();
     f
+}
+
+/// The staged copy `data_dir` holds, by its marker.
+fn staged(host: &dyn Host, data_dir: &Path) -> Option<Mark> {
+    Mark::parse(&host.read(&data_dir.join(INCOMPLETE))?)
 }
 
 /// The unit drop-in that makes the service wait for its data disk.
@@ -1157,7 +1184,7 @@ fn binary(host: &mut dyn Host, setup: &Setup, l: &mut Lines) {
     }
 }
 
-fn data_dir(host: &mut dyn Host, setup: &Setup, l: &mut Lines) {
+fn data_dir(host: &mut dyn Host, setup: &Setup, stage: Option<&str>, l: &mut Lines) {
     const ITEM: &str = "data directory";
     let dir = &setup.data_dir;
     let shown = dir.display().to_string();
@@ -1174,7 +1201,27 @@ fn data_dir(host: &mut dyn Host, setup: &Setup, l: &mut Lines) {
         .filter(|name| !crate::instance::walk::LEFT_OUT.contains(&name.as_str()))
         .collect();
     if names.iter().any(|name| name == INCOMPLETE) {
-        for name in &names {
+        // This move's own staged copy is what the next pass builds on.
+        if let (Some(mark), Some(stage)) = (staged(host, dir), stage)
+            && mark.stage == stage
+        {
+            return l.ok(
+                ITEM,
+                format!(
+                    "{shown} holds this move's staged copy ({} passes acknowledged)",
+                    mark.acked
+                ),
+            );
+        }
+        // The marker last: until everything else is gone, what is there stays an unfinished
+        // copy for the next run to remove.
+        let marker_last = names
+            .iter()
+            .filter(|name| *name != INCOMPLETE)
+            .chain(std::iter::once(&INCOMPLETE.to_owned()))
+            .cloned()
+            .collect::<Vec<_>>();
+        for name in &marker_last {
             let path = dir.join(name).display().to_string();
             let out = run(
                 host,
@@ -1387,8 +1434,18 @@ fn mark(host: &mut dyn Host, setup: &Setup, from: Option<&str>, to: &str, l: &mu
             format!("cannot give the mark to {}: {}", setup.user, out.why()),
         );
     }
-    // Proven on the old host: the copy is no longer unfinished.
-    let out = sh(host, &["rm", "-f", "--", &unproven.display().to_string()]);
+    // Proven on the old host: the copy is no longer unfinished, nor a staged copy.
+    let rewritten = setup.data_dir.join(format!(".{INCOMPLETE}.tmp"));
+    let out = sh(
+        host,
+        &[
+            "rm",
+            "-f",
+            "--",
+            &unproven.display().to_string(),
+            &rewritten.display().to_string(),
+        ],
+    );
     if !out.ok() || host.is_file(&unproven) {
         return l.failed(
             ITEM,
@@ -1742,7 +1799,12 @@ pub fn handle(host: &mut dyn Host, env: &mut Env<'_>, request: &Request) -> Repl
         Request::Npm { packages } => npm(host, packages, &mut l),
         Request::HostItems { setup } => l.0 = (env.setup)(host, Part::Host, setup),
         Request::Binary { setup } => binary(host, setup, &mut l),
-        Request::DataDir { setup } => data_dir(host, setup, &mut l),
+        Request::DataDir { setup, stage } => data_dir(host, setup, stage.as_deref(), &mut l),
+        Request::Stage { data_dir } => {
+            // A stream cut on the old host may still be taken in here.
+            drop((env.hold)(Hold::Received));
+            reply.stage = staged(host, data_dir);
+        }
         Request::BeforeStart { setup } => l.0 = (env.setup)(host, Part::BeforeStart, setup),
         Request::Texts { name, files } => texts(host, name, files, &mut l),
         Request::Proxy { changed } => proxy(host, *changed, &mut l),
@@ -1807,8 +1869,9 @@ fn real_hold(hold: Hold) -> Box<dyn std::any::Any> {
 }
 
 /// Takes `hold` with `flock` on files in `dir`; it is released when the returned value is
-/// dropped. [`Hold::Landed`] waits at most `landing` for a Start in flight and holds nothing.
-/// A lock that cannot be taken (no such directory) holds nothing: the steps then run as before.
+/// dropped. [`Hold::Landed`] and [`Hold::Received`] wait at most `landing` for a Start in
+/// flight or a stream being received and hold nothing. A lock that cannot be taken (no such
+/// directory) holds nothing: the steps then run as before.
 pub fn hold_in(dir: &Path, hold: Hold, landing: Duration) -> Box<dyn std::any::Any> {
     use rustix::fs::{FlockOperation, flock};
     let open = |name: &str| {
@@ -1819,24 +1882,196 @@ pub fn hold_in(dir: &Path, hold: Hold, landing: Duration) -> Box<dyn std::any::A
             .open(dir.join(name))
             .ok()
     };
-    match hold {
-        Hold::Flight | Hold::Switch => {
-            let file = open(HOLD_FILES[usize::from(hold == Hold::Switch)]);
-            if let Some(file) = &file {
-                let _ = flock(file, FlockOperation::LockExclusive);
+    let (name, wait) = match hold {
+        Hold::Flight => (HOLD_FILES[0], false),
+        Hold::Switch => (HOLD_FILES[1], false),
+        Hold::Landed => (HOLD_FILES[0], true),
+        Hold::Received => (HOLD_FILES[2], true),
+    };
+    if wait {
+        if let Some(file) = open(name) {
+            let deadline = std::time::Instant::now() + landing;
+            let stop = dir.join(RECEIVE_STOP);
+            let mut told = false;
+            let mut free = flock(&file, FlockOperation::NonBlockingLockShared).is_ok();
+            while !free && std::time::Instant::now() < deadline {
+                if hold == Hold::Received && !told {
+                    // One run at a time on the old host: whoever asks, that stream's sender
+                    // is gone.
+                    told = std::fs::write(&stop, b"").is_ok();
+                    eprintln!(
+                        "yulius instance migrate-target: a stream is still being taken in \
+                         here; it is closed first"
+                    );
+                }
+                std::thread::sleep(Duration::from_millis(200));
+                free = flock(&file, FlockOperation::NonBlockingLockShared).is_ok();
             }
-            Box::new(file)
+            // Heard: taken back. A receive that still runs stays told.
+            if told && free {
+                let _ = std::fs::remove_file(&stop);
+            }
         }
-        Hold::Landed => {
-            if let Some(file) = open(HOLD_FILES[0]) {
-                let deadline = std::time::Instant::now() + landing;
-                while flock(&file, FlockOperation::NonBlockingLockShared).is_err()
-                    && std::time::Instant::now() < deadline
-                {
-                    std::thread::sleep(Duration::from_millis(200));
+        return Box::new(());
+    }
+    let file = open(name);
+    if let Some(file) = &file {
+        let _ = flock(file, FlockOperation::LockExclusive);
+    }
+    Box::new(file)
+}
+
+/// A stream being received, from its first byte until its marker is written.
+#[derive(Debug)]
+pub struct Receiving {
+    _lock: std::fs::File,
+    stop: PathBuf,
+}
+
+impl Receiving {
+    /// Whether the old host went on without this stream ([`Hold::Received`]).
+    #[must_use]
+    pub fn told_to_stop(&self) -> bool {
+        self.stop.exists()
+    }
+
+    /// The file whose presence says so.
+    #[must_use]
+    pub fn stop_file(&self) -> PathBuf {
+        self.stop.clone()
+    }
+}
+
+/// Begins to receive a stream in the state directory `dir`: one at a time, waiting at most
+/// `wait` for a stream before it to be closed.
+///
+/// # Errors
+/// Another stream is still being received, or the lock cannot be made.
+pub fn receiving(dir: &Path, wait: Duration) -> Result<Receiving, String> {
+    use rustix::fs::{FlockOperation, flock};
+    let path = dir.join(HOLD_FILES[2]);
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    let deadline = std::time::Instant::now() + wait;
+    while flock(&lock, FlockOperation::NonBlockingLockExclusive).is_err() {
+        if std::time::Instant::now() >= deadline {
+            return Err(
+                "another stream is still being taken in on the new host: run the command again \
+                 in a few minutes"
+                    .into(),
+            );
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    let stop = dir.join(RECEIVE_STOP);
+    // What an earlier look left (it was cut before it took its word back) is not for this
+    // stream.
+    let _ = std::fs::remove_file(&stop);
+    Ok(Receiving { _lock: lock, stop })
+}
+
+/// A stream's bytes, read on a thread of their own, so a receive whose sender is gone can be
+/// told to close the stream: a link that breaks leaves the new host's end open for hours, and
+/// what arrived counts only once the stream is closed and marked (SPEC-465 WCP-011).
+pub struct Watched {
+    chunks: std::sync::mpsc::Receiver<std::io::Result<Vec<u8>>>,
+    chunk: Vec<u8>,
+    at: usize,
+    ended: bool,
+    every: Duration,
+    stopped: Box<dyn FnMut() -> bool + Send>,
+}
+
+impl std::fmt::Debug for Watched {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Watched")
+            .field("ended", &self.ended)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Watched {
+    /// Reads `input`; when no bytes come for `every`, asks `stopped` whether to give up.
+    pub fn new(
+        mut input: impl std::io::Read + Send + 'static,
+        every: Duration,
+        stopped: impl FnMut() -> bool + Send + 'static,
+    ) -> Self {
+        let (send, chunks) = std::sync::mpsc::sync_channel(8);
+        std::thread::spawn(move || {
+            let mut buf = vec![0u8; 1 << 20];
+            loop {
+                let read = match input.read(&mut buf) {
+                    Ok(n) => Ok(buf[..n].to_vec()),
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(e) => Err(e),
+                };
+                let last = read.as_ref().map_or(true, Vec::is_empty);
+                if send.send(read).is_err() || last {
+                    break;
                 }
             }
-            Box::new(())
+        });
+        Self {
+            chunks,
+            chunk: Vec::new(),
+            at: 0,
+            ended: false,
+            every,
+            stopped: Box::new(stopped),
+        }
+    }
+}
+
+impl std::io::Read for Watched {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        use std::sync::mpsc::RecvTimeoutError;
+        loop {
+            if self.at < self.chunk.len() {
+                let n = out.len().min(self.chunk.len() - self.at);
+                out[..n].copy_from_slice(&self.chunk[self.at..self.at + n]);
+                self.at += n;
+                return Ok(n);
+            }
+            if self.ended || out.is_empty() {
+                return Ok(0);
+            }
+            match self.chunks.recv_timeout(self.every) {
+                Ok(Ok(chunk)) => {
+                    self.ended = chunk.is_empty();
+                    self.chunk = chunk;
+                    self.at = 0;
+                }
+                Ok(Err(e)) => {
+                    self.ended = true;
+                    return Err(e);
+                }
+                Err(RecvTimeoutError::Disconnected) => self.ended = true,
+                Err(RecvTimeoutError::Timeout) => {
+                    if (self.stopped)() {
+                        self.ended = true;
+                        return Err(std::io::Error::other(
+                            "the old host went on without the rest of this stream",
+                        ));
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Lets this process hold as many open files as the host allows: removing a tree, and walking
+/// one while the instance runs, holds one directory open for each level it is deep.
+pub(super) fn raise_open_files() {
+    use nix::sys::resource::{Resource, getrlimit, setrlimit};
+    if let Ok((soft, hard)) = getrlimit(Resource::RLIMIT_NOFILE) {
+        let wanted = hard.min(1 << 16);
+        if soft < wanted {
+            let _ = setrlimit(Resource::RLIMIT_NOFILE, wanted, hard);
         }
     }
 }
@@ -1861,22 +2096,13 @@ pub fn reported_commit(address: &str) -> Option<String> {
     info.commit
 }
 
-/// Marks an installed copy unfinished again: installed is not proven.
-///
-/// # Errors
-/// The marker cannot be made (or is there, which an install that just ended rules out).
-pub fn mark_unproven(data_dir: &Path) -> std::io::Result<()> {
-    std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(data_dir.join(INCOMPLETE))
-        .map(|_| ())
-}
-
-/// Installs the copy arriving on standard input as [`EXPECT_FILE`] says, with the import's own
-/// checks, and reports it.
+/// Takes the pass arriving on standard input into the staged copy [`EXPECT_FILE`] names, with
+/// the import's own checks, and reports it. The copy stays marked unfinished: its marker is the
+/// stage, until the old host has proven the copy ([`Request::Mark`] removes it), so a run that
+/// dies in between leaves nothing that looks like an instance.
 #[must_use]
 pub fn receive() -> Reply {
+    use crate::instance::import::{Failure, Ground, land, prepare_host};
     const ITEM: &str = "copy";
     let mut l = Lines::default();
     let expect = std::fs::read_to_string(EXPECT_FILE)
@@ -1892,8 +2118,24 @@ pub fn receive() -> Reply {
             ..Reply::default()
         };
     };
+    // One stream at a time, and none unseen by a look at the marker.
+    let receiving = match receiving(Path::new(STATE_DIR), RECEIVE_WAIT) {
+        Ok(receiving) => receiving,
+        Err(why) => {
+            l.failed(ITEM, why);
+            return Reply {
+                lines: l.0,
+                ..Reply::default()
+            };
+        }
+    };
+    raise_open_files();
+    let stop = receiving.stop_file();
+    let watched = |input: Box<dyn std::io::Read + Send>| {
+        Watched::new(input, RECEIVE_LOOK, move || stop.exists())
+    };
     let mut unpack = None;
-    let input: Box<dyn std::io::Read> = if expect.zstd {
+    let input = if expect.zstd {
         let child = std::process::Command::new("zstd")
             .args(["-d", "-q", "-c"])
             .stdin(std::process::Stdio::inherit())
@@ -1904,8 +2146,8 @@ pub fn receive() -> Reply {
                 let out = child.stdout.take();
                 unpack = Some(child);
                 match out {
-                    Some(out) => Box::new(out),
-                    None => Box::new(std::io::empty()),
+                    Some(out) => watched(Box::new(out)),
+                    None => watched(Box::new(std::io::empty())),
                 }
             }
             Err(e) => {
@@ -1917,66 +2159,96 @@ pub fn receive() -> Reply {
             }
         }
     } else {
-        Box::new(std::io::stdin().lock())
+        watched(Box::new(std::io::stdin()))
     };
     let mut progress: Option<crate::instance::Progress> = None;
-    let result = crate::instance::import::install(
-        std::io::BufReader::with_capacity(1 << 20, input),
+    let result = land(
+        input,
         &expect.data_dir,
         None,
-        &mut |m, target| crate::instance::import::prepare_host(m, target, None),
-        true,
-        &mut |m, done| {
-            progress
-                .get_or_insert_with(|| crate::instance::Progress::new("Imported", m.total_bytes))
-                .tick(done);
+        &mut |m, target| prepare_host(m, target, None, true),
+        &mut Ground {
+            chown: true,
+            sync: &mut |dir| crate::instance::export::sync(dir),
+            tick: &mut |m, done| {
+                progress
+                    .get_or_insert_with(|| {
+                        crate::instance::Progress::new("Installed", m.total_bytes)
+                    })
+                    .tick(done);
+            },
         },
     );
     if let Some(p) = &progress {
         p.end();
     }
-    let unpacked = unpack.is_none_or(|mut child| child.wait().is_ok_and(|s| s.success()));
-    // Installed is not proven: the copy stays marked unfinished until the old host has
-    // compared its count ([`Request::Mark`] removes the mark), so a run that dies in between
-    // leaves nothing that looks like an instance.
-    let result = result.and_then(|done| {
-        mark_unproven(&expect.data_dir).map(|()| done).map_err(|e| {
-            crate::instance::import::Failure::Failed(format!(
-                "cannot mark the copy as unproven: {e}"
-            ))
-        })
-    });
-    match result {
-        Ok(_) if !unpacked => l.failed(ITEM, "zstd reported a damaged stream"),
-        Ok((m, report)) => {
-            let mut detail = format!(
-                "installed {} entries, {}, checksum and length as announced",
-                report.entries,
-                yulius_import::human_bytes(m.total_bytes)
-            );
-            if report.foreign_owners > 0 {
-                detail.push_str(&format!(
-                    "; {} entries of other owners now belong to the service user",
-                    report.foreign_owners
-                ));
-            }
-            if report.skipped_xattrs > 0 {
-                detail.push_str(&format!(
-                    "; {} extended attributes not restored",
-                    report.skipped_xattrs
-                ));
-            }
-            l.changed(ITEM, detail);
+    let unpacked = unpack.is_none_or(|mut child| {
+        // A stream that did not end by itself leaves it waiting on the link.
+        if result.is_err() {
+            let _ = child.kill();
         }
-        Err(
-            crate::instance::import::Failure::Refused(why)
-            | crate::instance::import::Failure::Failed(why),
-        ) => l.failed(ITEM, why),
+        child.wait().is_ok_and(|s| s.success())
+    });
+    let mut reply = Reply::default();
+    match result {
+        Ok(landing) => {
+            if unpacked {
+                l.changed(ITEM, landed(&landing));
+            } else {
+                l.failed(ITEM, "zstd reported a damaged stream");
+            }
+            reply.stage = Some(landing.mark);
+        }
+        Err(Failure::Refused(why) | Failure::Failed(why)) => l.failed(ITEM, why),
     }
-    Reply {
-        lines: l.0,
-        ..Reply::default()
+    reply.lines = l.0;
+    reply
+}
+
+/// What a pass left, for the checklist.
+#[must_use]
+pub fn landed(landing: &crate::instance::import::Landing) -> String {
+    let last = landing.mark.last.clone().unwrap_or_default();
+    let waiting = last.deferred.len() as u64;
+    let mut detail = if last.live && waiting > 0 {
+        // What was taken in and left out is not among the installed.
+        format!(
+            "pass {}: {} of {} entries installed and synced",
+            landing.mark.acked,
+            last.entries.saturating_sub(waiting),
+            last.entries
+        )
+    } else if last.live {
+        format!(
+            "pass {}: {} entries installed and synced",
+            landing.mark.acked, last.entries
+        )
+    } else {
+        format!(
+            "{} changed entries installed, {} removed that the old host no longer holds; \
+             checksum and length as announced",
+            last.entries, landing.removed
+        )
+    };
+    if !last.deferred.is_empty() {
+        detail.push_str(&format!(
+            "; {} wait for the freeze (a directory is in their way)",
+            last.deferred.len()
+        ));
     }
+    if landing.report.foreign_owners > 0 {
+        detail.push_str(&format!(
+            "; {} entries of other owners now belong to the service user",
+            landing.report.foreign_owners
+        ));
+    }
+    if landing.report.skipped_xattrs > 0 {
+        detail.push_str(&format!(
+            "; {} extended attributes not restored",
+            landing.report.skipped_xattrs
+        ));
+    }
+    detail
 }
 
 /// `yulius instance migrate-target`: one request from standard input, or with `receive` the

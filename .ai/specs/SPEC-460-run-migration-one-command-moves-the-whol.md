@@ -186,7 +186,8 @@ Copy and proof
   and time alone), removes what no longer exists and proves the result as in MIG-031. The plan and
   the checklist show the estimated freeze before it begins, from the measured rate and the
   changes outstanding; with `--max-downtime` the flow copies again instead of freezing while the
-  estimate is above it. The sandbox base is then built before the freeze.
+  estimate is above it. The sandbox base is then built before the freeze. Delivered by
+  [SPEC-465](SPEC-465-run-migration-warm-copy-while-the-instan.md) (task #445, ADR-0303).
 
 URL change
 

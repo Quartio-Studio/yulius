@@ -86,6 +86,15 @@ impl Entry {
     }
 }
 
+/// A path's digest: the first 128 bits of its SHA-256, so two paths of one copy never share it.
+#[must_use]
+pub fn path_digest(path: &[u8]) -> [u8; 16] {
+    let digest = Sha256::digest(path);
+    let mut out = [0u8; 16];
+    out.copy_from_slice(&digest[..16]);
+    out
+}
+
 /// `n` rounded up to whole blocks.
 #[must_use]
 pub fn padded(n: u64) -> u64 {
@@ -263,6 +272,51 @@ impl<W: Write> Writer<W> {
         self.written
     }
 
+    /// The first 8 bytes of the SHA-256 of what was written so far: what a reader finds at the
+    /// same place ([`Reader::sum`]).
+    #[must_use]
+    pub fn sum(&self) -> [u8; 8] {
+        sum_of(&self.hash)
+    }
+
+    /// Writes `e` from a file that may change while it is read (a move's warm pass, SPEC-465
+    /// WCP-002): exactly `e.size()` bytes follow the header, zeros where the file ended early
+    /// and nothing of what it grew by. `true` when it ended early.
+    ///
+    /// # Errors
+    /// A read or write error.
+    pub fn entry_torn(
+        &mut self,
+        e: &Entry,
+        data: &mut dyn Read,
+        mut tick: impl FnMut(u64),
+    ) -> io::Result<bool> {
+        self.put(&headers(e))?;
+        let size = e.size();
+        let mut left = size;
+        let mut buf = vec![0u8; 256 * 1024];
+        while left > 0 {
+            let want = usize::try_from(left.min(buf.len() as u64)).unwrap_or(buf.len());
+            let n = data.read(&mut buf[..want])?;
+            if n == 0 {
+                break;
+            }
+            self.put(&buf[..n])?;
+            left -= n as u64;
+            tick(self.written);
+        }
+        let torn = left > 0;
+        buf.fill(0);
+        while left > 0 {
+            let n = usize::try_from(left.min(buf.len() as u64)).unwrap_or(buf.len());
+            self.put(&buf[..n])?;
+            left -= n as u64;
+        }
+        let pad = padded(size) - size;
+        self.put(&vec![0; usize::try_from(pad).unwrap_or(0)])?;
+        Ok(torn)
+    }
+
     fn put(&mut self, bytes: &[u8]) -> io::Result<()> {
         self.out.write_all(bytes)?;
         self.hash.update(bytes);
@@ -325,6 +379,12 @@ impl<W: Write> Writer<W> {
         self.out.flush()?;
         Ok(self.written)
     }
+}
+
+fn sum_of(hash: &Sha256) -> [u8; 8] {
+    let mut out = [0u8; 8];
+    out.copy_from_slice(&hash.clone().finalize()[..8]);
+    out
 }
 
 fn trailer_entry() -> Entry {
@@ -424,6 +484,21 @@ impl<R: Read> Reader<R> {
     #[must_use]
     pub fn read_bytes(&self) -> u64 {
         self.read
+    }
+
+    /// The first 8 bytes of the SHA-256 of what was read so far ([`Writer::sum`]).
+    #[must_use]
+    pub fn sum(&self) -> [u8; 8] {
+        sum_of(&self.hash)
+    }
+
+    /// Reads the rest of the current entry, its padding included: the reader then stands where
+    /// the writer stood before its next entry.
+    ///
+    /// # Errors
+    /// A read error or an early end.
+    pub fn end_entry(&mut self) -> io::Result<()> {
+        self.skip_rest()
     }
 
     fn take(&mut self, buf: &mut [u8]) -> io::Result<()> {
