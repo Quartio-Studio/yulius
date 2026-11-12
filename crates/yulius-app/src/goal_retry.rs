@@ -59,13 +59,15 @@ const WORKS_AGAIN: &str = "the agent works again after Claude Code paused the go
 /// Why the request for a usage limit nothing says the end of ended without a person.
 const WORKS_PAST_LIMIT: &str = "the agent works again after the usage limit";
 
-/// How Yulius takes a task on at the usage limit that cut its session's turn. Either way the
-/// task goes on by itself, so a request that says it does not ([`STALLED_ACTIONS`]) is answered.
+/// How Yulius takes a task on at the refusal that cut its session's turn: a usage limit, or a
+/// subscription Claude refuses for good. Either way the task no longer waits for a message, so
+/// a request that says it does ([`STALLED_ACTIONS`]) is answered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TakenOn {
-    /// The session is run on past the limit, on this subscription or another.
+    /// The session is run on past the refusal, on this subscription or another.
     Moved,
-    /// The task waits for the limit to end, and the pool resumes it.
+    /// The task waits for a subscription that can take it (a limit's end, or a sign-in when
+    /// none is left, which Yulius then asks for), and the pool resumes it.
     Paused,
 }
 
@@ -74,9 +76,9 @@ impl TakenOn {
     /// that is refused again where it was moved to is asked about again).
     fn why(self) -> &'static str {
         match self {
-            Self::Moved => "Yulius takes the session on past the usage limit that cut its turn",
+            Self::Moved => "Yulius takes the session on past the refusal that cut its turn",
             Self::Paused => {
-                "Yulius waits for the usage limit to end and resumes the session by itself"
+                "Yulius waits for a subscription that can take the task and resumes the session then"
             }
         }
     }
