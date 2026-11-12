@@ -170,7 +170,8 @@ pub struct Queue {
     /// An entry was handed on and the turn it starts was not seen yet: between the two the
     /// queue reads empty and no turn shows (CCQ-003).
     handing_on: bool,
-    /// When Claude Code recorded the last hand-over, if its record said.
+    /// When Claude Code recorded the last of the hand-overs that are not over, if every one of
+    /// their records said when.
     handed_on_at: Option<Timestamp>,
 }
 
@@ -182,8 +183,14 @@ impl Queue {
             QueueChange::Added => self.waiting = self.waiting.saturating_add(1),
             QueueChange::HandedOn => {
                 self.waiting = self.waiting.saturating_sub(1);
+                // The latest of a batch, whatever order they are read in; a record without a
+                // time may be the latest, so with one the time is not known.
+                self.handed_on_at = match (self.handing_on, self.handed_on_at, at) {
+                    (false, _, at) => at,
+                    (true, Some(before), Some(at)) => Some(before.max(at)),
+                    (true, _, _) => None,
+                };
                 self.handing_on = true;
-                self.handed_on_at = at.max(self.handed_on_at);
             }
             QueueChange::Taken => self.waiting = self.waiting.saturating_sub(1),
         }
@@ -936,10 +943,30 @@ mod tests {
         assert!(queue.holds());
         queue.work_seen(at(311));
         assert!(!queue.holds());
+        // Read out of order, the later of the two still counts.
+        queue.record(QueueChange::HandedOn, at(410));
+        queue.record(QueueChange::HandedOn, at(400));
+        queue.work_seen(at(405));
+        assert!(queue.holds(), "written before the later hand-over");
+        queue.work_seen(at(411));
+        assert!(!queue.holds());
         // A hand-over whose record names no time ends with a prompt record alone.
         queue.record(QueueChange::HandedOn, None);
         queue.work_seen(at(10_000));
         assert!(queue.holds());
+        queue.turn_seen();
+        assert!(!queue.holds());
+        // So does a batch in which one record names none, whichever comes first: when the
+        // last of them was written is not known.
+        queue.record(QueueChange::HandedOn, at(11_000));
+        queue.record(QueueChange::HandedOn, None);
+        queue.work_seen(at(12_000));
+        assert!(queue.holds(), "the untimed one may be later");
+        queue.turn_seen();
+        queue.record(QueueChange::HandedOn, None);
+        queue.record(QueueChange::HandedOn, at(13_000));
+        queue.work_seen(at(14_000));
+        assert!(queue.holds(), "the untimed one may be later");
         queue.turn_seen();
         assert!(!queue.holds());
         // An earlier hand-over's time does not outlive it.

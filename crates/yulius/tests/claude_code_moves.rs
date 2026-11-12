@@ -1889,9 +1889,10 @@ mod moves {
 
     /// SPEC-471 CCQ-003 (AC6; review round 1, finding 3): Claude Code hands a prompt it
     /// scheduled for itself on with a prompt record that Yulius reads as no prompt. The
-    /// hand-over then ends with the model's first line written after it, here the turn's
-    /// answer: that turn's end restarts the session. It used to stay counted through the
-    /// turn, so a session driven by scheduled prompts never moved.
+    /// hand-over then ends with the model's first line written after it, here the tool call
+    /// its turn starts with, while the turn still runs; and that turn's end restarts the
+    /// session. It used to stay counted through the turn, so a session driven by scheduled
+    /// prompts never moved.
     #[test]
     fn a_hand_over_to_a_scheduled_prompt_ends_when_its_turn_works() -> TestResult {
         let (_dir, data) = data_dir()?;
@@ -1921,12 +1922,6 @@ mod moves {
             says(&s, "QUEUED TURN HELD").await?;
             until_decided(&first_end).await?;
             assert_eq!(runs(&s).await, 1);
-            std::fs::remove_file(&may_end)?;
-            std::fs::write(&turn_starts, "")?;
-            wait_for("the scheduled turn", Duration::from_secs(60), || async {
-                screen(&s.app, &s.id).matches("TURN HELD").count() == 2
-            })
-            .await?;
             wait_for("the hand-over", Duration::from_secs(30), || async {
                 s.app.claude_queue_waiting(&s.id) == 0
             })
@@ -1935,8 +1930,25 @@ mod moves {
                 s.app.claude_queue_holds(&s.id),
                 "handed on, and nothing of its turn was written yet"
             );
-            // Its answer is written after the hand-over: the turn shows, and its end
-            // restarts the session.
+            // Its turn starts: its hook, its record that is no prompt, and a tool call, the
+            // model's first line after the hand-over. The hand-over is over while the turn
+            // still runs.
+            std::fs::remove_file(&may_end)?;
+            std::fs::write(&turn_starts, "")?;
+            wait_for("the scheduled turn", Duration::from_secs(60), || async {
+                screen(&s.app, &s.id).matches("TURN HELD").count() == 2
+            })
+            .await?;
+            wait_for("the hand-over's end", Duration::from_secs(30), || async {
+                !s.app.claude_queue_holds(&s.id)
+            })
+            .await?;
+            assert_eq!(runs(&s).await, 1);
+            assert!(
+                !screen(&s.app, &s.id).contains("ECHO: check the build"),
+                "the turn has not answered yet"
+            );
+            // The turn ends, and that end restarts the session.
             std::fs::write(&may_end, "")?;
             let mut shown = String::new();
             wait_for("the restarted session", Duration::from_secs(90), || {

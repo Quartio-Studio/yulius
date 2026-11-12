@@ -452,6 +452,7 @@ impl App {
             None => {
                 tokio::time::timeout_at(deadline, self.await_transcript_read(task_id))
                     .await
+                    .map_err(|_| Self::log_out_of_time(task_id))
                     .ok()?;
                 lines_read = true;
                 self.run_cli_version(task_id, attempt).await??
@@ -471,10 +472,12 @@ impl App {
         if !lines_read {
             tokio::time::timeout_at(deadline, self.await_transcript_read(task_id))
                 .await
+                .map_err(|_| Self::log_out_of_time(task_id))
                 .ok()?;
         }
         let background = tokio::time::timeout_at(deadline, self.background_or_wait_now(task_id))
             .await
+            .map_err(|_| Self::log_out_of_time(task_id))
             .ok()?;
         crate::race::reached(
             crate::race::Point::ClaudeMoveProbed,
@@ -491,6 +494,17 @@ impl App {
             .await?;
         Self::log_kept(task_id, &facts);
         moves_now(&facts).then_some(target)
+    }
+
+    /// Says in the log that a turn's end could not decide in its time
+    /// ([`crate::context::AppConfig::claude_code_decision_ms`]): the session stays, and a
+    /// later turn's end decides.
+    fn log_out_of_time(task_id: &TaskId) {
+        tracing::info!(
+            task = %task_id,
+            why = "the look at the session took longer than a turn's end may",
+            "the session is not restarted on the newer Claude Code at this turn's end"
+        );
     }
 
     /// Says in the log what keeps a session that is due for the newer Claude Code where it

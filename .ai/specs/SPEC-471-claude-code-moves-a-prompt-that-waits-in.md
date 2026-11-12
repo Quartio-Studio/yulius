@@ -88,8 +88,8 @@ Where things are in Yulius:
 | CCQ-001 | **Yulius knows what waits in Claude Code's queue.** The watcher reads the `queue-operation` records of the run at hand: `enqueue` adds an entry, `dequeue` hands one on to a turn of its own, `remove`, `popAll` and `popOne` take one out without one. The count never goes below zero and an operation Yulius does not know changes nothing. A run starts with an empty queue: a resumed session's earlier lines are not read as the run's, and what the run before left waiting went with its process. A run reattached after a restart of the server knows the same from its own lines; until they were read again its queue is not known, which counts as holding something. |
 | CCQ-002 | **A session with something in its queue is not restarted for a newer Claude Code**, at a Stop the gate blocks or a goal session works on, and idle after a clean Stop. Every entry counts: a person's prompt, a message Yulius typed, Claude Code's own notification. The session moves at a later turn's end, once the queue is empty, or at its next start. A prompt taken into the running turn at a tool result is no longer waiting. The queue is asked once the turn's end read the turn's lines. |
 | CCQ-003 | **A hand-over is not rest.** From a `dequeue` until the turn it starts shows, the session counts as holding that entry: between the two its queue reads empty while the turn that took the entry is not known yet. The turn shows by its prompt record, or by a line of the model written after the hand-over: a prompt Claude Code scheduled for itself is handed on with a record that is read as no prompt. The lines of the turn that ended were written before the hand-over, though they may come after it in the file, and end nothing. |
-| CCQ-004 | **A prompt that just went on keeps the session.** Claude Code writes where a prompt went (a turn of its own, or its queue) once the prompt's hook returned, and the record reaches the file a moment later. A turn's end less than `claude_code_queue_record_ms` (2 s by default) after a prompt from the prompt box went on leaves the session where it is, and so does one during whose look at the session such a prompt goes on: the record may not be in the lines read. The session moves at a later turn's end. Claude Code's own wake-ups come through no prompt box and change nothing here. |
-| CCQ-005 | **The fake agent can queue prompts as Claude Code does** (`--queue-prompts`): a line entered while an echoed turn runs gets its prompt hook at once and an `enqueue` record; a Stop that is blocked releases nothing and the turn goes on to another Stop; after the Stop that ends the turn all waiting lines are handed on with one `dequeue` each and answered in one turn, each with its `user` record (`promptSource: "queued"`), with no further prompt hook. Tests can hold the record of a waiting line, the hand-over and the start of the handed-on turn, each by a file. Without the option the agent is as before. One order of Claude Code's it cannot play: a turn that reaches its Stop while a waiting line's prompt hook is still unanswered. |
+| CCQ-004 | **A prompt that just went on keeps the session.** Claude Code writes where a prompt went (a turn of its own, or its queue) once the prompt's hook returned, and the record reaches the file a moment later. A turn's end less than `claude_code_queue_record_ms` (2 s by default) after a prompt from the prompt box went on leaves the session where it is, and so does one during whose look at the session such a prompt goes on: the record may not be in the lines read. The session moves at a later turn's end. Claude Code's notifications of finished background work come through no prompt box and change nothing here; a prompt it scheduled for itself reads to Yulius as a typed one (issue #1225), which here errs toward staying. |
+| CCQ-005 | **The fake agent can queue prompts as Claude Code does** (`--queue-prompts`): a line entered while an echoed turn runs gets its prompt hook at once and an `enqueue` record; a Stop that is blocked releases nothing and the turn goes on to another Stop; after the Stop that ends the turn all waiting lines are handed on with one `dequeue` each and answered in one turn, each with its `user` record (`promptSource: "queued"`), with no further prompt hook. Tests can hold the record of a waiting line, the hand-over and the start of the handed-on turn, each by a file. A waiting line that begins with `/scheduled ` is played as a prompt Claude Code scheduled for itself, in the order the real tool has: no hook when it fires, the hook after its `dequeue`, a prompt record that is `isMeta`, a turn that works before it answers. Without the option the agent is as before. One order of Claude Code's it cannot play: a turn that reaches its Stop while a waiting line's prompt hook is still unanswered. |
 | CCQ-006 | **The documents say so.** SPEC-461 CCM-013, SPEC-468 (CCF-011 and "Not in this change: the queue"), ADR-0293, the operations guide ("Running tasks"), the architecture document and the changes log say that what waits in Claude Code's queue keeps the session. |
 
 ## Plan
@@ -137,7 +137,11 @@ Where things are in Yulius:
   restarts. With the handed-on turn then started and held: when its prompt record is read the
   hand-over still counts, and no longer once the task reads Working. In the fold: the ended
   turn's lines, written before the hand-over and read after it, end nothing; the model's
-  first line or answer written after it does; a line without a time does not.
+  first line or answer written after it does; a line without a time does not. With real
+  processes and a prompt Claude Code scheduled for itself: handed on, its turn started and
+  held, the hand-over is over once the turn's tool call was read, before its answer; that
+  turn's end restarts the session. Of a batch of hand-overs the latest time counts, in
+  whatever order they are read; with one that names no time, only a prompt record ends it.
 - AC7 (CCQ-004). With real processes, the waiting prompt's record held until the test lets it
   be written, the turn ended right after the prompt's hook, and six seconds taken as the time
   a record may need: the turn's end keeps the session though no line says a prompt waits; once
@@ -243,7 +247,14 @@ Where things are in Yulius:
   in the file but were written before it, which the records' own times tell; a line without a
   time (a sub-agent's) and the closing record of a turn end nothing. A hand-over that starts
   neither (a `/compact` entered while a turn ran) is ended by the next prompt; no turn ends
-  in between.
+  in between. Of several hand-overs that are not over the latest time counts, and a record
+  that names none makes the time unknown, so that only a prompt record ends them (all 3,677
+  `dequeue` records of this instance name one). The review then produced a scheduled prompt
+  with the real 2.1.322 (round 2): its fire, `enqueue` and `dequeue` within 8 ms, its
+  `UserPromptSubmit` hook 13 to 17 ms after the `dequeue`, its `isMeta` record, its answer
+  three seconds later. The fake agent plays that order. The hook is why the task reads
+  Working before the model's first line; that Yulius takes the hook for a typed prompt is
+  older and is issue #1225.
 - **Two seconds after a prompt went on, the session stays.** No record tells Yulius where a
   prompt went until Claude Code wrote one, 67 to 108 ms after the hook returned in the runs.
   For two seconds after a prompt from the prompt box went on, a turn's end therefore leaves
@@ -418,5 +429,6 @@ Where things are in Yulius:
   this instance hold the same records. `popOne` and the `remove` reasons `dropped_by_hook`,
   `cleared_on_cancel` and `delivered_to_agent` were read in the binary and (two of them) seen
   in real sessions, not produced in a run. A notification Claude Code never takes out of its
-  queue, and a prompt it scheduled for itself, were seen in real sessions, not produced in a
-  run of the tool: the fake agent plays the second.
+  queue was seen in real sessions, not produced in a run of the tool. A prompt it scheduled
+  for itself was produced by the review with the real tool (the stub's model calls
+  `ScheduleWakeup`); the fake agent plays it in that order.

@@ -809,10 +809,11 @@ fn queued_prompts_get_their_hook_at_the_enter_and_one_turn_after_the_ending_stop
 }
 
 /// SPEC-471 CCQ-003, CCQ-005: a waiting line that begins with `/scheduled ` stands for a prompt
-/// Claude Code scheduled for itself: nobody typed it, so it has no prompt hook; it is put into
-/// the queue, and at the hand-over its prompt record is `isMeta`, as in 2.1.322's transcripts.
+/// Claude Code scheduled for itself, in the order 2.1.322 was seen to have: its fire and its
+/// `enqueue` with no hook; at the hand-over the `dequeue`, then the prompt hook with the plain
+/// text, then a prompt record that is `isMeta`; its turn starts with a tool call.
 #[test]
-fn a_scheduled_prompt_is_handed_on_with_a_meta_record_and_no_hook() -> TestResult {
+fn a_scheduled_prompt_gets_its_hook_at_the_hand_over_and_a_meta_record() -> TestResult {
     let dir = tempfile::tempdir()?;
     let (dir, path) = (dir.path(), dir.path().join("s-q.jsonl"));
     let mut child = held_agent(dir, &["--queue-prompts"])?;
@@ -820,21 +821,33 @@ fn a_scheduled_prompt_is_handed_on_with_a_meta_record_and_no_hook() -> TestResul
     stdin.write_all(b"first\n")?;
     until("the first prompt's hook", || hooks_logged(dir).len() == 1)?;
     stdin.write_all(b"/scheduled check the build\n")?;
-    until("the scheduled prompt's record", || shapes(&path).len() == 2)?;
+    until("the scheduled prompt's record", || shapes(&path).len() == 3)?;
+    assert_eq!(
+        hooks_logged(dir),
+        ["UserPromptSubmit first"],
+        "no hook when it fires: nobody pressed Enter"
+    );
     std::fs::write(dir.join("hold"), "")?;
-    until("the scheduled turn's end", || shapes(&path).len() == 10)?;
+    until("the scheduled turn's end", || shapes(&path).len() == 12)?;
     stdin.write_all(b"/exit\n")?;
     drop(stdin);
     let output = child.wait_with_output()?;
     assert_eq!(
         hooks_logged(dir),
-        ["UserPromptSubmit first", "Stop", "Stop", "SessionEnd"],
-        "no prompt hook for what nobody typed"
+        [
+            "UserPromptSubmit first",
+            "Stop",
+            "UserPromptSubmit check the build",
+            "Stop",
+            "SessionEnd"
+        ],
+        "its hook comes at the hand-over, with the plain text"
     );
     assert_eq!(
         shapes(&path),
         [
             "user - first",
+            "scheduled_task_fire",
             "enqueue check the build",
             "assistant",
             "dequeue -",
@@ -842,13 +855,18 @@ fn a_scheduled_prompt_is_handed_on_with_a_meta_record_and_no_hook() -> TestResul
             "turn_duration",
             "user system check the build",
             "assistant",
+            "assistant",
             "stop_hook_summary",
             "turn_duration",
         ]
     );
     let records = read_jsonl(&path)?;
-    assert_eq!(records[6]["isMeta"], true, "read as no prompt by Yulius");
-    assert_eq!(records[6]["queuePriority"], "later");
+    assert_eq!(records[7]["isMeta"], true, "read as no prompt by Yulius");
+    assert_eq!(records[7]["queuePriority"], "later");
+    assert_eq!(
+        records[8]["message"]["stop_reason"], "tool_use",
+        "its turn works before it answers"
+    );
     assert!(stdout(&output).contains("ECHO: check the build"));
     Ok(())
 }

@@ -4510,8 +4510,9 @@ impl App {
         }
         // A line of the model written after a hand-over is of the turn the hand-over started,
         // which a prompt Claude Code scheduled for itself begins with no prompt record read
-        // here. Said to the queue once the line was applied below, so that the task reads
-        // Working first, as for a prompt record (SPEC-471 CCQ-003).
+        // here (SPEC-471 CCQ-003). Said to the queue once the line was applied below, as a
+        // prompt record's turn is: such a prompt has had its hook by then, so the task reads
+        // Working either way.
         let worked = match &observation {
             Observation::AgentWork { at } | Observation::TurnComplete { at } => *at,
             _ => None,
@@ -4936,6 +4937,23 @@ mod tests {
         assert!(runtime.queue_may_hold(), "not known counts as holding");
         runtime.run_starts(8_000);
         assert!(!runtime.queue_may_hold());
+    }
+
+    /// SPEC-471 CCQ-001: what the queue's records said cannot be read any more once a thread
+    /// died holding them: that is "not known", which counts as holding something.
+    #[test]
+    fn a_queue_that_cannot_be_read_counts_as_holding() {
+        let runtime = std::sync::Arc::new(super::TaskRuntime::new());
+        assert!(!runtime.queue_may_hold());
+        let dying = std::sync::Arc::clone(&runtime);
+        let died = std::thread::spawn(move || {
+            let _held = dying.queue.lock();
+            std::panic::resume_unwind(Box::new("a thread dies with the queue's lock"));
+        })
+        .join();
+        assert!(died.is_err());
+        assert!(runtime.queue.is_poisoned());
+        assert!(runtime.queue_may_hold());
     }
 
     /// Review of SPEC-332 (round 3): a person's switch and a hand-over may come mid-turn, so they

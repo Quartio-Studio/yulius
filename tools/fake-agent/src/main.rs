@@ -183,10 +183,13 @@
 //! `--turn-hold-file`, at each turn that finds the file missing), `QUEUE HELD` and `QUEUED
 //! TURN HELD`. A command line (`/exit`, `/work …`) entered during such a turn is queued like
 //! any other text and echoed, and `--limit-after` is not applied to such turns. A waiting line
-//! that begins with `/scheduled ` stands for a prompt Claude Code scheduled for itself
-//! (`scheduled_task_fire` in 2.1.322's transcripts): nobody typed it, so it gets no prompt
-//! hook; the rest of the line is put into the queue, and at the hand-over its prompt record
-//! is `isMeta` (`promptSource: "system"`), which Yulius reads as no prompt. Not as Claude
+//! that begins with `/scheduled ` stands for a prompt Claude Code scheduled for itself, in
+//! the order seen with 2.1.322: when it fires, a `scheduled_task_fire` record and the
+//! `enqueue` of the rest of the line, with no prompt hook (nobody pressed Enter); at the
+//! hand-over the `dequeue`, then its `UserPromptSubmit` hook with the plain text, then a
+//! prompt record that is `isMeta` (`promptSource: "system"`), which Yulius reads as no
+//! prompt. Its turn starts with a tool call before it answers; a block of its hook is not
+//! played. Not as Claude
 //! Code: a waiting line's prompt hook is answered before the agent goes on, so a turn never
 //! reaches its Stop while such a hook is unanswered. Claude Code does (seen with 2.1.322: a
 //! turn's Stop hook ran and returned while a prompt's hook was still held; the prompt's
@@ -930,6 +933,15 @@ impl Transcript {
         self.append(&[user])
     }
 
+    /// The record Claude Code 2.1.322 writes when a prompt it scheduled for itself fires.
+    fn scheduled_fire(&self) -> io::Result<()> {
+        let uuid = format!("fake-{}-fire-{}", self.session_id, now_ms());
+        let mut fire = self.claude_envelope("system", &uuid, &rfc3339(now_ms()));
+        fire["subtype"] = json!("scheduled_task_fire");
+        fire["isMeta"] = json!(false);
+        self.append(&[fire])
+    }
+
     /// A Stop hook blocked the turn's end: Claude Code's record of the hook's reason, and the
     /// answer the model gives to it.
     fn stop_feedback(&mut self, reason: &str) -> io::Result<()> {
@@ -1569,6 +1581,9 @@ impl Waiting<'_> {
                         wait_for_file(file, MAX_WORK_MS);
                     }
                     if let Ok(t) = transcript.lock() {
+                        if !typed {
+                            let _ = t.scheduled_fire();
+                        }
                         let _ = t.queue_operation("enqueue", Some(&text));
                     }
                 };
@@ -1704,7 +1719,20 @@ fn queued_echo(
         write(&mut |t| t.close_turn(took, 0))?;
         status_line(options, hooks)?;
         waiting.until_file(options.queue_turn_file.as_ref(), "QUEUED TURN HELD")?;
+        // What Claude Code scheduled for itself gets its prompt hook here, after the
+        // `dequeue` and before its prompt record, and its turn works before it answers.
+        let scheduled: Vec<&str> = turn
+            .iter()
+            .filter(|one| one.starts_with(SCHEDULED))
+            .map(|one| said(one))
+            .collect();
+        for prompt in &scheduled {
+            let _ = hooks.and_then(|h| h.prompt(prompt));
+        }
         write(&mut |t| turn.iter().try_for_each(|one| t.queued_prompt(one)))?;
+        if !scheduled.is_empty() {
+            write(&mut |t| t.tool_use())?;
+        }
     }
 }
 
