@@ -1,11 +1,11 @@
 ---
 yulius-task: 57d7619e-9b14-4e4a-81e8-6a431b4d5b7c
-status: in-progress
+status: done
 ---
 
 # SPEC-468: Claude Code moves: the last review's leftovers of SPEC-461
 
-Status: in progress
+Status: implemented
 Date: 2026-11-11
 Owner: Yulius task #452
 Scope authorization: the request of task #452 (by MrFishPL, 2026-11-11): fix the two minors and
@@ -101,7 +101,7 @@ The question of direction: the restart waits only while a person typed in the la
 - [x] SPEC-461, ADR-0293, the operations guide, the API reference and the changes log say so (finding 9)
 - [x] Gate and the whole e2e suite green, evidence recorded
 - [x] Independent review round 1 answered, every finding fixed with its test
-- [ ] A message Yulius typed that Claude Code still queues keeps the session, and the draft rule is checked against the real Claude Code
+- [x] A message Yulius typed that Claude Code still queues keeps the session, and the draft rule is checked against the real Claude Code
 
 ## Acceptance criteria
 
@@ -311,8 +311,10 @@ The question of direction: the restart waits only while a person typed in the la
   its hook.
 - **Left as it is: a goal across `/clear`.** Yulius's reading of the goal is not reset when
   the session changes inside its process (older code), so a prompt-mode session whose person
-  cleared it with a goal open keeps its version until its next start: the safe direction. What
-  a real Claude Code records at `/clear` was not checked.
+  cleared it with a goal open keeps its version until its next start: the safe direction. The
+  binary of 2.1.322 ends a goal at `/clear` (its telemetry names the reason `session_clear`)
+  and can write the "cleared" record Yulius already reads; whether it writes one there could
+  not be seen without running it.
 - **Left as it is: the age of a task's state restarts at an idle restart.** Its status did
   change for a moment (`state_since`), so "Your turn" counts from the restart. Keeping the
   earlier time would need a store call of its own for a figure that tells nobody anything
@@ -335,17 +337,16 @@ The question of direction: the restart waits only while a person typed in the la
 
 ## Evidence
 
-- `scripts/dev ci` at aa0916d9 (every code and test change of this task, with `dev` up to
-  4b59bce3 merged): exit 0. `cargo check`, `fmt --check`, clippy `-D warnings` on Linux and
-  for `aarch64-apple-darwin`, nextest 3649 passed / 16 skipped, doctests, `cargo deny`
-  (advisories, bans, licenses, sources ok), `cargo shear`, `cargo doc`. An earlier run at
-  42aa6838 passed too (3648 tests); the first run stopped at clippy (`type_complexity` in a
-  new test helper, fixed). After aa0916d9 come a clean merge of `dev` (#1168: host setup files
-  only; after it `scripts/dev check` exit 0, and its `bwrap_userns` tests with the Claude Code
-  tests, 49, passed) and this section.
-- e2e, the whole suite with the web files of aa0916d9
-  (`cd e2e && E2E_TELEMETRY_DISABLED=1 npx e2e run`): exit 0, 932 passed, 1 skipped (the agent
-  test, which needs a model key), in 79 files and that one.
+- `scripts/dev ci` at 65515fc7 (every code and test change of this task, with `dev` up to
+  420750d9 merged): exit 0. `cargo check`, `fmt --check`, clippy `-D warnings` on Linux and
+  for `aarch64-apple-darwin`, nextest 3707 passed / 16 skipped, doctests, `cargo deny`
+  (advisories, bans, licenses, sources ok), `cargo shear`, `cargo doc`. After it come only
+  this section and the Plan's last tick. Earlier runs passed at 42aa6838 (3648 tests) and at
+  aa0916d9 (3649 passed, 16 skipped); the first run stopped at clippy (`type_complexity` in a
+  new test helper, fixed).
+- e2e, the whole suite with the web files of that head
+  (`cd e2e && E2E_TELEMETRY_DISABLED=1 npx e2e run`): exit 0, 966 passed, 1 skipped (the agent
+  test, which needs a model key), in 81 files and that one.
 - Seen failing first, each for the reason its finding names:
   - `a_persons_own_goal_keeps_an_idle_prompt_session_where_it_is` and
     `…keeps_the_session_at_a_stop_the_gate_blocks`: `(2, 0, false)` instead of `(1, 1, true)`
@@ -353,53 +354,99 @@ The question of direction: the restart waits only while a person typed in the la
   - `two_turn_ends_that_decide_at_once_make_one_watched_restart`: "the restart was not
     watched" (no stop of moves after a session that never started).
   - `a_draft_typed_since_the_last_prompt_keeps_the_session`: the session was looked at and a
-    restart tried with a draft five minutes old. `a_draft_typed_while_a_prompt_is_held_stays_a_draft`
-    (found in the author's own review of the diff): the draft was forgotten at the held
-    prompt's second request.
-  - `the_version_and_the_model_a_record_names_are_capped`: 4 MiB kept.
+    restart tried with a draft five minutes old.
+    `a_draft_typed_while_a_prompt_is_held_stays_a_draft` (found in the author's own review of
+    the diff): the draft was forgotten at the held prompt's second request.
+  - `a_message_yulius_typed_that_is_not_submitted_yet_keeps_the_session`: "the message was
+    lost with the old process" (the session restarted at the first turn's end; the terminal
+    shows the typed message and no answer to it).
+  - `the_model_a_record_names_is_capped`: 4 MiB kept.
   - `a_running_task_moves_to_the_new_claude_code_when_its_turn_ends`: the published states
     read `switching, running/working, running/waiting`.
     `a_goal_that_failed_is_still_unfinished_after_an_idle_restart`: unfinished was forgotten.
+  - `a_goal_set_in_the_turn_the_gate_blocks_keeps_the_session` (review round 1): the session
+    was restarted with the gate's reasons.
   - e2e: the card's "Each moves to … when its turn ends" beside stopped moves, task info's
     "moves to … when its turn ends", no "models not read" badge; and in
-    `notifications.e2e.ts` the read "Your turn" entry back as unread after the restart.
+    `notifications.e2e.ts` the read "Your turn" entry back as unread after the restart, and a
+    second "Your turn" on the desktop.
   - `a_session_the_gate_blocks_moves_at_that_stop_with_the_gates_reasons` passed at once: the
     behavior worked, as the review said; its two mutations below show that it can fail.
 - Mutations, each caught by the test named and reverted (`git checkout`):
   - finding 1: the goal not asked in `idle` (idle test); not asked at the Stop (gate-block
-    goal test).
+    goal test); after review round 1: not asked again after the Stop's look, 3 runs of 3, and
+    not asked before it (the two gate-block goal tests).
   - finding 2: `gate_continues` dropped from `works_on`; the reasons not passed on (both: the
     gate-block move test).
-  - finding 3: the card's old words; task info's old words (e2e); the detail's flag never set
+  - finding 3: the card's old words; task info's old words (e2e); the detail's flag never set;
+    the flag set for every version once moves stopped
     (`a_version_a_session_could_not_continue_on_gets_no_other_session`).
   - finding 4: the session's start not noticed (`a_restarted_session_that_starts_in_time…`,
     which now fails at once instead of after its time).
-  - finding 5: the version uncapped; the model uncapped (the cap test).
+  - finding 5: the model uncapped (`the_model_a_record_names_is_capped`). The version's cut
+    is SPEC-461's since #1188, with its own test.
   - finding 6: the slot not taken, 3 runs of 3 (`two_turn_ends_…`); a session already sent
     restarted again (`a_turn_end_that_decided_before_a_restart…`); starts without an identity
-    (`a_start_is_only_taken_off_the_watch_as_itself`).
+    (`a_start_is_only_taken_off_the_watch_as_itself`); a finished restart keeping the slot
+    (the main move test, whose third release restarts the task again).
   - finding 7: the sentence never made; made for an adapter that keeps nothing current (view
     tests); the badge and the sentence not shown (e2e).
   - finding 8: the launch always Working (the main move test); the goal's state not carried
-    (the failed-goal test); the rest kept over a new turn (unit test); the notification
-    center not remembering through a switch (e2e).
+    (the failed-goal test); the notification center not remembering through a switch (e2e:
+    the bell's entries, and with those assertions taken out the desktop's alone).
   - the draft: not asked in `moves_now`; a submit not emptying the box; a launch not emptying
-    it (`an_idle_session_is_idle_again_after_a_person_moves_it`); a wake-up emptying it (unit
-    test); a held prompt emptying it at every request; the hold not remembered.
-- Stress: `claude_code_moves` (21 tests, real processes) 6 times over, all passed.
-- A probe with real processes, not kept: a person's move of a prompt-mode session with an own
-  goal open: `before=(1, 1, true) after=(2, 0, false)`. Older code: issue #1182.
+    it (`an_idle_session_is_idle_again_after_a_person_moves_it`, and the unit test of a new
+    run); a wake-up emptying it (the predicate's unit test, and its use: the draft test's
+    wake-up); a held prompt emptying it at every request; the hold not remembered; a new run
+    keeping a held prompt (unit test).
+  - what Yulius typed: the time not stamped; the stamp not asked (both: the message test, at
+    its first assertion; with that assertion taken out, at "the message was lost").
+- Stress: `claude_code_moves` (25 tests, real processes) 6 times over, all passed.
+- Checked against the real Claude Code instead of the fake agent. Its binaries were read with
+  `strings`, never run: 2.1.322 as installed, 2.1.311 and 2.1.292 from the npm registry. The
+  transcripts are those of this instance's own sessions (423 files; only record types, counts
+  and times were printed).
+  - An open goal is restored at a resume (`restoreGoalFromTranscript`, in all three), and one
+    session restarted from 2.1.311 on 2.1.322 shows it: its goal's "not met" verdict comes
+    about 2,000 lines after the restart and before any new `/goal`. This changed what finding
+    1 is said to lose (Decisions) and the text of issue #1182.
+  - An unsent prompt is kept on disk only for background jobs, and a prompt a hook blocked
+    goes into a warning line: a draft does not survive a restart, so the draft rule is needed.
+  - A prompt entered while a turn runs is queued; its submit hook runs when it is handed to
+    the model ("prompt.submit at the fold", or after the turn's end), and the ten prompts that
+    waited over 5 s between their own enqueue and dequeue records have their prompt record
+    within a second of the dequeue. The resume loader lists `queue-operation` records as
+    ignored. This is what CCF-011 came from.
+- Probes with real processes, not kept: a person's move of a prompt-mode session with an own
+  goal open, `before=(1, 1, true) after=(2, 0, false)` (older code: issue #1182); a
+  subscription switch at a turn's end with a message Yulius typed still queued,
+  `runs=2 switches=[("Selected { tier: UnknownUsage }", "completed")] message_answered=false`
+  (older code: issue #1194).
 - The UI in the sandbox browser (mock, port 20117): `claude=gap` shows the stopped-moves
   warning and "Each gets 2.1.400 at its next start."; `claude=unread` shows the "models not
   read" badge and its sentence.
 - `yulius security-scan`: "Security scan disabled: Vidoc is turned off in Yulius" (exit 0):
   disabled, not passed.
-- Review: the author read the whole diff against `dev` before the independent round and
-  found the held-prompt hole and one test wait that could race, both fixed above. The
-  independent review (fresh session, the skill `om-code-review`) is made on the head that
-  holds this section; its verdict goes with the merge.
-- Not tested: a real Claude Code session's goal and prompt box across `--resume` (the fake
-  agent stands in: its goal lives in its process; Yulius sees keystrokes and submitted
-  prompts, not the box); what Claude Code does with the text of a prompt whose hook is held
-  and then given up; desktop notifications of a real browser (the bell's entry is the same
-  call); a deployed instance.
+- Review. The author read the whole diff against `dev` before the independent round and found
+  the held-prompt hole and one test wait that could race. Independent round 1 (a fresh
+  session with the diff range, this spec and the skill `om-code-review`; it ran the gate and
+  the e2e suite itself: 3649 passed and 16 skipped, 932 passed and 1 skipped) approved the
+  head 5405c967 with two minors and four nits, all answered in this pull request:
+  - minor: the Stop asked about the goal before the turn's lines were read. It asks again
+    after its look, with a test.
+  - minor: three mutations survived (a wake-up emptying the box at its call site, a stop of
+    moves read for every version, a finished restart keeping the slot). Each has its test now.
+  - nit: a held prompt was not forgotten at a new run. `prompt_box_starts_empty`, unit test.
+  - nit: the carried goal state is memory only. Recorded under Decisions with its narrow case.
+  - nit: `IdleRest`'s guard for a turn begun in the new run could not be reached. Removed.
+  - nit: three early returns of the move said nothing. They log at debug level.
+  After that round came the merges of `dev` (#1168, #1184, #1188, #1193), the version's cut
+  moved to where SPEC-461 keeps it, the truthful wording about the goal, the desktop
+  notification's check and CCF-011. The same reviewer looked at that delta; its verdict goes
+  with the merge.
+- Not tested: a restart that Yulius makes of a real, signed-in Claude Code session (no
+  subscription can be signed in for a test: the fake agent stands in for the process, and
+  what the real one does was read in its binaries and transcripts); an operating system's
+  notification (the stand-in receives what the page asks the browser to show); whether a real
+  Claude Code writes its "cleared" record at `/clear` with a goal open (its binary ends the
+  goal there); a deployed instance.
