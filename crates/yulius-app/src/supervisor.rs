@@ -24,7 +24,7 @@ use yulius_domain::task::{
     Activity, AttemptState, STOP_INTERRUPT_GRACE_MS, StopReason, TaskEvent, TaskStatus,
 };
 use yulius_domain::time::Timestamp;
-use yulius_domain::usage::{AccountUsage, LimitScope, ModelFamily, ReportedLimit};
+use yulius_domain::usage::{AccountUsage, ModelFamily, ReportedLimit};
 
 use crate::auth::hex_token;
 use crate::context::App;
@@ -219,9 +219,10 @@ pub struct TaskRuntime {
     /// `turn_duration` record, STA-001): they wake the session by themselves, so the idle task
     /// is not done. Counted with the shells.
     pub(crate) background_agents: AtomicU32,
-    /// When (ms) a notice that asks a person to act, or a goal Claude Code stopped retrying
-    /// (SPEC-469), flagged the task `needs_attention` (0 = no such flag): the agent's work after
-    /// it shows the person answered, or the session went on (STA-003).
+    /// When (ms) a notice that asks a person to act, or a request Yulius opened because the
+    /// session did not go on by itself (SPEC-469, SPEC-464 UCL-010), flagged the task
+    /// `needs_attention` (0 = no such flag): the agent's work after it shows the person
+    /// answered, or the session went on (STA-003).
     pub(crate) notice_attention_ms: AtomicI64,
     /// The state time (ms) of the `needs_attention` flag an agent's secret request raised (0 =
     /// none): a person's answer ends only that flag, while the task still reads it (SPEC-213).
@@ -242,7 +243,8 @@ pub struct TaskRuntime {
     /// Claude Code armed a goal retry after the turn an error ended (SPEC-333 AER-001): the turn
     /// that closes stays Working until the retry's prompt, or a person's, starts the next one.
     pub(crate) goal_retry_armed: AtomicBool,
-    /// Yulius asked a person to send a message for a goal Claude Code stopped retrying, and the
+    /// Yulius asked a person because the session does not go on by itself (a goal Claude Code
+    /// stopped retrying, or a usage limit nothing says the end of, SPEC-464 UCL-010), and the
     /// session's agent has not worked since: its next work ends that request (SPEC-469 GPW-001).
     /// It outlives the run: a session Yulius restarts answers it too.
     pub(crate) goal_pause_asked: AtomicBool,
@@ -4419,9 +4421,7 @@ impl App {
                     window_minutes,
                     resets_at,
                 };
-                // A model's limit nothing says the end of: a reset that is not believed is none.
-                let blind = matches!(scope, LimitScope::Model(_))
-                    && limit.believed_reset(self.now()).is_none();
+                let blind = limit.without_an_end(self.now());
                 if let Some(account) = &attempt.account_id {
                     let family = self.task_family(task_id).await;
                     self.record_limit(account, limit, family).await;
@@ -4756,7 +4756,8 @@ mod tests {
     /// sub-agent's turn end (no time) do not, so a retry refused the same way stays a retry.
     #[test]
     fn the_models_own_records_say_it_answered() {
-        use super::{LimitScope, Observation, Timestamp, model_answered};
+        use super::{Observation, Timestamp, model_answered};
+        use yulius_domain::usage::LimitScope;
         let at = Some(Timestamp(1_000));
         assert!(model_answered(&Observation::AgentWork { at }));
         assert!(model_answered(&Observation::AgentWork { at: None }));

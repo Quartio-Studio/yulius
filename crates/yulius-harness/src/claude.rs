@@ -66,12 +66,7 @@ const CREDITS_PHRASES: [&str; 3] = [
 /// "Switch to another model"). Without one it is Claude Code's message for a subscription whose
 /// window and usage credits are both used up ("You're out of usage credits · resets 3pm"), which
 /// binds every model.
-const MODEL_PHRASES: [&str; 4] = [
-    "requires usage credits",
-    "/model",
-    "another model",
-    "switch models",
-];
+const MODEL_PHRASES: [&str; 3] = ["requires usage credits", "/model", "another model"];
 
 /// Lower-case phrases of the same refusals, for records that carry only text.
 const ACCESS_PHRASES: [&str; 3] = [
@@ -1476,7 +1471,12 @@ mod tests {
                 "Fable 5 requires usage credits. /model to switch models.",
                 LimitScope::Model(None),
             ),
+            // Each of the three ways alone: the model named, `/model`, "another model".
             ("Fable 5 requires usage credits.", LimitScope::Model(None)),
+            (
+                "You're out of usage credits. Run /usage-credits or /model.",
+                LimitScope::Model(None),
+            ),
             (
                 "You're out of usage credits. Switch to another model to continue.",
                 LimitScope::Model(None),

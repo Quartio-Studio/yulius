@@ -121,6 +121,14 @@ impl ReportedLimit {
         self.resets_at
             .filter(|at| at.millis_since(now) <= LIMIT_RESET_MAX_MS)
     }
+
+    /// Whether this is a model's limit nothing says the end of: the report names no reset that
+    /// is believed, and no usage reading shows a model's allowance of usage credits. A limit of
+    /// the subscription is not one: a provider's reading shows its windows (SPEC-464 UCL-010).
+    #[must_use]
+    pub fn without_an_end(&self, now: Timestamp) -> bool {
+        matches!(self.scope, LimitScope::Model(_)) && self.believed_reset(now).is_none()
+    }
 }
 
 /// An account's latest usage snapshot. `Default` is "nothing known".
@@ -614,6 +622,21 @@ mod tests {
             model_limit(Some(fable), Some(NOW.0 - 1)).believed_reset(NOW),
             Some(Timestamp(NOW.0 - 1))
         );
+
+        // UCL-010: a model's limit nothing says the end of is one with no believed reset. The
+        // subscription's own limit is none, whatever its reset: a reading shows its windows.
+        assert!(model_limit(Some(fable), None).without_an_end(NOW));
+        assert!(model_limit(None, None).without_an_end(NOW));
+        assert!(model_limit(Some(fable), Some(far.0)).without_an_end(NOW));
+        assert!(!model_limit(Some(fable), Some(edge.0)).without_an_end(NOW));
+        for resets_at in [None, Some(far), Some(edge)] {
+            let own = ReportedLimit {
+                scope: LimitScope::Account,
+                window_minutes: Some(SESSION_WINDOW_MINUTES),
+                resets_at,
+            };
+            assert!(!own.without_an_end(NOW), "{resets_at:?}");
+        }
 
         // A window stored with such a reset (before this bound) is not kept by a reading.
         let stored = AccountUsage {

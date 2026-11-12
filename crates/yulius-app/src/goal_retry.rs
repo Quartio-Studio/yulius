@@ -20,7 +20,9 @@
 //! stops being true (SPEC-469, ADR-0304): once the session's agent works again, whatever woke it
 //! (Claude Code's own wake-up, a prompt Yulius typed, a session Yulius restarted, or no prompt
 //! anyone sees). A prompt alone ends nothing: the API may refuse it again, and then the person
-//! still has to act.
+//! still has to act. The request Yulius makes for a usage limit nothing says the end of (SPEC-464
+//! UCL-010) says the same and ends the same way. Both also end, sooner, when the session goes
+//! on past the limit that cut its turn.
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -32,6 +34,7 @@ use yulius_domain::time::Timestamp;
 use crate::context::App;
 use crate::error::AppResult;
 use crate::model::TaskRecord;
+use crate::moves::LIMIT_WITHOUT_END_ACTION;
 use crate::needs_you::NeedsYouRecord;
 use crate::supervisor::TaskRuntime;
 
@@ -52,9 +55,21 @@ const RESOLVED_ACTION: &str = "task.needs_you.resolved";
 /// Why the request for a goal pause ended without a person.
 const WORKS_AGAIN: &str = "the agent works again after Claude Code paused the goal";
 
-/// Whether the Needs you a task reads since `state_at` is the flag of the goal pause whose request
-/// was asked at `asked_ms`: the request is recorded first and the task flagged next, so a state
-/// that began before the request was asked is an earlier flag, which the pause left as it was.
+/// Why the request for a usage limit nothing says the end of ended without a person.
+const WORKS_PAST_LIMIT: &str = "the agent works again after the usage limit";
+
+/// Why either ended at a move past the limit that cut the session's turn.
+const MOVED_PAST_LIMIT: &str = "the session goes on past the usage limit that cut its turn";
+
+/// The requests Yulius opens itself because a session does not go on by itself: for a goal
+/// Claude Code stopped retrying, and for a usage limit nothing says the end of (SPEC-464
+/// UCL-010). Each ends when that stops being true (ADR-0304).
+const STALLED_ACTIONS: [&str; 2] = [RETRY_ACTION, LIMIT_WITHOUT_END_ACTION];
+
+/// Whether the Needs you a task reads since `state_at` is the flag of the request asked at
+/// `asked_ms` (one of [`STALLED_ACTIONS`]): the request is recorded first and the task flagged
+/// next, so a state that began before the request was asked is an earlier flag, which the
+/// request left as it was.
 #[must_use]
 fn flagged_by_the_pause(state_at: Timestamp, asked_ms: i64) -> bool {
     state_at.0 >= asked_ms
@@ -211,51 +226,99 @@ impl App {
             );
         if !asked {
             self.goal_retries_spent(task, notice).await;
-        } else if let Err(err) = self.set_task_activity(task, Activity::NeedsAttention).await {
+        } else if let Err(err) = self.flag_stalled(task).await {
             tracing::warn!(task = %task.id, error = %err, "could not flag a goal pause at a limit again");
         }
+    }
+
+    /// Flags `task` Needs you because its session does not go on by itself, for a request
+    /// Yulius opened ([`STALLED_ACTIONS`]); called once the request is recorded. From here on
+    /// the agent's work shows the session went on: it ends that request
+    /// ([`Self::goal_pause_overtaken`]) and answers this flag, also when no prompt is seen to
+    /// start that turn (STA-003). A task flagged before keeps that flag.
+    ///
+    /// # Errors
+    /// The store's.
+    pub(crate) async fn flag_stalled(&self, task: &TaskRecord) -> AppResult<()> {
+        let runtime = self.runtime(&task.id);
+        runtime.goal_pause_asked.store(true, Ordering::SeqCst);
+        self.set_task_activity(task, Activity::NeedsAttention)
+            .await?;
+        if task.activity != Some(Activity::NeedsAttention) {
+            runtime
+                .notice_attention_ms
+                .store(self.now().0.max(1), Ordering::SeqCst);
+        }
+        Ok(())
     }
 
     /// The session goes on past the limit that cut its turn, with nothing typed: a request made
     /// for that limit is answered, be it for the goal pause written there (SPEC-464 UCL-007) or
     /// for a limit nothing says the end of (UCL-010). Any other request stays.
     pub(crate) async fn end_limit_requests(&self, task_id: &TaskId) {
-        if matches!(
-            self.deps.store.task_needs_you(task_id).await,
-            Ok(Some(open)) if [RETRY_ACTION, crate::moves::LIMIT_WITHOUT_END_ACTION]
-                .contains(&open.action.as_str())
-        ) {
-            self.end_needs_you(task_id).await;
+        match self.end_stalled_request(task_id).await {
+            Ok(Some(_)) => {
+                self.stalled_request_resolved(task_id, MOVED_PAST_LIMIT)
+                    .await
+            }
+            Ok(None) => {}
+            Err(err) => {
+                tracing::warn!(task = %task_id, error = %err, "ending a limit's request failed");
+            }
         }
     }
 
-    /// Ends the request Yulius opened for a goal Claude Code stopped retrying, while it is the
-    /// open one; any other request stays (the agent's own, SPEC-134). Whether it ended one.
+    /// Ends the request Yulius opened because the session did not go on by itself
+    /// ([`STALLED_ACTIONS`]), while it is the open one; any other request stays (the agent's
+    /// own, SPEC-134). It is ended by its action in one store statement, so a request made
+    /// meanwhile is never the one ended. The action of the request it ended.
     ///
     /// # Errors
     /// The store's.
-    async fn end_goal_retry_request(&self, task_id: &TaskId) -> AppResult<bool> {
-        let ended = self
-            .deps
-            .store
-            .end_task_needs_you_asking(task_id, RETRY_ACTION, self.now())
-            .await?;
-        if ended {
-            self.publish_task(task_id).await;
+    async fn end_stalled_request(&self, task_id: &TaskId) -> AppResult<Option<&'static str>> {
+        for action in STALLED_ACTIONS {
+            if self
+                .deps
+                .store
+                .end_task_needs_you_asking(task_id, action, self.now())
+                .await?
+            {
+                self.publish_task(task_id).await;
+                return Ok(Some(action));
+            }
         }
-        Ok(ended)
+        Ok(None)
     }
 
-    /// A run of `task_id` is watched from now on: a request for a goal pause that is still open,
-    /// made before this server started, is answered by the run's work too (SPEC-469 GPW-004).
-    /// So is the flag that pause raised (STA-003): a restart of Yulius forgot when it was
-    /// raised, and a task that reads Needs you since the request was asked says it.
+    /// Says in the audit log `why` a request Yulius opened ended without a person.
+    async fn stalled_request_resolved(&self, task_id: &TaskId, why: &str) {
+        if let Err(err) = self
+            .deps
+            .store
+            .audit(
+                self.now(),
+                "system",
+                RESOLVED_ACTION,
+                Some(task_id.as_str()),
+                Some(why),
+            )
+            .await
+        {
+            tracing::warn!(task = %task_id, error = %err, "could not log a request's end");
+        }
+    }
+
+    /// A run of `task_id` is watched from now on: a request Yulius opened because the session
+    /// did not go on by itself ([`STALLED_ACTIONS`]) that is still open, made before this
+    /// server started, is answered by the run's work too (SPEC-469 GPW-004). So is the flag
+    /// raised with it (STA-003): a restart of Yulius forgot when it was raised, and a task that
+    /// reads Needs you since the request was asked says it.
     pub(crate) async fn watch_goal_pause_request(&self, task_id: &TaskId) {
         let store = &self.deps.store;
         let Ok(Some(open)) = store.task_needs_you(task_id).await else {
             return;
         };
-        if open.action != RETRY_ACTION {
+        if !STALLED_ACTIONS.contains(&open.action.as_str()) {
             return;
         }
         let runtime = self.runtime(task_id);
@@ -273,40 +336,33 @@ impl App {
         }
     }
 
-    /// The session's agent worked (the model's own line in its transcript) after Claude Code
-    /// stopped retrying the goal: the task goes on by itself again, so the request to send it a
-    /// message is answered (SPEC-469 GPW-001). Nothing without such a pause, or once a person
-    /// answered it. Whether it ended the request.
+    /// The session's agent worked (the model's own line in its transcript) after Yulius asked a
+    /// person because it did not go on by itself (Claude Code stopped retrying the goal, or a
+    /// usage limit nothing says the end of): the task goes on by itself again, so that request
+    /// is answered (SPEC-469 GPW-001, SPEC-464 UCL-010). Nothing without such a request, or
+    /// once a person answered it. Whether it ended the request.
     pub(crate) async fn goal_pause_overtaken(&self, task_id: &TaskId) -> bool {
         let runtime = self.runtime(task_id);
         if !runtime.goal_pause_asked.swap(false, Ordering::SeqCst) {
             return false;
         }
-        match self.end_goal_retry_request(task_id).await {
-            Ok(true) => {}
-            Ok(false) => return false,
+        let ended = match self.end_stalled_request(task_id).await {
+            Ok(Some(action)) => action,
+            Ok(None) => return false,
             Err(err) => {
                 // Asked again at the agent's next work.
                 runtime.goal_pause_asked.store(true, Ordering::SeqCst);
                 tracing::warn!(task = %task_id, error = %err, "ending a goal pause's request failed");
                 return false;
             }
-        }
-        tracing::info!(task = %task_id, "the agent works again after a goal pause: the task needs nobody");
-        if let Err(err) = self
-            .deps
-            .store
-            .audit(
-                self.now(),
-                "system",
-                RESOLVED_ACTION,
-                Some(task_id.as_str()),
-                Some(WORKS_AGAIN),
-            )
-            .await
-        {
-            tracing::warn!(task = %task_id, error = %err, "could not log a goal pause's end");
-        }
+        };
+        tracing::info!(task = %task_id, "the agent works again: the task needs nobody");
+        let why = if ended == RETRY_ACTION {
+            WORKS_AGAIN
+        } else {
+            WORKS_PAST_LIMIT
+        };
+        self.stalled_request_resolved(task_id, why).await;
         true
     }
 
@@ -347,8 +403,6 @@ impl App {
         runtime.verdict_stop_ms.clear();
         runtime.resumed_turn.store(false, Ordering::SeqCst);
         runtime.end_turn(self.now());
-        // From here on the agent's work shows the session went on (SPEC-469 GPW-001).
-        runtime.goal_pause_asked.store(true, Ordering::SeqCst);
         let store = &self.deps.store;
         if matches!(store.task_needs_you(&task.id).await, Ok(None)) {
             let now = self.now();
@@ -364,14 +418,9 @@ impl App {
                 tracing::warn!(task = %task.id, error = %err, "could not record a goal's spent retries");
             }
         }
-        if let Err(err) = self.set_task_activity(task, Activity::NeedsAttention).await {
+        // From here on the agent's work shows the session went on (SPEC-469 GPW-001).
+        if let Err(err) = self.flag_stalled(task).await {
             tracing::warn!(task = %task.id, error = %err, "could not flag a goal's spent retries");
-        } else if task.activity != Some(Activity::NeedsAttention) {
-            // The agent's work after this flag shows the session went on, also when no prompt is
-            // seen to start that turn (STA-003). A task flagged before keeps that flag.
-            runtime
-                .notice_attention_ms
-                .store(self.now().0.max(1), Ordering::SeqCst);
         }
         self.publish_task(&task.id).await;
         if let Err(err) = store

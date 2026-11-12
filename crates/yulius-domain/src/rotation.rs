@@ -733,6 +733,21 @@ mod tests {
             matches!(decision, Decision::Wait { until: Some(_) }),
             "{decision:?}"
         );
+        // What is stored of an earlier limit of the subscription left out says nothing: one that
+        // ended does not make it a candidate, and one still ahead is no reset to wait for.
+        for stale_hours in [-1, 30] {
+            let mut stale = known.clone();
+            stale.accounts[0].usage.limit_reached = true;
+            stale.accounts[0].usage.limit_resets_at = Some(NOW.plus_millis(stale_hours * HOUR));
+            let (decision, _) = decide_leaving_out(&stale, Trigger::Start, &refusing);
+            assert_eq!(
+                decision,
+                Decision::Wait {
+                    until: Some(NOW.plus_millis(40 * HOUR))
+                },
+                "{stale_hours} h"
+            );
+        }
         // A subscription with room takes the task, left out or not.
         let mut room = known.clone();
         room.accounts

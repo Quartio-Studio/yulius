@@ -23,7 +23,7 @@ pub(crate) const NO_SUBSCRIPTION_ACTION: &str =
 
 /// What a task is asked for when Claude refused it at a limit nothing says the end of, again
 /// right after a retry, and no subscription can take it (SPEC-464 UCL-010). The request ends by
-/// itself when the task goes on past the limit.
+/// itself when the task goes on past the limit, or its agent works again.
 pub(crate) const LIMIT_WITHOUT_END_ACTION: &str = "Run the task on another subscription or model, or end the limit (for example with \
      usage credits), then send the task a message";
 
@@ -265,7 +265,9 @@ impl App {
                 tracing::warn!(task = %task.id, error = %err, "recording a Needs you failed");
             }
         }
-        if let Err(err) = self.set_task_activity(task, Activity::NeedsAttention).await {
+        // The agent's work after this shows the session went on: it ends the request and
+        // answers the flag, as for a goal Claude Code paused (ADR-0304).
+        if let Err(err) = self.flag_stalled(task).await {
             tracing::warn!(task = %task.id, error = %err, "could not flag a limit nothing says the end of");
         }
         self.publish_task(&task.id).await;

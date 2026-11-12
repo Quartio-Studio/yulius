@@ -104,9 +104,9 @@ pub struct TranscriptFacts {
     pub limit_goal_pause: Option<String>,
     /// When the session's agent first worked (a line of the model's own, or its answer) after
     /// Claude Code last stopped retrying the goal or a usage limit last cut its turn, or first
-    /// worked at all when what was read holds neither: a request made for that pause is
-    /// answered (SPEC-469 GPW-004). A prompt alone, a sub-agent's answer and work without a
-    /// time are no such work.
+    /// worked at all when what was read holds neither: a request made because the session did
+    /// not go on by itself is answered (SPEC-469 GPW-004, SPEC-464 UCL-010). A prompt alone, a
+    /// sub-agent's answer and work without a time are no such work.
     pub worked_since_goal_pause: Option<yulius_domain::time::Timestamp>,
     /// When the last record that closes a session's turn (its answer or its `turn_duration`)
     /// was written: a turn closed while Yulius was down is woken after it (SPEC-358 MSB-007).
@@ -213,8 +213,9 @@ impl TranscriptFacts {
             Observation::LimitReached { .. } | Observation::AccessLost { .. } => {
                 self.limit_pending = true;
                 self.limit_goal_pause = None;
-                // Work before the limit does not answer a goal pause written at it (the notice
-                // follows this record; SPEC-469's rule for a pause, SPEC-464 UCL-007).
+                // Work before the limit answers no request made at it: its goal pause's (the
+                // notice follows this record, SPEC-464 UCL-007), or one for a limit nothing
+                // says the end of (UCL-010). SPEC-469's rule for a pause.
                 self.worked_since_goal_pause = None;
             }
             Observation::Session { .. }
@@ -1643,9 +1644,27 @@ mod tests {
         let work = Observation::AgentWork {
             at: Some(Timestamp(3)),
         };
-        for next in [PROMPT, work, limit.clone()] {
+        for next in [PROMPT, work.clone(), limit.clone()] {
             let facts = reduce(&[PROMPT, limit.clone(), paused.clone(), ENDED, next.clone()]);
             assert_eq!(facts.limit_goal_pause, None, "{next:?}");
+        }
+        // SPEC-469 for a request made at a limit (its goal pause's, or one for a limit nothing
+        // says the end of, with or without a notice): work before the limit answers nothing,
+        // work after it does.
+        let earlier = Observation::AgentWork {
+            at: Some(Timestamp(1)),
+        };
+        for cut in [vec![limit.clone(), paused.clone()], vec![limit.clone()]] {
+            let mut read = vec![PROMPT, earlier.clone(), PROMPT];
+            read.extend(cut);
+            read.push(ENDED);
+            assert_eq!(reduce(&read).worked_since_goal_pause, None, "{read:?}");
+            read.push(work.clone());
+            assert_eq!(
+                reduce(&read).worked_since_goal_pause,
+                Some(Timestamp(3)),
+                "{read:?}"
+            );
         }
     }
 
