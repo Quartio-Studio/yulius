@@ -182,7 +182,11 @@
 //! by 60 s, so a test says when each happens. The agent says when it waits: `TURN HELD` (for
 //! `--turn-hold-file`, at each turn that finds the file missing), `QUEUE HELD` and `QUEUED
 //! TURN HELD`. A command line (`/exit`, `/work …`) entered during such a turn is queued like
-//! any other text and echoed, and `--limit-after` is not applied to such turns. Not as Claude
+//! any other text and echoed, and `--limit-after` is not applied to such turns. A waiting line
+//! that begins with `/scheduled ` stands for a prompt Claude Code scheduled for itself
+//! (`scheduled_task_fire` in 2.1.322's transcripts): nobody typed it, so it gets no prompt
+//! hook; the rest of the line is put into the queue, and at the hand-over its prompt record
+//! is `isMeta` (`promptSource: "system"`), which Yulius reads as no prompt. Not as Claude
 //! Code: a waiting line's prompt hook is answered before the agent goes on, so a turn never
 //! reaches its Stop while such a hook is unanswered. Claude Code does (seen with 2.1.322: a
 //! turn's Stop hook ran and returned while a prompt's hook was still held; the prompt's
@@ -270,6 +274,13 @@ const MAX_WORK_MS: u64 = 60_000;
 const MAX_ENTERED: usize = 64;
 /// Most Stops of one turn that a block sends on to another (a hook that always blocks).
 const MAX_STOP_BLOCKS: u32 = 16;
+/// How a waiting line begins that stands for a prompt Claude Code scheduled for itself.
+const SCHEDULED: &str = "/scheduled ";
+
+/// What a waiting line says: itself, or the prompt a `/scheduled` line stands for.
+fn said(line: &str) -> &str {
+    line.strip_prefix(SCHEDULED).unwrap_or(line)
+}
 /// How long a paused session waits for `--paused-wake-file`: a test may restart its server in
 /// between, and a leaked fixture still ends.
 const MAX_PAUSED_WAKE_MS: u64 = 120_000;
@@ -901,13 +912,20 @@ impl Transcript {
     }
 
     /// The prompt record of a line that waited in the queue, at the start of the turn that
-    /// takes it.
-    fn queued_prompt(&mut self, prompt: &str) -> io::Result<()> {
+    /// takes it: a prompt someone entered, or with `/scheduled ` one Claude Code scheduled
+    /// for itself, whose record is `isMeta` (as 2.1.322 writes it).
+    fn queued_prompt(&mut self, line: &str) -> io::Result<()> {
         self.turns += 1;
         let uuid = format!("fake-{}-{}-u", self.session_id, self.turns);
         let mut user = self.claude_envelope("user", &uuid, &rfc3339(now_ms()));
-        user["promptSource"] = json!("queued");
-        user["message"] = json!({"role": "user", "content": prompt});
+        if line.starts_with(SCHEDULED) {
+            user["isMeta"] = json!(true);
+            user["promptSource"] = json!("system");
+            user["queuePriority"] = json!("later");
+        } else {
+            user["promptSource"] = json!("queued");
+        }
+        user["message"] = json!({"role": "user", "content": said(line)});
         self.last_uuid = Some(uuid);
         self.append(&[user])
     }
@@ -1537,12 +1555,14 @@ impl Waiting<'_> {
     /// then waits, with its `enqueue` record.
     fn take_entered(&mut self) -> io::Result<()> {
         while let Some(line) = self.entered.meanwhile() {
-            if let Some(reason) = self.hooks.and_then(|h| h.prompt(&line)) {
+            // What Claude Code scheduled for itself was typed by nobody: no prompt hook.
+            let typed = !line.starts_with(SCHEDULED);
+            if let Some(reason) = self.hooks.filter(|_| typed).and_then(|h| h.prompt(&line)) {
                 say(&format!("PROMPT BLOCKED: {reason}"))?;
                 continue;
             }
             if let Some(transcript) = self.transcript {
-                let (transcript, text) = (Arc::clone(transcript), line.clone());
+                let (transcript, text) = (Arc::clone(transcript), said(&line).to_owned());
                 let held = self.options.queue_record_file.clone();
                 let record = move || {
                     if let Some(file) = &held {
@@ -1559,7 +1579,7 @@ impl Waiting<'_> {
                     record();
                 }
             }
-            say(&format!("QUEUED: {line}"))?;
+            say(&format!("QUEUED: {}", said(&line)))?;
             self.lines.push(line);
         }
         Ok(())
@@ -1655,13 +1675,14 @@ fn queued_echo(
         let runs = Duration::from_millis(options.echo_turn_ms);
         waiting.until(|| started.elapsed() >= runs)?;
         waiting.until_file(options.turn_hold_file.as_ref(), "TURN HELD")?;
-        let answers: Vec<String> = turn.iter().map(|one| format!("ECHO: {one}")).collect();
+        let prompts: Vec<&str> = turn.iter().map(|one| said(one)).collect();
+        let answers: Vec<String> = prompts.iter().map(|one| format!("ECHO: {one}")).collect();
         for answer in &answers {
             say(answer)?;
         }
         state.turns += 1;
         state.echoed += turn.len() as u64;
-        write(&mut |t| t.answer(&turn.join("\n"), &answers.join("\n")))?;
+        write(&mut |t| t.answer(&prompts.join("\n"), &answers.join("\n")))?;
         // A Stop that is blocked sends the turn on, and releases nothing.
         let mut blocks = 0;
         while let Some(reason) = waiting.stop(blocks > 0)? {

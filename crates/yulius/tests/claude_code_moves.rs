@@ -1887,6 +1887,72 @@ mod moves {
         Ok(())
     }
 
+    /// SPEC-471 CCQ-003 (AC6; review round 1, finding 3): Claude Code hands a prompt it
+    /// scheduled for itself on with a prompt record that Yulius reads as no prompt. The
+    /// hand-over then ends with the model's first line written after it, here the turn's
+    /// answer: that turn's end restarts the session. It used to stay counted through the
+    /// turn, so a session driven by scheduled prompts never moved.
+    #[test]
+    fn a_hand_over_to_a_scheduled_prompt_ends_when_its_turn_works() -> TestResult {
+        let (_dir, data) = data_dir()?;
+        let version = data.join("claude-version");
+        let may_end = data.join("turn-may-end");
+        let turn_starts = data.join("queued-turn-starts");
+        let rt = runtime()?;
+        rt.block_on(async {
+            let options = FakeAgentOptions {
+                queue_turn_file: Some(turn_starts.clone()),
+                ..queueing(&may_end)
+            };
+            let s = server(&data, &version, options, TaskMode::Prompt, "2.1.322").await?;
+            std::fs::write(&version, "2.1.322\n")?;
+            let mut watch = s.app.runtime(&s.id).hub.subscribe().rx;
+            s.app.send_input(&s.id, b"one\r").await?;
+            says(&s, "TURN HELD").await?;
+            s.app
+                .send_input(&s.id, b"/scheduled check the build\r")
+                .await?;
+            says(&s, "QUEUED: check the build").await?;
+            waits_in_the_queue(&s).await?;
+            // The turn ends; the scheduled prompt is handed on, and its turn is held twice:
+            // before its record, and before its answer.
+            let first_end = decided(&s.id);
+            std::fs::write(&may_end, "")?;
+            says(&s, "QUEUED TURN HELD").await?;
+            until_decided(&first_end).await?;
+            assert_eq!(runs(&s).await, 1);
+            std::fs::remove_file(&may_end)?;
+            std::fs::write(&turn_starts, "")?;
+            wait_for("the scheduled turn", Duration::from_secs(60), || async {
+                screen(&s.app, &s.id).matches("TURN HELD").count() == 2
+            })
+            .await?;
+            wait_for("the hand-over", Duration::from_secs(30), || async {
+                s.app.claude_queue_waiting(&s.id) == 0
+            })
+            .await?;
+            assert!(
+                s.app.claude_queue_holds(&s.id),
+                "handed on, and nothing of its turn was written yet"
+            );
+            // Its answer is written after the hand-over: the turn shows, and its end
+            // restarts the session.
+            std::fs::write(&may_end, "")?;
+            let mut shown = String::new();
+            wait_for("the restarted session", Duration::from_secs(90), || {
+                shown.push_str(&printed(&mut watch));
+                async { runs(&s).await == 2 }
+            })
+            .await?;
+            second_run_live(&s).await?;
+            shown.push_str(&printed(&mut watch));
+            assert!(shown.contains("ECHO: check the build"), "{shown}");
+            stop(&s.app, &s.id).await
+        })?;
+        rt.shutdown_timeout(Duration::from_secs(5));
+        Ok(())
+    }
+
     /// SPEC-471 CCQ-004 (AC7): Claude Code writes a waiting prompt's record once its hook
     /// returned, and the record reaches the file a moment later; here the agent writes it
     /// only when the test says so, and the turn ends right after the prompt's hook. Nothing

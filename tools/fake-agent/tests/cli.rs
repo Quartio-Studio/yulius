@@ -808,6 +808,51 @@ fn queued_prompts_get_their_hook_at_the_enter_and_one_turn_after_the_ending_stop
     Ok(())
 }
 
+/// SPEC-471 CCQ-003, CCQ-005: a waiting line that begins with `/scheduled ` stands for a prompt
+/// Claude Code scheduled for itself: nobody typed it, so it has no prompt hook; it is put into
+/// the queue, and at the hand-over its prompt record is `isMeta`, as in 2.1.322's transcripts.
+#[test]
+fn a_scheduled_prompt_is_handed_on_with_a_meta_record_and_no_hook() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let (dir, path) = (dir.path(), dir.path().join("s-q.jsonl"));
+    let mut child = held_agent(dir, &["--queue-prompts"])?;
+    let mut stdin = child.stdin.take().ok_or("no stdin")?;
+    stdin.write_all(b"first\n")?;
+    until("the first prompt's hook", || hooks_logged(dir).len() == 1)?;
+    stdin.write_all(b"/scheduled check the build\n")?;
+    until("the scheduled prompt's record", || shapes(&path).len() == 2)?;
+    std::fs::write(dir.join("hold"), "")?;
+    until("the scheduled turn's end", || shapes(&path).len() == 10)?;
+    stdin.write_all(b"/exit\n")?;
+    drop(stdin);
+    let output = child.wait_with_output()?;
+    assert_eq!(
+        hooks_logged(dir),
+        ["UserPromptSubmit first", "Stop", "Stop", "SessionEnd"],
+        "no prompt hook for what nobody typed"
+    );
+    assert_eq!(
+        shapes(&path),
+        [
+            "user - first",
+            "enqueue check the build",
+            "assistant",
+            "dequeue -",
+            "stop_hook_summary",
+            "turn_duration",
+            "user system check the build",
+            "assistant",
+            "stop_hook_summary",
+            "turn_duration",
+        ]
+    );
+    let records = read_jsonl(&path)?;
+    assert_eq!(records[6]["isMeta"], true, "read as no prompt by Yulius");
+    assert_eq!(records[6]["queuePriority"], "later");
+    assert!(stdout(&output).contains("ECHO: check the build"));
+    Ok(())
+}
+
 /// SPEC-471 CCQ-005: without the option the agent is as before: a line entered while a turn
 /// runs is read after that turn, gets its prompt hook then, and leaves no queue record.
 #[test]

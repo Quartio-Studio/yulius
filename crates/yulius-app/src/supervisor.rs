@@ -4508,6 +4508,14 @@ impl App {
         {
             blind.answered();
         }
+        // A line of the model written after a hand-over is of the turn the hand-over started,
+        // which a prompt Claude Code scheduled for itself begins with no prompt record read
+        // here. Said to the queue once the line was applied below, so that the task reads
+        // Working first, as for a prompt record (SPEC-471 CCQ-003).
+        let worked = match &observation {
+            Observation::AgentWork { at } | Observation::TurnComplete { at } => *at,
+            _ => None,
+        };
         match observation {
             Observation::LimitReached {
                 resets_at,
@@ -4642,8 +4650,6 @@ impl App {
                 if !runtime.hooks_seen.load(Ordering::SeqCst) {
                     self.turn_ended(task_id, attempt.account_id.clone());
                 }
-                // An answer written after a hand-over ends the turn it started (SPEC-471).
-                runtime.with_queue(|queue| queue.work_seen(at));
             }
             Observation::TurnInterrupted { at } => {
                 // Esc or Ctrl+C stopped the turn: no Stop hook runs, the agent waits for input.
@@ -4675,10 +4681,6 @@ impl App {
                 // The agent works: a goal pause before it asks nobody any more (SPEC-469).
                 self.goal_pause_overtaken(task_id).await;
                 self.agent_worked(task_id, at).await;
-                // Work written after a hand-over is of the turn it started, which a prompt
-                // Claude Code scheduled for itself begins with no prompt record read here.
-                // After the task reads Working, as for a prompt record (SPEC-471 CCQ-003).
-                runtime.with_queue(|queue| queue.work_seen(at));
             }
             Observation::GoalRetry { armed, notice } => {
                 self.goal_retry_observed(task_id, armed, &notice).await;
@@ -4703,6 +4705,7 @@ impl App {
             Observation::Queue(change, at) => runtime.with_queue(|queue| queue.record(change, at)),
             Observation::Session { .. } => {}
         }
+        runtime.with_queue(|queue| queue.work_seen(worked));
     }
 
     /// Applies the pool policy for a running task and acts on the decision (SPEC-001 §7.4):
