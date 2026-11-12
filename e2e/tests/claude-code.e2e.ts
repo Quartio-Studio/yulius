@@ -141,6 +141,21 @@ test('a channel change or a check the server refuses leaves the card as the serv
   await screen.getByRole('combobox', 'Release channel').selectOption({ label: 'Stable' });
   await expect(screen.getByText(/Claude Code follows Stable now\. Checking for a release…/)).toBeVisible();
   await expect.poll(select).toBe('stable on');
+
+  // The way back, refused too: both controls are usable again, and then it goes through.
+  const fails = (now: boolean) => browser.evaluate((value: boolean) => {
+    (window as unknown as { __yuliusMock: { claude: { channelFails: boolean } } }).__yuliusMock.claude.channelFails = value;
+  }, now);
+  const controls = () => browser.evaluate(() => [...document.querySelectorAll('.claude-channel select, .claude-channel button')]
+    .map((control) => `${control.tagName.toLowerCase()} ${(control as HTMLButtonElement).disabled ? 'off' : 'on'}`).join(', '));
+  await fails(true);
+  await screen.getByRole('button', 'Use the server’s (Latest)').click();
+  await expect.poll(controls).toBe('select on, button on');
+  await expect.poll(select).toBe('stable on');
+  await fails(false);
+  await screen.getByRole('button', 'Use the server’s (Latest)').click();
+  await expect(screen.getByText(/Claude Code follows Latest now\. Checking for a release…/)).toBeVisible();
+  await expect.poll(controls).toBe('select on');
 });
 
 test('while a channel change is being saved neither the select nor “Use the server’s” takes another', async ({ app, browser, screen }) => {

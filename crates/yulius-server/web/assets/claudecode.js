@@ -179,20 +179,19 @@ export function claudeCodeCard(ctx) {
   async function setChannel(id, select) {
     saving = true;
     for (const control of select.closest('.claude-channel').querySelectorAll('select, button')) control.disabled = true;
+    // The controls were switched off by hand, so the card is no longer as it was drawn: whatever
+    // comes next (the answer, a refusal, a poll) draws it again, and the controls with it.
+    drawn = '';
     try {
       const view = await ctx.api.put(`${API}/channel`, { channel: id });
       saving = false;
-      // Drawn again whatever the answer says, so the controls are back.
-      drawn = '';
       toast(view.channel === 'off' ? 'Claude Code updates are off: sandboxes run the host’s install from their next start.'
         : `Claude Code follows ${channelName(view.channel)} now. Checking for a release…`, { kind: 'ok' });
       render(view);
     } catch (error) {
       saving = false;
       errorToast(error, 'Couldn’t change the channel');
-      // The select shows the refused choice and is off: the card is drawn again from what the
-      // server says, also when that reads as before.
-      drawn = '';
+      // The select shows the refused choice: the card is drawn again from what the server says.
       refresh();
     }
   }
