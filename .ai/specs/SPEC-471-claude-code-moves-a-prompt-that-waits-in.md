@@ -307,38 +307,40 @@ Where things are in Yulius:
   (the Stop held, SIGTERM, `claude --resume`), `slow-hook-queued` (a prompt hook that answers
   after 6 s: its `enqueue` is made 2 ms after the hook returned, not before), `pop-up-two`
   (one Up arrow with two prompts waiting: two `popAll` records) and `tool-two-at-once` (two
-  prompts taken in at one tool result: two `remove` records), so every way out of the queue
-  writes one record per entry. Context states
-  what they showed. Over all runs the hook of a prompt entered while a turn ran began 5 to
-  15 ms after its Enter (11 prompts), and a queue record reached the file 67 to 108 ms after
-  its own time (21 records). The scripts are not in the repository (they drive
-  a local install); the record shapes they produced are the fixtures of
-  `queue_records_are_changes_of_the_queue`.
-- **The watcher's own code over real transcripts, after the change** (a throwaway `#[ignore]`
-  test, removed again: `HarnessAdapter::watch` from the start of each file, every observation
-  folded with `TranscriptFacts::fold`):
+  prompts taken in at one tool result: two `remove` records): a prompt's way out of the queue
+  wrote one record per entry in every run. Context states what they showed. Over all runs the
+  hook of a prompt entered while a turn ran began 5 to 15 ms after its Enter (11 prompts), and
+  a queue record reached the file 67 to 108 ms after its own time (21 records). The scripts
+  are not in the repository (they drive a local install); the record shapes they produced are
+  the fixtures of `queue_records_are_changes_of_the_queue`. The review ran the tool as well
+  (round 1): it reproduced `pop-up-two` and `tool-two-at-once`, and added a turn's Stop that
+  runs while a prompt's hook is still held, a `/compact` entered while a turn runs (no hook
+  at its Enter, `enqueue`, `dequeue`, no prompt record) and `/cost` and `/mcp reconnect`
+  (no record at all).
+- **The watcher's own code over real transcripts** (throwaway `#[ignore]` tests, removed
+  again: `HarnessAdapter::watch` from the start of each file, every observation folded with
+  `TranscriptFacts::fold`; counts only):
   - the probe's transcripts (ten files of nine scenarios, the ones run by then) read as the
-    scenarios ran: `one-queued` is prompt, `enqueue`
-    (1 waits), `dequeue` (0 wait, handed on), the ended turn's `turn_duration` (still handed
-    on), the queued prompt (nothing held); `pop-esc` keeps the hand-over through the
-    interrupted turn's line; `tool-queued` and `pop-up` end with nothing held after their
-    `remove` and `popAll`; `held-stop-kill-resume` ends with one entry waiting, which is the
-    record a resumed run does not read;
-  - 417 session files of this instance (2026-11-12, counts only): 408 hold queue records,
-    5,014 `enqueue`, 3,744 `dequeue`, 1,254 `remove`; a direct count of the same files gives
-    the same three numbers, so the watcher reads every one. No removal ever came with nothing
-    counted. Most entries waiting at once: 6. Of 4,252 turn ends, 41 came just after a
-    hand-over (something had waited through that turn's Stop), 47 with an entry still counted
-    (in 12 sessions) and 4 with both. Files are read whole here, with no reset at a restart,
-    so the 47 include what a restarted process left behind. 14 files end with the queue
-    holding something.
-  - hand-overs in the same files: 3,662 (a batch of `dequeue` records counted once). The
-    prompt record that ends a hand-over came with no turn's end in between 3,615 times (an
-    idle session woken by a notification), after one turn's end 41 times (the order of a
-    prompt that waited: `dequeue`, the ended turn's `turn_duration`, the prompt), after two
-    once; 5 files end before it. A hand-over from an earlier turn was still counted at 2 of
-    4,185 turn ends, in 2 sessions: a hand-over that starts no prompt record is that rare,
-    and ends with the next prompt;
+    scenarios ran: `one-queued` is prompt, `enqueue` (1 waits), `dequeue` (0 wait, handed on),
+    the ended turn's `turn_duration` (still handed on), the queued prompt (nothing held);
+    `pop-esc` keeps the hand-over through the interrupted turn's line; `tool-queued` and
+    `pop-up` end with nothing held after their `remove` and `popAll`; `held-stop-kill-resume`
+    ends with one entry waiting, which is the record a resumed run does not read;
+  - 417 session files of this instance (2026-11-12): 408 hold queue records, 5,014 `enqueue`,
+    3,744 `dequeue`, 1,254 `remove`; a direct count of the same files gives the same three
+    numbers, so the watcher reads every one. No removal ever came with nothing counted. Most
+    entries waiting at once: 6. Files are read whole here, with no reset at a restart: of
+    4,252 turn ends, 47 came with an entry still counted, in 12 sessions. The review counted
+    per process (round 1, finding 2): 9 sessions hold an entry that is never taken out while
+    their process lives on, all notifications; Decisions, "Every entry counts", has what
+    that costs;
+  - hand-overs, after the rule of round 1 (a hand-over ends with the model's work written
+    after it): 3,677 `dequeue` records, each with a time. Of 4,186 turn ends, 32 come with a
+    hand-over still counted and nothing else waiting, which is the order of an entry that
+    waited through a turn's Stop (`dequeue`, then the ended turn's `turn_duration`); at one of
+    them model work had been read since the hand-over, written before it. Before that rule
+    the review found the hand-over still counted at the end of the turn it had started for
+    each of the 10 scheduled prompts in these files (4 sessions);
   - by the Claude Code version that wrote them: 2.1.292 (360 sessions), 2.1.311 (32) and
     2.1.322 (18) write the same records with the same fields (`operation`, `sessionId`,
     `timestamp`, the text, and for `remove` its `reason` and ids). Only 2.1.322 was run.
@@ -346,18 +348,19 @@ Where things are in Yulius:
   the four tests in Claude Code's order failed with "the session was restarted with a prompt
   in its queue" and "with 1 in its queue", "with 2 in its queue" (AC2 to AC5); the three tests
   of CCQ-004 failed before it was built (AC7); the domain, harness, fold and runtime tests
-  failed against stubs (AC1); two of the fake agent's three tests failed on the unknown
-  option, and the third, which pins the old order without the option, passes with and without
-  the change (AC8).
-  The hand-over's test (AC6) passed when written, since the count already kept a hand-over:
-  its failure is mutants 8 and 10 below.
+  failed against stubs (AC1, and round 1's `kept_by`, the model's work after a hand-over and
+  the reattached run's unknown queue); the fake agent's tests of the new order, of the
+  record's hold file and of a scheduled prompt failed on the option or the order that did
+  not exist yet, and the one that pins the old order passes with and without the change
+  (AC8). The hand-over's tests with real processes (AC6) passed when written, since the rule
+  was there: their failure is mutants 8, 10 and 28 below.
   `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^claude_code_(moves|admin)::/)'`
-  at the final source: 44 passed. `cargo nextest run -p fake-agent`: 24 passed, three times.
-- **Mutations** (a script over 20 mutants, each applied alone, its tests run, reverted with
-  `git checkout`): 19 caught.
+  at 68ab2d96: 46 passed. `cargo nextest run -p fake-agent`: 26 passed.
+- **Mutations** at 68ab2d96 (a script over 32 mutants, each applied alone, its tests run,
+  reverted with `git checkout`): all 32 caught.
   1. the queue not asked: the five tests of AC2 to AC6 fail;
-  2. the queue asked in the first cheap check as well: **survived** (see Decisions, "The count
-     is not asked in the cheap first check": no arranged case tells the two apart);
+  2. the queue asked in the first cheap check as well: AC6's test fails, whose decision is
+     held inside the look (no outcome differs: Decisions);
   3. and 4. a `dequeue` not counted: the domain tests, and with real processes the session
      never moves after the hand-over;
   5. a `remove` not counted; 6. the count going below zero (wrapping): the domain test;
@@ -367,24 +370,53 @@ Where things are in Yulius:
   11. a turn that came and went not ending its hand-over: AC4 never moves;
   12. the watcher not applying queue records: AC2;
   13. a new run keeping the old count: `a_resumed_run_starts_with_an_empty_queue`;
-  14. a replay not applied: `a_reattached_run_knows_what_waits_in_its_queue`;
-  15. the time after a prompt not asked: both tests of AC7's bound;
+  14. a replay not applied: `a_reattached_run_knows_what_waits_in_its_queue`, which waits for
+      the replayed count (round 1's major: it had waited for "holds", which a reattached run
+      reads at once);
+  15. the time after a prompt not asked, and 18. a prompt that goes on not timed: both tests
+      of AC7's bound;
   16. a prompt during the look not asked, and 17. such a prompt not counted: AC7's look;
-  18. the bound compared the wrong way: the domain test;
-  19. an `enqueue` not read, and 20. `popAll` read as an entry put in: the harness test.
-- **Gate.** `scripts/dev ci` at 808a5e9f (every code and test change of this task): exit 0.
-  `cargo check`, `fmt --check`, clippy `-D warnings` on Linux and for `aarch64-apple-darwin`,
-  nextest 3975 passed / 16 skipped, doctests, `cargo deny` (advisories, bans, licenses, sources
-  ok), `cargo shear`, `cargo doc`. After it come a merge of `dev` (#1220, the instance move's
-  page: none of this change's files; `cargo check --workspace --all-targets` clean after it)
-  and this section.
-- **e2e.** The whole suite at 808a5e9f (`npx e2e run`): 82 files passed, 1 skipped; 985 tests
+  19. the bound compared the wrong way: the domain test;
+  20. a reattached run read as known at once, and 21. never known:
+      `a_reattached_runs_queue_is_not_known_until_its_lines_were_read`; 22. not known not
+      counting as holding: the runtime's test;
+  23. and 24. the model's work ending a hand-over whatever its time: the domain test and the
+      fold's; 25. never ending it: the domain test; 26. and 27. the replay not asking the
+      model's line, or its answer: the fold's test;
+  28. the watcher not asking the model's work: the scheduled prompt's test with real
+      processes never moves;
+  29. a due session kept by a fact without a name: `kept_by`'s test;
+  30. an `enqueue` not read, 31. `popAll` read as an entry put in, 32. a queue record's time
+      dropped: the harness test.
+- **Gate.** `scripts/dev ci` at 68ab2d96 (every code and test change of this task, `dev` up
+  to 2a31d50a merged): exit 0. `cargo check`, `fmt --check`, clippy `-D warnings` on Linux and
+  for `aarch64-apple-darwin`, nextest 3981 passed / 16 skipped, doctests, `cargo deny`
+  (advisories, bans, licenses, sources ok), `cargo shear`, `cargo doc`. After it comes this
+  section alone. The review ran the gate itself at 5bafbc37: exit 0, 3978 passed.
+- **e2e.** The whole suite at 68ab2d96 (`npx e2e run`): 82 files passed, 1 skipped; 985 tests
   passed, 1 skipped. This change touches no page.
 - **Security scan.** Disabled: `yulius security-scan` says "Security scan disabled: Vidoc is
   turned off in Yulius"; nothing was scanned, which is not a pass.
+- **Independent review, round 1** (a fresh session, read-only, head 5bafbc37; it ran the gate,
+  the tests twelve times over, its own mutants and the real tool): request changes. One
+  major: the reattached run's test could not fail once "not known" read as holding; it now
+  waits for the count (mutant 14). Minors: the price of counting every entry and a log line
+  for what keeps a session (Decisions, `kept_by`); the hand-over of a scheduled prompt
+  (CCQ-003, the model's work after it; the figures above); the fake agent's limit and the
+  sentence about #1206 (CCQ-005, Decisions); this section brought to the head it describes.
+  Nits: the tests' clocks (the record's hold is a file, the held turns are the test's, the
+  time a record may take is waited for as the app reads it); a poisoned lock reads as "may
+  hold"; the names (`run_starts`, `claude_queue_holds`, `claude_queue_waiting`,
+  `prompts_passed` as "so far"); the look's price said (Decisions) and the first check left
+  as it is; the bound raised to two seconds; the two limits said in the operations guide and
+  the changes log. Outside this change, as the review put them: the gate's count that is not
+  reset for a handed-on prompt and a task that can read Working after a handed-on turn
+  shorter than the watcher's second, both said on issue #1206.
 - **Not tested here.** A restart Yulius makes of a real, signed-in Claude Code session (no
   subscription can be signed in for a test): the fake agent stands in, in the order the real
   tool was seen to have. Claude Code 2.1.292 and 2.1.311 were not run; their transcripts in
   this instance hold the same records. `popOne` and the `remove` reasons `dropped_by_hook`,
   `cleared_on_cancel` and `delivered_to_agent` were read in the binary and (two of them) seen
-  in real sessions, not produced in a run.
+  in real sessions, not produced in a run. A notification Claude Code never takes out of its
+  queue, and a prompt it scheduled for itself, were seen in real sessions, not produced in a
+  run of the tool: the fake agent plays the second.
