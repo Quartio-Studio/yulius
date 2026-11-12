@@ -2220,6 +2220,7 @@ WantedBy=multi-user.target
 Description=Yulius move helper
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=0
 
 [Service]
 Type=oneshot
@@ -2241,19 +2242,23 @@ The unit has no start timeout (a copy takes as long as the data needs) and no fi
 sandboxing: the command reads the whole host, writes the proxy's configuration and freezes units,
 as it does from a root shell. A stop of the unit, or a shutdown, reaches the command as SIGTERM:
 before the new instance's start is ordered it thaws the old instance and ends; after that it
-finishes the cutover, for which it has ten minutes.
+finishes the cutover, for which it has ten minutes. `StartLimitIntervalSec=0` keeps the helper
+listening when requests come quickly: with systemd's default (5 starts in 10 s) a sixth request
+fails the path unit as well, and a failed path unit takes no request until root runs `systemctl
+reset-failed yulius-migrate.service yulius-migrate.path` and starts it again.
 
 **What the helper checks.** The request must be a regular file (not a link) owned by the data
 directory's owner, who is not root, at most 16 KiB, with exactly the fields above, at most 15
-minutes old, and an id it has not acted on. Every value is checked again with the rules the server
-used: the host as `ssh` takes it (`root@host` or `host`, nothing that reads as an option), a port
-from 1 to 65535, a public URL that is `https://host` and nothing more, at most two different
-disks under `/dev/`; an abort names none of them. It refuses while the update helper's unit runs,
-and a host outside `YULIUS_MIGRATE_TARGETS` when that is set. A refused request changes nothing;
-the page shows the reason, which never repeats the request's content. An accepted one runs
-`yulius instance migrate` with each value as one argument (no shell): the plan without `--yes`,
-the move with it, the abort as `--abort` and never with `--yes`. While the command runs, an
-abort request ends it with SIGTERM and is then handled.
+minutes old, and an id it has not acted on (it keeps the last one in `last-request`; when it cannot
+write that file it runs nothing and the unit fails). Every value is checked again with the rules
+the server used: the host as `ssh` takes it (`root@host` or `host`, nothing that reads as an
+option), a port from 1 to 65535, a public URL that is `https://host` and nothing more, at most two
+different disks under `/dev/`; an abort names none of them. It refuses while the update helper's
+unit runs, and a host outside `YULIUS_MIGRATE_TARGETS` when that is set. A refused request changes
+nothing; the page shows the reason, which never repeats the request's content. An accepted one runs
+`yulius instance migrate` with each value as one argument (no shell): the plan without `--yes`, the
+move with it, the abort as `--abort` and never with `--yes`. While the command runs, an abort
+request ends it with SIGTERM and is then handled.
 
 **Files.** In `/var/lib/yulius-migrate` (root's, mode 0711): `helper.json` (0644: the request it
 took, `running` with a heartbeat every 5 s, then `ended` with the command's exit code, or
@@ -2274,9 +2279,9 @@ was refused) and the command's own output. "The move helper did not take the req
 means the path unit is not enabled or could not start the service: `systemctl status
 yulius-migrate.path yulius-migrate.service`. The path unit starts the helper on a change of the
 request file; a request written in the moment the helper ends another run starts nothing, so the
-server writes an untaken request again from 5 s on while the page waits for it. A helper that stopped without a word (it was killed,
-the host restarted) is said on the page after a minute; the move is continued or aborted from
-there, or with the command.
+server writes an untaken request again from 5 s on while the page waits for it. A helper that
+stopped without a word (it was killed, the host restarted) is said on the page after a minute; the
+move is continued or aborted from there, or with the command.
 
 ### Notes for specific upgrades
 

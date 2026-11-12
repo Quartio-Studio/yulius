@@ -8,6 +8,9 @@
 Description=Yulius move helper
 After=network-online.target
 Wants=network-online.target
+# Requests may come quickly (a refusal, then another ask). With systemd's default start limit (5
+# starts in 10 s) a sixth would fail yulius-migrate.path too, which then watches nothing.
+StartLimitIntervalSec=0
 
 [Service]
 Type=oneshot

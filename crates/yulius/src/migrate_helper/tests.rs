@@ -909,6 +909,11 @@ fn the_shipped_units_start_the_helper_on_the_request_file() {
     ] {
         assert!(has(service, line), "{line}");
     }
+    // Requests that come quickly do not switch the helper off: with systemd's default start
+    // limit (5 in 10 s) a sixth fails the path unit, which then watches nothing (seen on a
+    // real host).
+    let unit_section = service.split("[Service]").next().unwrap_or_default();
+    assert!(has(unit_section, "StartLimitIntervalSec=0"));
     // The command reads the whole host and writes the proxy's configuration: nothing here
     // may hide the file system from it, and no list of targets is set for everyone.
     for line in service.lines().map(str::trim) {

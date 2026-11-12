@@ -95,9 +95,10 @@ The request and the root helper
   passed on the same way, and the helper ends only after the command, with its report written.
   At most three requests are handled in one run.
 - MVB-007 **Units.** `deploy/systemd/yulius-migrate.path` (`PathChanged=` the request file) and
-  `yulius-migrate.service` (oneshot, root, no start timeout, 10 minutes to stop), named after
-  the server's unit as its sessions unit is (`<stem>-migrate`). `host setup` does not install
-  them: root opts in, and the operations guide says what that allows.
+  `yulius-migrate.service` (oneshot, root, no start timeout, 10 minutes to stop, no start
+  limit: requests that come quickly must not fail the path unit), named after the server's
+  unit as its sessions unit is (`<stem>-migrate`). `host setup` does not install them: root
+  opts in, and the operations guide says what that allows.
 - MVB-008 **They travel.** A move carries the helper's unit files and drop-ins when the old host
   has them. Once the new instance runs, the path unit is enabled there when it was enabled on
   the old host; the plan and the checklist say which.
@@ -319,7 +320,13 @@ Settings → Instance
   helper does nothing; each part has its own tests.
 - **Not in this change.** The plan's own "an update is running" check (`active` only) is
   reported as issue #1196: the helper refuses first when a move is asked from the page, and the
-  freeze refuses in any case.
+  freeze refuses in any case. The update helper's units have the start limit this change
+  switches off for its own (below): issue #1201.
+- **No start limit on the helper's unit.** On a real host six requests within 10 s (the helper
+  ends at once when it refuses) hit systemd's default start limit, and systemd then failed the
+  path unit too: nothing was taken until root reset it, and the page said the helper was not
+  enabled. `StartLimitIntervalSec=0` on the service; the path unit's own trigger limit (200 in
+  2 s) still bounds a loop. With it 14 requests in 7 s left the path unit waiting.
 - **A defect of the command fixed here.** The real moves asked from the page (Evidence) showed
   that `--abort` after a plan that ended with the key to add, once the key was added, failed on
   the new host (exit 127: the step that removes the key is run by the build, which such a plan
