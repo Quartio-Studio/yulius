@@ -626,8 +626,9 @@ export function mountAccountsPage(ctx, route) {
   const off = ctx.store.on('account', refresh);
   const destroy = () => {
     gone = true;
-    // The readings that wait are dropped with the page; those under way end unheard.
-    queued.length = 0;
+    // The readings that wait are dropped with the page (never sent; whoever waits for one is
+    // told nothing came of it); those under way end unheard.
+    for (const { done } of queued.splice(0)) done({});
     off();
   };
   // Settings → "Add subscription" lands here with ?add=1: open the dialog right away.

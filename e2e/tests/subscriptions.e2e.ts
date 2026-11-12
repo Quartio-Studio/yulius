@@ -554,13 +554,14 @@ test('Refresh all joins a reading the page already has under way, and its card s
   await expect(refreshOf(screen, 'Claude spare')).toBeVisible();
 });
 
-// RFR-015: the queue is dropped with the page. Refresh all has three readings under way and two
-// waiting when the page is left: the two are never sent, and the three that end say nothing on
-// the page the person went to.
+// RFR-015: the queue is dropped with the page. A card's Refresh and Refresh all have three
+// readings under way and two waiting when the page is left: the two are never sent, and the
+// three that end say nothing on the page the person went to, for the card or for all.
 test('leaving the Subscriptions page drops the readings that wait and says nothing of those that end (SPEC-473)', async ({ app, browser, screen }) => {
   await openSubscriptions(app, browser);
   await browser.evaluate(() => { (window as unknown as Usage).__yuliusMock.sent = {}; });
   await holdUsage(browser);
+  await refreshOf(screen, 'Claude #1').click();
   await screen.getByRole('button', 'Refresh all').click();
   await expect.poll(() => browser.evaluate(() => (window as unknown as Usage).__yuliusMock.usageInFlight)).toBe(3);
   await browser.evaluate(() => { location.hash = '#/s/studio'; });
