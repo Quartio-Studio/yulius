@@ -128,8 +128,6 @@ pub struct TaskRuntime {
     /// The current run called a Yulius hook: its Stop hook is the turn boundary that decides
     /// switches and pauses, not the transcript (SPEC-002 §7.5).
     pub(crate) hooks_seen: AtomicBool,
-    /// Last seen limit reset time (ms, 0 = unknown).
-    pub limit_resets_at: AtomicI64,
     /// The current run's last turn ended at a usage limit: no prompt or agent work since
     /// (SPEC-072 LRS-002). A person's switch then resumes past the limit even without a `limit`
     /// pause (an automatic switch after the limit was refused).
@@ -440,7 +438,6 @@ impl TaskRuntime {
             last_input_ms: AtomicI64::new(0),
             proactive_switch: AtomicBool::new(false),
             hooks_seen: AtomicBool::new(false),
-            limit_resets_at: AtomicI64::new(0),
             at_limit: AtomicBool::new(false),
             limit_goal_pause: Mutex::new(crate::goal_retry::LimitGoalPause::None),
             limit_at_ms: AtomicI64::new(0),
@@ -4486,9 +4483,6 @@ impl App {
                     let family = self.task_family(task_id).await;
                     self.record_limit(account, limit, family).await;
                 }
-                runtime
-                    .limit_resets_at
-                    .store(resets_at.map_or(0, |t| t.0), Ordering::SeqCst);
                 let app = self.clone();
                 let tid = task_id.clone();
                 let account = attempt.account_id.clone();
@@ -4505,7 +4499,6 @@ impl App {
                 tracing::warn!(task = %task_id, %message, "subscription access refused");
                 runtime.end_turn(self.now());
                 runtime.limit_cut_the_turn(at);
-                runtime.limit_resets_at.store(0, Ordering::SeqCst);
                 let mut refused = None;
                 if let Some(account) = &attempt.account_id {
                     refused = match self.deps.store.account(account).await {
