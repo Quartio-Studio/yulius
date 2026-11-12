@@ -937,6 +937,44 @@ mod tests {
         assert!(!queue.hands_on());
     }
 
+    /// SPEC-479 SWQ-002 (review round 1): Claude Code hands a notification of its own, a slash
+    /// command or a `!` line on alone; a prompt behind it waits through that turn's closing
+    /// record and is handed on at the next turn's end (seen with 2.1.322). A turn's end that
+    /// handed something on says nothing about what waits behind it: only an end that handed
+    /// nothing on leaves what waits. Every entry such an end finds is left, not one of them.
+    #[test]
+    fn an_end_that_handed_something_on_leaves_nothing_behind() {
+        let counts = |queue: &Queue| (queue.waiting(), queue.left_over());
+        let mut queue = Queue::default();
+        // A notification, then a prompt; the turn's end hands the notification on alone.
+        queue.record(QueueChange::Added, None);
+        queue.record(QueueChange::Added, None);
+        queue.record(QueueChange::HandedOn, None);
+        queue.turn_closed();
+        assert_eq!(counts(&queue), (1, 0), "the prompt waits for the next end");
+        queue.turn_seen();
+        assert!(queue.hands_on(), "at the end of the notification's turn");
+        // That end hands the prompt on.
+        queue.record(QueueChange::HandedOn, None);
+        queue.turn_closed();
+        queue.turn_seen();
+        assert_eq!(counts(&queue), (0, 0));
+        assert!(!queue.hands_on());
+        // Two entries nothing takes out, and a prompt: the end that hands the prompt on marks
+        // none; the next one, which hands nothing on, marks both.
+        for _ in 0..3 {
+            queue.record(QueueChange::Added, None);
+        }
+        queue.record(QueueChange::HandedOn, None);
+        queue.turn_closed();
+        assert_eq!(counts(&queue), (2, 0));
+        queue.turn_seen();
+        assert!(queue.hands_on(), "nothing says yet that they stay");
+        queue.turn_closed();
+        assert_eq!(counts(&queue), (2, 2));
+        assert!(!queue.hands_on());
+    }
+
     /// SPEC-471 CCQ-001: the queue as Claude Code's records count it. An entry waits from its
     /// `enqueue` until it is handed on or taken, and the count never goes below zero.
     #[test]

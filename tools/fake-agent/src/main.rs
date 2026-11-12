@@ -189,7 +189,14 @@
 //! unanswered. A waiting line that begins with `/stuck ` stands for an entry Claude Code never
 //! takes out of its queue, as it does with some of its own notifications (SPEC-479): its
 //! `enqueue` record with the rest of the line, no prompt hook, `QUEUED: <rest>`; no turn's end
-//! hands it on and it is never answered. A waiting line
+//! hands it on and it is never answered. A waiting line that begins with `/alone ` stands for
+//! an entry Claude Code hands on alone, as it does with a notification of its own, a slash
+//! command and a `!` line (seen with 2.1.322, SPEC-479): its `enqueue` record with the rest of
+//! the line and no prompt hook when it is entered. The queue is handed on in the order of its
+//! lines: the lines up to the first `/alone ` one leave together, that one leaves alone when it
+//! is the first, and the rest waits, through the ended turn's closing records, for the next
+//! turn's end. At its hand-over come its `dequeue`, the closing records, its prompt hook, a
+//! prompt record with `promptSource: "system"` and a turn that answers it. A waiting line
 //! that begins with `/scheduled ` stands for a prompt Claude Code scheduled for itself, in
 //! the order seen with 2.1.322: when it fires, a `scheduled_task_fire` record and the
 //! `enqueue` of the rest of the line, with no prompt hook (nobody pressed Enter); at the
@@ -291,11 +298,16 @@ const SCHEDULED: &str = "/scheduled ";
 /// queue (some of its own notifications).
 const STUCK: &str = "/stuck ";
 
+/// How a waiting line begins that stands for an entry Claude Code hands on alone (a
+/// notification of its own, a slash command, a `!` line).
+const ALONE: &str = "/alone ";
+
 /// What a waiting line says: itself, or the prompt a `/scheduled` line stands for, or the
-/// entry a `/stuck` line stands for.
+/// entry a `/stuck` or an `/alone` line stands for.
 fn said(line: &str) -> &str {
     line.strip_prefix(SCHEDULED)
         .or_else(|| line.strip_prefix(STUCK))
+        .or_else(|| line.strip_prefix(ALONE))
         .unwrap_or(line)
 }
 /// How long a paused session waits for `--paused-wake-file`: a test may restart its server in
@@ -930,7 +942,8 @@ impl Transcript {
 
     /// The prompt record of a line that waited in the queue, at the start of the turn that
     /// takes it: a prompt someone entered, or with `/scheduled ` one Claude Code scheduled
-    /// for itself, whose record is `isMeta` (as 2.1.322 writes it).
+    /// for itself, whose record is `isMeta` (as 2.1.322 writes it), or with `/alone ` an
+    /// entry of Claude Code's own (`promptSource: "system"`).
     fn queued_prompt(&mut self, line: &str) -> io::Result<()> {
         self.turns += 1;
         let uuid = format!("fake-{}-{}-u", self.session_id, self.turns);
@@ -939,6 +952,9 @@ impl Transcript {
             user["isMeta"] = json!(true);
             user["promptSource"] = json!("system");
             user["queuePriority"] = json!("later");
+        } else if line.starts_with(ALONE) {
+            // As a notification of Claude Code's own is recorded.
+            user["promptSource"] = json!("system");
         } else {
             user["promptSource"] = json!("queued");
         }
@@ -1583,9 +1599,10 @@ impl Waiting<'_> {
         while let Some(line) = self.entered.meanwhile() {
             // What Claude Code scheduled for itself, and a notification of its own, were
             // typed by nobody: no prompt hook.
+            // An entry Claude Code hands on alone gets its hook at its hand-over.
             let stuck = line.starts_with(STUCK);
             let scheduled = line.starts_with(SCHEDULED);
-            let typed = !scheduled && !stuck;
+            let typed = !scheduled && !stuck && !line.starts_with(ALONE);
             if let Some(reason) = self.hooks.filter(|_| typed).and_then(|h| h.prompt(&line)) {
                 say(&format!("PROMPT BLOCKED: {reason}"))?;
                 continue;
@@ -1660,20 +1677,29 @@ impl Waiting<'_> {
         )
     }
 
-    /// Hands the waiting lines on once the turn ended: every `enqueue` record written, then a
-    /// `dequeue` each. The lines, which the next turn answers.
+    /// Hands waiting lines on once the turn ended: every `enqueue` record written, then a
+    /// `dequeue` for each line that leaves. As Claude Code does (seen with 2.1.322), in the
+    /// order they were entered: the lines up to the first `/alone ` one leave together, or
+    /// that one alone when it is the first. The rest waits for the next turn's end. The
+    /// lines that left, which the next turn answers.
     fn hand_on(&mut self) -> io::Result<Vec<String>> {
         for record in self.records.drain(..) {
             let _ = record.join();
         }
+        let alone = self.lines.iter().position(|line| line.starts_with(ALONE));
+        let leave = match alone {
+            Some(0) => 1,
+            Some(before) => before,
+            None => self.lines.len(),
+        };
         if let Some(transcript) = self.transcript
             && let Ok(t) = transcript.lock()
         {
-            for _ in &self.lines {
+            for _ in 0..leave {
                 t.queue_operation("dequeue", None)?;
             }
         }
-        Ok(std::mem::take(&mut self.lines))
+        Ok(self.lines.drain(..leave).collect())
     }
 }
 
@@ -1746,8 +1772,12 @@ fn queued_echo(
             .filter(|one| one.starts_with(SCHEDULED))
             .map(|one| said(one))
             .collect();
-        for prompt in &scheduled {
-            let _ = hooks.and_then(|h| h.prompt(prompt));
+        // So does an entry Claude Code hands on alone.
+        let hooked = turn
+            .iter()
+            .filter(|one| one.starts_with(SCHEDULED) || one.starts_with(ALONE));
+        for prompt in hooked {
+            let _ = hooks.and_then(|h| h.prompt(said(prompt)));
         }
         write(&mut |t| turn.iter().try_for_each(|one| t.queued_prompt(one)))?;
         // The limit cuts the handed-on turn (`--limit-after`): its prompts are recorded and

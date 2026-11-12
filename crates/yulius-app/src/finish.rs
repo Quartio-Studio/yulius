@@ -1680,6 +1680,17 @@ mod tests {
         assert_eq!(queued(&reduce(&lines)), (2, 1, true));
         lines.extend([Observation::Queue(HandedOn, None), ENDED, PROMPT]);
         assert_eq!(queued(&reduce(&lines)), (1, 1, false));
+        // An entry Claude Code hands on alone, and a prompt behind it: the closing record of
+        // the end that handed the entry on finds the prompt waiting and marks nothing.
+        let behind = [
+            PROMPT,
+            Observation::Queue(Added, None),
+            Observation::Queue(Added, None),
+            Observation::Queue(HandedOn, None),
+            ENDED,
+            PROMPT,
+        ];
+        assert_eq!(queued(&reduce(&behind)), (1, 0, true));
     }
 
     /// SPEC-358 MSB-007: the time of the last record closing a session's turn, its answer or its

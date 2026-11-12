@@ -937,6 +937,84 @@ fn a_stuck_entry_is_recorded_and_never_handed_on() -> TestResult {
     Ok(())
 }
 
+/// SPEC-479 SWQ-005: Claude Code hands its queue on in the order of the entries, and only
+/// prompts that follow one another leave together (seen with 2.1.322): a notification of its
+/// own, a slash command or a `!` line leaves alone, and what waits behind it stays through
+/// that turn's closing record until the next turn's end. A waiting line that begins with
+/// `/alone ` stands for such an entry: no prompt hook when it is entered; at its hand-over
+/// the `dequeue`, the ended turn's closing records, its prompt hook and a prompt record
+/// (`promptSource: "system"`).
+#[test]
+fn an_entry_handed_on_alone_leaves_the_rest_for_the_next_turns_end() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let (dir, path) = (dir.path(), dir.path().join("s-q.jsonl"));
+    let mut child = held_agent(dir, &["--queue-prompts"])?;
+    let mut stdin = child.stdin.take().ok_or("no stdin")?;
+    stdin.write_all(b"first\n")?;
+    until("the first prompt's hook", || hooks_logged(dir).len() == 1)?;
+    stdin.write_all(b"/alone note\n")?;
+    until("the entry's record", || shapes(&path).len() == 2)?;
+    assert_eq!(hooks_logged(dir).len(), 1, "no hook when it is entered");
+    stdin.write_all(b"second\nthird\n")?;
+    until("the waiting prompts' records", || shapes(&path).len() == 4)?;
+    std::fs::write(dir.join("hold"), "")?;
+    until("the last turn's end", || shapes(&path).len() == 19)?;
+    stdin.write_all(b"/exit\n")?;
+    drop(stdin);
+    let output = child.wait_with_output()?;
+    let text = stdout(&output);
+    assert_eq!(
+        hooks_logged(dir),
+        [
+            "UserPromptSubmit first",
+            "UserPromptSubmit second",
+            "UserPromptSubmit third",
+            "Stop",
+            "UserPromptSubmit note",
+            "Stop",
+            "Stop",
+            "SessionEnd"
+        ],
+        "its hook comes at its hand-over"
+    );
+    assert_eq!(
+        shapes(&path),
+        [
+            "user - first",
+            "enqueue note",
+            "enqueue second",
+            "enqueue third",
+            "assistant",
+            // The first turn's end hands the entry on alone: two prompts still wait when the
+            // turn closes.
+            "dequeue -",
+            "stop_hook_summary",
+            "turn_duration",
+            "user system note",
+            "assistant",
+            // Its turn's end hands on the prompts, together.
+            "dequeue -",
+            "dequeue -",
+            "stop_hook_summary",
+            "turn_duration",
+            "user queued second",
+            "user queued third",
+            "assistant",
+            "stop_hook_summary",
+            "turn_duration",
+        ]
+    );
+    let order = ["ECHO: first", "ECHO: note", "ECHO: second", "ECHO: third"];
+    let mut rest = text.as_str();
+    for word in order {
+        let at = rest
+            .find(word)
+            .ok_or_else(|| format!("no {word:?} in order: {text}"))?;
+        rest = &rest[at + word.len()..];
+    }
+    Ok(())
+}
+
 /// SPEC-479 SWQ-005: with `--queue-prompts`, `--limit-after N` cuts the handed-on turn that
 /// would be the Nth: its prompt records are written, then the usage-limit record; it is not
 /// answered and runs no Stop hook, as a turn a limit cuts in Claude Code.

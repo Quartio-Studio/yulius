@@ -3200,6 +3200,73 @@ mod moves {
         Ok(())
     }
 
+    /// SPEC-479 SWQ-002 (AC9, review round 1): Claude Code hands on an entry of its own (a
+    /// notification of finished background work, a slash command, a `!` line) alone, and a
+    /// prompt that waits behind it stays in the queue through that turn's closing record,
+    /// until the next turn's end. Such a prompt was not left: the end of the entry's turn
+    /// keeps the session, the prompt is answered in the same run, and only that turn's end
+    /// moves it. The first rule marked everything a closing record found, and the prompt went
+    /// with the process at the end of the entry's turn.
+    #[test]
+    fn a_prompt_behind_an_entry_handed_on_alone_is_answered_before_the_subscription_changes()
+    -> TestResult {
+        let (_dir, data) = data_dir()?;
+        let version = data.join("claude-version");
+        let may_end = data.join("turn-may-end");
+        let rt = runtime()?;
+        rt.block_on(async {
+            let options = queueing(&may_end);
+            let s = server(&data, &version, options, TaskMode::Prompt, "2.1.311").await?;
+            add_account(&s.app, "b-second").await?;
+            let mut watch = s.app.runtime(&s.id).hub.subscribe().rx;
+            s.app.send_input(&s.id, b"one\r").await?;
+            says(&s, "TURN HELD").await?;
+            s.probe.set("a-first", usage(100.0, 4 * HOUR, 30.0, 100));
+            refresh(&s.app, &s.user, "a-first").await?;
+            s.app.send_input(&s.id, b"/alone note\r").await?;
+            says(&s, "QUEUED: note").await?;
+            s.app.send_input(&s.id, b"two\r").await?;
+            says(&s, "QUEUED: two").await?;
+            wait_for("both in the queue", Duration::from_secs(60), || async {
+                s.app.claude_queue_waiting(&s.id) == 2
+            })
+            .await?;
+            std::fs::write(&may_end, "")?;
+            let mut shown = String::new();
+            wait_for(
+                "the waiting prompt's answer, or the move",
+                Duration::from_secs(90),
+                || {
+                    shown.push_str(&printed(&mut watch));
+                    let (answered, s) = (shown.contains("ECHO: two"), &s);
+                    async move { answered || runs(s).await > 1 }
+                },
+            )
+            .await?;
+            assert_eq!(
+                runs(&s).await,
+                1,
+                "the session moved with a prompt in its queue, which went with its process: {shown}"
+            );
+            assert!(
+                shown.contains("ECHO: note"),
+                "the entry had its turn: {shown}"
+            );
+            // Nothing waits any more: the end of the prompt's turn moves the session.
+            run_live(&s, 2).await?;
+            assert_eq!(
+                subscriptions(&s).await,
+                [Some("a-first".to_owned()), Some("b-second".to_owned())]
+            );
+            ready(&s.app, &s.id).await?;
+            shown.push_str(&printed(&mut watch));
+            assert_eq!(shown.matches("ECHO: two").count(), 1, "{shown}");
+            stop(&s.app, &s.id).await
+        })?;
+        rt.shutdown_timeout(Duration::from_secs(5));
+        Ok(())
+    }
+
     /// SPEC-479 SWQ-003 (AC5): no subscription has room and the gate would block, so the
     /// turn's end holds the turn (the task waits for capacity) with a prompt in Claude Code's
     /// queue. The second subscription gets room. The session is not moved over the prompt: the
