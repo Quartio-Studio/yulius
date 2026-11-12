@@ -167,10 +167,11 @@ pub struct TaskRuntime {
     /// nothing (SPEC-468 CCF-010).
     pub(crate) submit_emptied_ms: AtomicI64,
     /// The run's last prompt hook was answered with a hold: the next one is that prompt sent
-    /// again by the hook client, not another submit. A hold the CLI gave up leaves this set
-    /// until the run's next prompt is answered, which then counts as no submit: the session
-    /// reads as holding a draft for one turn longer, never as holding none. A new run holds
-    /// none ([`Self::prompt_box_starts_empty`]).
+    /// again by the hook client, not another submit. A hold the CLI gave up (its client holds
+    /// for days) leaves this set until the run's next prompt is answered, which then counts as
+    /// the held one going on: the session reads as holding a draft until the prompt after
+    /// that is submitted, never as holding none. A new run holds none
+    /// ([`Self::prompt_box_starts_empty`]).
     pub(crate) prompt_held: AtomicBool,
     /// Whose personal MCP servers the current run was started with (SPEC-332 MSC-009): a live
     /// run keeps its MCP configuration, so a hand-over restarts it, and only that person messages
