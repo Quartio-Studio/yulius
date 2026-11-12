@@ -47,7 +47,9 @@ other in load order, which a boot does not fix.
   by what it does: Yulius's profile is proven with every profile of the directory loaded as a
   boot loads them; where bwrap does not start, it is proven once more without Yulius's
   profile, and a person's profile that lets it in is adopted in place of Yulius's, whichever
-  run wrote that (SPEC-456 BNS-012).
+  run wrote that (SPEC-456 BNS-012). The same proof decides beside a profile the item reads,
+  where a profile of Yulius's from an earlier run stands next to it (BNS-006): nothing of
+  Yulius's is removed because of what a file's text looks like.
 - **Checks report and never fix.** `yulius host check` (the update helper's re-check, Settings →
   Instance) runs the same proof and reports what setup would do. `yulius doctor --contained`
   starts bwrap with ids mapped by `newuidmap`, as a sandbox does, and fails when that does not
@@ -97,4 +99,8 @@ other in load order, which a boot does not fix.
   not end fails the item, which undoes its steps.
 - Where a person's profile lets bwrap in, setup removes `/etc/apparmor.d/yulius-bwrap`, also
   one an earlier run wrote and that worked until the person's profile came: the proof decides,
-  and Yulius never disables a person's profile itself.
+  and Yulius never disables a person's profile itself. For the length of that proof Yulius's
+  profile is out of AppArmor, so a sandbox that starts in that moment fails. A person's
+  profile that only AppArmor holds (loaded by hand from outside `/etc/apparmor.d`) is adopted
+  as well and is gone after a boot: the check fails then, and the next setup writes Yulius's
+  profile again.
