@@ -287,8 +287,9 @@ function seed(params) {
     t('sb_studio', 12, 'Checkout API', 'claude', 'running', 'working', { done: 2, updated: 20e3, working: 2 * HOUR + 14 * MIN, prompt: `# Checkout API\n\nBuild the checkout endpoint:\n\n- Stripe payment intents\n- an idempotency key per order\n\n@${MOCK_ATTACHMENTS}/checkout-error.png\n@${MOCK_ATTACHMENTS}/notes.txt\n@${MOCK_ATTACHMENTS}/old-mockup.png` }),
     // Finished its turn with a tested pull request (checks green) and a complete plan: "Done" (#35, #139).
     t('sb_studio', 11, '3D model viewer', 'claude', 'running', 'waiting', { done: 7, current: false, author: 'anna-q', owner: 'mkarp', delivery: { stage: 'pr_open', environment: null, pr: pr(221, '3D model viewer', 'open', 'dev', 'success') } }),
-    // Claude Code asks in its terminal: the flag says so, in Claude Code's words (SPEC-472).
-    t('sb_studio', 10, 'AWS login for deploy', 'claude', 'running', 'needs_attention', { done: 4, attention: { kind: 'terminal', problem: 'Claude needs your permission to use Bash', action: null, link: null } }),
+    // Its agent asked for a sign-in in the sandbox browser (the request `askBrowserSignIn` sends):
+    // the flag says so itself, with the tab, for a page that never hears the request (SPEC-472).
+    t('sb_studio', 10, 'AWS login for deploy', 'claude', 'running', 'needs_attention', { done: 4, attention: { kind: 'yulius', problem: 'The agent asks you to act in the sandbox\'s browser: Sign in to AWS so task #10 can deploy', action: 'Open the browser tab and do what it asks.', link: `${ORIGIN}/s/studio/browser?tab=tab-aws` } }),
     t('sb_studio', 9, 'Move to the next account', 'claude', 'switching', null, { done: 3, working: 3 * HOUR }),
     t('sb_studio', 8, 'Nightly feedback digest', 'claude', 'queued', null, { origin: 'automation', noSteps: true }),
     t('sb_studio', 7, 'Search indexing', 'claude', 'waiting_capacity', null, { done: 1 }),

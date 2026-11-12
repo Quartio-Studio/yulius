@@ -421,8 +421,8 @@ impl App {
 
     /// Sets a running task's activity and publishes it. `NeedsAttention` is raised from the task
     /// as it is now, not as `task` says ([`Self::flag_needs_attention`]), and without a reason:
-    /// for a flag whose own card or request says it (a browser request, a goal pause, a host
-    /// move). Every other flag gives its reason ([`Self::flag_attention`], SPEC-472).
+    /// for a flag whose own request says it (a goal pause, a host move: `needs_you`). Every
+    /// other flag gives its reason ([`Self::flag_attention`], SPEC-472).
     pub(crate) async fn set_task_activity(
         &self,
         task: &TaskRecord,

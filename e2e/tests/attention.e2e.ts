@@ -59,6 +59,23 @@ test('a secret request says where a person answers it, with the link', async ({ 
   expect(await axeViolations(browser)).toEqual([]);
 });
 
+test('a browser request reads from the task until the page has the request itself', async ({ app, browser, screen }) => {
+  // Task #10 asked for a sign-in in the sandbox browser. This page heard no request (`ambient=0`),
+  // as one opened after it was made, with its Browser panel closed.
+  await app.open(mock('/s/studio/t/10', '&ambient=0'));
+  await terminalShown(browser);
+  await expect(bar(browser)).toHaveText(/Needs you[\s\S]*Problem[\s\S]*The agent asks you to act in the sandbox's browser: Sign in to AWS so task #10 can deploy[\s\S]*To do[\s\S]*Open the browser tab and do what it asks\./);
+  const open = browser.locator('.attention-bar a:has-text("Open")');
+  expect(await open.getAttribute('href')).toBe(`${await browser.evaluate(() => location.origin)}/s/studio/browser?tab=tab-aws`);
+  expect(await axeViolations(browser)).toEqual([]);
+
+  // Once the page has the request, its own row says it, with the button that opens the tab here.
+  expect(await browser.evaluate(() => (window as unknown as { __yuliusMock: { askBrowserSignIn: () => boolean } }).__yuliusMock.askBrowserSignIn())).toBe(true);
+  await expect(browser.locator('.attention-bar .attention-text')).toHaveText('Action needed in the browser: Sign in to AWS so task #10 can deploy');
+  await expect(screen.getByRole('button', 'Open browser tab')).toBeVisible();
+  await expect(bar(browser)).not.toHaveText(/Needs you|To do/);
+});
+
 test("a question in the terminal reads so, in Claude Code's words when it gave any", async ({ app, browser }) => {
   await app.open(mock('/s/studio/t/12', '&ambient=0'));
   await terminalShown(browser);
