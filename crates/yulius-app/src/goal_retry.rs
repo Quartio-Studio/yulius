@@ -52,18 +52,26 @@ pub(crate) enum LimitGoalPause {
     /// Yulius could not take the task on: its session stays at the limit, so a pause written
     /// there needs a person.
     Stays,
+    /// Yulius asked a person about this limit itself (a limit nothing says the end of, UCL-010):
+    /// a pause written there adds nothing, before or after.
+    Asked,
 }
 
 impl LimitGoalPause {
     /// Claude Code's pause `notice` was read at the limit. `true` when it is held for the limit
     /// path; `false` when that path already said the session stays, so it needs a person now.
     pub(crate) fn hold(&mut self, notice: &str) -> bool {
-        if *self == Self::Stays {
-            *self = Self::None;
-            return false;
+        match self {
+            Self::Stays => {
+                *self = Self::None;
+                false
+            }
+            Self::Asked => true,
+            Self::None | Self::Held(_) => {
+                *self = Self::Held(notice.to_owned());
+                true
+            }
         }
-        *self = Self::Held(notice.to_owned());
-        true
     }
 
     /// The move past the limit was refused: the notice held meanwhile, which needs a person
@@ -74,8 +82,18 @@ impl LimitGoalPause {
                 *self = Self::None;
                 Some(notice)
             }
+            Self::Asked => {
+                *self = Self::Asked;
+                None
+            }
             Self::None | Self::Stays => None,
         }
+    }
+
+    /// Yulius asked a person about the limit itself: a pause held is dropped, and one read
+    /// later is not asked about either.
+    pub(crate) fn asked(&mut self) {
+        *self = Self::Asked;
     }
 }
 
@@ -288,5 +306,21 @@ mod tests {
         let mut pause = LimitGoalPause::default();
         assert!(pause.hold(notice));
         assert!(pause.hold(notice), "read again after a restart");
+        // Yulius asked a person about the limit itself (UCL-010): the pause asks nobody, read
+        // before that or after it, and a move refused later finds nothing held to ask with.
+        let mut pause = LimitGoalPause::default();
+        assert!(pause.hold(notice));
+        pause.asked();
+        assert_eq!(pause.refused(), None, "the notice read first is dropped");
+        assert_eq!(pause, LimitGoalPause::Asked);
+        let mut pause = LimitGoalPause::default();
+        pause.asked();
+        assert!(
+            pause.hold(notice),
+            "the notice read afterwards is not asked about"
+        );
+        assert_eq!(pause, LimitGoalPause::Asked, "nor held");
+        assert_eq!(pause.refused(), None);
+        assert_eq!(pause, LimitGoalPause::Asked);
     }
 }

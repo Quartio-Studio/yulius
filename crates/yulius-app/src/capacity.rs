@@ -33,7 +33,7 @@ use yulius_domain::ids::{AccountId, TaskId};
 use yulius_domain::rotation::{self, Decision, RotationInput, Trigger};
 use yulius_domain::task::{Activity, TaskEvent, TaskStatus};
 use yulius_domain::time::Timestamp;
-use yulius_domain::usage::{AccountUsage, ModelFamily, UsageWindow};
+use yulius_domain::usage::{AccountUsage, LIMIT_RESET_MAX_MS, ModelFamily, UsageWindow};
 
 use crate::accounts::{account_usage, in_use_count, usage_view};
 use crate::auth::{AuthContext, rfc3339};
@@ -77,8 +77,6 @@ const SESSION_SAMPLE_MS: i64 = 5 * 60_000;
 /// An unchanged session reading still refreshes when the usage was last seen, at most this
 /// often, so a subscription in use never looks stale (F 2026-10-11).
 const SESSION_TOUCH_MS: i64 = 60_000;
-/// Latest reset time accepted from a session reading: a week and a day ahead.
-const SESSION_RESET_MAX_MS: i64 = WEEK_MS + 24 * 3_600_000;
 
 /// The last session reading stored for a subscription.
 #[derive(Debug, Clone, Copy)]
@@ -130,7 +128,7 @@ fn session_window(
         .resets_at
         .and_then(|s| s.checked_mul(1_000))
         .map(Timestamp)
-        .filter(|at| *at > now && at.millis_since(now) <= SESSION_RESET_MAX_MS);
+        .filter(|at| *at > now && at.millis_since(now) <= LIMIT_RESET_MAX_MS);
     Some(UsageWindow {
         used_percent: Some(used),
         window_minutes: Some(minutes),
@@ -635,7 +633,26 @@ impl App {
             Trigger::Start
         };
         let input = self.rotation_input(task, current).await?;
-        let (decision, reason) = rotation::decide(&input, trigger);
+        // A subscription that refused the task again at a limit nothing says the end of is not
+        // tried again while a reset is known to wait for, whatever a reading said since
+        // (SPEC-464 UCL-010).
+        let blind = self.existing_runtime(&task.id);
+        let left_out = blind
+            .as_ref()
+            .and_then(|rt| rt.blind_limits.lock().ok()?.refused_by().cloned());
+        let (decision, reason) = match left_out {
+            Some(account) => {
+                let (decided, again) = rotation::decide_leaving_out(&input, trigger, &account);
+                if again
+                    && let Some(mut blind) =
+                        blind.as_ref().and_then(|rt| rt.blind_limits.lock().ok())
+                {
+                    blind.nothing_to_wait_for();
+                }
+                decided
+            }
+            None => rotation::decide(&input, trigger),
+        };
         Ok((decision, format!("{reason:?}"), has_process))
     }
 
@@ -1033,7 +1050,7 @@ mod tests {
             assert_eq!(reading(used, Some(in_an_hour)), None, "{used}");
         }
         let past = (now.0 - 1_000) / 1_000;
-        let too_far = (now.0 + SESSION_RESET_MAX_MS + 1_000) / 1_000;
+        let too_far = (now.0 + LIMIT_RESET_MAX_MS + 1_000) / 1_000;
         for resets_at in [Some(past), Some(too_far), Some(i64::MAX), None] {
             assert_eq!(
                 reading(100.0, resets_at).and_then(|w| w.resets_at),

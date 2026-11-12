@@ -7,6 +7,7 @@ use std::sync::atomic::Ordering;
 
 use yulius_domain::ids::{AccountId, TaskId};
 use yulius_domain::task::{Activity, TaskStatus};
+use yulius_domain::time::Timestamp;
 
 use crate::account_gate::AgentAccounts;
 use crate::context::App;
@@ -28,6 +29,75 @@ pub(crate) const LIMIT_WITHOUT_END_ACTION: &str = "Run the task on another subsc
 
 /// The audit action of such a request.
 const LIMIT_WITHOUT_END_AUDIT: &str = "task.limit_without_end";
+
+/// How often a task is tried again by itself at a model's limit nothing says the end of, when
+/// no subscription can take it: once (a provider's reading ends such a limit, and a session
+/// resumed on a newer Claude Code names the reset). Refused the same way again, it is not
+/// started on that subscription at every reading (SPEC-464 UCL-010).
+pub(crate) const BLIND_LIMIT_RETRIES: u32 = 1;
+
+/// What a task remembers of the limits nothing says the end of that left it with nowhere to go
+/// (SPEC-464 UCL-010). Kept in memory: a restart of Yulius allows one more retry.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct BlindLimits {
+    /// Such waits in a row, the model not having answered in between.
+    waits: u32,
+    /// The subscription that refused the task that way again after its retries: the pool does
+    /// not put the task back on it by itself.
+    refused_by: Option<AccountId>,
+}
+
+/// What follows a limit nothing says the end of when no subscription can take the task now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BlindWait {
+    /// The task waits and the pool takes it on again: on any subscription while it has a
+    /// retry, afterwards on any but the one that refused it.
+    Pause,
+    /// Nothing says when the task can go on: its session stays at the refusal, and a person
+    /// is asked.
+    AskAPerson,
+}
+
+impl BlindLimits {
+    /// The model answered in the task's session: a later limit is no repeat of an earlier one.
+    pub(crate) fn answered(&mut self) {
+        *self = Self::default();
+    }
+
+    /// A limit nothing says the end of left the task with nowhere to go on `account`. `until`
+    /// is the earliest reset known of a subscription that could take it; `status` is the
+    /// task's (one that waits for capacity already has its pause, and its session is not at
+    /// the refusal for a person to act on).
+    pub(crate) fn nowhere_to_go(
+        &mut self,
+        account: Option<&AccountId>,
+        until: Option<Timestamp>,
+        status: TaskStatus,
+    ) -> BlindWait {
+        self.waits = self.waits.saturating_add(1);
+        if self.waits <= BLIND_LIMIT_RETRIES {
+            return BlindWait::Pause;
+        }
+        // Refused the same way right after its retry: not started there again by itself.
+        self.refused_by = account.cloned();
+        if until.is_some() || status != TaskStatus::Running {
+            BlindWait::Pause
+        } else {
+            BlindWait::AskAPerson
+        }
+    }
+
+    /// The subscription the pool leaves out for this task.
+    pub(crate) fn refused_by(&self) -> Option<&AccountId> {
+        self.refused_by.as_ref()
+    }
+
+    /// No reset is known to wait for any more: the subscription is a candidate again. The task
+    /// has no retry left, so it asks a person when it is refused there the same way.
+    pub(crate) fn nothing_to_wait_for(&mut self) {
+        self.refused_by = None;
+    }
+}
 
 /// Why a task left its subscription, as its terminal says it.
 pub(crate) enum Left {
@@ -164,9 +234,10 @@ impl App {
     /// or a message once the limit is over, takes it on.
     pub(crate) async fn limit_without_end(&self, task: &TaskRecord) {
         let runtime = self.runtime(&task.id);
-        // The goal pause Claude Code wrote there says less than this request: not asked too.
+        // The goal pause Claude Code wrote there says less than this request: not asked too,
+        // whether its notice was read already or comes after.
         if let Ok(mut pause) = runtime.limit_goal_pause.lock() {
-            *pause = crate::goal_retry::LimitGoalPause::None;
+            pause.asked();
         }
         tracing::warn!(task = %task.id, "refused again at a limit nothing says the end of: the task needs a person");
         runtime.hub.notice(
@@ -226,5 +297,82 @@ impl App {
         {
             self.end_needs_you(task_id).await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// SPEC-464 UCL-010: one retry at a limit nothing says the end of, then no more by itself.
+    /// What follows depends on whether anything is known to wait for.
+    #[test]
+    fn a_limit_nothing_says_the_end_of_is_waited_for_once()
+    -> Result<(), yulius_domain::ids::IdError> {
+        const RUNNING: TaskStatus = TaskStatus::Running;
+        let first = AccountId::parse("a-first")?;
+        let known = Some(Timestamp(9_000));
+        // Nowhere to go and nothing known: the task waits once, then a person is asked.
+        let mut blind = BlindLimits::default();
+        assert_eq!(
+            blind.nowhere_to_go(Some(&first), None, RUNNING),
+            BlindWait::Pause
+        );
+        assert_eq!(
+            blind.refused_by(),
+            None,
+            "tried there again after a reading"
+        );
+        assert_eq!(
+            blind.nowhere_to_go(Some(&first), None, RUNNING),
+            BlindWait::AskAPerson
+        );
+        assert_eq!(blind.refused_by(), Some(&first));
+        assert_eq!(
+            blind.nowhere_to_go(Some(&first), None, RUNNING),
+            BlindWait::AskAPerson,
+            "and at every later refusal there"
+        );
+        // The model answered in between: a later limit has its own retry.
+        blind.answered();
+        assert_eq!(blind, BlindLimits::default());
+        assert_eq!(
+            blind.nowhere_to_go(Some(&first), None, RUNNING),
+            BlindWait::Pause
+        );
+        // Another subscription says when it resets: the task waits for that, off the
+        // subscription that refused it, and nobody is asked.
+        let mut blind = BlindLimits::default();
+        assert_eq!(
+            blind.nowhere_to_go(Some(&first), known, RUNNING),
+            BlindWait::Pause
+        );
+        assert_eq!(blind.refused_by(), None);
+        assert_eq!(
+            blind.nowhere_to_go(Some(&first), known, RUNNING),
+            BlindWait::Pause
+        );
+        assert_eq!(blind.refused_by(), Some(&first), "left out from now on");
+        // That reset is no longer known: the subscription is tried once more, and the task
+        // asks a person when it is refused there again.
+        blind.nothing_to_wait_for();
+        assert_eq!(blind.refused_by(), None);
+        assert_eq!(
+            blind.nowhere_to_go(Some(&first), None, RUNNING),
+            BlindWait::AskAPerson
+        );
+        // A task that waits for capacity already keeps its pause: the pool goes on from there.
+        let mut blind = BlindLimits::default();
+        let waiting = TaskStatus::WaitingCapacity;
+        assert_eq!(
+            blind.nowhere_to_go(Some(&first), None, waiting),
+            BlindWait::Pause
+        );
+        assert_eq!(
+            blind.nowhere_to_go(Some(&first), None, waiting),
+            BlindWait::Pause
+        );
+        assert_eq!(blind.refused_by(), Some(&first));
+        Ok(())
     }
 }

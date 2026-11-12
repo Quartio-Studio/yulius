@@ -108,9 +108,9 @@ pub struct ReportedLimit {
     pub resets_at: Option<Timestamp>,
 }
 
-/// The furthest ahead a limit's reset is believed: a week and a day. No window lasts longer, and
-/// the reset comes from the session's transcript, which is the agent's own file (a session's
-/// reading is bounded the same way, SPEC-398 VSH-005).
+/// The furthest ahead a reset a session reports is believed: a week and a day. No window lasts
+/// longer, and both a limit's reset (from the session's transcript, which is the agent's own
+/// file) and a session's usage reading (SPEC-398 VSH-005) come from the agent's side.
 pub const LIMIT_RESET_MAX_MS: i64 = 8 * 24 * 3_600_000;
 
 impl ReportedLimit {

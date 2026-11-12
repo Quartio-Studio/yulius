@@ -47,12 +47,6 @@ pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 /// A usage window that is used up, in percent.
 const FULL_PERCENT: f64 = 100.0;
 
-/// How often a task is tried again by itself at a model's limit nothing says the end of, when
-/// no other subscription can take it: once (a provider's reading ends such a limit, and a
-/// session resumed on a newer Claude Code names the reset). Refused the same way again, it asks
-/// a person instead of restarting its session at every reading (SPEC-464 UCL-010).
-const BLIND_LIMIT_RETRIES: u32 = 1;
-
 /// Default PTY size before the first viewer reports its size.
 pub const DEFAULT_SIZE: (u16, u16) = (120, 40);
 /// Transcript poll interval.
@@ -146,13 +140,9 @@ pub struct TaskRuntime {
     /// When Claude Code recorded that limit (ms, 0 = unknown): what was audited at or after it
     /// is this limit's (SPEC-464 UCL-007).
     pub(crate) limit_at_ms: AtomicI64,
-    /// That limit is a model's and nothing says when it ends (no believable reset): a wait for
-    /// it is blind (SPEC-464 UCL-010).
-    pub(crate) limit_blind: AtomicBool,
-    /// Blind waits in a row: limits nothing says the end of that left the task with nowhere to
-    /// go, with no answer from the agent in between. After [`BLIND_LIMIT_RETRIES`] the task is
-    /// not tried again by itself (SPEC-464 UCL-010).
-    pub(crate) blind_limit_waits: AtomicU32,
+    /// The limits nothing says the end of that left the task with nowhere to go: how often in a
+    /// row, and the subscription the pool no longer starts it on by itself (SPEC-464 UCL-010).
+    pub(crate) blind_limits: Mutex<crate::moves::BlindLimits>,
     /// When the current turn started (ms, 0 = no turn in progress). Active agent time comes
     /// from the transcript (SPEC-087 MET-001), not from this.
     turn_started_ms: AtomicI64,
@@ -409,8 +399,7 @@ impl TaskRuntime {
             at_limit: AtomicBool::new(false),
             limit_goal_pause: Mutex::new(crate::goal_retry::LimitGoalPause::None),
             limit_at_ms: AtomicI64::new(0),
-            limit_blind: AtomicBool::new(false),
-            blind_limit_waits: AtomicU32::new(0),
+            blind_limits: Mutex::new(crate::moves::BlindLimits::default()),
             turn_started_ms: AtomicI64::new(0),
             auto_pr_head: Mutex::new(None),
             merged_covers: Mutex::new(None),
@@ -4102,7 +4091,7 @@ impl App {
         self.capacity_changed();
         // At or above the threshold: tasks on this account rotate at their next turn boundary
         // (ROT-003); with hooks the Stop hook decides this itself.
-        if usage.exhausted_for(now, rotation::THRESHOLD, family)
+        if usage.exhausted(now, rotation::THRESHOLD)
             && let Ok(live) = self.deps.store.live_attempts().await
         {
             for attempt in live
@@ -4398,6 +4387,13 @@ impl App {
         observation: Observation,
     ) {
         let runtime = self.runtime(task_id);
+        // The model answered: a later limit nothing says the end of is no repeat of an earlier
+        // one, and has its own retry (SPEC-464 UCL-010).
+        if model_answered(&observation)
+            && let Ok(mut blind) = runtime.blind_limits.lock()
+        {
+            blind.answered();
+        }
         match observation {
             Observation::LimitReached {
                 resets_at,
@@ -4414,11 +4410,9 @@ impl App {
                     window_minutes,
                     resets_at,
                 };
-                runtime.limit_blind.store(
-                    matches!(scope, LimitScope::Model(_))
-                        && limit.believed_reset(self.now()).is_none(),
-                    Ordering::SeqCst,
-                );
+                // A model's limit nothing says the end of: a reset that is not believed is none.
+                let blind = matches!(scope, LimitScope::Model(_))
+                    && limit.believed_reset(self.now()).is_none();
                 if let Some(account) = &attempt.account_id {
                     let family = self.task_family(task_id).await;
                     self.record_limit(account, limit, family).await;
@@ -4429,7 +4423,10 @@ impl App {
                 let app = self.clone();
                 let tid = task_id.clone();
                 let account = attempt.account_id.clone();
-                tokio::spawn(async move { app.rotate(&tid, account, Trigger::LimitReached).await });
+                tokio::spawn(async move {
+                    app.rotate_at(&tid, account, Trigger::LimitReached, blind)
+                        .await;
+                });
             }
             Observation::AccessLost { message, at } => {
                 // The subscription no longer works (cancelled, downgraded, revoked): it needs a
@@ -4439,7 +4436,6 @@ impl App {
                 tracing::warn!(task = %task_id, %message, "subscription access refused");
                 runtime.end_turn(self.now());
                 runtime.limit_cut_the_turn(at);
-                runtime.limit_blind.store(false, Ordering::SeqCst);
                 runtime.limit_resets_at.store(0, Ordering::SeqCst);
                 let mut refused = None;
                 if let Some(account) = &attempt.account_id {
@@ -4525,8 +4521,6 @@ impl App {
                 // A sub-agent's turn end (no time) leaves the session at its limit.
                 if at.is_some() {
                     runtime.at_limit.store(false, Ordering::SeqCst);
-                    // The session got an answer: a later limit is not a retry of an earlier one.
-                    runtime.blind_limit_waits.store(0, Ordering::SeqCst);
                 }
                 // With hooks the Stop hook is the boundary that switches or pauses; the
                 // transcript decides only for a run without them.
@@ -4554,7 +4548,6 @@ impl App {
             }
             Observation::AgentWork { at } => {
                 runtime.goal_retry_armed.store(false, Ordering::SeqCst);
-                runtime.blind_limit_waits.store(0, Ordering::SeqCst);
                 self.context_replied(task_id, &attempt.id);
                 // A usage limit ends the turn, so a `limit` pause is open only between turns (or
                 // after a limit replayed at a restart, which may find a turn open).
@@ -4595,6 +4588,18 @@ impl App {
         current: Option<AccountId>,
         trigger: Trigger,
     ) {
+        self.rotate_at(task_id, current, trigger, false).await;
+    }
+
+    /// [`Self::rotate`]; `blind` says the limit that asks for it is a model's that nothing says
+    /// the end of (SPEC-464 UCL-010).
+    async fn rotate_at(
+        self: &Arc<Self>,
+        task_id: &TaskId,
+        current: Option<AccountId>,
+        trigger: Trigger,
+        blind: bool,
+    ) {
         let Ok(Some(task)) = self.deps.store.task(task_id).await else {
             return;
         };
@@ -4629,17 +4634,21 @@ impl App {
                 }
             }
             Decision::Wait { until } => {
-                // A model's limit nothing says the end of, with nowhere to go: tried again by
-                // itself only so often, then a person is asked (SPEC-464 UCL-010).
-                let runtime = self.runtime(task_id);
-                if limit
-                    && until.is_none()
-                    && runtime.limit_blind.load(Ordering::SeqCst)
-                    && runtime.blind_limit_waits.fetch_add(1, Ordering::SeqCst)
-                        >= BLIND_LIMIT_RETRIES
-                {
-                    self.limit_without_end(&task).await;
-                    return;
+                // A model's limit nothing says the end of, with nowhere to go: the task is
+                // tried again by itself only so often (SPEC-464 UCL-010). After that it waits
+                // for a reset that is known, off this subscription, or asks a person.
+                if blind && limit {
+                    let next = self
+                        .runtime(task_id)
+                        .blind_limits
+                        .lock()
+                        .map_or(crate::moves::BlindWait::Pause, |mut blind| {
+                            blind.nowhere_to_go(current.as_ref(), until, task.status)
+                        });
+                    if next == crate::moves::BlindWait::AskAPerson {
+                        self.limit_without_end(&task).await;
+                        return;
+                    }
                 }
                 let kind = if limit {
                     PauseKind::Limit
@@ -4652,6 +4661,16 @@ impl App {
             }
         }
     }
+}
+
+/// Whether `observation` shows the model answered in the session: a record of its own work or of
+/// its turn's end, not one Claude Code writes itself for a refusal, and not a sub-agent's turn
+/// end (which carries no time).
+fn model_answered(observation: &Observation) -> bool {
+    matches!(
+        observation,
+        Observation::AgentWork { .. } | Observation::TurnComplete { at: Some(_) }
+    )
 }
 
 /// Asks the task's run, if one is attached, to shut down gracefully (interrupt, then TERM, then
@@ -4719,6 +4738,27 @@ fn interrupts_first(reason: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// SPEC-464 UCL-010: only the model's own records say it answered. A turn's work (a tool
+    /// call) and its end both do; a refusal Claude Code writes itself, a prompt and a
+    /// sub-agent's turn end (no time) do not, so a retry refused the same way stays a retry.
+    #[test]
+    fn the_models_own_records_say_it_answered() {
+        use super::{LimitScope, Observation, Timestamp, model_answered};
+        let at = Some(Timestamp(1_000));
+        assert!(model_answered(&Observation::AgentWork { at }));
+        assert!(model_answered(&Observation::AgentWork { at: None }));
+        assert!(model_answered(&Observation::TurnComplete { at }));
+        assert!(!model_answered(&Observation::TurnComplete { at: None }));
+        assert!(!model_answered(&Observation::UserTurn { at, wake: false }));
+        assert!(!model_answered(&Observation::LimitReached {
+            resets_at: None,
+            message: "You're out of usage credits.".into(),
+            window_minutes: None,
+            scope: LimitScope::Model(None),
+            at,
+        }));
+    }
+
     /// Review of SPEC-332 (round 3): a person's switch and a hand-over may come mid-turn, so they
     /// interrupt the turn first (the transcript keeps it); automatic switches, made while the agent
     /// is idle, terminate without an interrupt.

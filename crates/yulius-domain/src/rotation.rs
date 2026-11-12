@@ -305,6 +305,31 @@ pub fn decide(input: &RotationInput, trigger: Trigger) -> (Decision, DecisionRea
     }
 }
 
+/// [`decide`] for a task the pool keeps off `left_out`: the subscription that refused it at a
+/// limit nothing says the end of, again right after its retry (SPEC-464 UCL-010). While a reset
+/// of another subscription is known to wait for, `left_out` counts as limited with no known
+/// reset, whatever a reading said since: the task waits for that reset and is not started on
+/// `left_out` at every reading. With no reset known, nothing would ever take the task on, so
+/// `left_out` is a candidate again; `true` says so, and the caller no longer leaves it out.
+#[must_use]
+pub fn decide_leaving_out(
+    input: &RotationInput,
+    trigger: Trigger,
+    left_out: &AccountId,
+) -> ((Decision, DecisionReason), bool) {
+    let mut without = input.clone();
+    for account in &mut without.accounts {
+        if &account.id == left_out {
+            account.usage.limit_reached = true;
+            account.usage.limit_resets_at = None;
+        }
+    }
+    match decide(&without, trigger.clone()) {
+        (Decision::Wait { until: None }, _) => (decide(input, trigger), true),
+        decided => (decided, false),
+    }
+}
+
 fn find<'a>(input: &'a RotationInput, id: &AccountId) -> Option<&'a AccountView> {
     input.accounts.iter().find(|a| &a.id == id)
 }
@@ -669,6 +694,66 @@ mod tests {
         assert_eq!(ModelFamily::of(Some("sonnet")), ModelFamily::Sonnet);
         assert_eq!(ModelFamily::of(Some("haiku")), ModelFamily::Any);
         assert_eq!(ModelFamily::of(None), ModelFamily::Any);
+        Ok(())
+    }
+
+    /// SPEC-464 UCL-010: a subscription that refused a task again at a limit nothing says the end
+    /// of is left out for that task while another subscription's reset is known to wait for,
+    /// whatever its own reading says since. With no reset known it is a candidate again.
+    #[test]
+    fn a_subscription_left_out_is_not_chosen_while_a_reset_is_known() -> Result<(), IdError> {
+        let refusing = id("refusing")?;
+        let mut later = usage(10.0, 100.0, Some(40));
+        later.limit_reached = true;
+        later.limit_resets_at = Some(NOW.plus_millis(40 * HOUR));
+        // Its reading shows room again; the other one is out until its reset in 40 hours.
+        let known = input(
+            None,
+            vec![
+                account("refusing", usage(0.0, 10.0, Some(100)))?,
+                account("later", later)?,
+            ],
+        )?;
+        assert_eq!(
+            switched_to(&decide(&known, Trigger::Start).0),
+            Some("refusing")
+        );
+        let ((decision, _), again) = decide_leaving_out(&known, Trigger::Start, &refusing);
+        assert_eq!(
+            decision,
+            Decision::Wait {
+                until: Some(NOW.plus_millis(40 * HOUR))
+            }
+        );
+        assert!(!again, "it stays left out while that reset is waited for");
+        // A paused task that still has its process there is not released in place either.
+        let mut held = known.clone();
+        held.current = Some(refusing.clone());
+        let ((decision, _), _) = decide_leaving_out(&held, Trigger::Proactive, &refusing);
+        assert!(
+            matches!(decision, Decision::Wait { until: Some(_) }),
+            "{decision:?}"
+        );
+        // A subscription with room takes the task, left out or not.
+        let mut room = known.clone();
+        room.accounts
+            .push(account("third", usage(20.0, 20.0, Some(100)))?);
+        let ((decision, _), again) = decide_leaving_out(&room, Trigger::Start, &refusing);
+        assert_eq!(switched_to(&decision), Some("third"));
+        assert!(!again);
+        // Nothing known to wait for: it is tried again rather than never.
+        let mut unknown = usage(10.0, 100.0, None);
+        unknown.limit_reached = true;
+        let blind = input(
+            None,
+            vec![
+                account("refusing", usage(0.0, 10.0, Some(100)))?,
+                account("later", unknown)?,
+            ],
+        )?;
+        let ((decision, _), again) = decide_leaving_out(&blind, Trigger::Start, &refusing);
+        assert_eq!(switched_to(&decision), Some("refusing"));
+        assert!(again, "the caller no longer leaves it out");
         Ok(())
     }
 

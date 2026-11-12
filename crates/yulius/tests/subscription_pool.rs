@@ -1137,3 +1137,36 @@ async fn a_sessions_reading_does_not_write_over_a_provider_reading() -> TestResu
     assert_eq!(usage["primary"]["used_percent"], 55.0, "{usage}");
     Ok(())
 }
+
+/// SPEC-464 UCL-004: a model's window whose reset passed says nothing about the window that
+/// began. No reading replaces it (a session's reading carries the 5-hour and weekly windows
+/// only), so the next reading stored for the subscription drops it and its card no longer shows
+/// a limit that is over. One whose reset is ahead stays.
+#[tokio::test]
+async fn a_models_window_past_its_reset_is_dropped_at_the_next_stored_reading() -> TestResult {
+    let h = harness()?;
+    seed(&h).await?;
+    let t0 = now(&h);
+    let window = |resets: Timestamp| json!({"used_percent": 100.0, "window_minutes": 10080, "resets_at": resets.0});
+    let stored = json!({
+        "weekly_fable": window(t0.plus_millis(-HOUR)),
+        "weekly_opus": window(t0.plus_millis(40 * HOUR)),
+    });
+    let account = add_account(&h, "acc-reset-passed", Some(stored.to_string())).await?;
+    running_task(&h, TaskMode::Prompt, &account).await?;
+    let reading = rate_limits(
+        42.5,
+        t0.plus_millis(2 * HOUR),
+        18.0,
+        t0.plus_millis(90 * HOUR),
+    );
+    let (code, _) = status_line(&h.internal, reading).await?;
+    assert_eq!(code, 200);
+    let record = h.store.account(&account).await?.ok_or("account")?;
+    let usage: serde_json::Value =
+        serde_json::from_str(record.usage_json.as_deref().ok_or("usage")?)?;
+    assert_eq!(usage["primary"]["used_percent"], 42.5, "{usage}");
+    assert!(usage["weekly_fable"].is_null(), "its reset passed: {usage}");
+    assert_eq!(usage["weekly_opus"]["used_percent"], 100.0, "{usage}");
+    Ok(())
+}
