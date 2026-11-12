@@ -1593,6 +1593,7 @@ pub async fn exhausted_subscription(h: &Harness) -> Result<(), Box<dyn std::erro
             last_error: None,
             email: None,
             email_checked_at: None,
+            email_typed: false,
             created_at: Timestamp(1),
             updated_at: Timestamp(1),
         })
