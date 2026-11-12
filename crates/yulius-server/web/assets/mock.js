@@ -12,7 +12,7 @@
 // role=member|admin|superadmin (default superadmin), contained=0 (not isolated), github=0,
 // recovery=1 (setup issues a recovery code), update=1|fail (an update is on offer | its install rolls back), helper=0 (no update helper),
 // jev=config (a Jev key file is configured), vidoc=config (a Vidoc key file), vidoc_repo=off|bad (studio's .config/vidoc.toml), vidoc_patch_fail=1 (a sandbox's Vidoc switch is refused), protect_patch_fail=1 (a sandbox's production protection switch is refused), fail=<path> (GETs of that path answer 500),
-// failpost=<path> (POSTs of that path answer 500), holdpost=<path> (POSTs and PATCHes of that path wait for
+// failpost=<path> (POSTs of that path answer 500), holdpost=<path> (POSTs, PATCHes and PUTs of that path wait for
 // `__yuliusMock.release()`, as hold= does for GETs; `heldWaiting` counts those waiting), as=<login> (signed in as another member, a
 // teammate in a second window: mock pages of one origin relay presence to each other, SPEC-127).
 // guestlink=1|dead (signed out, holding a live or an ended guest link to the playground `lab`, SPEC-410;
@@ -207,13 +207,14 @@ function seed(params) {
     // `failedReads` counts the GET requests failed on purpose.
     failPath: params.get('fail') || null,
     failedReads: 0,
-    holdPath: params.get('hold') || null,
-    // holdpost=<path> keeps POST, PATCH and PUT requests of that path waiting until `release()`.
-    holdPostPath: params.get('holdpost') || null,
-    // failpost=<path> does the same to POST requests, to show how an action says it failed;
-    // `failedPosts` counts them.
+    // failpost=<path> answers 500 to POST requests of that path, to show how an action says it
+    // failed; `failedPosts` counts them.
     failPostPath: params.get('failpost') || null,
     failedPosts: 0,
+    // hold=<path> keeps GET requests of that path waiting until `release()`, and holdpost=<path>
+    // its POST, PATCH and PUT requests.
+    holdPath: params.get('hold') || null,
+    holdPostPath: params.get('holdpost') || null,
 
     nextId: 100,
     // Account sign-ins by login id, and the ids a person cancelled (SPEC-243).
@@ -378,6 +379,9 @@ function seed(params) {
   // `hold=<path>`: its GET requests wait until `__yuliusMock.release()`, which may come first;
   // `hold=frames` keeps the sandbox Chrome's picture back instead.
   if (db.holdPath || db.holdPostPath) db.held = new Promise((resolve) => { db.release = () => { db.released = true; resolve(); }; });
+  // `claude_hold_read=1`: the Claude Code card's reads are answered late, the page's first included
+  // (see the route).
+  if (params.get('claude_hold_read') === '1') db.claude.holdRead = new Promise((resolve) => { db.claude.releaseRead = resolve; });
   // `tasks=many`: 30 more queued tasks in studio, a long "Run after" menu (SPEC-038).
   if (params.get('tasks') === 'many') {
     for (let number = 15; number < 45; number += 1) db.tasks.push(t('sb_studio', number, `Queued idea ${number}`, 'claude', 'queued', null, { noSteps: true }));
@@ -4548,7 +4552,22 @@ function claudeCheck(db) {
   }, 2000);
 }
 
-route('GET', '/api/admin/claude-code', ({ db }) => { superadminOnly(db); return claudeView(db); });
+route('GET', '/api/admin/claude-code', async ({ db }) => {
+  superadminOnly(db);
+  const view = claudeView(db);
+  // A test can keep a read's answer back (`claude.holdRead = promise`, or `claude_hold_read=1`
+  // with `claude.releaseRead()`): the view is read when it is asked and answered when the promise
+  // resolves, as an answer that is slow on the wire; when the promise is rejected the read fails
+  // (500). `readsHeld` counts the answers kept back now.
+  const hold = db.claude.holdRead;
+  if (hold) {
+    db.claude.readsHeld = (db.claude.readsHeld || 0) + 1;
+    let lost = false;
+    try { await hold; } catch { lost = true; } finally { db.claude.readsHeld -= 1; }
+    if (lost) fail(500, 'internal', 'the mock failed this read');
+  }
+  return view;
+});
 route('POST', '/api/admin/claude-code/check', ({ db }) => {
   superadminOnly(db);
   if (db.claude.mode === 'unmanaged') fail(409, 'conflict', claudeView(db).unmanaged);

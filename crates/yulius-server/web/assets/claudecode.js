@@ -103,6 +103,12 @@ export function claudeCodeCard(ctx) {
   let saving = false;
   /** What is drawn: a poll that reads the same leaves the card (its focus, its alert) alone. */
   let drawn = '';
+  /**
+   * Counts what this card asks the server to change and each outcome it learns (a check, a
+   * channel change). A read asked before the latest of them may say what was true before it, so
+   * its answer is dropped: the outcome's own draw, or the read after a refusal, is the newer word.
+   */
+  let changes = 0;
 
   /** The channel choice, and where the channel in effect is set. */
   function channel(view) {
@@ -143,13 +149,14 @@ export function claudeCodeCard(ctx) {
   }
 
   async function refresh() {
+    const asked = changes;
     try {
       const view = await ctx.api.get(API);
-      if (gone) return;
+      if (gone || asked !== changes) return;
       failed = false;
       render(view);
     } catch (error) {
-      if (gone) return;
+      if (gone || asked !== changes) return;
       drawn = '';
       setChildren(body, h('p', { class: 'muted small' }, 'Couldn’t read which Claude Code sandboxes run.'));
       // One toast per outage.
@@ -162,12 +169,17 @@ export function claudeCodeCard(ctx) {
 
   async function checkNow() {
     checkButton.disabled = true;
+    // Switched off by hand, so the card is no longer as it was drawn: what comes next (the
+    // answer, or the read after a refusal) draws it again, and the button with it.
+    drawn = '';
+    changes += 1;
     try {
-      render(await ctx.api.post(`${API}/check`, {}));
+      const view = await ctx.api.post(`${API}/check`, {});
+      changes += 1;
+      render(view);
     } catch (error) {
+      changes += 1;
       errorToast(error, 'Couldn’t check for a Claude Code release');
-      // Drawn again from what the server says now, the button with it.
-      drawn = '';
       refresh();
     }
   }
@@ -182,14 +194,17 @@ export function claudeCodeCard(ctx) {
     // The controls were switched off by hand, so the card is no longer as it was drawn: whatever
     // comes next (the answer, a refusal, a poll) draws it again, and the controls with it.
     drawn = '';
+    changes += 1;
     try {
       const view = await ctx.api.put(`${API}/channel`, { channel: id });
       saving = false;
+      changes += 1;
       toast(view.channel === 'off' ? 'Claude Code updates are off: sandboxes run the host’s install from their next start.'
         : `Claude Code follows ${channelName(view.channel)} now. Checking for a release…`, { kind: 'ok' });
       render(view);
     } catch (error) {
       saving = false;
+      changes += 1;
       errorToast(error, 'Couldn’t change the channel');
       // The select shows the refused choice: the card is drawn again from what the server says.
       refresh();
