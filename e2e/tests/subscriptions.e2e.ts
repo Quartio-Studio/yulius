@@ -261,6 +261,11 @@ async function openSubscriptions(app: { open: (path: string) => Promise<void> },
   await firstShown(browser.locator('main .account-card').first());
   await expect.poll(async () => (await cardSays(browser, 'main .account-card', 'Claude spare')).age).toBe('Usage read just now');
 }
+/**
+ * How many toasts are on the page at this moment. A check that none is there looks once: one
+ * that retries for as long as a toast lives would pass over a toast that came and went.
+ */
+const toastsNow = (browser: Browser, css = '.toast') => browser.evaluate((css) => document.querySelectorAll(css).length, css);
 const refreshOf = (screen: Screen, name: string) => screen.getByRole('button', `Refresh usage of ${name}`);
 /** The Refresh button on the card that shows `who`, whatever it reads at the moment. */
 const refreshIn = (browser: Browser, who: string) => browser.locator(`main .card:has-text("${who}") .account-refresh`);
@@ -362,8 +367,8 @@ test('a refresh for which Claude gives no usage reading says so on the card (SPE
   const note = browser.locator('main .account-card:has-text("mkarp@example.com") .account-note');
   await expect(note).toHaveText('Claude gave no new usage reading: it shares this subscription’s usage only with its running tasks.');
   await expect(browser.locator('.toast-msg:has-text("Claude gave no new usage reading for Claude #1.")')).toBeVisible();
-  await expect(browser.locator('.toast-error')).toHaveCount(0);
-  await expect(browser.locator('.toast-ok')).toHaveCount(0);
+  expect(await toastsNow(browser, '.toast-error')).toBe(0);
+  expect(await toastsNow(browser, '.toast-ok')).toBe(0);
   expect((await cardSays(browser, 'main .account-card', 'mkarp@example.com')).age).toBe('Usage read 2 min ago');
 });
 
@@ -404,7 +409,7 @@ test('a refresh of a subscription that was never read and still gets no reading 
   await expect(note).toHaveCount(0);
   await refreshOf(screen, 'Claude #4').click();
   await expect(note).toHaveText('Claude gave no new usage reading: it shares this subscription’s usage only with its running tasks.');
-  await expect(browser.locator('.toast-ok')).toHaveCount(0);
+  expect(await toastsNow(browser, '.toast-ok')).toBe(0);
   expect((await cardSays(browser, 'main .account-card', 'pawel@example.com')).age).toBe('Usage not read yet');
 });
 
@@ -520,7 +525,7 @@ test('the page reads an old card by itself once per visit and says nothing when 
     return cards.length > 0 && cards.every((card) => !card.old);
   }), { message: 'the list was never drawn again' }).toBe(true);
   expect(await usageRequests(browser)).toEqual({ acc_x3: 1 });
-  await expect(browser.locator('.toast-error')).toHaveCount(0);
+  expect(await toastsNow(browser, '.toast-error')).toBe(0);
   await expect(browser.locator('main .account-card:has-text("Claude spare") .account-note')).toHaveCount(0);
   expect((await cardSays(browser, 'main .account-card', 'Claude spare')).age).toBe('Usage read 3 d ago · may be out of date');
   // Asked for by a person, the same failure is said.
@@ -570,7 +575,7 @@ test('leaving the Subscriptions page drops the readings that wait and says nothi
   // The answers have come and every step that follows them has run.
   await expect.poll(() => browser.evaluate(() => (window as unknown as Usage).__yuliusMock.usageInFlight)).toBe(0);
   await browser.evaluate(() => new Promise((resolve) => { setTimeout(resolve, 0); }));
-  await expect(browser.locator('.toast')).toHaveCount(0);
+  expect(await toastsNow(browser, '.toast')).toBe(0);
   expect(await usageRequests(browser)).toEqual({ acc_c1: 1, acc_c2: 1, acc_x1: 1 });
 });
 
@@ -582,7 +587,7 @@ test('Refresh all is off until the subscriptions are shown, and when they could 
   await expect(all).toHaveAttribute('aria-disabled', 'true');
   expect(await all.getAttribute('title')).toBeNull();
   await press(browser, '.page-actions .refresh-all');
-  await expect(browser.locator('.toast')).toHaveCount(0);
+  expect(await toastsNow(browser, '.toast')).toBe(0);
   await browser.evaluate(() => (window as unknown as Usage).__yuliusMock.release?.());
   await firstShown(browser.locator('main .account-card').first());
   await expect.poll(() => all.getAttribute('aria-disabled')).toBeNull();
@@ -594,7 +599,7 @@ test('Refresh all is off until the subscriptions are shown, and when they could 
   expect(await all.getAttribute('title')).toBeNull();
   await press(browser, '.page-actions .refresh-all');
   expect(await usageRequests(browser)).toEqual({});
-  await expect(browser.locator('.toast')).toHaveCount(0);
+  expect(await toastsNow(browser, '.toast')).toBe(0);
 });
 
 test('only the Subscriptions page offers Refresh: the Dashboard and the Status panel show the same card without it (SPEC-473)', async ({ app, browser }) => {

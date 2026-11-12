@@ -33,6 +33,8 @@ const DEFAULT: &str = "claude-fable-5-2";
 /// The stored sign-in: a made-up word, shaped like no provider's credential.
 const CREDENTIAL: &str = "stored-sign-in-of-the-test";
 const DAY_MS: i64 = 24 * 3_600_000;
+/// What a usage request that fails for now says.
+const UNREAD: &str = "Usage could not be read just now; it updates again in a few minutes.";
 
 /// What the stand-in was asked, in order: `usage` for the usage endpoint, else the model of a
 /// messages request.
@@ -841,6 +843,8 @@ struct AskedMeanwhile {
     writes: Mutex<Option<(yulius_store::SqliteStore, Meanwhile)>>,
     answer: Mutex<ModelAnswer>,
     reading: Mutex<Option<AccountUsage>>,
+    /// The usage request fails for now, after the write.
+    failing: Mutex<bool>,
 }
 
 impl AskedMeanwhile {
@@ -877,6 +881,10 @@ impl AskedMeanwhile {
 #[async_trait]
 impl UsageProbe for AskedMeanwhile {
     async fn fetch(&self, _: Provider, _: &Secret) -> Result<AccountUsage, UsageFailure> {
+        if self.failing.lock().is_ok_and(|failing| *failing) {
+            self.write().await;
+            return Err(UsageFailure::new(UNREAD));
+        }
         let Some(reading) = self.reading.lock().ok().and_then(|slot| *slot) else {
             return Err(UsageFailure::not_shared());
         };
@@ -890,7 +898,8 @@ impl UsageProbe for AskedMeanwhile {
         _: &Secret,
         _: &str,
     ) -> Result<ModelAnswer, UsageFailure> {
-        if self.reading.lock().is_ok_and(|slot| slot.is_none()) {
+        let reads = self.reading.lock().is_ok_and(|slot| slot.is_some());
+        if !reads && !self.failing.lock().is_ok_and(|failing| *failing) {
             self.write().await;
         }
         Ok(self.answer.lock().map(|answer| *answer).unwrap_or_default())
@@ -898,8 +907,8 @@ impl UsageProbe for AskedMeanwhile {
 }
 
 /// A usage reading is the sign-in's it was asked with too: one that comes back after the
-/// subscription was signed in again is not stored for the new sign-in, and the answer says
-/// that nothing was read.
+/// subscription was signed in again is not stored for the new sign-in, and the refresh says
+/// what happened, in one sentence that is no note of the subscription's.
 #[tokio::test]
 async fn a_reading_for_the_previous_sign_in_is_not_stored_for_a_new_one() -> TestResult {
     let (h, probe, admin) = raced().await?;
@@ -918,10 +927,27 @@ async fn a_reading_for_the_previous_sign_in_is_not_stored_for_a_new_one() -> Tes
         *read = Some(reading);
     }
     let refreshed = refresh(&h, &admin, "a-raced").await?;
-    assert_eq!(refreshed.status, StatusCode::OK, "{:?}", refreshed.body);
-    assert_eq!(refreshed.body["usage_read"], false, "{:?}", refreshed.body);
+    assert_eq!(
+        refreshed.status,
+        StatusCode::BAD_GATEWAY,
+        "{:?}",
+        refreshed.body
+    );
+    assert!(
+        refreshed.body.to_string().contains(
+            "This subscription was signed in again while its usage was read; refresh it once more."
+        ),
+        "{:?}",
+        refreshed.body
+    );
     assert_eq!(stored(&h, "a-raced").await?, AccountUsage::default());
     assert!(h.store.usage_samples(Timestamp(0)).await?.is_empty());
+    let record = h
+        .store
+        .account(&AccountId::parse("a-raced")?)
+        .await?
+        .ok_or("the account")?;
+    assert_eq!(record.last_error, None);
 
     // With the sign-in unchanged the same reading is stored.
     if let Ok(mut slot) = probe.writes.lock() {
@@ -964,6 +990,19 @@ async fn a_limit_recorded_while_claude_is_asked_is_kept() -> TestResult {
     if let Ok(mut slot) = probe.writes.lock() {
         *slot = Some((h.store.clone(), Meanwhile::Limit(Box::new(newer))));
     }
+    // The answer carries both of the subscription's windows: applied, it would be a reading.
+    let read = UsageWindow {
+        used_percent: Some(40.0),
+        window_minutes: Some(300),
+        resets_at: None,
+    };
+    if let Ok(mut answer) = probe.answer.lock() {
+        *answer = ModelAnswer {
+            five_hour: Some(read),
+            seven_day: Some(read),
+            ..ModelAnswer::default()
+        };
+    }
     account(
         &h,
         "a-raced",
@@ -981,6 +1020,37 @@ async fn a_limit_recorded_while_claude_is_asked_is_kept() -> TestResult {
         "the limit recorded during the question stays"
     );
     assert_eq!(refreshed.body["status"], "limited");
+    // The answer was not applied, so nothing of it is stored and the usage was not read.
+    assert_eq!(stored(&h, "a-raced").await?.primary, None);
+    assert_eq!(refreshed.body["usage_read"], false, "{:?}", refreshed.body);
+    Ok(())
+}
+
+/// A usage note is the sign-in's it was asked with, like the reading: a request that fails
+/// after the subscription was signed in again leaves no note on the new sign-in.
+#[tokio::test]
+async fn a_failed_reading_for_the_previous_sign_in_leaves_no_note() -> TestResult {
+    let (h, probe, admin) = raced().await?;
+    account(&h, "a-raced", &AccountUsage::default()).await?;
+    if let (Ok(mut slot), Ok(mut failing)) = (probe.writes.lock(), probe.failing.lock()) {
+        let other = h.app.deps.crypto.seal(b"another-sign-in")?;
+        *slot = Some((h.store.clone(), Meanwhile::SignIn(other)));
+        *failing = true;
+    }
+    let note = || async {
+        let record = h.store.account(&AccountId::parse("a-raced")?).await?;
+        Ok::<_, Box<dyn std::error::Error>>(record.ok_or("the account")?.last_error)
+    };
+    let refreshed = refresh(&h, &admin, "a-raced").await?;
+    assert_eq!(refreshed.status, StatusCode::BAD_GATEWAY);
+    assert_eq!(note().await?, None);
+    // With the sign-in unchanged the same failure is the subscription's note.
+    if let Ok(mut slot) = probe.writes.lock() {
+        *slot = None;
+    }
+    let refreshed = refresh(&h, &admin, "a-raced").await?;
+    assert_eq!(refreshed.status, StatusCode::BAD_GATEWAY);
+    assert_eq!(note().await?, Some(format!("usage: {UNREAD}")));
     Ok(())
 }
 
@@ -998,6 +1068,12 @@ async fn an_answer_for_the_previous_sign_in_is_not_recorded_for_a_new_one() -> T
                 scope: LimitScope::Account,
                 window_minutes: Some(300),
                 resets_at: Some(Timestamp(in_an_hour)),
+            }),
+            // One window beside the refusal: stored, and no reading of the usage.
+            seven_day: Some(UsageWindow {
+                used_percent: Some(40.0),
+                window_minutes: Some(WEEKLY_WINDOW_MINUTES),
+                resets_at: None,
             }),
             ..ModelAnswer::default()
         };
@@ -1021,9 +1097,11 @@ async fn an_answer_for_the_previous_sign_in_is_not_recorded_for_a_new_one() -> T
     }
     let refreshed = refresh(&h, &admin, "a-raced").await?;
     assert_eq!(refreshed.status, StatusCode::OK, "{:?}", refreshed.body);
-    // An answer that carried no window is no reading of the usage.
+    // An answer that carried one window is no reading of the usage.
     assert_eq!(refreshed.body["usage_read"], false, "{:?}", refreshed.body);
     let after = stored(&h, "a-raced").await?;
+    assert_eq!(after.secondary.and_then(|w| w.used_percent), Some(40.0));
+    assert_eq!(after.observed_at, None);
     assert_eq!(after.limit_resets_at, Some(Timestamp(in_an_hour)));
     assert_eq!(after.primary.and_then(|w| w.used_percent), Some(100.0));
     Ok(())
