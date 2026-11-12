@@ -1069,6 +1069,18 @@ mod tests {
         assert_eq!(target, None);
         assert_eq!(service, "yulius-b.service");
         assert_eq!(state_dir, std::path::Path::new("/srv/yulius-migrate"));
+        // An id is the request's own form: nothing else reaches the status through it.
+        for bad in ["short", "with space-0123", "0123abcd/../x", ""] {
+            let refused = Cli::try_parse_from([
+                "yulius",
+                "instance",
+                "migrate",
+                &format!("--request-id={bad}"),
+                "--",
+                "root@new.example",
+            ]);
+            assert!(refused.is_err(), "{bad:?} was taken as a request's id");
+        }
         // The helper itself is a command of this binary, with its unit's defaults.
         let Command::MigrateHelper(helper) = Cli::try_parse_from([
             "yulius",
