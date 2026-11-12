@@ -311,6 +311,8 @@ pub trait World {
 struct Old {
     /// The server's unit is active.
     active: bool,
+    /// The server's unit is frozen.
+    frozen: bool,
     /// The server's unit has stopped (`inactive` or `failed`): it is neither active nor on its
     /// way up or down (SPEC-467 LFT-002).
     stopped: bool,
@@ -1517,6 +1519,7 @@ impl<'a> Move<'a> {
         let frozen = freezer == "frozen";
         (code == 0).then_some(Old {
             active: active == "active",
+            frozen,
             stopped: matches!(active.as_str(), "inactive" | "failed"),
             sessions_run: sessions == Some(false),
             any_frozen: frozen || sessions == Some(true),
@@ -1873,14 +1876,24 @@ impl<'a> Move<'a> {
         let hold = match state {
             Some(old) if old.all_frozen => Hold::Frozen,
             Some(old) if old.down() => Hold::Down,
-            // A unit of it runs unfrozen or is on its way up or down, or systemd does not say.
-            _ => {
-                let found = if state.is_some() {
-                    format!("{unit} is not frozen as a whole")
-                } else {
-                    format!("systemd does not say what {unit} does")
-                };
-                return Err(self.must_hold(&found, later));
+            // A unit of it runs unfrozen or is on its way up or down. The run that started the
+            // new instance tried the freeze and named the way out with its failure.
+            Some(old) => {
+                let found = format!("{unit} is not frozen as a whole");
+                let unfrozen = later.then(|| self.unfrozen_units(old));
+                return Err(self.must_hold(&found, later, unfrozen));
+            }
+            // Nothing is known to be wrong, and nothing is known: no command is named.
+            None if later => {
+                return Err(format!(
+                    "systemd does not say what {unit} does, so the old instance is not known to \
+                     be frozen and disabled. The move is not finished: run the command again \
+                     when it answers"
+                ));
+            }
+            None => {
+                let found = format!("systemd does not say what {unit} does");
+                return Err(self.must_hold(&found, false, None));
             }
         };
         // A unit that does not run may have left processes that do, beside frozen units too
@@ -1890,32 +1903,61 @@ impl<'a> Move<'a> {
             (Ok(()), _) => Ok(hold),
             (Err(said), Hold::Frozen) => {
                 let found = format!("{unit} is frozen, but `systemctl is-enabled {unit}` {said}");
-                Err(self.must_hold(&found, false))
+                Err(self.must_hold(&found, later, None))
             }
             (Err(said), Hold::Down) => Err(self.not_disabled(&said)),
         }
     }
 
     /// The line of an old instance that is not frozen as a whole, or frozen and not known to
-    /// be disabled: what was `found`, and the two commands. `instead`: with the commands that
-    /// end an old instance systemd does not freeze (only a unit that runs is frozen: not one
-    /// on its way up or down or with a process stuck in the kernel).
-    fn must_hold(&mut self, found: &str, instead: bool) -> String {
+    /// be disabled: what was `found`, and the two commands. `unfrozen`: the units to name in
+    /// the commands that end an old instance systemd does not freeze (only a unit that runs is
+    /// frozen: not one on its way up or down or with a process stuck in the kernel). A `later`
+    /// run did not ask the new instance, which a person may have stopped to go back by hand:
+    /// it says that the new instance has taken over, not that it runs, and names the abort.
+    fn must_hold(&mut self, found: &str, later: bool, unfrozen: Option<String>) -> String {
         let unit = self.opts.service.clone();
         let units = self.old_units();
-        let instead = if instead {
+        let instead = unfrozen.map_or_else(String::new, |unfrozen| {
             format!(
                 " If a freeze keeps failing (systemd freezes only a unit that runs), stop it for \
-                 good instead: `systemctl stop {units}; {KILL_ALL} {units}`."
+                 good instead: `systemctl stop {unfrozen}; {KILL_ALL} {unfrozen}; systemctl \
+                 disable {unit}`."
+            )
+        });
+        let (new_instance, or_back) = if later {
+            (
+                "has taken over",
+                ". To go back to this host instead: `yulius instance migrate --abort`, once the \
+                 new instance is stopped",
             )
         } else {
-            String::new()
+            ("runs", "")
         };
         format!(
-            "{found}. It must be frozen and disabled now that the new instance runs: `systemctl \
-             freeze {units}; systemctl disable {unit}`, then run the command again.{instead} \
-             The move is not finished until then"
+            "{found}. It must be frozen and disabled now that the new instance {new_instance}: \
+             `systemctl freeze {units}; systemctl disable {unit}`, then run the command \
+             again.{instead} The move is not finished until then{or_back}"
         )
+    }
+
+    /// The units of the old instance that are not frozen, for the commands that end it for
+    /// good. A frozen unit is held as it is and is never named there: systemd 259 refuses to
+    /// stop one, and one whose processes are killed stays frozen on its way to a restart,
+    /// where no thaw, no start and no abort reaches it until its host restarts (measured on
+    /// the server's own unit, SPEC-481).
+    fn unfrozen_units(&self, old: Old) -> String {
+        let unit = &self.opts.service;
+        let mut units = Vec::new();
+        if !old.frozen {
+            units.push(unit.clone());
+        }
+        if old.sessions_run
+            && let Some(sessions) = yulius_sandbox::units::sessions_unit(unit)
+        {
+            units.push(sessions);
+        }
+        units.join(" ")
     }
 
     /// The line of an old server's unit that has stopped with nothing left and is not known
@@ -1930,13 +1972,15 @@ impl<'a> Move<'a> {
     }
 
     /// A run that finds the move recorded as moved looks at the old instance again and says
-    /// what it found (SPEC-481 HLD-002): held, an `ok` line; not held, the failed line under
-    /// the cutover's heading, where `--status` and the page read it. Nothing of the old
+    /// what it found under the cutover's heading (SPEC-481 HLD-002): held, an `ok` line; not
+    /// held, the failed line, which `--status` and the page read. Nothing of the old
     /// instance is changed: the new one cannot be asked once the key is gone, and a person may
     /// have gone back by hand.
     fn look_again(&mut self) -> Result<(), Stop> {
         let unit = self.opts.service.clone();
-        match self.old_hold(true) {
+        let hold = self.old_hold(true);
+        self.phase("Cutover");
+        match hold {
             Ok(Hold::Frozen) => self.ok(
                 "old instance",
                 format!("{unit} is frozen and disabled: it does not run beside the new one"),
@@ -1947,10 +1991,7 @@ impl<'a> Move<'a> {
                     "{unit} does not run here, nothing of it is left running, and it is disabled"
                 ),
             ),
-            Err(why) => {
-                self.phase("Cutover");
-                return Err(self.fail_not_held(why));
-            }
+            Err(why) => return Err(self.fail_not_held(why)),
         }
         Ok(())
     }
@@ -2199,11 +2240,18 @@ impl<'a> Move<'a> {
                 .map(|(name, _)| format!("{name} {}", if ran(name) { "runs" } else { "may run" }))
                 .collect();
             let why: Vec<&str> = did.failed.iter().map(|(_, why)| why.as_str()).collect();
-            let units = self.old_units();
             // The freeze `moved` asks for may fail again: systemd freezes only a unit that
             // runs, not one on its way up or down or with a process stuck in the kernel.
             // Stopping it (so it is not restarted) and killing what is left, with SIGKILL as
-            // the new host's own stop does, ends the old instance in every state.
+            // the new host's own stop does, ends such a unit in every state. Only the units
+            // that could not be frozen are named: a frozen one is held as it is, and a kill
+            // would leave it frozen and out of the abort's reach (`unfrozen_units`).
+            let units = did
+                .failed
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
             self.fail(
                 "old instance",
                 format!(

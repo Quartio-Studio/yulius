@@ -1513,6 +1513,7 @@ fn the_cutover_says_why_the_instance_is_not_frozen_after_its_freeze() {
     use crate::instance::migrate::{Old, not_frozen_after_freeze};
     let old = |active, stopped| Old {
         active,
+        frozen: active,
         stopped,
         sessions_run: false,
         any_frozen: active,
@@ -3149,8 +3150,11 @@ fn a_move_whose_old_unit_was_not_held_is_not_finished_until_it_is() -> TestResul
         "{first}"
     );
     assert!(first.contains(NOT_FINISHED), "{first}");
-    // That run had just asked the new instance: it names no way back.
-    assert!(!first.contains("--abort"), "{first}");
+    // That run had just asked the new instance: its line names no way back.
+    assert!(
+        !first.contains("To go back to this host instead"),
+        "{first}"
+    );
     // A person ran the named command, and the disable worked.
     s.world.systemd.lock().map_err(|e| e.to_string())?.disabled = true;
     looks_and_finishes(&mut s, HELD_FROZEN)?;
