@@ -30,21 +30,32 @@ use yulius_domain::harness::{Harness, Provider};
 use yulius_domain::ids::{AccountId, SandboxId, TaskId, UserId};
 use yulius_domain::task::TaskStatus;
 use yulius_domain::time::Timestamp;
-use yulius_domain::usage::{AccountUsage, UsageWindow};
+use yulius_domain::usage::{AccountUsage, ModelAnswer, UsageWindow};
 use yulius_ptyhost::test_support::locate_fake_agent;
 use yulius_store::SqliteStore;
 use yulius_store::crypto::MasterKeyCrypto;
 
 pub(crate) const HOUR: i64 = 3_600_000;
 
-/// A usage probe whose answers the test sets per credential (account id = credential here).
+/// A usage probe whose answers the test sets per credential (account id = credential here):
+/// the usage it reads, and what Claude answers when asked about a model on it (SPEC-473).
 #[derive(Default)]
-pub(crate) struct ScriptedUsage(Mutex<HashMap<String, AccountUsage>>);
+pub(crate) struct ScriptedUsage(
+    Mutex<HashMap<String, AccountUsage>>,
+    Mutex<HashMap<String, ModelAnswer>>,
+);
 
 impl ScriptedUsage {
     pub(crate) fn set(&self, account: &str, usage: AccountUsage) {
         if let Ok(mut map) = self.0.lock() {
             map.insert(account.to_owned(), usage);
+        }
+    }
+
+    /// What Claude answers a question about a model on `account`.
+    pub(crate) fn answer(&self, account: &str, answer: ModelAnswer) {
+        if let Ok(mut map) = self.1.lock() {
+            map.insert(account.to_owned(), answer);
         }
     }
 }
@@ -61,6 +72,19 @@ impl UsageProbe for ScriptedUsage {
             .ok()
             .and_then(|m| m.get(credential.expose()).copied())
             .ok_or_else(|| UsageFailure::new("no scripted usage"))
+    }
+
+    async fn model_answer(
+        &self,
+        _provider: Provider,
+        credential: &Secret,
+        _model: &str,
+    ) -> Result<ModelAnswer, UsageFailure> {
+        self.1
+            .lock()
+            .ok()
+            .and_then(|m| m.get(credential.expose()).copied())
+            .ok_or_else(|| UsageFailure::new("no scripted answer"))
     }
 }
 
@@ -309,6 +333,17 @@ pub(crate) async fn add_account(
     Ok(account)
 }
 
+/// A provider's reading of `account` now, as the background round makes it: what a reading
+/// does to the stored usage, with no question about the limits stored for it.
+pub(crate) async fn reading(app: &App, account: &str) -> TestResult {
+    app.read_account_usage(&AccountId::parse(account)?)
+        .await
+        .map_err(|failure| failure.message)?;
+    Ok(())
+}
+
+/// The Subscriptions page's refresh of `account` by an administrator: a reading, then Claude is
+/// asked about each limit stored for it (SPEC-473).
 pub(crate) async fn refresh(app: &App, user: &UserId, account: &str) -> TestResult {
     let ctx = AuthContext {
         user: app.deps.store.user(user).await?.ok_or("user")?,

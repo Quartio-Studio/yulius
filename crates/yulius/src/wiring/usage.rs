@@ -218,7 +218,9 @@ pub fn parse_rate_limit_headers(headers: &reqwest::header::HeaderMap) -> Option<
 /// (`error.details.error_code: "credits_required"`, as Claude Code 2.1.322 reads it).
 fn credits_required(body: &[u8]) -> bool {
     serde_json::from_slice::<Value>(body).is_ok_and(|v| {
-        v.pointer("/error/details/error_code").and_then(Value::as_str) == Some("credits_required")
+        v.pointer("/error/details/error_code")
+            .and_then(Value::as_str)
+            == Some("credits_required")
     })
 }
 
@@ -263,9 +265,9 @@ pub fn parse_model_answer(
                 header_time(headers, "anthropic-ratelimit-unified-reset"),
             );
             if limit.scope == LimitScope::Model(None) {
-                limit.resets_at = limit.resets_at.or_else(|| {
-                    header_time(headers, "anthropic-ratelimit-unified-7d_oi-reset")
-                });
+                limit.resets_at = limit
+                    .resets_at
+                    .or_else(|| header_time(headers, "anthropic-ratelimit-unified-7d_oi-reset"));
             }
             Ok(ModelAnswer {
                 refused: Some(limit),
@@ -386,7 +388,11 @@ impl UsageProbe for ProviderUsage {
                 } else {
                     Default::default()
                 };
-                let body = if body.len() > MAX_BODY { &[][..] } else { &body[..] };
+                let body = if body.len() > MAX_BODY {
+                    &[][..]
+                } else {
+                    &body[..]
+                };
                 parse_model_answer(status, &headers, body)
             }
         }
@@ -526,10 +532,7 @@ mod tests {
         )
         .map_err(|f| f.message)?;
         assert_eq!(overage.refused, None);
-        assert_eq!(
-            overage.allowance.and_then(|w| w.used_percent),
-            Some(100.0)
-        );
+        assert_eq!(overage.allowance.and_then(|w| w.used_percent), Some(100.0));
 
         // No headers at all: the model ran, and nothing was read.
         assert_eq!(
@@ -635,7 +638,11 @@ mod tests {
         );
         // The allowance's reset is not the 5-hour window's.
         assert_eq!(
-            refused(&[(CLAIM, "five_hour"), (ALLOWANCE_RESET, "1790600000")], b"")?.resets_at,
+            refused(
+                &[(CLAIM, "five_hour"), (ALLOWANCE_RESET, "1790600000")],
+                b""
+            )?
+            .resets_at,
             None
         );
         // A reset that is no number is no reset.

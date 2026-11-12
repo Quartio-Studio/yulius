@@ -15,14 +15,16 @@ use axum::http::{Method, StatusCode};
 use support::{HarnessOptions, TestResult, call, harness_with, setup_superadmin_creds};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use yulius::wiring::usage::ProviderUsage;
-use yulius_app::model::{AccountRecord, AccountStatus, Secret};
+use yulius_app::model::{AccountRecord, AccountStatus, Sealed, Secret};
 use yulius_app::ports::store::AccountStore;
 use yulius_app::ports::usage::{UsageFailure, UsageProbe};
 use yulius_app::usage_json;
 use yulius_domain::harness::Provider;
 use yulius_domain::ids::AccountId;
 use yulius_domain::time::Timestamp;
-use yulius_domain::usage::{AccountUsage, ModelAnswer, UsageWindow, WEEKLY_WINDOW_MINUTES};
+use yulius_domain::usage::{
+    AccountUsage, LimitScope, ModelAnswer, ReportedLimit, UsageWindow, WEEKLY_WINDOW_MINUTES,
+};
 
 /// The cheapest model, which the probe reads the 5-hour and weekly windows with.
 const CHEAPEST: &str = "claude-haiku-4-5-20251001";
@@ -98,15 +100,16 @@ async fn claude(
         while let Ok((mut sock, _)) = listener.accept().await {
             let (head, body) = read_request(&mut sock).await;
             let response = if head.starts_with("GET /api/oauth/usage") {
-                seen.lock().expect("asked").push("usage".into());
+                note(&seen, "usage");
                 reply("403 Forbidden", &[], "")
             } else if head.starts_with("POST /v1/messages") {
                 let request: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
                 let model = request["model"].as_str().unwrap_or("").to_owned();
-                seen.lock().expect("asked").push(model.clone());
-                let authorized = head
-                    .to_ascii_lowercase()
-                    .contains(&format!("authorization: bearer {}", CREDENTIAL.to_lowercase()));
+                note(&seen, &model);
+                let authorized = head.to_ascii_lowercase().contains(&format!(
+                    "authorization: bearer {}",
+                    CREDENTIAL.to_lowercase()
+                ));
                 if authorized && request["max_tokens"] == 1 {
                     answer(&model)
                 } else {
@@ -121,8 +124,14 @@ async fn claude(
     Ok((base, asked))
 }
 
+fn note(asked: &Asked, what: &str) {
+    if let Ok(mut list) = asked.lock() {
+        list.push(what.to_owned());
+    }
+}
+
 fn asked(asked: &Asked) -> Vec<String> {
-    asked.lock().expect("asked").clone()
+    asked.lock().map(|list| list.clone()).unwrap_or_default()
 }
 
 fn full_week(resets_at: Option<i64>) -> UsageWindow {
@@ -154,7 +163,10 @@ async fn account(h: &support::Harness, id: &str, usage: &AccountUsage) -> TestRe
     Ok(())
 }
 
-async fn stored(h: &support::Harness, id: &str) -> Result<AccountUsage, Box<dyn std::error::Error>> {
+async fn stored(
+    h: &support::Harness,
+    id: &str,
+) -> Result<AccountUsage, Box<dyn std::error::Error>> {
     let record = h
         .store
         .account(&AccountId::parse(id)?)
@@ -222,7 +234,10 @@ async fn a_refresh_ends_a_models_limit_that_claude_no_longer_holds() -> TestResu
     let usage = &refreshed.body["usage"];
     assert!(usage["weekly_fable"].is_null(), "the limit ends: {usage}");
     assert_eq!(refreshed.body["status"], "ok", "{:?}", refreshed.body);
-    assert_eq!(usage["primary"]["used_percent"], 25.0, "the reading: {usage}");
+    assert_eq!(
+        usage["primary"]["used_percent"], 25.0,
+        "the reading: {usage}"
+    );
     assert_eq!(usage["secondary"]["used_percent"], 61.0);
     assert!(refreshed.body["last_error"].is_null());
     assert_eq!(asked(&seen), ["usage", CHEAPEST, DEFAULT]);
@@ -256,9 +271,10 @@ async fn a_refresh_gives_a_limit_recorded_without_a_reset_its_reset() -> TestRes
     .await?;
     let h = harness_at(base).await?;
     // 4000000000 s is past what a reset is believed for, so the clock is set a day before it.
-    h.clock
-        .0
-        .store(4_000_000_000_000 - DAY_MS, std::sync::atomic::Ordering::SeqCst);
+    h.clock.0.store(
+        4_000_000_000_000 - DAY_MS,
+        std::sync::atomic::Ordering::SeqCst,
+    );
     let admin = setup_superadmin_creds(&h).await?;
     account(
         &h,
@@ -305,7 +321,10 @@ async fn a_refresh_that_cannot_ask_leaves_the_limit_and_says_why() -> TestResult
     let answering = Arc::clone(&status);
     let (base, seen) = claude(move |model| {
         if model == DEFAULT {
-            reply(*answering.lock().expect("status"), &[("retry-after", "30")], "")
+            let status = answering
+                .lock()
+                .map_or("500 Internal Server Error", |status| *status);
+            reply(status, &[("retry-after", "30")], "")
         } else {
             ran(&[])
         }
@@ -325,15 +344,17 @@ async fn a_refresh_that_cannot_ask_leaves_the_limit_and_says_why() -> TestResult
         )
         .await?;
     }
-    let unasked =
-        "Claude did not answer when asked whether the limit still holds; the limit stays as it was.";
-    let refused_sign_in = "Claude did not accept this subscription's sign-in. If its tasks fail too, sign in again.";
+    let unasked = "Claude did not answer when asked whether the limit still holds; the limit stays as it was.";
+    let refused_sign_in =
+        "Claude did not accept this subscription's sign-in. If its tasks fail too, sign in again.";
     for (answer, sentence) in [
         ("500 Internal Server Error", unasked),
         ("401 Unauthorized", refused_sign_in),
         ("429 Too Many Requests", unasked),
     ] {
-        *status.lock().expect("status") = answer;
+        if let Ok(mut status) = status.lock() {
+            *status = answer;
+        }
         for (id, resets_at) in [("a-dated", Some(in_two_days)), ("a-blind", None)] {
             let refreshed = refresh(&h, &admin, id).await?;
             assert_eq!(
@@ -469,9 +490,10 @@ async fn another_models_window_is_asked_about_with_that_model() -> TestResult {
     })
     .await?;
     let h = harness_at(base).await?;
-    h.clock
-        .0
-        .store(4_000_000_000_000 - DAY_MS, std::sync::atomic::Ordering::SeqCst);
+    h.clock.0.store(
+        4_000_000_000_000 - DAY_MS,
+        std::sync::atomic::Ordering::SeqCst,
+    );
     let admin = setup_superadmin_creds(&h).await?;
     account(
         &h,
@@ -493,13 +515,26 @@ async fn another_models_window_is_asked_about_with_that_model() -> TestResult {
     Ok(())
 }
 
-/// A probe during whose question a session reports the model's limit anew: the store to write
-/// it to and the usage it stores, once the test has them.
+/// What happens to the stored account while Claude is being asked about it.
+#[derive(Clone)]
+enum Meanwhile {
+    /// A session reports a limit: this usage is stored.
+    Limit(Box<AccountUsage>),
+    /// The subscription is signed in again: this credential is stored.
+    SignIn(Sealed),
+}
+
+/// A probe during whose question something else writes the account (once the test has given
+/// it the store and what), and that then answers `answer`: the model ran, until the test says
+/// otherwise. It cannot read usage.
 #[derive(Default)]
-struct LimitWhileAsked(Mutex<Option<(yulius_store::SqliteStore, AccountUsage)>>);
+struct AskedMeanwhile {
+    writes: Mutex<Option<(yulius_store::SqliteStore, Meanwhile)>>,
+    answer: Mutex<ModelAnswer>,
+}
 
 #[async_trait]
-impl UsageProbe for LimitWhileAsked {
+impl UsageProbe for AskedMeanwhile {
     async fn fetch(&self, _: Provider, _: &Secret) -> Result<AccountUsage, UsageFailure> {
         Err(UsageFailure::not_shared())
     }
@@ -510,39 +545,59 @@ impl UsageProbe for LimitWhileAsked {
         _: &Secret,
         _: &str,
     ) -> Result<ModelAnswer, UsageFailure> {
-        let reported = self.0.lock().ok().and_then(|slot| slot.clone());
-        if let (Some((store, newer)), Ok(id)) = (reported, AccountId::parse("a-raced")) {
-            let _ = store
-                .set_account_state(
-                    &id,
-                    AccountStatus::Limited,
-                    Some(&usage_json::to_json(&newer)),
-                    None,
-                    Timestamp(2),
-                )
-                .await;
+        let writes = self.writes.lock().ok().and_then(|slot| slot.clone());
+        if let (Some((store, meanwhile)), Ok(id)) = (writes, AccountId::parse("a-raced")) {
+            let _ = match meanwhile {
+                Meanwhile::Limit(usage) => {
+                    store
+                        .set_account_state(
+                            &id,
+                            AccountStatus::Limited,
+                            Some(&usage_json::to_json(&usage)),
+                            None,
+                            Timestamp(2),
+                        )
+                        .await
+                }
+                Meanwhile::SignIn(credential) => {
+                    store
+                        .set_account_credential(
+                            &id,
+                            &credential,
+                            AccountStatus::Limited,
+                            Timestamp(2),
+                        )
+                        .await
+                }
+            };
         }
-        Ok(ModelAnswer::default())
+        Ok(self.answer.lock().map(|answer| *answer).unwrap_or_default())
     }
+}
+
+async fn raced()
+-> Result<(support::Harness, Arc<AskedMeanwhile>, support::Creds), Box<dyn std::error::Error>> {
+    let probe = Arc::new(AskedMeanwhile::default());
+    let h = harness_with(HarnessOptions {
+        usage: Some(probe.clone()),
+        ..HarnessOptions::default()
+    })?;
+    let admin = setup_superadmin_creds(&h).await?;
+    Ok((h, probe, admin))
 }
 
 /// RFR-005: a limit Claude reports to a session while the refresh is asking is newer than the
 /// answer, and is kept: the answer "the model ran" does not end it.
 #[tokio::test]
 async fn a_limit_recorded_while_claude_is_asked_is_kept() -> TestResult {
-    let probe = Arc::new(LimitWhileAsked::default());
-    let h = harness_with(HarnessOptions {
-        usage: Some(probe.clone()),
-        ..HarnessOptions::default()
-    })?;
-    let admin = setup_superadmin_creds(&h).await?;
+    let (h, probe, admin) = raced().await?;
     let now = h.app.now().0;
     let newer = AccountUsage {
         weekly_fable: Some(full_week(Some(now + 3 * DAY_MS))),
         ..AccountUsage::default()
     };
-    if let Ok(mut slot) = probe.0.lock() {
-        *slot = Some((h.store.clone(), newer));
+    if let Ok(mut slot) = probe.writes.lock() {
+        *slot = Some((h.store.clone(), Meanwhile::Limit(Box::new(newer))));
     }
     account(
         &h,
@@ -561,5 +616,48 @@ async fn a_limit_recorded_while_claude_is_asked_is_kept() -> TestResult {
         "the limit recorded during the question stays"
     );
     assert_eq!(refreshed.body["status"], "limited");
+    Ok(())
+}
+
+/// RFR-005: the subscription is signed in again while the refresh is asking. The answer is the
+/// previous sign-in's, perhaps another Claude account's: it is not recorded for the new one.
+/// The limit of the whole subscription that was asked about is stored unchanged, where the
+/// refusal would have filled the 5-hour window and dated the limit.
+#[tokio::test]
+async fn an_answer_for_the_previous_sign_in_is_not_recorded_for_a_new_one() -> TestResult {
+    let (h, probe, admin) = raced().await?;
+    let in_an_hour = h.app.now().0 + 3_600_000;
+    if let Ok(mut answer) = probe.answer.lock() {
+        *answer = ModelAnswer {
+            refused: Some(ReportedLimit {
+                scope: LimitScope::Account,
+                window_minutes: Some(300),
+                resets_at: Some(Timestamp(in_an_hour)),
+            }),
+            ..ModelAnswer::default()
+        };
+    }
+    let reported = AccountUsage {
+        limit_reached: true,
+        ..AccountUsage::default()
+    };
+    account(&h, "a-raced", &reported).await?;
+    if let Ok(mut slot) = probe.writes.lock() {
+        let other = h.app.deps.crypto.seal(b"another-sign-in")?;
+        *slot = Some((h.store.clone(), Meanwhile::SignIn(other)));
+    }
+    let refreshed = refresh(&h, &admin, "a-raced").await?;
+    assert_eq!(refreshed.status, StatusCode::OK, "{:?}", refreshed.body);
+    assert_eq!(stored(&h, "a-raced").await?, reported);
+
+    // The same refusal with the sign-in unchanged is recorded: the guard is the sign-in's.
+    if let Ok(mut slot) = probe.writes.lock() {
+        *slot = None;
+    }
+    let refreshed = refresh(&h, &admin, "a-raced").await?;
+    assert_eq!(refreshed.status, StatusCode::OK, "{:?}", refreshed.body);
+    let after = stored(&h, "a-raced").await?;
+    assert_eq!(after.limit_resets_at, Some(Timestamp(in_an_hour)));
+    assert_eq!(after.primary.and_then(|w| w.used_percent), Some(100.0));
     Ok(())
 }

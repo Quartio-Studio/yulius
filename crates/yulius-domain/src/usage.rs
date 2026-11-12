@@ -305,7 +305,12 @@ impl AccountUsage {
     ///   a window stored without a reset gets the one the answer names. An answer that names
     ///   no believable reset keeps the one stored for the window it fills, while that is
     ///   ahead.
-    pub fn record_model_answer(&mut self, answer: ModelAnswer, family: ModelFamily, now: Timestamp) {
+    pub fn record_model_answer(
+        &mut self,
+        answer: ModelAnswer,
+        family: ModelFamily,
+        now: Timestamp,
+    ) {
         self.observed_at = Some(now);
         self.primary = answer.five_hour.or(self.primary);
         self.secondary = answer.seven_day.or(self.secondary);
@@ -371,6 +376,40 @@ impl AccountUsage {
             }
         }
         self
+    }
+
+    /// [`Self::keeping_unread`] for a reading after which Claude is asked about each limit that
+    /// is stored (SPEC-473): a per-model window stored used up without a reset is kept too.
+    /// There the answer ends such a limit or gives it its reset, not the reading.
+    #[must_use]
+    pub fn keeping_asked(self, stored: &Self, now: Timestamp) -> Self {
+        let mut kept = self.keeping_unread(stored, now);
+        for family in ModelFamily::WITH_WINDOW {
+            let blind = stored.model_window(family).copied().filter(|w| {
+                w.resets_at.is_none() && w.known_percent().is_some_and(|p| p >= FULL_PERCENT)
+            });
+            if let Some(slot) = kept.model_slot(family)
+                && slot.is_none()
+            {
+                *slot = blind;
+            }
+        }
+        kept
+    }
+
+    /// What is stored about the limits an answer for a model of `family` speaks of: the
+    /// family's own window, and the limit of the whole subscription with its reset. Equal
+    /// before and after a question when no limit was recorded meanwhile (SPEC-473 RFR-005).
+    #[must_use]
+    pub fn stored_limit(
+        &self,
+        family: ModelFamily,
+    ) -> (Option<UsageWindow>, bool, Option<Timestamp>) {
+        (
+            self.model_window(family).copied(),
+            self.limit_reached,
+            self.limit_resets_at,
+        )
     }
 
     /// Without the per-model windows: they are what Claude told one sign-in, and a new sign-in
@@ -1150,6 +1189,61 @@ mod tests {
             own.weekly_fable,
             Some(full_week(Some(5_000_000))),
             "the model's limit is not answered by the subscription's"
+        );
+    }
+
+    /// SPEC-473 RFR-003: a reading that is followed by questions about the stored limits keeps
+    /// a model's window stored used up without a reset, which a reading alone ends; everything
+    /// else is kept or replaced as by any reading.
+    #[test]
+    fn a_reading_before_claude_is_asked_keeps_a_limit_without_a_reset() {
+        let stored = AccountUsage {
+            secondary: Some(full_week(Some(9_000_000))),
+            weekly_fable: Some(full_week(None)),
+            weekly_opus: Some(full_week(Some(5_000_000))),
+            // Not used up, and without a reset: nothing to ask about.
+            weekly_sonnet: Some(window(Some(80.0), None)),
+            limit_reached: true,
+            ..AccountUsage::default()
+        };
+        let reading = AccountUsage {
+            secondary: Some(window(Some(61.0), Some(9_000_000))),
+            observed_at: Some(NOW),
+            ..AccountUsage::default()
+        };
+        assert_eq!(reading.keeping_unread(&stored, NOW).weekly_fable, None);
+        let kept = reading.keeping_asked(&stored, NOW);
+        assert_eq!(kept.weekly_fable, stored.weekly_fable);
+        assert_eq!(kept.weekly_opus, stored.weekly_opus, "as by any reading");
+        assert_eq!(kept.weekly_sonnet, None);
+        assert_eq!(kept.secondary, reading.secondary);
+        assert!(!kept.limit_reached);
+        // A reading that carries the window is the newer word.
+        let carried = AccountUsage {
+            weekly_fable: Some(window(Some(20.0), Some(8_000_000))),
+            ..reading
+        };
+        assert_eq!(
+            carried.keeping_asked(&stored, NOW).weekly_fable,
+            carried.weekly_fable
+        );
+
+        // What an answer for a family speaks of: its window and the subscription's limit.
+        assert_eq!(
+            stored.stored_limit(ModelFamily::Fable),
+            (stored.weekly_fable, true, None)
+        );
+        assert_eq!(
+            stored.stored_limit(ModelFamily::Opus),
+            (stored.weekly_opus, true, None)
+        );
+        assert_eq!(
+            AccountUsage {
+                limit_resets_at: Some(Timestamp(7)),
+                ..AccountUsage::default()
+            }
+            .stored_limit(ModelFamily::Any),
+            (None, false, Some(Timestamp(7)))
         );
     }
 

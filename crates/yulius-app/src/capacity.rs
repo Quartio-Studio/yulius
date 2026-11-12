@@ -243,16 +243,27 @@ impl App {
         account: &AccountId,
         change: impl FnOnce(AccountUsage) -> Option<AccountUsage> + Send,
     ) -> Option<AccountUsage> {
+        self.change_usage_of(account, |_, usage| change(usage))
+            .await
+    }
+
+    /// [`Self::change_account_usage`] for a change that also depends on the account as it is
+    /// stored now (its sign-in), read under the same lock.
+    pub(crate) async fn change_usage_of(
+        &self,
+        account: &AccountId,
+        change: impl FnOnce(&crate::model::AccountRecord, AccountUsage) -> Option<AccountUsage> + Send,
+    ) -> Option<AccountUsage> {
         let _writing = self.capacity.usage_writes.lock().await;
-        let stored = match self.deps.store.account(account).await {
-            Ok(Some(record)) => account_usage(&record),
+        let record = match self.deps.store.account(account).await {
+            Ok(Some(record)) => record,
             _ => return None,
         };
         crate::race::reached(
             crate::race::Point::UsageRead,
             std::path::Path::new(account.as_str()),
         );
-        let usage = change(stored)?;
+        let usage = change(&record, account_usage(&record))?;
         self.record_account_usage(account, &usage).await;
         Some(usage)
     }
