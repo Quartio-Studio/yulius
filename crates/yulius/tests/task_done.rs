@@ -4905,8 +4905,12 @@ async fn task_flagged_by_a_notice(app: &Arc<App>, data: &Path) -> Result<TaskId,
     app.send_input(&id, b"/notify permission_prompt\r").await?;
     wait_for("the notice's flag", Duration::from_secs(30), || async {
         activity(app, &id).await == Some(Activity::NeedsAttention)
+            && screen_contains(app, &id, "NOTIFIED").await
     })
     .await?;
+    // The hook has returned and the notice's time is stored. What the agent does next is later
+    // than it by more than the clock's step: work in the notice's own millisecond is not after it.
+    transcript_read(app, &id).await?;
     Ok(id)
 }
 
@@ -4955,8 +4959,6 @@ fn a_flag_raised_after_a_notices_is_not_lifted_by_the_agents_work() -> TestResul
         };
         let (app, _) = start(&data, &fake, agent, 0).await?;
         let id = task_flagged_by_a_notice(&app, &data).await?;
-        // Later than the notice's flag by more than the clock's step.
-        transcript_read(&app, &id).await?;
         let store = &app.deps.store;
         store
             .set_activity(&id, Some(Activity::Working), app.now())
