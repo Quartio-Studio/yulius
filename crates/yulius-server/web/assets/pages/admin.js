@@ -465,7 +465,7 @@ export function mountAccountsPage(ctx, route) {
           if (outcome.fresh && account) Object.assign(account, { status: outcome.fresh.status, usage: outcome.fresh.usage, last_error: outcome.fresh.last_error });
           // What a person asked for is said on the card for the visit; the page's own reading
           // of an old card says nothing.
-          if (asked && outcome.error) notes.set(id, outcome.error.message || 'The usage could not be read.');
+          if (asked && outcome.error) notes.set(id, outcome.error.message);
           else if (asked && unread) notes.set(id, NO_NEW_READING);
           else if (outcome.fresh) notes.delete(id);
           outcome.unread = unread;
