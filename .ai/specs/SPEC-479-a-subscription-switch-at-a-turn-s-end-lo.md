@@ -9,8 +9,9 @@ Status: accepted
 Date: 2026-11-12
 Owner: Yulius task #462
 Scope authorization: the request of task #462 (by MrFishPL, 2026-11-12): fix issue #1194 in one
-pull request, the defect reproduced first by a test that fails without the fix. Amends SPEC-034
-(rotation at a turn boundary, ROT-003) and builds on SPEC-471 (the queue's count).
+pull request, the defect reproduced first by a test that fails without the fix. Amends
+SPEC-001 ROT-003 (the proactive move at a turn boundary) and builds on SPEC-471 (the queue's
+count).
 
 ## Goal
 
@@ -45,12 +46,18 @@ is then handed on to a turn of its own (`dequeue`), or is taken into the running
 next tool result (`remove`). A Stop a hook blocks releases nothing. A resumed session does not
 get the queue back. Claude Code leaves some of its own notifications in the queue for good.
 
-Two more facts this change rests on, both checked (Evidence):
+Three more facts this change rests on, each checked (Evidence):
 
 - A turn's closing record (`turn_duration`) is written when a turn ends, after the `dequeue`
   records of that end, and not at a Stop a hook blocks.
-- What that record finds still waiting is never handed on to a turn of its own later: in this
-  instance's sessions no `dequeue` ever came while only such entries were counted.
+- Claude Code hands its queue on in the order of its entries, and only prompts that follow
+  one another leave together. A notification of its own, a slash command or a `!` line leaves
+  alone; what waits behind it stays through that turn's closing record and is handed on at
+  the next turn's end (found by the review with the real tool; the first version of this
+  spec said the opposite).
+- What a closing record finds waiting at an end that handed nothing on is not handed on to a
+  turn of its own later: in this instance's sessions no `dequeue` ever came while only such
+  entries were counted.
 
 A turn that a usage limit cuts is redone by the session Yulius resumes past the limit
 (SPEC-034, SPEC-072: the transcript is stepped back and keeps the unanswered prompts), so a
@@ -61,10 +68,10 @@ handed-on prompt whose turn meets the limit is not lost either.
 | ID | Requirement |
 | --- | --- |
 | SWQ-001 | **A move the pool wants at a turn's end stays while a prompt waits.** At a Stop where the pool decides to move the session to another subscription, the session stays on its subscription when Claude Code's queue holds something a turn's end hands on (SWQ-002), or a hand-over is not over (SPEC-471 CCQ-003), or a prompt from the prompt box went on so recently, or during this look, that its record may not be read (SPEC-471 CCQ-004). The Stop is answered as on a subscription that stays: the gate blocks, a clean Stop ends the turn. The queue is asked after the turn's lines were read. The session moves at a later turn's end, once nothing of that waits. |
-| SWQ-002 | **What a turn's end left in the queue does not keep the move.** The queue's count knows how many of its entries a turn's closing record found waiting: Claude Code had its hand-over and left them (its own notifications of work a sub-agent started, an entry Yulius counted wrongly). They keep no move. An entry that leaves the queue is taken to be one that was not left over, while there is one. The restart on a newer Claude Code keeps counting every entry (SPEC-471 CCQ-002, unchanged). |
+| SWQ-002 | **What a turn's end left in the queue does not keep the move.** The queue's count knows how many of its entries a turn's end left: its closing record found them waiting, and that end had handed nothing on (its own notifications of work a sub-agent started, an entry Yulius counted wrongly). They keep no move. The closing record of an end that did hand something on marks nothing: what waits behind an entry Claude Code hands on alone gets its hand-over at the next end. An entry that leaves the queue is taken to be one that was not left over, while there is one. The restart on a newer Claude Code keeps counting every entry (SPEC-471 CCQ-002, unchanged). |
 | SWQ-003 | **A turn held for capacity is not moved over a waiting prompt.** When capacity returns on another subscription for a task whose turn is held at its Stop (`PauseKind::Turn`, a live process) and SWQ-001's facts hold, the hold is released in place instead: the Stop is asked again and SWQ-001 decides it. |
 | SWQ-004 | **A handed-on turn that meets the limit moves like any turn a limit cuts.** Nothing new: the test shows that the prompt's record is in the transcript the resumed session continues from. |
-| SWQ-005 | **The fake agent can play both.** With `--queue-prompts`, a waiting line that begins with `/stuck ` is an entry Claude Code never takes out: its `enqueue` record, no prompt hook, no hand-over, no answer. `--limit-after N` also cuts a handed-on turn: its prompt records, then the limit record, no answer and no Stop. |
+| SWQ-005 | **The fake agent can play both.** With `--queue-prompts`, a waiting line that begins with `/stuck ` is an entry Claude Code never takes out: its `enqueue` record, no prompt hook, no hand-over, no answer. A waiting line that begins with `/alone ` is an entry Claude Code hands on alone (a notification of its own, a slash command, a `!` line): the queue leaves in the order of its lines, the lines up to the first such one together and that one alone, and the rest waits through the closing records for the next turn's end. `--limit-after N` also cuts a handed-on turn: its prompt records, then the limit record, no answer and no Stop. |
 | SWQ-006 | **The documents say so.** The operations guide says what happens to a message sent while a task moves to another subscription; ADR-0310 records the decision; the architecture document, the changes log and SPEC-471's note on #1194 follow. |
 
 ## Plan
@@ -77,6 +84,7 @@ handed-on prompt whose turn meets the limit is not lost either.
 - [x] A handed-on turn the limit cuts moves past the limit with its prompt (fake agent)
 - [x] Operations guide, ADR-0310, architecture and changes log say so
 - [x] Mutation checks and gate green, evidence recorded
+- [ ] Review round 1: an end that handed something on leaves nothing behind, the held turn's guards tested
 - [ ] Independent review answered
 
 ## Acceptance criteria
@@ -92,9 +100,10 @@ handed-on prompt whose turn meets the limit is not lost either.
   gate blocks, the prompt is answered in that run, and a later end moves the session.
 - AC4 (SWQ-002). With an entry in the queue that is never taken out: the turn's end at which
   it is first seen keeps the session; once that turn closed, the next turn's end moves it. In
-  the count: a closing record marks what waits as left over; an entry added later is not; a
-  leave takes one that is not left over first; a new run starts with none; the restart's rule
-  (`holds`) still counts a left-over entry.
+  the count: the closing record of an end that handed nothing on marks all that waits as
+  left over, that of an end that handed something on marks nothing; an entry added later is
+  not left over; a leave takes one that is not left over first; a new run starts with none;
+  the restart's rule (`holds`) still counts a left-over entry.
 - AC5 (SWQ-003). Both subscriptions are over the threshold, the gate would block: the turn's
   end holds the turn (the task waits for capacity) with a prompt in the queue. The second
   subscription gets room: the task runs again in the same run, the prompt is answered there,
@@ -107,6 +116,15 @@ handed-on prompt whose turn meets the limit is not lost either.
   neither hook, `dequeue` nor answer; a handed-on turn at the limit writes its prompt records
   and the limit record, and runs no Stop.
 - AC8 (SWQ-006). The documents named in SWQ-006 state the rule and its limits.
+- AC9 (SWQ-002, review round 1). An entry Claude Code hands on alone and a prompt behind it
+  wait when the turn ends on a subscription at its limit: the entry gets its turn, the end of
+  that turn keeps the session, the prompt is answered in the same run, once, and that turn's
+  end moves the session. With the first rule the end of the entry's turn moved it and the
+  prompt was never answered.
+- AC10 (SWQ-003, review round 1). A held turn with a prompt that may wait stays held while
+  nothing has room; the pool reads the lines written so far before it asks (a prompt whose
+  record reaches the transcript after the turn was held keeps the turn in place); a pause
+  that changed while the pool read is left as it is.
 
 ## Test plan
 
@@ -155,7 +173,8 @@ handed-on prompt whose turn meets the limit is not lost either.
 - **The hold is bounded by the records, not by a count of turns or a timer.** A session whose
   queue holds one of the notifications Claude Code never takes out would never move at a
   turn's end and would run into its limit every time. An entry that a turn's closing record
-  found waiting had its hand-over and was left: it keeps nothing. Rejected: a number of turn
+  found waiting, at an end that handed nothing on, was left by Claude Code: it keeps nothing.
+  Rejected: a number of turn
   ends (a goal session whose Stops are blocked without a tool call keeps a real prompt
   waiting through any number of them, and a person who writes at every turn would be cut off
   by it); the entry's text (the records name no entry at a `dequeue`).
@@ -167,6 +186,18 @@ handed-on prompt whose turn meets the limit is not lost either.
   a prompt waits (a notification delivered to a sub-agent: once in this instance's sessions),
   that prompt counts as left over and a move at that turn's end loses it, as before this
   change.
+- **Only an end that handed nothing on leaves what waits** (review round 1, the major). The
+  first rule marked whatever a closing record found. The review ran the real 2.1.322 with a
+  background shell's notification, a slash command and a `!` line ahead of a prompt: Claude
+  Code hands such an entry on alone, the closing record finds the prompt still waiting, and
+  the prompt is handed on at the end of the entry's turn. Marked as left over, it no longer
+  kept the session there, which is #1194 again for a message typed seconds after the agent's
+  background work finished. An end that handed something on therefore marks nothing: the
+  count knows it by the hand-over that is not over when the closing record is read (the
+  `dequeue` comes before it in the file). An entry Claude Code never takes out is still
+  marked at the first end that hands nothing on. In the real sessions the corrected rule
+  marks the same 24 entries, and four closing records came at an end that had handed
+  something on with entries waiting behind.
 - **The restart on a newer Claude Code keeps its rule.** SPEC-471 chose that every entry
   counts there and accepted the cost. Whether it should use the left-over mark too is that
   feature's decision; this change is one concern.

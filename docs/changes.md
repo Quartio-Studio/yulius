@@ -16,15 +16,17 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   and the next turn's end moves it. On a subscription at its limit that turn is refused and
   continued past the limit on the next one, like any turn a limit cuts. A turn held for
   capacity is released in place instead of moved while a prompt waits. The count is the one
-  of SPEC-471; new in it is what a turn's closing record found still waiting: Claude Code had
-  its hand-over and left that entry (it leaves some of its own notifications in the queue for
-  good), so it keeps no move, and a session with such an entry stays for one turn's end at
-  most. In this instance's 412 sessions with queue records none of 3,682 hand-overs took such
-  an entry. The restart on a newer Claude Code still counts every entry. The limits of
+  of SPEC-471; new in it is what a turn's end left: an entry its closing record found still
+  waiting when that end had handed nothing on (Claude Code leaves some of its own
+  notifications in the queue for good). It keeps no move, so a session with such an entry
+  stays only until a turn's end hands nothing on. A prompt behind a notification, a slash
+  command or a `!` line is not left: Claude Code hands those on alone and the prompt one
+  end later (the review found this with the real 2.1.322; the first rule lost that prompt).
+  In this instance's sessions with queue records no hand-over ever took a left-over entry. The restart on a newer Claude Code still counts every entry. The limits of
   SPEC-471 stay (a prompt entered in the moment after the turn's end decided, a record
   written later than two seconds); a person's own switch or stop and a turn a limit cuts
   carry nothing over. The tests' fake agent can play an entry that is never taken out
-  (`/stuck`) and a limit that cuts a handed-on turn.
+  (`/stuck`), one that is handed on alone (`/alone`) and a limit that cuts a handed-on turn.
 - The first `sudo yulius host setup` on a fresh host no longer fails its Docker smoke test
   (SPEC-477, task #459, ADR-0308, issue #1160). The setup starts `yulius.service` and runs the
   smoke seconds later; the starting server adopted the smoke's throwaway sandbox like a holder of

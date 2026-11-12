@@ -1132,8 +1132,12 @@ Vidoc off, it also says `Vidoc scans are switched off for the instance`.
    it is; when another subscription gets room it goes on in place first and moves a turn
    later. Yulius knows the queue from the records Claude Code writes into the transcript, as
    for a restart on a newer Claude Code ("Claude Code updates" above); an entry a turn's end
-   left in the queue (Claude Code leaves some of its own notifications there for good) keeps
-   no move, so such a session stays for one turn's end at most. The server's log says when a
+   left in the queue when it handed nothing on (Claude Code leaves some of its own
+   notifications there for good) keeps no move, so such a session stays only until a turn's
+   end hands nothing on, usually one. A prompt that waits behind a notification of finished
+   background work, a slash command or a `!` line is not such an entry: Claude Code hands
+   those on alone and the prompt one turn's end later, and the session stays until then. The
+   server's log says when a
    move waits ("the session is not moved to another subscription at this turn's end"). A
    message sent while the task reads "Continuing" is refused ("try again once it runs"), so
    its sender knows. What can still be lost: a prompt entered in the moment between a turn's

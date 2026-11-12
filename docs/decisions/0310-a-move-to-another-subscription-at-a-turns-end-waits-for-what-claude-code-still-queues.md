@@ -40,9 +40,12 @@ it would run into its limit each time.
   after the turn's lines were read.
 - **What a turn's end left in the queue keeps no move.** The record that closes a turn
   (`turn_duration`) is written after that end's `dequeue` records and not at a Stop a hook
-  blocks. What it finds waiting had its hand-over and was left. The count keeps how many
-  entries that is; an entry that leaves is taken to be one that was not left over, while
-  there is one.
+  blocks. When that end handed nothing on, what the record finds waiting was left by Claude
+  Code. The count keeps how many entries that is; an entry that leaves is taken to be one
+  that was not left over, while there is one. An end that handed something on marks nothing:
+  Claude Code hands a notification of its own, a slash command or a `!` line on alone, and a
+  prompt behind it at the next turn's end (seen with 2.1.322 by the review, which found the
+  first version of this rule losing that prompt).
 - **A turn held for capacity is released in place, not moved, while a prompt waits.** The Stop
   is then asked again and the first rule decides.
 - **The restart on a newer Claude Code keeps counting every entry** (SPEC-471, unchanged).
@@ -74,8 +77,8 @@ it would run into its limit each time.
 - A session with a prompt waiting runs one more turn on a subscription over its threshold (or
   the rest of a turn the gate sent on). At its limit that turn is cut and redone after the
   move.
-- A session that holds an entry Claude Code never takes out stays for one turn's end, the one
-  at which the entry is first seen, and moves at the next.
+- A session that holds an entry Claude Code never takes out stays until a turn's end hands
+  nothing on (usually the one at which the entry is first seen) and moves at the next.
 - When a left-over entry leaves the queue alone while a prompt waits (a notification
   delivered to a sub-agent: once in this instance's 412 sessions with queue records), that
   prompt counts as left over, and a move at that turn's end loses it as before.
