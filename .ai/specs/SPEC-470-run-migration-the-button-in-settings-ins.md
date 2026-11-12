@@ -85,19 +85,19 @@ The request and the root helper
   the root-owned unit sets that list. A refusal changes nothing and is reported with its reason,
   which never repeats the request's content.
 - MVB-004 **It runs the command, as nobody's sign-in.** An accepted request runs this binary's
-  `instance migrate --no-sign-in`
-  with the unit's data directory, service, update service and state directory, and the request's
-  values each as one argument (`--request-id=`, `--ssh-port=`, `--public-url=`, `--data-disk=`,
-  then `--` and the target): `plan` without `--yes` (no terminal, so it ends after its plan), `move` with `--yes`,
-  `abort` as `--abort` and never with `--yes` (an abort that needs a person's word that the new
-  instance is stopped stays a command on the host). No shell; standard input is closed; the
-  command's output goes to the journal. `--no-sign-in` (a new option of the command): the
-  operator's sign-in that adds the move's key is never tried, no ssh configuration is read
-  (`-F none`), and every connection offers the one-time key alone (`IdentitiesOnly`, no agent,
-  public key only). The request is the service user's: without this, root's own keys would
-  open every host that trusts root here to it. So the first plan ends with the key line, and a
-  host is reached only once a person there added it. The helper does not touch the command's
-  checklist: a run the command refuses changes nothing (MVB-020 tells whose a checklist is).
+  `instance migrate --no-sign-in` with the unit's data directory, service, update service and
+  state directory, and the request's values each as one argument (`--request-id=`,
+  `--ssh-port=`, `--public-url=`, `--data-disk=`, then `--` and the target): `plan` without
+  `--yes` (no terminal, so it ends after its plan), `move` with `--yes`, `abort` as `--abort`
+  and never with `--yes` (an abort that needs a person's word that the new instance is stopped
+  stays a command on the host). No shell; standard input is closed; the command's output goes to
+  the journal. `--no-sign-in` (a new option of the command): the operator's sign-in that adds
+  the move's key is never tried, no ssh configuration is read (`-F none`), and every connection
+  offers the one-time key alone (`IdentitiesOnly`, no agent, public key only). The request is
+  the service user's: without this, root's own keys would open every host that trusts root here
+  to it. So the first plan ends with the key line, and a host is reached only once a person
+  there added it. The helper does not touch the command's checklist: a run the command refuses
+  changes nothing (MVB-020 tells whose a checklist is).
 - MVB-005 **It reports.** `<state>/helper.json` (0644): the request's id, action and values,
   `running` with a heartbeat every 5 s, then `ended` with the command's exit code, or `refused`
   with the reason and none of the request's values. When the command ended refused before its
@@ -549,15 +549,15 @@ Settings → Instance
   981 tests passed, 1 skipped; `instance-move.e2e.ts` 11 tests. The file ran three times in a
   row and twice pinned to one CPU after its passing states were made to hold (`df6e9db4`).
 - **Gate.** `scripts/dev ci` at `8fe8b7a4` exited 0: repository checks, `cargo check`, `fmt`,
-  `clippy` for Linux and macOS, 3908 tests run, 3908 passed, 16 skipped, doctests, `cargo
-  deny`, `cargo shear`, `cargo doc`. After it come this spec's Evidence and one more merge of
-  `dev` without a conflict (`4a31c6c0`: `host setup` only; the move's and `host setup`'s tests
-  were run again on it). `dev` is merged in seven times: `32b5a46a` (a conflict in `finish()` and a variable the other side had
-  renamed), `4e5bb5de` (none), `e1911ed3` (the warm copy: conflicts in `finish()`, `abort()`,
-  the flow and target tests and three documents, all resolved by hand; the test that names
-  every option of the command stopped compiling on the new `--max-downtime`, which is what it
-  is for), `b1fa9629` and `8fe8b7a4` (one line of the web README each), `59ec8cf5` and
-  `4a31c6c0` (none).
+  `clippy` for Linux and macOS, 3908 tests run, 3908 passed, 16 skipped, doctests, `cargo deny`,
+  `cargo shear`, `cargo doc`. After it come this spec's Evidence and one more merge of `dev`
+  without a conflict (`4a31c6c0`: `host setup` only; the move's and `host setup`'s tests were
+  run again on it). `dev` is merged in seven times: `32b5a46a` (a conflict in `finish()` and a
+  variable the other side had renamed), `4e5bb5de` (none), `e1911ed3` (the warm copy: conflicts
+  in `finish()`, `abort()`, the flow and target tests and three documents, all resolved by hand;
+  the test that names every option of the command stopped compiling on the new `--max-downtime`,
+  which is what it is for), `b1fa9629` and `8fe8b7a4` (one line of the web README each),
+  `59ec8cf5` and `4a31c6c0` (none).
 - **Security scan.** `yulius security-scan`: "Security scan disabled: Vidoc is turned off in
   Yulius … nothing was scanned." Disabled, not passed.
 - **Issues.** #1196 (the plan's own update check looks for `active` only) and #1201 (the update
