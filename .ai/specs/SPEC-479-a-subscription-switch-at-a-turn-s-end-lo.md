@@ -75,8 +75,8 @@ handed-on prompt whose turn meets the limit is not lost either.
 - [x] An entry a turn's end left behind does not keep the move (fake agent `/stuck`)
 - [x] A turn held for capacity is released in place, not moved, while a prompt waits
 - [x] A handed-on turn the limit cuts moves past the limit with its prompt (fake agent)
-- [ ] Operations guide, ADR-0310, architecture and changes log say so
-- [ ] Mutation checks and gate green, evidence recorded
+- [x] Operations guide, ADR-0310, architecture and changes log say so
+- [x] Mutation checks and gate green, evidence recorded
 - [ ] Independent review answered
 
 ## Acceptance criteria
@@ -115,6 +115,15 @@ handed-on prompt whose turn meets the limit is not lost either.
   record into the queue (AC4).
 - Integration with real processes, `crates/yulius/tests/claude_code_moves.rs` (`mod moves`),
   the fake agent in Claude Code's order with two subscriptions: AC1, AC2, AC3, AC4, AC5, AC6.
+- Integration on the test's clock, `claude_code_moves.rs` (hooks to the internal listener, no
+  process; a move that is tried is refused there and leaves its wait): a turn's end 1,999 ms
+  after a prompt went on does not move the session and one 2,000 ms after does; a prompt that
+  goes on while the turn's end looks (held at the race point `SwitchProbed`) keeps the session;
+  a held turn goes on in place while a prompt may wait and is moved once none does; a turn a
+  limit cut is moved whatever may wait; a paused task without a process is not released in
+  place (SWQ-001, SWQ-003).
+- Unit, `crates/yulius-app/src/supervisor.rs`: what a move asks of the queue, with a queue that
+  is not known and a new run (SWQ-001, SWQ-002).
 - `tools/fake-agent/tests/cli.rs`: AC7.
 - Mutations, each reverted (Evidence).
 - Checked against real artifacts: the installed Claude Code 2.1.322 against a local stub of
@@ -179,4 +188,62 @@ handed-on prompt whose turn meets the limit is not lost either.
 
 ## Evidence
 
-To be recorded.
+- **Reproduced first.** At 8b826e4a (the two tests of AC1 and AC2 on `dev`'s code, with real
+  processes): both fail with "the session moved with a prompt in its queue, which went with
+  its process", 2 runs where 1 was expected, the terminal showing `QUEUED: …` and `ECHO: one`
+  and no answer to the prompt. They pass from eaac0372 on.
+- **The real tool** (2026-11-12, the installed Claude Code 2.1.322 in a PTY against a local
+  stub of the Messages API, the probe of SPEC-471 run again; nothing leaves the host).
+  Scenario `stop-block-queued`: a prompt entered while a turn runs, the turn's first Stop
+  blocked by the hook, the second not. In the file: `enqueue`; the first answer; the hook's
+  feedback and a `stop_hook_summary`, and no `turn_duration`; the second answer; `dequeue`,
+  `stop_hook_summary`, `turn_duration`; the prompt's record (`promptSource: "queued"`). So a
+  blocked Stop writes no closing record, and at the ending Stop the hand-over is in the file
+  before the closing record.
+- **Real transcripts of this instance** (420 session files, 412 with queue records; scripts
+  that count, no text read; kept outside the repository): 5,038 `enqueue`, 3,682 `dequeue`,
+  1,339 `remove`, 4,197 `turn_duration`. Counted as SWQ-002 counts: 24 entries were found
+  waiting by a closing record; no `dequeue` ever came while only such entries were counted;
+  7 of them left later by a `remove` (6 `absorbed_mid_turn`, 1 `delivered_to_agent`), 17
+  still waited at the file's end. Records of 2.1.292, 2.1.311 and 2.1.322.
+- **Tests, each seen failing first.** AC1, AC2 as above. The fake agent's two tests failed
+  before its change (a `/stuck` line was answered and got a hook; a handed-on turn was not
+  cut). AC5 failed before SWQ-003 with "the held turn was moved with a prompt in its queue".
+  AC3, AC4, AC6, the tests on the test's clock and the unit tests passed when written, since
+  the rule was there: their failure is the mutants below.
+- **Mutations** at 5a85caa6 (a script over 23 mutants, each applied alone, the tests of this
+  change run, reverted with `git checkout`): all 23 caught.
+  1. the turn's end not staying for a waiting prompt: AC1 to AC6 and the look's test fail;
+  2. prompts counted after the look, and 6. a prompt during the look not asked: the look's
+     test; 5. a prompt that just went on not asked: its test;
+  3. the move counting every entry, as the restart does, 9. the watcher not marking what a
+     turn's end left, 11. a closing record marking nothing, 14. a left-over entry counting
+     for the move: AC4 (the session never moves);
+  4. the queue not asked by the move: AC1 to AC6;
+  7. a queue not read yet, 8. one that cannot be read, counting as empty, and 19. a new run
+     keeping the old left-over count: the runtime's test;
+  10. the replay not marking: the fold's test;
+  12. a leave leaving the left-over count above what waits, 13. a hand-over that is not over
+      not counting: the domain test; 15. the comparison including equal: AC1 to AC5;
+  16. a held turn moved over a waiting prompt: AC5; 17. any pause released in place: the
+      limit's test on the clock; 18. a task without a process released in place: its test;
+  20. to 23. the fake agent handing a stuck entry on, sending it a prompt hook, not cutting a
+      handed-on turn, cutting it one turn late: its own tests and AC4, AC6.
+  The first run of the script reported eight survivors; its pattern for nextest's result
+  lines missed `( 1/20)`. Run again with the pattern fixed, each of the eight is caught.
+- **Gate.** `scripts/dev ci` at 56662c57 (every code and test change of this task, `dev` up to
+  4157f67d merged without a conflict): exit 0. `cargo check`, `fmt --check`, clippy
+  `-D warnings` on Linux and for `aarch64-apple-darwin`, nextest 4047 passed / 16 skipped,
+  doctests, `cargo deny` (advisories, bans, licenses, sources ok), `cargo shear`, `cargo doc`.
+- **e2e.** Not run here: this change touches no page. Yulius CI runs the suite on the pull
+  request.
+- **Security scan.** Disabled: `yulius security-scan` says "Security scan disabled: Vidoc is
+  turned off in Yulius"; nothing was scanned, which is not a pass.
+- **Not tested here.** A move Yulius makes of a real, signed-in Claude Code session, and a
+  real usage limit: no subscription can be signed in for a test, so the fake agent stands in,
+  in the order the real tool was seen to have. That Claude Code continues a handed-on turn
+  after a resume past a limit rests on SPEC-034 and SPEC-072 (the transcript holds the
+  prompt's record; the test shows that much). What Claude Code does with its queue when a
+  limit cuts a turn was not run. The re-check that the pause is still open before a held turn
+  is released (`pause_open` in `resume_paused`) has no test: it guards a change of the pause
+  during the read of the turn's lines.
