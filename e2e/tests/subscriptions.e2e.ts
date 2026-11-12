@@ -36,6 +36,22 @@ test('the subscriptions page shows the pool capacity and nothing to manage but a
   expect(await axeViolations(browser)).toEqual([]);
 });
 
+test('a subscription out of its model\'s usage credits shows that model\'s week beside its own (SPEC-464)', async ({ app, browser, screen }) => {
+  await app.open(mock('/admin/accounts'));
+  // The limit is the model's: its weekly allowance is used up until it resets, while the 5-hour
+  // and weekly windows keep their own readings.
+  const card = '.card:has-text("studio@example.com")';
+  await expect(browser.locator(`${card} .account-state`)).toHaveText('Limit reached');
+  const fable = browser.locator(`${card} .usage-row:has-text("Fable this week")`);
+  await expect(fable).toContainText('100% used');
+  await expect(fable).toContainText(/Resets \S+ \d/);
+  await expect(browser.locator(`${card} .usage-row:has-text("This week")`).first()).toContainText('71% used');
+  await expect(screen.getByRole('meter', 'Fable this week')).toHaveAttribute('aria-valuetext', '100% used');
+  // A subscription Claude reported no such limit for has no such row.
+  await expect(browser.locator('.card:has-text("mkarp@example.com") .usage-row:has-text("Fable this week")')).toHaveCount(0);
+  expect(await axeViolations(browser)).toEqual([]);
+});
+
 test('a task shows its subscription and a person runs it on another (SPEC-447 MOV-001, MOV-004)', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12'));
   const chip = browser.locator('.taskview .stepstrip-main button.account-chip');
@@ -46,10 +62,99 @@ test('a task shows its subscription and a person runs it on another (SPEC-447 MO
   await expect(screen.getByRole('menuitem', /^Claude #2\s*Runs on it now/)).toHaveAttribute('aria-disabled', 'true');
   await expect(screen.getByRole('menuitem', /^Claude #3\s*Needs a new sign-in/)).toHaveAttribute('aria-disabled', 'true');
   await expect(screen.getByRole('menuitem', /^Claude #4\s*5 h 12% · week 33%/)).toBeVisible();
+  // Out of the default model's usage credits only: this task runs Opus, so it can go there (SPEC-464).
+  await expect(screen.getByRole('menuitem', /^Claude #5\s*5 h 100% · week 71%/)).toBeVisible();
   expect(await axeViolations(browser)).toEqual([]);
   await screen.getByRole('menuitem', /^Claude #4/).click();
   await expect(screen.getByText('#12 moves to Claude #4…')).toBeVisible();
   await expect(chip).toHaveText('Claude #4');
+});
+
+// Review round 2 of SPEC-464: the task's model is in its details, which the task view reads after
+// it drew the chip. A person who opens the menu before that read answered (or whose read failed)
+// still gets the subscriptions judged for the task's model: the menu reads what it needs itself.
+test('"Run #N on…" knows the task\'s model before the task view has its details (SPEC-464)', async ({ app, browser, screen }) => {
+  type Holding = { __yuliusMock: { holdDetail?: Promise<void> | null; detailReads?: Record<string, number> }; __releaseDetail?: () => void };
+  await app.open(mock('/s/studio', '&ambient=0'));
+  // The view's own read of the task waits on its way, as on a slow connection.
+  await browser.evaluate(() => {
+    const w = window as unknown as Holding;
+    w.__yuliusMock.holdDetail = new Promise<void>((resolve) => { w.__releaseDetail = resolve; });
+    location.hash = '#/s/studio/t/12';
+  });
+  await expect.poll(() => browser.evaluate(() => {
+    const db = (window as unknown as Holding).__yuliusMock;
+    return Boolean(db.detailReads?.tsk_studio_12) && !db.holdDetail;
+  }), { message: 'the view never read the task' }).toBe(true);
+  const chip = browser.locator('.taskview .stepstrip-main button.account-chip');
+  await expect(chip).toHaveText('Claude #2');
+  await chip.click();
+  await expect(screen.getByText('Run #12 on…')).toBeVisible();
+  // Task #12 runs Opus: a subscription that is only out of the default model's usage credits can take it.
+  await expect(screen.getByRole('menuitem', /^Claude #5\s*5 h 100% · week 71%/)).toBeVisible();
+  await expect(screen.getByRole('menuitem', /^Claude #3\s*Needs a new sign-in/)).toHaveAttribute('aria-disabled', 'true');
+  // When the menu cannot read the task either, it still opens, and a task of no known model is
+  // not let through on a subscription that reads "Limit reached".
+  await browser.keyboard.press('Escape');
+  await expect(screen.getByText('Run #12 on…')).toHaveCount(0);
+  await browser.evaluate(() => { (window as unknown as { __yuliusMock: { failNextDetail?: boolean } }).__yuliusMock.failNextDetail = true; });
+  await chip.click();
+  await expect(screen.getByRole('menuitem', /^Claude #5\s*At its usage limit/)).toHaveAttribute('aria-disabled', 'true');
+  await expect(screen.getByRole('menuitem', /^Claude #4\s*5 h 12% · week 33%/)).toBeVisible();
+  await browser.evaluate(() => (window as unknown as Holding).__releaseDetail?.());
+});
+
+test('"Run #N on…" judges a subscription by the windows that bind the task\'s model (unit, in the page; SPEC-464)', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const reasons = await browser.evaluate(async () => {
+    const url = '/assets/actions.js';
+    const { cannotTake } = await import(url);
+    const ahead = new Date(Date.now() + 3600e3).toISOString();
+    const past = new Date(Date.now() - 3600e3).toISOString();
+    const w = (used, resets_at = ahead) => ({ used_percent: used, resets_at, window_minutes: 10080 });
+    // "Limited" because the default model's allowance is used up; its own windows have room.
+    const fableOut = { status: 'limited', usage: { primary: w(10), secondary: w(20), weekly_fable: w(100) } };
+    const opus = { model: 'claude-opus-5-5' };
+    return {
+      fableTaskOnFableOut: cannotTake(fableOut, { model: 'claude-fable-5-2' }),
+      opusTaskOnFableOut: cannotTake(fableOut, opus),
+      unknownModelOnFableOut: cannotTake(fableOut, {}),
+      opusTaskOnOpusOut: cannotTake({ status: 'ok', usage: { primary: w(10), weekly_opus: w(100) } }, opus),
+      weekUsedUp: cannotTake({ status: 'limited', usage: { secondary: w(100) } }, opus),
+      // A limit of the whole subscription binds every model, whatever else is used up beside it.
+      limitOfTheSubscription: cannotTake({ status: 'limited', usage: { primary: w(10), limit_reached: true, limit_resets_at: ahead } }, opus),
+      limitOfTheSubscriptionAndFableOut: cannotTake({ status: 'limited', usage: { limit_reached: true, limit_resets_at: null, weekly_fable: w(100) } }, opus),
+      limitPastItsReset: cannotTake({ status: 'ok', usage: { primary: w(10), limit_reached: true, limit_resets_at: past } }, opus),
+      windowPastItsReset: cannotTake({ status: 'ok', usage: { primary: w(100, past) } }, opus),
+      needsSignIn: cannotTake({ status: 'relogin', usage: {} }, opus),
+      room: cannotTake({ status: 'ok', usage: { primary: w(40), secondary: w(12) } }, { model: 'claude-fable-5-2' }),
+    };
+  });
+  expect(reasons).toEqual({
+    fableTaskOnFableOut: 'At its usage limit',
+    opusTaskOnFableOut: null,
+    unknownModelOnFableOut: 'At its usage limit',
+    opusTaskOnOpusOut: 'At its usage limit',
+    weekUsedUp: 'At its usage limit',
+    limitOfTheSubscription: 'At its usage limit',
+    limitOfTheSubscriptionAndFableOut: 'At its usage limit',
+    limitPastItsReset: null,
+    windowPastItsReset: null,
+    needsSignIn: 'Needs a new sign-in',
+    room: null,
+  });
+});
+
+// "Limit reached" also means only the default model's own window is used up (SPEC-464), so the
+// status line for a pool whose every subscription reads so does not claim that nothing can run.
+test('the status line of a pool at its limits says so without claiming nothing runs (SPEC-464)', async ({ app, browser }) => {
+  await app.open(mock('/s/studio', '&ambient=0'));
+  await browser.evaluate(() => {
+    const db = (window as unknown as { __yuliusMock: { accounts: { status: string }[] } }).__yuliusMock;
+    for (const account of db.accounts) account.status = 'limited';
+  });
+  await browser.locator('.btn-status').click();
+  await expect(browser.locator('.status-pop .status-health')).toHaveText('Every subscription is at a usage limit: tasks continue when a window resets');
 });
 
 test('the Tasks list says which subscription each task runs on (SPEC-447 MOV-004)', async ({ app, browser }) => {

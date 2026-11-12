@@ -5,7 +5,9 @@
 //! into the task (a person answered, or did it and said so) or the agent calls
 //! `needs_you {resolved: true}`. A request Yulius opens itself for a state of the task also ends
 //! when that state does: "no subscription left" when the task runs again (SPEC-447), a goal
-//! pause's when the agent works again (SPEC-469, ADR-0304).
+//! pause's when the agent works again (SPEC-469, ADR-0304), and one for a usage limit nothing
+//! says the end of likewise; both also when Yulius takes the task on at a usage limit, by a
+//! move past it or a wait it resumes from (SPEC-464).
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};

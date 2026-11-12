@@ -60,8 +60,8 @@ pub enum UiEvent {
     /// An account changed.
     #[serde(rename = "account.updated")]
     AccountUpdated {
-        /// New account view.
-        account: AccountView,
+        /// New account view (boxed: it is by far the largest payload; the JSON is the same).
+        account: Box<AccountView>,
     },
     /// An instance update changed (a new `main` was found, or a run moved): clients refetch
     /// `GET /api/update` (SPEC-002 ADR-18). `phase` is the running update's phase, if any.
