@@ -388,8 +388,8 @@ fn a_plan_runs_the_command_once_and_reports_how_it_ended() -> TestResult {
 #[test]
 fn a_request_that_cannot_be_recorded_is_not_run() -> TestResult {
     let env = Env::new()?;
-    // Where the taken request's id is kept there is something that cannot be replaced.
-    std::fs::create_dir_all(env.args.state_dir.join("last-request").join("kept"))?;
+    // Where the taken requests' ids are kept there is something that cannot be replaced.
+    std::fs::create_dir_all(env.args.state_dir.join(HANDLED_FILE).join("kept"))?;
     env.request(&plan("0123abcd-plan"))?;
     let said = env.helper().run().err().ok_or("the helper ended well")?;
     assert!(said.contains("cannot record the request"), "{said}");
@@ -404,6 +404,82 @@ fn a_request_that_cannot_be_recorded_is_not_run() -> TestResult {
     assert_eq!(env.said()?.state, MoveHelperState::Refused);
     assert_eq!(env.runs(), 0);
     Ok(())
+}
+
+/// MVB-003: an id is acted on once, also when other requests were handled since: the helper
+/// remembers every id for as long as its request could still be taken.
+#[test]
+fn a_request_handled_before_another_is_not_acted_on_again() -> TestResult {
+    let env = Env::new()?;
+    let first = plan("0123abcd-first");
+    env.request(&first)?;
+    env.run()?;
+    env.request(&plan("0123abcd-second"))?;
+    env.run()?;
+    assert_eq!(env.runs(), 2);
+    // The first again, still fresh, from whoever kept a copy of it.
+    env.request(&first)?;
+    env.run()?;
+    assert_eq!(env.runs(), 2, "an earlier request was acted on again");
+    assert_eq!(env.said()?.id, "0123abcd-second");
+    // A refusal in between is remembered beside them, not instead of them.
+    let mut bad = serde_json::to_value(plan("0123abcd-bad"))?;
+    bad["ssh_port"] = 0.into();
+    env.raw_request(&serde_json::to_vec(&bad)?)?;
+    env.run()?;
+    assert_eq!(env.said()?.state, MoveHelperState::Refused);
+    for again in [&first, &plan("0123abcd-second")] {
+        let again = MoveRequest {
+            requested_at: again.requested_at,
+            ..(*again).clone()
+        };
+        env.request(&again)?;
+        env.run()?;
+    }
+    assert_eq!(env.runs(), 2);
+    assert_eq!(
+        env.said()?.id,
+        "0123abcd-bad",
+        "the refusal's report was replaced"
+    );
+    // Only root reads what it handled.
+    let mode = std::fs::metadata(env.args.state_dir.join(HANDLED_FILE))?
+        .permissions()
+        .mode()
+        & 0o7777;
+    assert_eq!(mode, 0o600);
+    Ok(())
+}
+
+/// MVB-003: an id is forgotten once its request could no longer be taken (it would be refused
+/// as stale), lines that are not the helper's are ignored, and the list stays bounded.
+#[test]
+fn handled_ids_are_kept_while_their_request_could_be_taken() {
+    let text = format!(
+        "{} 0123abcd-old\n{} 0123abcd-fresh\nnot a line\n\n12 \n{} with spaces in it\n",
+        NOW - 1,
+        NOW,
+        NOW + 5
+    );
+    assert_eq!(
+        still_handled(&text, NOW),
+        [(NOW, "0123abcd-fresh".to_owned())]
+    );
+    // Kept until the request is stale by the helper's own clock, however it was dated.
+    assert_eq!(
+        handled_until(NOW),
+        NOW + REQUEST_TTL_MS + yulius_contracts::migrate::REQUEST_AHEAD_MS
+    );
+    let many: String = (0..KEPT_REQUESTS + 10)
+        .map(|n| format!("{} 0123abcd-{n}\n", NOW + n as i64))
+        .collect();
+    let kept = with_handled(&many, "0123abcd-new", NOW);
+    assert_eq!(kept.lines().count(), KEPT_REQUESTS);
+    assert!(kept.ends_with(&format!("{} 0123abcd-new\n", handled_until(NOW))));
+    assert!(!kept.contains(" 0123abcd-0\n"), "the oldest stayed");
+    // The same id again replaces its line.
+    let twice = with_handled(&kept, "0123abcd-new", NOW + 1);
+    assert_eq!(twice.matches("0123abcd-new").count(), 1);
 }
 
 /// MVB-003: a request that breaks a rule runs nothing; its report gives the reason without the

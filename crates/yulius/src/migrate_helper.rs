@@ -194,6 +194,44 @@ pub fn command_args(args: &MoveHelperArgs, request: &MoveRequest) -> Vec<String>
     argv
 }
 
+/// The ids the helper acted on, in its state directory: a line `<until> <id>` each.
+const HANDLED_FILE: &str = "handled";
+/// Ids kept at most: more than a person asks in the quarter of an hour an id is kept.
+const KEPT_REQUESTS: usize = 1024;
+
+/// Until when (ms) an id handled at `now` is kept: as long as a request the helper took at
+/// `now` could be taken again. It was dated at most [`REQUEST_AHEAD_MS`] ahead of `now`, and is
+/// refused as stale [`REQUEST_TTL_MS`] after its date.
+fn handled_until(now: i64) -> i64 {
+    now.saturating_add(REQUEST_TTL_MS)
+        .saturating_add(REQUEST_AHEAD_MS)
+}
+
+/// The ids of `text` that are still kept at `now`, oldest first. A line that is not the
+/// helper's own is ignored.
+fn still_handled(text: &str, now: i64) -> Vec<(i64, String)> {
+    text.lines()
+        .filter_map(|line| {
+            let (until, id) = line.split_once(' ')?;
+            let until: i64 = until.parse().ok()?;
+            (until >= now && rules::valid_id(id)).then(|| (until, id.to_owned()))
+        })
+        .collect()
+}
+
+/// `text` with `id` handled at `now`: the ids still kept, then this one, the newest
+/// [`KEPT_REQUESTS`] of them.
+fn with_handled(text: &str, id: &str, now: i64) -> String {
+    let mut kept = still_handled(text, now);
+    kept.retain(|(_, handled)| handled != id);
+    kept.push((handled_until(now), id.to_owned()));
+    let from = kept.len().saturating_sub(KEPT_REQUESTS);
+    kept[from..]
+        .iter()
+        .map(|(until, id)| format!("{until} {id}\n"))
+        .collect()
+}
+
 /// A line of the command as a report may hold it: no control characters, bounded.
 fn plain(line: &str) -> String {
     line.chars()
@@ -334,13 +372,18 @@ impl Helper {
         })
     }
 
+    /// Whether `id` was acted on (or refused) while its request could still be taken.
     fn already_handled(&self, id: &str) -> bool {
-        std::fs::read_to_string(self.state("last-request")).is_ok_and(|last| last.trim() == id)
+        let text = std::fs::read_to_string(self.state(HANDLED_FILE)).unwrap_or_default();
+        still_handled(&text, now_ms())
+            .iter()
+            .any(|(_, handled)| handled == id)
     }
 
     fn mark_handled(&self, id: &str) -> Result<(), String> {
-        let path = self.state("last-request");
-        write_atomic(&path, id.as_bytes(), 0o600)
+        let path = self.state(HANDLED_FILE);
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        write_atomic(&path, with_handled(&text, id, now_ms()).as_bytes(), 0o600)
             .map_err(|err| format!("cannot record the request in {}: {err}", path.display()))
     }
 
