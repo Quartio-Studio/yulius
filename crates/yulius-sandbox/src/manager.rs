@@ -1456,6 +1456,7 @@ impl Manager {
     }
 
     /// Adopts holders a previous server process started; removes the records of dead ones.
+    /// The holders of a Docker smoke test that still runs are left to it ([`smoke_runs`]).
     pub async fn adopt(&self) -> usize {
         let root = self.config.data_dir.join("runtime").join("sandboxes");
         let Ok(entries) = std::fs::read_dir(&root) else {
@@ -1464,6 +1465,10 @@ impl Manager {
         let mut adopted = 0;
         for entry in entries.flatten().take(10_000) {
             let sandbox = entry.file_name().to_string_lossy().into_owned();
+            if smoke_runs(&sandbox) {
+                tracing::info!(sandbox, "left to the Docker smoke test that runs");
+                continue;
+            }
             if self.adopt_one(&sandbox).await {
                 adopted += 1;
             }
@@ -1925,6 +1930,16 @@ impl Manager {
             Instant::now().checked_sub(age).unwrap_or_else(Instant::now),
         ));
     }
+}
+
+/// Whether `sandbox` is the throwaway sandbox of a Docker smoke test that still runs, or its
+/// production holder: `docker-smoke-<pid>[.prod]` while process `<pid>` lives (the leftovers
+/// scan's rule). A server that starts beside the smoke must not take them (SPEC-477 SMK-001,
+/// ADR-0308, #1160): the smoke starts its holder with Docker off and reads the refusal, and an
+/// adopting server replaced that refusing front with its own engine front. Once the process is
+/// gone they are holders like any other.
+fn smoke_runs(sandbox: &str) -> bool {
+    yulius_domain::leftovers::smoke_pid(sandbox).is_some_and(crate::holder::exists)
 }
 
 /// What [`Manager::keep_front`] does with a sandbox's front.
