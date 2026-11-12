@@ -1641,6 +1641,24 @@ fn a_recorded_start_freezes_whatever_unit_runs_beside_the_new_instance() -> Test
     assert!(!s.events().iter().any(|e| e.contains("thaw")));
     assert_eq!(units(&s)?, (false, Some(true)));
 
+    // Neither unit can be frozen: both are named in the way out.
+    let mut s = killed_while_starting()?;
+    if let Ok(mut unit) = s.world.systemd.lock() {
+        unit.frozen = false;
+        unit.no_freeze = true;
+    }
+    sessions(&s, false)?;
+    assert_eq!(s.run()?, 1);
+    assert!(
+        s.shown().contains(
+            "stop it for good instead: `systemctl stop yulius.service yulius-sandboxes.service; \
+             systemctl kill --kill-who=all --signal=SIGKILL yulius.service \
+             yulius-sandboxes.service`"
+        ),
+        "{}",
+        s.shown()
+    );
+
     // The sessions unit cannot be frozen: never exit 0, both units named in what to do, and
     // nothing thawed.
     let mut s = killed_while_starting()?;
@@ -1736,12 +1754,14 @@ fn a_recorded_start_with_a_stopped_server_freezes_its_sessions() -> TestResult {
             !frozen,
             "{shown}"
         );
+        // The stopped server's unit alone: its sessions unit is frozen, and a frozen unit is
+        // never named to be stopped or killed (SPEC-481 HLD-009).
         assert!(
             shown.contains(
                 "yulius.service does not run here any more, and the new instance runs. Make \
-                 sure nothing of the old one runs here: `systemctl stop yulius.service \
-                 yulius-sandboxes.service; systemctl kill --kill-who=all --signal=SIGKILL \
-                 yulius.service yulius-sandboxes.service; systemctl disable yulius.service`"
+                 sure nothing of the old one runs here: `systemctl stop yulius.service; \
+                 systemctl kill --kill-who=all --signal=SIGKILL yulius.service; systemctl \
+                 disable yulius.service`"
             ),
             "{shown}"
         );
@@ -3384,7 +3404,35 @@ fn a_later_run_looks_at_the_sessions_unit_too() -> TestResult {
         "{}",
         s.shown()
     );
-    s.world.systemd.lock().map_err(|e| e.to_string())?.frozen = true;
+    // The server's unit thawed beside frozen sessions: it alone is named.
+    sessions(&s, true)?;
+    looks_and_fails(&mut s, "yulius.service is not frozen as a whole")?;
+    assert!(s.shown().contains(STOP_FOR_GOOD_LATER), "{}", s.shown());
+    // On its way up or down beside frozen sessions: not frozen either, and named.
+    s.world.systemd.lock().map_err(|e| e.to_string())?.starting = true;
+    looks_and_fails(&mut s, "yulius.service is not frozen as a whole")?;
+    assert!(s.shown().contains(STOP_FOR_GOOD_LATER), "{}", s.shown());
+    // Stopped beside sessions that run: both are named, the stopped one too (it is not held
+    // by a freeze, and what a stop left of it is ended by the same kill).
+    if let Ok(mut unit) = s.world.systemd.lock() {
+        unit.starting = false;
+        unit.stopped = true;
+    }
+    sessions(&s, false)?;
+    looks_and_fails(&mut s, "yulius.service is not frozen as a whole")?;
+    assert!(
+        s.shown().contains(
+            "stop it for good instead: `systemctl stop yulius.service yulius-sandboxes.service; \
+             systemctl kill --kill-who=all --signal=SIGKILL yulius.service \
+             yulius-sandboxes.service; systemctl disable yulius.service`"
+        ),
+        "{}",
+        s.shown()
+    );
+    if let Ok(mut unit) = s.world.systemd.lock() {
+        unit.stopped = false;
+        unit.frozen = true;
+    }
     sessions(&s, true)?;
     looks_and_finishes(&mut s, HELD_FROZEN)?;
 
