@@ -23,7 +23,8 @@ const PAGE = '/admin/instance';
 const PHASES = [
   ['Plan', 'Plan', 'Both hosts are checked again. Nothing is changed.'],
   ['Prepare', 'Prepare', `The new host is set up while ${BRAND.name} keeps working here.`],
-  ['Cutover', 'Cutover', `${BRAND.name} is frozen, its data is copied and proven, and the new instance is started.`],
+  ['Copy', 'Copy', `${BRAND.name} keeps working while its data is copied to the new host.`],
+  ['Cutover', 'Cutover', `${BRAND.name} is frozen for what changed since, the copy is proven, and the new instance is started.`],
   ['Finish', 'Finish', 'This address is redirected and the move’s key is removed.'],
 ];
 
@@ -53,10 +54,13 @@ export function summary(lines) {
   return `changed ${count('changed')}, left alone ${count('ok')}, manual ${count('manual')}, failed ${count('failed')}`;
 }
 
-/** What the plan said about the time frozen, if it measured the link. */
+/**
+ * What the move last said about the time frozen: the plan's first estimate, then the one the
+ * copy measured before the freeze (SPEC-465).
+ */
 export function estimate(lines) {
-  const line = (lines || []).find((l) => l.name === 'downtime' && l.outcome !== 'failed');
-  return line ? line.detail : '';
+  const said = (lines || []).filter((l) => l.name === 'downtime' && l.outcome !== 'failed');
+  return said.length ? said[said.length - 1].detail : '';
 }
 
 /** A new public URL as the move decides one (`https://host`), or null: nothing else is linked. */
@@ -342,8 +346,8 @@ export function moveCard(ctx) {
     }
     return h('div', { class: 'banner banner-info move-frozen', role: 'status' }, h('span', { class: 'spinner', 'aria-hidden': 'true' }),
       h('div', { class: 'banner-text' },
-        h('strong', null, `${BRAND.name} is frozen while its data is copied to ${host}.`),
-        h('p', null, `Nothing answers here meanwhile. ${followed.estimate ? `The plan said: ${followed.estimate}. ` : ''}This page keeps trying and shows what answers: ${BRAND.name} on the new host, or here again if the move did not complete.`)));
+        h('strong', null, `${BRAND.name} is frozen while the last changes are sent to ${host} and the copy is proven.`),
+        h('p', null, `Nothing answers here meanwhile. ${followed.estimate ? `The estimate: ${followed.estimate}. ` : ''}This page keeps trying and shows what answers: ${BRAND.name} on the new host, or here again if the move did not complete.`)));
   }
 
   function actions(view) {
@@ -539,9 +543,9 @@ export function moveCard(ctx) {
       message: h('div', { class: 'stack-sm' },
         h('p', null, 'Root on this host will give this instance’s data to ', h('strong', null, values.target), `: every repository, every secret and key, and the settings of its service. ${BRAND.name} is started there, and this host keeps a frozen copy.`),
         h('ol', { class: 'update-confirm-steps' },
-          h('li', null, `The new host is set up while ${BRAND.name} keeps working here.`),
-          h('li', null, `${BRAND.name} is frozen for the copy: every task and terminal pauses and nothing answers here.${said ? ` The plan said: ${said}.` : ''}`),
-          h('li', null, 'The copy is proven and the new instance started. Until that start a failure, or an abort, leaves everything running here.'),
+          h('li', null, `The new host is set up, and the data is copied there, while ${BRAND.name} keeps working here.`),
+          h('li', null, `${BRAND.name} is frozen only for what changed since, the proof of the copy and the start there: every task and terminal pauses and nothing answers here.${said ? ` The plan said: ${said}.` : ''}`),
+          h('li', null, 'Until the new instance is started a failure, or an abort, leaves everything running here.'),
           yours ? h('li', null, `${plural(yours, 'step')} of the plan ${yours === 1 ? 'is' : 'are'} yours (marked “yours”): a DNS record, the GitHub App, what is not carried.`) : null)),
       confirmLabel: again ? 'Continue the move' : 'Run migration',
       danger: true,
@@ -561,6 +565,7 @@ export function moveCard(ctx) {
           h('li', null, `${BRAND.name} keeps running on this host; if the move had frozen it, it is thawed.`),
           h('li', null, 'The move’s one-time key is removed from the new host and deleted here, and the recorded move is forgotten.'),
           h('li', null, 'What was already installed on the new host (packages, the service’s unit, the proxy’s configuration, a data disk) stays there.'),
+          h('li', null, 'Data that was already copied stays there too, with master.key and every secret: the checklist then says to remove it.'),
           h('li', null, 'If the new instance had been started, it is stopped and disabled there first. When the new host cannot be reached, the abort stops and names the command to run on this host: it never guesses that the new instance is stopped.'))),
       confirmLabel: 'Abort the move',
       danger: true,

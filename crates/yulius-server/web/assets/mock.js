@@ -4764,8 +4764,9 @@ function migrationState(mode) {
     // `holdReads = true`: each read answers what it saw when it arrived, once `releaseReads()`
     // lets it go (`holds` are those waiting).
     holdReads: false, holds: [],
-    // `holdAt = 'Prepare' | 'frozen'`: a move stays in its preparation, or frozen, for as long
-    // as a test looks at that state; any other value lets it go on.
+    // `holdAt = 'Prepare' | 'Copy' | 'frozen'`: a move stays in its preparation, in its copy
+    // (the instance answers), or frozen, for as long as a test looks at that state; any other
+    // value lets it go on.
     holdAt: null,
     // `probeHangs = true`: while frozen, a request that follows no redirect is never answered.
     probeHangs: false,
@@ -4786,7 +4787,7 @@ function movePlanLines(values) {
       ? `will make ${disks.length === 2 ? 'a mirror' : 'ext4'} of ${disks.join(' and ')} for the data directory (275.8 GiB to copy)`
       : '1.8 TiB free where the data directory goes, at most 275.8 GiB to copy'),
     moveLine('link', 'ok', '112.0 MiB/s to the new host'),
-    moveLine('downtime', 'ok', 'about 44 min frozen: up to 275.8 GiB at that rate, then the start; the old instance answers nothing meanwhile'),
+    moveLine('downtime', 'ok', 'the instance runs during the copy (about 42 min for up to 275.8 GiB at that rate); then it is frozen for about 9 min: up to 6388083 entries are counted four times (about 55000 a second here, twice on each host), what changed during the last pass is sent, and the new instance starts. It is measured again before the freeze'),
     moveLine('public URL', 'manual', `${url} (was ${ORIGIN}): ${host} leads to nowhere, not to ${MOVE_ADDRESS}. Change its DNS record when the checklist says the new instance runs (lower its TTL now)`),
     moveLine('GitHub App', 'manual', `GitHub does not accept the new sign-in address yet: open https://github.com/organizations/Quartio-Studio/settings/apps/yulius-quartio-studio and add the callback URL ${url}/api/auth/github/callback and the homepage ${url}`),
     moveLine('packages', 'ok', '43 packages of the old host are installed while preparing'),
@@ -4804,9 +4805,15 @@ const MOVE_PREPARE = [
   moveLine('unit', 'changed', 'wrote the unit, 2 drop-ins and the environment file'),
   moveLine('reverse proxy', 'changed', 'Caddy serves the new host name'),
 ];
+// The warm copy (SPEC-465): passes while the instance runs, then the estimate it measured.
+const MOVE_COPY = [
+  moveLine('copy', 'changed', 'pass 1: 6388083 of 6388083 entries sent (275.8 GiB) in 42 min while the instance runs; the new host: 6388083 changed entries installed; checksum as announced'),
+  moveLine('copy', 'changed', 'pass 2: 1204 of 6388083 entries sent (310.4 MiB) in 2 min while the instance runs; the new host: 1204 changed entries installed; checksum as announced'),
+  moveLine('downtime', 'ok', 'about 9 min frozen: the entries are counted four times (116 s each, twice on each host), what changes meanwhile takes about 6 s to send, the new host’s sync 3 s, and the start about 20 s'),
+];
 const MOVE_CUTOVER = [
   moveLine('old instance', 'changed', 'yulius.service is frozen: every Yulius process is paused until the new one runs'),
-  moveLine('copy', 'changed', 'installed 6388083 entries'),
+  moveLine('copy', 'changed', 'the frozen pass: 37 of 6388083 entries sent (2.1 MiB); the new host: 37 changed entries installed, 0 removed that the old host no longer holds; checksum and length as announced'),
   moveLine('copy proven', 'ok', '6388083 entries and 275.8 GiB in 14 folders, the same on both hosts'),
   moveLine('new instance', 'changed', 'yulius.service runs build 9c1e7d3'),
   moveLine('old instance', 'changed', 'yulius.service stays frozen and is disabled: it never runs beside the new one'),
@@ -4934,8 +4941,15 @@ function moveSteps(db, values) {
     });
   }
   steps.push(() => {
-    // The page reads the preparation before the instance stops answering.
+    // The page reads the preparation before the copy begins.
     if (!m.seen.Prepare || m.holdAt === 'Prepare') return 'again';
+    moveSay(db, 'Copy', MOVE_COPY[0]);
+    return undefined;
+  });
+  for (const line of MOVE_COPY.slice(1)) steps.push(() => moveSay(db, 'Copy', line));
+  steps.push(() => {
+    // The instance answers during the copy: the page reads it before anything freezes.
+    if (!m.seen.Copy || m.holdAt === 'Copy') return 'again';
     // The cutover freezes the instance: nothing answers until the new one runs.
     moveSay(db, 'Cutover', MOVE_CUTOVER[0]);
     m.frozen = true;

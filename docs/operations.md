@@ -1733,20 +1733,26 @@ on the old host; without it the card says so and names the command above.
 2. **Run migration…** names the host that root will give the instance's data to (every repository,
    secret and key) and the freeze the plan estimated, and is confirmed by typing the host's name.
    It is the plan that was shown: the same host, port, URL and disks, shown at most an hour ago
-   (else show it again). The card then shows the phases and the checklist as it grows.
-3. **While the instance is frozen** nothing answers, the page included: the card says so, keeps
-   the last checklist and keeps trying. With the same public URL the new instance answers the
-   page once the name leads to it, and the card shows **the finished checklist**. With another
-   URL the old address redirects: the card links to the same page at the new address, where you
-   sign in again (a sign-in belongs to one address) and find the finished checklist. If the move
-   did not complete, the old instance answers again and the card says where it stopped, with
+   (else show it again). The card then shows the phases and the checklist as it grows: the new
+   host is prepared and the data copied while the instance keeps working (the phases Prepare and
+   Copy), and only then it freezes. The page asks for no bound on the freeze: the move decides
+   as the command does without `--max-downtime` (it copies again while that shortens the
+   freeze). Use the command to set one.
+3. **While the instance is frozen** for the last changes, the proof of the copy and the start on
+   the new host, nothing answers, the page included: the card says so with the estimate the copy
+   measured, keeps the last checklist and keeps trying. With the same public URL the new instance
+   answers the page once the name leads to it, and the card shows **the finished checklist**. With
+   another URL the old address redirects: the card links to the same page at the new address, where
+   you sign in again (a sign-in belongs to one address) and find the finished checklist. If the
+   move did not complete, the old instance answers again and the card says where it stopped, with
    **Continue the move…** (the same values, the same confirmation) and **Abort…**.
-4. **Abort…** says what it does first: a run in flight is stopped (before the new instance's
-   start is ordered that leaves everything running here; after it the command finishes by
-   itself), then `--abort` runs as above, without `--yes`: when it needs a person's word that the
-   new instance is stopped, the checklist names the command to run on this host. After a
-   finished move the old instance is frozen and cannot be asked: go back with `sudo yulius
-   instance migrate --abort` on the old host.
+4. **Abort…** says what it does first: a run in flight is stopped (before the new instance's start
+   is ordered that leaves everything running here; after it the command finishes by itself), then
+   `--abort` runs as above, without `--yes`: when it needs a person's word that the new instance is
+   stopped, the checklist names the command to run on this host. Data that was already copied stays
+   on the new host with `master.key` and every secret: the abort's checklist says to remove it
+   there. After a finished move the old instance is frozen and cannot be asked: go back with `sudo
+   yulius instance migrate --abort` on the old host.
 
 Only the superadmin sees the card (403 for everyone else); every plan, move and abort is in the
 audit log (`migration.planned`, `migration.started`, `migration.aborted`: who, the host, the

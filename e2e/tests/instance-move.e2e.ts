@@ -23,13 +23,15 @@ const API = '/api/admin/instance/migration';
 const HOST = 'new.yulius.example';
 const TARGET = `root@${HOST}`;
 const URL = `https://${HOST}`;
+/** What the card says while nothing answers: the copy ran before, the freeze is for the rest. */
+const FROZEN = `Yulius is frozen while the last changes are sent to ${HOST} and the copy is proven.`;
 /** A quick card and a quick helper: what a test waits for arrives within its usual budget. */
 const QUICK = '&movepoll=200';
 
 const pace = (browser: Browser, stepMs: number) => browser.evaluate((ms: number) => {
   (window as unknown as MoveMock).__yuliusMock.migration.stepMs = ms;
 }, stepMs);
-/** A move stays in its preparation (`Prepare`), or frozen (`frozen`), while a test looks; `null` lets it go on. */
+/** A move stays in its preparation (`Prepare`), in its copy (`Copy`), or frozen (`frozen`), while a test looks; `null` lets it go on. */
 const holdAt = (browser: Browser, state: string | null) => browser.evaluate((at: string | null) => {
   (window as unknown as MoveMock).__yuliusMock.migration.holdAt = at;
 }, state);
@@ -117,7 +119,9 @@ test('the plan asks for the key first, then says what is yours, and a move needs
   const dialog = screen.getByRole('dialog', /^Move Yulius to new\.yulius\.example\?$/);
   await expect(dialog.getByText(/Root on this host will give this instance’s data to root@new\.yulius\.example: every repository, every secret and key/)).toBeVisible();
   await expect(dialog.getByText(/this host keeps a frozen copy/)).toBeVisible();
-  await expect(dialog.getByText(/The plan said: about 44 min frozen/)).toBeVisible();
+  // The copy runs while the instance works (SPEC-465): the freeze is for the rest.
+  await expect(dialog.getByText('The new host is set up, and the data is copied there, while Yulius keeps working here.')).toBeVisible();
+  await expect(dialog.getByText(/Yulius is frozen only for what changed since, the proof of the copy and the start there: every task and terminal pauses and nothing answers here\. The plan said: the instance runs during the copy \(about 42 min .*then it is frozen for about 9 min/)).toBeVisible();
   await expect(dialog.getByText(/2 steps of the plan are yours/)).toBeVisible();
   const go = dialog.getByRole('button', 'Run migration');
   await expect(go).toBeDisabled();
@@ -170,10 +174,23 @@ test('a move shows its checklist, says when the instance is frozen, and ends on 
   await expect(c.getByRole('button', 'Abort…')).toBeVisible();
   expect(await axeViolations(browser)).toEqual([]);
 
-  // Nothing answers: the card says why, keeps the checklist and keeps trying.
+  // The data is copied while the instance answers: the phase is named, its passes are lines,
+  // and nothing is said frozen.
+  await holdAt(browser, 'Copy');
+  await expect.poll(() => browser.evaluate(() => {
+    const step = document.querySelector<HTMLElement>('section.move .move-phases .update-step-current');
+    return step ? step.innerText : '';
+  })).toMatch(/^Copy[\s\S]*Yulius keeps working while its data is copied to the new host\./);
+  await expect.poll(() => lineNames(browser)).toContain('copy');
+  await expect(c.getByText(`Moving to ${HOST}`)).toBeVisible();
+  await expect(c.getByText(FROZEN)).toBeHidden();
+  await expect(c.getByRole('button', 'Abort…')).toBeVisible();
+
+  // Nothing answers: the card says why, with the estimate the copy measured, keeps the
+  // checklist and keeps trying.
   await holdAt(browser, 'frozen');
-  await expect(c.getByText(`Yulius is frozen while its data is copied to ${HOST}.`)).toBeVisible();
-  await expect(c.getByText(/Nothing answers here meanwhile\. The plan said: about 44 min frozen.*This page keeps trying/)).toBeVisible();
+  await expect(c.getByText(FROZEN)).toBeVisible();
+  await expect(c.getByText(/Nothing answers here meanwhile\. The estimate: about 9 min frozen: the entries are counted four times.*This page keeps trying/)).toBeVisible();
   expect(await lineNames(browser)).toContain('software');
   await expect(c.getByRole('button', 'Abort…')).toBeHidden();
   expect(await axeViolations(browser)).toEqual([]);
@@ -181,10 +198,10 @@ test('a move shows its checklist, says when the instance is frozen, and ends on 
   // The name leads to the new host: the new instance answers with the finished checklist.
   await holdAt(browser, null);
   await expect(c.getByText('The move finished: Yulius now runs on the new host.')).toBeVisible({ timeout: 15000 });
-  await expect(c.getByText(`Yulius is frozen while its data is copied to ${HOST}.`)).toBeHidden();
-  await expect(c.getByText(/^Yulius was moved to this host .*changed 11, left alone 15, manual 4, failed 0\.$/)).toBeVisible();
+  await expect(c.getByText(FROZEN)).toBeHidden();
+  await expect(c.getByText(/^Yulius was moved to this host .*changed 13, left alone 16, manual 4, failed 0\.$/)).toBeVisible();
   // It came from another address, which is named (the mock's own address, before the move).
-  expect(await cardText(browser)).toMatch(/Yulius was moved to this host .*, from http:\/\/127\.0\.0\.1:\d+\. changed 11/);
+  expect(await cardText(browser)).toMatch(/Yulius was moved to this host .*, from http:\/\/127\.0\.0\.1:\d+\. changed 13/);
   const still = await browser.evaluate(() => {
     const el = document.querySelector<HTMLElement>('section.move .move-arrived .move-attention-list');
     return el ? el.innerText : '';
@@ -192,7 +209,7 @@ test('a move shows its checklist, says when the instance is frozen, and ends on 
   expect(still).toMatch(/old host: it keeps a frozen copy with master\.key and every secret/);
   expect(still).toMatch(/public URL: /);
   const finished = await lineNames(browser, '.move-arrived .move-lines');
-  expect(finished).toHaveLength(30);
+  expect(finished).toHaveLength(33);
   expect(finished.slice(-2)).toEqual(['remote clients', 'old host']);
   // The new instance moves like any other: its form is ready, nothing of the old host's run.
   await expect(c.getByRole('button', 'Show the plan')).toBeEnabled();
@@ -209,11 +226,11 @@ test('when the old address redirects, the card links to the instance at its new 
   await showThePlan(screen);
   await holdAt(browser, 'frozen');
   await runMigration(screen);
-  await expect(c.getByText(`Yulius is frozen while its data is copied to ${HOST}.`)).toBeVisible({ timeout: 15000 });
+  await expect(c.getByText(FROZEN)).toBeVisible({ timeout: 15000 });
   await holdAt(browser, null);
   await expect(c.getByText(`Yulius now runs at ${URL}.`)).toBeVisible({ timeout: 15000 });
   await expect(c.getByText(/This address redirects there\. Sign in again at the new address/)).toBeVisible();
-  await expect(c.getByText(`Yulius is frozen while its data is copied to ${HOST}.`)).toBeHidden();
+  await expect(c.getByText(FROZEN)).toBeHidden();
   const link = await browser.evaluate(() => {
     const a = document.querySelector<HTMLAnchorElement>('section.move .move-moved a.btn');
     return a ? { text: a.innerText.trim(), href: a.href } : null;
@@ -238,7 +255,7 @@ test('a frozen instance that never answers is said at once, and the card keeps t
     m.holdAt = 'frozen';
   });
   await runMigration(screen);
-  await expect(c.getByText(`Yulius is frozen while its data is copied to ${HOST}.`)).toBeVisible({ timeout: 15000 });
+  await expect(c.getByText(FROZEN)).toBeVisible({ timeout: 15000 });
   await expect(c.getByText(`Moving to ${HOST}`)).toBeHidden();
   // It still asks: the mock counts the reads that found nothing, also after the first one.
   const missed = () => browser.evaluate(() => (window as unknown as MoveMock).__yuliusMock.migration.missed);
@@ -279,7 +296,7 @@ test('a move that does not complete is continued or aborted, and the abort says 
   await showThePlan(screen);
   await holdAt(browser, 'frozen');
   await runMigration(screen);
-  await expect(c.getByText(`Yulius is frozen while its data is copied to ${HOST}.`)).toBeVisible({ timeout: 15000 });
+  await expect(c.getByText(FROZEN)).toBeVisible({ timeout: 15000 });
   await holdAt(browser, null);
 
   // The old instance answers again: what failed first, then the whole checklist.
@@ -308,6 +325,7 @@ test('a move that does not complete is continued or aborted, and the abort says 
   await expect(dialog.getByText(/Yulius keeps running on this host; if the move had frozen it, it is thawed\./)).toBeVisible();
   await expect(dialog.getByText(/The move’s one-time key is removed from the new host and deleted here/)).toBeVisible();
   await expect(dialog.getByText(/What was already installed on the new host .* stays there\./)).toBeVisible();
+  await expect(dialog.getByText('Data that was already copied stays there too, with master.key and every secret: the checklist then says to remove it.')).toBeVisible();
   await expect(dialog.getByText(/it never guesses that the new instance is stopped/)).toBeVisible();
   await expect(dialog.getByText(/The run in flight is stopped first\./)).toBeHidden();
   expect(await axeViolations(browser)).toEqual([]);
@@ -388,7 +406,7 @@ test('a plan with a failed line offers no move, and a failed preparation says so
   await runMigration(screen);
   await expect(c.getByText('The move did not complete')).toBeVisible({ timeout: 15000 });
   expect(await cardText(browser)).toMatch(/Failed \(1\)\s+software: the new host: tar: \/usr\/local: Cannot write: No space left on device/);
-  expect(await cardText(browser)).not.toMatch(/is frozen while its data is copied/);
+  expect(await cardText(browser)).not.toMatch(/is frozen while the last changes/);
   await expect(c.getByRole('button', 'Continue the move…')).toBeVisible();
   await expect(c.getByRole('button', 'Abort…')).toBeVisible();
 });

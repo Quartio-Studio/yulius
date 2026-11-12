@@ -51,7 +51,9 @@ page shows the finished checklist.
     (`profile::address_url`), so what a new host says about itself cannot put text into the old
     host's proxy configuration.
 - Parallel tasks change the command (#445 the warm copy, #450 review leftovers): this change
-  keeps its edits there small and additive.
+  keeps its edits there small and additive. Both merged while it was in work; the warm copy
+  (SPEC-465) changed what a move is to the page: a phase `Copy` during which the instance
+  works, a freeze only for the changes, and a bound on it (`--max-downtime`).
 
 ## Requirements
 
@@ -154,21 +156,24 @@ Settings → Instance
   key has to be added: the key line with a copy button, what to do with it, and "Show the plan"
   again. A plan with a failed line offers no move.
 - MVB-032 **Run migration.** Behind a dialog that says root on this host will give this
-  instance's data (every repository, secret and key) to the named host and start it there, how
-  long the plan estimated the freeze, and that this host keeps a frozen copy; the host's name is
-  typed to confirm.
+  instance's data (every repository, secret and key) to the named host and start it there, that
+  the data is copied while the instance keeps working and what the freeze is for (what changed
+  since, the proof, the start), how long the plan estimated it, and that this host keeps a
+  frozen copy; the host's name is typed to confirm.
 - MVB-033 **Live.** While a request waits or a run is in flight the card reads the view every
-  3 s and shows the phase (Plan, Prepare, Cutover, Finish) and the lines as they come; a read
+  3 s and shows the phase (Plan, Prepare, Copy, Cutover, Finish) and the lines as they come; a read
   that answers late never replaces a newer one. A run that ended says how: the plan is shown,
   moved, did not complete (with "Continue the move…"), refused with the reason, the helper did
   not answer (with the command that enables it), or lost.
 - MVB-034 **Abort.** Offered while a move is recorded or runs, behind a dialog that says what it
   does: a run in flight is stopped, the old instance runs on, the key is removed from the new
-  host and deleted here, what was installed on the new host stays; after a move that had
-  started the new instance, the abort stops it there first; an abort that needs a person's word
-  says so and names the command.
+  host and deleted here, what was installed on the new host stays, and so does data that was
+  already copied, with its keys and secrets, which the checklist then says to remove; after a
+  move that had started the new instance, the abort stops it there first; an abort that needs a
+  person's word says so and names the command.
 - MVB-035 **Frozen.** When reads fail while a move runs, the card says that the instance is
-  frozen for the copy (with the plan's estimate), keeps the last checklist and keeps trying
+  frozen while the last changes are sent and the copy is proven (with the last estimate the
+  move gave: the plan's, or the one the copy measured), keeps the last checklist and keeps trying
   every 3 s with a short timeout. When this address answers again it shows what answers: the
   old instance with why the move did not complete, or the new one (MVB-037).
 - MVB-036 **Moved to another URL.** While frozen the card also asks this address without
@@ -322,6 +327,14 @@ Settings → Instance
   reported as issue #1196: the helper refuses first when a move is asked from the page, and the
   freeze refuses in any case. The update helper's units have the start limit this change
   switches off for its own (below): issue #1201.
+- **The warm copy, as the page shows it.** SPEC-465 merged into `dev` while this change was
+  ready for review. The card names the phase `Copy` (unknown, it read as "Plan"), says in the
+  confirmation that the data is copied while the instance works and what the freeze is for,
+  shows the last estimate the move gave while frozen, and says in the abort's dialog that data
+  already copied stays on the new host with its secrets. The request has no field for
+  `--max-downtime`: MIG-060 names the target, the URL and the disks, and the move then decides
+  as the command does without the option (it copies again while that shortens the freeze). A
+  field for it on the page is issue #1202.
 - **No start limit on the helper's unit.** On a real host six requests within 10 s (the helper
   ends at once when it refuses) hit systemd's default start limit, and systemd then failed the
   path unit too: nothing was taken until root reset it, and the page said the helper was not
