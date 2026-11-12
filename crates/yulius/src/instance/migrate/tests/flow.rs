@@ -1478,7 +1478,12 @@ fn the_cutover_says_why_the_instance_is_not_frozen_after_its_freeze() {
     );
     for said in [&thawed, &unknown] {
         assert!(!said.contains("is not running any more"), "{said}");
-        assert!(said.contains("nothing is copied"), "{said}");
+        // After the warm passes: what is not done is the frozen pass, and the staged copy is
+        // there for the next run.
+        assert!(
+            said.contains("nothing is copied frozen and the staged copy stays"),
+            "{said}"
+        );
     }
 }
 
