@@ -567,7 +567,9 @@ prompt anyone sees. A prompt alone ends nothing, since the API may refuse it aga
 request Yulius opened ends this way (`end_task_needs_you_asking`, by its action in one statement);
 a request the agent made stays. The pause's flag is answered by work like a notice's
 (`notice_attention_ms`); a run that starts while the request is open takes the flag's time back
-from the task's state, which a restart of Yulius forgot. The replay after a restart folds when
+from the task's state, which a restart of Yulius forgot. That time stands only while the task
+still reads the flag it belongs to (`standing_notice_ms`): a status change replaces a flag
+without a word, and one raised later is not answered by work. The replay after a restart folds when
 the agent first worked after the last pause (`TranscriptFacts::worked_since_goal_pause`): the
 request ends, and the task the pause flagged follows its session.
 

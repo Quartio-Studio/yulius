@@ -52,6 +52,11 @@ Yulius had restarted, and twice a person's "continue".
 - A restart of Yulius forgets when the pause flagged the task. A run that starts while the
   pause's request is open takes that time back from the task's state, when the task reads Needs
   you since the request was asked (the request is recorded first, the flag raised next).
+- The time of a flag that work answers (a notice's, the pause's) stands only while the task
+  reads that flag: Needs you, since no later than that time (`standing_notice_ms`). A status
+  change replaces a flag without a word (a pause for capacity, a held turn that ended), and a
+  flag raised afterwards is another matter's: the agent's work does not lift it, and the stale
+  time is dropped.
 - The replay after a restart of Yulius folds when the agent first worked after the last pause
   (`TranscriptFacts::worked_since_goal_pause`). With such work the request ends, the pause is no
   longer the transcript's last word, and the flag is answered by that work as it is live: the
@@ -88,3 +93,10 @@ Yulius had restarted, and twice a person's "continue".
   first pause, with its words and its age, where the live watcher ends it and asks anew. The task
   reads Needs you either way; asking anew there needs the time of each pause, which the
   transcript's fold does not keep (as before this change: SPEC-333 asks once).
+- A woken turn that produces output and then dies with no new notice from Claude Code ends the
+  request and settles as "Your turn" (ADR-0212) with no request text. The task stays under Needs
+  you while its goal is unfinished, without the cause. Claude Code writes a notice when an error
+  ends a goal turn, so this needs a CLI that stays silent there.
+- After a restart of Yulius, while the pause's request is still open, a flag Yulius raised
+  itself after the pause (a goal the restarted session never took, say) cannot be told from the
+  pause's by its time: the agent's work lifts it too. Such a session that works has gone on.
