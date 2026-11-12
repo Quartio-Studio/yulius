@@ -751,8 +751,23 @@ async fn updates_and_moves_refuse_each_other() -> TestResult {
 async fn an_unanswered_request_and_a_silent_helper_are_said() -> TestResult {
     let i = instance().await?;
     assert_eq!(i.ask(plan()).await?.status, StatusCode::ACCEPTED);
-    i.later(20_000);
+    // The path unit fires on a change of the file, and a change that comes while the helper is
+    // ending another run is lost (seen on a real host): after 5 s the same request is written
+    // again whenever it is read, until its answer is no longer awaited.
+    i.later(5_000);
     assert_eq!(i.view().await?["request"]["state"], "requested");
+    assert_eq!(i.helper.written().len(), 1, "not before 5 s");
+    i.later(1);
+    assert_eq!(i.view().await?["request"]["state"], "requested");
+    let written = i.helper.written();
+    assert_eq!(written.len(), 2);
+    assert_eq!(
+        written[0], written[1],
+        "the same request: its id and its time"
+    );
+    i.later(14_999);
+    assert_eq!(i.view().await?["request"]["state"], "requested");
+    assert_eq!(i.helper.written().len(), 3);
     i.later(1);
     let waiting = i.view().await?;
     assert_eq!(waiting["request"]["state"], "unanswered");
@@ -760,20 +775,33 @@ async fn an_unanswered_request_and_a_silent_helper_are_said() -> TestResult {
         waiting["can"],
         json!({"plan": true, "move": false, "abort": false})
     );
+    assert_eq!(
+        i.helper.written().len(),
+        3,
+        "not once it is said unanswered"
+    );
     // Asked again: a new request replaces the old one.
     assert_eq!(i.ask(plan()).await?.status, StatusCode::ACCEPTED);
     let written = i.helper.written();
-    assert_eq!(written.len(), 2);
-    assert_ne!(written[0].id, written[1].id);
-    assert_eq!(i.view().await?["request"]["id"], written[1].id.as_str());
+    assert_eq!(written.len(), 4);
+    assert_ne!(written[2].id, written[3].id);
+    assert_eq!(i.view().await?["request"]["id"], written[3].id.as_str());
+    // A request the helper took is not written again, however long its run takes.
+    i.helper.takes(i.now())?;
+    i.later(6_000);
+    assert_eq!(i.view().await?["run"]["state"], "running");
+    assert_eq!(i.helper.written().len(), 4);
+    i.helper.ends(Some(0), i.now());
+    assert_eq!(i.ask(plan()).await?.status, StatusCode::ACCEPTED);
 
     // Never taken: after 15 minutes the helper would refuse it as stale, so it goes.
+    let cleared = i.helper.cleared.load(Ordering::SeqCst);
     i.later(15 * 60_000);
     assert_eq!(i.view().await?["request"]["state"], "unanswered");
-    assert_eq!(i.helper.cleared.load(Ordering::SeqCst), 0);
+    assert_eq!(i.helper.cleared.load(Ordering::SeqCst), cleared);
     i.later(1);
     assert_eq!(i.view().await?["request"], Value::Null);
-    assert_eq!(i.helper.cleared.load(Ordering::SeqCst), 1);
+    assert_eq!(i.helper.cleared.load(Ordering::SeqCst), cleared + 1);
 
     // A run whose helper stops reporting (killed, the host restarted): before its first line
     // there is no checklist, and what it began can still be aborted.

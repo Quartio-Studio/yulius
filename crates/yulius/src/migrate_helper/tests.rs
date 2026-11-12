@@ -60,6 +60,29 @@ fn until(what: &str, mut met: impl FnMut() -> bool) -> TestResult {
     Ok(())
 }
 
+/// Waits for the helper's thread. One that never ends fails the test instead of hanging it, and
+/// the fake command it waits for is ended, so nothing runs on behind a failed test.
+fn ended(run: std::thread::JoinHandle<Result<(), String>>, env: &Env) -> TestResult {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !run.is_finished() {
+        if Instant::now() > deadline {
+            if let Some(pid) = std::fs::read_to_string(env.bin.join("command.pid"))
+                .ok()
+                .and_then(|pid| pid.trim().parse::<i32>().ok())
+            {
+                let _ = nix::sys::signal::kill(
+                    nix::unistd::Pid::from_raw(pid),
+                    nix::sys::signal::Signal::SIGKILL,
+                );
+            }
+            return Err("the helper never ended".into());
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    run.join().map_err(|_| "the helper panicked")??;
+    Ok(())
+}
+
 /// A data directory of an unprivileged owner, a state directory, a fake `systemctl` whose
 /// `is-active` answers what `bin/update-state` holds, and a fake command that writes each
 /// argument on its own line to `bin/command.log` and then does what `bin/command.do` says.
@@ -94,6 +117,7 @@ esac"#,
             &bin.join("command"),
             r#"d="$(dirname "$0")"
 echo run >> "$d/command.runs"
+echo $$ > "$d/command.pid"
 printf '%s\n' "$@" > "$d/command.log"
 [ -f "$YULIUS_TEST_STATE/status.json" ] && echo yes > "$d/status-was-there"
 if [ -f "$d/command.do" ]; then . "$d/command.do"; fi"#,
@@ -424,13 +448,15 @@ fn a_file_that_is_not_the_service_users_request_is_ignored() -> TestResult {
         nix::unistd::chown(&path, Some(nix::unistd::Uid::from_raw(0)), None)?;
         env.run()?;
         assert!(env.status().is_none(), "root's own file was read");
-        // And a data directory that is root's is nobody's to ask from.
+        // And a data directory that is root's is nobody's to ask from, not even with a request
+        // that is root's too.
         env.request(&plan("0123abcd-own"))?;
         nix::unistd::chown(
             &env.args.data_dir,
             Some(nix::unistd::Uid::from_raw(0)),
             None,
         )?;
+        nix::unistd::chown(&path, Some(nix::unistd::Uid::from_raw(0)), None)?;
         env.run()?;
         assert!(
             env.status().is_none(),
@@ -561,7 +587,7 @@ fn a_running_command_is_reported_with_a_heartbeat_and_then_its_exit_code() -> Te
     assert_eq!(env.said()?.state, MoveHelperState::Running);
 
     std::fs::write(env.bin.join("go"), "")?;
-    run.join().map_err(|_| "the helper panicked")??;
+    ended(run, &env)?;
     let said = env.said()?;
     assert_eq!(said.state, MoveHelperState::Ended);
     assert_eq!(said.exit_code, Some(1));
@@ -611,7 +637,7 @@ while :; do sleep 0.02; done"#,
 
     env.request(&abort("0123abcd-abort"))?;
     assert!(path.exists());
-    run.join().map_err(|_| "the helper panicked")??;
+    ended(run, &env)?;
     assert_eq!(
         std::fs::read_to_string(env.bin.join("order"))?,
         "terminated\naborted\n"
@@ -657,7 +683,7 @@ echo moved >> "$d/order"; exit 0"#,
     assert_eq!(env.said()?.id, "0123abcd-move", "the abort did not wait");
     assert_eq!(env.said()?.state, MoveHelperState::Running);
     std::fs::write(env.bin.join("go"), "")?;
-    run.join().map_err(|_| "the helper panicked")??;
+    ended(run, &env)?;
     let order = std::fs::read_to_string(env.bin.join("order"))?;
     // Sent once, however long the command takes.
     assert_eq!(order, "ignored\nmoved\naborted\n");
@@ -685,7 +711,7 @@ while :; do sleep 0.02; done"#,
     // A request that waits behind the command is not taken by a helper that was stopped.
     env.request(&plan("0123abcd-next"))?;
     stop.store(true, Ordering::SeqCst);
-    run.join().map_err(|_| "the helper panicked")??;
+    ended(run, &env)?;
     assert_eq!(
         std::fs::read_to_string(env.bin.join("order"))?,
         "terminated\n"

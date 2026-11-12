@@ -30,6 +30,10 @@ use crate::ports::migration::{MoveHelper, MoveStatus};
 /// A request the helper has not taken after this long is said to be unanswered: its path unit
 /// is not enabled, or it could not start.
 pub const ACK_WAIT_MS: i64 = 20_000;
+/// A request the helper has not taken after this long is written again when it is read, while
+/// its answer is awaited: the path unit fires on a change of the file, and a change that comes
+/// while the helper is ending another run is lost.
+pub const RETRY_AFTER_MS: i64 = 5_000;
 /// A running helper whose report is older than this stopped without a word.
 pub const LOST_AFTER_MS: i64 = 60_000;
 /// A move is asked on a plan shown at most this long ago.
@@ -253,10 +257,14 @@ fn read(helper: &dyn MoveHelper, now: i64) -> Files {
     let mut pending = helper.pending();
     if let Some(request) = &pending {
         let taken = report.as_ref().is_some_and(|run| run.id == request.id);
+        let age = now - request.requested_at;
         // Never left for a copy to carry to another host as if it were asked there.
-        if taken || now - request.requested_at > REQUEST_TTL_MS {
+        if taken || age > REQUEST_TTL_MS {
             helper.clear_request();
             pending = None;
+        } else if age > RETRY_AFTER_MS && age <= ACK_WAIT_MS {
+            // The same request, with its id and its time: the helper acts on an id once.
+            let _ = helper.request(request);
         }
     }
     Files {

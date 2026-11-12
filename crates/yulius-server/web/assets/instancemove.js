@@ -257,8 +257,10 @@ export function moveCard(ctx) {
       return h('div', { class: 'row move-waiting', role: 'status' }, h('span', { class: 'spinner', 'aria-hidden': 'true' }), h('span', null, text));
     }
     if (run.state === 'refused') {
+      // The helper's reason begins with its own "The request was refused: ": said once here.
+      const why = String(run.error || '').replace(/^The request was refused: /, '');
       return h('div', { class: 'banner banner-danger', role: 'alert' }, icon('warn', { size: 16 }),
-        h('div', { class: 'banner-text' }, h('strong', null, 'The move helper refused the request.'), ` ${run.error || ''} Nothing was changed.`));
+        h('div', { class: 'banner-text' }, h('strong', null, 'The move helper refused the request.'), ` ${why ? `${why[0].toUpperCase()}${why.slice(1)} ` : ''}Nothing was changed.`));
     }
     if (run.state === 'lost') {
       return h('div', { class: 'banner banner-warn', role: 'status' }, icon('warn', { size: 16 }),

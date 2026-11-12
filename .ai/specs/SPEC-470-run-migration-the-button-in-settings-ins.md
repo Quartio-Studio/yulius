@@ -85,7 +85,7 @@ The request and the root helper
   `status.json` is always of the run in flight.
 - MVB-005 **It reports.** `<state>/helper.json` (0644): the request's id, action and values,
   `running` with a heartbeat every 5 s, then `ended` with the command's exit code, or `refused`
-  with the reason. When the command ended refused before its checklist (exit 2) or could not be
+  with the reason and none of the request's values. When the command ended refused before its checklist (exit 2) or could not be
   started, its last words (the command prints no secret value, MIG-025) are the error.
 - MVB-006 **Abort stops a run.** While a command runs the helper looks at the request file twice
   a second. A new valid `abort` sends the command SIGTERM (the command's own rule decides: the
@@ -115,11 +115,14 @@ Application and API
 
 - MVB-020 **View.** `GET /api/admin/instance/migration` (superadmin) answers: `helper_installed`
   (systemd says the path unit is active; kept for 10 s); `update_running`; `request` (written
-  and not taken by the helper yet: `requested`, or `unanswered` after 20 s); `run` (the helper's
+  and not taken by the helper yet: `requested`, or `unanswered` after 20 s; from 5 s on the same
+  request is written again whenever it is read, since a change of the file that comes while the
+  helper is ending another run starts nothing); `run` (the helper's
   report: action, values, `running`, `ended` with the exit code, `refused` with the reason, or
   `lost` when a running helper's heartbeat is more than 60 s old); `move` (the command's status:
   id, target, phase, lines, `public_key`, `new_url`, `updated_at`, and `by_command` when it was
-  written after the helper's last run ended, that is by a run started on the host); `arrived`
+  written after the helper's last run ended, or without any, that is by a run started on the
+  host); `arrived`
   (the checklist a move to this host left, MVB-011); and `can` (`plan`, `move`,
   `abort`: what would be accepted now). A request the helper took, or one older than 15
   minutes, is removed, so it is never copied to a new host as a pending one.
@@ -311,5 +314,16 @@ Settings → Instance
 - **One pull request.** The helper without the page cannot be reached, and the page without the
   helper does nothing; each part has its own tests.
 - **Not in this change.** The plan's own "an update is running" check (`active` only) is
-  reported as an issue: the helper refuses first when a move is asked from the page, and the
+  reported as issue #1196: the helper refuses first when a move is asked from the page, and the
   freeze refuses in any case.
+- **A defect of the command fixed here.** The real moves asked from the page (Evidence) showed
+  that `--abort` after a plan that ended with the key to add, once the key was added, failed on
+  the new host (exit 127: the step that removes the key is run by the build, which such a plan
+  never brings) and left the key there. That is the page's most natural abort (plan, key, think
+  again), so the abort now brings the build for that step, with a flow test.
+- **An untaken request is written again, not re-triggered by the helper.** The path unit starts
+  the helper on a change of the file; a change that comes while the helper is ending another
+  run starts nothing (seen on a real host). Updates write their request again after 20 s for
+  the same reason; a move's request is written again from 5 s on while the page reads it, and
+  said `unanswered` after 20 s. A level-triggered unit (`PathExists=`) would need the helper to
+  delete every file it finds there, also those it must not read.

@@ -2224,7 +2224,9 @@ its database travels with the copy.
 **Logs.** `journalctl -u yulius-migrate` shows each request (its action, host and id, or why it
 was refused) and the command's own output. "The move helper did not take the request" on the page
 means the path unit is not enabled or could not start the service: `systemctl status
-yulius-migrate.path yulius-migrate.service`. A helper that stopped without a word (it was killed,
+yulius-migrate.path yulius-migrate.service`. The path unit starts the helper on a change of the
+request file; a request written in the moment the helper ends another run starts nothing, so the
+server writes an untaken request again from 5 s on while the page waits for it. A helper that stopped without a word (it was killed,
 the host restarted) is said on the page after a minute; the move is continued or aborted from
 there, or with the command.
 

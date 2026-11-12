@@ -435,7 +435,7 @@ test('a field outside the rules is said in place, and a helper that is silent, r
   await c.getByLabel('New host').fill(TARGET);
   await c.getByRole('button', 'Show the plan').click();
   await expect(c.getByText('The move helper refused the request.')).toBeVisible();
-  await expect(c.getByText(/an update is running \(yulius-update\.service\): ask again once it has finished\. Nothing was changed\./)).toBeVisible();
+  await expect(c.getByText(/^The move helper refused the request\. An update is running \(yulius-update\.service\): ask again once it has finished\. Nothing was changed\.$/)).toBeVisible();
   await expect(c.getByRole('button', 'Run migration…')).toBeHidden();
 
   // No helper on this server: what it is, and the command that does the same.
