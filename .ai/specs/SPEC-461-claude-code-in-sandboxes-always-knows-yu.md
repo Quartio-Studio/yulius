@@ -372,6 +372,18 @@ an older one.
     the tests read the controls with one helper. A first reviewer's session ended without a
     report; its experiment logs showed one reset pinned by no test, which is gone with the one
     marker, and its whole-suite run at 1c44dbde passed (941 tests).
+  - *Its second look* (at 18be448f): approved; one minor, one nit and one question left to the
+    author, all answered. Nothing pinned that "Check now" is switched off at the press, before
+    anything draws the card: the test looks at the button there too. Nothing pinned that the
+    mock reads a kept-back read's view when the read is asked, on which the late-read tests
+    rest: the mock lists what each late answer said (`lateAnswers`), and the tests assert that
+    it is the older word.
+  - *An older answer that is not a late read is left to the next poll* (the question). A
+    check's own answer that arrives after a channel change made meanwhile was drawn shows the
+    old channel; and of two reads asked after one refusal the older can answer last. In both
+    the older view says that a check runs, so the card asks again two seconds later and is
+    right. Holding back a change's own answer for it would add a branch to every change, for a
+    two-second flicker that needs two changes within one answer's time.
   - *The version is cut at 64 bytes where it is kept* (`UsageAccumulator::note_cli_version`).
     Task #452 answers the third review's finding that the stored version is whatever a
     transcript line holds (a line may be megabytes) by cutting it in the parser's prompt
@@ -493,20 +505,22 @@ an older one.
     server’s” takes another" with `select off, button on`; "a read asked before a check or a
     channel change does not undo what that drew, answered or failed after it" with the check's
     result never shown (the page's first read, answered late, had stopped the card's asking).
-  - `e2e/tests/claude-code.e2e.ts` passes (11), and the whole e2e suite at 73a051cc: 80 files
-    passed, 1 skipped (`agent.e2e.ts` needs a model key); 967 tests passed, 1 skipped; exit 0
-    (`target/evidence/e2e-whole-1192.log`). The reviewer's whole-suite run at 09daf532: 964
-    passed, 1 skipped.
-  - Ten mutants, each caught by a test and reverted (`target/evidence/mutants-1192.log`): no
+  - `e2e/tests/claude-code.e2e.ts` passes (11), and the whole e2e suite at fdb21d05 (the last
+    change to a script or a test; `dev` up to 0fc557ba merged): 80 files passed, 1 skipped
+    (`agent.e2e.ts` needs a model key); 967 tests passed, 1 skipped; exit 0
+    (`target/evidence/e2e-whole-1192.log`). The reviewer's whole-suite runs: 964 passed at
+    09daf532, 967 at 18be448f, 1 skipped each.
+  - Twelve mutants, each caught by a test and reverted (`target/evidence/mutants-1192.log`): no
     count of outcomes; the count taken when the change is sent; no redraw mark at the
     outcome; an answered late read not dropped; a failed one not dropped; "Check now" not kept
     off across a draw; `asking` never ended after a check that was taken, and after one that
-    was refused; only the select switched off; a hold that does not hold a PUT.
+    was refused; only the select switched off; a hold that does not hold a PUT; "Check now"
+    not switched off at the press; the mock reading a late answer's view when it is let go.
   - Rust: the tests that read the web files pass at 73a051cc (`ui_contract`, 9; the
-    `yulius-server` crate, 25), and the script tests (152). `scripts/dev ci` last ran at
-    f08aa9a6 (exit 0, nextest 3687 passed / 16 skipped), before the card's script changed
-    again and `dev` was merged twice more; Yulius CI runs the gate and the e2e suite at the
-    pull request's head.
+    `yulius-server` crate, 25), and the script tests (152); the commits after it change the
+    mock, the tests and this file. `scripts/dev ci` last ran at f08aa9a6 (exit 0, nextest
+    3687 passed / 16 skipped), before the card's script changed again and `dev` was merged
+    again; Yulius CI runs the gate and the e2e suite at the pull request's head.
 - After the merge, a real host (2026-11-11 21:07 to 21:18 UTC): an Ubuntu 26.04.1 guest (QEMU,
   kernel 7.0.0-38) with Node 22 and `npm install -g @anthropic-ai/claude-code@2.1.311`, the
   incident's host (`claude --version`: 2.1.311; its binary holds `claude-fable-5-2` 0 times
