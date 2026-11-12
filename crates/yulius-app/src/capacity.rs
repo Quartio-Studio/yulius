@@ -711,6 +711,12 @@ impl App {
             && pause.kind == PauseKind::Turn
             && self.prompt_waits_in_held_turn(&task.id).await
         {
+            crate::race::reached(
+                crate::race::Point::HeldTurnProbed,
+                std::path::Path::new(task.id.as_str()),
+            );
+            // The pause may have ended while the lines were read (its person typed into the
+            // held turn): only the pause that was read is released.
             if !self.pause_open(pause).await {
                 return Resume::Gone;
             }

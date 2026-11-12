@@ -3274,12 +3274,30 @@ mod moves {
     /// that stays, the prompt is answered in the same run, and a later end moves the session.
     #[test]
     fn a_held_turn_is_not_moved_over_a_waiting_prompt() -> TestResult {
+        held_turn_with_a_waiting_prompt(false)
+    }
+
+    /// SPEC-479 SWQ-003 (review round 1): the pool reads the lines written so far before it
+    /// asks what waits. Here the prompt's `enqueue` record reaches the transcript only after
+    /// the turn was held, and the pool looks the moment it is in the file, before the watcher's
+    /// next round: without that read the queue reads empty and the held turn is moved.
+    #[test]
+    fn a_held_turn_is_not_moved_over_a_prompt_whose_record_was_not_read_yet() -> TestResult {
+        held_turn_with_a_waiting_prompt(true)
+    }
+
+    /// AC5; with `record_late` the waiting prompt's record is written once the turn is held.
+    fn held_turn_with_a_waiting_prompt(record_late: bool) -> TestResult {
         let (_dir, data) = data_dir()?;
         let version = data.join("claude-version");
         let may_end = data.join("turn-may-end");
+        let written = data.join("queue-record-written");
         let rt = runtime()?;
         rt.block_on(async {
-            let options = queueing(&may_end);
+            let options = FakeAgentOptions {
+                queue_record_file: record_late.then(|| written.clone()),
+                ..queueing(&may_end)
+            };
             let s = server(&data, &version, options, TaskMode::Prompt, "2.1.311").await?;
             add_account(&s.app, "b-second").await?;
             s.probe.set("b-second", usage(99.0, 4 * HOUR, 30.0, 100));
@@ -3291,7 +3309,9 @@ mod moves {
             // Entered while its subscription still has room: its hook lets it on, it waits.
             s.app.send_input(&s.id, b"two\r").await?;
             says(&s, "QUEUED: two").await?;
-            waits_in_the_queue(&s).await?;
+            if !record_late {
+                waits_in_the_queue(&s).await?;
+            }
             s.probe.set("a-first", usage(99.0, 4 * HOUR, 30.0, 100));
             refresh(&s.app, &s.user, "a-first").await?;
             // The turn ends: nothing has room and the gate would block, so the turn is held.
@@ -3302,10 +3322,21 @@ mod moves {
             })
             .await?;
             assert_eq!(runs(&s).await, 1);
-            assert!(s.app.claude_queue_holds(&s.id), "the prompt still waits");
+            assert_eq!(
+                s.app.claude_queue_holds(&s.id),
+                !record_late,
+                "the prompt waits, as far as its record was read"
+            );
             // The other subscription gets room, and the pool looks at what waits for capacity.
             s.probe.set("b-second", usage(10.0, 4 * HOUR, 30.0, 100));
             refresh(&s.app, &s.user, "b-second").await?;
+            if record_late {
+                std::fs::write(&written, "")?;
+                wait_for("the prompt's record", Duration::from_secs(60), || async {
+                    transcripts(&data).contains(r#""operation":"enqueue""#)
+                })
+                .await?;
+            }
             let _ = s.app.resume_round().await;
             let mut shown = String::new();
             wait_for(
@@ -3606,6 +3637,106 @@ mod moves {
             state(&h.app, &task).await,
             Some((TaskStatus::Running, Some(Activity::Waiting))),
             "nothing would run it"
+        );
+        Ok(())
+    }
+
+    /// SPEC-479 SWQ-003 (review round 1): a held turn with a prompt that may wait stays held
+    /// while no subscription has room. It is released in place only where the pool would
+    /// move it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_held_turn_stays_held_while_nothing_has_room() -> TestResult {
+        use axum::http::StatusCode;
+        use yulius_app::model::AccountStatus;
+        use yulius_app::model::PauseKind;
+        let (h, task) = on_the_test_clock(true).await?;
+        second_subscription(&h).await?;
+        assert_eq!(hook(&h, Some("first")).await?, StatusCode::OK);
+        // The second subscription reaches its limit too: nothing has room.
+        let now = h.app.now();
+        let full = serde_json::json!({"primary": null, "secondary": null, "limit_reached": true,
+            "limit_resets_at": now.0 + 60 * MINUTE, "observed_at": now.0})
+        .to_string();
+        let second = yulius_domain::ids::AccountId::parse("acc-2")?;
+        let store = &h.app.deps.store;
+        store
+            .set_account_state(&second, AccountStatus::Ok, Some(&full), None, now)
+            .await?;
+        paused(&h, &task, PauseKind::Turn).await?;
+        let _ = h.app.resume_round().await;
+        assert_eq!(
+            state(&h.app, &task).await.map(|(status, _)| status),
+            Some(TaskStatus::WaitingCapacity)
+        );
+        let pause = h.app.deps.store.open_pause(&task).await?;
+        assert_eq!(pause.map(|pause| pause.kind), Some(PauseKind::Turn));
+        Ok(())
+    }
+
+    /// A prompt hook of the clock's run, sent on `internal` at `now`: the status it is
+    /// answered with.
+    async fn prompt_hook(
+        internal: axum::Router,
+        now: i64,
+        text: &str,
+    ) -> Result<axum::http::StatusCode, Box<dyn std::error::Error + Send + Sync>> {
+        use tower::ServiceExt as _;
+        let body = serde_json::json!({"hook_event_name": "UserPromptSubmit", "session_id": "s",
+            "prompt": text});
+        let request = axum::http::Request::post("/hooks/claude/UserPromptSubmit")
+            .header("authorization", format!("Bearer {CLOCK_TOKEN}"))
+            .header("content-type", "application/json")
+            .header("x-yulius-hook-sent-ms", now.to_string())
+            .body(axum::body::Body::from(body.to_string()))?;
+        Ok(internal.oneshot(request).await?.status())
+    }
+
+    /// SPEC-479 SWQ-003 (review round 1): while the pool reads a held turn's lines, its person
+    /// types into it (the hold ends) and the task is paused again, now with that prompt held.
+    /// The pool released the pause it had read: the new one is not its to end, and the task
+    /// keeps waiting with its prompt held.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_pause_that_changed_while_the_pool_looked_is_left_alone() -> TestResult {
+        use axum::http::StatusCode;
+        use yulius_app::model::PauseKind;
+        let (h, task) = on_the_test_clock(true).await?;
+        second_subscription(&h).await?;
+        assert_eq!(hook(&h, Some("first")).await?, StatusCode::OK);
+        paused(&h, &task, PauseKind::Turn).await?;
+        let (app, internal, id) = (Arc::clone(&h.app), h.internal.clone(), task.clone());
+        let changed = Arc::new(Mutex::new(None));
+        let said = Arc::clone(&changed);
+        race::on(Point::HeldTurnProbed, Path::new(task.as_str()), move || {
+            let meanwhile = async {
+                let entered = prompt_hook(internal, app.now().0, "second").await;
+                let account = yulius_domain::ids::AccountId::parse("acc-1").ok();
+                let held = app
+                    .pause_task(&id, PauseKind::Prompt, account, Some("second".into()))
+                    .await;
+                (entered.ok(), held.is_ok())
+            };
+            let done = tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(meanwhile)
+            });
+            if let Ok(mut said) = said.lock() {
+                *said = Some(done);
+            }
+        });
+        let _ = h.app.resume_round().await;
+        assert_eq!(
+            changed.lock().ok().and_then(|said| *said),
+            Some((Some(StatusCode::OK), true)),
+            "the prompt went on and the task was paused again while the pool looked"
+        );
+        let pause = h.app.deps.store.open_pause(&task).await?;
+        assert_eq!(
+            pause.map(|pause| pause.kind),
+            Some(PauseKind::Prompt),
+            "the pause opened meanwhile is still open"
+        );
+        assert_eq!(
+            state(&h.app, &task).await.map(|(status, _)| status),
+            Some(TaskStatus::WaitingCapacity)
         );
         Ok(())
     }

@@ -143,6 +143,10 @@ pub enum Point {
     /// the turn's lines and looked at its background work; whether a prompt waits is not asked
     /// yet. The path is the task id.
     SwitchProbed,
+    /// The pool found a prompt waiting in a turn held for capacity that it would move
+    /// (SPEC-479): the turn's lines were read; the pause is not asked for again yet and nothing
+    /// is released. The path is the task id.
+    HeldTurnProbed,
     /// A turn's end decided to restart its session on a newer Claude Code (SPEC-468); the
     /// restart is not registered or asked for yet. The path is the task id.
     ClaudeMoveDecided,
