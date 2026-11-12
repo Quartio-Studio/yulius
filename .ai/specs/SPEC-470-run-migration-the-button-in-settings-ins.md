@@ -1,11 +1,11 @@
 ---
 yulius-task: 719087ff-c914-4241-bf1d-1d0a477a2041
-status: in-progress
+status: done
 ---
 
 # SPEC-470: Run migration: the button in Settings → Instance
 
-Status: in progress
+Status: done
 Date: 2026-11-11
 Owner: Yulius task #447 (slice D of #442)
 Scope authorization: task #447, asked by the project's owner: "A superadmin starts the move from
@@ -161,8 +161,8 @@ Settings → Instance
   since, the proof, the start), how long the plan estimated it, and that this host keeps a
   frozen copy; the host's name is typed to confirm.
 - MVB-033 **Live.** While a request waits or a run is in flight the card reads the view every
-  3 s and shows the phase (Plan, Prepare, Copy, Cutover, Finish) and the lines as they come; a read
-  that answers late never replaces a newer one. A run that ended says how: the plan is shown,
+  3 s and shows the phase (Plan, Prepare, Copy, Cutover, Finish) and the lines as they come; a
+  read that answers late never replaces a newer one. A run that ended says how: the plan is shown,
   moved, did not complete (with "Continue the move…"), refused with the reason, the helper did
   not answer (with the command that enables it), or lost.
 - MVB-034 **Abort.** Offered while a move is recorded or runs, behind a dialog that says what it
@@ -230,7 +230,7 @@ Settings → Instance
 - [x] The card "Move to another host": form, plan with the key line, typed confirmation, live checklist, abort, on the mock with e2e
 - [x] Frozen and moved: the card keeps trying, follows the old URL's redirect, and the new instance shows the finished checklist
 - [x] Operations guide §7 and §8, API, architecture, product summary, changes
-- [ ] Gates green and the independent review answered
+- [x] Gates green and the independent review answered
 
 ## Acceptance criteria
 
@@ -293,9 +293,8 @@ Settings → Instance
   checks.
 - Gates: `scripts/dev ci`, the e2e suite, `yulius security-scan` (Vidoc is off for this project:
   disabled, not passed).
-- Not testable here: systemd starting the helper from the path unit, and a move asked from the
-  page between two real hosts (the sandbox has no systemd); recorded in Evidence, with what a
-  QEMU guest could show if one is run.
+- Beyond the sandbox, which has no systemd: systemd starting the helper from the path unit, and
+  moves asked from the page between two real hosts, on two QEMU guests (Evidence).
 
 ## Decisions
 
@@ -360,3 +359,130 @@ Settings → Instance
   the same reason; a move's request is written again from 5 s on while the page reads it, and
   said `unanswered` after 20 s. A level-triggered unit (`PathExists=`) would need the helper to
   delete every file it finds there, also those it must not read.
+
+## Evidence
+
+- **Tests first.** Each part began with its tests; the ones that failed for a defect, and why:
+  - e2e "a frozen instance that never answers is said at once, and the card keeps trying" (the
+    probe never answers): the card stayed on "Moving…". Found on a real frozen instance (run 1
+    below); fixed in `682cce5d`.
+  - `an_abort_after_a_plan_that_only_asked_for_the_key_removes_the_key_there` (flow): the abort
+    ended with the new host's exit 127 and left the key. Found in run 2; fixed in `972a2e53`.
+  - `an_unanswered_request_and_a_silent_helper_are_said`: a request the path unit missed was
+    never written again (seen on the new host of run 1); fixed in `fa80784f`.
+  - `a_request_that_cannot_be_recorded_is_not_run`: the plan ran three times in one helper run;
+    fixed in `148f3182`.
+  - `of_two_asks_at_once_one_is_written` (`[202, 202]` instead of `[202, 409]`),
+    `a_taken_request_is_removed_with_nobody_reading` (timed out) and the file adapter's removal
+    by id (a request with another id was removed); fixed in `b2108cbc`.
+  - `the_shipped_units_start_the_helper_on_the_request_file` (no `StartLimitIntervalSec=0`),
+    after a real host left the path unit failed; fixed in `301cf556`.
+  - After the warm copy came in from `dev`: five of the ten e2e tests (the stepper's current
+    step read "" during `Copy`, the freeze was said to be for the copy, the abort's dialog did
+    not name the copy it leaves); fixed in `37e5f7cf`. Then the frozen notice's estimate (run 6
+    below); fixed in `e30b2988`.
+- **Unit and integration tests** (all in the gate below): the helper against a fake program, a
+  fake `systemctl`, real files and signals (`migrate_helper::`, 16); the application and
+  the routes through the API with a fake of the helper's files (`tests/migration.rs`, 11); the
+  file adapter (`wiring::migrate_files`, 3); the contract (2) and the field rules (6); the
+  command (`instance::migrate::`, 155, 8 of them added here: the units travel and are
+  enabled as on the old host, the key line and the new URL in the status, the checklist carried
+  and left by Finish, the abort that brings the build).
+- **Mutation checks** (`target/evidence/mutate.py`: one change at a time on a clean tree, the
+  part's tests run, the file restored). 153 written, 151 fail a test:
+
+  | Part | Written | Fail a test | Note |
+  | --- | --- | --- | --- |
+  | Application (`yulius-app::migration`) | 50 | 50 | 3 survived first (a plan's exit code, a lost run, an abort in flight): test cases added in `6bc088c5` |
+  | File adapter | 2 | 2 | |
+  | Card (`instancemove.js`, e2e) | 41 | 41 | 1 survived first (a redirect seen in any answer): the mock now answers 502 while frozen |
+  | Helper | 38 | 36 | see below |
+  | Command (this change's parts) | 22 | 22 | |
+
+  The helper's two: one pointed at a condition that the record of a taken request already
+  covered, which showed that a failed record was ignored (the fix in `148f3182` removes the
+  condition); one was written wrongly (a time moved by 1 ms, no change in behaviour) and was
+  replaced by two that fail a test (an invalid id in a report, a refusal that cannot be
+  recorded). Two more survived first and are caught since `148f3182` and `b2108cbc` (the
+  command's words for exit 1 and 0; an abort stopped by its own request file). All but the
+  card's last four were run before `dev`'s last two merges; the tests they fail pass on the
+  merged head.
+- **Two real hosts** (Ubuntu 26.04.1, systemd 259, in QEMU; release builds of the named heads;
+  every step from the real page in the Yulius browser unless said):
+  - Run 1, `df6e9db4`, A to B. `helper_installed` false, then true once `yulius-migrate.path`
+    was enabled. Plan: the path unit started the helper, exit 0, the key line; request
+    directory empty afterwards; `helper.json` 0644, state directory 0711, `state.json` and the
+    key 0600. `systemctl is-active yulius-migrate.service` during the run: `activating`. Key
+    added, plan again (16 lines), "Run migration…" with the host typed: 61 lines, exit 0, 9 min
+    40 s. B afterwards: `arrived.json` (root, 0644) with the 61 lines of A's final status, the
+    helper's units carried and its path unit enabled, no key line left, nothing in the request
+    directory. The page, not reloaded, said "The move finished" with the checklist.
+  - On B: a request written by root, a link to a request, and one with an unknown field were
+    refused as specified (the first two without a report).
+  - Run 2, `144cfe60`, B to A. `YULIUS_MIGRATE_TARGETS` set to other hosts: the page showed the
+    helper's refusal. The abort defect above. Move: 56 lines, exit 0; the frozen message with
+    the plan's estimate while nothing answered.
+  - Run 3, `fa80784f`: plan, key added, "Abort…": exit 0, the key removed on the new host.
+  - Run 4, `ec72ab0e` with the units of `301cf556`, A to B. Start limit: with the units as they
+    were, 8 requests 0.7 s apart left `yulius-migrate.path` failed (`unit-start-limit-hit`);
+    with `StartLimitIntervalSec=0`, 14 requests 0.5 s apart ran the helper 14 times and the path
+    unit kept waiting. "Abort…" while the move ran in Prepare: journal "an abort arrived:
+    stopping the command", "the command ended (by a signal)", then the abort in the same helper
+    run, exit 0 after 7 s; the key removed on B. Then plan, key, plan and "Run migration…" with
+    the page closed at once: the helper took the move and the request directory was empty with
+    nobody reading. Page opened again: the running move, then the frozen message. Exit 0 after
+    9 min 24 s, 56 lines. B: the instance, the path unit enabled, the carried unit with
+    `StartLimitIntervalUSec=0`, `arrived.json` with 56 lines, no request in its data
+    directory, no key line. The page said "The move finished: Yulius now runs on the new host."
+  - Run 5, the same build, B to A: with the move in Prepare the address was made to answer every
+    request with a redirect to another origin (a stand-in server; it answered 308 where the
+    proxy's configuration says 307). Within 5 s the card said "Yulius now runs on the new host.
+    This address redirects there. …" with "Reload to follow the redirect", which led to the
+    other origin. The move then ran to its end: exit 0 after 8 min 55 s, 56 lines.
+  - Run 6, `37e5f7cf` (the warm copy merged in), A to B. The plan's line: "the instance runs
+    during the copy (about 5 min for up to 5.0 GiB at that rate); then it is frozen for about
+    88 s: …". The dialog said that the data is copied while Yulius keeps working and what the
+    freeze is for, with that line. During the copy the page answered and its stepper read Plan
+    and Prepare done, Copy in progress, Cutover, Finish. The instance of the guests holds 70
+    entries, so the copy took seconds, and the line it measured ("about 34 s frozen: …") was
+    written a moment before the freeze: the page never read it, which is why the frozen notice
+    quotes the plan. Exit 0 after 8 min 37 s, 59 lines. B: the instance, the path unit enabled,
+    `arrived.json` with 59 lines (the copy's passes among them), no request, no key line, no
+    import marker. The page, not reloaded: "The move finished …", "changed 16, left alone 39,
+    manual 4, failed 0".
+- **e2e.** `E2E_TELEMETRY_DISABLED=1 npx e2e run` at `b1fa9629`: 81 files passed, 1 skipped;
+  977 tests passed, 1 skipped; `instance-move.e2e.ts` 10 tests. The file ran three times in a
+  row and twice pinned to one CPU after its passing states were made to hold (`df6e9db4`).
+- **Gate.** `scripts/dev ci` at `b1fa9629` exited 0: repository checks, `cargo check`, `fmt`,
+  `clippy` for Linux and macOS, 3875 tests run, 3875 passed, 16 skipped, doctests, `cargo
+  deny`, `cargo shear`, `cargo doc`.
+  The commit after it changes this spec only. An earlier run (`301cf556`) reported one of this
+  change's tests as leaky (a child it left behind for 6 s): `b4691c24` ends the child with the
+  test. `dev` is merged in four times: `32b5a46a` (a conflict in `finish()` and a variable the
+  other side had renamed), `4e5bb5de` (none), `e1911ed3` (the warm copy: conflicts in
+  `finish()`, `abort()`, the flow and target tests and three documents, all resolved by hand;
+  the test that names every option of the command stopped compiling on the new
+  `--max-downtime`, which is what it is for) and `b1fa9629` (one line of the web README).
+- **Security scan.** `yulius security-scan`: "Security scan disabled: Vidoc is turned off in
+  Yulius … nothing was scanned." Disabled, not passed.
+- **Issues.** #1196 (the plan's own update check looks for `active` only) and #1201 (the update
+  helper's units have the start limit this change switches off for its own), both in code this
+  change did not write; #1202 (a field for `--max-downtime` on the page).
+- **Independent review.** A fresh read-only session, given the diff range, this spec and
+  `om-code-review`, reviews the exact head that is merged; its verdict is recorded with the
+  merge, because a commit after an approval would void it. Rounds that asked for changes are
+  listed here with their answers: none so far.
+- **Not tested.**
+  - A move to another public URL behind a real reverse proxy with a certificate: the guests have
+    no proxy. The card's notice for an address that redirects was shown on the real page with a
+    redirecting server put in front of it (run 5); its link to another URL ("Open Yulius at its
+    new address") only on the mock.
+  - A copy that takes long: the guests' instance is small, so the phase `Copy` lasted seconds
+    on the real page; its lines as they come are shown on the mock.
+  - Data disks named on the page, on real hosts (the guests have one disk): the rules, the
+    request and the command's arguments are tested, and the command's own disk step is
+    SPEC-460's.
+  - A stop of the helper's unit or a shutdown during a real move (fake program only), and a
+    real update running beside a request (a fake `systemctl`; the word `activating` was read
+    from a real oneshot unit).
+  - Ubuntu 24.04: the real hosts were 26.04 only.
