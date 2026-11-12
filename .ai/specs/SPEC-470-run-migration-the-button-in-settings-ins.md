@@ -1,11 +1,11 @@
 ---
 yulius-task: 719087ff-c914-4241-bf1d-1d0a477a2041
-status: done
+status: in-progress
 ---
 
 # SPEC-470: Run migration: the button in Settings → Instance
 
-Status: done
+Status: in progress
 Date: 2026-11-11
 Owner: Yulius task #447 (slice D of #442)
 Scope authorization: task #447, asked by the project's owner: "A superadmin starts the move from
@@ -231,6 +231,7 @@ Settings → Instance
 - [x] Frozen and moved: the card keeps trying, follows the old URL's redirect, and the new instance shows the finished checklist
 - [x] Operations guide §7 and §8, API, architecture, product summary, changes
 - [x] Gates green and the independent review answered
+- [ ] Review round 1 answered: no sign-in with root's own keys, a refused run keeps the recorded checklist, the rest
 
 ## Acceptance criteria
 
