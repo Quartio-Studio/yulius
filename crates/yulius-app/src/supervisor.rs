@@ -4664,23 +4664,24 @@ impl App {
                         return;
                     }
                 }
-                let kind = if limit {
-                    PauseKind::Limit
-                } else {
-                    PauseKind::Turn
-                };
-                match self.pause_task(task_id, kind, current, None).await {
+                let paused = if limit {
+                    let paused = self
+                        .pause_task(task_id, PauseKind::Limit, current, None)
+                        .await;
                     // The pool resumes a task that waits at its limit by itself: a request
                     // that says it does not go on by itself is answered, as at a move past
                     // the limit (SPEC-464 UCL-007).
-                    Ok(()) if limit => {
+                    if paused.is_ok() {
                         self.end_limit_requests(task_id, crate::goal_retry::TakenOn::Paused)
                             .await;
                     }
-                    Ok(()) => {}
-                    Err(err) => {
-                        tracing::warn!(error = %err, task = %task_id, "could not pause the task");
-                    }
+                    paused
+                } else {
+                    self.pause_task(task_id, PauseKind::Turn, current, None)
+                        .await
+                };
+                if let Err(err) = paused {
+                    tracing::warn!(error = %err, task = %task_id, "could not pause the task");
                 }
             }
         }
