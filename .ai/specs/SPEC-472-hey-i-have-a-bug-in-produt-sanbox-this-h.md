@@ -1,11 +1,11 @@
 ---
 yulius-task: 3ce7fca4-c720-4005-ab26-1fb3c4348632
-status: in-progress
+status: done
 ---
 
 # SPEC-472: A task flagged "needs attention" says why, and Reply shows where the answer goes
 
-Status: in progress
+Status: done
 Date: 2026-11-12
 Owner: Yulius task #455
 Scope authorization: the person's request of 2026-11-12 ("I have a bug in product sandbox, this
@@ -168,7 +168,7 @@ after a restart of Yulius. Reply shows that the terminal took the keyboard.
 - [x] Every flag Yulius raises says why, and a notice's flag carries Claude Code's words
 - [x] The task view shows the reason and Reply says the terminal took the keyboard
 - [x] Docs, ADR-0306 and the changes entry true to the fix
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] Independent review in a fresh session, findings fixed test-first
 
 ## Acceptance criteria
 
@@ -248,3 +248,94 @@ after a restart of Yulius. Reply shows that the terminal took the keyboard.
   run is watched (once per run), not looked up at every line of the agent's work.
 - [ADR-0306](../../docs/decisions/0306-a-needs-attention-flag-keeps-its-reason.md): a flag
   Yulius raises keeps its reason with the task.
+
+## Evidence
+
+- **Reproduction.** A probe test on `dev` (`92ba83cc2`), not committed: after the gate's fourth
+  Stop the task reads `needs_attention`, a receiver subscribed before got the notice "… stopped
+  3 times without fixing …", one that subscribes afterwards gets none, and the task's view says
+  nothing of why. Issue #1221. The committed tests failed first:
+  - `bc318566b` (tests and spec only, on `dev`'s code): 14 integration tests failed, each at its
+    `attention` assertion (`left: Null`), and the 9 e2e tests of `attention.e2e.ts` failed (the
+    bar read the terminal sentence, no notice after Reply, the row's line unchanged).
+  - `992e6ca66` (the restart test, before its fix):
+    `a_notice_is_answered_by_the_agents_work_after_a_restart` failed with "timed out waiting for
+    Working with the agent's work"; its two guards passed.
+  - The browser request's test failed before `e33e15a6e` (`left: Null`).
+- **Fix.** `5d6595ced` (the column, the statement that flags with a reason, the API field, the
+  gate), `8d6bfc0fd` (every other flag of Yulius's own, and the notice's words), `d736a3871` (the
+  bar, the row's line, Reply's notice), `15bca64fa` (the restart), `e33e15a6e` (the browser
+  request), `db7bc1a22` (a goal never set behind the trust question; the mock drops a reason
+  with its flag), `c80a37a3f` (documents).
+- **The real CLI.** Claude Code 2.1.322 was run in a terminal against a local stand-in for the
+  API (nothing left this host; the scripts are kept outside the repository). The stand-in asks
+  for one Bash call, so the permission dialog opens in the default permission mode. Read from
+  that run:
+  - the `Notification` hook ran 6.5 s after the dialog opened, with `notification_type:
+    "permission_prompt"` and `message: "Claude needs your permission"` (beside `session_id`,
+    `transcript_path`, `cwd`, `prompt_id`, `hook_event_name`; no `title`). The regression test
+    `a_notices_flag_carries_claude_codes_words` posts an input of that shape, with made-up ids;
+  - once the dialog was answered, the session wrote the tool's result and its next assistant
+    line within 0.1 s, both dated after the notice: the work that answers the flag.
+  The CLI's own code names the hook input's fields (`message`, `title`, `notification_type`) and
+  waits 6 s before it notifies (`rDn=6000`).
+- **Mutation checks** (each on a clean tree at `db7bc1a22`, restored from `HEAD` afterwards).
+  Every mutation fails a test:
+
+  | Removed or broken | Failing test |
+  | --- | --- |
+  | A reason is read only while the state is of the flag's time | `a_flags_reason_is_read_only_while_the_task_reads_that_flag`, `a_reason_that_cannot_be_read_is_none`, `a_flag_the_gate_raised_says_why_to_whoever_comes_later`, `a_flag_raised_after_a_notices_is_not_lifted_after_a_restart` |
+  | A flagged task keeps its flag and its reason | `a_flags_reason_is_read_only…`, `a_notice_on_a_flagged_task_keeps_the_flags_reason` |
+  | A flag from a state the task left is not raised | `a_flag_from_a_state_the_task_left_is_not_raised` |
+  | The store answers when the flag was raised | three store tests, `a_notice_is_answered_by_the_agents_work_after_a_restart` |
+  | The gate's flag gives its reason | `a_flag_the_gate_raised…`, `a_notice_on_a_flagged_task…` |
+  | A notice's reason says that work answers it | `a_notice_is_answered_by_the_agents_work_after_a_restart` |
+  | A worker's notice does not say so | `a_workers_notice_is_not_answered_by_the_agents_work_after_a_restart` |
+  | A run watched again takes the flag's time back | `a_notice_is_answered_by_the_agents_work_after_a_restart` |
+  | Only a reason that work answers gives its time back | `a_workers_notice_is_not_answered…after_a_restart` |
+  | The browser request's flag gives its reason | `user_action_requests_mark_the_task_notify_viewers_and_return_a_link` |
+  | The bar shows a reason of Yulius's own | six tests of `attention.e2e.ts` |
+  | Only Claude Code's question is "in the terminal" | "a flag Yulius raised says why…", "a flag with no reason claims no question" |
+  | Words that end a sentence get no second full stop | "a question in the terminal reads so…" |
+  | Reply says that the terminal took the keyboard | the three Reply tests |
+  | A terminal that takes no input says why instead | "Reply on a terminal that takes no input says why instead" |
+  | The row's line follows the reason | "the task's row says the reason's to-do…" |
+  | A reason's page gets its Open link | the secret and browser request tests |
+  | Reply stays the owner's | "a watcher reads the reason, and Reply stays the owner's" |
+
+- **Gate.** `scripts/dev ci` exited 0 at `674e88784`, the head with `dev` merged (`2a31d50ae`,
+  no conflict): repository checks, the scripts' unit tests, `cargo check`, `fmt`, `clippy` for
+  Linux and macOS, the tests (3971 run, 3971 passed, 16 skipped), doctests, `cargo deny`,
+  `cargo shear`, `cargo doc`. The commit after it changes one test, to the real input's shape
+  (`a_notices_flag_carries_claude_codes_words`), and this spec: that test file's tests,
+  `scripts/dev lint` and the repository checks passed again.
+- **End-to-end suite** (a web change). The whole suite at `674e88784`: 83 files passed, 1
+  skipped; 995 tests passed, 1 skipped. A first whole run, at `d736a3871`, had one failure in a
+  file this change does not touch: `cd.e2e.ts` "a scrolled needs_you list survives task updates
+  and its to-do stays opaque" read the list's `tabindex` once, before the page had set it
+  (`expected [null,40] to equal ["0",40]`). Its file passed alone three times, and the same
+  single read fails 1 run in 3 with late `ResizeObserver`s on `dev`'s assets as on this
+  branch's: a flaky test this change did not cause, filed as #1223.
+- **By eye.** Screenshots of the bar from the mock in Chromium at 1440, 820 and 390 px: a
+  reason of Yulius's own with and without a page, Claude Code's question with its words, a flag
+  without a reason, and the terminal's notice after Reply. The buttons go under the text on the
+  phone width, as a request's do.
+- **Security scan.** `scripts/dev security` exited 0 as disabled: Vidoc is turned off in Yulius
+  for this project, so nothing was scanned. That is not a pass.
+- **Independent review** (a fresh read-only session, `om-code-review`): round 1 reviews this
+  head; its verdict is the review summary recorded with the merge.
+- **Not tested.**
+  - The task of the screenshot: it is another sandbox's, on the running instance, and nothing
+    of it can be read from here. Which of the causes it met is therefore not known; both are
+    fixed and each has its failing test.
+  - A session of the real Claude Code inside a Yulius of this branch (it needs a subscription;
+    the running instance is on `main` and gets the change when a person promotes `dev`). The
+    server's side is tested with the fake agent, also across a restart on the same data
+    directory, and the fake's notice and work lines have the shape the real CLI was seen to
+    send.
+  - An instance update itself (the freeze and the new binary): the restart tests start a second
+    server on the first one's data directory and reattach the run, as an update does.
+  - The folder-trust question in front of a typed goal has no integration test, before or
+    after this change; its words are unit-tested.
+  - Browsers other than Chromium, and a real touch screen (phones keep the quick input, which
+    this change does not touch).

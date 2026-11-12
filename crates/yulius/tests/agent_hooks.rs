@@ -583,10 +583,12 @@ async fn a_flag_the_gate_raised_says_why_to_whoever_comes_later() -> TestResult 
 }
 
 /// SPEC-472 ATN-005: a flag raised by a Claude Code notice says the question is in the terminal,
-/// in Claude Code's own words (one line); the idle reminder flags nothing and says nothing.
+/// in Claude Code's own words (one line); a notice without words says only that; the idle
+/// reminder flags nothing and says nothing.
 #[tokio::test]
 async fn a_notices_flag_carries_claude_codes_words() -> TestResult {
     let f = fixture().await?;
+    let why = || support::attention(&f.h.app, "t-main");
     hook(&f, "UserPromptSubmit", json!({"prompt": "go"})).await?;
     hook(
         &f,
@@ -594,25 +596,69 @@ async fn a_notices_flag_carries_claude_codes_words() -> TestResult {
         json!({"notification_type": "idle_prompt", "message": "Claude is waiting for your input"}),
     )
     .await?;
-    assert!(support::attention(&f.h.app, "t-main").await?.is_null());
+    assert!(why().await?.is_null());
+    // The input as Claude Code 2.1.322 sends it for a permission dialog left open for six
+    // seconds (read from the real CLI run against a local stand-in for the API; the ids and
+    // paths here are made up).
     hook(
         &f,
         "Notification",
         json!({
+            "session_id": "0f5065b9-0000-4000-8000-000000000001",
+            "transcript_path": "/home/agent/.claude/projects/-work/0f5065b9.jsonl",
+            "cwd": "/work",
+            "prompt_id": "670bf19d-0000-4000-8000-000000000002",
+            "hook_event_name": "Notification",
+            "message": "Claude needs your permission",
             "notification_type": "permission_prompt",
-            "message": "Claude needs your permission\nto use Bash",
         }),
     )
     .await?;
     assert_eq!(activity(&f).await?, Some(Activity::NeedsAttention));
     assert_eq!(
-        support::attention(&f.h.app, "t-main").await?,
+        why().await?,
         json!({
             "kind": "terminal",
-            "problem": "Claude needs your permission to use Bash",
+            "problem": "Claude needs your permission",
             "action": null,
             "link": null,
         })
+    );
+
+    // The person's next prompt ends the flag and its reason. Words over several lines are one
+    // line in the bar.
+    f.h.clock.0.fetch_add(1_000, Ordering::SeqCst);
+    hook(&f, "UserPromptSubmit", json!({"prompt": "go on"})).await?;
+    assert!(why().await?.is_null());
+    f.h.clock.0.fetch_add(1_000, Ordering::SeqCst);
+    hook(
+        &f,
+        "Notification",
+        json!({
+            "notification_type": "elicitation_dialog",
+            "message": "Claude Code needs\n  your input",
+        }),
+    )
+    .await?;
+    assert_eq!(
+        why().await?["problem"],
+        "Claude Code needs your input",
+        "one line"
+    );
+
+    // A notice that brings no words still says where the question is.
+    f.h.clock.0.fetch_add(1_000, Ordering::SeqCst);
+    hook(&f, "UserPromptSubmit", json!({"prompt": "go on"})).await?;
+    f.h.clock.0.fetch_add(1_000, Ordering::SeqCst);
+    hook(
+        &f,
+        "Notification",
+        json!({"notification_type": "permission_prompt"}),
+    )
+    .await?;
+    assert_eq!(
+        why().await?,
+        json!({"kind": "terminal", "problem": null, "action": null, "link": null})
     );
     Ok(())
 }
