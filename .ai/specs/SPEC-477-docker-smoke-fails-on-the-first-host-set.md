@@ -44,7 +44,15 @@ server.
   replaces it (`FrontAction::Replace`): the refuse front is stopped and an engine front is started
   at the same socket, named after the host name in `holder.json` (`docker-smoke`). The smoke's
   old run then asks a live engine. The server also keeps the holder in its 30-second upkeep, where
-  it would restart its engine front whenever the smoke's manager displaced it.
+  it restarts its engine front whenever the smoke's manager displaced it.
+- **Two managers, one holder: any step can fail.** From the adoption on, the server's manager
+  and the smoke's each hold the front they started and take the other's for a dead one. Which
+  step fails depends on who started a front last. In the issue's runs the server's engine front
+  was the last before the old run's `docker info` (the refusal step failed). In this task's
+  reproduction the smoke's tick put its refusal back in time, and the server's next upkeep, 30
+  seconds later, replaced the smoke's engine front during the old run's `docker compose up`,
+  which stopped that engine: `FAIL docker compose up (two services) in the old run`. The sandbox
+  had seven fronts where a smoke starts three.
 - **Why only the first run.** A server adopts only when it starts. On later runs the unit is not
   written, so nothing starts the server next to the smoke.
 - **The departure.** The smoke's module documentation says its sandbox is "next to the real ones
@@ -62,7 +70,9 @@ server.
   so the new server process met its sandbox the same way.
 - **Reproduced** before any fix, see Evidence: the manager test of this spec fails on `dev`
   (`0dd7a58a5`) with the engine's answer where the refusal is expected, and the first `host
-  setup` of a fresh Ubuntu 24.04.5 guest with the `dev` binary fails as in the issue.
+  setup` of a fresh Ubuntu 24.04.5 guest with the `dev` binary ends with `FAIL Docker smoke test`
+  (exit 1), with the server's journal naming the adoption (`replacing the sandbox's Docker front
+  sandbox="docker-smoke-5884" to="engine"`, `adopted=1`) one second after its start.
 
 ## Requirements
 
@@ -100,7 +110,8 @@ type, and the smoke's checks themselves.
 - [ ] `sudo yulius host setup` on a fresh Ubuntu 24.04 host ends with `Docker smoke test` ok on
   its first run (a QEMU guest from Ubuntu's cloud image, binary built from this branch).
 - [ ] `yulius doctor --docker-smoke` still passes beside the running server on later runs (same
-  guest), and a server restarted in the middle of a smoke does not change its result.
+  guest), and a server restarted while the smoke's Docker-off holder runs does not change its
+  result.
 - [ ] `scripts/dev ci` and `scripts/dev security` pass (or say why a part did not run).
 
 ## Test plan
@@ -116,9 +127,9 @@ type, and the smoke's checks themselves.
 - **Host, QEMU guest (Ubuntu 24.04 cloud image, no KVM):** the first `yulius host setup
   --public-url …` on a fresh guest, once with the binary of `dev` (expected: the issue's failure,
   with the server's journal naming the replaced front) and once with this branch's (expected:
-  `Docker smoke test` ok, exit 0). On the fixed guest then: `yulius doctor --docker-smoke` beside
-  the running server, and once more with `systemctl restart yulius.service` while the smoke is
-  in its first phase.
+  `Docker smoke test` ok, exit 0, and the server's journal says it left the smoke's sandbox to
+  it). On both guests then: `yulius doctor --docker-smoke` beside the running server, and once
+  more with `systemctl restart yulius.service` as soon as the smoke's holder is recorded.
 - **Gates:** `scripts/dev ci`, `scripts/dev security`.
 
 ## Decisions
