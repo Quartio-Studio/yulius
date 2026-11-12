@@ -1,11 +1,11 @@
 ---
 yulius-task: 2d488ecd-4304-4dd1-88ed-926e238ac3a9
-status: in-progress
+status: done
 ---
 
 # SPEC-478: A resumed start does not end well while processes of a stopped old unit run (issue #1178)
 
-Status: in-progress
+Status: done
 Date: 2026-11-12
 Owner: Yulius task #460, issue #1178
 Scope authorization: the request of task #460 (from task #458, which works through open issues):
@@ -43,7 +43,7 @@ that ends them, fails, and looks again on the next run.
 - **What real systemd says** (Ubuntu 26.04, systemd 259, a QEMU guest; Evidence): a unit with
   `KillMode=process` and a process in a subgroup, after `systemctl stop`:
   `ActiveState=inactive`, `ControlGroup` still set, `cgroup.events` "populated 1", "frozen 0";
-  `systemctl freeze` fails ("Unit is not active"); `systemctl kill --kill-whom=all
+  `systemctl freeze` fails ("Unit is not active"); `systemctl kill --kill-who=all
   --signal=SIGKILL` ends them, and then `ControlGroup` is empty and the group is gone. A unit
   whose stop left nothing has an empty `ControlGroup` at once. systemd 255 (Ubuntu 24.04)
   answers the same, and there a `systemctl stop` of the unit the move froze thaws it and stops
@@ -65,7 +65,7 @@ that ends them, fails, and looks again on the next run.
 
 | ID | Requirement | Evidence |
 | --- | --- | --- |
-| RSL-001 | A resumed start that finds no unit of the old instance running unfrozen, a new instance that reports the build, and a stopped unit of the old instance (the server's, `inactive` or `failed`; its sessions unit when it does not run) whose cgroup holds processes that are not frozen (`cgroup.events`: `populated 1` without `frozen 1`) fails: a `FAIL` line names the units, says that processes of them still run beside the new instance, and names `systemctl kill --kill-whom=all --signal=SIGKILL <units>`; exit 1. The run kills, starts, stops, thaws and disables nothing, and the move stays recorded as `Starting`, so the same command asks again. A sessions unit that runs unfrozen is still frozen to stay first. | flow tests `a_recorded_start_with_a_stopped_server_whose_processes_run_does_not_end_well`, `a_recorded_start_names_every_stopped_unit_whose_processes_run`; unit tests of `freeze::left_running`; the guest |
+| RSL-001 | A resumed start that finds no unit of the old instance running unfrozen, a new instance that reports the build, and a unit of the old instance that does not run (the server's, `inactive` or `failed`; its sessions unit when it has stopped or is being stopped) whose cgroup holds processes that are not frozen (`cgroup.events`: `populated 1` without `frozen 1`) fails: a `FAIL` line names the units, says that processes of them still run beside the new instance, and names `systemctl kill --kill-who=all --signal=SIGKILL <units>`, a command that runs on every systemd the freeze supports; exit 1. The run kills, starts, stops, thaws and disables nothing, and the move stays recorded as `Starting`, so the same command asks again. A sessions unit that runs unfrozen is still frozen to stay first. | flow tests `a_recorded_start_with_a_stopped_server_whose_processes_run_does_not_end_well`, `a_recorded_start_names_every_stopped_unit_whose_processes_run`; unit tests of `freeze::left_running`; the guest |
 | RSL-002 | With no cgroup (the unit left nothing, or the old host was restarted), an empty one, or one whose processes the kernel holds frozen, the `manual` line, `Cutover::Moved` and exit 0 stay as before. After the named command ended the processes, the same command goes on that way. | flow test `a_recorded_start_with_a_stopped_server_and_nothing_left_keeps_its_line` and the last part of the first test above; unit tests; the guest |
 | RSL-003 | When systemd does not say what a stopped unit left, the run does not take that for "nothing": a `FAIL` line says so, exit 1, the move stays `Starting`. | flow test `a_recorded_start_does_not_guess_what_a_stopped_unit_left`; unit test `what_a_stopped_unit_left_is_not_guessed` |
 | RSL-004 | `docs/operations.md` §7 ("Move the instance to another host") says what such a run does and what to run; `docs/changes.md` has the entry. | the documents |
@@ -76,7 +76,7 @@ that ends them, fails, and looks again on the next run.
 - [x] A resumed start fails with the command to run while a stopped unit's processes run, and records nothing
 - [x] The guide and the change log say what such a run does
 - [x] The same run on a real host: an Ubuntu 26.04 guest with the build before and after the fix
-- [ ] Every gate run and the independent review's findings answered
+- [x] Every gate run and the independent review's findings answered
 
 After the pull request is open and after its merge, not Plan items (`delivery_merge` needs every
 step done first): its description says `Fixes #1178`, and issue #1178 is closed with a comment
@@ -147,6 +147,31 @@ that names the pull request.
   now shares `group()` with `left_running`. Its behaviour is unchanged (it refuses on
   `populated 1` whatever `frozen` says). The new host's stop in `migrate/target.rs` reads
   through another `Host` trait and stays as it is.
+- **The lines name `--kill-who=all` (review, minor 4).** `--kill-whom` is the option's name
+  since systemd 252; systemd 249 (Ubuntu 22.04) refuses it ("unrecognized option", measured),
+  and an old host is what a move leaves. `--kill-who=all` is the name before 252, and 255 and
+  259 take it too (as the start of `--kill-whom`; measured on both). So one spelling runs on
+  every old host the freeze supports (systemd 246 and later), and a person is given one line,
+  not two to choose from. The two older lines of the same run ("Make sure nothing of the old
+  one runs here", "stop it for good instead") name the same command and were changed with it
+  (one constant, `KILL_ALL`): a run prints them one after the other, and two spellings of one
+  command would read as two commands. The new host's own stop (`migrate/target.rs`) keeps
+  trying both names. Alternative, naming both spellings in the line: rejected, a longer line
+  for a choice the person cannot make without reading `systemctl --version`.
+- **"Does not run any more", not "has stopped" (review, nits 5 to 7).** The line is also said
+  of a sessions unit that is still `deactivating`, which has not stopped. The parenthesis says
+  what the server's unit keeps on either layout ("what the server started in it"), and only
+  when the server's unit is among the named ones. The line for an unanswered systemd names the
+  server's unit only for what is known of it (it has stopped), since the question that went
+  unanswered may have been the sessions unit's.
+- **What the review saw in code that was there before** (not changed here; both are written
+  in a comment on issue #1178, with what was measured): (1) a resumed start that finds
+  `FreezerState=frozen` goes on to order the start and to `moved()` without asking what a unit
+  that does not run left (`Old::all_frozen`); the reviewer found "nothing realistic" that
+  leaves unfrozen processes there, and it is the area of issue #1179, for which
+  `freeze::left_running` is there to use. (2) `--abort` from this issue's state starts the old
+  unit with processes left in its group: on the 26.04 guest (systemd 259) that start succeeds
+  (Evidence), so the abort is not blocked.
 - **No new ADR.** ADR-0297 (one resumable checklist that freezes the old instance and thaws it
   when the move does not happen) stands and this follows it; the choice above is this spec's,
   as the issue asks.
@@ -154,7 +179,9 @@ that names the pull request.
 ## Evidence
 
 Runs of 2026-11-12. The logs and scripts are kept in the task's ignored `target/evidence/`
-while it runs; what they showed is quoted here.
+while it runs; what they showed is quoted here. The code's last state is `b1e59947`; this
+section is committed after it, and the independent reviewer's look at that head and at this
+commit comes after this commit.
 
 - **The defect, by test.** At `5f9536e1` (the tests and the fake systemd alone, the code of
   `dev`) `cargo nextest run -p yulius --no-fail-fast -E 'test(/instance::/)'`: 327 run, 324
@@ -163,12 +190,17 @@ while it runs; what they showed is quoted here.
   `a_recorded_start_does_not_guess_what_a_stopped_unit_left`, each on `left: 0, right: 1` (exit
   0) with the `manual` line in the shown checklist. The fourth new flow test (nothing left: the
   line stays) passes before and after, as it must. At `2d373d6b` (the fix): 330 run, 330 passed.
-- **Mutations** (`target/evidence/mutants.py`, at `2d373d6b`, each applied alone and undone):
-  11 of 11 fail a test. The check removed from `resume_start` (the 3 tests above); `frozen`
+  The review's findings the same way: at `93bc8af4` (tests alone) 331 run, 8 failed (every flow
+  test that reads one of the three lines); at `b1e59947`: 331 run, 331 passed.
+- **Mutations** (`target/evidence/mutants.py`, at `b1e59947`, each applied alone and undone):
+  16 of 16 fail a test. The author's 11: the check removed from `resume_start`; `frozen`
   ignored; `populated` ignored; a running unit looked at too; the sessions unit left out; an
   unanswered systemd taken for "nothing left"; a `show` error swallowed in the helper; an unset
   `ControlGroup` read as the root group; the move recorded in the failed case; only the first
-  unit named in the command; `KillMode=process` named for every unit.
+  unit named in the command; `KillMode=process` named for every unit. The four that survived
+  the reviewer's run at `3af29ace` and are killed now: "it" and "them" swapped; the export
+  accepting a stopped unit's frozen processes; `FreezerState` read in place of the kernel's
+  `frozen`; `FreezerState` read beside it. And `--kill-whom` put back into the lines.
 - **What systemd answers** (QEMU guests from the Ubuntu cloud images; a unit with
   `KillMode=process`, `Delegate=yes` and a process in a subgroup):
   - Ubuntu 26.04.1, systemd 259.5: after `systemctl stop`: `ActiveState=inactive`,
@@ -180,7 +212,15 @@ while it runs; what they showed is quoted here.
     SIGKILL: `failed`, `FreezerState=frozen`, `ControlGroup=`, no group (nothing left).
   - Ubuntu 24.04.5, systemd 255.4: the same answers for a stopped unit with a process left and
     after the kill ("Unit is inactive." for the freeze). `systemctl stop` of a frozen unit
-    succeeds there: `inactive`, `FreezerState=running`, "populated 1 frozen 0".
+    succeeds there: `inactive`, `FreezerState=running`, "populated 1 frozen 0". Both
+    `--kill-whom=all` and `--kill-who=all` end a process that ignores SIGTERM (exit 0, no
+    group).
+  - Ubuntu 22.04, systemd 249.11: the same state after the stop. `systemctl kill
+    --kill-whom=all --signal=SIGKILL`: "systemctl: unrecognized option '--kill-whom=all'", exit
+    1, the process stays ("populated 1 frozen 0"). `--kill-who=all`: exit 0, `ControlGroup=`,
+    no group.
+  - systemd 259 takes `--kill-who=all` as well: the scenario below runs it. (The probe unit of
+    the 249 and 255 runs did not start on 259, so that probe says nothing there.)
 - **The real command on the 26.04 guest.** `yulius host setup --public-url http://vm.test
   --no-smoke` (exit 0: the real units, `yulius.service` in `yulius.slice` with
   `KillMode=process`, and `yulius-sandboxes.service`). Then: a process put into a subgroup of
@@ -196,17 +236,58 @@ while it runs; what they showed is quoted here.
     frozen again`, `manual old instance yulius.service does not run here any more, and the new
     instance runs. Make sure nothing …`, the finish, "failed 0", **exit 0**, state
     `"cutover":"Moved","finished":true`, with the process still running, "populated 1 frozen 0".
-  - This change (`2d373d6b`), `target/evidence/guest/scenario-fix-2d373d6b2.log`: run 1: the
-    sessions unit frozen again, then `FAIL old instance yulius.service has stopped, but
-    processes of it still run here beside the new instance (a stopped server's unit keeps the
-    agents, terminals and sandbox engines it started: KillMode=process), and systemd freezes
-    nothing of a unit that has stopped. End them: \`systemctl kill --kill-whom=all
-    --signal=SIGKILL yulius.service\`, then run the command again. The move is not recorded as
-    done until then`, "failed 1", **exit 1**, state `"cutover":"Starting","finished":false`, the
-    process alive. Run 2, nothing changed: the same line, exit 1. Then the named command (exit
-    0; `ControlGroup=`, no group, the process gone). Run 3: the `manual` line, the finish,
-    "failed 0", **exit 0**, `"cutover":"Moved","finished":true`.
-  - Also with this change: `--status` after the failed run shows the `FAIL` line; with the
-    group frozen by hand (`echo 1 > cgroup.freeze`: "populated 1 frozen 1") the run gives the
+  - This change (`b1e59947`, `target/evidence/guest/scenario-fix-b1e599476.log`; the same at
+    `2d373d6b` with the first wording). Run 1: the sessions unit frozen again, then
+
+    ```
+    FAIL     old instance           yulius.service does not run any more, but processes of it still run here beside the new instance (the server's unit keeps what the server started in it when it stops: KillMode=process), and systemd freezes nothing of a unit that does not run. End them: `systemctl kill --kill-who=all --signal=SIGKILL yulius.service`, then run the command again. The move is not recorded as done until then
+    ```
+
+    "failed 1", **exit 1**, state `"cutover":"Starting","finished":false`, the process alive.
+    Run 2, nothing changed: the same line, exit 1. Then the named command (exit 0;
+    `ControlGroup=`, no group, the process gone). Run 3: the `manual` line (with
+    `--kill-who=all`), the finish, "failed 0", **exit 0**, `"cutover":"Moved","finished":true`.
+  - At `2d373d6b` also: `--status` after the failed run shows the `FAIL` line; with the group
+    frozen by hand (`echo 1 > cgroup.freeze`: "populated 1 frozen 1") the run gives the
     `manual` line and exit 0; with an empty group left behind ("populated 0 frozen 0",
     `ControlGroup` still set) the same.
+  - A start of the old unit with a process left in its group (what `--abort` asks for), at
+    `b1e59947`: `systemctl start yulius.service` exit 0, `ActiveState=active`.
+- **Gates at `b1e59947`.** `scripts/dev ci`, run twice:
+  - 18:54 to 18:58 UTC: failed, in one test this change does not touch:
+    `tool_cli::tests::an_unreachable_yulius_exits_3` (`left: 0, right: 3`); "4038 tests run:
+    4037 passed, 1 failed, 16 skipped". The test takes a free port, lets go of it and expects
+    that nothing listens there; `crates/yulius/src/tool_cli.rs` is as on `dev`. The four
+    `tool_cli` tests then passed 40 times out of 40 on their own. Reported in a comment on
+    issue #1178 (this run opens no issue).
+  - 18:59 to 19:03 UTC: exit 0; "4038 tests run: 4038 passed, 16 skipped".
+  At `3af29ace`, before the review's findings: exit 0, "4037 tests run: 4037 passed, 16
+  skipped". `yulius security-scan`: exit 0, "Security scan disabled: Vidoc is turned off in
+  Yulius, for this project or the whole instance; nothing was scanned." A disabled scan is not
+  a passed one.
+- **Independent review** (a fresh read-only session given the diff range `0dd7a58a5..3af29acee`,
+  this spec and `om-code-review`; its own copy of the tree for builds; a first reviewer session
+  was cut off by the account's usage limit before it had findings). Its words: "**Verdict:
+  approve.** No blocker and no major. The fix does what issue #1178 and RSL-001..004 ask, and
+  the export's freeze behaves exactly as before. There are four own-code minors and a few nits,
+  all cheap; I'd fix them in the delta. One condition: I did not run the full gate
+  (`scripts/dev ci`), as instructed. The approval holds only if the delta shows it green." It
+  ran the 330 instance tests, `cargo fmt --check`, `cargo clippy -p yulius --all-targets` and 7
+  mutations of its own (4 survived). Its findings, all answered in `93bc8af4` (tests first),
+  `ef45b74a` and `b1e59947`:
+  - minor 1, a sentence of §7 made false ("a sessions unit that is being stopped counts as
+    ended"): the sentence now says "once no process of it is left";
+  - minor 2, the export's unchanged refusal of frozen leftovers had no test: unit test
+    `a_stopped_unit_with_frozen_processes_is_refused_too`;
+  - minor 3, the kernel's word against `FreezerState` had no test: the frozen cases of
+    `a_stopped_unit_is_named_while_its_processes_run` now differ in `FreezerState`;
+  - minor 4, `--kill-whom` on an older systemd: Decisions, measured on systemd 249;
+  - nits 5 to 8 (the wording for a unit that is stopping, the unit blamed for an unanswered
+    question, the layout the parenthesis was true of, "of them" unpinned): the lines and their
+    tests, Decisions;
+  - pre-existing, information only (P1 `Old::all_frozen`, P2 the abort's start): Decisions,
+    and the comment on issue #1178.
+- **Not tested.** A move between two real hosts (the guest stands in for its own new host);
+  the real command on systemd 249 and 255 (only what systemd answers was measured there: this
+  build runs on the 26.04 guest alone); a host without a sessions unit as a real host (the
+  flow tests' default fake is such a host).
