@@ -71,6 +71,18 @@ pub fn message_paste(login: &str, channel: Channel, text: &str) -> Vec<u8> {
     format!("\x1b[200~Message from {login} (through {through}):\n\n{text}\x1b[201~").into_bytes()
 }
 
+/// What Yulius types into a session ([`App::type_into_session`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Typed {
+    /// A message for the agent: Claude Code submits it as a prompt, at once or, while a turn
+    /// runs, from its queue. Until then it is in the session and a restart would lose it
+    /// (SPEC-468 CCF-011).
+    Prompt,
+    /// A command Claude Code runs itself (`/mcp reconnect yulius`): no prompt is submitted,
+    /// so nothing of it waits anywhere.
+    Command,
+}
+
 /// Clears a run's "a message is being typed" mark when the typing ends, even if the call is
 /// dropped half-way.
 struct Typing<'a>(&'a AtomicBool);
@@ -191,7 +203,7 @@ impl App {
         channel: Channel,
         text: &str,
     ) -> AppResult<()> {
-        self.type_into_session(task, &message_paste(login, channel, text))
+        self.type_into_session(task, &message_paste(login, channel, text), Typed::Prompt)
             .await?;
         // The person spoke to the task (through their Superagent or their own agent): what it
         // asked them is answered.
@@ -202,8 +214,13 @@ impl App {
     /// Types `paste` (one bracketed paste) and then Enter into the running task's session, once
     /// it takes typed text (TMS-004): its session started, no person typed in the last minute,
     /// and nothing else is being typed. Also Yulius's own "Yulius is back; continue" (SPEC-358
-    /// MSB-007).
-    pub(crate) async fn type_into_session(&self, task: &TaskRecord, paste: &[u8]) -> AppResult<()> {
+    /// MSB-007). `what` says whether Claude Code will submit it as a prompt.
+    pub(crate) async fn type_into_session(
+        &self,
+        task: &TaskRecord,
+        paste: &[u8],
+        what: Typed,
+    ) -> AppResult<()> {
         let runtime = self.existing_runtime(&task.id).ok_or_else(|| {
             AppError::Conflict(format!("task #{} has no live session", task.number))
         })?;
@@ -250,13 +267,20 @@ impl App {
             )));
         }
         let _typing = Typing(&runtime.typing_message);
-        // From here the message is in the session and not submitted: in its prompt box, or,
+        // From here a message is in the session and not submitted: in its prompt box, or,
         // while a turn runs, in Claude Code's queue, which a restart of the session would lose
-        // (SPEC-468 CCF-011). Stamped before it is typed: its submit comes after.
-        runtime
-            .message_typed_ms
-            .store(self.now().0, Ordering::SeqCst);
-        self.send_input(&task.id, paste).await?;
+        // (SPEC-468 CCF-011). Stamped before it is typed: its submit comes after. A command
+        // submits nothing, and a text that could not be typed is nowhere.
+        let before = runtime.message_typed_ms.load(Ordering::SeqCst);
+        if what == Typed::Prompt {
+            runtime
+                .message_typed_ms
+                .store(self.now().0, Ordering::SeqCst);
+        }
+        if let Err(err) = self.send_input(&task.id, paste).await {
+            runtime.message_typed_ms.store(before, Ordering::SeqCst);
+            return Err(err);
+        }
         tokio::time::sleep(SUBMIT_DELAY).await;
         // The text is in the prompt box but not sent: said, so a retry does not send it twice.
         self.send_input(&task.id, b"\r").await.map_err(|err| {
@@ -267,6 +291,9 @@ impl App {
                 err.public_message()
             ))
         })?;
+        // The Enter that submits it, or enters it into the queue: what a person types from
+        // here on is not part of it (SPEC-468 CCF-010).
+        runtime.entered_ms.store(self.now().0, Ordering::SeqCst);
         Ok(())
     }
 }

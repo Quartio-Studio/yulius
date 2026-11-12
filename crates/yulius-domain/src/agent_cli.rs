@@ -151,6 +151,24 @@ pub fn is_draft(typed_at_ms: i64, box_emptied_ms: i64) -> bool {
     typed_at_ms > 0 && typed_at_ms > box_emptied_ms
 }
 
+/// When the prompt box of a session was emptied by a prompt whose submit hook was sent at
+/// `sent_ms` (SPEC-468 CCF-010). Mostly then. But a prompt entered while a turn ran waited in
+/// Claude Code's queue, and its hook comes when it is handed on, long after its Enter: what was
+/// typed after that Enter (`typed_ms`, the latest) is still in the box. So when the last Enter
+/// typed into the session (`entered_ms`) lies between the time the box was last known empty
+/// (`emptied_before_ms`) and the hook, and something was typed after it, the box counts as
+/// emptied at that Enter. An Enter Yulius did not see (0, or older than the last submit)
+/// changes nothing.
+#[must_use]
+pub fn box_emptied_at(sent_ms: i64, entered_ms: i64, typed_ms: i64, emptied_before_ms: i64) -> i64 {
+    let entered_for_it = entered_ms > emptied_before_ms && entered_ms <= sent_ms;
+    if entered_for_it && typed_ms > entered_ms {
+        entered_ms
+    } else {
+        sent_ms
+    }
+}
+
 /// Whether the session is restarted on `target` now: it runs an older version, was not sent to
 /// `target` before (a session that still names the old one afterwards is not restarted at every
 /// turn's end), no session failed to continue on `target`, nobody typed into it in the last
@@ -616,6 +634,28 @@ mod tests {
             "typed, then submitted (or the run started)"
         );
         assert!(!is_draft(1_000, 1_000), "the keystroke that submitted it");
+    }
+
+    /// SPEC-468 CCF-010 (review round 2): a submit empties the prompt box as of its hook,
+    /// unless something was typed after the Enter that entered it: then as of that Enter.
+    #[test]
+    fn a_submit_empties_the_box_as_of_its_enter_when_more_was_typed_after_it() {
+        // Typed, entered at 2 s, submitted at once: the Enter is the last keystroke.
+        assert_eq!(box_emptied_at(2_050, 2_000, 2_000, 1_000), 2_050);
+        // Entered at 2 s while a turn ran, typed on at 3 s, handed on at 9 s.
+        let emptied = box_emptied_at(9_000, 2_000, 3_000, 1_000);
+        assert_eq!(emptied, 2_000);
+        assert!(is_draft(3_000, emptied), "what was typed after the Enter");
+        // The same, and the next thing typed came after the hook was sent.
+        assert_eq!(box_emptied_at(9_000, 2_000, 9_500, 1_000), 2_000);
+        // No Enter was seen for it: none at all, or only the one of the prompt before.
+        assert_eq!(box_emptied_at(9_000, 0, 3_000, 1_000), 9_000);
+        assert_eq!(box_emptied_at(9_000, 900, 3_000, 1_000), 9_000);
+        assert_eq!(box_emptied_at(9_000, 1_000, 3_000, 1_000), 9_000);
+        // An Enter after the hook was sent is another prompt's.
+        assert_eq!(box_emptied_at(9_000, 9_200, 9_300, 1_000), 9_000);
+        // Nothing was typed at all (Yulius's own prompt at a launch).
+        assert_eq!(box_emptied_at(9_000, 0, 0, 1_000), 9_000);
     }
 
     /// SPEC-461 CCM-007 (review round 2): npm's newest release is said not to know the default

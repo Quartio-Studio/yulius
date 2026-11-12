@@ -240,10 +240,23 @@ impl App {
         // it is no draft any more (SPEC-468 CCF-010). Once per submit: a prompt that is held
         // (an update, a pause, no subscription with room) is sent again every few seconds,
         // stamped anew, until it goes on, and what a person types meanwhile is a draft.
+        // A prompt that waited in Claude Code's queue is submitted long after its Enter: what
+        // was typed after that Enter is still in the box, which then counts as emptied at the
+        // Enter (`box_emptied_at`).
         let runtime = self.runtime(&ctx.task.id);
         let sent_again = runtime.prompt_held.load(Ordering::SeqCst);
         if !sent_again && crate::finish::from_prompt_box(input.prompt.as_deref()) {
-            runtime.box_emptied_ms.fetch_max(sent, Ordering::SeqCst);
+            let typed = runtime
+                .typed_at_ms
+                .load(Ordering::SeqCst)
+                .max(runtime.message_typed_ms.load(Ordering::SeqCst));
+            let emptied = yulius_domain::agent_cli::box_emptied_at(
+                sent,
+                runtime.entered_ms.load(Ordering::SeqCst),
+                typed,
+                runtime.box_emptied_ms.load(Ordering::SeqCst),
+            );
+            runtime.box_emptied_ms.fetch_max(emptied, Ordering::SeqCst);
         }
         let reply = self.answer_event(ctx, event, input, sent).await;
         let held = matches!(reply, Ok(HookReply::Hold { .. }));

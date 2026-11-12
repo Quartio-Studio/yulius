@@ -18,6 +18,7 @@ use yulius_domain::task::TaskStatus;
 use yulius_domain::time::Timestamp;
 
 use crate::context::App;
+use crate::task_message::Typed;
 
 /// The file holding when Yulius was last alive (milliseconds since the epoch).
 pub const ALIVE_FILE: &str = "alive-at";
@@ -257,7 +258,10 @@ impl App {
                 continue;
             }
             let paste = format!("\x1b[200~{WAKE_TEXT}\x1b[201~");
-            match self.type_into_session(&task, paste.as_bytes()).await {
+            match self
+                .type_into_session(&task, paste.as_bytes(), Typed::Prompt)
+                .await
+            {
                 Ok(()) => {
                     runtime
                         .woken_after_outage_ms
