@@ -281,6 +281,7 @@ impl App {
             config_dir_host: config,
             resume: resume.clone(),
             continue_interrupted: continue_interrupted && resume.is_some(),
+            model: runtime.model.get().cloned(),
             credential,
             yulius: Some((self.config.internal_url.clone(), Secret(bearer))),
             project_mcp_servers: Vec::new(),

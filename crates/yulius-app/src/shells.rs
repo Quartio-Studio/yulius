@@ -150,6 +150,10 @@ pub struct ShellRuntime {
     /// The pool subscription a Cockpit runs on (SPEC-074 SUP-001); unknown for records written
     /// before it was kept.
     pub(crate) account: OnceLock<AccountId>,
+    /// The model a Cockpit was launched with when it is not the default one: the fallback while
+    /// no subscription could run the default (SPEC-482 FBK-011). A limit it reports binds that
+    /// model.
+    pub(crate) model: OnceLock<String>,
     /// A Cockpit ended to start again on another subscription (SPEC-074 SUP-004): its viewers
     /// are told `switched`, and its quick end says nothing about its conversation.
     pub(crate) switching: AtomicBool,
@@ -240,6 +244,9 @@ struct ShellFile {
     /// A Cockpit's pool subscription (absent in older records and for terminals).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     account: Option<String>,
+    /// The fallback model a Cockpit was launched with (absent for the default one, SPEC-482).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    model: Option<String>,
     /// When the last usage limit a Cockpit acted on was recorded (ms), if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     limit_handled_at: Option<i64>,
@@ -830,6 +837,7 @@ impl App {
             seq: runtime.seq,
             kind: runtime.kind,
             account: runtime.account.get().map(|a| a.as_str().to_owned()),
+            model: runtime.model.get().cloned(),
             limit_handled_at: Some(runtime.limit_handled_ms.load(Ordering::SeqCst))
                 .filter(|ms| *ms > 0),
             launch: runtime.launch.get().cloned(),
@@ -863,6 +871,7 @@ impl App {
             kind,
             resumed: OnceLock::new(),
             account: OnceLock::new(),
+            model: OnceLock::new(),
             switching: AtomicBool::new(false),
             limit_handled_ms: AtomicI64::new(0),
             launch: OnceLock::new(),
@@ -1492,6 +1501,7 @@ impl App {
             kind: file.kind,
             resumed: OnceLock::new(),
             account,
+            model: file.model.clone().map(OnceLock::from).unwrap_or_default(),
             switching: AtomicBool::new(false),
             limit_handled_ms: AtomicI64::new(file.limit_handled_at.unwrap_or(0)),
             launch,

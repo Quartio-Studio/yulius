@@ -115,10 +115,12 @@ session runs and why. Fable is used again by itself once a subscription can run 
   subscriptions' windows (`placingModel`, the server's rule; `models.js` names the fallback
   and a test keeps it equal to the server's).
 - FBK-011 (the Superagent). A Superagent or Global Superagent is placed by the same rule
-  (`pool_account` for the default model): started, restarted or moved at a limit while no
-  subscription can run Fable, it runs Opus 5.5, on the same subscription when that is the one
-  with room (FBK-003). Its limit is recorded for the family of the model it was launched with
-  (FBK-006), and its terminal says the line of FBK-008.
+  (`place_default_run` for the default model): started, restarted or moved at a limit while no
+  subscription can run Fable, it is launched with Opus 5.5 (`CockpitLaunch::model`), on the same
+  subscription when that is the one with room (FBK-003). Its record keeps the model
+  (`shell.json`), its limit is recorded for the family of that model (FBK-006), and at a move
+  that changes the model its viewers are told the line of FBK-008. A Superagent on the fallback
+  stays there until its next start (FBK-004).
 
 Not in scope: a setting to switch the fallback off or to choose its model; a fallback for other
 models, or a chain of fallbacks (Opus 5.5 to Sonnet); following a model a person switched inside
@@ -132,7 +134,7 @@ launch; the price shown for a run, which already follows the model that answered
 - [x] A run records the model it was launched with: migration 0054 and the attempt record (FBK-005)
 - [x] A task's launch takes the placed model, says so, and a limit binds the run's model (FBK-005, FBK-006, FBK-008)
 - [x] The task view and the capacity view say that sessions run on the fallback (FBK-009, FBK-010)
-- [ ] The Superagent falls back by the same rule (FBK-011)
+- [x] The Superagent falls back by the same rule (FBK-011)
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 

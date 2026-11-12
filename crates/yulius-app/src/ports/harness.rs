@@ -101,6 +101,9 @@ pub struct CockpitLaunch {
     /// The resumed conversation continues the turn a usage limit cut (SPEC-074 SUP-004): its
     /// transcript steps back over the limit and Claude Code redoes the turn by itself.
     pub continue_interrupted: bool,
+    /// The model it is launched with instead of the default one: the fallback while no
+    /// subscription can run the default (SPEC-482 FBK-011). `None` for the default.
+    pub model: Option<String>,
     /// Provider credential (the Claude OAuth token).
     pub credential: Secret,
     /// The Yulius MCP server it manages the project with (SPEC-037): the internal listener's

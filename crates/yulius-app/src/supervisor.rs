@@ -4984,7 +4984,7 @@ pub(crate) struct Placed {
 /// What a session's terminal says when a launch changes the model it runs (SPEC-482 FBK-008):
 /// `model` is not the task's `own` (the launch falls back), or it is again after a run on
 /// another model (`before`, the model of the task's last run). `None` when nothing changes.
-fn model_change_notice(own: &str, before: Option<&str>, model: &str) -> Option<String> {
+pub(crate) fn model_change_notice(own: &str, before: Option<&str>, model: &str) -> Option<String> {
     let name = claude_model_name;
     if model != own {
         return (before != Some(model)).then(|| {

@@ -1497,6 +1497,7 @@ fn a_contained_superagent_starts_with_the_approval_bypass_accepted() -> TestResu
         config_dir_host: dir.path().join(home),
         resume: None,
         continue_interrupted: false,
+        model: None,
         credential: yulius_app::model::Secret(TOKEN.into()),
         yulius: None,
         project_mcp_servers: Vec::new(),
@@ -2742,6 +2743,117 @@ async fn a_superagent_out_of_usage_credits_moves_to_another_subscription() -> Te
     );
     assert_eq!(usage["secondary"]["used_percent"], 5.0, "{usage}");
     assert_eq!(usage["limit_reached"], false, "{usage}");
+    f.h.app.end_all_shells().await;
+    Ok(())
+}
+
+/// The record of Claude Code 2.1.322 for a model refused for its usage credits, whose allowance
+/// resets at `resets` (seconds).
+fn credits_refusal(uuid: &str, parent: &str, secs: i64, resets: i64) -> String {
+    transcript_record(
+        "assistant",
+        uuid,
+        Some(parent),
+        secs,
+        &json!({"isApiErrorMessage": true, "error": "rate_limit",
+            "apiError": "model_requires_usage_credits", "apiErrorStatus": 429,
+            "apiErrorParams": {"rate_limit_info": {"status": "rejected",
+                "resetsAt": resets, "rateLimitType": "seven_day_overage_included",
+                "overageStatus": "rejected", "overageDisabledReason": "out_of_credits",
+                "isUsingOverage": false}},
+            "message": {"id": format!("msg_{uuid}"), "role": "assistant", "model": "<synthetic>",
+                "content": [{"type": "text",
+                    "text": "You're out of usage credits. /model to switch models."}]}}),
+    )
+}
+
+/// SPEC-482 FBK-011: the only subscription refuses the Superagent Fable for its usage credits.
+/// Before, it stayed at the refusal ("No other subscription has capacity"); now it starts again
+/// on the same subscription with Opus 5.5 and continues the turn, its viewers are told why, and
+/// its record keeps the model. A limit it hits there is Opus's, not Fable's: with neither model
+/// left it stays, as before.
+#[tokio::test]
+async fn a_superagent_out_of_fable_everywhere_goes_on_with_opus() -> TestResult {
+    let f = fixture().await?;
+    let served = serve(f.h.router.clone()).await?;
+    let id = cockpit_id(&f, &f.alice).await?;
+    let mut socket = attach(served.addr, &id, &f.alice).await?;
+    let mut screen = String::new();
+    read_until(&mut socket, &mut screen, "ready").await?;
+    assert_eq!(
+        printed(&screen, "cockpit-args")?,
+        "[--model claude-fable-5-2 --effort high]"
+    );
+    let project = project_of(&screen)?;
+    std::fs::create_dir_all(&project)?;
+    let transcript = project.join("conv-1.jsonl");
+    std::fs::write(
+        &transcript,
+        [
+            prompt_record("u1", None, 5),
+            credits_refusal("refused", "u1", 6, 1_791_400_000),
+        ]
+        .concat(),
+    )?;
+
+    let notice = read_message(&mut socket, "notice").await?;
+    assert_eq!(
+        notice["text"],
+        "Fable 5.2 is used up on every subscription: this session runs on Opus 5.5."
+    );
+    let exit = read_message(&mut socket, "exit").await?;
+    assert_eq!(exit["status"], "switched", "{exit}");
+    let again = other_cockpit(&f, &id).await?;
+    let mut socket = attach(served.addr, &again, &f.alice).await?;
+    let mut screen = String::new();
+    read_until(&mut socket, &mut screen, "ready").await?;
+    assert_eq!(
+        printed(&screen, "cockpit-args")?,
+        "[--resume conv-1 --model claude-opus-5-5 --effort high]",
+        "the same conversation on the fallback, nothing typed"
+    );
+    assert_eq!(printed(&screen, "interrupted")?, "1");
+    assert_eq!(printed(&screen, "token")?, TOKEN, "the same subscription");
+    let stepped = std::fs::read_to_string(&transcript)?;
+    assert!(
+        !stepped.contains("refused") && stepped.contains("\"u1\""),
+        "{stepped}"
+    );
+    let usage = usage_of(&f.h, "acc-1").await?;
+    assert_eq!(usage["weekly_fable"]["used_percent"], 100.0, "{usage}");
+    assert!(usage["weekly_opus"].is_null(), "{usage}");
+    let record = std::fs::read_to_string(f.data.join("shells").join(&again).join("shell.json"))?;
+    assert!(record.contains("\"model\":\"claude-opus-5-5\""), "{record}");
+
+    // Refused on the fallback too: the limit is Opus's, and nothing else can take the session.
+    let mut more = std::fs::OpenOptions::new().append(true).open(&transcript)?;
+    std::io::Write::write_all(
+        &mut more,
+        [
+            prompt_record("u2", Some("u1"), 20),
+            credits_refusal("refused-again", "u2", 21, 1_791_500_000),
+        ]
+        .concat()
+        .as_bytes(),
+    )?;
+    drop(more);
+    let notice = read_message(&mut socket, "notice").await?;
+    assert!(
+        notice["text"]
+            .as_str()
+            .is_some_and(|t| t.contains("No other subscription has capacity")),
+        "{notice}"
+    );
+    let usage = usage_of(&f.h, "acc-1").await?;
+    assert_eq!(
+        usage["weekly_opus"]["resets_at"], 1_791_500_000_000_i64,
+        "{usage}"
+    );
+    assert_eq!(
+        usage["weekly_fable"]["resets_at"], 1_791_400_000_000_i64,
+        "Fable's window is as it was: {usage}"
+    );
+    assert_eq!(cockpit_id(&f, &f.alice).await?, again, "the same session");
     f.h.app.end_all_shells().await;
     Ok(())
 }

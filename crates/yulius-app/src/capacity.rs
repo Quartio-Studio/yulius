@@ -336,6 +336,51 @@ impl App {
         }
     }
 
+    /// Where the pool places a run of the default model outside any task (a Superagent), with
+    /// the fallback while no subscription can run the default model (SPEC-482 FBK-011).
+    /// `current` is the subscription a usage limit just cut the run on, with the family of the
+    /// model it was launched with: the run is placed off it unless its model changes.
+    ///
+    /// # Errors
+    /// `AccountRequired` without a usable Claude account, `Capacity` while none has capacity.
+    pub(crate) async fn place_default_run(
+        &self,
+        current: Option<(AccountId, ModelFamily)>,
+    ) -> AppResult<crate::supervisor::Placed> {
+        let provider = yulius_domain::harness::Provider::Anthropic;
+        self.ensure_agent_account(provider).await?;
+        let trigger = match current {
+            Some(_) => Trigger::LimitReached,
+            None => Trigger::Start,
+        };
+        let (current, running) = current.unzip();
+        let input = RotationInput {
+            current,
+            task_provider: provider,
+            family: default_family(),
+            fallback: fallback_of(None).map(|fallback| model_family(Some(fallback))),
+            running,
+            accounts: self.account_views().await?,
+            now: self.now(),
+            threshold: rotation::THRESHOLD,
+        };
+        match rotation::decide(&input, trigger).0 {
+            Decision::Switch { account } => Ok(crate::supervisor::Placed {
+                account: self
+                    .deps
+                    .store
+                    .account(&account)
+                    .await?
+                    .ok_or(crate::error::AppError::NotFound)?,
+                fallback: fallback_of(None)
+                    .filter(|_| rotation::placing_family(&input) != input.family),
+            }),
+            Decision::Stay | Decision::Wait { .. } => Err(crate::error::AppError::Capacity(
+                "no subscription has capacity right now".into(),
+            )),
+        }
+    }
+
     /// Pauses a task for lack of capacity (ROT-010): records the pause, moves the task to
     /// `waiting_capacity` and tells viewers (never the agent). A task that is already paused
     /// keeps its pause, except that a usage limit the CLI reported turns it into a `limit`

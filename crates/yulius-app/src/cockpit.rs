@@ -26,17 +26,17 @@ use std::time::Duration;
 
 use serde_json::json;
 
-use yulius_domain::harness::{Harness, Provider};
+use yulius_domain::harness::Harness;
 use yulius_domain::ids::{SandboxId, UserId};
 use yulius_domain::permission::Action;
 use yulius_domain::time::Timestamp;
-use yulius_domain::usage::{ModelFamily, ReportedLimit};
+use yulius_domain::usage::ReportedLimit;
 
 use crate::auth::AuthContext;
 use crate::context::App;
 use crate::coordination::{Channel, ProjectCaller};
 use crate::error::{AppError, AppResult};
-use crate::model::{AccountRecord, SandboxRecord, UserRecord};
+use crate::model::{SandboxRecord, UserRecord};
 use crate::ports::harness::{CockpitLaunch, Observation, TranscriptWatch, WatchFrom};
 use crate::shells::{COCKPIT_NOT_MOVED, COCKPIT_TOKEN_PREFIX, ShellInfo, ShellKind, ShellRuntime};
 
@@ -174,10 +174,13 @@ pub(crate) enum Seat {
     Global,
 }
 
-/// The model family the Cockpit runs: the default model's, Fable 5.2 (SPEC-023), which its
-/// weekly allowance of usage credits binds (SPEC-464).
-fn cockpit_family() -> ModelFamily {
-    crate::capacity::default_family()
+/// The model a Cockpit was launched with: the default one, Fable 5.2 (SPEC-023), or its fallback
+/// while no subscription could run that (SPEC-482 FBK-011).
+fn cockpit_model(runtime: &ShellRuntime) -> &str {
+    runtime
+        .model
+        .get()
+        .map_or(yulius_domain::harness::DEFAULT_CLAUDE_MODEL, String::as_str)
 }
 
 impl App {
@@ -358,10 +361,9 @@ impl App {
         record: &SandboxRecord,
         global: bool,
     ) -> AppResult<ShellInfo> {
-        // The Cockpit runs the default model, Fable 5.2: no per-model weekly cap binds (SPEC-023).
-        let account = self
-            .pool_account(Provider::Anthropic, cockpit_family())
-            .await?;
+        // The Cockpit runs the default model, Fable 5.2 (SPEC-023), or its fallback while no
+        // subscription can run that (SPEC-482).
+        let account = self.place_default_run(None).await?;
         let seat = if global {
             Seat::Global
         } else {
@@ -392,9 +394,10 @@ impl App {
         user: &UserRecord,
         record: &SandboxRecord,
         global: bool,
-        account: &AccountRecord,
+        placed: &crate::supervisor::Placed,
         continue_interrupted: bool,
     ) -> AppResult<ShellInfo> {
+        let account = &placed.account;
         let folder = if global {
             self.global_superagent_folder(&user.id)?
         } else {
@@ -413,6 +416,9 @@ impl App {
             global,
         );
         let _ = runtime.account.set(account.id.clone());
+        if let Some(fallback) = placed.fallback {
+            let _ = runtime.model.set(fallback.to_owned());
+        }
         let _ = runtime.launch.set(self.cockpit_launch_digest(global));
         let launched = if global {
             self.launch_global_superagent(user, &runtime, credential, continue_interrupted)
@@ -712,9 +718,7 @@ impl App {
                     .cockpit_start_slot(&user.id, Seat::Sandbox(record.id.clone()))
                     .await?;
                 if let Some(running) = app.running_cockpit(&user.id, &record.id) {
-                    let account = app
-                        .pool_account(Provider::Anthropic, cockpit_family())
-                        .await?;
+                    let account = app.place_default_run(None).await?;
                     running.notice(RESTART_NOTICE);
                     running.switching.store(true, Ordering::SeqCst);
                     if !app.end_shells(std::slice::from_ref(&running)).await {
@@ -838,10 +842,7 @@ impl App {
         let Ok(record) = self.cockpit_host(&owner, runtime).await else {
             return Refresh::Failed;
         };
-        let account = match self
-            .pool_account(Provider::Anthropic, cockpit_family())
-            .await
-        {
+        let account = match self.place_default_run(None).await {
             Ok(account) => account,
             Err(err) => {
                 tracing::info!(error = %err, shell = %runtime.id(), "the cockpit waits for a subscription to restart on");
@@ -885,8 +886,11 @@ impl App {
     ) -> bool {
         let current = runtime.account.get().cloned();
         tracing::info!(shell = %runtime.id(), account = ?current, scope = ?limit.scope, "usage limit reached in the cockpit");
+        // The limit of the model this Cockpit was launched with (SPEC-482 FBK-006).
+        let model = cockpit_model(runtime);
+        let family = crate::capacity::model_family(Some(model));
         if let Some(account) = &current {
-            self.record_limit(account, limit, cockpit_family()).await;
+            self.record_limit(account, limit, family).await;
         }
         let Ok(_starting) = self
             .cockpit_start_slot(runtime.creator(), runtime.seat())
@@ -905,16 +909,18 @@ impl App {
         let Ok(record) = self.cockpit_host(&owner, runtime).await else {
             return false;
         };
-        let account = match self
-            .pool_account(Provider::Anthropic, cockpit_family())
-            .await
-        {
-            Ok(account) if Some(&account.id) != current.as_ref() => account,
-            _ => {
-                runtime.notice(NO_CAPACITY_NOTICE);
-                return false;
-            }
+        // Off its subscription, unless the model changes: the fallback may run where the default
+        // model was refused, and the other way round (SPEC-482 FBK-003).
+        let on = current.clone().map(|account| (account, family));
+        let Ok(account) = self.place_default_run(on).await else {
+            runtime.notice(NO_CAPACITY_NOTICE);
+            return false;
         };
+        let default = yulius_domain::harness::DEFAULT_CLAUDE_MODEL;
+        let next = account.fallback.unwrap_or(default);
+        if let Some(said) = crate::supervisor::model_change_notice(default, Some(model), next) {
+            runtime.notice(&said);
+        }
         runtime.switching.store(true, Ordering::SeqCst);
         if !self.end_shells(std::slice::from_ref(runtime)).await {
             // Its process may still run: a second one would write the same conversation, whose
@@ -929,7 +935,7 @@ impl App {
             .await
         {
             Ok(started) => {
-                tracing::info!(from = %runtime.id(), to = %started.id, account = %account.id, "cockpit moved to another subscription after a usage limit");
+                tracing::info!(from = %runtime.id(), to = %started.id, account = %account.account.id, model = next, "cockpit moved past a usage limit");
             }
             // The panel starts it again when it asks for its Cockpit, still continuing the turn.
             Err(err) => {
@@ -1034,6 +1040,7 @@ impl App {
             config_dir_host: space.home_host.join(".claude"),
             resume: resume.clone(),
             continue_interrupted: continue_interrupted && resume.is_some(),
+            model: runtime.model.get().cloned(),
             credential,
             yulius: Some((
                 self.config.internal_url.clone(),

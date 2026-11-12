@@ -664,6 +664,9 @@ pub struct CockpitRequest {
     /// The resumed conversation continues the turn a usage limit cut (SPEC-074 SUP-004,
     /// SPEC-034 LIM-002): the caller has stepped its transcript back.
     pub continue_interrupted: bool,
+    /// The model it is launched with instead of the default one: the fallback while no
+    /// subscription can run the default (SPEC-482 FBK-011). `None` for the default.
+    pub model: Option<String>,
     /// Provider credential of the pool subscription.
     pub credential: Credential,
     /// The Yulius MCP server the Cockpit manages the project with (SPEC-037); `None` for none.
@@ -831,13 +834,14 @@ pub fn plan_cockpit(request: &CockpitRequest) -> Result<LaunchPlan, LaunchError>
             String::new(),
         ]);
     }
-    // The person's own session still starts on Yulius's default model and effort (SPEC-023).
-    argv.extend([
-        "--model".into(),
-        DEFAULT_CLAUDE_MODEL.into(),
-        "--effort".into(),
-        DEFAULT_CLAUDE_EFFORT.into(),
-    ]);
+    // The person's own session still starts on Yulius's default model and effort (SPEC-023), or
+    // on the fallback while no subscription can run the default (SPEC-482).
+    let model = request.model.as_deref().unwrap_or(DEFAULT_CLAUDE_MODEL);
+    check(valid_model(model), "model")?;
+    argv.extend(["--model".into(), model.to_owned()]);
+    if let Some(effort) = yulius_domain::harness::claude_effort(model, None) {
+        argv.extend(["--effort".into(), effort.to_owned()]);
+    }
     let mut env = vec![
         (
             "CLAUDE_CONFIG_DIR".into(),
