@@ -255,7 +255,10 @@ impl Helper {
                     if let Some(refused) = refused
                         && !self.already_handled(&refused.id)
                     {
-                        self.mark_handled(&refused.id);
+                        // A refusal runs nothing: it is said even when it cannot be recorded.
+                        if let Err(err) = self.mark_handled(&refused.id) {
+                            eprintln!("yulius migrate-helper: {err}");
+                        }
                         self.write_refusal(&refused, &reason);
                     }
                     return Ok(());
@@ -264,7 +267,10 @@ impl Helper {
             if self.already_handled(&request.id) {
                 return Ok(());
             }
-            self.mark_handled(&request.id);
+            // One request once: a request that cannot be recorded as taken could run again
+            // on the next change of its file, so it does not run at all.
+            self.mark_handled(&request.id)
+                .map_err(|err| format!("{err}: nothing was run"))?;
             if let Err(reason) = self.allowed(&request) {
                 eprintln!("yulius migrate-helper: request refused: {reason}");
                 let refused = Refused {
@@ -329,10 +335,10 @@ impl Helper {
         std::fs::read_to_string(self.state("last-request")).is_ok_and(|last| last.trim() == id)
     }
 
-    fn mark_handled(&self, id: &str) {
-        if let Err(err) = write_atomic(&self.state("last-request"), id.as_bytes(), 0o600) {
-            eprintln!("yulius migrate-helper: cannot record the request: {err}");
-        }
+    fn mark_handled(&self, id: &str) -> Result<(), String> {
+        let path = self.state("last-request");
+        write_atomic(&path, id.as_bytes(), 0o600)
+            .map_err(|err| format!("cannot record the request in {}: {err}", path.display()))
     }
 
     /// What the root-owned unit and the host say about an accepted request.
@@ -425,14 +431,13 @@ impl Helper {
         });
     }
 
-    /// Whether a new, valid abort waits in the request file.
-    fn abort_waits(&self, running: &str) -> bool {
+    /// Whether a new, valid abort waits in the request file. The request that runs is the one
+    /// recorded as taken, so an abort that runs does not stop itself.
+    fn abort_waits(&self) -> bool {
         matches!(
             self.read_request(),
             Ok(Some(request))
-                if request.action == MoveAction::Abort
-                    && request.id != running
-                    && !self.already_handled(&request.id)
+                if request.action == MoveAction::Abort && !self.already_handled(&request.id)
         )
     }
 
@@ -525,7 +530,7 @@ impl Helper {
             }
             if !told && watched.elapsed() >= self.pace.watch {
                 watched = Instant::now();
-                if self.abort_waits(&request.id) {
+                if self.abort_waits() {
                     eprintln!("yulius migrate-helper: an abort arrived: stopping the command");
                     told = true;
                 }

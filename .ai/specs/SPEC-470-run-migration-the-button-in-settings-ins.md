@@ -71,7 +71,8 @@ The request and the root helper
   path unit) takes the request only as a regular file (not a link) owned by the data directory's
   owner, which is not root, of at most 16 KiB, with the exact schema (an unknown field is
   refused), the version, a timestamp at most 15 minutes old and 60 s ahead, and an id it has not
-  acted on (`<state>/last-request`). It refuses while the update helper's unit runs (`active`,
+  acted on (`<state>/last-request`; a request it cannot record there is not run, and the helper
+  ends with an error). It refuses while the update helper's unit runs (`active`,
   `activating` or `reloading`), and a target whose host is not in `YULIUS_MIGRATE_TARGETS` when
   the root-owned unit sets that list. A refusal changes nothing and is reported with its reason,
   which never repeats the request's content.

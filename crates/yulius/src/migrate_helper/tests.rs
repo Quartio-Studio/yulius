@@ -377,6 +377,29 @@ fn a_plan_runs_the_command_once_and_reports_how_it_ended() -> TestResult {
     Ok(())
 }
 
+/// MVB-003: one request once holds only while the helper can record which one it took. When it
+/// cannot (the state directory is full, or damaged), nothing runs and the unit fails.
+#[test]
+fn a_request_that_cannot_be_recorded_is_not_run() -> TestResult {
+    let env = Env::new()?;
+    // Where the taken request's id is kept there is something that cannot be replaced.
+    std::fs::create_dir_all(env.args.state_dir.join("last-request").join("kept"))?;
+    env.request(&plan("0123abcd-plan"))?;
+    let said = env.helper().run().err().ok_or("the helper ended well")?;
+    assert!(said.contains("cannot record the request"), "{said}");
+    assert_eq!(env.runs(), 0, "a request that could be run again was run");
+    assert!(env.status().is_none());
+
+    // A refusal is still said: it runs nothing, however often it is looked at.
+    let mut bad = serde_json::to_value(plan("0123abcd-bad"))?;
+    bad["ssh_port"] = 0.into();
+    env.raw_request(&serde_json::to_vec(&bad)?)?;
+    env.run()?;
+    assert_eq!(env.said()?.state, MoveHelperState::Refused);
+    assert_eq!(env.runs(), 0);
+    Ok(())
+}
+
 /// MVB-003: a request that breaks a rule runs nothing; its report gives the reason without the
 /// request's text, and it is not looked at twice.
 #[test]
@@ -767,6 +790,18 @@ exit 2"#,
     env.request(&plan("0123abcd-quiet"))?;
     env.run()?;
     assert_eq!(env.said()?.error, None);
+
+    // A step that failed (exit 1), and a move that went on after a signal (exit 0), are the
+    // checklist's to tell: what the command said meanwhile is no error then.
+    for code in [1, 0] {
+        env.does(&format!(
+            r#"echo "yulius instance migrate: signal 15 ignored: the move goes on" >&2; exit {code}"#
+        ))?;
+        env.request(&plan(&format!("0123abcd-exit-{code}")))?;
+        env.run()?;
+        let said = env.said()?;
+        assert_eq!((said.exit_code, said.error), (Some(code), None));
+    }
 
     // Words that carry control characters reach the report without them.
     env.does(r#"printf 'yulius instance migrate: a\033[31mb\tc\n' >&2; exit 2"#)?;
