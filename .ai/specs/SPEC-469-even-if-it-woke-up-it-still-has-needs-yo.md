@@ -40,7 +40,9 @@ whatever woke it. "Send the task a message…" is shown only while nothing goes 
   of 13 pauses "the request was rate limited", 9 were followed by the session's own work with
   nobody typing. Each time Yulius had restarted the session (the limit path: another
   subscription, or the reset) and typed its goal again, which is no person's prompt and ended
-  nothing; tasks #446, #450 and #452 were paused for 12 to 30 minutes and then worked on. Claude
+  nothing. The model's first output came 10 to 76 minutes after the pause, and in five of the
+  nine only after two to four restarts (tasks #440, #446, #449, #450, #438): a restart alone
+  brought nothing. Claude
   Code also wakes a session whose goal is paused: after two pauses for another cause ("goal
   checks kept finding it unmet this turn") its `<task-notification>` for ended background work
   started a working turn.
@@ -99,6 +101,7 @@ whatever woke it. "Send the task a message…" is shown only while nothing goes 
 - [x] Fix the cause until the regression test and every gate pass
 - [x] Docs, ADR-0304 and the changes entry true to the fix
 - [x] Independent review in a fresh session, findings fixed test-first
+- [x] After the merge: the notice's side tested, the last review notes and the real transcripts replayed
 
 ## Acceptance criteria
 
@@ -144,6 +147,9 @@ whatever woke it. "Send the task a message…" is shown only while nothing goes 
     the task still reads Needs you, live and after a restart of Yulius.
   - The pause's flag was replaced by a status change and another matter flagged the task later:
     the session's work ends the request and leaves that flag.
+  - The notice's side of the same rule (the fake agent runs the Notification hook with `/notify
+    <type>` and goes on with no prompt with `/tool`): the agent's work after a permission
+    notice makes the task Working; a flag raised after the notice's own was replaced stays.
 - Unit tests:
   - `finish`: the transcript's fold says when the agent first worked after the last goal pause
     (a prompt alone, a sub-agent's answer, work without a time and work before the pause do not
@@ -229,6 +235,10 @@ whatever woke it. "Send the task a message…" is shown only while nothing goes 
   | A stale flag time still answers | `a_flag_raised_after_the_goal_pause_is_not_lifted…` |
   | A task flagged before the pause gets the pause's flag time | `a_task_flagged_before_the_goal_pause…through_the_agents_work` |
   | A restart takes any flag's time for the pause's | `a_task_flagged_before_the_goal_pause…after_a_restart` |
+  | Work after a notice does not make the task Working | `a_notice_is_answered_by_the_agents_next_work` and the three unprompted tests |
+
+  The stale-time mutation, run again with the notice tests, also fails
+  `a_flag_raised_after_a_notices_is_not_lifted_by_the_agents_work`.
   | Only the pause's request is ended (any request instead) | `the_agents_own_request_stays…` |
   | A failed write is tried again | `a_request_the_store_could_not_end…` |
 - **Unit tests.** `finish::tests::a_replay_says_when_the_agent_first_worked_after_the_last_goal_pause`,
@@ -237,13 +247,16 @@ whatever woke it. "Send the task a message…" is shown only while nothing goes 
   `needs_you::tests::a_request_ends_by_its_action_only_while_it_is_the_open_one` (`yulius-store`),
   `claude::tests` in `yulius-harness` (the resumed session's line), and the fake agent's five CLI
   tests: passed.
-- **Gate.** `scripts/dev ci` at `e0829a53` exited 0: repository checks, `cargo check`, `fmt`,
-  `clippy` for Linux and macOS, 3713 tests run, 3713 passed, 16 skipped, doctests, `cargo deny`,
-  `cargo shear`, `cargo doc`. The commit after it changes this spec only. `dev` is merged in
-  three times: `0203de67` and `d4a55ba1` without a conflict, `f43cac4c` with one in the fake
-  agent (both sides had added a `resumed` record; this branch's flag became
-  `--no-response-line`). Earlier runs at `0203de67` (3696 passed), `d3812b8a` and `c5aad212`
-  (3698 passed) and `bd32e834` (3704 passed) exited 0 too.
+- **Gate.** `scripts/dev ci` exited 0 at `e0829a53`, the last source of the first pull request
+  (3713 tests run, 3713 passed, 16 skipped), and at `3cf8b888`, the follow-up (3730 passed, 16
+  skipped): repository checks, `cargo check`, `fmt`, `clippy` for Linux and macOS, the tests,
+  doctests, `cargo deny`, `cargo shear`, `cargo doc`. The commit after `3cf8b888` changes this
+  spec only. Yulius CI passed at `f58269b0`, the merged head. `dev` was merged in four times
+  before the merge: `0203de67`, `d4a55ba1` and `f58269b0` without a conflict, `f43cac4c` with one
+  in the fake agent (both sides had added a `resumed` record; this branch's flag became
+  `--no-response-line`); and once after it (`75c61b02`, the same tree as `dev`). Earlier runs at
+  `0203de67` (3696 passed), `d3812b8a` and `c5aad212` (3698 passed) and `bd32e834` (3704 passed)
+  exited 0 too.
 - **Security scan.** `scripts/dev security` exited 0 as disabled: Vidoc is turned off in Yulius
   for this project, so nothing was scanned. That is not a pass.
 - **End-to-end suite.** Not run: the change touches no web asset.
@@ -270,11 +283,30 @@ whatever woke it. "Send the task a message…" is shown only while nothing goes 
       turn that works and then dies with no notice.
     - The reviewer ran one command beyond its brief, a trial merge (`git merge-tree
       --write-tree`): it left one unreferenced tree object and changed no ref or file.
-  - Round 2 reviews the delivered head; its verdict is the review summary recorded with the
-    merge, and a round that asks for changes is listed here with its fixes.
+  - Round 2, on `f58269b0` (the merged head): approve, every round-1 finding answered, three
+    nits. An ADR-0304 sentence claimed more than is known about when Claude Code writes a notice
+    (qualified, `3cf8b888`). This Evidence was one clean merge of `dev` behind the head (carried
+    in the merge's review summary, brought up to date here). No test sent a notice and then
+    agent work, a gap on `dev` before this change (two tests, `10fdbcd3`). A race it inferred in
+    the notification hook, outside this change, was reproduced (3 runs of 3) and filed as #1200.
+  - Round 3 reviews the follow-up's head; its verdict is the review summary recorded with that
+    merge.
+- **Merge.** Pull request #1197 merged into `dev` (`87d1f1dc`) at `f58269b0`, whose own Yulius CI
+  run passed; issue #1183 is closed. The follow-up after it is a second pull request from the
+  same branch: the notice's side tested, two documents corrected, this Evidence.
+- **Real transcripts.** The 13 pauses "Goal paused · the request was rate limited" of this host
+  were replayed through the production watcher (`HarnessAdapter::watch`) and
+  `TranscriptFacts::fold`, with a throwaway test that is not committed (it reads private
+  files). All 13 notices are read as pauses. The 9 requests end at a work line of the model,
+  never at a prompt, at the resumed session's own "No response requested." or at an error
+  record, and the fold agrees at every step. In 6 of the 9 no prompt record lies between the
+  pause and that work: a session Yulius restarts writes none. The model's first output came 10
+  to 76 minutes after the pause, in five of the nine only after two to four restarts.
 - **Not tested.**
-  - A real Claude Code session: the fake agent replays the recorded shapes.
-  - The continuation with no visible prompt has no recorded example after a goal pause. Its
-    shape is the one Claude Code uses when it continues a turn a usage limit cut.
+  - A live Claude Code session on an instance with this change: the running instance is on
+    `main` and gets it when a person promotes `dev`. The real transcripts were replayed instead.
+  - A continuation with no visible prompt inside one run has no recorded example after a goal
+    pause; its shape is the one Claude Code uses when it continues a turn a usage limit cut.
+    Across a restart by Yulius it is the common case (6 of the 9 above).
   - A database left by an older Yulius (a working task with the request open): the restart tests
     cover the same reading of the transcript, from a state this version wrote.
