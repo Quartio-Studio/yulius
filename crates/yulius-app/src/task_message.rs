@@ -7,8 +7,8 @@
 //! - a running task gets it typed into its session as one bracketed paste, labelled with the
 //!   person and the channel it came through (SPEC-322), then a separate Enter; Claude Code
 //!   queues a message submitted while the agent works (TMS-003). From the paste to its
-//!   submit the session is not restarted on a newer Claude Code (SPEC-468 CCF-011); the
-//!   wait in Claude Code's queue after that is not covered (issue #1204). Control characters
+//!   submit the session is not restarted on a newer Claude Code (SPEC-468 CCF-011), nor
+//!   while the message waits in Claude Code's queue after that (SPEC-471). Control characters
 //!   other than line breaks and tabs never reach the TUI;
 //! - nothing is typed before Claude Code's session started (its SessionStart hook, also read
 //!   from the run's marker after a restart, or the goal typist's fallback for a CLI without it),

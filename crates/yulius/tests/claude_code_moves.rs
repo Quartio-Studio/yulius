@@ -258,6 +258,194 @@ async fn an_assumed_version_fills_only_what_the_transcript_left_open() -> TestRe
     Ok(())
 }
 
+/// A fake agent in Claude Code's order (`--queue-prompts`) whose turn is held until `may_end`
+/// exists: what is entered meanwhile waits in its queue.
+fn queueing_agent(may_end: &Path) -> FakeAgentOptions {
+    FakeAgentOptions {
+        transcript: true,
+        queue_prompts: true,
+        turn_hold_file: Some(may_end.to_path_buf()),
+        ..FakeAgentOptions::default()
+    }
+}
+
+/// A running task whose turn is held with the prompt "two" waiting in its queue, as Yulius
+/// read it.
+async fn with_a_waiting_prompt(app: &Arc<App>, data: &Path) -> Result<(TaskId, UserId), BoxError> {
+    let (sandbox, user) = seed(app, data, &["a-first"]).await?;
+    let id = new_task(app, &sandbox, &user, "Queue").await?;
+    ready(app, &id).await?;
+    app.send_input(&id, b"one\r").await?;
+    for (entered, said) in [(&b""[..], "TURN HELD"), (&b"two\r"[..], "QUEUED: two")] {
+        app.send_input(&id, entered).await?;
+        wait_for(said, Duration::from_secs(30), || async {
+            screen(app, &id).contains(said)
+        })
+        .await?;
+    }
+    wait_for(
+        "the prompt in the queue",
+        Duration::from_secs(30),
+        || async { app.claude_queue_holds(&id) },
+    )
+    .await?;
+    Ok((id, user))
+}
+
+type BoxError = Box<dyn std::error::Error>;
+
+/// SPEC-471 CCQ-001 (AC1): a run that is reattached after a restart of the server reads its own
+/// lines again and knows what waits in Claude Code's queue.
+#[test]
+fn a_reattached_run_knows_what_waits_in_its_queue() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let agent = queueing_agent(&data.join("turn-may-end"));
+    let first = runtime()?;
+    let id = first.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let app = build_with(&data, &fake, probe, agent.clone())?;
+        let (id, _user) = with_a_waiting_prompt(&app, &data).await?;
+        Ok::<_, BoxError>(id)
+    })?;
+    first.shutdown_timeout(Duration::from_secs(5));
+
+    let second = runtime()?;
+    second.block_on(async {
+        let app = build_with(&data, &fake, Arc::new(ScriptedUsage::default()), agent)?;
+        assert_eq!(
+            app.claude_queue_waiting(&id),
+            0,
+            "nothing is read before the lines"
+        );
+        app.reconcile().await?;
+        // The count, not "holds": a reattached run reads as holding something from the moment
+        // it is attached, before a line of it was read again.
+        wait_for("the replayed queue", Duration::from_secs(30), || async {
+            app.claude_queue_waiting(&id) == 1
+        })
+        .await?;
+        assert!(app.claude_queue_holds(&id));
+        assert_eq!(app.deps.store.attempts(&id).await?.len(), 1);
+        stop(&app, &id).await
+    })?;
+    second.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-471 CCQ-001 (AC1): a run that is reattached after a restart of the server has written
+/// lines this server has not read: until they are read again, what waits in Claude Code's
+/// queue is not known, which counts as holding something (a turn's end then leaves the session
+/// where it is). Here nothing waits: once the lines were read, the queue reads empty.
+#[test]
+fn a_reattached_runs_queue_is_not_known_until_its_lines_were_read() -> TestResult {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use yulius_app::race::{self, Point};
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let agent = FakeAgentOptions {
+        transcript: true,
+        ..FakeAgentOptions::default()
+    };
+    let first = runtime()?;
+    let id = first.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let app = build_with(&data, &fake, probe, agent.clone())?;
+        let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
+        let id = new_task(&app, &sandbox, &user, "Queue").await?;
+        ready(&app, &id).await?;
+        app.send_input(&id, b"one\r").await?;
+        wait_for("the turn", Duration::from_secs(30), || async {
+            screen(&app, &id).contains("ECHO: one")
+        })
+        .await?;
+        assert!(
+            !app.claude_queue_holds(&id),
+            "a run this server started is known"
+        );
+        Ok::<_, BoxError>(id)
+    })?;
+    first.shutdown_timeout(Duration::from_secs(5));
+
+    let second = runtime()?;
+    second.block_on(async {
+        let app = build_with(&data, &fake, Arc::new(ScriptedUsage::default()), agent)?;
+        // Asked where the run is attached again, before anything of its transcript is read.
+        let unknown = Arc::new(AtomicBool::new(false));
+        let (asked, seen, task) = (Arc::clone(&app), Arc::clone(&unknown), id.clone());
+        race::on(Point::RunAttached, Path::new(id.as_str()), move || {
+            seen.store(asked.claude_queue_holds(&task), Ordering::SeqCst);
+        });
+        app.reconcile().await?;
+        assert!(
+            unknown.load(Ordering::SeqCst),
+            "a reattached run's queue is not known before its lines were read"
+        );
+        wait_for("the run's lines", Duration::from_secs(30), || async {
+            !app.claude_queue_holds(&id)
+        })
+        .await?;
+        stop(&app, &id).await
+    })?;
+    second.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-471 CCQ-001 (AC1): a run that ends with a prompt in Claude Code's queue leaves its
+/// `enqueue` record behind. The run that resumes the session does not read it as its own and
+/// starts with an empty queue: Claude Code does not take the queue over.
+#[test]
+fn a_resumed_run_starts_with_an_empty_queue() -> TestResult {
+    use yulius_contracts::api::tasks::ContinueTask;
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let agent = queueing_agent(&data.join("turn-may-end"));
+        let app = build_with(&data, &fake, probe, agent)?;
+        let (id, user) = with_a_waiting_prompt(&app, &data).await?;
+        // Its person stops the task: the process ends with the prompt waiting.
+        stop(&app, &id).await?;
+        let ctx = ctx(&app, &user).await?;
+        app.continue_task(&ctx, id.as_str(), &ContinueTask { account_id: None })
+            .await?;
+        // The resumed run's first line names its version: the watcher reads the run's lines.
+        wait_for("the resumed run", Duration::from_secs(60), || async {
+            app.deps.store.attempts(&id).await.is_ok_and(|runs| {
+                runs.len() == 2 && runs[1].state == yulius_domain::task::AttemptState::Live
+            })
+        })
+        .await?;
+        let runs = app.deps.store.attempts(&id).await?;
+        assert_eq!(runs[1].launch_kind, yulius_app::model::LaunchKind::Resume);
+        assert_eq!(
+            runs[0].provider_session_id, runs[1].provider_session_id,
+            "the same Claude session, so the same transcript"
+        );
+        ready(&app, &id).await?;
+        app.send_input(&id, b"three\r").await?;
+        wait_for(
+            "the resumed run's lines",
+            Duration::from_secs(60),
+            || async {
+                run_versions(&app, &id)
+                    .await
+                    .get(1)
+                    .is_some_and(Option::is_some)
+            },
+        )
+        .await?;
+        assert!(
+            !app.claude_queue_holds(&id),
+            "the queue of the process that ended is not this run's"
+        );
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 // --- CCM-013: the move, with the fake agent running Claude Code's hooks against a served app.
 
 mod moves {
@@ -385,6 +573,13 @@ mod moves {
         let options = FakeAgentOptions {
             cli_version_file: Some(version.to_path_buf()),
             ..options
+        };
+        // The fake agent ends a turn milliseconds after its prompt, which no turn of a model
+        // does: the time a prompt's record may take to be written (SPEC-471 CCQ-004) is taken
+        // as none, unless a test sets it.
+        let configure = |config: &mut AppConfig| {
+            config.claude_code_queue_record_ms = 0;
+            configure(config);
         };
         let (app, _port) = start_with(data, &fake, options, 0, probe.clone(), configure).await?;
         let installed = Arc::new(Installed(Mutex::new(Some(v(gets)))));
@@ -1036,12 +1231,13 @@ mod moves {
     }
 
     /// SPEC-468 CCF-010 (the last look's minor): a prompt that waits for room has not gone on
-    /// when one of its requests is answered with an error, since the hook client, once it
-    /// holds, asks again after a failing answer. The box counts as emptied at the prompt's
-    /// first request all the same: what its person typed while it waited is still a draft when
-    /// it goes on. An error used to end the hold, so the next request counted as a new submit,
-    /// at its own, later time. Here the store fails for one request: a second connection takes
-    /// a table away.
+    /// when one of its requests is answered with a 5xx or loses its connection, since the hook
+    /// client, once it holds, asks again after those (at a 4xx it ends its hold and the prompt
+    /// goes on, which Yulius reads as held too: toward a draft). The box counts as emptied at
+    /// the prompt's first request all the same: what its person typed while it waited is still
+    /// a draft when it goes on. An error used to end the hold, so the next request counted as
+    /// a new submit, at its own, later time. Here the store fails for one request: a second
+    /// connection takes a table away.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_failed_answer_inside_a_hold_keeps_the_hold() -> TestResult {
         use axum::http::StatusCode;
@@ -1249,11 +1445,14 @@ mod moves {
     /// leaves the session where it is, the message gets its turn, and that turn's end
     /// restarts the session.
     ///
-    /// This runs in the fake agent's order: it submits a line (the prompt hook) when it reads
-    /// it, after its turn. Claude Code submits at the Enter, also while a turn runs (seen with
-    /// 2.1.322), and then keeps the message in its queue until the turn ends. There this rule
-    /// covers the message from its paste to that submit only, and a restart at the turn's end
-    /// still loses it from the queue: issue #1204.
+    /// This runs in the fake agent's old order: it submits a line (the prompt hook) when it
+    /// reads it, after its turn. So what it shows is the draft rule for what Yulius typed: a
+    /// message that sits in the prompt box, not submitted, keeps the session at a turn's end.
+    /// Claude Code submits at the Enter, also while a turn runs (seen with 2.1.322): with it
+    /// that state lasts from the paste to the Enter, or longer when the Enter failed. The
+    /// wait in Claude Code's queue that follows the submit is another rule's, shown in the
+    /// real order by `a_waiting_message_yulius_typed_keeps_the_session_at_the_gates_block`
+    /// (SPEC-471).
     #[test]
     fn a_message_yulius_typed_keeps_the_session_until_its_submit() -> TestResult {
         let (_dir, data) = data_dir()?;
@@ -1331,6 +1530,592 @@ mod moves {
         .await;
         assert!(refused.is_err(), "no process runs: {refused:?}");
         assert!(!h.app.has_draft(&task), "nothing was typed: {refused:?}");
+        Ok(())
+    }
+
+    // --- SPEC-471: what waits in Claude Code's queue, with the fake agent in Claude Code's order
+    // (`--queue-prompts`): a prompt entered while a turn runs gets its hook at its Enter and
+    // waits until the Stop that ends the turn returned.
+
+    /// A fake agent in Claude Code's order whose turn ends once `may_end` exists.
+    fn queueing(may_end: &Path) -> FakeAgentOptions {
+        FakeAgentOptions {
+            turn_hold_file: Some(may_end.to_path_buf()),
+            queue_prompts: true,
+            ..hooked()
+        }
+    }
+
+    /// Waits until the session's terminal said `text`.
+    async fn says(s: &Server, text: &str) -> TestResult {
+        wait_for(text, Duration::from_secs(60), || async {
+            screen(&s.app, &s.id).contains(text)
+        })
+        .await
+    }
+
+    /// Waits until Yulius read that something waits in the session's queue.
+    async fn waits_in_the_queue(s: &Server) -> TestResult {
+        wait_for(
+            "the prompt in the queue",
+            Duration::from_secs(60),
+            || async { s.app.claude_queue_holds(&s.id) },
+        )
+        .await
+    }
+
+    /// Who enters the prompt that waits.
+    #[derive(Clone, Copy)]
+    enum Entered {
+        /// The task's person, in its terminal.
+        Person,
+        /// Yulius, for the task's person who tells it something through their Superagent.
+        Yulius,
+    }
+
+    /// SPEC-471 CCQ-002 (AC2, AC3): a prompt-mode session on 2.1.311 runs a turn the gate will
+    /// block while runs get 2.1.322. A prompt entered while the turn runs waits in Claude
+    /// Code's queue; the Stop the gate blocks does not restart the session, the prompt is
+    /// answered in the same run, and a later turn's end restarts the session.
+    async fn a_waiting_prompt_keeps_the_session_at_the_gates_block(
+        data: &Path,
+        who: Entered,
+    ) -> TestResult {
+        let version = data.join("claude-version");
+        let may_end = data.join("turn-may-end");
+        // Runs get 2.1.322 from the start; the first session started on 2.1.311.
+        let s = server(
+            data,
+            &version,
+            queueing(&may_end),
+            TaskMode::Prompt,
+            "2.1.322",
+        )
+        .await?;
+        std::fs::write(&version, "2.1.322\n")?;
+        change_code(&s).await?;
+        let mut watch = s.app.runtime(&s.id).hub.subscribe().rx;
+        s.app.send_input(&s.id, b"one\r").await?;
+        says(&s, "TURN HELD").await?;
+        // Entered while the turn runs: its hook comes now, and it waits for the turn's end.
+        let answered = match who {
+            Entered::Person => {
+                s.app.send_input(&s.id, b"two\r").await?;
+                "ECHO: two"
+            }
+            Entered::Yulius => {
+                let answer = told(&s.app, &s.sandbox, &s.user, &s.id).await?;
+                assert_eq!(answer["delivered"], "sent", "{answer}");
+                "ECHO: Message from admin (through their Superagent):"
+            }
+        };
+        waits_in_the_queue(&s).await?;
+        assert!(
+            !s.app.has_draft(&s.id),
+            "its hook came: nothing of it is in the prompt box"
+        );
+        // The turn ends and the gate blocks its Stop: the session stays, and the prompt that
+        // waited is answered there.
+        std::fs::write(&may_end, "")?;
+        let mut shown = String::new();
+        wait_for(
+            "the waiting prompt's answer",
+            Duration::from_secs(90),
+            || {
+                shown.push_str(&printed(&mut watch));
+                let (answered, s) = (shown.contains(answered), &s);
+                async move { answered || runs(s).await > 1 }
+            },
+        )
+        .await?;
+        assert_eq!(
+            runs(&s).await,
+            1,
+            "the session was restarted with a prompt in its queue: {shown}"
+        );
+        assert!(shown.contains("STOP BLOCKED"), "the gate blocked: {shown}");
+        assert!(shown.contains(answered), "{shown}");
+        assert_eq!(
+            run_versions(&s.app, &s.id).await,
+            [Some("2.1.311".to_owned())]
+        );
+        // Nothing waits any more: the next turn the gate blocks restarts the session.
+        wait_for("an empty queue", Duration::from_secs(30), || async {
+            !s.app.claude_queue_holds(&s.id)
+        })
+        .await?;
+        s.app.send_input(&s.id, b"three\r").await?;
+        second_run_live(&s).await?;
+        wait_for(
+            "the new session's version",
+            Duration::from_secs(30),
+            || async {
+                run_versions(&s.app, &s.id).await
+                    == [Some("2.1.311".to_owned()), Some("2.1.322".to_owned())]
+            },
+        )
+        .await?;
+        assert!(
+            !s.app.claude_queue_holds(&s.id),
+            "a new run starts with none"
+        );
+        stop(&s.app, &s.id).await
+    }
+
+    /// SPEC-471 AC2: the prompt a person entered while the turn ran.
+    #[test]
+    fn a_persons_waiting_prompt_keeps_the_session_at_the_gates_block() -> TestResult {
+        let (_dir, data) = data_dir()?;
+        let rt = runtime()?;
+        rt.block_on(a_waiting_prompt_keeps_the_session_at_the_gates_block(
+            &data,
+            Entered::Person,
+        ))?;
+        rt.shutdown_timeout(Duration::from_secs(5));
+        Ok(())
+    }
+
+    /// SPEC-471 AC3: a message Yulius typed while the turn ran, whose sender was told "sent".
+    #[test]
+    fn a_waiting_message_yulius_typed_keeps_the_session_at_the_gates_block() -> TestResult {
+        let (_dir, data) = data_dir()?;
+        let rt = runtime()?;
+        rt.block_on(a_waiting_prompt_keeps_the_session_at_the_gates_block(
+            &data,
+            Entered::Yulius,
+        ))?;
+        rt.shutdown_timeout(Duration::from_secs(5));
+        Ok(())
+    }
+
+    /// SPEC-471 CCQ-002 (AC4, AC5): an idle prompt-mode session on 2.1.311 whose turn ends
+    /// cleanly while `prompts` wait, when runs get 2.1.322. The hand-over is held, so nothing
+    /// of it is written when the turn's end decides: the session keeps its run. Once the
+    /// hand-over goes on, all that waited are answered there in one turn, and that turn's end
+    /// restarts the session.
+    async fn waiting_prompts_keep_an_idle_session(data: &Path, prompts: &[&str]) -> TestResult {
+        let version = data.join("claude-version");
+        let may_end = data.join("turn-may-end");
+        let handed_on = data.join("queue-handed-on");
+        let options = FakeAgentOptions {
+            queue_handover_file: Some(handed_on.clone()),
+            ..queueing(&may_end)
+        };
+        let s = server(data, &version, options, TaskMode::Prompt, "2.1.322").await?;
+        std::fs::write(&version, "2.1.322\n")?;
+        let mut watch = s.app.runtime(&s.id).hub.subscribe().rx;
+        s.app.send_input(&s.id, b"one\r").await?;
+        says(&s, "TURN HELD").await?;
+        // Each gets its hook at its Enter, while the turn runs.
+        for prompt in prompts {
+            s.app
+                .send_input(&s.id, format!("{prompt}\r").as_bytes())
+                .await?;
+            says(&s, &format!("QUEUED: {prompt}")).await?;
+        }
+        waits_in_the_queue(&s).await?;
+        // The turn ends cleanly; the agent holds its queue, and the turn's end decides.
+        let first_end = decided(&s.id);
+        std::fs::write(&may_end, "")?;
+        says(&s, "QUEUE HELD").await?;
+        until_decided(&first_end).await?;
+        assert_eq!(
+            runs(&s).await,
+            1,
+            "the session was restarted with {} in its queue",
+            prompts.len()
+        );
+        assert!(s.app.claude_queue_holds(&s.id));
+        // The hand-over goes on: one turn answers all, and its end restarts the session.
+        std::fs::write(&handed_on, "")?;
+        let mut shown = String::new();
+        wait_for("the restarted session", Duration::from_secs(90), || {
+            shown.push_str(&printed(&mut watch));
+            async { runs(&s).await == 2 }
+        })
+        .await?;
+        second_run_live(&s).await?;
+        shown.push_str(&printed(&mut watch));
+        for prompt in prompts {
+            assert!(
+                shown.contains(&format!("ECHO: {prompt}")),
+                "{prompt:?} was lost with the old process: {shown}"
+            );
+        }
+        assert_eq!(
+            shown.matches("STOP").count(),
+            0,
+            "clean Stops throughout: {shown}"
+        );
+        assert_eq!(
+            run_versions(&s.app, &s.id).await[0],
+            Some("2.1.311".to_owned())
+        );
+        assert!(
+            !s.app.claude_queue_holds(&s.id),
+            "a new run starts with none"
+        );
+        stop(&s.app, &s.id).await
+    }
+
+    /// SPEC-471 AC4: the clean Stop of an idle prompt-mode session with one prompt waiting.
+    #[test]
+    fn a_waiting_prompt_keeps_an_idle_session_after_a_clean_stop() -> TestResult {
+        let (_dir, data) = data_dir()?;
+        let rt = runtime()?;
+        rt.block_on(waiting_prompts_keep_an_idle_session(&data, &["two"]))?;
+        rt.shutdown_timeout(Duration::from_secs(5));
+        Ok(())
+    }
+
+    /// SPEC-471 AC5: two prompts entered while one turn ran are answered in one turn.
+    #[test]
+    fn two_waiting_prompts_keep_the_session_and_get_one_turn() -> TestResult {
+        let (_dir, data) = data_dir()?;
+        let rt = runtime()?;
+        rt.block_on(waiting_prompts_keep_an_idle_session(
+            &data,
+            &["two", "three"],
+        ))?;
+        rt.shutdown_timeout(Duration::from_secs(5));
+        Ok(())
+    }
+
+    /// SPEC-471 CCQ-003 (AC6): Claude Code writes the `dequeue` of a hand-over before the
+    /// prompt record of the turn it starts. Between the two its queue is empty and no turn
+    /// shows: here the agent holds the turn's start, and the turn's end decides once the
+    /// hand-over was read. The session stays, and moves at the handed-on turn's end. The
+    /// hand-over counts until the task reads Working for that turn, not only until its prompt
+    /// record was read: the test holds that turn too, until both were seen.
+    #[test]
+    fn a_hand_over_keeps_the_session_until_its_turn_shows() -> TestResult {
+        const HELD: Duration = Duration::from_secs(60);
+        let (_dir, data) = data_dir()?;
+        let version = data.join("claude-version");
+        let may_end = data.join("turn-may-end");
+        let turn_starts = data.join("queued-turn-starts");
+        let rt = runtime()?;
+        rt.block_on(async {
+            let options = FakeAgentOptions {
+                queue_turn_file: Some(turn_starts.clone()),
+                ..queueing(&may_end)
+            };
+            let s = server(&data, &version, options, TaskMode::Prompt, "2.1.322").await?;
+            std::fs::write(&version, "2.1.322\n")?;
+            let mut watch = s.app.runtime(&s.id).hub.subscribe().rx;
+            s.app.send_input(&s.id, b"one\r").await?;
+            says(&s, "TURN HELD").await?;
+            s.app.send_input(&s.id, b"two\r").await?;
+            waits_in_the_queue(&s).await?;
+            // The turn's end decides only once it knows of the hand-over.
+            let (app, id) = (Arc::clone(&s.app), s.id.clone());
+            let handed_on = Arc::new(AtomicBool::new(false));
+            let seen = Arc::clone(&handed_on);
+            race::on(
+                Point::ClaudeMoveProbed,
+                Path::new(s.id.as_str()),
+                move || {
+                    let started = std::time::Instant::now();
+                    tokio::task::block_in_place(|| {
+                        while app.claude_queue_waiting(&id) > 0 && started.elapsed() < HELD {
+                            std::thread::sleep(Duration::from_millis(20));
+                        }
+                    });
+                    seen.store(app.claude_queue_waiting(&id) == 0, Ordering::SeqCst);
+                },
+            );
+            let first_end = decided(&s.id);
+            std::fs::write(&may_end, "")?;
+            says(&s, "QUEUED TURN HELD").await?;
+            until_decided(&first_end).await?;
+            assert!(
+                handed_on.load(Ordering::SeqCst),
+                "the hand-over was read before the turn's end decided"
+            );
+            assert_eq!(
+                runs(&s).await,
+                1,
+                "the session was restarted between a hand-over and its turn"
+            );
+            assert!(
+                s.app.claude_queue_holds(&s.id),
+                "handed on, and its turn not seen"
+            );
+            // The handed-on turn starts, and is held like the first: it runs until the test
+            // lets it end. When its prompt record is read, the task does not read Working
+            // yet: the hand-over still counts there.
+            std::fs::remove_file(&may_end)?;
+            let (app, id) = (Arc::clone(&s.app), s.id.clone());
+            let counted = Arc::new(AtomicBool::new(false));
+            let seen = Arc::clone(&counted);
+            race::on(
+                Point::UserTurnChecked,
+                Path::new(s.id.as_str()),
+                move || {
+                    seen.store(app.claude_queue_holds(&id), Ordering::SeqCst);
+                },
+            );
+            std::fs::write(&turn_starts, "")?;
+            wait_for("the handed-on turn", Duration::from_secs(60), || async {
+                screen(&s.app, &s.id).matches("TURN HELD").count() == 2
+            })
+            .await?;
+            settled(&s, Activity::Working).await?;
+            assert!(
+                counted.load(Ordering::SeqCst),
+                "the hand-over ended before its turn was known"
+            );
+            wait_for("the hand-over's end", Duration::from_secs(30), || async {
+                !s.app.claude_queue_holds(&s.id)
+            })
+            .await?;
+            assert_eq!(runs(&s).await, 1);
+            // The turn may end: the prompt is answered, and that end restarts the session.
+            std::fs::write(&may_end, "")?;
+            let mut shown = String::new();
+            wait_for("the restarted session", Duration::from_secs(90), || {
+                shown.push_str(&printed(&mut watch));
+                async { runs(&s).await == 2 }
+            })
+            .await?;
+            second_run_live(&s).await?;
+            shown.push_str(&printed(&mut watch));
+            assert!(shown.contains("ECHO: two"), "{shown}");
+            stop(&s.app, &s.id).await
+        })?;
+        rt.shutdown_timeout(Duration::from_secs(5));
+        Ok(())
+    }
+
+    /// SPEC-471 CCQ-003 (AC6; review round 1, finding 3): Claude Code hands a prompt it
+    /// scheduled for itself on with a prompt record that Yulius reads as no prompt. The
+    /// hand-over then ends with the model's first line written after it, here the tool call
+    /// its turn starts with, while the turn still runs; and that turn's end restarts the
+    /// session. It used to stay counted through the turn, so a session driven by scheduled
+    /// prompts never moved.
+    #[test]
+    fn a_hand_over_to_a_scheduled_prompt_ends_when_its_turn_works() -> TestResult {
+        let (_dir, data) = data_dir()?;
+        let version = data.join("claude-version");
+        let may_end = data.join("turn-may-end");
+        let turn_starts = data.join("queued-turn-starts");
+        let rt = runtime()?;
+        rt.block_on(async {
+            let options = FakeAgentOptions {
+                queue_turn_file: Some(turn_starts.clone()),
+                ..queueing(&may_end)
+            };
+            let s = server(&data, &version, options, TaskMode::Prompt, "2.1.322").await?;
+            std::fs::write(&version, "2.1.322\n")?;
+            let mut watch = s.app.runtime(&s.id).hub.subscribe().rx;
+            s.app.send_input(&s.id, b"one\r").await?;
+            says(&s, "TURN HELD").await?;
+            s.app
+                .send_input(&s.id, b"/scheduled check the build\r")
+                .await?;
+            says(&s, "QUEUED: check the build").await?;
+            waits_in_the_queue(&s).await?;
+            // The turn ends; the scheduled prompt is handed on, and its turn is held twice:
+            // before its record, and before its answer.
+            let first_end = decided(&s.id);
+            std::fs::write(&may_end, "")?;
+            says(&s, "QUEUED TURN HELD").await?;
+            until_decided(&first_end).await?;
+            assert_eq!(runs(&s).await, 1);
+            wait_for("the hand-over", Duration::from_secs(30), || async {
+                s.app.claude_queue_waiting(&s.id) == 0
+            })
+            .await?;
+            assert!(
+                s.app.claude_queue_holds(&s.id),
+                "handed on, and nothing of its turn was written yet"
+            );
+            // Its turn starts: its hook, its record that is no prompt, and a tool call, the
+            // model's first line after the hand-over. The hand-over is over while the turn
+            // still runs.
+            std::fs::remove_file(&may_end)?;
+            std::fs::write(&turn_starts, "")?;
+            wait_for("the scheduled turn", Duration::from_secs(60), || async {
+                screen(&s.app, &s.id).matches("TURN HELD").count() == 2
+            })
+            .await?;
+            wait_for("the hand-over's end", Duration::from_secs(30), || async {
+                !s.app.claude_queue_holds(&s.id)
+            })
+            .await?;
+            assert_eq!(runs(&s).await, 1);
+            assert!(
+                !screen(&s.app, &s.id).contains("ECHO: check the build"),
+                "the turn has not answered yet"
+            );
+            // The turn ends, and that end restarts the session.
+            std::fs::write(&may_end, "")?;
+            let mut shown = String::new();
+            wait_for("the restarted session", Duration::from_secs(90), || {
+                shown.push_str(&printed(&mut watch));
+                async { runs(&s).await == 2 }
+            })
+            .await?;
+            second_run_live(&s).await?;
+            shown.push_str(&printed(&mut watch));
+            assert!(shown.contains("ECHO: check the build"), "{shown}");
+            stop(&s.app, &s.id).await
+        })?;
+        rt.shutdown_timeout(Duration::from_secs(5));
+        Ok(())
+    }
+
+    /// SPEC-471 CCQ-004 (AC7): Claude Code writes a waiting prompt's record once its hook
+    /// returned, and the record reaches the file a moment later; here the agent writes it
+    /// only when the test says so, and the turn ends right after the prompt's hook. Nothing
+    /// in the transcript says a prompt waits when the turn's end decides: the session stays
+    /// because a prompt went on less than the six seconds ago that its record may take here.
+    /// Once that time is over, the record read and the prompt answered, that turn's end
+    /// restarts the session.
+    #[test]
+    fn a_prompt_whose_record_is_not_written_yet_keeps_the_session() -> TestResult {
+        let (_dir, data) = data_dir()?;
+        let version = data.join("claude-version");
+        let may_end = data.join("turn-may-end");
+        let handed_on = data.join("queue-handed-on");
+        let written = data.join("queue-record-written");
+        let rt = runtime()?;
+        rt.block_on(async {
+            let options = FakeAgentOptions {
+                queue_record_file: Some(written.clone()),
+                queue_handover_file: Some(handed_on.clone()),
+                ..queueing(&may_end)
+            };
+            let s = server_with(
+                &data,
+                &version,
+                options,
+                TaskMode::Prompt,
+                "2.1.322",
+                |config| config.claude_code_queue_record_ms = 6_000,
+            )
+            .await?;
+            std::fs::write(&version, "2.1.322\n")?;
+            let mut watch = s.app.runtime(&s.id).hub.subscribe().rx;
+            s.app.send_input(&s.id, b"one\r").await?;
+            says(&s, "TURN HELD").await?;
+            // Entered, its hook answered, and the turn ends at once.
+            s.app.send_input(&s.id, b"two\r").await?;
+            says(&s, "QUEUED: two").await?;
+            let first_end = decided(&s.id);
+            std::fs::write(&may_end, "")?;
+            says(&s, "QUEUE HELD").await?;
+            until_decided(&first_end).await?;
+            assert_eq!(
+                runs(&s).await,
+                1,
+                "the session was restarted before the waiting prompt's record was written"
+            );
+            assert!(
+                !s.app.claude_queue_holds(&s.id),
+                "its record is not written yet: the time alone kept the session"
+            );
+            // The time a record may take passes; the record comes; the queue is handed on;
+            // that turn's end restarts the session.
+            wait_for(
+                "the time a record may take",
+                Duration::from_secs(60),
+                || async { !s.app.prompt_just_went_on(&s.id) },
+            )
+            .await?;
+            std::fs::write(&written, "")?;
+            waits_in_the_queue(&s).await?;
+            std::fs::write(&handed_on, "")?;
+            let mut shown = String::new();
+            wait_for("the restarted session", Duration::from_secs(90), || {
+                shown.push_str(&printed(&mut watch));
+                async { runs(&s).await == 2 }
+            })
+            .await?;
+            second_run_live(&s).await?;
+            shown.push_str(&printed(&mut watch));
+            assert!(shown.contains("ECHO: two"), "{shown}");
+            stop(&s.app, &s.id).await
+        })?;
+        rt.shutdown_timeout(Duration::from_secs(5));
+        Ok(())
+    }
+
+    /// SPEC-471 CCQ-004 (AC7), on the test's clock: a turn's end less than two seconds after
+    /// a prompt from the prompt box went on does not look at the session, since the record
+    /// that says where the prompt went may not be written; one two seconds after it does.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_prompt_that_just_went_on_keeps_the_session() -> TestResult {
+        use axum::http::StatusCode;
+        let (h, task) = on_the_test_clock(false).await?;
+        assert_eq!(hook(&h, Some("first")).await?, StatusCode::OK);
+        h.clock.0.fetch_add(1_999, Ordering::SeqCst);
+        let probed = reached(Point::ClaudeMoveProbed, &task);
+        let flag = decided(&task);
+        assert_eq!(hook(&h, None).await?, StatusCode::OK);
+        until_decided(&flag).await?;
+        assert!(
+            !probed.load(Ordering::SeqCst) && !h.app.claude_move_cooling(&task),
+            "a prompt went on 1,999 ms ago: no look, and no restart is tried"
+        );
+        // Claude Code's own wake-up comes through no prompt box: it changes nothing.
+        let wake = "<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>\n\
+                    </task-notification>";
+        assert_eq!(hook(&h, Some("second")).await?, StatusCode::OK);
+        h.clock.0.fetch_add(2_000, Ordering::SeqCst);
+        assert_eq!(hook(&h, Some(wake)).await?, StatusCode::OK);
+        let flag = decided(&task);
+        assert_eq!(hook(&h, None).await?, StatusCode::OK);
+        until_decided(&flag).await?;
+        assert!(probed.load(Ordering::SeqCst), "the session was looked at");
+        assert!(h.app.claude_move_cooling(&task), "the restart was tried");
+        Ok(())
+    }
+
+    /// SPEC-471 CCQ-004 (AC7), on the test's clock: a prompt from the prompt box that goes on
+    /// while a turn's end looks at the session (here a command, which starts no turn Yulius
+    /// sees) is not in the lines that look read: the session stays, however the clock moved
+    /// meanwhile. The next turn's end restarts it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_prompt_that_goes_on_while_a_turns_end_looks_keeps_the_session() -> TestResult {
+        use axum::http::StatusCode;
+        const HELD: Duration = Duration::from_secs(60);
+        let (h, task) = on_the_test_clock(false).await?;
+        assert_eq!(hook(&h, Some("first")).await?, StatusCode::OK);
+        h.clock.0.fetch_add(5 * MINUTE, Ordering::SeqCst);
+        // The turn's end is held where its look at the session is over.
+        let looking = Arc::new(AtomicBool::new(false));
+        let (go_on, held) = std::sync::mpsc::channel::<()>();
+        let there = Arc::clone(&looking);
+        race::on(
+            Point::ClaudeMoveProbed,
+            Path::new(task.as_str()),
+            move || {
+                there.store(true, Ordering::SeqCst);
+                let _ = tokio::task::block_in_place(|| held.recv_timeout(HELD));
+            },
+        );
+        let flag = decided(&task);
+        assert_eq!(hook(&h, None).await?, StatusCode::OK);
+        wait_for("the look at the session", HELD, || async {
+            looking.load(Ordering::SeqCst)
+        })
+        .await?;
+        assert_eq!(hook(&h, Some("/compact")).await?, StatusCode::OK);
+        h.clock.0.fetch_add(5 * MINUTE, Ordering::SeqCst);
+        go_on.send(())?;
+        until_decided(&flag).await?;
+        assert!(
+            !h.app.claude_move_cooling(&task),
+            "a prompt went on while the turn's end looked: no restart is tried"
+        );
+        // A prompt and its turn, long after: that end restarts the session.
+        assert_eq!(hook(&h, Some("second")).await?, StatusCode::OK);
+        h.clock.0.fetch_add(5 * MINUTE, Ordering::SeqCst);
+        let flag = decided(&task);
+        assert_eq!(hook(&h, None).await?, StatusCode::OK);
+        until_decided(&flag).await?;
+        assert!(h.app.claude_move_cooling(&task), "the restart was tried");
         Ok(())
     }
 

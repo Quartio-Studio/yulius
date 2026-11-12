@@ -448,6 +448,7 @@ impl TranscriptWatch for Watch {
                     Observed::ContextFull => out.push(Observation::ContextFull),
                     Observed::Compacted => out.push(Observation::Compacted),
                     Observed::CompactFailed => out.push(Observation::CompactFailed),
+                    Observed::Queue { change, at } => out.push(Observation::Queue(change, at)),
                     Observed::LimitReached {
                         resets_at,
                         message,
@@ -483,6 +484,44 @@ impl TranscriptWatch for Watch {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SPEC-471 CCQ-001: a run that resumed a session reads the lines recorded from its own
+    /// start on, so an `enqueue` the run before left behind (its process ended with the prompt
+    /// still waiting) is not in this run's queue; a run that started the session reads all.
+    #[test]
+    fn a_resumed_run_does_not_count_what_the_run_before_left_waiting()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use yulius_domain::agent_cli::QueueChange;
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("session.jsonl");
+        let lines = [
+            r#"{"type":"queue-operation","operation":"enqueue","timestamp":"2026-11-12T06:00:43.971Z","sessionId":"s","content":"second"}"#,
+            r#"{"type":"user","isSidechain":false,"timestamp":"2026-11-12T06:01:10.589Z","sessionId":"s","version":"2.1.322","promptSource":"typed","message":{"role":"user","content":"after"}}"#,
+            r#"{"type":"queue-operation","operation":"enqueue","timestamp":"2026-11-12T06:01:11.000Z","sessionId":"s","content":"third"}"#,
+        ];
+        std::fs::write(&path, format!("{}\n", lines.join("\n")))?;
+        let resumed_at =
+            yulius_harness::time::parse_rfc3339("2026-11-12T06:01:00.000Z").ok_or("a time")?;
+        let queued = |from: WatchFrom| -> Result<usize, Box<dyn std::error::Error>> {
+            let mut watch = Watch {
+                harness: Harness::ClaudeCode,
+                tail: tail::TranscriptTail::open(&path, tail::DEFAULT_MAX_LINE_BYTES)?,
+                since: LinesSince::new(match from {
+                    WatchFrom::Start => None,
+                    WatchFrom::Since(at) => Some(at),
+                }),
+                subagents: SubagentTails::new(&path, None),
+                acc: UsageAccumulator::new(),
+            };
+            let seen = watch.poll().map_err(|err| err.to_string())?;
+            let added =
+                |one: &&Observation| matches!(one, Observation::Queue(QueueChange::Added, Some(_)));
+            Ok(seen.iter().filter(added).count())
+        };
+        assert_eq!(queued(WatchFrom::Start)?, 2);
+        assert_eq!(queued(WatchFrom::Since(resumed_at))?, 1);
+        Ok(())
+    }
 
     #[test]
     fn every_mcp_value_travels_in_a_variable_of_its_own() {

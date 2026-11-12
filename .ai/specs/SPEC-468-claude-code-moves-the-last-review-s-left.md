@@ -20,8 +20,9 @@ left in the session's prompt box and tells nobody twice: a goal a person set in 
 session and a draft in its prompt box keep the session where it is; an idle restart never reads
 as work and does not notify again; a restart is always watched by the breaker; and the card and
 a task's info promise only what will happen. The gaps in tests and wording the review named are
-closed. Not reached: a prompt that waits in Claude Code's queue is still lost by such a restart
-(Decisions; issue #1204).
+closed. Not reached here: a prompt that waits in Claude Code's queue was still lost by such a
+restart (Decisions; issue #1204). [SPEC-471](SPEC-471-claude-code-moves-a-prompt-that-waits-in.md)
+(task #454) closed that: such a session now stays.
 
 ## Context
 
@@ -88,8 +89,8 @@ The question of direction: the restart waits only while a person typed in the la
 | CCF-007 | **The card says when the binary could not be read.** When Yulius keeps Claude Code current and the binary runs get cannot be read for the models it knows, the card shows a warning badge and a sentence saying that whether it knows the default model is not known (`ClaudeCodeView.models_unread`), as `yulius doctor` warns. |
 | CCF-008 | **An idle restart is no news.** A prompt-mode session that was idle and is restarted with nothing typed never reads Working: its task goes from switching back to the activity it had, and what Claude Code last recorded of the session's goal (unfinished or not) still counts, so the task reads as it did. The notification center remembers a task's state through a switch, so a task that reads after it as it did before gets no second notification, in the bell or on the desktop. |
 | CCF-009 | **SPEC-461 says what is true.** Its Context quotes the owner's goal; CCM-008, CCM-011, CCM-012 and CCM-013 state the rules of this spec; ADR-0293, the operations guide and the API reference follow. |
-| CCF-010 | **A draft keeps the session.** A session a person typed into since its last prompt was submitted (and since it started) is not restarted, however long ago they typed: what they typed may still sit in its prompt box. A prompt submitted by a person or by Yulius empties the box, once: a prompt that is held at its submit (an update, a pause, no subscription with room) is sent again by the hook client until it goes on, which is the same submit, so what is typed meanwhile is a draft. Claude Code's own wake-up empties nothing. The box counts as emptied at the prompt's hook, which Claude Code runs at the Enter, also for a prompt entered while a turn runs (seen with 2.1.322): what is typed after it is a draft. A prompt whose hook Yulius answers with an error at its first request goes on all the same (the hook client fails open) and empties the box; an error while the prompt is held leaves it held (the client asks again). A prompt Yulius's own scope check holds (TSK-013) is blocked, and Claude Code puts its text back into the box: that submit empties nothing, also when the prompt first waited for a subscription with room. The minute after any keystroke stays as well (a person who just sent a prompt is still at the keyboard). |
-| CCF-011 | **What Yulius typed counts until it is submitted.** A message Yulius typed into the session (a person's message through their Superagent or their own agent, a pull request's news, "Yulius is back") is a draft from the moment it is typed until its submit (its prompt hook). A command Claude Code runs itself (the MCP watch's `/mcp reconnect yulius`) submits no prompt and is no draft, and neither is a message that could not be typed. Claude Code submits at Yulius's own Enter, also while a turn runs, and then keeps the message in its queue until the turn ends: this rule covers the message from its paste to that submit only. A restart at the turn's end still loses a prompt that waits in that queue, a person's or Yulius's, as before this change (Decisions; issue #1204). |
+| CCF-010 | **A draft keeps the session.** A session a person typed into since its last prompt was submitted (and since it started) is not restarted, however long ago they typed: what they typed may still sit in its prompt box. A prompt submitted by a person or by Yulius empties the box, once: a prompt that is held at its submit (an update, a pause, no subscription with room) is sent again by the hook client until it goes on, which is the same submit, so what is typed meanwhile is a draft. Claude Code's own wake-up empties nothing. The box counts as emptied at the prompt's hook, which Claude Code runs at the Enter, also for a prompt entered while a turn runs (seen with 2.1.322): what is typed after it is a draft. A prompt whose hook Yulius answers with an error at its first request goes on all the same (the hook client fails open) and empties the box; an error while the prompt is held leaves it held (the client asks again after a 5xx or a lost connection; at a 4xx it ends its hold and the prompt goes on, which Yulius reads as held too, so that the session reads as holding a draft until the prompt after the next is submitted). A prompt Yulius's own scope check holds (TSK-013) is blocked, and Claude Code puts its text back into the box: that submit empties nothing, also when the prompt first waited for a subscription with room. The minute after any keystroke stays as well (a person who just sent a prompt is still at the keyboard). |
+| CCF-011 | **What Yulius typed counts until it is submitted.** A message Yulius typed into the session (a person's message through their Superagent or their own agent, a pull request's news, "Yulius is back") is a draft from the moment it is typed until its submit (its prompt hook). A command Claude Code runs itself (the MCP watch's `/mcp reconnect yulius`) submits no prompt and is no draft, and neither is a message that could not be typed. Claude Code submits at Yulius's own Enter, also while a turn runs, and then keeps the message in its queue until the turn ends: this rule covers the message from its paste to that submit only. A restart at the turn's end still lost a prompt that waited in that queue, a person's or Yulius's, as before this change (Decisions; issue #1204); since SPEC-471 the session stays while something waits there. |
 
 ## Plan
 
@@ -301,7 +302,11 @@ The question of direction: the restart waits only while a person typed in the la
   records, which the turn end's look already reads, and teach the fake agent the real order.
   Not done here: it is a design of its own (a new observation, a fake agent that queues as
   the real tool does, tests in that order), the review had reached its third round, and the
-  loss is not this change's.
+  loss is not this change's. Done since by task #454
+  ([SPEC-471](SPEC-471-claude-code-moves-a-prompt-that-waits-in.md)): Yulius counts those
+  records per run, a session with something in Claude Code's queue is not restarted, and the
+  fake agent has the real order behind `--queue-prompts`. The test of CCF-011 in the old
+  order stays as the test of the draft rule.
 - **What Yulius typed is a draft until its submit** (found while the draft rule was checked
   against the binary, after review round 1; cut down to what holds in round 3). Yulius types
   into sessions itself: a person's message through their Superagent or their own agent, a
@@ -345,9 +350,12 @@ The question of direction: the restart waits only while a person typed in the la
   session reads as holding a draft until the prompt after the next one is submitted: later than
   needed, never as holding none. A prompt whose hook Yulius answers with an error at its first
   request goes on too, since the client fails open: the box is empty. Once the client holds a
-  prompt it asks again after a failing answer, so an error inside a hold leaves the prompt held
-  (the last look's minor: it used to end the hold, and the next request counted as a new submit
-  at its later time; any error on a request sent again is read so, which errs toward a draft).
+  prompt it asks again after a 5xx or a lost connection, so such an error inside a hold leaves
+  the prompt held (the last look's minor: it used to end the hold, and the next request counted
+  as a new submit at its later time). At a 4xx the client ends its hold and the prompt goes on;
+  any error on a request sent again is read as held all the same, which errs toward a draft:
+  the session then reads as holding one until the prompt after the next is submitted, as after
+  a hold given up (wording set right by task #454, as the last look asked in issue #1204).
   An earlier text of this spec said a blocked prompt goes into a warning line and not back into
   the box; that read only half of the binary's path and was wrong. A held prompt a person then
   edits, or clears by hand, reads as a draft until the next prompt is submitted.
