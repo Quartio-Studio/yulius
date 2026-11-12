@@ -2,7 +2,7 @@
 // subscription pool with the login terminal, and the GitHub App connection (manifest flow).
 
 import { enc } from '../api.js';
-import { h, icon, badge, openModal, field, invalid, toast, confirmDialog, errorToast, toggle, setChildren, emptyState, skeleton, bar, pollPaused } from '../dom.js';
+import { h, icon, badge, openModal, field, invalid, toast, confirmDialog, errorToast, toggle, setChildren, emptyState, skeleton, bar, pollPaused, keepFocus } from '../dom.js';
 import { href } from '../router.js';
 import { openSandboxDialog } from '../actions.js';
 import { claudeConnected, CONNECT_PATH } from '../claude.js';
@@ -221,13 +221,17 @@ export function openLoginTerminal(ctx, { loginId, account, onFinish }) {
     return { promise, stop: () => { clearTimeout(timer); off(); } };
   }
 
-  /** The success toast, naming the subscription and its email (LGN-003), waiting at most 5 s for it. */
+  /**
+   * The success toast, naming the subscription and its email (LGN-003), waiting at most 5 s for
+   * it. Only an email Claude gave is named: one an administrator typed is not Claude's word for
+   * this sign-in (SPEC-463 EML-006).
+   */
   async function connectedToast() {
     const update = emailUpdate(5000);
     let now = await fresh();
     if (!now || !now.email) now = (await update.promise) || now;
     update.stop();
-    const email = now && now.email ? ` as ${now.email}` : '';
+    const email = now && now.email && !now.email_typed ? ` as ${now.email}` : '';
     toast(`${account.label} is connected${email}. Tasks can use it now.`, { kind: 'ok', timeout: 8000 });
   }
 
@@ -365,6 +369,48 @@ export function mountAccountsPage(ctx, route) {
     return false;
   });
 
+  // The list is not drawn again while a name or an email is being edited, whoever asked for
+  // the read: an update, a read that was on its way when the field opened, or the page's own
+  // read after a removal (SPEC-463 EML-001). A redraw would take the field away, and the field
+  // would save what was half typed. Such a refresh waits (the list says so,
+  // `data-refresh="waiting"`) and is read once no field is open; the reload keeps focus on the
+  // same control.
+  let pendingReload = false;
+  let gone = false;
+  /** A field is open: in use, or set aside (refused as it was left, `data-set-aside`). */
+  const open = () => Boolean(host.querySelector('.account-rename-input'));
+  /** A field is in use: typed in, being left or saving. */
+  const inUse = () => Boolean(host.querySelector('.account-rename-input:not([data-set-aside])'));
+  const defer = () => {
+    pendingReload = true;
+    host.dataset.refresh = 'waiting';
+  };
+  const settled = () => {
+    pendingReload = false;
+    delete host.dataset.refresh;
+  };
+  /** Reads the list again now, or notes that it must be read once no field is open. */
+  const refresh = () => {
+    if (gone) return;
+    if (open()) { defer(); return; }
+    settled();
+    reload({ quiet: true });
+  };
+  const flush = () => { if (pendingReload) refresh(); };
+  // An update from elsewhere waits for every open field, so a refused value can be come back
+  // to. What the person asked for themselves (the read after a removal, an Add, a sign-in)
+  // waits only for a field in use: one set aside goes with the redraw, and the list shows what
+  // they did.
+  const held = ({ quiet }) => {
+    const wait = quiet ? open() : inUse();
+    if (wait) defer();
+    else settled();
+    return wait;
+  };
+  // A field closes without any focus leaving the list when it is left as it was or saved by
+  // leaving it, so the field itself says that it is gone.
+  host.addEventListener('yulius:edit-closed', flush);
+
   // Capacity is read beside the subscriptions, so the panel above them is in place before they
   // land (SPEC-120). Each later render (after an add or a removal) reads it again, and so does
   // the first one when that read failed.
@@ -383,14 +429,22 @@ export function mountAccountsPage(ctx, route) {
         Object.assign(account, fresh);
         toast(`Subscription renamed to ${account.label}.`, { kind: 'ok' });
       };
+      // So is the email under it (SPEC-463 EML-001); an empty one removes it.
+      const setEmail = async (email) => {
+        const fresh = await ctx.api.patch(`/api/admin/accounts/${enc(account.id)}`, { email });
+        Object.assign(account, fresh);
+        toast(account.email ? `Email of ${account.label} is now ${account.email}.` : `Email of ${account.label} removed.`, { kind: 'ok' });
+      };
       // Provider windows (refreshed in the background) and what Yulius observed (ROT-009).
-      const usageHost = h('div', null, accountUsage(account, { rename, showEmail: true }), tokenTotals(account));
+      const usageHost = h('div', null, accountUsage(account, { rename, setEmail, showEmail: true }), tokenTotals(account));
       const stale = !account.usage || !account.usage.observed_at || Date.now() - Date.parse(account.usage.observed_at) > 10 * 60 * 1000;
       if (account.status !== 'pending_login' && stale) {
         ctx.api.post(`/api/admin/accounts/${enc(account.id)}/usage`).then((fresh) => {
           Object.assign(account, fresh);
-          if (usageHost.querySelector('.account-rename-input')) pendingReload = true;
-          else setChildren(usageHost, accountUsage(account, { rename, showEmail: true }), tokenTotals(account));
+          // The answer draws the card's head again: a pencil that has the keyboard keeps it (an
+          // idle subscription's usage stays old, so this follows every list read; SPEC-463).
+          if (usageHost.querySelector('.account-rename-input')) defer();
+          else keepFocus(usageHost, () => setChildren(usageHost, accountUsage(account, { rename, setEmail, showEmail: true }), tokenTotals(account)));
         }).catch(() => {});
       }
       const broken = ['relogin', 'error', 'pending_login'].includes(account.status);
@@ -399,7 +453,9 @@ export function mountAccountsPage(ctx, route) {
         h('div', { class: 'row-wrap' },
           h('span', { class: 'spacer' }),
           // A broken credential is repaired with Claude's sign-in; there is nothing else to set.
-          broken ? h('button', { type: 'button', class: 'btn btn-sm btn-primary', onClick: async () => {
+          // Like the pencils, the card's buttons say whose they are (`data-focus-key`): a list
+          // drawn again after a rename keeps the keyboard on this subscription (SPEC-463).
+          broken ? h('button', { type: 'button', class: 'btn btn-sm btn-primary', dataset: { focusKey: `account:${account.id}:signin` }, onClick: async () => {
             try {
               const result = await ctx.api.post(`/api/admin/accounts/${enc(account.id)}/relogin`);
               openLoginTerminal(ctx, { loginId: result.login_id, account, onFinish: reload });
@@ -408,7 +464,7 @@ export function mountAccountsPage(ctx, route) {
             }
           } }, 'Sign in again') : null,
           // Removal always works: the tasks on it move to another subscription (SPEC-447 MOV-003).
-          h('button', { type: 'button', class: 'btn btn-sm btn-quiet-danger', title: account.in_use_by > 0 ? `${account.in_use_by} live task${account.in_use_by === 1 ? '' : 's'} on this subscription move to another one` : null, onClick: async () => {
+          h('button', { type: 'button', class: 'btn btn-sm btn-quiet-danger', dataset: { focusKey: `account:${account.id}:remove` }, title: account.in_use_by > 0 ? `${account.in_use_by} live task${account.in_use_by === 1 ? '' : 's'} on this subscription move to another one` : null, onClick: async () => {
             const moving = account.in_use_by > 0 ? ` ${account.in_use_by === 1 ? 'The task' : `The ${account.in_use_by} tasks`} on it ${account.in_use_by === 1 ? 'moves' : 'move'} to another subscription in the same session, or ${account.in_use_by === 1 ? 'waits' : 'wait'} for one.` : '';
             if (!(await confirmDialog({ title: `Remove ${account.label}?`, message: `Its stored credential is deleted and a running sign-in is cancelled.${moving} Done tasks on it are closed (Continue starts them on another subscription), and nothing runs on it again.`, confirmLabel: 'Remove', danger: true }))) return;
             try {
@@ -420,7 +476,7 @@ export function mountAccountsPage(ctx, route) {
             }
           } }, 'Remove')));
     }));
-  }, { shape: 'cards' });
+  }, { shape: 'cards', hold: held });
 
   function add() {
     const label = h('input', { class: 'input', placeholder: 'Claude #3', maxlength: 80, autofocus: true });
@@ -440,25 +496,17 @@ export function mountAccountsPage(ctx, route) {
     });
   }
 
-  // A name being edited is not redrawn away by an update: the reload waits until the field
-  // closes (the reload keeps focus on the same control).
-  let pendingReload = false;
-  const off = ctx.store.on('account', () => {
-    if (host.querySelector('.account-rename-input')) pendingReload = true;
-    else reload({ quiet: true });
-  });
-  host.addEventListener('focusout', () => setTimeout(() => {
-    if (pendingReload && !host.querySelector('.account-rename-input')) {
-      pendingReload = false;
-      reload({ quiet: true });
-    }
-  }, 0));
+  const off = ctx.store.on('account', refresh);
+  const destroy = () => {
+    gone = true;
+    off();
+  };
   // Settings → "Add subscription" lands here with ?add=1: open the dialog right away.
   if (route && route.query && route.query.get('add') === '1') {
     setTimeout(add, 0);
     ctx.navigate('/admin/accounts', { replace: true });
   }
-  return { el: frame.el, key: 'admin:accounts', destroy: off };
+  return { el: frame.el, key: 'admin:accounts', destroy };
 }
 
 // ---------------------------------------------------------------- GitHub
