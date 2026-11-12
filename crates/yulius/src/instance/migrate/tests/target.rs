@@ -1326,6 +1326,7 @@ fn finishing_removes_the_key_and_the_flows_files_and_enables_the_firewall() {
     let request = Request::Finish {
         key: "yulius-migrate-ab12".into(),
         firewall: true,
+        arrived: true,
     };
     let reply = step(&mut host, &request);
     let outcomes: Vec<(&str, HostOutcome)> = reply
@@ -1362,6 +1363,7 @@ fn finishing_removes_the_key_and_the_flows_files_and_enables_the_firewall() {
         &Request::Finish {
             key: "yulius-migrate-ab12".into(),
             firewall: false,
+            arrived: false,
         },
     );
     assert_eq!(only(&reply).0, HostOutcome::Ok);
@@ -1493,6 +1495,7 @@ fn a_start_still_in_flight_finds_the_stop_and_starts_nothing() {
         &Request::Finish {
             key: String::new(),
             firewall: false,
+            arrived: false,
         },
     );
     assert!(host.text(STOPPED).is_some() && host.text(STAGED_BUILD).is_none());
@@ -1878,6 +1881,7 @@ fn the_finish_leaves_the_staged_checklist_for_the_new_instance() -> Result<(), S
     let finish = Request::Finish {
         key: "yulius-migrate-abcd1234".into(),
         firewall: true,
+        arrived: true,
     };
     let mode = |host: &FakeHost, path: &str| {
         host.stat(std::path::Path::new(path))
@@ -1936,11 +1940,29 @@ fn the_finish_leaves_the_staged_checklist_for_the_new_instance() -> Result<(), S
             .any(|l| l.starts_with("write /var/lib/yulius/"))
     );
 
-    // Without a staged checklist (an abort's finish) nothing is left.
+    // Without a staged checklist nothing is left.
     let mut host = new_host();
     step(&mut host, &finish);
     assert!(host.text(ARRIVED).is_none());
     assert!(!host.files.keys().any(|path| path.starts_with(STATE_DIR)));
+
+    // An abort's finish does not say that the move arrived: what a move staged (its own finish
+    // never reached this host) goes with the flow's files, and no finished checklist is left
+    // on a host the instance did not move to.
+    let mut host = new_host();
+    step(&mut host, &carry);
+    let back = Request::Finish {
+        key: "yulius-migrate-abcd1234".into(),
+        firewall: false,
+        arrived: false,
+    };
+    let reply = step(&mut host, &back);
+    assert!(
+        host.text(ARRIVED).is_none(),
+        "an aborted move left a finished checklist"
+    );
+    assert!(!host.files.keys().any(|path| path.starts_with(STATE_DIR)));
+    assert!(reply.lines.iter().all(|l| l.name != "checklist"));
 
     // A checklist an earlier move left there is replaced by this move's, or goes with a
     // finish that brings none.

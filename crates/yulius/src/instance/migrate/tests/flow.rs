@@ -4289,6 +4289,24 @@ fn the_finished_checklist_travels_to_the_new_host() -> TestResult {
     let status = s.status()?;
     assert_eq!(carried(&s)?.lines, status.lines);
 
+    // A move whose Finish did not reach the new host and that is then aborted leaves none:
+    // the instance did not move there.
+    let mut s = setup()?;
+    s.remote.refuse = vec!["finish"];
+    assert_eq!(s.run()?, 1);
+    assert!(
+        s.remote
+            .host
+            .files
+            .contains_key(Path::new(target::CARRY_FILE)),
+        "nothing was staged"
+    );
+    assert_eq!(s.abort()?, 0, "{}", s.shown());
+    assert!(
+        carried(&s).is_err(),
+        "an aborted move left a finished checklist"
+    );
+
     // A new host that cannot keep it says so, and the move ends all the same.
     let mut s = setup()?;
     s.remote.host.read_only.insert(target::ARRIVED.into());

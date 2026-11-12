@@ -2195,6 +2195,7 @@ impl<'a> Move<'a> {
         let finish = Request::Finish {
             key: self.state.key_comment(),
             firewall: p.firewall == Carried::Yes,
+            arrived: true,
         };
         if deleted_before {
             self.manual(
@@ -2479,6 +2480,8 @@ impl<'a> Move<'a> {
                 &Request::Finish {
                     key: self.state.key_comment(),
                     firewall: false,
+                    // Going back: no checklist of a finished move stays on the new host.
+                    arrived: false,
                 },
             );
         }

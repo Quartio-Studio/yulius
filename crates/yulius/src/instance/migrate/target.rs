@@ -254,6 +254,11 @@ pub enum Request {
         key: String,
         /// Enable ufw.
         firewall: bool,
+        /// The move finished: the checklist the old host brought ([`Request::Carry`]) is
+        /// completed and left for the new instance's page. An abort's Finish says no, and
+        /// what a move staged goes with the flow's other files (SPEC-470 MVB-011).
+        #[serde(default)]
+        arrived: bool,
     },
 }
 
@@ -1764,7 +1769,14 @@ fn enable(host: &mut dyn Host, name: &str, unit: &str, l: &mut Lines) {
     }
 }
 
-fn finish(host: &mut dyn Host, env: &Env<'_>, key: &str, firewall: bool, l: &mut Lines) {
+fn finish(
+    host: &mut dyn Host,
+    env: &Env<'_>,
+    key: &str,
+    firewall: bool,
+    arrived: bool,
+    l: &mut Lines,
+) {
     let keys = Path::new("/root/.ssh/authorized_keys");
     let text = host.read(keys).unwrap_or_default();
     let ours = |line: &str| !key.is_empty() && line.trim_end().ends_with(key);
@@ -1825,7 +1837,8 @@ fn finish(host: &mut dyn Host, env: &Env<'_>, key: &str, firewall: bool, l: &mut
         }
     }
     // Read before the flow's files go, left after: what an earlier move left goes with them.
-    let staged = host.read(Path::new(CARRY_FILE));
+    // Only a move that finished leaves one; an abort's finish removes what was staged.
+    let staged = host.read(Path::new(CARRY_FILE)).filter(|_| arrived);
     if host.is_file(Path::new(STOPPED)) {
         // A Start may still be in flight: what tells it not to start the unit stays.
         for name in host.list(Path::new(STATE_DIR)) {
@@ -1965,7 +1978,11 @@ pub fn handle(host: &mut dyn Host, env: &mut Env<'_>, request: &Request) -> Repl
         }
         Request::Carry(carried) => carry(host, carried, &mut l),
         Request::Enable { name, unit } => enable(host, name, unit, &mut l),
-        Request::Finish { key, firewall } => finish(host, env, key, *firewall, &mut l),
+        Request::Finish {
+            key,
+            firewall,
+            arrived,
+        } => finish(host, env, key, *firewall, *arrived, &mut l),
     }
     reply.lines = l.0;
     reply
