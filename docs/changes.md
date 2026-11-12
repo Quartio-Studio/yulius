@@ -26,6 +26,21 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   longer knows a goal a person set in a prompt-mode session until Claude Code records its next
   verdict (#1182), and a subscription switch at a turn's end still loses a message that waits in
   Claude Code's queue (#1194).
+- A move copies while the instance runs and freezes only for the changes (SPEC-465, task #445,
+  ADR-0303; SPEC-460's MIG-032). `sudo yulius instance migrate root@new-host` now copies the data
+  directory in passes into a staged copy on the new host while the old instance runs, then
+  freezes, sends what changed since, removes what no longer exists and proves the whole copy as
+  before. Changes are never judged by size and time: the old host keeps a receipt for every entry
+  the new host took in and synced (a digest of its metadata, its inode number and its inode's
+  change time) and sends again whatever has none that matches, also a file rewritten in place
+  within the same second or with its time set back. The checklist shows the estimated freeze
+  before it begins; `--max-downtime <minutes>` makes the move copy again while the estimate is
+  above it and stop without freezing after five such passes. A pass cut by a broken link or a
+  killed command is continued by the same command, and nothing the new host acknowledged is sent
+  twice. The copy reads as root while the sandboxes run and never follows a link out of the data
+  directory; after a restart of the old host, or when its clock was set back, the receipts are
+  dropped and everything is sent into the staged copy again. The operations guide §7 describes
+  it.
 - A task whose session works again after a goal pause leaves Needs you by itself (SPEC-469, task
   #453, fixes #1183, ADR-0304). When Claude Code stops retrying a goal ("Goal paused · the request
   was rate limited", "Goal paused after 3 automatic retries"), Yulius asks a person to send the

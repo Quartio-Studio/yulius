@@ -128,10 +128,26 @@ fn instance_migrate_explains_itself_and_refuses_what_is_not_a_run() -> TestResul
         "--data-disk",
         "--ssh-port",
         "--yes",
+        "--max-downtime",
         "--status",
         "--abort",
     ] {
         assert!(text.contains(option), "{option} is not in the help: {text}");
+    }
+    // SPEC-465 WCP-013: the bound is whole minutes, at least one.
+    for bound in ["0", "soon"] {
+        let out = Command::new(EXE)
+            .args([
+                "instance",
+                "migrate",
+                "root@new-host",
+                "--max-downtime",
+                bound,
+            ])
+            .output()?;
+        assert_eq!(out.status.code(), Some(2), "--max-downtime {bound}");
+        let said = String::from_utf8_lossy(&out.stderr);
+        assert!(said.contains("--max-downtime"), "{said}");
     }
 
     let dir = tempfile::tempdir()?;

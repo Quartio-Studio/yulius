@@ -144,6 +144,179 @@ fn a_left_out_name_below_the_top_is_kept() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn the_walk_shows_each_entry_s_inode_and_change_time() -> TestResult {
+    use std::os::unix::fs::MetadataExt as _;
+    let dir = tree()?;
+    let root = dir.path();
+    let mut found = Vec::new();
+    walk_seen(root, false, &copied, &mut |seen| {
+        found.push((
+            String::from_utf8_lossy(&seen.entry.path).into_owned(),
+            (seen.ino, seen.dev, seen.nlink, seen.ctime),
+        ));
+        Ok(true)
+    })?;
+    let of = |name: &str| found.iter().find(|(path, _)| path == name).map(|f| f.1);
+    let meta = fs::symlink_metadata(root.join("sandboxes/sb/repo/a"))?;
+    let expected = (meta.ino(), meta.dev(), 2, (meta.ctime(), meta.ctime_nsec()));
+    assert_eq!(of("data/sandboxes/sb/repo/a"), Some(expected));
+    // The link is the same inode.
+    assert_eq!(of("data/sandboxes/sb/repo/b"), Some(expected));
+    let link = fs::symlink_metadata(root.join("sandboxes/sb/out"))?;
+    assert_eq!(
+        of("data/sandboxes/sb/out").map(|f| f.0),
+        Some(link.ino()),
+        "a link's own inode, not its target's"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_live_walk_leaves_out_what_is_gone_and_an_exact_one_fails() -> TestResult {
+    let dir = tree()?;
+    let root = dir.path().to_path_buf();
+    fs::create_dir_all(root.join("sandboxes/sb/tmp/deep"))?;
+    fs::write(root.join("sandboxes/sb/tmp/deep/f"), b"x")?;
+    fs::write(root.join("sandboxes/sb/zz"), b"z")?;
+    let run = |live: bool| {
+        let mut paths = Vec::new();
+        let walked = walk_seen(&root, live, &copied, &mut |seen| {
+            let path = String::from_utf8_lossy(&seen.entry.path).into_owned();
+            // Removed while the walk is in the directory before them.
+            if path == "data/sandboxes/sb/repo" {
+                let _ = fs::remove_dir_all(root.join("sandboxes/sb/tmp/deep"));
+                let _ = fs::remove_file(root.join("sandboxes/sb/zz"));
+            }
+            // A directory that goes away once it was seen: nothing below it is walked.
+            if path == "data/sandboxes/sb/tmp" {
+                let _ = fs::remove_dir_all(root.join("sandboxes/sb/tmp"));
+            }
+            paths.push(path);
+            Ok(true)
+        });
+        (walked, paths)
+    };
+    let (walked, paths) = run(true);
+    let skipped = walked?;
+    assert!(
+        paths.contains(&"data/sandboxes/sb/tmp".to_owned()),
+        "{paths:?}"
+    );
+    assert!(
+        !paths
+            .iter()
+            .any(|p| p.contains("deep") || p.ends_with("/zz"))
+    );
+    assert_eq!(skipped.vanished, 2, "{paths:?}");
+    assert!(paths.contains(&"data/yulius.db".to_owned()));
+
+    fs::create_dir_all(root.join("sandboxes/sb/tmp/deep"))?;
+    fs::write(root.join("sandboxes/sb/zz"), b"z")?;
+    let (walked, _) = run(false);
+    assert!(walked.is_err());
+    Ok(())
+}
+
+#[test]
+fn a_first_path_that_is_not_there_after_all_is_no_link_s_target() -> TestResult {
+    let dir = tree()?;
+    let mut kinds = Vec::new();
+    walk_seen(dir.path(), true, &copied, &mut |seen| {
+        let path = String::from_utf8_lossy(&seen.entry.path).into_owned();
+        let there = path != "data/sandboxes/sb/repo/a";
+        if there {
+            kinds.push((path, seen.entry.kind.clone()));
+        }
+        Ok(there)
+    })?;
+    // `b` is the file now, not a link to a path that was never sent.
+    let b = kinds
+        .iter()
+        .find(|(path, _)| path == "data/sandboxes/sb/repo/b")
+        .map(|(_, kind)| kind.clone());
+    assert_eq!(b, Some(Kind::File { size: 4 }));
+    Ok(())
+}
+
+#[test]
+fn an_open_file_s_attributes_are_its_path_s() -> TestResult {
+    let dir = tree()?;
+    let path = dir.path().join("master.key");
+    let set = rustix::fs::setxattr(
+        &path,
+        "user.note",
+        b"hello",
+        rustix::fs::XattrFlags::empty(),
+    );
+    if set.is_err() {
+        // A filesystem without user attributes: both read none.
+        assert!(xattrs(&path)?.is_empty());
+    }
+    assert_eq!(xattrs_of(&fs::File::open(&path)?)?, xattrs(&path)?);
+    Ok(())
+}
+
+#[test]
+fn a_link_that_is_a_file_by_the_time_it_is_read_is_gone() -> TestResult {
+    let dir = tree()?;
+    let root = dir.path();
+    assert_eq!(link_text(&root.join("sandboxes/sb/out"))?, b"/etc/passwd");
+    // A link when the walk looked at it, a file when its text is read.
+    let late = link_text(&root.join("master.key"));
+    assert!(late.as_ref().is_err_and(gone), "{late:?}");
+    // What cannot be opened at all (a socket took a file's place) is gone too.
+    let socket = std::io::Error::from_raw_os_error(rustix::io::Errno::NXIO.raw_os_error());
+    assert!(gone(&socket));
+    assert!(!gone(&std::io::Error::from_raw_os_error(
+        rustix::io::Errno::ACCESS.raw_os_error()
+    )));
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_live_walk_stays_in_the_directories_it_opened() -> TestResult {
+    // A directory that is renamed away under a walk, with a link to somewhere else under its
+    // name: the walk goes on in the directory it opened and never follows the name.
+    let dir = tempfile::tempdir()?;
+    let (root, outside) = (dir.path().join("data"), dir.path().join("outside"));
+    fs::create_dir_all(root.join("sb/dir/sub"))?;
+    fs::write(root.join("sb/dir/a"), b"a")?;
+    fs::write(root.join("sb/dir/sub/inner"), b"inner")?;
+    std::os::unix::fs::symlink("a", root.join("sb/dir/z-link"))?;
+    fs::create_dir_all(outside.join("sub"))?;
+    fs::write(outside.join("sub/planted"), b"planted")?;
+    fs::write(outside.join("planted"), b"planted")?;
+    let mut paths = Vec::new();
+    let skipped = walk_seen(&root, true, &copied, &mut |seen| {
+        let path = String::from_utf8_lossy(&seen.entry.path).into_owned();
+        if path == "data/sb/dir/a" {
+            fs::rename(root.join("sb/dir"), root.join("sb/aside"))?;
+            std::os::unix::fs::symlink(&outside, root.join("sb/dir"))?;
+        }
+        // What the walk shows can be looked at and opened where it is.
+        let meta = fs::symlink_metadata(seen.disk)?;
+        assert_eq!((meta.ino(), meta.dev()), (seen.ino, seen.dev), "{path}");
+        paths.push(path);
+        Ok(true)
+    })?;
+    assert_eq!(
+        paths,
+        [
+            "data",
+            "data/sb",
+            "data/sb/dir",
+            "data/sb/dir/a",
+            "data/sb/dir/sub",
+            "data/sb/dir/sub/inner",
+            "data/sb/dir/z-link",
+        ]
+    );
+    assert_eq!(skipped, Skipped::default());
+    Ok(())
+}
+
 /// SPEC-467 LFT-005: every import writes its own limits mark, so the old host's never travels,
 /// whatever sits at its name. Only at the top: the name means nothing below it.
 #[test]

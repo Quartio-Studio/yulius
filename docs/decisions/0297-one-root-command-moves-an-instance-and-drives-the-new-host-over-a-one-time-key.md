@@ -5,7 +5,9 @@
 Accepted. Specified in
 [SPEC-460](../../.ai/specs/SPEC-460-run-migration-one-command-moves-the-whol.md); task #442
 (continues #439). Builds on [0222](0222-an-instance-export-freezes-the-whole-unit-and-streams-an-exact-size-tar.md)
-(the export's freeze, stream and import) and on `yulius host setup` (SPEC-203).
+(the export's freeze, stream and import) and on `yulius host setup` (SPEC-203). Extended by
+[0303](0303-a-move-copies-warm-and-freezes-only-for-what-its-receipts-do-not-cover.md): the data
+is copied while the old instance runs, and the freeze sends only what changed.
 
 ## Context
 

@@ -13,15 +13,16 @@ use yulius_contracts::update::{HostLine, HostOutcome};
 use super::fake::{FakeHost, NEW_ADDRESS, OLD_HOST, STAGED_BUILD, new_host, old_host};
 use super::github::facts;
 use crate::host_setup::{Host as _, Out};
+use crate::instance::Manifest;
 use crate::instance::archive::{Item, Reader};
-use crate::instance::extract::{Extractor, IdMap};
+use crate::instance::extract::IdMap;
 use crate::instance::freeze;
+use crate::instance::import::{self, Failure, Ground, INCOMPLETE, Mark};
 use crate::instance::inventory::of_copy;
 use crate::instance::migrate::github::{Asked, line as line_of};
 use crate::instance::migrate::remote::Remote;
 use crate::instance::migrate::target::{self, Env, Part, Reply, Request};
-use crate::instance::migrate::{Cutover, Move, Options, State, Status, World, profile};
-use crate::instance::{MANIFEST, Manifest};
+use crate::instance::migrate::{Cutover, Move, Options, State, Status, World, profile, warm};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -234,8 +235,38 @@ struct FakeRemote {
     /// Steps whose answer is lost, once each: done there, unheard here.
     lose: Vec<&'static str>,
     sent: Vec<PathBuf>,
+    /// The data directory, as both hosts name it.
+    data: PathBuf,
+    /// What happens to the old host's data directory after each stream, in order.
+    churn: Vec<fn(&Path)>,
+    /// The next stream is cut to this many bytes on its way.
+    cut: Option<usize>,
+    /// What each stream held: whether it was read live, and its entries' paths.
+    streams: Vec<(bool, Vec<String>)>,
+    /// The link is slow: every write of 64 KiB or more takes this long.
+    slow: Option<Duration>,
     /// What the new instance says of its GitHub App.
     github: Asked,
+}
+
+/// The fake link: what is written arrives, a large write after a while when it is slow.
+struct Link<'a> {
+    out: &'a mut Vec<u8>,
+    slow: Option<Duration>,
+}
+
+impl Write for Link<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if let Some(slow) = self.slow.filter(|_| bytes.len() >= 64 << 10) {
+            // Not a wait for anything: the time is what the test is about.
+            std::thread::sleep(slow);
+        }
+        self.out.write(bytes)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 /// What `ssh` says of a host that cannot be reached, as the real connection reports it.
@@ -384,6 +415,18 @@ impl Remote for FakeRemote {
             let report = setup.data_dir.join(target::MOVED).display().to_string();
             host.file(&report, r#"{"queued":2,"left":1,"failed":0}"#);
         }
+        // What the step removed on the new host's disk is gone from the copy's directory.
+        let marker = self.data.join(INCOMPLETE);
+        if matches!(request, Request::DataDir { .. })
+            && reply
+                .lines
+                .iter()
+                .any(|l| l.detail.starts_with("removed an unfinished copy"))
+        {
+            let _ = fs::remove_dir_all(&self.copy_dir);
+        } else if !self.host.is_file(&marker) {
+            let _ = fs::remove_file(self.copy_dir.join(INCOMPLETE));
+        }
         if lost.is_some() {
             return Err("ssh: the connection was reset".into());
         }
@@ -400,36 +443,54 @@ impl Remote for FakeRemote {
         _: bool,
         write: &mut dyn FnMut(&mut dyn Write) -> io::Result<()>,
     ) -> Result<Reply, String> {
-        note(&self.events, "new: copy");
         let mut bytes = Vec::new();
-        write(&mut bytes).map_err(|e| e.to_string())?;
-        let installed = install(&bytes, &self.copy_dir).map_err(|e| e.to_string());
+        let wrote = write(&mut Link {
+            out: &mut bytes,
+            slow: self.slow,
+        });
+        if let Some(cut) = self.cut.take() {
+            bytes.truncate(cut);
+        }
+        let (live, paths) = listed(&bytes);
+        note(
+            &self.events,
+            if live {
+                "new: copy warm"
+            } else {
+                "new: copy frozen"
+            },
+        );
+        self.streams.push((live, paths));
+        // The new host takes in what arrived, also of a stream that broke on the old host.
+        let landed = land(&bytes, &self.copy_dir);
         if let Some(tamper) = self.tamper {
             tamper(&self.copy_dir);
         }
-        // What the import leaves on the new host's disk.
-        let data = self.host.text(target::EXPECT_FILE).and_then(|text| {
-            let expect: target::Expect = serde_json::from_str(text).ok()?;
-            Some(expect.data_dir.display().to_string())
-        });
-        if let Some(data) = data {
-            self.host.file(&format!("{data}/yulius.db"), "the copy");
-            // Installed is not proven: the copy stays unfinished until it is marked.
-            self.host
-                .file(&format!("{data}/.yulius-import-incomplete"), "");
+        // What the import leaves on the new host's disk: the copy, marked as a staged one.
+        let data = self.data.display().to_string();
+        self.host.file(&format!("{data}/yulius.db"), "the copy");
+        if let Ok(marker) = fs::read_to_string(self.copy_dir.join(INCOMPLETE)) {
+            self.host.file(&format!("{data}/{INCOMPLETE}"), &marker);
         }
-        let (outcome, detail) = match installed {
-            Ok(entries) => (HostOutcome::Changed, format!("installed {entries} entries")),
-            Err(why) => (HostOutcome::Failed, why),
+        if !self.churn.is_empty() {
+            self.churn.remove(0)(&self.data);
+        }
+        wrote.map_err(|e| format!("the copy's stream failed: {e}"))?;
+        let mut reply = Reply::default();
+        let (outcome, detail) = match landed {
+            Ok(landing) => {
+                let detail = target::landed(&landing);
+                reply.stage = Some(landing.mark);
+                (HostOutcome::Changed, detail)
+            }
+            Err(Failure::Refused(why) | Failure::Failed(why)) => (HostOutcome::Failed, why),
         };
-        Ok(Reply {
-            lines: vec![HostLine {
-                name: "copy".into(),
-                outcome,
-                detail,
-            }],
-            ..Reply::default()
-        })
+        reply.lines = vec![HostLine {
+            name: "copy".into(),
+            outcome,
+            detail,
+        }];
+        Ok(reply)
     }
 
     fn measure(&mut self, _: u64) -> Result<Duration, String> {
@@ -462,30 +523,39 @@ fn same_ids(m: &Manifest) -> IdMap {
     }
 }
 
-/// Installs an archive into `dir` as the import does, without its checks of the host.
-fn install(bytes: &[u8], dir: &Path) -> io::Result<u64> {
+/// Takes a pass into the staged copy at `dir` as the new host does, without its checks of the
+/// host (the copy's directory is not where the stream was read).
+fn land(bytes: &[u8], dir: &Path) -> Result<import::Landing, Failure> {
     let mut r = Reader::new(bytes);
-    let Item::Entry(first) = r.next_item()? else {
-        return Err(io::Error::other("no manifest"));
-    };
-    assert_eq!(first.path, MANIFEST);
-    let mut json = Vec::new();
-    io::Read::read_to_end(&mut r.data_reader(), &mut json)?;
-    let m: Manifest = serde_json::from_slice(&json).map_err(io::Error::other)?;
-    fs::create_dir_all(dir)?;
-    let mut ex = Extractor::new(dir, same_ids(&m), false)?;
-    while let Item::Entry(e) = r.next_item()? {
-        ex.put(&e, &mut r.data_reader())?;
+    let m = import::manifest(&mut r).map_err(Failure::Refused)?;
+    import::take_in(
+        r,
+        &m,
+        dir,
+        &m.service.user,
+        same_ids(&m),
+        &mut Ground {
+            chown: false,
+            sync: &mut |_| Ok(()),
+            tick: &mut |_, _| {},
+        },
+    )
+}
+
+/// Whether a stream was read live, and the paths of its `data` entries.
+fn listed(bytes: &[u8]) -> (bool, Vec<String>) {
+    let mut r = Reader::new(bytes);
+    let live = import::manifest(&mut r)
+        .ok()
+        .and_then(|m| m.pass)
+        .is_some_and(|pass| pass.live);
+    let mut paths = Vec::new();
+    while let Ok(Item::Entry(e)) = r.next_item() {
+        if e.path.starts_with(b"data") {
+            paths.push(String::from_utf8_lossy(&e.path).into_owned());
+        }
     }
-    let entries = ex.finish()?.entries;
-    // The import's own limits mark (SPEC-459 HSL-005), whatever the copy brought at its name.
-    let mark = dir.join(yulius_app::limits::ADAPT_MARK);
-    match fs::remove_file(&mark) {
-        Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
-        _ => {}
-    }
-    fs::write(&mark, b"")?;
-    Ok(entries)
+    (live, paths)
 }
 
 struct FakeWorld {
@@ -499,6 +569,24 @@ struct FakeWorld {
     lost_at: Option<&'static str>,
     /// This build names no commit.
     no_commit: bool,
+    /// How far ahead of the real clock a pass begins: far enough, and every entry a test just
+    /// wrote is old enough to earn its receipt.
+    ahead: i64,
+    /// The data directory's filesystem cannot be synced.
+    no_sync: bool,
+    /// Syncs asked for.
+    syncs: u32,
+    /// Entries a second that a sample walk of the data directory measured.
+    walk_rate: Option<f64>,
+    /// The old instance is updated to this build after the plan looked at it.
+    updated_to: Option<&'static str>,
+    /// Looks at the old instance's build.
+    looks: u32,
+    /// The boot and the clock the receipts are believed by.
+    era: crate::instance::receipts::Era,
+    /// The clock is an hour behind once this event has happened so many times (`sync`: the
+    /// data directory's filesystem was synced).
+    set_back_at: Option<(&'static str, usize)>,
     /// What the old instance says of its GitHub App for a new URL, and the URLs it was asked.
     github: Asked,
     asked: Vec<String>,
@@ -542,6 +630,54 @@ impl World for FakeWorld {
     }
 
     fn sleep(&mut self, _: Duration) {}
+
+    fn now(&mut self) -> (i64, i64) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        (
+            i64::try_from(now.as_secs()).unwrap_or(0) + self.ahead,
+            i64::from(now.subsec_nanos()),
+        )
+    }
+
+    fn sync(&mut self, _: &Path) -> Result<(), String> {
+        self.syncs += 1;
+        if self.no_sync {
+            Err("Input/output error (os error 5)".into())
+        } else {
+            Ok(())
+        }
+    }
+
+    fn era(&mut self) -> crate::instance::receipts::Era {
+        let mut era = self.era.clone();
+        if let Some((event, times)) = self.set_back_at {
+            let seen = if event == "sync" {
+                self.syncs as usize
+            } else {
+                self.events.lock().map_or(0, |events| {
+                    events.iter().filter(|seen| *seen == event).count()
+                })
+            };
+            if seen >= times {
+                era.ahead = era.ahead.map(|ahead| ahead - 3_600_000);
+            }
+        }
+        era
+    }
+
+    fn walk_rate(&mut self, _: &Path) -> Option<f64> {
+        self.walk_rate
+    }
+
+    fn running(&mut self, _: &str) -> Option<String> {
+        self.looks += 1;
+        match self.updated_to {
+            Some(newer) if self.looks > 1 => Some(newer.to_owned()),
+            _ => Some(build()),
+        }
+    }
 
     fn exe(&self) -> PathBuf {
         PathBuf::from("/usr/local/bin/yulius")
@@ -673,10 +809,11 @@ fn setup() -> Result<Setup, Box<dyn std::error::Error>> {
             public_url: None,
             data_disks: Vec::new(),
             yes: true,
-            data_dir,
+            data_dir: data_dir.clone(),
             service: "yulius.service".into(),
             update_service: "yulius-update.service".into(),
             state_dir,
+            max_downtime: None,
         },
         local,
         remote: FakeRemote {
@@ -699,6 +836,11 @@ fn setup() -> Result<Setup, Box<dyn std::error::Error>> {
             refuse: Vec::new(),
             lose: Vec::new(),
             sent: Vec::new(),
+            data: data_dir,
+            churn: Vec::new(),
+            cut: None,
+            streams: Vec::new(),
+            slow: None,
             github: Ok(Some(facts("missing", NEW_URL))),
         },
         world: FakeWorld {
@@ -710,6 +852,17 @@ fn setup() -> Result<Setup, Box<dyn std::error::Error>> {
             shown: Vec::new(),
             lost_at: None,
             no_commit: false,
+            ahead: 3600,
+            no_sync: false,
+            syncs: 0,
+            walk_rate: Some(100_000.0),
+            updated_to: None,
+            looks: 0,
+            era: crate::instance::receipts::Era {
+                boot: "boot".into(),
+                ahead: Some(0),
+            },
+            set_back_at: None,
             github: Ok(Some(facts("missing", NEW_URL))),
             asked: Vec::new(),
         },
@@ -903,9 +1056,10 @@ fn a_move_runs_from_the_plan_to_the_finish() -> TestResult {
             .position(|e| e == what)
             .ok_or(format!("no {what}: {events:?}"))
     };
-    assert!(at("new: before_start")? < at("old: systemctl freeze")?);
-    assert!(at("old: systemctl freeze")? < at("new: copy")?);
-    assert!(at("new: copy")? < at("new: inventory")?);
+    assert!(at("new: before_start")? < at("new: copy warm")?);
+    assert!(at("new: copy warm")? < at("old: systemctl freeze")?);
+    assert!(at("old: systemctl freeze")? < at("new: copy frozen")?);
+    assert!(at("new: copy frozen")? < at("new: inventory")?);
     assert!(at("new: inventory")? < at("old: no signal thaws from here")?);
     assert!(at("old: no signal thaws from here")? < at("new: mark")?);
     assert!(at("new: mark")? < at("new: start")?);
@@ -1014,7 +1168,7 @@ fn a_failure_while_preparing_leaves_the_old_instance_running_and_a_rerun_complet
     assert!(
         !s.events()
             .iter()
-            .any(|e| e == "new: copy" || e == "old: systemctl freeze")
+            .any(|e| e.starts_with("new: copy") || e == "old: systemctl freeze")
     );
 
     // Fixed: the same command goes on, and what was done is found done.
@@ -1063,11 +1217,28 @@ fn a_copy_that_differs_thaws_the_old_instance_and_starts_nothing() -> TestResult
         Some(true)
     );
 
-    // The copy that was not proven stays marked unfinished: the same command removes it,
-    // copies again and completes.
+    // A copy that is not the old host's data is not built on: the receipts are dropped with
+    // it, the same command removes it, copies everything again and completes.
+    assert!(
+        s.shown()
+            .contains("is dropped: the next run copies everything again"),
+        "{}",
+        s.shown()
+    );
+    assert!(!s.opts.state_dir.join("copy").exists());
     s.remote.tamper = None;
+    s.remote.streams.clear();
     assert_eq!(s.run()?, 0, "{}", s.shown());
     assert!(s.remote.host.ran("rm -rf --one-file-system -- "));
+    assert!(
+        s.remote.streams[0]
+            .1
+            .contains(&"data/sysroots/sb/upper/tool".to_owned())
+    );
+    assert_eq!(
+        fs::read(s.remote.copy_dir.join("sysroots/sb/upper/tool"))?.len(),
+        1500
+    );
     assert_eq!(s.old_unit(), (true, true));
     Ok(())
 }
@@ -1554,11 +1725,7 @@ fn a_failed_look_right_after_the_freeze_thaws_the_sessions_unit_too() -> TestRes
     assert!(at("old: no signal thaws from here")? < at("old: systemctl thaw sessions")?);
     assert!(at("old: systemctl thaw sessions")? < at("old: systemctl thaw")?);
     assert_eq!(units(&s)?, (false, Some(false)));
-    assert!(
-        !events
-            .iter()
-            .any(|e| e == "new: copy" || e == "new: expect")
-    );
+    assert!(!events.iter().any(|e| e == "new: copy frozen"));
 
     // Its sessions unit alone thawed from outside at that moment, and the server's unit alone.
     for change in [(|unit| unit.sessions = Some(false)) as Outside, |unit| {
@@ -1575,11 +1742,7 @@ fn a_failed_look_right_after_the_freeze_thaws_the_sessions_unit_too() -> TestRes
         // Nothing of it is left frozen behind that line.
         assert!(shown.contains("thawed: it runs as before"), "{shown}");
         assert_eq!(units(&s)?, (false, Some(false)), "{:?}", s.events());
-        assert!(
-            !s.events()
-                .iter()
-                .any(|e| e == "new: copy" || e == "new: expect")
-        );
+        assert!(!s.events().iter().any(|e| e == "new: copy frozen"));
     }
 
     // The server's unit stopped at that moment (systemd thaws what it stops), or died and is
@@ -1873,11 +2036,15 @@ fn what_cannot_be_moved_from_here_is_refused() -> TestResult {
     let status = s.status()?;
     assert_eq!(outcome(&status, "new host"), Some(HostOutcome::Failed));
     assert_eq!(outcome(&status, "ports"), Some(HostOutcome::Failed));
-    assert!(
-        s.events()
-            .iter()
-            .all(|e| e == "new: build copied" || e == "new: facts" || e == "new: packages")
-    );
+    assert!(s.events().iter().all(|e| {
+        [
+            "new: build copied",
+            "new: facts",
+            "new: stage",
+            "new: packages",
+        ]
+        .contains(&e.as_str())
+    }));
     // Another move is recorded.
     let s = setup()?;
     s.state()?;
@@ -2011,7 +2178,8 @@ fn a_run_that_ended_while_the_new_instance_started_goes_on_from_its_state() -> T
     assert!(
         !events.iter().any(|e| {
             [
-                "new: copy",
+                "new: copy warm",
+                "new: copy frozen",
                 "new: packages",
                 "new: sources",
                 "old: systemctl freeze",
@@ -2069,7 +2237,7 @@ fn a_new_host_that_is_not_ready_is_found_before_anything_freezes() -> TestResult
     assert!(
         !s.events()
             .iter()
-            .any(|e| e.starts_with("old: systemctl") || e == "new: copy")
+            .any(|e| e.starts_with("old: systemctl") || e.starts_with("new: copy"))
     );
     Ok(())
 }
@@ -2189,16 +2357,26 @@ fn a_finish_that_did_not_reach_the_new_host_is_tried_again() -> TestResult {
 }
 
 #[test]
-fn a_run_that_ended_before_the_proof_copies_again() -> TestResult {
-    // The copy was installed; the old host never heard its count (a killed run, a cut link).
+fn a_run_that_ended_before_the_proof_goes_on_from_the_staged_copy() -> TestResult {
+    // The frozen pass was installed; the old host never heard the copy's count (a cut link).
     let mut s = setup()?;
     s.remote.refuse = vec!["inventory"];
     assert_eq!(s.run()?, 1);
     assert_eq!(s.old_unit(), (false, false));
     assert!(!s.events().contains(&"new: start".to_owned()));
-    // What is there is an unfinished copy, not an instance: the same command removes it.
+    // Not counted is not disproven: the staged copy stays, and the same command sends only
+    // what the frozen pass sent (it earned no receipt) before it proves and starts.
+    s.remote.streams.clear();
     assert_eq!(s.run()?, 0, "{}", s.shown());
-    assert!(s.remote.host.ran("rm -rf --one-file-system -- "));
+    assert!(!s.remote.host.ran("rm -rf --one-file-system -- "));
+    assert!(
+        s.remote
+            .streams
+            .iter()
+            .all(|(_, paths)| !paths.contains(&"data/yulius.db".to_owned())),
+        "{:?}",
+        s.remote.streams
+    );
     assert_eq!(s.old_unit(), (true, true));
     Ok(())
 }
@@ -2292,7 +2470,7 @@ fn an_old_unit_not_known_to_be_frozen_starts_nothing() -> TestResult {
 }
 
 #[test]
-fn a_unit_that_stopped_since_the_plan_is_found_before_the_copy() -> TestResult {
+fn a_unit_that_stopped_since_the_plan_is_found_before_anything_is_copied_frozen() -> TestResult {
     let mut s = setup()?;
     // The last step before the cutover: the unit is stopped meanwhile.
     s.remote.meanwhile = Some((
@@ -2306,10 +2484,12 @@ fn a_unit_that_stopped_since_the_plan_is_found_before_the_copy() -> TestResult {
         "{}",
         s.shown()
     );
+    // The copy went on warm meanwhile, which harms nothing; nothing is copied frozen and
+    // nothing is thawed.
     assert!(
         !s.events()
             .iter()
-            .any(|e| e == "new: copy" || e == "new: expect" || e == "old: systemctl thaw")
+            .any(|e| e == "new: copy frozen" || e == "old: systemctl thaw")
     );
     Ok(())
 }
@@ -2334,7 +2514,8 @@ fn a_look_that_fails_right_after_the_freeze_thaws_and_says_what_is_known() -> Te
         "{shown}"
     );
     assert!(!shown.contains("is not running any more"), "{shown}");
-    // Thawed once the move took the freeze's end, and still enabled; nothing was copied.
+    // Thawed once the move took the freeze's end, and still enabled; nothing was copied
+    // frozen.
     assert_eq!(s.old_unit(), (false, false), "{shown}");
     // What the freeze covered is thawed as the freeze knew it, without another question to a
     // systemd that does not answer: no thaw of a sessions unit this host does not have, and
@@ -2354,9 +2535,7 @@ fn a_look_that_fails_right_after_the_freeze_thaws_and_says_what_is_known() -> Te
     assert!(at("old: systemctl freeze")? < at("old: no signal thaws from here")?);
     assert!(at("old: no signal thaws from here")? < at("old: systemctl thaw")?);
     assert!(
-        !events
-            .iter()
-            .any(|e| e == "new: copy" || e == "new: expect"),
+        !events.iter().any(|e| e == "new: copy frozen"),
         "{events:?}"
     );
     let state = State::load(&s.opts.state_dir).ok_or("no state")?;
@@ -2385,11 +2564,7 @@ fn a_look_that_fails_right_after_the_freeze_thaws_and_says_what_is_known() -> Te
         "{shown}"
     );
     assert_eq!(s.old_unit(), (false, false));
-    assert!(
-        !s.events()
-            .iter()
-            .any(|e| e == "new: copy" || e == "new: expect")
-    );
+    assert!(!s.events().iter().any(|e| e == "new: copy frozen"));
 
     // Stopped from outside at that moment (systemd thaws what it stops): nothing is frozen, so
     // nothing is thawed, and the line says what to do.
@@ -2977,6 +3152,769 @@ fn an_abort_that_stopped_the_new_instance_is_no_longer_a_finished_move() -> Test
     Ok(())
 }
 
+// The warm copy (SPEC-465).
+
+/// What a pass must follow: a rewrite in place, a deletion, a file that becomes a directory
+/// and a directory that becomes a file, a broken hard link, new files.
+fn churn(root: &Path) {
+    let home = root.join("sandboxes/sb/home");
+    let _ = fs::write(root.join("master.key"), b"KEY");
+    let _ = fs::remove_dir_all(root.join("sysroots/sb"));
+    let _ = fs::remove_file(home.join("link"));
+    let _ = fs::create_dir(home.join("link"));
+    let _ = fs::write(home.join("link/inside"), b"in");
+    let _ = fs::remove_file(home.join("notes-again"));
+    let _ = fs::write(home.join("notes-again"), b"own\n");
+    let _ = fs::write(home.join("fresh"), b"fresh");
+    let _ = fs::hard_link(home.join("fresh"), root.join("fresh-link"));
+    let _ = fs::remove_dir_all(root.join("sandboxes/sb/work"));
+    let _ = fs::write(root.join("sandboxes/sb/work"), b"a file now");
+}
+
+/// What changes in the last moment before the freeze.
+fn last_changes(root: &Path) {
+    let _ = fs::write(root.join("sandboxes/sb/home/fresh"), b"FRESH");
+    let _ = fs::remove_file(root.join("sandboxes/sb/home/notes"));
+}
+
+/// Every file below `root` with its content, links as their text.
+fn content(root: &Path) -> io::Result<Vec<(PathBuf, Vec<u8>)>> {
+    let mut found = Vec::new();
+    let mut dirs = vec![root.to_path_buf()];
+    while let Some(dir) = dirs.pop() {
+        for entry in fs::read_dir(&dir)? {
+            let path = entry?.path();
+            let name = path.strip_prefix(root).unwrap_or(&path).to_path_buf();
+            // The new host's own marks are not the copy.
+            if name.to_string_lossy().starts_with(".yulius") {
+                continue;
+            }
+            let meta = fs::symlink_metadata(&path)?;
+            if meta.is_dir() {
+                found.push((name, b"<dir>".to_vec()));
+                dirs.push(path);
+            } else if meta.is_symlink() {
+                let target = fs::read_link(&path)?;
+                found.push((name, target.to_string_lossy().as_bytes().to_vec()));
+            } else {
+                found.push((name, fs::read(&path)?));
+            }
+        }
+    }
+    found.sort();
+    Ok(found)
+}
+
+#[test]
+fn the_copy_runs_warm_and_the_freeze_sends_only_the_last_changes() -> TestResult {
+    let mut s = setup()?;
+    fs::create_dir_all(s.opts.data_dir.join("sandboxes/sb/work"))?;
+    fs::write(s.opts.data_dir.join("sandboxes/sb/work/below"), b"b")?;
+    // After the first pass the instance has been busy; after the second, a little more.
+    s.remote.churn = vec![churn, last_changes];
+    assert_eq!(s.run()?, 0, "{}", s.shown());
+    let status = s.status()?;
+    assert_eq!(status.phase, "done");
+
+    // Two passes while the instance ran, one frozen.
+    let streams = &s.remote.streams;
+    assert_eq!(
+        streams.iter().map(|(live, _)| *live).collect::<Vec<_>>(),
+        [true, true, false]
+    );
+    assert_eq!(streams[0].1.len(), 15, "{:?}", streams[0].1);
+    // The second holds what changed and nothing that did not.
+    let second = &streams[1].1;
+    for path in [
+        "data/master.key",
+        "data/sandboxes/sb/home/link",
+        "data/sandboxes/sb/home/link/inside",
+        "data/sandboxes/sb/home/notes-again",
+        "data/fresh-link",
+        "data/sandboxes/sb/work",
+    ] {
+        assert!(second.contains(&path.to_owned()), "{path}: {second:?}");
+    }
+    assert!(!second.contains(&"data/yulius.db".to_owned()), "{second:?}");
+    // The frozen one: the last changes, and what waited for it (a directory that became a
+    // file). Not the database, not the key.
+    let frozen = &streams[2].1;
+    assert!(frozen.contains(&"data/fresh-link".to_owned()), "{frozen:?}");
+    assert!(
+        frozen.contains(&"data/sandboxes/sb/work".to_owned()),
+        "{frozen:?}"
+    );
+    assert!(
+        !frozen.contains(&"data/yulius.db".to_owned())
+            && !frozen.contains(&"data/master.key".to_owned()),
+        "{frozen:?}"
+    );
+
+    // The new host holds the old host's tree: content, deletions, links.
+    assert_eq!(content(&s.remote.copy_dir)?, content(&s.opts.data_dir)?);
+    assert!(!s.remote.copy_dir.join("sysroots/sb").exists());
+    assert_eq!(
+        fs::read(s.remote.copy_dir.join("sandboxes/sb/work"))?,
+        b"a file now"
+    );
+    use std::os::unix::fs::MetadataExt as _;
+    assert_eq!(
+        fs::metadata(s.remote.copy_dir.join("fresh-link"))?.nlink(),
+        2
+    );
+    assert_eq!(outcome(&status, "copy proven"), Some(HostOutcome::Ok));
+
+    // In this order: the base before the first pass, the estimate before the freeze, the
+    // freeze before the last pass, the proof before the mark and the start.
+    let events = s.events();
+    let at = |what: &str| {
+        events
+            .iter()
+            .position(|e| e == what)
+            .ok_or(format!("no {what}: {events:?}"))
+    };
+    assert!(at("new: before_start")? < at("new: copy warm")?);
+    assert!(at("new: copy warm")? < at("old: systemctl freeze")?);
+    assert!(at("old: systemctl freeze")? < at("new: copy frozen")?);
+    assert!(at("new: copy frozen")? < at("new: inventory")?);
+    assert!(at("new: inventory")? < at("new: mark")?);
+    assert!(at("new: mark")? < at("new: start")?);
+    let shown = s.shown();
+    let said = |what: &str| shown.find(what).ok_or(format!("no {what:?} in {shown}"));
+    assert!(said("\nCopy\n")? < said("ok       downtime               about ")?);
+    assert!(said("ok       downtime               about ")? < said("\nCutover\n")?);
+    let downtime = line(&status, "downtime").ok_or("no downtime line")?;
+    assert!(
+        downtime
+            .detail
+            .starts_with("about 30 s frozen: the entries are counted four times"),
+        "{}",
+        downtime.detail
+    );
+    // Each pass began with a sync of the data directory's filesystem; the frozen one needs
+    // none.
+    assert_eq!(s.world.syncs, 2);
+    // Nothing is kept of the staged copy once the new instance runs.
+    assert!(!s.opts.state_dir.join("copy").exists());
+    assert!(!s.remote.copy_dir.join(INCOMPLETE).exists());
+    Ok(())
+}
+
+#[test]
+fn a_freeze_above_the_bound_is_never_begun() -> TestResult {
+    let mut s = setup()?;
+    // The start alone is allowed half a minute in the estimate: no bound below that is met.
+    s.opts.max_downtime = Some(0);
+    assert_eq!(s.run()?, 1);
+    let status = s.status()?;
+    assert_eq!(status.phase, "Copy");
+    let downtime = line(&status, "downtime").ok_or("no downtime line")?;
+    assert_eq!(downtime.outcome, HostOutcome::Failed);
+    assert!(
+        downtime
+            .detail
+            .contains("above --max-downtime 0 after 5 passes")
+            && downtime.detail.contains("Nothing was frozen"),
+        "{}",
+        downtime.detail
+    );
+    // It copied again instead of freezing: a full pass and five that sent only changes.
+    assert_eq!(s.remote.streams.len(), 1 + warm::MAX_DELTA_PASSES as usize);
+    assert!(s.remote.streams.iter().all(|(live, _)| *live));
+    assert_eq!(
+        s.shown().matches("so the move copies again").count(),
+        warm::MAX_DELTA_PASSES as usize - 1,
+        "{}",
+        s.shown()
+    );
+    assert_eq!(s.old_unit(), (false, false));
+    assert!(!s.events().iter().any(|e| e.starts_with("old: systemctl")));
+    // The plan said so before anything was copied.
+    let plan = status
+        .lines
+        .iter()
+        .find(|l| l.name == "downtime")
+        .ok_or("no plan line")?;
+    assert!(
+        plan.detail
+            .contains("with --max-downtime 0 it begins only when that is at most 0 min"),
+        "{}",
+        plan.detail
+    );
+
+    // The staged copy stays: with a bound that can be met, the same command sends only what
+    // changed and moves.
+    assert!(Mark::read(&s.remote.copy_dir).is_some());
+    s.opts.max_downtime = Some(10);
+    s.remote.streams.clear();
+    assert_eq!(s.run()?, 0, "{}", s.shown());
+    assert_eq!(
+        s.remote
+            .streams
+            .iter()
+            .map(|(live, paths)| (*live, paths.len()))
+            .collect::<Vec<_>>(),
+        [(true, 0), (false, 0)]
+    );
+    assert!(
+        s.shown()
+            .contains("the new host holds a staged copy (13 entries acknowledged)"),
+        "{}",
+        s.shown()
+    );
+    assert_eq!(s.old_unit(), (true, true));
+    Ok(())
+}
+
+#[test]
+fn a_pass_that_was_cut_is_continued_by_the_same_command() -> TestResult {
+    let mut s = setup()?;
+    // The link breaks inside the third entry's header.
+    s.remote.cut = Some(10_500);
+    assert_eq!(s.run()?, 1);
+    let status = s.status()?;
+    assert_eq!(status.phase, "Copy");
+    let copy = line(&status, "copy").ok_or("no copy line")?;
+    assert_eq!(copy.outcome, HostOutcome::Failed);
+    assert!(
+        copy.detail
+            .contains("keeps the 2 entries of this pass that arrived"),
+        "{}",
+        copy.detail
+    );
+    assert_eq!(s.old_unit(), (false, false));
+
+    // Again: what was acknowledged is not sent again, the rest is, then the move goes on.
+    s.remote.streams.clear();
+    assert_eq!(s.run()?, 0, "{}", s.shown());
+    let first = &s.remote.streams[0].1;
+    assert!(
+        !first.contains(&"data".to_owned()) && !first.contains(&"data/master.key".to_owned()),
+        "{first:?}"
+    );
+    assert_eq!(first.len(), 11, "{first:?}");
+    // A pass that only caught up is followed by one that finds changes only.
+    assert_eq!(
+        s.remote
+            .streams
+            .iter()
+            .map(|(live, paths)| (*live, paths.len()))
+            .collect::<Vec<_>>(),
+        [(true, 11), (true, 0), (false, 0)]
+    );
+    assert!(!s.remote.host.ran("rm -rf --one-file-system -- "));
+    assert_eq!(content(&s.remote.copy_dir)?, content(&s.opts.data_dir)?);
+    Ok(())
+}
+
+#[test]
+fn a_staged_copy_that_is_gone_or_another_one_makes_the_next_pass_a_full_one() -> TestResult {
+    let bounded = || -> Result<Setup, Box<dyn std::error::Error>> {
+        let mut s = setup()?;
+        s.opts.max_downtime = Some(0);
+        assert_eq!(s.run()?, 1);
+        assert!(Mark::read(&s.remote.copy_dir).is_some());
+        s.opts.max_downtime = None;
+        s.remote.streams.clear();
+        s.world.shown.clear();
+        Ok(s)
+    };
+    // Removed on the new host.
+    let mut s = bounded()?;
+    fs::remove_dir_all(&s.remote.copy_dir)?;
+    let data = s.remote.data.clone();
+    s.remote
+        .host
+        .files
+        .retain(|path, _| !path.starts_with(&data));
+    assert_eq!(s.run()?, 0, "{}", s.shown());
+    assert!(
+        s.shown()
+            .contains("the staged copy this host knew is not on the new host"),
+        "{}",
+        s.shown()
+    );
+    assert_eq!(s.remote.streams[0].1.len(), 13);
+
+    // Another stage there (another host's move, a copy put back): removed, never built on.
+    let mut s = bounded()?;
+    let mut mark = Mark::read(&s.remote.copy_dir).ok_or("no stage")?;
+    mark.stage = "another".into();
+    let text = serde_json::to_string(&mark)?;
+    fs::write(s.remote.copy_dir.join(INCOMPLETE), &text)?;
+    let marker = s.remote.data.join(INCOMPLETE).display().to_string();
+    s.remote.host.file(&marker, &text);
+    assert_eq!(s.run()?, 0, "{}", s.shown());
+    assert!(s.remote.host.ran("rm -rf --one-file-system -- "));
+    assert_eq!(s.remote.streams[0].1.len(), 13);
+
+    // The old host lost its receipts (its state directory was cleared): the same.
+    let mut s = bounded()?;
+    fs::remove_dir_all(s.opts.state_dir.join("copy"))?;
+    assert_eq!(s.run()?, 0, "{}", s.shown());
+    assert!(s.remote.host.ran("rm -rf --one-file-system -- "));
+    assert_eq!(s.remote.streams[0].1.len(), 13);
+    Ok(())
+}
+
+#[test]
+fn entries_too_fresh_for_a_receipt_are_sent_again_and_the_move_still_ends_right() -> TestResult {
+    let mut s = setup()?;
+    // The pass begins before the tree was written: nothing in it is old enough, however long
+    // the test takes.
+    s.world.ahead = -3600;
+    s.remote.churn = vec![churn];
+    assert_eq!(s.run()?, 0, "{}", s.shown());
+    let sent: Vec<usize> = s
+        .remote
+        .streams
+        .iter()
+        .map(|(_, paths)| paths.len())
+        .collect();
+    assert_eq!(sent.len(), 3);
+    // Nothing earned a receipt, so the frozen pass sent the whole tree.
+    assert_eq!(sent[2], 14, "{:?}", s.remote.streams[2].1);
+    assert_eq!(content(&s.remote.copy_dir)?, content(&s.opts.data_dir)?);
+    Ok(())
+}
+
+#[test]
+fn a_data_directory_that_cannot_be_synced_is_not_copied_from() -> TestResult {
+    let mut s = setup()?;
+    s.world.no_sync = true;
+    assert_eq!(s.run()?, 1);
+    let status = s.status()?;
+    let copy = line(&status, "copy").ok_or("no copy line")?;
+    assert!(copy.detail.contains("cannot sync"), "{}", copy.detail);
+    assert!(s.remote.streams.is_empty());
+    assert_eq!(s.old_unit(), (false, false));
+    Ok(())
+}
+
+#[test]
+fn a_rolled_back_move_leaves_no_staged_copy_to_go_on_with() -> TestResult {
+    let mut s = setup()?;
+    s.remote.healthy = false;
+    assert_eq!(s.run()?, 1);
+    // The copy was proven and started: its marker is gone, and so is what this host knew.
+    assert!(!s.remote.copy_dir.join(INCOMPLETE).exists());
+    s.remote.healthy = true;
+    s.remote.streams.clear();
+    assert_eq!(s.run()?, 1);
+    assert!(s.remote.streams.is_empty());
+    assert!(!s.opts.state_dir.join("copy").exists());
+    let status = s.status()?;
+    let refusal = line(&status, "new host").ok_or("no refusal")?;
+    assert!(
+        refusal.detail.contains("holds an instance"),
+        "{}",
+        refusal.detail
+    );
+    Ok(())
+}
+
+#[test]
+fn a_rerun_does_not_ask_again_for_the_room_the_staged_copy_already_takes() -> TestResult {
+    let mut s = setup()?;
+    s.opts.max_downtime = Some(0);
+    assert_eq!(s.run()?, 1);
+    // The staged copy fills most of the new disk: less is free than the data takes.
+    s.remote
+        .host
+        .says(&["stat", "-f", "-c"], "4096 1000 30000000\n");
+    s.opts.max_downtime = None;
+    assert_eq!(s.run()?, 0, "{}", s.shown());
+    let status = s.status()?;
+    let space = line(&status, "disk space").ok_or("no line")?;
+    assert_eq!(space.outcome, HostOutcome::Ok);
+    assert!(
+        space.detail.contains("the staged copy is there already"),
+        "{}",
+        space.detail
+    );
+
+    // Without a staged copy the same disk is too small, as before.
+    let mut s = setup()?;
+    s.remote
+        .host
+        .says(&["stat", "-f", "-c"], "4096 1000 30000000\n");
+    assert_eq!(s.run()?, 1);
+    assert_eq!(
+        outcome(&s.status()?, "disk space"),
+        Some(HostOutcome::Failed)
+    );
+    Ok(())
+}
+
+#[test]
+fn an_abort_before_the_cutover_names_the_staged_copy_left_on_the_new_host() -> TestResult {
+    let mut s = setup()?;
+    s.opts.max_downtime = Some(0);
+    assert_eq!(s.run()?, 1);
+    assert!(s.opts.state_dir.join("copy/stage.json").exists());
+    let looks = |s: &Setup| s.events().iter().filter(|e| *e == "new: stage").count();
+    let before = looks(&s);
+    assert_eq!(s.abort()?, 0, "{}", s.shown());
+    let status = s.status()?;
+    let left = line(&status, "new host").ok_or("no line of the new host")?;
+    assert_eq!(left.outcome, HostOutcome::Manual);
+    assert!(
+        left.detail
+            .contains("still holds master.key and every secret"),
+        "{}",
+        left.detail
+    );
+    // What this host knew of it goes with the move.
+    assert!(!s.opts.state_dir.join("copy").exists());
+    assert_eq!(s.old_unit(), (false, false));
+    // A stream the new host may still be taking in is closed before the flow's files go.
+    let events = s.events();
+    let last = |what: &str| events.iter().rposition(|e| e == what);
+    assert!(last("new: stage").is_some() && last("new: stage") < last("new: finish"));
+    assert_eq!(looks(&s), before + 1);
+    Ok(())
+}
+
+#[test]
+fn an_instance_updated_during_the_copy_is_not_frozen() -> TestResult {
+    let mut s = setup()?;
+    s.world.updated_to = Some("another-build");
+    assert_eq!(s.run()?, 1);
+    let status = s.status()?;
+    let old = line(&status, "old instance").ok_or("no line")?;
+    assert_eq!(old.outcome, HostOutcome::Failed);
+    assert!(
+        old.detail.contains("reports build another-build now")
+            && old.detail.contains("Nothing is frozen"),
+        "{}",
+        old.detail
+    );
+    assert_eq!(s.old_unit(), (false, false));
+    assert!(
+        !s.events()
+            .iter()
+            .any(|e| e.starts_with("old: systemctl") || e == "new: copy frozen")
+    );
+    // The staged copy stays for the run with the new build.
+    assert!(Mark::read(&s.remote.copy_dir).is_some());
+    s.world.updated_to = None;
+    s.world.looks = 0;
+    assert_eq!(s.run()?, 0, "{}", s.shown());
+    Ok(())
+}
+
+#[test]
+fn any_bound_is_a_number_of_minutes() -> TestResult {
+    let mut s = setup()?;
+    s.opts.max_downtime = Some(u64::MAX);
+    assert_eq!(s.run()?, 0, "{}", s.shown());
+    assert_eq!(s.old_unit(), (true, true));
+    Ok(())
+}
+
+#[test]
+fn a_data_directory_that_holds_the_copy_s_marker_is_refused_in_the_plan() -> TestResult {
+    for name in import::MARKERS {
+        let mut s = setup()?;
+        fs::write(s.opts.data_dir.join(name), b"")?;
+        assert_eq!(s.run()?, 1);
+        let status = s.status()?;
+        assert_eq!(status.phase, "Plan", "{name}");
+        let old = line(&status, "old host").ok_or("no line")?;
+        assert_eq!(old.outcome, HostOutcome::Failed);
+        assert!(
+            old.detail.contains(&format!("holds {name}")),
+            "{}",
+            old.detail
+        );
+        assert!(s.remote.streams.is_empty() && s.remote.sent.is_empty());
+        assert_eq!(s.old_unit(), (false, false));
+    }
+    Ok(())
+}
+
+#[test]
+fn a_finished_move_keeps_no_receipts_however_it_got_there() -> TestResult {
+    // A run that ended while the new instance started; this host was restarted since (its
+    // disabled unit does not run) and the new instance runs. What this host knew of the
+    // staged copy is of no use any more.
+    let mut s = killed_while_starting()?;
+    let copy = s.opts.state_dir.join("copy");
+    fs::create_dir_all(&copy)?;
+    fs::write(copy.join("receipts-0"), [0u8; 64])?;
+    if let Ok(mut unit) = s.world.systemd.lock() {
+        unit.frozen = false;
+        unit.stopped = true;
+    }
+    assert_eq!(s.run()?, 0, "{}", s.shown());
+    let state = State::load(&s.opts.state_dir).ok_or("no state")?;
+    assert_eq!((state.cutover, state.finished), (Cutover::Moved, true));
+    assert!(!copy.exists(), "the receipts are still there");
+    Ok(())
+}
+
+#[test]
+fn a_bound_of_a_minute_can_be_met() -> TestResult {
+    // The estimate allows the start half a minute: a quiet instance moves within one minute.
+    let mut s = setup()?;
+    s.opts.max_downtime = Some(1);
+    assert_eq!(s.run()?, 0, "{}", s.shown());
+    assert_eq!(s.old_unit(), (true, true));
+    assert!(
+        !s.shown().contains("so the move copies again"),
+        "{}",
+        s.shown()
+    );
+    Ok(())
+}
+
+#[test]
+fn the_plan_gives_a_first_estimate_of_the_freeze_from_a_sample_of_the_tree() -> TestResult {
+    // 6.4 million inodes are used where the data is; a pass looks at 100,000 entries a second.
+    let mut s = setup()?;
+    s.opts.yes = false;
+    assert_eq!(s.run()?, 0);
+    let status = s.status()?;
+    let downtime = line(&status, "downtime").ok_or("no downtime line")?;
+    assert_eq!(downtime.outcome, HostOutcome::Ok);
+    // Four counts of 64 s and half a minute for the start.
+    assert!(
+        downtime.detail.contains(
+            "then it is frozen for about 5 min: up to 6400000 entries are counted four times \
+             (about 100000 a second here, twice on each host)"
+        ) && downtime
+            .detail
+            .contains("It is measured again before the freeze"),
+        "{}",
+        downtime.detail
+    );
+    assert!(
+        downtime
+            .detail
+            .starts_with("the instance runs during the copy (about "),
+        "{}",
+        downtime.detail
+    );
+
+    // A tree that cannot be sampled: no number, and the estimate still comes before the freeze.
+    let mut s = setup()?;
+    s.opts.yes = false;
+    s.world.walk_rate = None;
+    assert_eq!(s.run()?, 0);
+    let status = s.status()?;
+    let downtime = line(&status, "downtime").ok_or("no downtime line")?;
+    assert!(
+        !downtime.detail.contains("frozen for about")
+            && downtime
+                .detail
+                .contains("The estimate is shown before the freeze"),
+        "{}",
+        downtime.detail
+    );
+    Ok(())
+}
+
+/// A move that copied and did not freeze (its bound cannot be met): the staged copy and its
+/// receipts are there for the next run.
+fn copied_and_not_frozen() -> Result<Setup, Box<dyn std::error::Error>> {
+    let mut s = setup()?;
+    s.opts.max_downtime = Some(0);
+    assert_eq!(s.run()?, 1);
+    assert!(Mark::read(&s.remote.copy_dir).is_some());
+    s.opts.max_downtime = None;
+    s.remote.streams.clear();
+    s.world.shown.clear();
+    Ok(s)
+}
+
+fn passes(s: &Setup) -> Vec<(bool, usize)> {
+    s.remote
+        .streams
+        .iter()
+        .map(|(live, paths)| (*live, paths.len()))
+        .collect()
+}
+
+#[test]
+fn after_a_restart_of_the_old_host_everything_is_sent_into_the_staged_copy_again() -> TestResult {
+    // After a crash a file may hold newer content than the change time its receipt was earned
+    // with: the receipts of the boot before are not believed.
+    let mut s = copied_and_not_frozen()?;
+    s.world.era.boot = "the boot after".into();
+    assert_eq!(s.run()?, 0, "{}", s.shown());
+    assert!(
+        s.shown()
+            .contains("this host was restarted since the last pass")
+            && s.shown()
+                .contains("everything is sent into the staged copy again"),
+        "{}",
+        s.shown()
+    );
+    // Into the staged copy that is there: nothing is removed first.
+    assert!(!s.remote.host.ran("rm -rf --one-file-system -- "));
+    assert_eq!(passes(&s), [(true, 13), (true, 0), (false, 0)]);
+    assert_eq!(content(&s.remote.copy_dir)?, content(&s.opts.data_dir)?);
+    assert_eq!(s.old_unit(), (true, true));
+    Ok(())
+}
+
+#[test]
+fn a_clock_set_back_during_a_pass_makes_the_next_one_send_everything_again() -> TestResult {
+    let mut s = setup()?;
+    // While the first pass is on its way.
+    s.world.set_back_at = Some(("new: copy warm", 1));
+    assert_eq!(s.run()?, 0, "{}", s.shown());
+    assert_eq!(
+        s.shown()
+            .matches("this host's clock was set back since a pass began")
+            .count(),
+        1,
+        "{}",
+        s.shown()
+    );
+    // What the first pass sent earned nothing; the passes after it are a move like any other.
+    assert_eq!(passes(&s), [(true, 13), (true, 13), (true, 0), (false, 0)]);
+    assert_eq!(content(&s.remote.copy_dir)?, content(&s.opts.data_dir)?);
+    Ok(())
+}
+
+#[test]
+fn a_clock_set_back_before_the_freeze_copies_nothing_while_frozen() -> TestResult {
+    let mut s = setup()?;
+    // After the last warm pass was reconciled: the frozen pass would be planned on receipts
+    // that are not believed any more.
+    s.world.set_back_at = Some(("old: systemctl freeze", 1));
+    assert_eq!(s.run()?, 1);
+    let status = s.status()?;
+    let copy = line(&status, "copy").ok_or("no copy line")?;
+    assert_eq!(copy.outcome, HostOutcome::Failed);
+    assert!(
+        copy.detail
+            .contains("clock was set back since the last pass: nothing is copied while frozen"),
+        "{}",
+        copy.detail
+    );
+    assert!(!s.remote.streams.iter().any(|(live, _)| !*live));
+    assert!(s.events().contains(&"old: systemctl thaw".to_owned()));
+    assert_eq!(s.old_unit(), (false, false));
+
+    // The same command again: everything goes into the staged copy once more, warm, and the
+    // move ends as it should.
+    s.remote.streams.clear();
+    assert_eq!(s.run()?, 0, "{}", s.shown());
+    assert_eq!(passes(&s), [(true, 13), (true, 0), (false, 0)]);
+    assert!(!s.remote.host.ran("rm -rf --one-file-system -- "));
+    assert_eq!(content(&s.remote.copy_dir)?, content(&s.opts.data_dir)?);
+    Ok(())
+}
+
+#[test]
+fn an_abort_names_the_copy_on_the_new_host_also_when_this_host_dropped_what_it_knew_of_it()
+-> TestResult {
+    // The proof differed: this host forgot the staged copy, which is on the new host still,
+    // with master.key and every secret, until a next run removes it. There is none.
+    let mut s = setup()?;
+    s.remote.tamper = Some(|copy| {
+        let _ = fs::write(copy.join("sysroots/sb/upper/tool"), vec![1u8; 1499]);
+    });
+    assert_eq!(s.run()?, 1);
+    assert!(!s.opts.state_dir.join("copy").exists());
+    assert!(Mark::read(&s.remote.copy_dir).is_some());
+    let looks = |s: &Setup| s.events().iter().filter(|e| *e == "new: stage").count();
+    let before = looks(&s);
+    assert_eq!(s.abort()?, 0, "{}", s.shown());
+    let status = s.status()?;
+    let left = line(&status, "new host").ok_or("no line of the new host")?;
+    assert_eq!(left.outcome, HostOutcome::Manual);
+    assert!(
+        left.detail
+            .contains("still holds master.key and every secret"),
+        "{}",
+        left.detail
+    );
+    // A stream the new host may still be taking in is closed before the key goes.
+    assert_eq!(looks(&s), before + 1);
+
+    // A move that never copied anything leaves nothing to name.
+    let mut s = setup()?;
+    s.remote.no_base = true;
+    assert_eq!(s.run()?, 1);
+    assert_eq!(s.status()?.phase, "Prepare");
+    assert_eq!(s.abort()?, 0, "{}", s.shown());
+    assert!(line(&s.status()?, "new host").is_none());
+    Ok(())
+}
+
+#[test]
+fn a_clock_set_back_while_a_pass_syncs_is_found_when_the_pass_ends() -> TestResult {
+    // The pass's start is read before the sync. A clock that goes back during the sync makes
+    // what changes after that start look older than it: the lead the pass is measured against
+    // is the one of its start, not one read after the sync.
+    let mut s = setup()?;
+    s.world.set_back_at = Some(("sync", 1));
+    assert_eq!(s.run()?, 0, "{}", s.shown());
+    assert_eq!(
+        s.shown()
+            .matches("this host's clock was set back since a pass began")
+            .count(),
+        1,
+        "{}",
+        s.shown()
+    );
+    assert_eq!(passes(&s), [(true, 13), (true, 13), (true, 0), (false, 0)]);
+    assert_eq!(content(&s.remote.copy_dir)?, content(&s.opts.data_dir)?);
+    Ok(())
+}
+
+#[test]
+fn a_pass_of_changes_that_lost_its_receipts_is_not_followed_by_a_freeze() -> TestResult {
+    // The clock goes back while the first pass of changes is on its way: its receipts and all
+    // before them are dropped when it ends. The move copies again; it does not freeze the
+    // instance for a pass that could not be sent.
+    let mut s = setup()?;
+    s.world.set_back_at = Some(("new: copy warm", 2));
+    assert_eq!(s.run()?, 0, "{}", s.shown());
+    assert_eq!(
+        passes(&s),
+        [(true, 13), (true, 0), (true, 13), (true, 0), (false, 0)]
+    );
+    let events = s.events();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| *e == "old: systemctl freeze")
+            .count(),
+        1
+    );
+    assert!(!events.contains(&"old: systemctl thaw".to_owned()));
+    assert_eq!(content(&s.remote.copy_dir)?, content(&s.opts.data_dir)?);
+    Ok(())
+}
+
+#[test]
+fn a_clock_set_back_during_the_frozen_pass_does_not_announce_another_copy() -> TestResult {
+    // Nothing changes while the instance is frozen, so the move goes on to the proof; what it
+    // drops is only what a later run would have built on.
+    let mut s = setup()?;
+    s.world.set_back_at = Some(("new: copy frozen", 1));
+    assert_eq!(s.run()?, 0, "{}", s.shown());
+    assert!(
+        !s.shown()
+            .contains("everything is sent into the staged copy again"),
+        "{}",
+        s.shown()
+    );
+    assert!(
+        s.shown()
+            .contains("this host's clock was set back during the frozen pass"),
+        "{}",
+        s.shown()
+    );
+    assert_eq!(passes(&s), [(true, 13), (true, 0), (false, 0)]);
+    assert_eq!(s.old_unit(), (true, true));
+    Ok(())
+}
+
 fn github_lines(status: &Status) -> Vec<(HostOutcome, &str)> {
     status
         .lines
@@ -3085,5 +4023,35 @@ fn no_app_or_no_new_url_leaves_nothing_to_register() -> TestResult {
     assert!(github_lines(&s.status()?).is_empty());
     assert!(s.world.asked.is_empty());
     assert!(!s.events().contains(&"new: callback".to_owned()));
+    Ok(())
+}
+
+#[test]
+fn the_estimate_counts_in_full_what_waits_for_the_freeze_behind_a_directory() -> TestResult {
+    // After the first pass a directory becomes a file of half a megabyte. A warm pass removes
+    // no directory, so the new host leaves the file out and every pass sends it again, the
+    // frozen one too: its time is not a change that may not come again.
+    let mut s = setup()?;
+    s.remote.churn = vec![|root| {
+        let _ = fs::remove_dir_all(root.join("sysroots/sb"));
+        let _ = fs::write(root.join("sysroots/sb"), vec![7u8; 512 << 10]);
+    }];
+    // Two writes of the file's content, 0.6 s in all.
+    s.remote.slow = Some(Duration::from_millis(300));
+    assert_eq!(s.run()?, 0, "{}", s.shown());
+    let shown = s.shown();
+    assert!(
+        shown.contains("1 wait for the freeze (a directory is in their way)"),
+        "{shown}"
+    );
+    assert!(
+        shown.contains(
+            "what changes meanwhile takes about 1 s to send (1 s of it for entries that every \
+             pass sends: they change all the time, lie on another filesystem, or wait for the \
+             freeze behind a directory)"
+        ),
+        "{shown}"
+    );
+    assert_eq!(content(&s.remote.copy_dir)?, content(&s.opts.data_dir)?);
     Ok(())
 }
