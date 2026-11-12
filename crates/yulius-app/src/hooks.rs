@@ -268,6 +268,16 @@ impl App {
         if from_box && !held && !blocked {
             let emptied = runtime.submit_emptied_ms.load(Ordering::SeqCst);
             runtime.box_emptied_ms.fetch_max(emptied, Ordering::SeqCst);
+            // With the box empty no person's draft holds a typed message any more (SPEC-480
+            // DRF-007, DRF-009): its mark leaves the run's folder, and a flag that said a
+            // message of Yulius's own waits for it ends, also after a prompt that starts no
+            // turn. A key typed after this submit is a draft of its own, and both stay.
+            if !self.persons_draft_holds(&ctx.task.id) {
+                if runtime.draft_marked.swap(false, Ordering::SeqCst) {
+                    crate::supervisor::clear_person_typed(Path::new(&ctx.attempt.run_dir));
+                }
+                self.settle_draft_flag(&ctx.task.id).await;
+            }
             // It goes on to Claude Code now, which writes where it went (a turn of its own,
             // or its queue) only after this answer: until that record is read, a turn's end
             // cannot tell (SPEC-471 CCQ-004).

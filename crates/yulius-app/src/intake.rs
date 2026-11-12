@@ -279,6 +279,11 @@ impl App {
         )
     }
 
+    /// Whether a person's draft may sit in the task's prompt box now ([`Self::box_held`]).
+    pub(crate) fn persons_draft_holds(&self, task: &TaskId) -> bool {
+        matches!(self.box_held(task), Some(policy::BoxHeld::Draft { .. }))
+    }
+
     /// `POST /api/sandboxes/{sid}/intake/check` (TSK-011, SPEC-188): whether a new task's
     /// prompt mixes separate workstreams, and whether it is broad work to propose as a
     /// supertask. Jev gets both questions at once; a prompt under 40 words is not asked about a

@@ -327,6 +327,25 @@ fn a_persons_draft_keeps_the_message_out() -> TestResult {
 
 const MINUTE: i64 = 60_000;
 
+/// What a task says while a message of Yulius's own waits for its person's draft (SPEC-480
+/// DRF-006).
+fn held_message_flag() -> Value {
+    json!({
+        "kind": "yulius",
+        "problem": "Yulius has a message for this session and does not type it: someone typed \
+                    in the terminal and sent no prompt since, so their text may still be in the \
+                    prompt box.",
+        "action": "Send what you typed in the terminal, or clear it and send any prompt. Yulius \
+                   types its message after the next prompt sent from there.",
+        "link": null,
+    })
+}
+
+/// The one line the session's terminal gets with that flag.
+const HELD_MESSAGE_NOTICE: &str = "Yulius holds a message for this session: text typed here was \
+    not sent and may still be in the prompt box. Send it, or clear it and send any prompt, and \
+    Yulius types its message.";
+
 /// [`app`] on a clock the test moves, which starts `behind_ms` behind the system's.
 async fn app_behind(data: &Path, behind_ms: i64) -> Result<(Arc<App>, Arc<ShiftedClock>), Error> {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
@@ -485,26 +504,10 @@ fn a_message_of_yulius_waits_for_a_persons_draft_and_tells_them() -> TestResult 
         }
         assert_eq!(
             support::attention(&app, id.as_str()).await?,
-            json!({
-                "kind": "yulius",
-                "problem": "Yulius has a message for this session and does not type it: \
-                            someone typed in the terminal and sent no prompt since, so their \
-                            text may still be in the prompt box.",
-                "action": "Send what you typed in the terminal, or clear it and send any \
-                           prompt. Yulius types its message after the next prompt sent from \
-                           there.",
-                "link": null,
-            })
+            held_message_flag()
         );
         said.extend(notices(&mut watch));
-        assert_eq!(
-            said,
-            [
-                "Yulius holds a message for this session: text typed here was not sent and may \
-              still be in the prompt box. Send it, or clear it and send any prompt, and Yulius \
-              types its message."
-            ]
-        );
+        assert_eq!(said, [HELD_MESSAGE_NOTICE]);
         // A flag that ended while the command still waits (a turn's end settles a flagged
         // task) is raised again at the next pass; the terminal has its line already.
         let flagged = support::attention(&app, id.as_str()).await?;
@@ -522,10 +525,15 @@ fn a_message_of_yulius_waits_for_a_persons_draft_and_tells_them() -> TestResult 
         assert!(!shown.contains("ECHO: half a thought"), "{shown}");
         assert!(!shown.contains("ECHO: /mcp"), "{shown}");
 
-        // They send it; the minute after their Enter passes; the next pass types the command.
+        // They send it: the flag ends with the hold. The minute after their Enter passes, and
+        // the next pass types the command.
         app.terminal_input(&ctx, &attach, b"\r", false).await?;
         wait_for("the person's prompt", Duration::from_secs(30), || async {
             read_alone(&app, &id, "half a thought")
+        })
+        .await?;
+        wait_for("the flag's end", Duration::from_secs(30), || async {
+            matches!(support::attention(&app, id.as_str()).await, Ok(Value::Null))
         })
         .await?;
         clock.0.store(-MINUTE + 1_000, Ordering::SeqCst);
@@ -543,6 +551,101 @@ fn a_message_of_yulius_waits_for_a_persons_draft_and_tells_them() -> TestResult 
             || async { read_alone(&app, &id, RECONNECT_TEXT) },
         )
         .await?;
+        app.terminal_leave(&attach).await;
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-480 AC6 (DRF-006; review round 1): the wake after an outage is given up ten minutes
+/// after the start, so at its last pass a wake that a person's draft holds tells them, however
+/// young their keystroke is: here two minutes, at which an earlier pass says nothing. The task
+/// used to stay idle with nobody told. Their prompt then continues the session, and no wake
+/// follows it. The server is restarted, as after an outage: a run's last turn is known from its
+/// transcript only when it was read again.
+#[test]
+fn the_last_wake_after_an_outage_tells_the_person_of_their_draft() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let first = runtime()?;
+    let (port, id, caller) = first.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let (app, port) = start(&data, &fake, fake_agent(), 0, probe).await?;
+        let (id, caller) = running(&app, &data).await?;
+        wait_for("the first turn's end", Duration::from_secs(30), || async {
+            activity(&app, &id).await.is_some_and(Activity::is_idle)
+        })
+        .await?;
+        Ok::<_, Error>((port, id, caller))
+    })?;
+    first.shutdown_timeout(Duration::from_secs(5));
+
+    let rt = runtime()?;
+    rt.block_on(async {
+        let clock = Arc::new(ShiftedClock(AtomicI64::new(-3 * MINUTE)));
+        let probe = Arc::new(ScriptedUsage::default());
+        let (app, _) = start_on(
+            &data,
+            &fake,
+            fake_agent(),
+            port,
+            probe,
+            clock.clone(),
+            |_| {},
+        )
+        .await?;
+        app.reconcile().await?;
+        // Its transcript was read again: its last turn's end is known.
+        wait_for(
+            "the transcript read again",
+            Duration::from_secs(30),
+            || async { !app.claude_queue_holds(&id) },
+        )
+        .await?;
+        // As after an outage in which that turn closed: Yulius never answered its Stop.
+        let run_dir = app
+            .deps
+            .store
+            .live_attempt(&id)
+            .await?
+            .ok_or("run")?
+            .run_dir;
+        std::fs::write(Path::new(&run_dir).join("stop-answered"), "1")?;
+        let down_since = yulius_domain::time::Timestamp(1);
+        let started = yulius_domain::time::Timestamp(i64::MAX / 2);
+        let (ctx, attach) = terminal(&app, &caller, &id).await?;
+        let mut watch = app.runtime(&id).hub.watch();
+        app.terminal_input(&ctx, &attach, b"half a thought", false)
+            .await?;
+        clock.0.store(-MINUTE, Ordering::SeqCst);
+
+        // A pass that is not the last waits and says nothing; the last one tells the person.
+        let woken = app.wake_after_outage(down_since, started, false).await;
+        assert!(woken.is_empty(), "{woken:?}");
+        assert_eq!(support::attention(&app, id.as_str()).await?, Value::Null);
+        assert_eq!(notices(&mut watch), Vec::<String>::new());
+        let woken = app.wake_after_outage(down_since, started, true).await;
+        assert!(woken.is_empty(), "{woken:?}");
+        assert_eq!(
+            support::attention(&app, id.as_str()).await?,
+            held_message_flag()
+        );
+        assert_eq!(notices(&mut watch), [HELD_MESSAGE_NOTICE]);
+        // Whatever reaches the agent shows within a second; nothing did.
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let shown = screen(&app, &id);
+        assert!(!shown.contains("ECHO: half a thought"), "{shown}");
+        assert!(!shown.contains("Yulius is back"), "{shown}");
+
+        // Their prompt continues the session and ends the flag.
+        app.terminal_input(&ctx, &attach, b"\r", false).await?;
+        wait_for("the person's prompt", Duration::from_secs(30), || async {
+            read_alone(&app, &id, "half a thought")
+                && activity(&app, &id).await.is_some_and(Activity::is_idle)
+        })
+        .await?;
+        assert_eq!(support::attention(&app, id.as_str()).await?, Value::Null);
         app.terminal_leave(&attach).await;
         stop(&app, &id).await
     })?;

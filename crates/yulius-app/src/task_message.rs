@@ -27,8 +27,9 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use yulius_contracts::api::tasks::QueueMessage;
+use yulius_domain::ids::TaskId;
 use yulius_domain::intake::BoxHeld;
-use yulius_domain::task::TaskStatus;
+use yulius_domain::task::{Activity, TaskStatus};
 
 use crate::attention::AttentionRecord;
 use crate::context::App;
@@ -100,6 +101,20 @@ pub(crate) enum Sender {
     /// message waits in its watch, and the session's person is told once their last keystroke
     /// is ten minutes old (DRF-005, DRF-006).
     Yulius,
+    /// Yulius itself, at the last try of a message it gives up after it (the wake after an
+    /// outage): the session's person is told whatever the age of their keystroke (DRF-006).
+    YuliusLastTry,
+}
+
+impl Sender {
+    /// Whether the session's person is told that the message waits for their possible draft.
+    fn tells_person(self, held: BoxHeld) -> bool {
+        match self {
+            Self::Person => false,
+            Self::Yulius => held.tells_person(),
+            Self::YuliusLastTry => matches!(held, BoxHeld::Draft { .. }),
+        }
+    }
 }
 
 /// What the task says when a message of Yulius's own waits for a person's possible draft
@@ -293,10 +308,12 @@ impl App {
         // message and their unfinished text would be submitted as one prompt. Yulius sees keys,
         // not the box, so a keystroke since the box was last empty counts until the next prompt
         // is submitted from it; the one who can act is told instead (DRF-004, DRF-006).
-        match self.box_held(&task.id) {
+        let typed = runtime.typed_at_ms.load(Ordering::SeqCst);
+        let emptied = runtime.box_emptied_ms.load(Ordering::SeqCst);
+        match yulius_domain::intake::box_held(self.now().0, typed, emptied) {
             Some(held @ BoxHeld::Draft { .. }) => {
-                if from == Sender::Yulius && held.tells_person() {
-                    self.tell_of_held_message(task).await;
+                if from.tells_person(held) {
+                    self.tell_of_held_message(task, typed).await;
                 }
                 return Err(AppError::Conflict(format!(
                     "a person typed into task #{}'s terminal and sent no prompt since, so \
@@ -349,12 +366,12 @@ impl App {
         Ok(())
     }
 
-    /// Tells the session's person that a message of Yulius's own waits for what they typed
-    /// (SPEC-480 DRF-006): the task is flagged with the reason and its terminal says so. The
-    /// watches try again at every pass: a task that reads the flag keeps it, one whose flag
-    /// ended meanwhile (a turn's end settles a flagged task) is flagged again, and the terminal
-    /// gets its line once per keystroke.
-    async fn tell_of_held_message(&self, task: &TaskRecord) {
+    /// Tells the session's person that a message of Yulius's own waits for what they typed at
+    /// `typed` (SPEC-480 DRF-006): the task is flagged with the reason and its terminal says
+    /// so. The watches try again at every pass: a task that reads the flag keeps it, one whose
+    /// flag ended meanwhile (a turn's end settles a flagged task) is flagged again, and the
+    /// terminal gets its line once per keystroke.
+    async fn tell_of_held_message(&self, task: &TaskRecord, typed: i64) {
         let reason = AttentionRecord::yulius(DRAFT_HOLDS_PROBLEM, DRAFT_HOLDS_ACTION);
         if let Err(err) = self.flag_attention(&task.id, reason).await {
             // Not told: the next pass tries again.
@@ -362,10 +379,53 @@ impl App {
             return;
         }
         let runtime = self.runtime(&task.id);
-        let typed = runtime.typed_at_ms.load(Ordering::SeqCst);
         if runtime.draft_told_ms.swap(typed, Ordering::SeqCst) != typed {
             runtime.hub.notice(DRAFT_HOLDS_NOTICE.to_owned());
             tracing::info!(task = %task.id, "a message waits for a person's draft: the task is flagged");
+        }
+    }
+
+    /// Ends the flag that says a message of Yulius's own waits for a person's draft
+    /// ([`Self::tell_of_held_message`]) once no draft holds the prompt box (SPEC-480 DRF-007).
+    /// A prompt that starts a turn sets the task Working, which ends every flag; one that starts
+    /// none (`/compact`, a prompt answered after its turn ended) leaves the task as it was, so
+    /// the flag would outlast its reason and keep the pull-request watch quiet (a flagged task
+    /// gets nothing typed). Only this flag, and only while the task still reads it.
+    pub(crate) async fn settle_draft_flag(&self, task_id: &TaskId) {
+        let runtime = self.runtime(task_id);
+        let held = runtime.attention_lock.lock().await;
+        let store = &self.deps.store;
+        let flagged = match store.task_attention(task_id).await {
+            Ok(Some((reason, flagged)))
+                if reason == AttentionRecord::yulius(DRAFT_HOLDS_PROBLEM, DRAFT_HOLDS_ACTION) =>
+            {
+                flagged
+            }
+            Ok(_) => return,
+            Err(err) => {
+                tracing::warn!(task = %task_id, error = %err, "reading a flag's reason failed");
+                return;
+            }
+        };
+        let next = if runtime.turn_in_progress() {
+            Activity::Working
+        } else {
+            Activity::after_clean_turn(runtime.goal_achieved.load(Ordering::SeqCst))
+        };
+        let from = (Some(Activity::NeedsAttention), flagged);
+        match store
+            .set_activity_from(task_id, from, Some(next), self.now())
+            .await
+        {
+            Ok(true) => {
+                drop(held);
+                tracing::info!(task = %task_id, "the prompt box was emptied: the flag of a held message ends");
+                self.publish_task(task_id).await;
+            }
+            Ok(false) => {}
+            Err(err) => {
+                tracing::warn!(task = %task_id, error = %err, "could not end the flag of a held message");
+            }
         }
     }
 }

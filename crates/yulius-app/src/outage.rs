@@ -210,8 +210,11 @@ impl App {
             tokio::time::sleep(WAKE_GRACE).await;
             let until = tokio::time::Instant::now() + WAKE_UNTIL.saturating_sub(WAKE_GRACE);
             loop {
-                app.wake_after_outage(down_since, start.started).await;
-                if tokio::time::Instant::now() + WAKE_EVERY > until {
+                // The last pass: a wake a person's draft still holds is given up after it, so
+                // its person is told (SPEC-480 DRF-006).
+                let last = tokio::time::Instant::now() + WAKE_EVERY > until;
+                app.wake_after_outage(down_since, start.started, last).await;
+                if last {
                     break;
                 }
                 tokio::time::sleep(WAKE_EVERY).await;
@@ -222,11 +225,14 @@ impl App {
     }
 
     /// Types [`WAKE_TEXT`] into each live task that went idle while Yulius was down (from
-    /// `down_since` to `started`); returns the tasks it woke.
+    /// `down_since` to `started`); returns the tasks it woke. A wake held by a person's possible
+    /// draft is tried again at the next pass; at the `last` one its person is told, whatever the
+    /// age of their keystroke (SPEC-480 DRF-006): the wake is not typed later.
     pub async fn wake_after_outage(
         self: &Arc<Self>,
         down_since: Timestamp,
         started: Timestamp,
+        last: bool,
     ) -> Vec<TaskId> {
         let attempts = match self.deps.store.live_attempts().await {
             Ok(attempts) => attempts,
@@ -259,8 +265,13 @@ impl App {
                 continue;
             }
             let paste = format!("\x1b[200~{WAKE_TEXT}\x1b[201~");
+            let from = if last {
+                Sender::YuliusLastTry
+            } else {
+                Sender::Yulius
+            };
             match self
-                .type_into_session(&task, paste.as_bytes(), Typed::Prompt, Sender::Yulius)
+                .type_into_session(&task, paste.as_bytes(), Typed::Prompt, from)
                 .await
             {
                 Ok(()) => {
