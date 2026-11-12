@@ -28,7 +28,9 @@ its pull request.
 
 A prompt is not proof that the session recovered. The other 4 of the 13 were refused again: a
 goal check-in that Claude Code closed without a new notice (task #438's session), a session
-Yulius had restarted, and twice a person's "continue".
+Yulius had restarted, and twice a person's "continue". Nor is a restart: in the nine sessions
+that worked again, the model's first output came 10 to 76 minutes after the pause, and in five
+of them only after two to four restarts.
 
 ## Decision
 
@@ -95,8 +97,9 @@ Yulius had restarted, and twice a person's "continue".
   transcript's fold does not keep (as before this change: SPEC-333 asks once).
 - A woken turn that produces output and then dies with no new notice from Claude Code ends the
   request and settles as "Your turn" (ADR-0212) with no request text. The task stays under Needs
-  you while its goal is unfinished, without the cause. Claude Code writes a notice when an error
-  ends a goal turn, so this needs a CLI that stays silent there.
+  you while its goal is unfinished, without the cause. Claude Code usually writes a notice when
+  an error ends a goal turn, but not always: the refused check-in of task #438's session closed
+  with none. Whether a turn that produced output can end that way is not known.
 - After a restart of Yulius, while the pause's request is still open, a flag Yulius raised
   itself after the pause (a goal the restarted session never took, say) cannot be told from the
   pause's by its time: the agent's work lifts it too. Such a session that works has gone on.
