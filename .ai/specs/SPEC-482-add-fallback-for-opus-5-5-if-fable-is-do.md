@@ -73,7 +73,12 @@ session runs and why. Fable is used again by itself once a subscription can run 
   is not restarted because Fable can run again; a run on Fable whose subscription can no longer
   run Fable is placed anew (FBK-002), as before. The next launch that happens anyway (a move at
   98 %, a limit, a pause that resumes, Continue, a person's move, a restart for a newer Claude
-  Code) is placed with the task's own model again when an account is a candidate for it.
+  Code, a fresh session after a full context, a hand-over) is placed with the task's own model
+  again when an account is a candidate for it. A restart that asks for the run's subscription
+  only to keep it (the last three) asks for it only while it can take the run placed now
+  (`rotation::keeps_account`): a run on the fallback sits where Fable is used up, so once
+  another subscription runs Fable the pool places that restart instead of refusing it. When no
+  account can take the run, the restart is refused as before and the session stays.
 - FBK-005 (launch and record). A launch placed with the fallback gives Claude Code the fallback
   model and the effort that model takes (`claude_effort`); the task's own setting (`tasks.model`)
   is not changed. Every run records the model it was launched with (`attempts.model`, migration
@@ -82,13 +87,16 @@ session runs and why. Fable is used again by itself once a subscription can run 
   family of the model that run was launched with, not the task's: a limit of Opus hit on the
   fallback fills `weekly_opus` and leaves `weekly_fable` as it is.
 - FBK-007 (left-out subscriptions). A subscription the pool keeps a task off because it refused
-  the task's model at a limit nothing says the end of (SPEC-464 UCL-010) is left out for that
-  model: it counts as out of the model's own window with no reset (before: as limited as a
-  whole). So the fallback's known reset on it is a reset to wait for, and the task is not
-  started on it at each reading meanwhile. While the pool places the task with the fallback
-  anyway, nothing is left out. A placement with the fallback that only leaving out would make
-  is not taken: the launch asks the policy without it, so the task is tried with its own model
-  where a reading shows it, and falls back by the limit stored at that refusal.
+  the task at a limit nothing says the end of (SPEC-464 UCL-010) is left out for the model it
+  refused: the task remembers each subscription with the family of that model (`BlindLimits`),
+  also the fallback's, and once its retry is spent each counts as out of that model's own window
+  with no reset (before: one subscription, as limited as a whole). So the other model's known
+  reset on it is a reset to wait for, and the task is not started on it at each reading
+  meanwhile: a fallback refused with no end while Fable's reset is known is retried once, then
+  the task waits for Fable's reset. A placement with the fallback that only leaving out would
+  make is not taken: the launch asks the policy without it, so the task is tried with its own
+  model where a reading shows it, and falls back by the limit stored at that refusal. The
+  task's "resumes at" time follows the same decision as the resume loop.
 - FBK-008 (said in the terminal and the history). The session's terminal says in one line that
   it runs on the fallback and why ("Fable 5.2 is used up on every subscription: this session
   runs on Opus 5.5."), at the launch that falls back and not at each later one, and in one line
@@ -99,9 +107,10 @@ session runs and why. Fable is used again by itself once a subscription can run 
   with no end too (then SPEC-464 UCL-010 holds for both models: one retry, then a person).
 - FBK-009 (the task view). `TaskDetail` gains `fallback_model`: the model the task's live run
   was launched with when it is not the task's own, else absent. The task's details show it
-  beside the model ("Fable 5.2 (default) · High effort · runs on Opus 5.5 while Fable 5.2 is
-  used up") and are read again when the session starts again (a fallback on the same
-  subscription changes nothing else the page listens to). "Run #N on…" judges each
+  beside the model ("Fable 5.2 (default) · High effort · this session runs on Opus 5.5 (Fable
+  5.2 was used up when it started)", true also after Fable runs again, FBK-004) and are read
+  again when the session starts again (a fallback on the same subscription changes nothing else
+  the page listens to). "Run #N on…" judges each
   subscription for the model the pool would place the task with, as the server does: with
   Fable used up everywhere, a subscription with room for Opus 5.5 can be chosen.
 - FBK-010 (the capacity view). `GET /api/capacity` counts as `available` the subscriptions a
@@ -110,10 +119,11 @@ session runs and why. Fable is used again by itself once a subscription can run 
   It gains `fallback_model`: the fallback while such a task would be placed with it, else
   `null`. The Capacity panel then says "Fable 5.2 is used up on every subscription: tasks run
   on Opus 5.5 until it can run again" and its "Available now" tile says for which model it
-  counts. The Status line for "every subscription is at a usage limit" says the same sentence
-  instead of "tasks continue when a window resets", worked out in the page from the
-  subscriptions' windows (`placingModel`, the server's rule; `models.js` names the fallback
-  and a test keeps it equal to the server's).
+  counts. The Status line says the same sentence whenever the pool would place a default task
+  with the fallback, at the pool's 98 % like the server (so also before a card reads "Limit
+  reached"), instead of "tasks continue when a window resets"; it is worked out in the page
+  from the subscriptions' windows (`placingModel`, the server's rule; `models.js` names the
+  fallback and a test keeps it equal to the server's).
 - FBK-011 (the Superagent). A Superagent or Global Superagent is placed by the same rule
   (`place_default_run` for the default model): started, restarted or moved at a limit while no
   subscription can run Fable, it is launched with Opus 5.5 (`CockpitLaunch::model`), on the same
@@ -160,6 +170,11 @@ launch; the price shown for a run, which already follows the model that answered
   the fallback; both panels say it in words.
 - AC-8 (FBK-011). A Superagent whose turn is cut by the Fable limit on the only subscription
   starts again on it with Opus 5.5 and continues the turn.
+- AC-10 (FBK-007). Fable's reset is known and the fallback is refused with no end: after one
+  retry no reading starts the session again; the task waits, reads "resumes at" Fable's reset,
+  and nobody is asked.
+- AC-11 (FBK-004). A run on the fallback whose context is full continues in a fresh session on
+  the subscription that runs Fable again, with the task's own model.
 - AC-9 (FBK-005). A database of schema version 53 opens with `attempts.model` `NULL` for its
   runs, and such a run's limit is attributed to the task's model.
 
@@ -200,5 +215,13 @@ launch; the price shown for a run, which already follows the model that answered
   prompt cache, and a limit nothing says the end of is ended by each provider reading: a run
   that went back at once would be refused and fall back again at every reading. The next launch
   that happens anyway uses Fable when it can run.
+- **A subscription is left out for the model it refused, each one remembered** (review round
+  1). Leaving out only the last subscription as a whole, or nothing while the pool is in
+  fallback, let a fallback refused with no end be started again at every reading until Fable's
+  reset.
+- **A restart that keeps its subscription is a preference, not a person's choice** (review round
+  1). Asked for like a choice, the subscription of a run on the fallback is refused once
+  another runs Fable: a Claude Code restart never happened, a full context gave up to a
+  person, a hand-over stopped the task. The pool places such a restart when it can.
 - **The same subscription is a candidate when the model changes.** Leaving the current account
   out protects from a limit that binds the placed run; it does not bind a run of another model.

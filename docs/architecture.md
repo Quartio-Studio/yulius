@@ -554,6 +554,12 @@ move's entry names the model; `TaskDetail.fallback_model` and the capacity view'
 `fallback_model` carry it to the task's details, the Capacity panel and the Status line. The
 Superagent is placed by the same rule (`App::place_default_run`).
 
+A run on the fallback sits on a subscription that cannot run the task's own model. A restart
+that asks for the run's subscription only to keep it (a newer Claude Code, a fresh session after
+a full context, a hand-over) therefore asks for it only while it can take the run placed now
+(`rotation::keeps_account`); when it cannot and another subscription can, the pool places the
+run, with the task's own model.
+
 A model's limit nothing says the end of, with no subscription the task can go to (for a Fable
 model: none for its fallback either), makes the task
 wait, and the provider's reading that ends it lets the pool try the task once
@@ -562,9 +568,12 @@ the task is not started on that subscription at each of its readings, so no sess
 every few minutes with nobody told. What follows depends on what is known. When another
 subscription says when it resets, the task waits for that reset and the pool leaves the refusing
 subscription out for the waiting task, whatever its readings say meanwhile
-(`rotation::decide_leaving_out`). Left out means out of the refused model: that model's own
-window counts as full with no reset, so the reset of the fallback's window on the same
-subscription is one to wait for too. When nothing says when the task can go on, its session stays
+(`rotation::decide_leaving_out`). Left out means out of the refused model: `BlindLimits` keeps
+each subscription with the family of the model it refused, and that model's own window counts
+as full with no reset. So the reset of the other model's window on the same subscription is one
+to wait for, and a fallback refused with no end is not started again at every reading while
+the task's own model says when it resets. The task's "resumes at" time follows the same decision
+(`App::decide_for_waiting`). When nothing says when the task can go on, its session stays
 at the refusal and Yulius asks a person (`task.limit_without_end`). Two starts on that
 subscription remain possible, one each: once no reset is known any more (the other subscription
 was removed or needs a sign-in) it is a candidate again, and a task that went on elsewhere and
@@ -1974,7 +1983,7 @@ usage-limit move does but without redoing a turn.
 ```mermaid
 flowchart LR
   UI["Right panel: Superagent"] -->|"POST /api/sandboxes/sid/cockpit"| APP["App::cockpit_open"]
-  APP -->|"pool_account"| POOL[("Subscriptions")]
+  APP -->|"place_default_run: the default model, or its fallback"| POOL[("Subscriptions")]
   W["Cockpit watch: newest conversation"] -->|"usage limit after the start: record_limit, start again (switched) once the old host is gone"| APP
   W -->|"adopted with another launch digest: start again resuming, once idle (switched)"| APP
   SH -->|"HTTPS_PROXY yulius:ck_… (bound hosts get their secrets)"| EG["Egress proxy: EgressCaller::Superagent"]

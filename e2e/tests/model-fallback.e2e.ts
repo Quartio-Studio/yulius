@@ -36,7 +36,7 @@ test('a task’s details say that its session runs on the fallback and why (SPEC
   await touchTask(browser, 'sb_studio', 11, { model: null, status: 'switching' });
   await expect.poll(model).toBe('Fable 5.2 (default) · High effort');
   await touchTask(browser, 'sb_studio', 11, { fallback_model: 'claude-opus-5-5', status: 'running' });
-  await expect.poll(model).toBe('Fable 5.2 (default) · High effort · runs on Opus 5.5 while Fable 5.2 is used up');
+  await expect.poll(model).toBe('Fable 5.2 (default) · High effort · this session runs on Opus 5.5 (Fable 5.2 was used up when it started)');
   expect(await axeViolations(browser)).toEqual([]);
 });
 
@@ -73,6 +73,17 @@ test('the status line of a pool out of Fable says that tasks run on the fallback
   await fableOutEverywhere(browser, true);
   await browser.locator('.btn-status').click();
   await expect(browser.locator('.status-pop .status-health')).toHaveText('Every subscription is at a usage limit: tasks continue when a window resets');
+  // At the pool's threshold (98 %) Fable is as good as used up for a new task: the line says the
+  // fallback already, as the Capacity panel does, though no card reads "Limit reached" yet.
+  await browser.locator('.btn-status').click();
+  await browser.evaluate(() => {
+    const db = (window as unknown as { __yuliusMock: { accounts: Account[] } }).__yuliusMock;
+    const resets_at = new Date(Date.now() + 40 * 3600e3).toISOString();
+    const w = (used_percent: number) => ({ used_percent, resets_at, window_minutes: 10080 });
+    db.accounts.forEach((account) => Object.assign(account, { status: 'ok', usage: { primary: w(10), secondary: w(20), weekly_fable: w(99), observed_at: new Date().toISOString() } }));
+  });
+  await browser.locator('.btn-status').click();
+  await expect(browser.locator('.status-pop .status-health')).toHaveText(LINE);
 });
 
 test('the model the pool places a task with, and which subscription takes it (unit, in the page; SPEC-482)', async ({ app, browser }) => {

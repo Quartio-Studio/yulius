@@ -48,11 +48,18 @@ family. With a run launched on another model than the task's, that is wrong.
   again. The next launch that happens anyway (a move at 98 %, a limit, a pause that resumes,
   Continue, a person's move, a restart for a newer Claude Code) is placed with the task's own
   model when a subscription can run it.
-- **A subscription is left out as out of the refused model** (SPEC-464 UCL-010,
-  `decide_leaving_out`): its model's own window counts as full with no reset, not the whole
-  subscription as limited. The fallback's known reset on it is then a reset to wait for. A pool
-  that is in fallback anyway leaves nothing out, and a placement with the fallback that only
-  leaving out would make is not taken, because the launch asks the policy without it.
+- **A subscription is left out for the model it refused** (SPEC-464 UCL-010,
+  `decide_leaving_out`). The task remembers each subscription with the family of the model it
+  refused at a limit nothing says the end of (`BlindLimits`), the fallback's too; once the
+  retry is spent, each counts as out of that model's own window with no reset, not as limited
+  as a whole. The other model's known reset on it is then a reset to wait for, and a fallback
+  refused with no end is not started again at every reading. A placement with the fallback that
+  only leaving out would make is not taken, because the launch asks the policy without it.
+- **A restart that keeps its subscription is placed by the pool when that subscription cannot
+  take it** (`rotation::keeps_account`): a restart for a newer Claude Code, a fresh session
+  after a full context and a hand-over ask for the run's subscription only while a person's
+  choice of it would be accepted, or while nothing else can take the run. A run on the
+  fallback sits where Fable is used up, and its next launch runs Fable where it can.
 - **It is said, and nobody is asked.** The session's terminal says the change in one line at
   the launch that makes it, both ways; the move's entry names the model; the task's details,
   the Capacity panel (`fallback_model`) and the Status line say that sessions run on the
@@ -77,6 +84,10 @@ family. With a run launched on another model than the task's, that is wrong.
   refusal; the transcript names a model only after the first answer. Rejected for the column.
 - **A setting for the fallback model or to switch it off.** Nobody asked; the default effort's
   setting was left to its own task the same way (ADR-0295). Left out.
+- **Leave nothing out while the pool is in fallback** (the first version: "the fallback is
+  another model than the one refused"). The fallback itself can be the refused model: with
+  Fable's reset known, each reading ended its limit and the session was started on it again.
+  Rejected for remembering the refused model.
 - **Keep leaving a subscription out as limited as a whole.** With one subscription whose Opus
   window says when it resets, the wait had no known end (the mark hides that reset), so the task
   was started on it again at every reading. Rejected for the model's window.

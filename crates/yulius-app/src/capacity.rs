@@ -300,8 +300,9 @@ impl App {
         Some(usage)
     }
 
-    /// The subscription a run outside any task (a split proposal, a Cockpit) runs on: the best
-    /// placement of the pool for a run of `family`, whose weekly cap binds too.
+    /// The subscription a run outside any task that names its model's family runs on (a split
+    /// proposal): the best placement of the pool for a run of `family`, whose weekly cap binds
+    /// too. A Superagent is placed with [`Self::place_default_run`].
     ///
     /// # Errors
     /// `AccountRequired` without a usable Claude account, `Capacity` while none has capacity.

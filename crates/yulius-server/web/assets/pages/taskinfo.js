@@ -161,8 +161,9 @@ export function mountTaskInfoView(ctx, sandbox, task) {
       // What the task asks Claude Code for, what answered (its transcripts' word) and which
       // Claude Code runs it (SPEC-461 CCM-012); while running tasks are no longer moved to the
       // newer one, only its next start is promised (SPEC-468 CCF-003).
-      // While no subscription can run it, its session runs the fallback (SPEC-482 FBK-009).
-      ['Model', detail.model ? [modelLabel(detail.model), detail.model_default ? h('span', { class: 'muted' }, ' (default)') : null, detail.effort ? h('span', { class: 'muted' }, ` · ${(findEffort(detail.effort) || { name: detail.effort }).name} effort`) : null, detail.fallback_model ? h('span', { class: 'muted' }, ` · runs on ${modelLabel(detail.fallback_model)} while ${modelLabel(detail.model)} is used up`) : null] : '—'],
+      // A session started while no subscription could run it runs the fallback until its next
+      // start (SPEC-482 FBK-009).
+      ['Model', detail.model ? [modelLabel(detail.model), detail.model_default ? h('span', { class: 'muted' }, ' (default)') : null, detail.effort ? h('span', { class: 'muted' }, ` · ${(findEffort(detail.effort) || { name: detail.effort }).name} effort`) : null, detail.fallback_model ? h('span', { class: 'muted' }, ` · this session runs on ${modelLabel(detail.fallback_model)} (${modelLabel(detail.model)} was used up when it started)`) : null] : '—'],
       ['Answered by', m.models && m.models.length ? m.models.map((id) => modelLabel(id)).join(', ') : '—'],
       ['Claude Code', detail.cli_version ? [detail.cli_version, detail.cli_moves_to ? h('span', { class: 'muted' }, detail.cli_moves_stopped ? ` · gets ${detail.cli_moves_to} at its next start` : ` · moves to ${detail.cli_moves_to} when its turn ends, or at its next start`) : null] : '—'],
       ['Turns', m.turns === null || m.turns === undefined ? '—' : int(m.turns)],

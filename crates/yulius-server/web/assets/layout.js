@@ -451,13 +451,13 @@ export function renderStatus(data) {
   const stateNow = new Map(accounts.map((a) => [a, limitsNow(a).state]));
   // Every subscription at a limit: tasks wait for the first window reset (ROT-010). A limit may
   // be the default model's alone (SPEC-464), so the line does not say that nothing runs.
-  if (accounts.length && accounts.every((a) => stateNow.get(a) === 'limited')) {
-    // The default model alone is used up while its fallback still runs: tasks go on with that
-    // (SPEC-482).
-    const model = PROVIDERS[0].models[0].id;
-    const placed = placingModel(accounts, model);
-    health = { tone: 'warn', icon: 'clock', text: placed === model ? 'Every subscription is at a usage limit: tasks continue when a window resets' : fallbackLine(model, placed) };
-  }
+  if (accounts.length && accounts.every((a) => stateNow.get(a) === 'limited')) health = { tone: 'warn', icon: 'clock', text: 'Every subscription is at a usage limit: tasks continue when a window resets' };
+  // No subscription can take a task of the default model while one takes its fallback: tasks go
+  // on with that (SPEC-482). Judged at the pool's threshold, as the server and the Capacity
+  // panel do, so it is also said before every window reads used up.
+  const defaultModel = PROVIDERS[0].models[0].id;
+  const placed = accounts.length ? placingModel(accounts, defaultModel) : defaultModel;
+  if (placed !== defaultModel) health = { tone: 'warn', icon: 'clock', text: fallbackLine(defaultModel, placed) };
   if (troubled.length) health = { tone: 'warn', icon: 'warn', text: `${troubled.length} ${troubled.length === 1 ? 'subscription needs' : 'subscriptions need'} attention` };
 
   const facts = [
