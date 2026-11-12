@@ -151,8 +151,8 @@ pub struct TaskRuntime {
     /// When Yulius last typed a message into the session for it to submit (ms, 0 = never): a
     /// person's message, a pull request's news (`type_into_session`). It counts as a draft
     /// until its submit, which Claude Code makes at Yulius's own Enter. The wait in Claude
-    /// Code's queue while a turn runs comes after that and is not known here (SPEC-468
-    /// CCF-011, issue #1204).
+    /// Code's queue while a turn runs comes after that: [`Self::queue`] knows it (SPEC-468
+    /// CCF-011, SPEC-471).
     pub(crate) message_typed_ms: AtomicI64,
     /// When the session's prompt box was last known empty (ms, 0 = not known): its run's
     /// launch, or the last prompt submitted from it. What was typed after that may still sit
@@ -4226,8 +4226,6 @@ impl App {
         runtime.goal_open.store(false, Ordering::SeqCst);
         runtime.goal_unfinished.store(false, Ordering::SeqCst);
         runtime.verdict_stop_ms.clear();
-        // What waits in Claude Code's queue is read from the run's own lines (SPEC-471).
-        runtime.with_queue(|queue| *queue = yulius_domain::agent_cli::Queue::default());
         if let Ok(mut end) = runtime.session_end.lock() {
             *end = None;
         }

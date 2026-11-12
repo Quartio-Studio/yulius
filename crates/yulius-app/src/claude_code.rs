@@ -321,8 +321,9 @@ impl App {
     /// Whether something was typed into the task's session since its prompt box was last
     /// empty (its run's start, or the last prompt submitted from it), by a person or by Yulius
     /// (a person's message, a pull request's news): it may still sit in the box, and a restart
-    /// would lose it (SPEC-468 CCF-010, CCF-011). A prompt submitted while a turn runs waits
-    /// in Claude Code's queue, which this does not know (issue #1204). Public for tests.
+    /// would lose it (SPEC-468 CCF-010, CCF-011). A prompt submitted while a turn runs is no
+    /// draft: it waits in Claude Code's queue, which [`Self::queue_holds`] knows (SPEC-471).
+    /// Public for tests.
     #[must_use]
     pub fn has_draft(&self, task_id: &TaskId) -> bool {
         let runtime = self.runtime(task_id);
@@ -345,13 +346,16 @@ impl App {
 
     /// What a turn's end knows about restarting the task's session, which runs `runs`, on
     /// `target`. All of it is cheap to read, so it is read again after the looks that take
-    /// seconds; `background` is what those looks found.
+    /// seconds; `looked` is what those looks found, `None` before them. Only after them is
+    /// Claude Code's queue asked: the watcher reads once a second, so before the turn's lines
+    /// were read its count may still name an entry that was handed on, or miss one (SPEC-471
+    /// CCQ-002).
     async fn move_facts(
         &self,
         services: &AgentCliServices,
         task_id: &TaskId,
         (runs, target): (Version, Version),
-        background: Option<bool>,
+        looked: Option<Option<bool>>,
     ) -> Option<MoveFacts> {
         let sent_to = services.moved.lock().ok()?.get(task_id).copied();
         let stopped_for = services
@@ -370,8 +374,9 @@ impl App {
             switch_refused: self.switch_cooling(task_id) || self.claude_move_cooling(task_id),
             paused: self.is_paused_by_person(task_id).await,
             update_holds: self.update_holds_starts(),
-            background,
-            queued: false,
+            // Before the looks: taken as none, so that they are made.
+            background: looked.unwrap_or(Some(false)),
+            queued: looked.is_some() && self.queue_holds(task_id),
             prompt_unread: false,
         })
     }
@@ -382,7 +387,9 @@ impl App {
     /// typed into it in the last minute, left a draft in its prompt box (typed since its last
     /// prompt) or paused it, an update of the instance holds the runs,
     /// a switch was refused moments ago, it has background shells (a `yulius wait` included),
-    /// agents or monitors, which a restart would end, or that could not be told within
+    /// agents or monitors, which a restart would end, something waits in Claude Code's queue
+    /// (a prompt entered while a turn ran, which a resumed session does not get back; SPEC-471),
+    /// or that could not be told within
     /// [`crate::context::AppConfig::claude_code_decision_ms`].
     pub(crate) async fn claude_code_move_due(
         self: &Arc<Self>,
@@ -407,13 +414,14 @@ impl App {
         };
         // What costs nothing first: most turns end on the version runs get.
         let cheap = self
-            .move_facts(services, task_id, (runs, target), Some(false))
+            .move_facts(services, task_id, (runs, target), None)
             .await?;
         if !moves_now(&cheap) {
             return None;
         }
         // Background work started in this turn is known from its lines (SPEC-079 BGW-004); a
-        // shell that only runs `yulius wait` counts: its news would never arrive.
+        // shell that only runs `yulius wait` counts: its news would never arrive. So is a
+        // prompt entered while the turn ran, which waits in Claude Code's queue (SPEC-471).
         if !lines_read {
             tokio::time::timeout_at(deadline, self.await_transcript_read(task_id))
                 .await
@@ -429,7 +437,7 @@ impl App {
         // That took a moment: a person may have started a draft or paused the task, an update
         // of the instance begun to hold the runs, another session failed on this version.
         let facts = self
-            .move_facts(services, task_id, (runs, target), background)
+            .move_facts(services, task_id, (runs, target), Some(background))
             .await?;
         moves_now(&facts).then_some(target)
     }
