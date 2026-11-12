@@ -20,7 +20,7 @@
 //!            [--interrupts] [--rate-limits-file PATH] [--session-start] [--opening-turn-ms MS]
 //!            [--cli-version-file PATH] [--exit-at-start-file PATH] [--stuck-at-start-file PATH]
 //!            [--turn-hold-file PATH] [--resume-record]
-//!            [--queue-prompts [--queue-record-ms MS] [--queue-handover-file PATH]
+//!            [--queue-prompts [--queue-record-file PATH] [--queue-handover-file PATH]
 //!            [--queue-turn-file PATH]]
 //!            [--echo-turn-ms MS] [--context-full-after N] [--compact-fails] [--compact-hangs]
 //!            [--prompt TEXT] [--limit-continues-ms MS [--limit-continues-answer-only]]
@@ -174,14 +174,20 @@
 //! records, then one `user` record each (`promptSource: "queued"`) and one turn that answers
 //! them all (`ECHO: <line>` each), with no further prompt hook; lines entered during that turn
 //! wait in the same way. Without the option a line is read, and its hook run, only after the
-//! turn before it, as ever. `--queue-record-ms MS` writes a waiting line's `enqueue` record MS
-//! after its hook returned (Claude Code's record reaches the file about 100 ms after it is
-//! made). `--queue-handover-file PATH` hands the queue on only once PATH exists, and
-//! `--queue-turn-file PATH` starts the handed-on turn (its prompt records) only once PATH
-//! exists, after the `dequeue` records; both are bounded by 60 s, so a test says when each
-//! happens. The agent says when it waits: `TURN HELD` (for `--turn-hold-file`), `QUEUE HELD`
-//! and `QUEUED TURN HELD`. A command line (`/exit`, `/work …`) entered during such a turn is
-//! queued like any other text and echoed, and `--limit-after` is not applied to such turns.
+//! turn before it, as ever. `--queue-record-file PATH` writes a waiting line's `enqueue`
+//! record only once PATH exists (Claude Code's record reaches the file about 100 ms after it
+//! is made, so a turn's end can come before it). `--queue-handover-file PATH` hands the queue
+//! on only once PATH exists, and `--queue-turn-file PATH` starts the handed-on turn (its
+//! prompt records) only once PATH exists, after the `dequeue` records; all three are bounded
+//! by 60 s, so a test says when each happens. The agent says when it waits: `TURN HELD` (for
+//! `--turn-hold-file`, at each turn that finds the file missing), `QUEUE HELD` and `QUEUED
+//! TURN HELD`. A command line (`/exit`, `/work …`) entered during such a turn is queued like
+//! any other text and echoed, and `--limit-after` is not applied to such turns. Not as Claude
+//! Code: a waiting line's prompt hook is answered before the agent goes on, so a turn never
+//! reaches its Stop while such a hook is unanswered. Claude Code does (seen with 2.1.322: a
+//! turn's Stop hook ran and returned while a prompt's hook was still held; the prompt's
+//! `enqueue` came when its hook returned, and its turn right after). Tool calls, and with
+//! them a waiting line taken into the running turn, are not played either.
 //!
 //! `--resume-record`: at its start the agent writes a record a real Claude Code writes before
 //! any prompt when it resumes a session whose turn was interrupted: a meta user record with
@@ -337,7 +343,7 @@ struct Options {
     stuck_at_start_file: Option<PathBuf>,
     turn_hold_file: Option<PathBuf>,
     queue_prompts: bool,
-    queue_record_ms: u64,
+    queue_record_file: Option<PathBuf>,
     queue_handover_file: Option<PathBuf>,
     queue_turn_file: Option<PathBuf>,
     resume_record: bool,
@@ -408,7 +414,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
         stuck_at_start_file: None,
         turn_hold_file: None,
         queue_prompts: false,
-        queue_record_ms: 0,
+        queue_record_file: None,
         queue_handover_file: None,
         queue_turn_file: None,
         resume_record: false,
@@ -568,9 +574,12 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
                     Some(args.next().ok_or("--turn-hold-file needs a path")?.into());
             }
             "--queue-prompts" => options.queue_prompts = true,
-            "--queue-record-ms" => {
-                let ms: u64 = parse_number(&flag, args.next())?;
-                options.queue_record_ms = ms.min(MAX_WORK_MS);
+            "--queue-record-file" => {
+                options.queue_record_file = Some(
+                    args.next()
+                        .ok_or("--queue-record-file needs a path")?
+                        .into(),
+                );
             }
             "--queue-handover-file" => {
                 options.queue_handover_file = Some(
@@ -1519,7 +1528,7 @@ struct Waiting<'a> {
     hooks: Option<&'a Hooks>,
     entered: &'a Entered,
     lines: Vec<String>,
-    /// `enqueue` records still to be written (`--queue-record-ms`).
+    /// `enqueue` records still to be written (`--queue-record-file`).
     records: Vec<std::thread::JoinHandle<()>>,
 }
 
@@ -1534,17 +1543,20 @@ impl Waiting<'_> {
             }
             if let Some(transcript) = self.transcript {
                 let (transcript, text) = (Arc::clone(transcript), line.clone());
-                let later = Duration::from_millis(self.options.queue_record_ms);
+                let held = self.options.queue_record_file.clone();
                 let record = move || {
-                    std::thread::sleep(later);
+                    if let Some(file) = &held {
+                        wait_for_file(file, MAX_WORK_MS);
+                    }
                     if let Ok(t) = transcript.lock() {
                         let _ = t.queue_operation("enqueue", Some(&text));
                     }
                 };
-                if later.is_zero() {
-                    record();
-                } else {
+                // Held: written by a thread of its own, so the turn goes on meanwhile.
+                if self.options.queue_record_file.is_some() {
                     self.records.push(std::thread::spawn(record));
+                } else {
+                    record();
                 }
             }
             say(&format!("QUEUED: {line}"))?;
@@ -3034,10 +3046,7 @@ mod tests {
         assert!(parse(&["--stuck-at-start-file"]).is_err());
         assert!(parse(&["--turn-hold-file"]).is_err());
         assert!(parse(&["--queue-prompts"]).is_ok_and(|o| o.queue_prompts));
-        assert!(parse(&["--queue-record-ms"]).is_err());
-        assert!(
-            parse(&["--queue-record-ms", "999999"]).is_ok_and(|o| o.queue_record_ms == MAX_WORK_MS)
-        );
+        assert!(parse(&["--queue-record-file"]).is_err());
         assert!(parse(&["--queue-handover-file"]).is_err());
         assert!(parse(&["--queue-turn-file"]).is_err());
         assert!(parse(&["--paused-wake-file"]).is_err());

@@ -332,7 +332,7 @@ impl App {
     /// empty (its run's start, or the last prompt submitted from it), by a person or by Yulius
     /// (a person's message, a pull request's news): it may still sit in the box, and a restart
     /// would lose it (SPEC-468 CCF-010, CCF-011). A prompt submitted while a turn runs is no
-    /// draft: it waits in Claude Code's queue, which [`Self::queue_holds`] knows (SPEC-471).
+    /// draft: it waits in Claude Code's queue, which [`Self::claude_queue_holds`] knows (SPEC-471).
     /// Public for tests.
     #[must_use]
     pub fn has_draft(&self, task_id: &TaskId) -> bool {
@@ -343,22 +343,23 @@ impl App {
         )
     }
 
-    /// Whether something waits in Claude Code's queue of the task's session, or was handed on
+    /// Whether something waits in Claude Code's own queue (not Yulius's queue of tasks) in the
+    /// task's session, or was handed on
     /// to a turn not seen yet, as the run's lines read so far say (SPEC-471 CCQ-001, CCQ-003):
     /// a prompt entered while a turn runs, a message Yulius typed meanwhile, a notification of
     /// Claude Code's own. The process holds it in memory alone, and a resumed session does not
     /// get it back. A run reattached after a restart of the server counts as holding
     /// something until its lines were read again: nothing is known before. Public for tests.
     #[must_use]
-    pub fn queue_holds(&self, task_id: &TaskId) -> bool {
+    pub fn claude_queue_holds(&self, task_id: &TaskId) -> bool {
         self.existing_runtime(task_id)
             .is_some_and(|runtime| runtime.queue_may_hold())
     }
 
     /// How many entries wait in Claude Code's queue of the task's session, as read so far
-    /// ([`Self::queue_holds`] also counts one that is being handed on). Public for tests.
+    /// ([`Self::claude_queue_holds`] also counts one that is being handed on). Public for tests.
     #[must_use]
-    pub fn queue_waiting(&self, task_id: &TaskId) -> u32 {
+    pub fn claude_queue_waiting(&self, task_id: &TaskId) -> u32 {
         self.existing_runtime(task_id)
             .map_or(0, |runtime| runtime.queue().waiting())
     }
@@ -396,8 +397,8 @@ impl App {
             update_holds: self.update_holds_starts(),
             // Before the looks: taken as none, so that they are made.
             background: looked.map_or(Some(false), |looked| looked.background),
-            queued: looked.is_some() && self.queue_holds(task_id),
-            prompt_unread: self.prompt_record_pending(task_id)
+            queued: looked.is_some() && self.claude_queue_holds(task_id),
+            prompt_unread: self.prompt_just_went_on(task_id)
                 || looked
                     .is_some_and(|looked| self.prompts_passed(task_id) != looked.prompts_before),
         })
@@ -409,8 +410,10 @@ impl App {
     }
 
     /// Whether a prompt from the prompt box of the task's session went on so recently that the
-    /// record which says where it went may not be written yet (SPEC-471 CCQ-004).
-    fn prompt_record_pending(&self, task_id: &TaskId) -> bool {
+    /// record which says where it went may not be written yet (SPEC-471 CCQ-004). Public for
+    /// tests, which wait for that time to pass instead of sleeping through it.
+    #[must_use]
+    pub fn prompt_just_went_on(&self, task_id: &TaskId) -> bool {
         let passed = self
             .runtime(task_id)
             .prompt_passed_ms

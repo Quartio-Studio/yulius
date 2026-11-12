@@ -840,14 +840,14 @@ fn without_the_option_a_line_entered_during_a_turn_is_read_after_it() -> TestRes
 }
 
 /// SPEC-471 CCQ-005: a test says when a waiting line's record is written
-/// (`--queue-record-ms`, as Claude Code writes it a moment after the hook), when the queue is
+/// (`--queue-record-file`: Claude Code writes it a moment after the hook), when the queue is
 /// handed on (`--queue-handover-file`) and when the handed-on turn starts
-/// (`--queue-turn-file`); the agent says when it waits for each.
+/// (`--queue-turn-file`); the agent says when it waits for the last two.
 #[test]
 fn the_record_the_hand_over_and_the_handed_on_turn_can_be_held() -> TestResult {
     let dir = tempfile::tempdir()?;
     let (dir, path) = (dir.path(), dir.path().join("s-q.jsonl"));
-    let (handover, turn) = (dir.join("handover"), dir.join("turn"));
+    let (handover, turn, written) = (dir.join("handover"), dir.join("turn"), dir.join("written"));
     let mut child = Command::new(EXE)
         .args(["--session-id", "s-q", "--transcript"])
         .arg(&path)
@@ -855,7 +855,9 @@ fn the_record_the_hand_over_and_the_handed_on_turn_can_be_held() -> TestResult {
         .arg(hooks_exe(dir)?)
         .arg("--turn-hold-file")
         .arg(dir.join("hold"))
-        .args(["--queue-prompts", "--queue-record-ms", "400"])
+        .arg("--queue-prompts")
+        .arg("--queue-record-file")
+        .arg(&written)
         .arg("--queue-handover-file")
         .arg(&handover)
         .arg("--queue-turn-file")
@@ -875,18 +877,13 @@ fn the_record_the_hand_over_and_the_handed_on_turn_can_be_held() -> TestResult {
     };
     stdin.write_all(b"first\n")?;
     said("TURN HELD")?;
-    let entered = Instant::now();
     stdin.write_all(b"second\n")?;
-    // Said once its hook returned: its record comes later.
+    // Said once its hook returned: its record comes only when the test says so.
     said("QUEUED: second")?;
     assert_eq!(hooks_logged(dir).len(), 2);
-    assert_eq!(shapes(&path), ["user - first"]);
+    assert_eq!(shapes(&path), ["user - first"], "its record is held");
+    std::fs::write(&written, "")?;
     until("the waiting prompt's record", || shapes(&path).len() == 2)?;
-    assert!(
-        entered.elapsed() >= Duration::from_millis(400),
-        "written {:?} after the Enter",
-        entered.elapsed()
-    );
     // The turn ends: nothing is handed on until the test says so.
     std::fs::write(dir.join("hold"), "")?;
     said("QUEUE HELD")?;

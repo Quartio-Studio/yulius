@@ -175,7 +175,7 @@ pub struct TaskRuntime {
     /// for days) leaves this set until the run's next prompt is answered, which then counts as
     /// the held one going on: the session reads as holding a draft until the prompt after
     /// that is submitted, never as holding none. A new run holds none
-    /// ([`Self::prompt_box_starts_empty`]).
+    /// ([`Self::run_starts`]).
     pub(crate) prompt_held: AtomicBool,
     /// Whose personal MCP servers the current run was started with (SPEC-332 MSC-009): a live
     /// run keeps its MCP configuration, so a hand-over restarts it, and only that person messages
@@ -326,8 +326,9 @@ pub struct TaskRuntime {
     /// this run): where it went (a turn of its own, or the queue) is written a moment later
     /// (SPEC-471 CCQ-004).
     pub(crate) prompt_passed_ms: AtomicI64,
-    /// How many prompts from the prompt box went on in this run: a turn's end that looks at
-    /// the session sees by it that one went on meanwhile (SPEC-471 CCQ-004).
+    /// How many prompts from the prompt box went on so far (it only grows): a turn's end that
+    /// looks at the session reads it twice and so sees that one went on meanwhile (SPEC-471
+    /// CCQ-004).
     pub(crate) prompts_passed: AtomicU64,
     /// The run was reattached after a restart of the server and its lines were not read again
     /// yet: what waits in Claude Code's queue is not known (SPEC-471 CCQ-001).
@@ -432,11 +433,11 @@ impl TaskRuntime {
             .max(self.message_typed_ms.load(Ordering::SeqCst))
     }
 
-    /// A run starts at `now_ms`: its prompt box is empty, and no prompt of it is held (one held
-    /// in the run before went with that run's hook client; SPEC-468 CCF-010). Nothing waits in
-    /// its queue and no prompt of it went on: what the run before queued went with its process
-    /// (SPEC-471 CCQ-001).
-    pub(crate) fn prompt_box_starts_empty(&self, now_ms: i64) {
+    /// A run starts at `now_ms`, in a new process: its prompt box is empty, and no prompt of
+    /// it is held (one held in the run before went with that run's hook client; SPEC-468
+    /// CCF-010). Nothing waits in its queue and no prompt of it went on: what the run before
+    /// queued went with its process (SPEC-471 CCQ-001).
+    pub(crate) fn run_starts(&self, now_ms: i64) {
         self.box_emptied_ms.store(now_ms, Ordering::SeqCst);
         self.prompt_held.store(false, Ordering::SeqCst);
         self.with_queue(|queue| *queue = yulius_domain::agent_cli::Queue::default());
@@ -450,9 +451,11 @@ impl TaskRuntime {
     }
 
     /// Whether Claude Code's queue may hold something a restart would lose: its records say
-    /// so, or they were not read yet ([`Self::queue_unread`]).
+    /// so, or they were not read yet ([`Self::queue_unread`]), or what they said cannot be
+    /// read (a poisoned lock): not known counts as holding.
     pub(crate) fn queue_may_hold(&self) -> bool {
-        self.queue_unread.load(Ordering::SeqCst) || self.queue().holds()
+        self.queue_unread.load(Ordering::SeqCst)
+            || self.queue.lock().map_or(true, |queue| queue.holds())
     }
 
     /// Changes what is known of the queue.
@@ -1810,7 +1813,7 @@ impl App {
         // Typing from now on, once viewers can write to this run, is a person's draft in it
         // (SPEC-068): its prompt box starts empty (SPEC-468 CCF-010).
         let typed_before = runtime.typed_at_ms.load(Ordering::SeqCst);
-        runtime.prompt_box_starts_empty(self.now().0);
+        runtime.run_starts(self.now().0);
         self.attach_run(&task.id, &attempt, &host_token).await?;
         // The new run learns its goal from its own lines, and an idle one writes none: what the
         // old run read of the goal still says what the agent left.
@@ -4902,7 +4905,7 @@ mod tests {
         let runtime = super::TaskRuntime::new();
         runtime.typed_at_ms.store(5_000, Ordering::SeqCst);
         runtime.prompt_held.store(true, Ordering::SeqCst);
-        runtime.prompt_box_starts_empty(7_000);
+        runtime.run_starts(7_000);
         assert_eq!(runtime.box_emptied_ms.load(Ordering::SeqCst), 7_000);
         assert!(!runtime.prompt_held.load(Ordering::SeqCst));
     }
@@ -4920,7 +4923,7 @@ mod tests {
         runtime.with_queue(|queue| queue.record(QueueChange::Added, None));
         runtime.prompt_passed_ms.store(6_500, Ordering::SeqCst);
         assert!(runtime.queue().holds());
-        runtime.prompt_box_starts_empty(7_000);
+        runtime.run_starts(7_000);
         assert_eq!(runtime.queue(), yulius_domain::agent_cli::Queue::default());
         assert_eq!(runtime.prompt_passed_ms.load(Ordering::SeqCst), 0);
         assert!(!runtime.queue_may_hold());
@@ -4928,7 +4931,7 @@ mod tests {
         // which counts as holding; the next launch starts a process whose queue is empty.
         runtime.queue_unread.store(true, Ordering::SeqCst);
         assert!(runtime.queue_may_hold(), "not known counts as holding");
-        runtime.prompt_box_starts_empty(8_000);
+        runtime.run_starts(8_000);
         assert!(!runtime.queue_may_hold());
     }
 
