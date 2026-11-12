@@ -92,8 +92,7 @@ an older one.
 - [x] Independent review round 1 answered, every finding fixed with its test
 - [x] Independent review round 2 answered, every finding fixed with its test
 - [x] A session resumed with nothing typed names its Claude Code with its first record
-- [x] While a channel change is saved neither control of the channel takes another
-- [x] A late read never undoes what a check or a channel change drew on the card
+- [x] A change asked for on the card keeps its controls off until its outcome, and no late read undoes it
 
 ## Acceptance criteria
 
