@@ -23,7 +23,9 @@ const channelSelect = (browser: { evaluate: (fn: () => string) => Promise<string
   return `${el.value} ${el.disabled ? 'off' : 'on'}`;
 });
 /** The mock's Claude Code state a test reaches into. */
-type MockClaude = { __yuliusMock: { claude: { holdRead: Promise<void> | null; releaseRead?: () => void; failRead?: () => void; readsHeld?: number }; heldWaiting?: number } };
+type MockClaude = { __yuliusMock: { claude: { holdRead: Promise<void> | null; releaseRead?: () => void; failRead?: () => void; readsHeld?: number; lateAnswers?: string[] }; heldWaiting?: number } };
+/** What each read the mock answered late said: its channel, and ", checking" when a check ran as it was asked. */
+const lateAnswers = (browser: { evaluate: (fn: () => string[]) => Promise<string[]> }) => browser.evaluate(() => (window as unknown as MockClaude).__yuliusMock.claude.lateAnswers ?? []);
 
 test('the card shows the version, npm’s releases, the last check and the tasks still on an older one', async ({ app, browser, screen }) => {
   await app.open(mock('/admin/instance'));
@@ -206,6 +208,7 @@ test('a read asked before a check or a channel change does not undo what that dr
   // The first read's answer comes now and says nothing of the check: the card goes on asking, and
   // shows what the check did.
   await releaseRead();
+  await expect.poll(() => lateAnswers(browser)).toEqual(['latest']);
   await expect(screen.getByText(/Up to date: runs get 2\.1\.322\./)).toBeVisible({ timeout: 10000 });
 
   // The same for a channel change. A check runs, so the card asks again; that read is answered late.
@@ -220,10 +223,10 @@ test('a read asked before a check or a channel change does not undo what that dr
   await screen.getByRole('combobox', 'Release channel').selectOption({ label: 'Stable' });
   await expect(screen.getByText(/Chosen here by mkarp/)).toBeVisible();
   await expect.poll(() => channelSelect(browser)).toBe('stable on');
-  // Its answer arrives after the change was drawn. The card keeps the change, and the check the
-  // change started is followed to its end.
+  // Its answer arrives after the change was drawn, and names the old channel. The card keeps the
+  // change, and the check the change started is followed to its end.
   await releaseRead();
-  await expect.poll(readsHeld).toBe(0);
+  await expect.poll(() => lateAnswers(browser)).toEqual(['latest', 'latest']);
   await expect(screen.getByText(/Up to date: runs get 2\.1\.322\./)).toBeVisible({ timeout: 10000 });
   expect(await channelSelect(browser)).toBe('stable on');
   await expect(screen.getByText(/Chosen here by mkarp/)).toBeVisible();
@@ -268,7 +271,7 @@ test('a read asked while a channel change is being saved, and answered after it,
   await browser.evaluate(() => (window as unknown as { __yuliusMock: { release(): void } }).__yuliusMock.release());
   await expect(screen.getByText(/Chosen here by mkarp/)).toBeVisible();
   await browser.evaluate(() => { (window as unknown as MockClaude).__yuliusMock.claude.releaseRead?.(); });
-  await expect.poll(readsHeld).toBe(0);
+  await expect.poll(() => lateAnswers(browser)).toEqual(['latest']);
   await expect(screen.getByText(/Up to date: runs get 2\.1\.322\./)).toBeVisible({ timeout: 10000 });
   expect(await channelSelect(browser)).toBe('stable on');
 });
@@ -279,6 +282,8 @@ test('“Check now” stays off while its request is on its way, also when the c
   await expect.poll(() => browser.evaluate(() => (window as unknown as MockClaude).__yuliusMock.claude.readsHeld ?? 0)).toBe(1);
   await screen.getByRole('button', CHECK).click();
   await expect.poll(() => browser.evaluate(() => (window as unknown as MockClaude).__yuliusMock.heldWaiting ?? 0)).toBe(1);
+  // Off from the press, before anything draws the card.
+  await expect(screen.getByRole('button', CHECK)).toBeDisabled();
   // The first read draws the card while the check is still being asked for.
   await browser.evaluate(() => { (window as unknown as MockClaude).__yuliusMock.claude.releaseRead?.(); });
   await firstShown(screen.getByText('Claude Code 2.1.322'));

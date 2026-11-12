@@ -4559,13 +4559,15 @@ route('GET', '/api/admin/claude-code', async ({ db }) => {
   // A test can keep a read's answer back (`claude.holdRead = promise`, or `claude_hold_read=1`
   // with `claude.releaseRead()`): the view is read when it is asked and answered when the promise
   // resolves, as an answer that is slow on the wire; when the promise is rejected the read fails
-  // (500). `readsHeld` counts the answers kept back now.
+  // (500). `readsHeld` counts the answers kept back now, and `lateAnswers` lists what each late
+  // answer said (its channel, and whether a check ran), so a test sees that it is the older word.
   const hold = db.claude.holdRead;
   if (hold) {
     db.claude.readsHeld = (db.claude.readsHeld || 0) + 1;
     let lost = false;
     try { await hold; } catch { lost = true; } finally { db.claude.readsHeld -= 1; }
     if (lost) fail(500, 'internal', 'the mock failed this read');
+    db.claude.lateAnswers = [...(db.claude.lateAnswers || []), `${view.channel}${view.checking ? ', checking' : ''}`];
   }
   return view;
 });
