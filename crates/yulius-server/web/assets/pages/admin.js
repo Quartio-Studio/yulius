@@ -509,8 +509,9 @@ export function mountAccountsPage(ctx, route) {
     loadCapacity();
   };
   async function refreshAll() {
+    // Off (it runs already, or no card on the page can be read): a press does nothing.
+    if (refreshAllButton.getAttribute('aria-disabled') === 'true') return;
     const accounts = [...shown.values()].filter(signedIn);
-    if (readingAll || accounts.length === 0 || !anyToRead()) return;
     readingAll = true;
     paintRefreshAll();
     const outcomes = await Promise.all(accounts.map((account) => read(account.id, true)));

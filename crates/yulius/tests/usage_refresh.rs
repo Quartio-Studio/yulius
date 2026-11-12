@@ -1021,6 +1021,8 @@ async fn an_answer_for_the_previous_sign_in_is_not_recorded_for_a_new_one() -> T
     }
     let refreshed = refresh(&h, &admin, "a-raced").await?;
     assert_eq!(refreshed.status, StatusCode::OK, "{:?}", refreshed.body);
+    // An answer that carried no window is no reading of the usage.
+    assert_eq!(refreshed.body["usage_read"], false, "{:?}", refreshed.body);
     let after = stored(&h, "a-raced").await?;
     assert_eq!(after.limit_resets_at, Some(Timestamp(in_an_hour)));
     assert_eq!(after.primary.and_then(|w| w.used_percent), Some(100.0));

@@ -582,7 +582,9 @@ hold until its reset even after a person bought credits. The Subscriptions page'
 `POST /api/admin/accounts/{id}/usage` (`App::refresh_account_usage`) reads the usage, then sends
 one request of one output token for each limit stored and in effect, with the model that limit
 binds (`UsageProbe::model_answer`): a model of each family whose own weekly window is used up, and
-the default model for a limit of the whole subscription (`AccountUsage::families_at_a_limit`).
+the default model for a limit of the whole subscription (`AccountUsage::families_at_a_limit`). A
+window the reading of that call itself carried is not asked about: the reading is Claude's word
+on it. The answer says whether a usage reading came of it (`usage_read`).
 
 The response's status is the answer, as Claude Code reads its own responses. A response that ran
 ends the limit, whatever its headers say (one that ran on bought credits still carries
@@ -593,7 +595,8 @@ record): the window is full until the reset the answer names, so a limit stored 
 gets one. Anything else is no answer: the refresh fails with one sentence and the limit stays.
 
 An answer is applied under the usage lock (`App::change_usage_of`), and only while the sign-in it
-was asked with and the limit it was asked about are still the ones stored. The whole call has one
+was asked with and the limit it was asked about are still the ones stored; a usage reading is
+stored only for the sign-in it was asked with, too. The whole call has one
 deadline of 25 s, under the 30 s the web client waits; each step stores whole or not at all, so
 a call that is cut off leaves what its finished steps stored. The background round asks about no
 limit: reading a model's allowance ahead of its limit would cost a request of that model for

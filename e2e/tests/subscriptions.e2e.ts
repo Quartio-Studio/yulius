@@ -581,6 +581,7 @@ test('Refresh all is off until the subscriptions are shown, and when they could 
   await expect(all).toHaveAttribute('aria-disabled', 'true');
   expect(await all.getAttribute('title')).toBeNull();
   await press(browser, '.page-actions .refresh-all');
+  await expect(browser.locator('.toast')).toHaveCount(0);
   await browser.evaluate(() => (window as unknown as Usage).__yuliusMock.release?.());
   await firstShown(browser.locator('main .account-card').first());
   await expect.poll(() => all.getAttribute('aria-disabled')).toBeNull();
@@ -592,6 +593,7 @@ test('Refresh all is off until the subscriptions are shown, and when they could 
   expect(await all.getAttribute('title')).toBeNull();
   await press(browser, '.page-actions .refresh-all');
   expect(await usageRequests(browser)).toEqual({});
+  await expect(browser.locator('.toast')).toHaveCount(0);
 });
 
 test('only the Subscriptions page offers Refresh: the Dashboard and the Status panel show the same card without it (SPEC-473)', async ({ app, browser }) => {

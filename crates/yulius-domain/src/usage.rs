@@ -1235,6 +1235,14 @@ mod tests {
         let mut unknown = read;
         unknown.record_model_answer(refused(LimitScope::Account, None, None), fable, NOW);
         assert_eq!(unknown.limit_resets_at, None);
+        // A limit in effect whose window the refusal does not name keeps its own reset.
+        let mut in_effect = AccountUsage {
+            limit_reached: true,
+            limit_resets_at: Some(Timestamp(4_000_000)),
+            ..read
+        };
+        in_effect.record_model_answer(refused(LimitScope::Account, None, None), fable, NOW);
+        assert_eq!(in_effect.limit_resets_at, Some(Timestamp(4_000_000)));
         let mut passed_window = AccountUsage {
             primary: Some(window(Some(100.0), Some(900_000))),
             ..AccountUsage::default()

@@ -42,7 +42,9 @@ up, on credits the person bought, or it is refused.
   token for each limit stored and in effect: with a model of each family whose own weekly window
   is used up (the default model for its own family, else the first one Yulius offers of the
   family), and with the default model for a limit of the whole subscription. Nothing is asked
-  when no limit is stored. At most five provider requests, one after another, under one
+  when no limit is stored, nor about a window the usage reading of that call itself carried
+  (a per-model cap from the usage endpoint): the reading is Claude's word on it, and an answer
+  "it ran", on credits a person bought, would end a window the next reading stores again. At most five provider requests, one after another, under one
   deadline of 25 s, shorter than the 30 s the web client waits.
 - **The response's status says whether the model runs.** A response that ran ends the limit,
   whatever its headers say, and nothing is stored about the model's allowance. HTTP 429 that
@@ -54,7 +56,9 @@ up, on credits the person bought, or it is refused.
   round's reading still ends it, as ADR-0301 decided.
 - **An answer is applied under the usage lock, for the sign-in and the limit it was asked
   about.** A limit a session reported meanwhile is newer than the answer; a new sign-in's limits
-  are not the previous one's.
+  are not the previous one's. A usage reading is stored only for the sign-in it was asked with,
+  as well. The route's answer says whether a usage reading came of the call (`usage_read`): a
+  reading's time is written to the second, so it cannot tell.
 - **A question Claude does not answer fails the refresh** with one sentence (502, kept as the
   usage note) and leaves the limit. A reading Claude will not give for now (not shared, or
   throttled) does not stop the questions; a refused sign-in or a failed request does.
