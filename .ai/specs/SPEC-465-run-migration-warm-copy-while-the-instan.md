@@ -317,13 +317,13 @@ Resume and bound
 
 ## Evidence
 
-Head of the gate: `0a4978f8` (2026-11-12), which holds `dev` up to `420750d9`; the commit after
+Head of the gate: `1939fae4` (2026-11-12), which holds `dev` up to `cfc11cd6`; the commit after
 it changes this document only.
 
-- `scripts/dev ci`: exit 0; nextest 3786 run, 3786 passed, 16 skipped; clippy with `-D
+- `scripts/dev ci`: exit 0; nextest 3800 run, 3800 passed, 16 skipped; clippy with `-D
   warnings`, the macOS compile, the repository contracts, `cargo deny` (advisories, bans,
   licenses, sources ok), `cargo shear` (no issues), doctests and docs.
-- `cargo test -p yulius --lib instance::`: 297 tests pass, 95 of them new in this change
+- `cargo test -p yulius --lib instance::`: 311 tests pass, 95 of them new in this change
   (receipts 20, export 14, extraction 6, import 14, the new host's steps 6, whole moves 23, walk
   6, archive 3, the estimate and the sample 2, the progress line 1). `cli::instance_migrate…`
   passes with `--max-downtime` in the help and `0` or a word refused (exit 2). Forty runs in a
@@ -405,7 +405,7 @@ it changes this document only.
     One pass of the build before the fix (`2e407d22`) beside the same process staged none
     either: the moment between the walk's look at a directory and its listing is microseconds,
     which the tests and the reviewer's 400 passes hit on purpose.
-  - At `4a7fe6f4` (every fix of the review; after it only a clean merge of `dev`), the same
+  - At `4a7fe6f4` (every fix of the review; after it only merges of `dev`), the same
     setup and four more things in the data directory: a tmpfs mounted inside it (51 files, 30
     MiB), a tree 1,500 directories deep while the command's shell allowed 1,024 open files, a
     file under a write lease whose holder never gives it up (`lease-break-time` 5 s), and a
@@ -430,6 +430,14 @@ it changes this document only.
     files on the new host), the file at the bottom of the deep tree, the leased file. Type,
     owner, mode, time, link text, link count and size of 22,290 entries were equal but the time
     of `sandboxes/` itself; no file of `/etc` was in the copy.
+  - At `1939fae4` (the merge of SPEC-467, by which no pass sends the limits mark an import
+    leaves at the top of a data directory): the old host held such a mark, as production does
+    (8 bytes, a time of 2023). Pass 1 sent 22,299 entries in 49 s, pass 2 sent 18; both units
+    frozen at 00:53:02; the frozen pass sent 18 of 22,304 entries; `copy proven 22304 entries
+    and 386.0 MiB in 13 folders, the same on both hosts` at 00:53:15; the new instance listened
+    at 00:53:29, 27 s after the freeze; exit 0. The mark is in no pass's count, the old host's
+    is untouched, and the new instance's first start used the one the import wrote. The
+    SHA-256 of all 20,627 files was equal on both hosts.
   - At `2e407d22` the plan alone said: "then it is frozen for about 54 s: up to 224698 entries
     are counted four times (about 36848 a second here, twice on each host) …", exit 0, nothing
     changed.
@@ -451,8 +459,10 @@ it changes this document only.
   (fixed in `5389761e`, `c2f39946`, `656f79fc`), then `APPROVE de8df9d1` with three notes, which
   `ef00e48e` and this section answer. One finding lies outside this change (the plan's
   disk-space check counts an unfinished copy that Prepare removes, on `dev` before it): issue
-  #1191. The same reviewer's look at the final head (those last fixes, two clean merges of
-  `dev` and this section) is the approval the merge was asked with.
+  #1191. After that came the notes' fixes, two clean merges of `dev` and one with conflicts
+  (`1939fae4`: SPEC-467 changed the walk's rule of what a copy leaves out and added tests of
+  the freeze, which the warm passes now follow); the same reviewer's look at those and at this
+  section is the approval the merge was asked with.
 
 Not tested here:
 
