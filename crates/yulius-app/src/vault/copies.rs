@@ -148,7 +148,8 @@ impl App {
             ),
         )
         .await?;
-        self.flag_secret_wait(user, "a copy request").await?;
+        let link = self.agent_secret_link(&sandbox.slug, source);
+        self.flag_secret_wait(user, "a copy request", &link).await?;
         // Another copy replaced the one other tasks asked for: they no longer wait for it.
         if waiting.is_some() && !same {
             self.settle_secret_waits(Some(user.sandbox())).await;
@@ -158,7 +159,7 @@ impl App {
             "copy_of": source.name,
             "hosts": request.hosts,
             "requested_by": request.requested_by,
-            "link": self.agent_secret_link(&sandbox.slug, source),
+            "link": link,
             "next": format!(
                 "A person who manages {} and this project's secrets allows the copy on the Secrets \
                  page: print the link so they can. Until then {} does not exist; go on with other \

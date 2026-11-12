@@ -71,6 +71,16 @@ function needsYouText(asked) {
       h('div', { class: i === parts.length - 1 ? 'needs-you-todo' : null }, h('dt', null, label), h('dd', null, withCode(text))))));
 }
 
+/** Where a request or a flag's reason is answered: a page of this Yulius opens in place. */
+function openLink(link) {
+  return h('a', { class: 'btn btn-sm', href: link, target: link.startsWith(location.origin) ? null : '_blank', rel: 'noopener' }, 'Open');
+}
+
+/** Words as a sentence of their own: a full stop unless they end one themselves. */
+function sentence(text) {
+  return /[.!?…:]$/.test(text) ? text : `${text}.`;
+}
+
 /** A request's list that scrolls takes the keyboard, so what scrolls is read without a pointer. */
 function fitNeedsYou(bar) {
   const list = bar.querySelector('.needs-you-parts');
@@ -231,7 +241,7 @@ export function mountTaskView(ctx, sandbox, task) {
   });
   const watchingTerminal = (view) => ({
     el: view.el, term: null, socket: { status: 'closed' }, canWrite: false, ready: true,
-    start() { view.start(); }, focus() { view.focus(); }, sendKeys: () => false,
+    start() { view.start(); }, focus() { view.focus(); }, answerHere() { view.focus(); }, sendKeys: () => false,
     reconnect() {}, refit() {}, refreshEmpty() {}, refreshBanner() {}, destroy() { view.destroy(); },
   });
   let watch = owner() ? makeWatch() : null;
@@ -316,12 +326,13 @@ export function mountTaskView(ctx, sandbox, task) {
   // the terminal (each resize makes Claude Code redraw its whole screen, F 2026-10-09).
   // It takes the keyboard (tabindex -1) only from a reply field closed under someone typing.
   const attention = h('div', { class: 'attention-bar', role: 'status', tabindex: -1, hidden: true });
-  // Where the user answers the agent: its terminal (the quick input on phones).
+  // Where the user answers the agent: its terminal (the quick input on phones), which says that
+  // it took the keyboard, as Claude Code's own cursor shows nothing of it (SPEC-472).
   // The whole session (SPEC-326) gives the terminal back first: the answer goes there.
   const focusReply = () => {
     closeHistory(false);
     if (isPhone()) quickInput.focus();
-    else terminal.focus();
+    else terminal.answerHere();
   };
   // Reply when the question is in the terminal: one button kept across the bar's renders, so the
   // keyboard stays on it through task updates (#406).
@@ -460,17 +471,32 @@ export function mountTaskView(ctx, sandbox, task) {
       textAnswer = !owner() && !asksInTerminal;
       asksPerson = true;
       content = [icon('st-attention', { size: 16 }), needsYouText(asked),
-        asked.link ? h('a', { class: 'btn btn-sm', href: asked.link, target: asked.link.startsWith(location.origin) ? null : '_blank', rel: 'noopener' }, 'Open') : null,
+        asked.link ? openLink(asked.link) : null,
         owner() ? null : asksInTerminal ? terminalReply : replying ? null : replyButton];
     } else if (info.request) {
       content = [icon('globe', { size: 16 }), h('span', { class: 'attention-text' }, h('strong', null, 'Action needed in the browser: '), info.request.reason || 'the agent asked you to do something there.'),
         h('button', { type: 'button', class: 'btn btn-sm', onClick: () => ctx.openBrowserTab && ctx.openBrowserTab(sandbox, info.request.tab_id) }, 'Open browser tab')];
     } else if (current.status === 'running' && current.activity === 'needs_attention') {
+      // Why the task was flagged (SPEC-472). A reason of Yulius's own reads as a request does,
+      // with the page where it is answered: the terminal shows no question for it. Reply still
+      // goes to the terminal, never to a field: a menu may have opened there since (RPL-006).
       // A watcher has no terminal and cannot type (SPEC-179): the answer is the owner's (#576).
-      content = [icon('st-attention', { size: 16 }), h('span', { class: 'attention-text' }, owner()
-        ? h('strong', null, `The agent needs @${owner()}'s attention.`)
-        : [h('strong', null, 'The agent needs your attention. '), 'Its question is in the terminal below.']),
-        owner() ? null : terminalReply];
+      const why = current.attention;
+      if (why && why.kind === 'yulius' && (why.problem || why.action)) {
+        asksPerson = true;
+        content = [icon('st-attention', { size: 16 }), needsYouText({ problem: why.problem, action: why.action }),
+          why.link ? openLink(why.link) : null,
+          owner() ? null : terminalReply];
+      } else {
+        // Only Claude Code's own question is in the terminal, in its words when it gave any; a
+        // flag with no reason (raised before reasons were kept) claims none.
+        const asks = Boolean(why) && why.kind === 'terminal';
+        content = [icon('st-attention', { size: 16 }), h('span', { class: 'attention-text' }, owner()
+          ? h('strong', null, `The agent needs @${owner()}'s attention.`)
+          : [h('strong', null, 'The agent needs your attention. '), asks && why.problem ? `${sentence(why.problem)} ` : null,
+            asks ? 'Its question is in the terminal below.' : 'Look at its terminal below.']),
+          owner() ? null : terminalReply];
+      }
     } else if (current.status === 'running' && current.activity === 'waiting' && info.group === 'needs') {
       content = [icon('st-input', { size: 16 }), h('span', { class: 'attention-text' }, owner()
         ? h('strong', null, `The agent is waiting for @${owner()}'s reply.`)

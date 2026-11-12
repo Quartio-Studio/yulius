@@ -123,6 +123,10 @@ pub struct TaskSummary {
     /// until someone writes to it or the agent resolves it.
     #[serde(default)]
     pub needs_you: Option<NeedsYouView>,
+    /// Why the task reads `needs_attention` (SPEC-472): the reason of that flag, while the task
+    /// reads it. Null in every other state, and for a flag raised without one.
+    #[serde(default)]
+    pub attention: Option<AttentionView>,
     /// How "Auto" chose the task's mode and workflow when it was created (TSK-015); null when the
     /// person picked both.
     #[serde(default)]
@@ -233,6 +237,23 @@ pub struct NeedsYouView {
     pub link: Option<String>,
     /// When it was asked (RFC 3339).
     pub at: String,
+}
+
+/// Why a task was flagged `needs_attention` (SPEC-472, ADR-0306).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttentionView {
+    /// `terminal`: Claude Code asks in the task's terminal (a permission menu, a question);
+    /// `yulius`: Yulius flagged the task itself.
+    pub kind: String,
+    /// What is wrong, one line: Yulius's reason, or Claude Code's own words for its question.
+    #[serde(default)]
+    pub problem: Option<String>,
+    /// What the person does.
+    #[serde(default)]
+    pub action: Option<String>,
+    /// Where they do it (a page of this Yulius).
+    #[serde(default)]
+    pub link: Option<String>,
 }
 
 /// A prompt held by the scope check (SPEC-001 TSK-013).

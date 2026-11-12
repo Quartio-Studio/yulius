@@ -87,6 +87,9 @@ function keyboardOnPage() {
   return !active || active === document.body || active === document.documentElement;
 }
 
+/** What the terminal says when it takes the keyboard for an answer asked for elsewhere (SPEC-472). */
+const ANSWER_HERE = 'The terminal has the keyboard: answer there.';
+
 /**
  * Create a terminal view. Options:
  *   transport, path            WebSocket transport and path (e.g. /api/tasks/{tid}/terminal)
@@ -831,6 +834,12 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     clickTimer = setTimeout(() => { if (!term.hasSelection()) claim(); }, CLICK_SETTLE_MS);
   }, true);
 
+  function takeFocus() {
+    focusRequests += 1;
+    focusWanted = focusRequests;
+    if (opened && ready) term.focus();
+  }
+
   function showNotice(text) {
     noticeEl.textContent = text;
     noticeEl.hidden = false;
@@ -935,9 +944,16 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     },
     /** Focus the terminal now, or as soon as it is shown. */
     focus() {
-      focusRequests += 1;
-      focusWanted = focusRequests;
-      if (opened && ready) term.focus();
+      takeFocus();
+    },
+    /**
+     * Takes the keyboard for an answer asked for elsewhere on the page (the task view's Reply,
+     * SPEC-472) and says so here: Claude Code draws its own cursor, so focus alone shows nothing.
+     * A terminal that takes no input says why instead; a disconnected one has its own banner.
+     */
+    answerHere() {
+      takeFocus();
+      if (gotState && conn === 'open') showNotice(state.can_write ? ANSWER_HERE : readOnlyText());
     },
     get ready() {
       return ready;

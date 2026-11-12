@@ -360,6 +360,7 @@ TaskSummary = {
   "after": ChainLink|null, "next": [ChainLink],
   "held_prompt": {"id","class":"new_scope|drops_scope|redirect","excerpt","percent","typed_by|null","created_at"}|null,
   "needs_you": {"action","happened|null","problem|null","decision","link|null","at"}|null,   // SPEC-134, SPEC-327: what the agent asked a person (`needs_you`)
+  "attention": {"kind":"terminal|yulius","problem|null","action|null","link|null"}|null,   // SPEC-472: why `activity` is `needs_attention`
   "background_shells": "0|1|…|null",
   "auto": {"mode":"jev|default|null","workflow":"jev|default|null","workflow_name":"Feature|null"}|null
 }
@@ -369,6 +370,15 @@ ChainLink = {"task_id|null","number","title|null","status|null","blocked":"reaso
 `after` is the task this one runs after (`task_id` null once that task was deleted), `next` the
 tasks chained after it. On a `chained` task, `after.blocked` says why it waits for a person: its
 predecessor stopped, failed, closed before it was done or was deleted (TSK-012).
+
+`attention` says why a running task's `activity` is `needs_attention`
+([ADR-0306](decisions/0306-a-needs-attention-flag-keeps-its-reason.md)): the reason of that flag,
+only while the task reads it. `kind` `terminal` means Claude Code asks in the task's terminal (a
+permission menu, a question), with its own words in `problem` when it gave any. `kind` `yulius`
+means Yulius flagged the task itself and nothing is asked in the terminal: `problem` says what is
+wrong and `action` what the person does, each one line, and `link` is the page of this Yulius
+where they do it (the Secrets page for a secret request, the browser tab for a browser request).
+It is null in every other state, and for a flag whose `needs_you` request says it (a goal pause).
 
 `status` `waiting_capacity` means the task is **paused** for subscription capacity (ROT-010,
 SPEC-002 ADR-17): every Claude subscription is at 98 % or limited in a window binding the task, so

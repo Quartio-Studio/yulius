@@ -112,6 +112,12 @@ export function createTerminalView(options) {
       if (view) view.focus();
       else focusWanted = true;
     },
+    /** As the core's. Before the core has loaded there is no notice to say it in: the terminal
+     * takes the keyboard when it shows. */
+    answerHere() {
+      if (view) view.answerHere();
+      else focusWanted = true;
+    },
     refit() {
       if (view) view.refit();
     },

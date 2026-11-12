@@ -2824,9 +2824,42 @@ flowchart LR
     stop -.->|"goal open: until the verdict,\nthe turn record or 20 s"| working
     verdict["goal verdict: not met"] --> working
     work["assistant work after the stop"] --> working
-    notice["notice that asks a person"] --> attention["needs_attention"]
-    attention -.->|"agent works on"| working
+    notice["notice that asks a person"] -->|"reason: terminal,\nClaude Code's words"| attention["needs_attention\n+ its reason"]
+    own["Yulius's own flag: the gate gave up,\nno goal, a full context, a secret\nor browser request, …"] -->|"reason: yulius,\nproblem, to do, page"| attention
+    attention -.->|"a notice's flag:\nagent works on"| working
 ```
+
+A `needs_attention` flag keeps its reason with the task
+([SPEC-472](../.ai/specs/SPEC-472-hey-i-have-a-bug-in-produt-sanbox-this-h.md),
+[ADR-0306](decisions/0306-a-needs-attention-flag-keeps-its-reason.md)). Claude Code's notice is one
+way to the flag and the only one that puts a question on the terminal. Yulius raises it itself
+when the Stop gate gave up, a goal was never set, Claude Code still asks whether to trust the
+folder, a restart cut the first message, a full context could not be recovered, a session could
+not be ended, or the agent asked for a secret or for an action in the sandbox browser. Each of
+these says why in a notice of the task's terminal, which reaches the viewers connected at that
+moment and shows for six seconds. So the statement that raises the flag
+(`TaskStore::flag_attention`) writes the reason into `tasks.attention`: who asks (`terminal` or
+`yulius`), the problem, what to do, the page where to do it, and the flag's time. It is read
+only while the task is running, reads `needs_attention` and has not changed state since that
+time (`task_attention`), so no other statement has to clear it; a task that is already flagged
+keeps its flag and its reason. One flag changes owner, and its reason follows: a secret
+request's flag that another matter takes over (the request's answer then leaves it) says that
+matter's reason, and one that waits for several requests points at one still open
+(`replace_attention`: the same flag and time, another reason). The reason also records that a
+flag is a secret request's (`answer_ends`), so the request's answer ends it after a restart of
+Yulius as before one. The task's view carries it as `attention`, and the task view's
+bar shows it: a reason of Yulius's own as a request is shown (Problem, To do, Open), Claude
+Code's question as "Its question is in the terminal below" with Claude Code's words, and a flag
+without a reason as "Look at its terminal below". Reply gives the terminal the keyboard and the
+terminal's notice says so.
+
+The reason also says whether the session's own work answers the flag (STA-003: Claude Code's
+question, which the person answers in the terminal with no prompt to the agent; not a worker's
+prompt). The time of such a flag is kept in the server's memory, and an instance update freezes
+every agent mid-turn: a run that is watched again takes the time back from the flag
+(`watch_answerable_flag`), so the task reads Working once the person answered and the agent goes
+on, after a restart as before one. The same holds for a question that took a secret request's
+flag over.
 
 Needs you means a person has to act. An idle agent that stopped reads "Your turn" under Needs you only
 while its work is visibly unfinished: plan steps open, or a goal that Claude Code last recorded as set,

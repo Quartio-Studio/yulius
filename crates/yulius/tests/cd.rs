@@ -966,6 +966,16 @@ async fn agents_deploy_dev_ask_a_person_and_never_deploy_production() -> TestRes
     let secret = f.h.store.vault_get(&f.secret).await?.ok_or("secret")?;
     assert_eq!(secret.env_files, EnvFiles::Asked);
     assert_eq!(secret.env_requested_by.as_deref(), Some("#1"));
+    // The task says what its person does, and where (SPEC-472 ATN-004).
+    assert_eq!(
+        support::attention(&f.h.app, "t1").await?,
+        json!({
+            "kind": "yulius",
+            "problem": "The agent asked for a secret, and a person has to answer its request.",
+            "action": "Answer it on the Secrets page.",
+            "link": link,
+        })
+    );
 
     // Allowed: the agent deploys dev, and `yulius wait` follows the run to its end.
     f.allow_secret().await?;

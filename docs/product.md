@@ -239,7 +239,13 @@ watching, steering and unblocking.
   A task is its owner's: Yulius acts on GitHub for it with their credentials (the agent's own Git
   and `gh` use a narrowed App token), so only they change it. Its owner can **pause** a running task and resume it later: the agent
   stops where it is without being told (as an update pauses every task) and goes on from there; a
-  paused task, and one an update holds, reads Paused in the lists and says why. Others
+  paused task, and one an update holds, reads Paused in the lists and says why. A task that
+  reads **Needs your action** says why in the bar over its terminal, whenever it is opened:
+  what is wrong, what to do, and the page where to do it when Yulius flagged the task itself
+  (the Stop gate gave up, no goal was set, a session is full, the agent asked for a secret or
+  for an action in the sandbox browser), and "Its question is in the terminal below" only for
+  Claude Code's own question; Reply puts the keyboard in the terminal and says so (SPEC-472).
+  Others
   watch it as its live transcript (printed as the Sessions view prints a session, in the
   terminal's colours, following its newest lines until they scroll up), see whose it is
   in the view and in the sidebar, and can ask the owner for control; once handed over, it acts as

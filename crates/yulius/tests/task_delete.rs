@@ -321,6 +321,17 @@ async fn a_closed_run_whose_host_cannot_be_terminated_is_a_conflict_and_stays_li
         task.activity,
         Some(yulius_domain::task::Activity::NeedsAttention)
     );
+    // The task says why to whoever opens it (SPEC-472 ATN-004).
+    let why = support::attention(&h.app, "t1").await?;
+    assert_eq!(why["kind"], "yulius", "{why}");
+    let problem = why["problem"].as_str().unwrap_or_default();
+    assert!(
+        problem.starts_with("Yulius could not end this session (")
+            && problem.contains("still alive after SIGKILL")
+            && problem.ends_with("It still counts as running, so the task cannot be deleted."),
+        "{why}"
+    );
+    assert_eq!(why["action"], "Stop the task again to retry.", "{why}");
     Ok(())
 }
 

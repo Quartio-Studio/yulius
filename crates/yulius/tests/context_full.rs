@@ -577,6 +577,18 @@ fn a_full_fresh_session_needs_a_person() -> TestResult {
             .map(String::as_str),
             Some("needs attention: the context is still full after compacting and a fresh session")
         );
+        // The task says it to whoever opens it later (SPEC-472 ATN-004).
+        assert_eq!(
+            crate::support::attention(&app, id.as_str()).await?,
+            serde_json::json!({
+                "kind": "yulius",
+                "problem": "The context is still full after compacting and a fresh session.",
+                "action": "Find what fills it (a huge file, tool output or instructions), then \
+                           type `/compact` or `/clear` in the terminal, or stop and continue the \
+                           task.",
+                "link": null,
+            })
+        );
         stop(&app, &id).await?;
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
