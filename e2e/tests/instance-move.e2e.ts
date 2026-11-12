@@ -423,6 +423,19 @@ test('a plan with a failed line offers no move, and a failed preparation says so
   await expect(c.getByText(new RegExp(`^ ?A move to ${TARGET.replaceAll('.', '\\.')} is recorded on this host \\(phase Prepare, last line .*\\)\\. The checklist below is that move’s, not this request’s\\.$`))).toBeVisible();
   expect(await cardText(browser)).toMatch(/Failed \(1\)\s+software: the new host: tar: \/usr\/local: Cannot write/);
   expect(await cardText(browser)).not.toMatch(/found problems/);
+  // The note's icon stands before its words, not on a line of its own above them.
+  const note = await browser.evaluate(() => {
+    const p = document.querySelector<HTMLElement>('section.move .move-recorded');
+    const icon = p ? p.querySelector('svg') : null;
+    const words = p ? [...p.childNodes].find((n) => n.nodeType === Node.TEXT_NODE && (n.textContent || '').trim()) : null;
+    if (!p || !icon || !words) return null;
+    const range = document.createRange();
+    range.selectNodeContents(words);
+    const first = range.getClientRects()[0];
+    const mark = icon.getBoundingClientRect();
+    return { beside: first.left >= mark.right, sameLine: Math.abs(first.top - mark.top) < 8 };
+  });
+  expect(note).toEqual({ beside: true, sameLine: true });
   expect(await lineNames(browser)).toContain('software');
   await expect(c.getByRole('button', 'Continue the move…')).toBeHidden();
   await expect(c.getByRole('button', 'Run migration…')).toBeHidden();

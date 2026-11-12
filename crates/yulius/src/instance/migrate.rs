@@ -762,7 +762,10 @@ impl<'a> Move<'a> {
                     self.manual(
                         ITEM,
                         format!(
-                            "is not on the new host yet{seen}. This run never signs in as root                              does (root's keys, its ssh configuration, a password): add this                              line to root's ~/.ssh/authorized_keys on the new host, then ask                              again: {public}"
+                            "is not on the new host yet{seen}. This run never signs in as root \
+                             does (root's keys, its ssh configuration, a password): add this \
+                             line to root's ~/.ssh/authorized_keys on the new host, then ask \
+                             again: {public}"
                         ),
                     );
                     Err(Stop::Ended)

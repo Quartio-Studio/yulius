@@ -1892,13 +1892,16 @@ fn a_run_without_a_sign_in_never_uses_roots_own() -> TestResult {
     let key = line(&status, "one-time key").ok_or("no key line")?;
     assert_eq!(key.outcome, HostOutcome::Manual);
     assert!(
-        key.detail.contains("never signs in as root")
+        key.detail
+            .contains("never signs in as root does (root's keys")
             && key
                 .detail
                 .contains("ssh-ed25519 AAAAC3FAKE yulius-migrate-"),
         "{}",
         key.detail
     );
+    // One sentence after another, as it is read on the page: no runs of spaces.
+    assert!(!key.detail.contains("  "), "{:?}", key.detail);
     assert_eq!(status.lines.len(), 2, "the plan went on: {}", s.shown());
     assert!(
         status

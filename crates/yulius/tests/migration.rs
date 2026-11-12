@@ -35,6 +35,8 @@ struct FakeMoveHelper {
     slow: AtomicBool,
     /// A write waits until a test lets it go.
     held: AtomicBool,
+    /// How often a waiting request was written again by its id.
+    again: AtomicUsize,
     helper: Mutex<Option<MoveHelperStatus>>,
     status: Mutex<Option<MoveStatus>>,
     arrived: Mutex<Option<MoveChecklist>>,
@@ -68,6 +70,7 @@ impl MoveHelper for FakeMoveHelper {
             && let Some(request) = pending.as_ref().filter(|request| request.id == id)
         {
             written.push(request.clone());
+            self.again.fetch_add(1, Ordering::SeqCst);
         }
     }
 
@@ -787,6 +790,8 @@ async fn an_unanswered_request_and_a_silent_helper_are_said() -> TestResult {
         written[0], written[1],
         "the same request: its id and its time"
     );
+    // By its id, so that a request written meanwhile is never replaced by this one.
+    assert_eq!(i.helper.again.load(Ordering::SeqCst), 1);
     i.later(14_999);
     assert_eq!(i.view().await?["request"]["state"], "requested");
     assert_eq!(i.helper.written().len(), 3);
