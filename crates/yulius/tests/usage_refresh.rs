@@ -336,12 +336,23 @@ async fn a_refresh_gives_a_limit_recorded_without_a_reset_its_reset() -> TestRes
 async fn a_refresh_that_cannot_ask_leaves_the_limit_and_says_why() -> TestResult {
     let status = Arc::new(Mutex::new("500 Internal Server Error"));
     let answering = Arc::clone(&status);
+    // A refusal's body longer than the probe reads (256 KiB): what it says of usage credits is
+    // not taken, so a 429 that names no limit in its headers stays a throttle.
+    let long = format!(
+        r#"{{"error":{{"details":{{"error_code":"credits_required","pad":"{}"}}}}}}"#,
+        "x".repeat(300 * 1024)
+    );
     let (base, seen) = claude(move |model| {
         if model == DEFAULT {
             let status = answering
                 .lock()
                 .map_or("500 Internal Server Error", |status| *status);
-            reply(status, &[("retry-after", "30")], "")
+            let body = if status.starts_with("429") {
+                long.as_str()
+            } else {
+                ""
+            };
+            reply(status, &[("retry-after", "30")], body)
         } else {
             ran(&[])
         }
@@ -685,6 +696,40 @@ async fn a_refresh_ends_at_its_deadline() -> TestResult {
         record.last_error.as_deref(),
         Some(format!("usage: {sentence}").as_str())
     );
+    Ok(())
+}
+
+/// RFR-003: each question is asked about what is stored when its turn comes. An Opus window and
+/// a limit of the whole subscription are stored for a sign-in whose usage cannot be read; the
+/// Opus model answers, which ends both, so the default model is not asked any more.
+#[tokio::test]
+async fn a_limit_that_an_earlier_answer_ended_is_not_asked_about() -> TestResult {
+    let (base, seen) = claude(|model| {
+        if model == CHEAPEST {
+            reply("200 OK", &[], "{}")
+        } else {
+            ran(&[])
+        }
+    })
+    .await?;
+    let h = harness_at(base).await?;
+    let admin = setup_superadmin_creds(&h).await?;
+    account(
+        &h,
+        "a-both",
+        &AccountUsage {
+            weekly_opus: Some(full_week(Some(h.app.now().0 + 2 * DAY_MS))),
+            limit_reached: true,
+            ..AccountUsage::default()
+        },
+    )
+    .await?;
+    let refreshed = refresh(&h, &admin, "a-both").await?;
+    assert_eq!(refreshed.status, StatusCode::OK, "{:?}", refreshed.body);
+    let after = stored(&h, "a-both").await?;
+    assert_eq!(after.weekly_opus, None);
+    assert!(!after.limit_reached);
+    assert_eq!(asked(&seen), ["usage", CHEAPEST, "claude-opus-5-5"]);
     Ok(())
 }
 

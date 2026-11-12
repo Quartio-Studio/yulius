@@ -262,6 +262,8 @@ test('Refresh reads one subscription again: the button says so and keeps the key
   await openUsageGate(browser);
   await expect.poll(async () => (await cardSays(browser, 'main .account-card', 'mkarp@example.com')).age).toBe('Usage read just now');
   await expect(browser.locator('.toast-ok .toast-msg:has-text("Usage of Claude #1 read again.")')).toBeVisible();
+  // Said once: the presses while it was reading started nothing of their own.
+  await expect(browser.locator('.toast-ok')).toHaveCount(1);
   await expect(refreshOf(screen, 'Claude #1')).toBeVisible();
   expect(await button.getAttribute('aria-busy')).toBeNull();
   expect(await button.getAttribute('aria-disabled')).toBeNull();
@@ -308,6 +310,8 @@ test('a refresh that finds the limit gone draws the card ready and reads the cap
   });
   const capacityReads = () => browser.evaluate(() => ((window as unknown as Usage).__yuliusMock.asked ?? {})['/api/capacity'] ?? 0);
   const before = await capacityReads();
+  // Read beside the list, and again after the page's own reading of the old card.
+  expect(before).toBe(2);
   await refreshOf(screen, 'Claude #5').click();
   await expect(browser.locator('.toast-ok .toast-msg:has-text("Usage of Claude #5 read again.")')).toBeVisible();
   const after = await cardSays(browser, 'main .account-card', 'studio@example.com');
@@ -350,6 +354,8 @@ test('Refresh all reads every signed-in subscription, three at a time, and says 
   expect(await axeViolations(browser)).toEqual([]);
   await openUsageGate(browser);
   await expect(browser.locator('.toast-ok .toast-msg:has-text("Usage read again for 5 subscriptions.")')).toBeVisible();
+  // Said once, with nothing else: the presses meanwhile started nothing of their own.
+  await expect(browser.locator('.toast-ok')).toHaveCount(1);
   await expect(all).toHaveText('Refresh all');
   expect(await all.getAttribute('aria-disabled')).toBeNull();
   expect(await all.getAttribute('aria-busy')).toBeNull();

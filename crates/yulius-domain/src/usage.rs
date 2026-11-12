@@ -1213,6 +1213,12 @@ mod tests {
         assert_eq!(kept.weekly_fable, stored.weekly_fable);
         assert_eq!(kept.weekly_opus, stored.weekly_opus, "as by any reading");
         assert_eq!(kept.weekly_sonnet, None);
+        // A window past its reset is no limit to ask about: it goes, as by any reading.
+        let passed = AccountUsage {
+            weekly_fable: Some(full_week(Some(900_000))),
+            ..stored
+        };
+        assert_eq!(reading.keeping_asked(&passed, NOW).weekly_fable, None);
         assert_eq!(kept.secondary, reading.secondary);
         assert!(!kept.limit_reached);
         // A reading that carries the window is the newer word.
