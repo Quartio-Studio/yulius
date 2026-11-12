@@ -189,6 +189,97 @@ pub fn freeze(mut host: Box<dyn Host>, unit: &str, update_unit: &str) -> Result<
     Ok(held)
 }
 
+/// What a freeze to stay did ([`freeze_to_stay`]).
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Stayed {
+    /// The units it froze, in that order.
+    pub frozen: Vec<String>,
+    /// The units that could not be frozen, each with why.
+    pub failed: Vec<(String, String)>,
+}
+
+/// Freezes the instance of the server's unit `unit` to stay frozen: for a move whose new
+/// instance has taken over, so nothing of the old one may run beside it (SPEC-467 LFT-002).
+/// Every unit of it that may run unfrozen is sent the freeze: the server's and its sessions unit
+/// (SPEC-458), also one systemd says nothing about. A unit that is frozen already is left
+/// alone, and so is a server's unit that has stopped (`inactive`, `failed`) and a sessions unit
+/// the host does not have or that does not run: systemd freezes none of those.
+///
+/// Unlike [`freeze`] nothing here ever thaws, and the update helper is not asked: a freeze
+/// that fails, or is not complete within [`FREEZE_WAIT`], is left as it stands for the caller
+/// to report. Every unit is sent its freeze before any is waited for, and what was frozen is
+/// told beside what was not, because the more of the old instance is frozen, and the sooner,
+/// the better.
+pub fn freeze_to_stay(host: &mut dyn Host, unit: &str) -> Stayed {
+    let mut targets = Vec::new();
+    match show(host, unit) {
+        Ok(state)
+            if state.freezer == "frozen"
+                || matches!(state.active.as_str(), "inactive" | "failed") => {}
+        // It runs, is on its way up or down, or systemd does not say.
+        _ => targets.push(unit.to_owned()),
+    }
+    if let Some(sessions) = yulius_sandbox::units::sessions_unit(unit) {
+        match sessions_state(host, unit) {
+            Ok(None | Some(true)) => {}
+            // It runs unfrozen, or systemd does not say.
+            Ok(Some(false)) | Err(_) => targets.push(sessions),
+        }
+    }
+    let mut did = Stayed::default();
+    // Sent to all of them first: a freeze that hangs on one unit does not keep the other
+    // running for the length of the wait.
+    let mut sent = Vec::new();
+    for target in targets {
+        match host.systemctl(&["freeze", &target]) {
+            Ok((0, _)) => sent.push(target),
+            // Refused: also when an earlier freeze is still on its way, or has landed since.
+            Ok((_, _)) if show(host, &target).is_ok_and(|state| state.freezer == "frozen") => {
+                did.frozen.push(target);
+            }
+            Ok((code, _)) => {
+                let why = format!("`systemctl freeze {target}` failed (exit {code})");
+                did.failed.push((target, why));
+            }
+            Err(why) => {
+                let why = format!("`systemctl freeze {target}` did not run ({why})");
+                did.failed.push((target, why));
+            }
+        }
+    }
+    for target in sent {
+        match frozen_to_stay(host, &target) {
+            Ok(()) => did.frozen.push(target),
+            Err(why) => did.failed.push((target, why)),
+        }
+    }
+    did
+}
+
+/// Waits until systemd says that `target`, which was sent the freeze, is frozen; never thaws.
+fn frozen_to_stay(host: &mut dyn Host, target: &str) -> Result<(), String> {
+    let mut waited = Duration::ZERO;
+    loop {
+        let state = show(host, target).map_err(|why| {
+            format!(
+                "{target} was sent the freeze, and systemd does not say whether it took ({why})"
+            )
+        })?;
+        if state.freezer == "frozen" {
+            return Ok(());
+        }
+        if waited >= FREEZE_WAIT {
+            return Err(format!(
+                "{target} was not frozen within {} s (a process may hang in the kernel); the \
+                 freeze is left in place",
+                FREEZE_WAIT.as_secs()
+            ));
+        }
+        host.sleep(POLL);
+        waited += POLL;
+    }
+}
+
 impl Freeze {
     /// Whether the export froze a unit (so it thaws it).
     #[must_use]
@@ -359,6 +450,15 @@ pub fn thaw_instance(host: &mut dyn Host, unit: &str) -> Result<(), String> {
         None => Ok(()),
         Some(why) => Err(format!("{why} (`systemctl thaw {}`)", units.join(" "))),
     }
+}
+
+/// Thaws `units` in that order without asking systemd what there is: for a caller that knows
+/// them (what a freeze covered). Every one is tried.
+///
+/// # Errors
+/// A thaw failed; the message says which, to run by hand.
+pub fn thaw_each(host: &mut dyn Host, units: &[String]) -> Result<(), String> {
+    thaw(host, units.iter()).map_or(Ok(()), Err)
 }
 
 /// Thaws `units` in order; every one is tried, and the failures say to run it by hand.
