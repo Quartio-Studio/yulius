@@ -505,7 +505,9 @@ windows only. A subscription reads `limited` while the default model cannot run 
 limit, a session's reading and a provider's reading read, change and store a subscription's usage
 through one helper under one lock (`App::change_account_usage`, `CapacityState::usage_writes`),
 which a new sign-in takes too; it is never held across a request to the provider, so a limit
-recorded while a reading is under way is kept.
+recorded while a reading is under way is kept. The write that marks a subscription refused
+(`record_access_lost`) takes the lock as well: a usage write stores the status it read together
+with the usage, and one under way would otherwise store `ok` over "needs a new sign-in" (#1211).
 
 A model's limit nothing says the end of, with no subscription the task can go to, makes the task
 wait, and the provider's reading that ends it lets the pool try the task once
@@ -526,9 +528,11 @@ own limit.
 
 Yulius's request says the task does not go on by itself, like the one for a goal Claude Code
 paused, and ends the same way ([decision 0304](decisions/0304-a-request-yulius-opens-for-a-goal-pause-ends-when-the-agent-works-again.md)):
-when the session's agent works again, or sooner when Yulius takes the task on at a usage limit
-(`TakenOn`): it runs the session on past the limit, or pauses the task and resumes it by itself.
-The audit log says which (`task.needs_you.resolved`).
+when the session's agent works again, or sooner when Yulius takes the task on at the refusal
+that cut its turn (`TakenOn`; a usage limit, or a subscription Claude refuses for good): it runs
+the session on past the refusal, or pauses the task until a subscription can take it and resumes
+it then. The audit log says which (`task.needs_you.resolved`). When the last subscription is
+refused, the request gives way to the one that asks for a sign-in.
 
 ```mermaid
 flowchart TD
