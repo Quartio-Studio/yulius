@@ -61,6 +61,18 @@ const CREDITS_PHRASES: [&str; 3] = [
     "out of extra usage",
 ];
 
+/// Lower-case phrases by which such a text says the limit is one model's: Claude Code names the
+/// model or a way to another one ("Fable 5 requires usage credits", "/model to switch models",
+/// "Switch to another model"). Without one it is Claude Code's message for a subscription whose
+/// window and usage credits are both used up ("You're out of usage credits · resets 3pm"), which
+/// binds every model.
+const MODEL_PHRASES: [&str; 4] = [
+    "requires usage credits",
+    "/model",
+    "another model",
+    "switch models",
+];
+
 /// Lower-case phrases of the same refusals, for records that carry only text.
 const ACCESS_PHRASES: [&str; 3] = [
     "disabled claude subscription access",
@@ -696,15 +708,21 @@ fn access_lost(record: &Map<String, Value>, text: &str) -> bool {
 
 /// Recognizes Claude usage-limit error text such as `Claude AI usage limit reached|1760000000`
 /// (epoch seconds after `|`) or `5-hour limit reached ∙ resets 3pm` (no absolute time), and the
-/// text of a model refused for its usage credits ([`CREDITS_PHRASES`]), which is that model's.
+/// text of a refusal for usage credits ([`CREDITS_PHRASES`]): the model's when the text names
+/// the model or a way to another one ([`MODEL_PHRASES`]), else the subscription's.
 fn limit_signal(text: &str) -> Option<Observed> {
     let lower = text.to_lowercase();
     if CREDITS_PHRASES.iter().any(|p| lower.contains(p)) {
+        let scope = if MODEL_PHRASES.iter().any(|p| lower.contains(p)) {
+            LimitScope::Model(None)
+        } else {
+            LimitScope::Account
+        };
         return Some(Observed::LimitReached {
             resets_at: None,
             message: shorten(text.trim(), LIMIT_MESSAGE_BYTES),
             window_minutes: None,
-            scope: LimitScope::Model(None),
+            scope,
             at: None,
         });
     }
@@ -1441,15 +1459,33 @@ mod tests {
             )),
             Some((LimitScope::Model(None), None))
         );
-        // Only the text says so (a CLI without the typed kind), in each of Claude Code's wordings.
-        for worded in [
-            text,
-            "Fable 5 requires usage credits. /model to switch models.",
-            "You're out of extra usage · resets 3pm",
+        // Only the text says so (a CLI without the typed kind). Claude Code names a way to
+        // another model when the model's own allowance is the limit; the same words without
+        // one are its message for a subscription whose window and credits are both used up,
+        // which binds every model (review round 2).
+        for (worded, scope) in [
+            (text, LimitScope::Model(None)),
+            (
+                "Fable 5 requires usage credits. /model to switch models.",
+                LimitScope::Model(None),
+            ),
+            ("Fable 5 requires usage credits.", LimitScope::Model(None)),
+            (
+                "You're out of usage credits. Switch to another model to continue.",
+                LimitScope::Model(None),
+            ),
+            (
+                "You're out of usage credits · resets 3pm",
+                LimitScope::Account,
+            ),
+            (
+                "You're out of extra usage · resets 3pm",
+                LimitScope::Account,
+            ),
         ] {
             assert_eq!(
                 scope_and_reset(&record(serde_json::json!({}), worded)),
-                Some((LimitScope::Model(None), None)),
+                Some((scope, None)),
                 "{worded}"
             );
         }
