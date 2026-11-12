@@ -242,10 +242,19 @@ impl App {
         // stamped anew, until it goes on, and what a person types meanwhile is a draft.
         // A prompt that waited in Claude Code's queue is submitted long after its Enter: what
         // was typed after that Enter is still in the box, which then counts as emptied at the
-        // Enter (`box_emptied_at`).
+        // Enter (`box_emptied_at`). And a prompt Yulius blocks (its scope check held it,
+        // TSK-013) never reaches the agent: Claude Code puts its text back into the box, so
+        // that submit emptied nothing.
         let runtime = self.runtime(&ctx.task.id);
         let sent_again = runtime.prompt_held.load(Ordering::SeqCst);
-        if !sent_again && crate::finish::from_prompt_box(input.prompt.as_deref()) {
+        let from_box = !sent_again && crate::finish::from_prompt_box(input.prompt.as_deref());
+        let reply = self.answer_event(ctx, event, input, sent).await;
+        let blocked = matches!(
+            &reply,
+            Ok(HookReply::Output(output))
+                if output.decision.as_deref() == Some(yulius_contracts::hooks::DECISION_BLOCK)
+        );
+        if from_box && !blocked {
             let typed = runtime
                 .typed_at_ms
                 .load(Ordering::SeqCst)
@@ -258,7 +267,6 @@ impl App {
             );
             runtime.box_emptied_ms.fetch_max(emptied, Ordering::SeqCst);
         }
-        let reply = self.answer_event(ctx, event, input, sent).await;
         let held = matches!(reply, Ok(HookReply::Hold { .. }));
         runtime.prompt_held.store(held, Ordering::SeqCst);
         reply

@@ -773,21 +773,22 @@ SPEC-461), with no root step and no sign-in again:
   person typed into it in the last minute, and while a draft may sit in its prompt box: a person
   typed into it since its last prompt was sent (for a prompt that waited while the agent worked:
   since it was entered), however long ago (Yulius sees keystrokes and sent prompts, not the box,
-  so anything typed and not sent counts). A message Yulius typed into the session counts in the
-  same way until Claude Code submits it (a message sent through a Superagent, a pull request's
-  news): while the agent works Claude Code queues it, and a restarted session would not have it.
-  It tries once per version, one restart of a task at a time. A goal session moves at a turn it
-  works on after, while its goal is set and not yet achieved; an idle one, and a goal task that
-  is Done, keep their version until their next start. A prompt-mode session in which a person
-  set a goal of their own (`/goal …` in its terminal) keeps its version while that goal is open:
-  Yulius types nothing into such a session and learns of a goal only from what the new process
-  writes, so after a restart it would not know the goal any more (Claude Code restores an open
-  goal by itself when a session is resumed, at least since 2.1.292; Yulius does not rely on it).
-  The session moves at a later turn's end, once the goal is met, failed or cleared, or at its
-  next start: stop the task and continue it to move it at once. An idle session that is
-  restarted reads "Continuing" for a moment and then as it did: its person is not notified a
-  second time. The card lists the tasks still on an older version, and each task's info shows
-  the version each session ran.
+  so anything typed and not sent counts, and so does a prompt Yulius holds for its person's
+  choice, which Claude Code keeps in the box). A message Yulius typed into the session counts in
+  the same way until Claude Code submits it (a message sent through a Superagent, a pull
+  request's news): while the agent works Claude Code queues it, and a restarted session would
+  not have it. It tries once per version, one restart of a task at a time. A goal session moves
+  at a turn it works on after, while its goal is set and not yet achieved; an idle one, and a
+  goal task that is Done, keep their version until their next start. A prompt-mode session in
+  which a person set a goal of their own (`/goal …` in its terminal) keeps its version while
+  that goal is open: Yulius types nothing into such a session and learns of a goal only from
+  what the new process writes, so after a restart it would not know the goal any more (Claude
+  Code restores an open goal by itself when a session is resumed, at least since 2.1.292; Yulius
+  does not rely on it). The session moves at a later turn's end, once the goal is met, failed or
+  cleared, or at its next start: stop the task and continue it to move it at once. An idle
+  session that is restarted reads "Continuing" for a moment and then as it did: its person is
+  not notified a second time. The card lists the tasks still on an older version, and each
+  task's info shows the version each session ran.
   Yulius does not know a schedule a session set for itself (Claude Code's `/loop`): such a
   session is restarted like any other, and the schedule ends with its process.
 - **A version a session cannot continue on gets no other running session.** That is: the

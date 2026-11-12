@@ -861,11 +861,11 @@ mod moves {
     }
 
     /// A hook of that run, sent now: its turn's Stop, or with `prompt` the submit of that
-    /// prompt. The status it is answered with: 200, or 202 while it is held.
-    async fn hook(
+    /// prompt. The status it is answered with (200, or 202 while it is held) and what it said.
+    async fn hook_answered(
         h: &crate::support::Harness,
         prompt: Option<&str>,
-    ) -> Result<axum::http::StatusCode, Box<dyn std::error::Error>> {
+    ) -> Result<(axum::http::StatusCode, serde_json::Value), Box<dyn std::error::Error>> {
         use tower::ServiceExt as _;
         let (event, body) = match prompt {
             Some(text) => (
@@ -884,7 +884,89 @@ mod moves {
             .header("content-type", "application/json")
             .header("x-yulius-hook-sent-ms", h.app.now().0.to_string())
             .body(axum::body::Body::from(body.to_string()))?;
-        Ok(h.internal.clone().oneshot(request).await?.status())
+        let answer = h.internal.clone().oneshot(request).await?;
+        let status = answer.status();
+        let said = axum::body::to_bytes(answer.into_body(), 1 << 20).await?;
+        Ok((status, serde_json::from_slice(&said).unwrap_or_default()))
+    }
+
+    /// [`hook_answered`], for its status alone: 200, or 202 while it is held.
+    async fn hook(
+        h: &crate::support::Harness,
+        prompt: Option<&str>,
+    ) -> Result<axum::http::StatusCode, Box<dyn std::error::Error>> {
+        Ok(hook_answered(h, prompt).await?.0)
+    }
+
+    /// A Jev that reads every typed prompt as new scope, so Yulius holds each (TSK-013).
+    struct HoldsEveryPrompt;
+
+    #[async_trait]
+    impl yulius_app::ports::intake::ChoiceEvaluator for HoldsEveryPrompt {
+        async fn evaluate(
+            &self,
+            _state: &str,
+            question: &yulius_domain::intake::ChoiceQuestion<'_>,
+            _deadline: Duration,
+        ) -> Result<yulius_domain::intake::ChoiceAnswer, yulius_app::ports::intake::JevFailure>
+        {
+            let odds = |key: &str| if key == "new_scope" { 0.97 } else { 0.01 };
+            Ok(yulius_domain::intake::ChoiceAnswer {
+                choice: "new_scope".to_owned(),
+                confidence: 0.97,
+                probabilities: question
+                    .options
+                    .iter()
+                    .map(|option| (option.key.to_owned(), odds(option.key)))
+                    .collect(),
+            })
+        }
+    }
+
+    /// SPEC-468 CCF-010: a prompt Yulius's scope check holds (TSK-013) never reaches the agent,
+    /// and Claude Code puts its text back into the prompt box (the intake module's own check
+    /// with 2.1.295; 2.1.322 lands a line a hook dropped in the composer). That submit emptied
+    /// nothing: the turn that ran meanwhile ends and the session stays. The hook used to count
+    /// as a submit, so the held text went with the old process while the task's card still
+    /// offered "Send anyway".
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_prompt_yulius_holds_is_still_in_the_prompt_box() -> TestResult {
+        use axum::http::StatusCode;
+        let (h, task) = on_the_test_clock(false).await?;
+        let alice = UserId::parse("u-alice")?;
+        let jev = Arc::new(HoldsEveryPrompt) as Arc<dyn yulius_app::ports::intake::ChoiceEvaluator>;
+        assert!(
+            h.app
+                .set_intake(yulius_app::intake::IntakeServices::new(Some(jev), None))
+        );
+
+        // A turn runs (a prompt of three words or fewer is not checked).
+        assert_eq!(hook(&h, Some("first")).await?, StatusCode::OK);
+        // Its person types the next prompt and enters it; Yulius holds it.
+        let next = "Also add a dark mode to the whole settings page";
+        h.clock.0.fetch_add(1_000, Ordering::SeqCst);
+        h.app.record_input(&task, &alice, next.as_bytes());
+        h.clock.0.fetch_add(1_000, Ordering::SeqCst);
+        h.app.record_input(&task, &alice, b"\r");
+        h.clock.0.fetch_add(100, Ordering::SeqCst);
+        let (status, answer) = hook_answered(&h, Some(next)).await?;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(answer["decision"], "block", "{answer}");
+        assert!(
+            h.app.has_draft(&task),
+            "the held prompt is back in the prompt box"
+        );
+        // The turn that ran meanwhile ends five minutes later: the session stays.
+        h.clock.0.fetch_add(5 * MINUTE, Ordering::SeqCst);
+        let probed = reached(Point::ClaudeMoveProbed, &task);
+        let flag = decided(&task);
+        assert_eq!(hook(&h, None).await?, StatusCode::OK);
+        until_decided(&flag).await?;
+        assert!(
+            !probed.load(Ordering::SeqCst) && !h.app.claude_move_cooling(&task),
+            "a session with a held prompt in its box is not looked at, and no restart is tried"
+        );
+        Ok(())
     }
 
     /// SPEC-468 CCF-010 (the review's question of direction): a draft that sits in a session's
