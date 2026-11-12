@@ -309,6 +309,14 @@ pub struct TaskRuntime {
     /// The clean Stop (ms) whose turn waits for the goal verdict before it reads idle (0 = none).
     /// Whoever takes it settles that turn (SPEC-079 BGW-005).
     pub(crate) verdict_stop_ms: crate::finish::VerdictSlot,
+    /// What waits in Claude Code's queue, as the run's `queue-operation` records say: a prompt
+    /// entered while a turn runs, or a notification of its own, which the process holds in
+    /// memory alone, so a restart loses it (SPEC-471 CCQ-001). A run starts with none.
+    pub(crate) queue: Mutex<yulius_domain::agent_cli::Queue>,
+    /// When a prompt from the session's prompt box last went on to Claude Code (ms, 0 = none in
+    /// this run): where it went (a turn of its own, or the queue) is written a moment later
+    /// (SPEC-471 CCQ-004).
+    pub(crate) prompt_passed_ms: AtomicI64,
     /// Polls of the transcript watcher so far: the Stop hook waits for one more before it decides
     /// a switch, so the lines written before the Stop are read (SPEC-079 BGW-004).
     pub(crate) watch_polls: AtomicU64,
@@ -410,10 +418,26 @@ impl TaskRuntime {
     }
 
     /// A run starts at `now_ms`: its prompt box is empty, and no prompt of it is held (one held
-    /// in the run before went with that run's hook client; SPEC-468 CCF-010).
+    /// in the run before went with that run's hook client; SPEC-468 CCF-010). Nothing waits in
+    /// its queue and no prompt of it went on: what the run before queued went with its process
+    /// (SPEC-471 CCQ-001).
     pub(crate) fn prompt_box_starts_empty(&self, now_ms: i64) {
         self.box_emptied_ms.store(now_ms, Ordering::SeqCst);
         self.prompt_held.store(false, Ordering::SeqCst);
+        self.with_queue(|queue| *queue = yulius_domain::agent_cli::Queue::default());
+        self.prompt_passed_ms.store(0, Ordering::SeqCst);
+    }
+
+    /// What the run's lines said so far about Claude Code's queue.
+    pub(crate) fn queue(&self) -> yulius_domain::agent_cli::Queue {
+        self.queue.lock().map(|queue| *queue).unwrap_or_default()
+    }
+
+    /// Changes what is known of the queue.
+    pub(crate) fn with_queue(&self, change: impl FnOnce(&mut yulius_domain::agent_cli::Queue)) {
+        if let Ok(mut queue) = self.queue.lock() {
+            change(&mut queue);
+        }
     }
 
     pub(crate) fn new() -> Self {
@@ -486,6 +510,8 @@ impl TaskRuntime {
             goal_open: AtomicBool::new(false),
             goal_unfinished: AtomicBool::new(false),
             verdict_stop_ms: crate::finish::VerdictSlot::default(),
+            queue: Mutex::default(),
+            prompt_passed_ms: AtomicI64::new(0),
             watch_polls: AtomicU64::new(0),
             replay_transcript: AtomicBool::new(false),
             session_end: Mutex::new(None),
@@ -4200,6 +4226,8 @@ impl App {
         runtime.goal_open.store(false, Ordering::SeqCst);
         runtime.goal_unfinished.store(false, Ordering::SeqCst);
         runtime.verdict_stop_ms.clear();
+        // What waits in Claude Code's queue is read from the run's own lines (SPEC-471).
+        runtime.with_queue(|queue| *queue = yulius_domain::agent_cli::Queue::default());
         if let Ok(mut end) = runtime.session_end.lock() {
             *end = None;
         }
@@ -4490,6 +4518,8 @@ impl App {
                 // settles, after this prompt started its turn (SPEC-453 TPO-001).
                 let _order = runtime.turn_order.lock().await;
                 if at.is_some_and(|at| at.0 <= runtime.last_stop_ms.load(Ordering::SeqCst)) {
+                    // Its turn came and went: what Claude Code handed on had it (SPEC-471).
+                    runtime.with_queue(yulius_domain::agent_cli::Queue::turn_seen);
                     return;
                 }
                 crate::race::reached(
@@ -4525,6 +4555,9 @@ impl App {
                     .await;
                 self.publish_task(task_id).await;
                 self.keep_working_stretch(task_id, stretch).await;
+                // Only now, with the task reading Working: the turn of what Claude Code handed
+                // on from its queue is known, so the hand-over is over (SPEC-471 CCQ-003).
+                runtime.with_queue(yulius_domain::agent_cli::Queue::turn_seen);
             }
             Observation::TurnComplete { at } => {
                 if let Some(at) = at {
@@ -4597,6 +4630,8 @@ impl App {
             Observation::BackgroundResumable { id } => {
                 self.background_resumable(task_id, id).await;
             }
+            // In the order of the lines: the count is ahead of nothing the watcher applied.
+            Observation::Queue(change) => runtime.with_queue(|queue| queue.record(change)),
             Observation::Session { .. } => {}
         }
     }
@@ -4733,6 +4768,24 @@ mod tests {
         runtime.prompt_box_starts_empty(7_000);
         assert_eq!(runtime.box_emptied_ms.load(Ordering::SeqCst), 7_000);
         assert!(!runtime.prompt_held.load(Ordering::SeqCst));
+    }
+
+    /// SPEC-471 CCQ-001: what the run before left in Claude Code's queue went with its process,
+    /// and a resumed session does not get it back: a run starts with an empty queue and with
+    /// no prompt that just went on.
+    #[test]
+    fn a_new_run_starts_with_an_empty_queue() {
+        use std::sync::atomic::Ordering;
+        use yulius_domain::agent_cli::QueueChange;
+        let runtime = super::TaskRuntime::new();
+        runtime.with_queue(|queue| queue.record(QueueChange::Added));
+        runtime.with_queue(|queue| queue.record(QueueChange::HandedOn));
+        runtime.with_queue(|queue| queue.record(QueueChange::Added));
+        runtime.prompt_passed_ms.store(6_500, Ordering::SeqCst);
+        assert!(runtime.queue().holds());
+        runtime.prompt_box_starts_empty(7_000);
+        assert_eq!(runtime.queue(), yulius_domain::agent_cli::Queue::default());
+        assert_eq!(runtime.prompt_passed_ms.load(Ordering::SeqCst), 0);
     }
 
     /// Review of SPEC-332 (round 3): a person's switch and a hand-over may come mid-turn, so they

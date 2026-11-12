@@ -16,6 +16,7 @@
 //! `stop_hook_summary` and `turn_duration` ("Brewed for 51s") that close it.
 
 use serde_json::{Map, Value};
+use yulius_domain::agent_cli::QueueChange;
 use yulius_domain::task::GoalOutcome;
 use yulius_domain::time::Timestamp;
 use yulius_domain::usage::TokenUsage;
@@ -194,6 +195,7 @@ pub fn observe_versioned(line: &str) -> (Vec<Observed>, Option<String>) {
         Some("assistant") => observe_assistant(&record),
         Some("attachment") => observe_attachment(&record),
         Some("system") => observe_system(&record),
+        Some("queue-operation") => observe_queue(&record),
         Some(_) => Vec::new(),
         None => return (vec![Observed::Malformed], None),
     };
@@ -213,6 +215,24 @@ pub fn record_time(line: &str) -> Option<Timestamp> {
         .as_ref()
         .and_then(|record| str_of(record, "timestamp"))
         .and_then(parse_rfc3339)
+}
+
+/// What a `queue-operation` record says happened to Claude Code's queue (SPEC-471 CCQ-001).
+/// Claude Code 2.1.322 writes one when a prompt entered while a turn runs, or a notification of
+/// its own, is put into the queue (`enqueue`, with its text), handed on to a turn of its own
+/// once the running turn ended (`dequeue`, nothing else), or taken out without one: into the
+/// running turn at a tool result, to another agent, dropped (`remove`, with a `reason`), or
+/// back into the prompt box (`popAll`, `popOne`). The record carries no `isSidechain` and no
+/// `version`: it is written to the session's own file only. An operation not known here is
+/// read as nothing.
+fn observe_queue(record: &Map<String, Value>) -> Vec<Observed> {
+    let change = match str_of(record, "operation") {
+        Some("enqueue") => QueueChange::Added,
+        Some("dequeue") => QueueChange::HandedOn,
+        Some("remove" | "popAll" | "popOne") => QueueChange::Taken,
+        _ => return Vec::new(),
+    };
+    vec![Observed::Queue(change)]
 }
 
 /// The session goal's state from a `goal_status` attachment (see the module docs).
@@ -1552,6 +1572,58 @@ mod tests {
             serde_json::json!({"origin": {"kind": "task-notification"}, "promptSource": "system"}),
         );
         assert_eq!(wake, vec![session, Observed::UserTurn { at, wake: true }]);
+    }
+
+    /// SPEC-471 CCQ-001: the records Claude Code 2.1.322 wrote about its queue when it ran
+    /// against a stub of the model API (their ids shortened): each is one change of the queue,
+    /// and nothing else is.
+    #[test]
+    fn queue_records_are_changes_of_the_queue() {
+        let change = |line: &str| observe_versioned(line);
+        let one = |change: QueueChange| (vec![Observed::Queue(change)], None);
+        assert_eq!(
+            change(
+                r#"{"type":"queue-operation","operation":"enqueue","timestamp":"2026-11-12T05:56:52.726Z","sessionId":"b38662ec","content":"second"}"#
+            ),
+            one(QueueChange::Added)
+        );
+        assert_eq!(
+            change(
+                r#"{"type":"queue-operation","operation":"dequeue","timestamp":"2026-11-12T05:59:32.594Z","sessionId":"19203f97"}"#
+            ),
+            one(QueueChange::HandedOn)
+        );
+        assert_eq!(
+            change(
+                r#"{"type":"queue-operation","operation":"remove","timestamp":"2026-11-12T05:56:55.452Z","sessionId":"b38662ec","content":"second","reason":"absorbed_mid_turn","commandUuid":"052fb0ee","deliveryId":"3ba9db56"}"#
+            ),
+            one(QueueChange::Taken)
+        );
+        assert_eq!(
+            change(
+                r#"{"type":"queue-operation","operation":"popAll","timestamp":"2026-11-12T05:59:24.320Z","sessionId":"ba29703f","content":"second"}"#
+            ),
+            one(QueueChange::Taken)
+        );
+        // Read in the binary, not seen in a run: one waiting prompt taken back into the box.
+        assert_eq!(
+            change(r#"{"type":"queue-operation","operation":"popOne","content":"x"}"#),
+            one(QueueChange::Taken)
+        );
+        // An enqueue of something that is no text (an image) has no content.
+        assert_eq!(
+            change(r#"{"type":"queue-operation","operation":"enqueue","sessionId":"s"}"#),
+            one(QueueChange::Added)
+        );
+        // What is not known changes nothing; neither does another record that names one.
+        for line in [
+            r#"{"type":"queue-operation","operation":"reorder","sessionId":"s"}"#,
+            r#"{"type":"queue-operation","sessionId":"s"}"#,
+            r#"{"type":"queue-operation","operation":7}"#,
+            r#"{"type":"last-prompt","operation":"enqueue"}"#,
+        ] {
+            assert_eq!(change(line), (Vec::new(), None), "{line}");
+        }
     }
 
     /// SPEC-468 CCF-005: the agent writes its own transcript, and a line may be 4 MiB. The

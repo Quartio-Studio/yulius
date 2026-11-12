@@ -92,7 +92,7 @@ Where things are in Yulius:
 ## Plan
 
 - [x] Spec SPEC-471 written and validated
-- [ ] The watcher counts what waits in Claude Code's queue, per run (CCQ-001)
+- [x] The watcher counts what waits in Claude Code's queue, per run (CCQ-001)
 - [ ] The fake agent queues prompts as Claude Code does (CCQ-005)
 - [ ] A turn's end leaves a session with a waiting prompt where it is: the gate's block and the clean Stop (CCQ-002)
 - [ ] A hand-over counts until its turn shows, and a prompt that just went on is waited for (CCQ-003, CCQ-004)

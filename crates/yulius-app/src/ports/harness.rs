@@ -207,6 +207,8 @@ pub enum Observation {
     Compacted,
     /// A compaction failed.
     CompactFailed,
+    /// Claude Code recorded a change of its queue of waiting prompts (SPEC-471 CCQ-001).
+    Queue(yulius_domain::agent_cli::QueueChange),
     /// The provider reported a usage limit.
     LimitReached {
         /// Reset time if known.

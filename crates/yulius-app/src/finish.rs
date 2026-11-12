@@ -111,6 +111,8 @@ pub struct TranscriptFacts {
     /// turn is not woken after an outage; one answered before it (a blocked Stop, after which the
     /// turn went on) was not (SPEC-358 MSB-007).
     pub turn_moved_at: Option<yulius_domain::time::Timestamp>,
+    /// What waits in Claude Code's queue, as the lines read so far say (SPEC-471 CCQ-001).
+    pub queue: yulius_domain::agent_cli::Queue,
 }
 
 impl TranscriptFacts {
@@ -136,6 +138,8 @@ impl TranscriptFacts {
         match observation {
             Observation::UserTurn { wake, .. } => {
                 self.turn_open = Some(true);
+                // The turn of what Claude Code handed on from its queue began (SPEC-471).
+                self.queue.turn_seen();
                 self.goal_retry = None;
                 // Claude Code's own wake-up keeps an achieved goal.
                 if !wake {
@@ -198,6 +202,7 @@ impl TranscriptFacts {
             Observation::LimitReached { .. } | Observation::AccessLost { .. } => {
                 self.limit_pending = true;
             }
+            Observation::Queue(change) => self.queue.record(*change),
             Observation::Session { .. }
             | Observation::CompactFailed
             | Observation::BackgroundStarted { .. }
@@ -956,6 +961,8 @@ impl App {
         runtime
             .background_agents
             .store(facts.background_agents, Ordering::SeqCst);
+        // What waits in Claude Code's queue is what the run's lines say (SPEC-471 CCQ-001).
+        runtime.with_queue(|queue| *queue = facts.queue);
         // The agent worked after Claude Code's last goal pause while nobody watched: the request
         // made for that pause is answered (SPEC-469 GPW-004).
         if facts.worked_since_goal_pause.is_some() {
@@ -1546,6 +1553,51 @@ mod tests {
         at: None,
     };
 
+    /// SPEC-471 CCQ-001, CCQ-003: the lines of a run say what waits in Claude Code's queue,
+    /// in the order Claude Code 2.1.322 writes them: the prompt's `enqueue` while a turn runs;
+    /// after the Stop that ends the turn the `dequeue`, the ended turn's `turn_duration`, and
+    /// only then the prompt record of the turn that took the prompt.
+    #[test]
+    fn the_queue_is_folded_from_its_records() {
+        use yulius_domain::agent_cli::QueueChange::{Added, HandedOn, Taken};
+        let queued = |facts: &TranscriptFacts| (facts.queue.waiting(), facts.queue.holds());
+        let answer = Observation::TurnComplete {
+            at: Some(Timestamp(5)),
+        };
+        let work = Observation::AgentWork {
+            at: Some(Timestamp(6)),
+        };
+        assert_eq!(queued(&reduce(&[PROMPT])), (0, false));
+        let waiting = [PROMPT, Observation::Queue(Added), answer.clone()];
+        assert_eq!(queued(&reduce(&waiting)), (1, true));
+        // Handed on: the turn that ended closes, and nothing of the new one shows yet.
+        let mut lines = waiting.to_vec();
+        lines.extend([Observation::Queue(HandedOn), ENDED]);
+        assert_eq!(
+            queued(&reduce(&lines)),
+            (0, true),
+            "between the two records"
+        );
+        // The ended turn's own late lines are not the new turn.
+        lines.extend([work, Observation::TurnInterrupted { at: None }]);
+        assert_eq!(queued(&reduce(&lines)), (0, true));
+        lines.push(PROMPT);
+        assert_eq!(queued(&reduce(&lines)), (0, false), "its turn began");
+        // Taken into the running turn at a tool result: no turn of its own follows.
+        let taken = [PROMPT, Observation::Queue(Added), Observation::Queue(Taken)];
+        assert_eq!(queued(&reduce(&taken)), (0, false));
+        // Claude Code's own wake-up is a turn that took what was handed on.
+        let woken = [
+            Observation::Queue(Added),
+            Observation::Queue(HandedOn),
+            Observation::UserTurn {
+                at: Some(Timestamp(9)),
+                wake: true,
+            },
+        ];
+        assert_eq!(queued(&reduce(&woken)), (0, false));
+    }
+
     /// SPEC-358 MSB-007: the time of the last record closing a session's turn, its answer or its
     /// `turn_duration`; a prompt, an interrupt or a sub-agent's answer is not one.
     #[test]
@@ -1854,6 +1906,7 @@ mod tests {
                 worked_since_goal_pause: None,
                 turn_closed_at: None,
                 turn_moved_at: Some(Timestamp(1)),
+                queue: yulius_domain::agent_cli::Queue::default(),
             }
         );
         // Typed again after the goal: a new open turn, the goal no longer counts.

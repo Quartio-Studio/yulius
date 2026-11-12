@@ -332,6 +332,17 @@ impl App {
         )
     }
 
+    /// Whether something waits in Claude Code's queue of the task's session, or was handed on
+    /// to a turn not seen yet, as the run's lines read so far say (SPEC-471 CCQ-001, CCQ-003):
+    /// a prompt entered while a turn runs, a message Yulius typed meanwhile, a notification of
+    /// Claude Code's own. The process holds it in memory alone, and a resumed session does not
+    /// get it back. Public for tests.
+    #[must_use]
+    pub fn queue_holds(&self, task_id: &TaskId) -> bool {
+        self.existing_runtime(task_id)
+            .is_some_and(|runtime| runtime.queue().holds())
+    }
+
     /// What a turn's end knows about restarting the task's session, which runs `runs`, on
     /// `target`. All of it is cheap to read, so it is read again after the looks that take
     /// seconds; `background` is what those looks found.
@@ -360,6 +371,8 @@ impl App {
             paused: self.is_paused_by_person(task_id).await,
             update_holds: self.update_holds_starts(),
             background,
+            queued: false,
+            prompt_unread: false,
         })
     }
 
