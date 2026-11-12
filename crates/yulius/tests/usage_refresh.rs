@@ -699,6 +699,32 @@ async fn a_refresh_ends_at_its_deadline() -> TestResult {
     Ok(())
 }
 
+/// RFR-003, RFR-007: only a refresh keeps a limit without a reset for Claude's answer. The
+/// background round's reading still ends it, as any provider's reading does (SPEC-464
+/// UCL-004), and asks nothing about it.
+#[tokio::test]
+async fn the_rounds_reading_still_ends_a_limit_without_a_reset() -> TestResult {
+    let (base, seen) = claude(|_| ran(&[])).await?;
+    let h = harness_at(base).await?;
+    account(
+        &h,
+        "a-blind",
+        &AccountUsage {
+            weekly_fable: Some(full_week(None)),
+            ..AccountUsage::default()
+        },
+    )
+    .await?;
+    h.app
+        .refresh_usage_round(&mut std::collections::HashMap::new())
+        .await;
+    let after = stored(&h, "a-blind").await?;
+    assert_eq!(after.weekly_fable, None);
+    assert_eq!(after.secondary.and_then(|w| w.used_percent), Some(61.0));
+    assert_eq!(asked(&seen), ["usage", CHEAPEST]);
+    Ok(())
+}
+
 /// RFR-003: each question is asked about what is stored when its turn comes. An Opus window and
 /// a limit of the whole subscription are stored for a sign-in whose usage cannot be read; the
 /// Opus model answers, which ends both, so the default model is not asked any more.
