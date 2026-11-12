@@ -47,6 +47,12 @@ today's `dev`, delivered by one pull request that closes issue #1079.
   the `limits` tests), and this test does neither. So its fixture still has three slots, handed
   out first come first served. Yulius CI passed with #1163 twice (at `d1835270` and in merge
   train #1162); the probes had not been run on it.
+- **SPEC-454's list of other tests is two short on today's `dev`.** It names nine tests of
+  `local_ci.rs` that hold a job on a file under the fixture's 8 s limit. #1163 added two more,
+  `a_raised_job_limit_starts_waiting_jobs_while_one_runs` and
+  `a_lowered_job_limit_starts_no_job_beside_the_ones_it_lets_finish`. SPEC-454 predates them and
+  stays as it is; they are neither analysed nor changed here (one concern per pull request).
+  What the review's probes showed about them is in Evidence and reported on issue #1079.
 - **What this task adds to the fix:** nothing in the test. It merges the pull request's head,
   moves the change log's entry to the day the fix lands, proves the fix on today's `dev` and
   delivers it.
@@ -57,7 +63,7 @@ today's `dev`, delivered by one pull request that closes issue #1079.
 | --- | --- | --- |
 | LND-001 | The delivered test change is the reviewed one: against `dev`, `crates/yulius/tests/local_ci.rs` differs exactly as it did at the approved `6022027e` against the `dev` of that time, and SPEC-454 is that head's file, unchanged. | `git patch-id` of both diffs; `git diff 6022027e HEAD -- .ai/specs/SPEC-454-*` empty |
 | LND-002 | `docs/changes.md` has the entry for #1079 once, at the top (the day it reaches `dev`), and no other line of the file differs from `dev`. | `git diff origin/dev -- docs/changes.md` |
-| LND-003 | The fix holds on today's `dev`: the test passes repeatedly, its guard still fails without the fix, the other `local_ci` tests pass beside it, and every gate passes on the merged head. | the runs and the gate in Evidence |
+| LND-003 | The fix holds on today's `dev`: the test passes repeatedly, its guard still fails without the fix, the other `local_ci` tests pass beside it, and every gate that runs here passes on the merged head, with the security scan's state recorded. | the runs and the gate in Evidence |
 | LND-004 | One pull request delivers it and says `Fixes #1079`; pull request #1162 is closed with a pointer to it, and its branch is not left stale. | the pull request, #1162, `repo_hygiene` |
 
 ## Plan
@@ -104,9 +110,10 @@ says what was done, and `repo_hygiene` shows nothing of this task or of #436 lef
 ## Decisions
 
 - **Merge the pull request's head instead of copying its diff.** `git merge d1835270` keeps the
-  fifteen reviewed commits and their messages, so "the test is the reviewed one" is a fact Git
-  shows (`git diff d1835270 HEAD -- crates/yulius/tests/local_ci.rs` is empty), and the squash
-  merge into `dev` makes one commit of it either way. A cherry-pick or a copied diff would have
+  pull request's fifteen commits and their messages (thirteen up to the approved `6022027e`,
+  then two merges of `dev`), so "the test is the reviewed one" is a fact Git shows (`git diff
+  d1835270 HEAD -- crates/yulius/tests/local_ci.rs` is empty), and the squash merge into `dev`
+  makes one commit of it either way. A cherry-pick or a copied diff would have
   to be compared by hand. Alternative, reviving #1162 itself (merging `dev` into its branch):
   rejected, because that branch and pull request belong to a closed task: Yulius delivers and
   merges only the pull request of a running task's own branch, which is how #1162 was stranded.
@@ -124,6 +131,14 @@ says what was done, and `repo_hygiene` shows nothing of this task or of #436 lef
   who gets those slots, so "proven on today's `dev`" needs the recorded probes on the new slot
   code: a quarter of an hour of machine time against a fix that might only look proven. They
   were taken from SPEC-454 and task #436's session as they stand; the results match SPEC-454's.
+- **No assertion on the job limit is added to the test.** The review noted that nothing
+  committed fails when the hour is lost: with the limit back at 8 s the test passes at rest, and
+  only a slow poll or a job that starts late shows that half. It offered an assertion on the
+  configured limit as the author's call. Not taken: it would change the test this task delivers
+  as reviewed (LND-001), it would restate the line that sets the limit instead of testing what
+  the limit is for, and SPEC-454's Decisions already weighs it ("The limit has no such guard:
+  only a wait longer than 8 s could show it, and the probes do"). The probes showed it again on
+  today's `dev`, here and in the review.
 - **No decision record.** Nothing in the product or in the project's rules changes.
 
 ## What differs from the approved `6022027e`
@@ -149,13 +164,16 @@ here differs from it as follows, with the command that shows each.
   changed: `3308cd33` and `d1835270` (task #436, after the approval) and `5852aff7` (this task,
   the pull request's head into today's `dev`). For each, `git merge-tree --write-tree <first
   parent> <second parent>` gives the merge commit's own tree.
-- **Of those 29, one changes code this test runs through:** #1163 (`05caae42`), the job slots
-  (see Context). It also added two tests to `local_ci.rs` (116 lines, `git diff e2dd441d
-  bbd65665 -- crates/yulius/tests/local_ci.rs`), which is why the file differs from
+- **Of those 29, one changes the CI code this test's scenario rests on:** #1163 (`05caae42`),
+  the job slots (see Context). It also added two tests to `local_ci.rs` (116 lines, `git diff
+  e2dd441d bbd65665 -- crates/yulius/tests/local_ci.rs`), which is why the file differs from
   `6022027e`'s although the fix's patch does not. `git diff --stat e2dd441d origin/dev --
   crates/yulius-app/src/ci crates/yulius-domain/src/ci crates/yulius-app/src/resources.rs`
-  lists what else changed under the test: `run_disk_max` and `lanes` read from the limits in
+  lists what else changed in that code: `run_disk_max` and `lanes` read from the limits in
   force (`cd.rs`, `environment.rs`, `mod.rs`), nothing in the domain's plan or the capacity.
+  The fixture runs through more than that (the tests' support code, the store with migrations
+  0050 to 0052, `context.rs`, the router). The review read those commits' diffs: none touches
+  runs, slots, limits, the plan, Git or the process host.
 
 ## Evidence
 
@@ -202,17 +220,46 @@ here differs from it as follows, with the command that shows each.
   passed again after the commits that follow.
 - **Security scan.** `yulius security-scan`: "Security scan disabled: Vidoc is turned off in
   Yulius, for this project or the whole instance; nothing was scanned." Disabled, not passed.
-- **Independent review.** A fresh session with `om-code-review` reviews the head that is
-  delivered, judging what differs from the approved `6022027e`, and runs the gate itself. Its
-  verdict and that head are in the pull request and on the issue: a commit recording them here
-  could not be the head it reviewed.
+- **Independent review, round 1** (a fresh session with `om-code-review`, on `1f971341`):
+  approve. It ran the gate itself at that head (exit 0, 3957 tests passed, 16 skipped; the scan
+  disabled), confirmed every claim of "What differs from the approved `6022027e`" with Git, and
+  repeated this Evidence in a worktree of its own: 10 of 10 at rest, `dev`'s test in both
+  classes, both mutations, the probes on the fixed test and on `dev`'s, the load run, the
+  neighbours. Its own additions: four product mutations of NOI-007 (a failed `security` stops
+  the others, a failed `quality` also cancels `security`, no fail-fast among the others, the
+  failed scan not published while the others run) each made the test fail; with `security`,
+  `quality` or `e2e` asking for its slot 3 s late, and with `security` and `e2e` 9 s late, it
+  passed; with only the hour (SPEC-454's R3) 1 of 4 runs failed after 60.8 s; 32 of 32
+  concurrent copies passed. Findings:
+  - Minor, own code: this spec did not say that #1163's two tests hold jobs under the 8 s
+    limit too, so SPEC-454's nine read as today's list. Added to Context.
+  - Minor, not from this change (`9080cf3e`, #851): `until_jobs` checks its deadline only once
+    the run it waits for exists; if a sync queued no run, the test would spin until nextest
+    ends it. Not changed here; reported on issue #1079.
+  - Minor, not from this change (`05caae42`, #1163): its two tests depend on the 8 s limit, the
+    second also on the slot order. Shown with a probe that makes a named job ask for its slot
+    late; neither order was observed without it. With two jobs 9 s late the first failed after
+    60.8 s (job `a` "timed out: ran 8 s, its time limit"); with the `a` jobs 500 ms late the
+    second failed after 8.9 s ("two at once under a limit of 1"). Not changed here; reported on
+    issue #1079.
+  - Nits, taken: "one changes code this test runs through" was wider than its command; "the
+    fifteen reviewed commits" (thirteen were reviewed); LND-003 said every gate passes beside a
+    disabled scan.
+  - Nit, the author's call, not taken: an assertion on the job limit (see Decisions).
+  - Nit, no change asked: "only the test ends a held job" is short for SPEC-454 NCT-002's "its
+    release file, or the fail-fast it checks".
+- **Final review.** The same reviewer looks at the commit that answers round 1, which changes
+  only this spec. Its verdict and that head are in the pull request and on the issue: a commit
+  recording them here could not be the head it reviewed.
 - **Limits, and what was not tested.**
   - Yulius CI's own load cannot be produced on demand; the forced slot order, the slow polls
     and the load run stand for it, as in SPEC-454.
-  - Not run again: SPEC-454's R3 (only the limit raised, which shows why the limit alone is no
-    fix), its run with 120 busy loops and its runs pinned to one, two and three CPUs. They
-    concern the analysis and a limit of the test that this change does not touch (it needs
-    three CPUs, before and after), not whether the fix holds on today's `dev`.
+  - Not run again by the author: SPEC-454's R3 (only the limit raised, which shows why the
+    limit alone is no fix), its run with 120 busy loops and its runs pinned to one, two and
+    three CPUs. They concern the analysis and a limit of the test that this change does not
+    touch (it needs three CPUs, before and after), not whether the fix holds on today's `dev`.
+    The review ran R3's equivalent (above) and the pinned runs: one CPU failed after 61.2 s with
+    `e2e` queued, two and three CPUs passed 3 of 3 each.
   - Why pull request #1162 was never merged is a defect of its own and not fixed here: a task
     closed while its merge train runs leaves an approved, green pull request open with no
     owner. It is reported on issue #1079 and in this task's summary (this task opens no issue).
