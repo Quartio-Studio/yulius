@@ -1172,9 +1172,11 @@ Vidoc off, it also says `Vidoc scans are switched off for the instance`.
    message sent while the task reads "Continuing" is refused ("try again once it runs"), so
    its sender knows. What can still be lost: a prompt entered in the moment between a turn's
    end deciding to move and the task reading "Continuing", a prompt whose record Claude Code
-   takes longer than two seconds to write, and what waits in the queue when a person moves or
-   stops the task themselves or when a usage limit cuts the turn (Yulius carries nothing
-   over). Claude's sign-in here (`claude setup-token`) may
+   takes longer than two seconds to write, a prompt that waits at the moment an entry a turn's
+   end had left in the queue leaves it after all, alone (a notification delivered to a
+   sub-agent: Yulius then takes the prompt for the entry that was left), and what waits in
+   the queue when a person moves or stops the task themselves or when a usage limit cuts the
+   turn (Yulius carries nothing over). Claude's sign-in here (`claude setup-token`) may
    not read Claude's usage endpoint (it lacks the `user:profile` scope), so a subscription's usage
    shows once a task runs on it: the running sessions report it through Claude Code's status line.
    A subscription Claude refuses (a cancelled or downgraded plan) is marked "Sign in again" with

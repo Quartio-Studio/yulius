@@ -328,6 +328,17 @@ handed-on prompt whose turn meets the limit is not lost either.
   message or the sender is told. The change has the old session answer it before the move,
   and ADR-0310 argues why. That is a decision, not a defect, and should be stated when the
   issue is closed."
-- **Independent review, round 2.** The same reviewer looks at the delta after 68b104d6 on
-  the head that carries this section, so its verdict cannot be quoted here: it is recorded
-  on the pull request and on issue #1194.
+- **Independent review, round 2** (the same reviewer, head 605808d5; it ran the gate, the
+  change's tests fifteen times over, its own mutants, and four more scenarios with the real
+  tool: ten orders in all, folded through Yulius's parser and the corrected count):
+  "**Approve.** No blocker or major is left in the change's own code. The round 1 major is
+  fixed and proven, the four minors and the nit are answered, and the gate is green on this
+  exact head. One new minor and one nit remain, both in the change's own code." The minor:
+  the fake agent's hand-over of the lines ahead of an `/alone` line had no test; it has one
+  now (`the_lines_ahead_of_an_entry_handed_on_alone_leave_first`; the review's mutant
+  `before + 1` fails it). The nit: the operations guide's list of what can still be lost
+  now names the left-over entry that leaves alone while a prompt waits. Those two answers
+  and this paragraph are the delta after 605808d5; the same reviewer's look at it is given
+  on the head that carries this section, so it cannot be quoted here: it is recorded on the
+  pull request and on issue #1194. `scripts/dev ci` at that delta's code (the fake agent's
+  test and the guide's sentence): exit 0, nextest 4072 passed / 16 skipped.
