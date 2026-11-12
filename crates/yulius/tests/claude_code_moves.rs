@@ -1055,12 +1055,10 @@ mod moves {
         let (h, task) = seeded_on_the_test_clock(h, Some(30_000)).await?;
         let alice = UserId::parse("u-alice")?;
 
-        // A prompt waits for a subscription with room, and its person types on meanwhile.
+        // A prompt waits for a subscription with room.
         h.app.record_typing(&task, &alice);
         h.clock.0.fetch_add(1_000, Ordering::SeqCst);
         assert_eq!(hook(&h, Some("first")).await?, StatusCode::ACCEPTED);
-        h.clock.0.fetch_add(1_000, Ordering::SeqCst);
-        h.app.record_typing(&task, &alice);
         // The store fails for the client's next request.
         let other = rusqlite::Connection::open(&db)?;
         other.execute_batch("ALTER TABLE capacity_pauses RENAME TO capacity_pauses_gone")?;
@@ -1068,6 +1066,13 @@ mod moves {
         let failed = hook(&h, Some("first")).await?;
         other.execute_batch("ALTER TABLE capacity_pauses_gone RENAME TO capacity_pauses")?;
         assert!(failed.is_server_error(), "{failed}");
+        assert!(
+            h.app.has_draft(&task),
+            "a prompt that still waits is still in the box"
+        );
+        // Its person types on while it waits.
+        h.clock.0.fetch_add(1_000, Ordering::SeqCst);
+        h.app.record_typing(&task, &alice);
         // The client asks again: still no room. Then the limit resets and the prompt goes on.
         h.clock.0.fetch_add(2_000, Ordering::SeqCst);
         assert_eq!(hook(&h, Some("first")).await?, StatusCode::ACCEPTED);

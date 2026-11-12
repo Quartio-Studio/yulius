@@ -582,10 +582,17 @@ The question of direction: the restart waits only while a person typed in the la
   through an error (that test); every error keeping a hold
   (`a_prompt_whose_hook_fails_was_submitted_all_the_same`). The nit: two Plan lines named
   what round 3 withdrew; they say so now. `scripts/dev ci` at 49d9907b: exit 0, nextest 3852
-  passed / 16 skipped, the other steps as above; after it come only this section and the
-  Plan's last tick. `claude_code_moves` (30 tests) 6 times over, all passed. The web files
-  are those of the first delivery, so the e2e suite was not run again here (Yulius CI runs
-  it). The same reviewer looked at this delta; its verdict goes with the merge.
+  passed / 16 skipped, the other steps as above. `claude_code_moves` (30 tests) 6 times over,
+  all passed. The web files are those of the first delivery, so the e2e suite was not run
+  again here (Yulius CI runs it). The same reviewer looked at this delta (its own gate at
+  5c03fdff: 3855 passed, 16 skipped) and found that the test pinned one of the fix's two
+  effects only: a failing answer that keeps the hold and still empties the box passed it. Its
+  change to the test is taken as it gave it (the draft is typed after the failing request,
+  and before that the prompt that still waits must read as in the box); with it that
+  rewrite fails, and so does a hold forgotten at an error with nothing emptied. After the
+  gate come only that test change (the 59 tests of `claude_code_moves`, `intake` and
+  `task_message`, `fmt --check` and clippy run again), a clean merge of `dev`, this section
+  and the Plan's last tick. The reviewer's verdict goes with the merge.
 - Not tested: a restart that Yulius makes of a real, signed-in Claude Code session (no
   subscription can be signed in for a test: the fake agent stands in for the process, and
   what the real one does was read in its binaries and transcripts); an operating system's
