@@ -6,6 +6,21 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-11
 
+- A subscription's email is typed in place, under its name (SPEC-463, task #448, ADR-0300).
+  Production's subscriptions read "email unknown" (Claude gave Yulius no email for their
+  `claude setup-token` sign-ins, as ADR-0185 feared), so the address went into the name. On the Subscriptions page the
+  email line now has a pencil like the name: Enter or leaving the field saves, Escape cancels,
+  Enter in the empty field removes it. A card can read "Agent TEAM" over its address. A typed
+  email stays when the subscription signs in again, and nothing says Claude confirmed it: the
+  toast after a sign-in names only an email Claude gave. `PATCH /api/admin/accounts/{id}` takes
+  `email` beside an optional `label`, and `Account` carries `email_typed`. Also fixed on that
+  page, for the name too: a list read (after a save, a removal or an update) could draw over a
+  field being typed in and save what was half typed, and an update that came while a field was
+  open could stay undrawn; a click or a tap on Remove, Sign in again or a pencil was lost when
+  leaving a field showed its refusal (#1174); switching to another window saved what was half
+  typed; a late answer to a name saved with Enter took the keyboard from the field the person
+  had gone on to; and the keyboard left a subscription's pencil when its usage was read again
+  or, after a rename that moved its card, could land on another subscription's control.
 - A session that works on after a restart shows the Claude Code it runs with the first record
   it writes (SPEC-461, task #443). Yulius read a session's Claude Code version from its prompt
   records only, and a session that redoes an interrupted turn by itself writes none for hours:

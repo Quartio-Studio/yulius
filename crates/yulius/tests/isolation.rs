@@ -220,6 +220,7 @@ async fn fixture(
             updated_at: Timestamp(1),
             email: None,
             email_checked_at: None,
+            email_typed: false,
         })
         .await?;
     // Decoys of the host's secrets next to the sandboxes.

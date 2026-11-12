@@ -230,6 +230,7 @@ async fn signed_in_account(
             last_error: None,
             email: email.map(str::to_owned),
             email_checked_at: email.map(|_| Timestamp(1)),
+            email_typed: false,
             created_at: Timestamp(1),
             updated_at: Timestamp(1),
         })
@@ -665,5 +666,335 @@ async fn an_answer_for_an_older_sign_in_is_not_stored() -> TestResult {
         (None, None),
         "the old sign-in's email is not the new one's"
     );
+    Ok(())
+}
+
+/// SPEC-463 EML-003, EML-005: an administrator types a subscription's email, changes it with the
+/// name and removes it. Every view that names the subscription shows it to administrators only.
+/// Anyone else is refused, a value that is not an address is refused, and a refused request
+/// writes nothing. The audit trail says that the email changed, never the address.
+#[tokio::test]
+async fn an_administrator_types_changes_and_removes_a_subscriptions_email() -> TestResult {
+    use yulius_app::ports::store::AuditStore as _;
+
+    let h = harness_with(HarnessOptions::default())?;
+    let admin = setup_superadmin_creds(&h).await?;
+    configure_github_app(&h).await?;
+    let member = admit_and_sign_in(&h, &admin, "member", 4242, false).await?;
+    h.github.set_perm(
+        "member",
+        "Quartio-Studio/studio",
+        GitHubPermissions {
+            pull: true,
+            ..Default::default()
+        },
+    );
+    let instance_admin = admit_and_sign_in(&h, &admin, "operator", 4243, true).await?;
+    signed_in_account(&h, "a-team", "token", None).await?;
+    signed_in_account(&h, "a-claude", "token-2", Some("pawel@example.com")).await?;
+    let id = AccountId::parse("a-team")?;
+    let task = task_on(&h, &id).await?;
+    let path = "/api/admin/accounts/a-team";
+
+    let refused = call(
+        &h.router,
+        Method::PATCH,
+        path,
+        Some(json!({"email": "agent@example.com"})),
+        &member,
+    )
+    .await?;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.body);
+    let long = format!("{}@example.com", "a".repeat(250));
+    for bad in [
+        json!({}),
+        json!({"email": null}),
+        json!({"email": "not an address"}),
+        json!({"email": "agent@"}),
+        json!({"email": "a@b@example.com"}),
+        json!({"email": "agent@exa\u{7}mple.com"}),
+        json!({"email": long}),
+        json!({"email": 7}),
+        json!({"email": "agent@example.com", "priority": 1}),
+        // Nothing is written when either field is refused.
+        json!({"label": "  ", "email": "agent@example.com"}),
+        json!({"label": "Agent TEAM", "email": "not an address"}),
+    ] {
+        let r = call(&h.router, Method::PATCH, path, Some(bad.clone()), &admin).await?;
+        assert_eq!(
+            r.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{bad}: {}",
+            r.body
+        );
+    }
+    let untouched = h.store.account(&id).await?.ok_or("account")?;
+    assert_eq!(
+        (
+            untouched.label.as_str(),
+            untouched.email,
+            untouched.updated_at
+        ),
+        ("a-team", None, Timestamp(1))
+    );
+    assert!(
+        h.store
+            .audit_details("a-team", "account.updated", 5)
+            .await?
+            .is_empty(),
+        "a refused change is not audited"
+    );
+
+    // An instance administrator manages subscriptions as the superadmin does (ACC-009).
+    let mut events = h.app.events.subscribe();
+    let typed = call(
+        &h.router,
+        Method::PATCH,
+        path,
+        Some(json!({"email": "  agent@example.com "})),
+        &instance_admin,
+    )
+    .await?;
+    assert_eq!(typed.status, StatusCode::OK, "{}", typed.body);
+    assert_eq!(
+        (typed.body["label"].as_str(), typed.body["email"].as_str()),
+        (Some("a-team"), Some("agent@example.com")),
+        "trimmed, and the name is left alone"
+    );
+    assert_eq!(typed.body["email_typed"], true, "{}", typed.body);
+    let event = account_event(&mut events, "a-team", |a| !a["email"].is_null()).await?;
+    assert_eq!(event["email"], "agent@example.com");
+    assert_eq!(event["email_typed"], true);
+
+    // The name and the email in one request.
+    let both = call(
+        &h.router,
+        Method::PATCH,
+        path,
+        Some(json!({"label": "Agent TEAM", "email": "team@example.com"})),
+        &admin,
+    )
+    .await?;
+    assert_eq!(both.status, StatusCode::OK, "{}", both.body);
+    assert_eq!(
+        (both.body["label"].as_str(), both.body["email"].as_str()),
+        (Some("Agent TEAM"), Some("team@example.com"))
+    );
+
+    let named = |list: &Value| -> Option<(Value, Value)> {
+        list.as_array()?
+            .iter()
+            .find(|a| a["label"] == "Agent TEAM")
+            .map(|a| (a["label"].clone(), a["email"].clone()))
+    };
+    let with_email = Some((json!("Agent TEAM"), json!("team@example.com")));
+    let accounts = call(&h.router, Method::GET, "/api/admin/accounts", None, &admin).await?;
+    assert_eq!(named(&accounts.body), with_email);
+    // EML-006: the account view says which emails a person typed and which Claude gave.
+    let typed_by_person = |label: &str| -> Option<(Value, Value)> {
+        accounts
+            .body
+            .as_array()?
+            .iter()
+            .find(|a| a["label"] == label)
+            .map(|a| (a["email"].clone(), a["email_typed"].clone()))
+    };
+    assert_eq!(
+        typed_by_person("Agent TEAM"),
+        Some((json!("team@example.com"), json!(true)))
+    );
+    assert_eq!(
+        typed_by_person("a-claude"),
+        Some((json!("pawel@example.com"), json!(false)))
+    );
+    for (who, expected) in [
+        (&admin, with_email.clone()),
+        (&member, Some((json!("Agent TEAM"), Value::Null))),
+    ] {
+        let status = call(&h.router, Method::GET, "/api/status", None, who).await?;
+        assert_eq!(named(&status.body["accounts"]), expected, "{}", status.body);
+        let capacity = call(&h.router, Method::GET, "/api/capacity", None, who).await?;
+        assert_eq!(
+            named(&capacity.body["accounts"]),
+            expected,
+            "{}",
+            capacity.body
+        );
+    }
+    let detail = call(
+        &h.router,
+        Method::GET,
+        &format!("/api/tasks/{task}"),
+        None,
+        &admin,
+    )
+    .await?;
+    assert_eq!(detail.status, StatusCode::OK, "{}", detail.body);
+    assert_eq!(detail.body["account_email"], "team@example.com");
+    assert_eq!(
+        detail.body["attempts"][0]["account_email"],
+        "team@example.com"
+    );
+    // A member who reads the task sees the subscription's name without its email (UI-022).
+    let seen = call(
+        &h.router,
+        Method::GET,
+        &format!("/api/tasks/{task}"),
+        None,
+        &member,
+    )
+    .await?;
+    assert_eq!(seen.status, StatusCode::OK, "{}", seen.body);
+    assert_eq!(seen.body["account_label"], "Agent TEAM");
+    assert!(
+        seen.body.get("account_email").is_none()
+            && seen.body["attempts"][0].get("account_email").is_none(),
+        "{}",
+        seen.body
+    );
+    let listed = h
+        .app
+        .task_summary(&h.store.task(&task).await?.ok_or("task")?)
+        .await?;
+    assert_eq!(listed.account_email, None);
+
+    // An empty email removes it: unknown again.
+    let removed = call(
+        &h.router,
+        Method::PATCH,
+        path,
+        Some(json!({"email": "  "})),
+        &admin,
+    )
+    .await?;
+    assert_eq!(removed.status, StatusCode::OK, "{}", removed.body);
+    assert!(removed.body["email"].is_null(), "{}", removed.body);
+    assert_eq!(removed.body["email_typed"], false, "{}", removed.body);
+    assert_eq!(removed.body["label"], "Agent TEAM");
+    let record = h.store.account(&id).await?.ok_or("account")?;
+    assert_eq!((record.email, record.email_checked_at), (None, None));
+
+    // The audit trail (newest first) says what changed, without the address.
+    assert_eq!(
+        h.store
+            .audit_details("a-team", "account.updated", 5)
+            .await?,
+        [
+            "email=removed",
+            r#"label="Agent TEAM" email=set"#,
+            "email=set"
+        ]
+    );
+    Ok(())
+}
+
+/// Waits (bounded) until Claude was asked `calls` times about `credential` and its answer for
+/// the account's current sign-in is stored.
+async fn answered(
+    h: &support::Harness,
+    profile: &FakeProfile,
+    id: &AccountId,
+    credential: &str,
+    calls: usize,
+) -> Result<AccountRecord, Box<dyn std::error::Error>> {
+    let wait = async {
+        loop {
+            if profile.calls(credential) == calls {
+                let record = h.store.account(id).await?.ok_or("account")?;
+                if record.email_checked_at.is_some() {
+                    return Ok::<_, Box<dyn std::error::Error>>(record);
+                }
+            }
+            tokio::task::yield_now().await;
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(10), wait).await?
+}
+
+/// SPEC-463 EML-004: what a person typed outlives the subscription's sign-ins and Claude's
+/// answers, and costs no further request. Once it is removed, the background round asks Claude
+/// again and Claude's answer shows.
+#[tokio::test]
+async fn a_typed_email_outlives_sign_ins_until_it_is_removed() -> TestResult {
+    let host = Arc::new(SignInHost::default());
+    if let Ok(mut tokens) = host.tokens.lock() {
+        tokens.extend([REFUSED, WITH_EMAIL]);
+    }
+    let profile = Arc::new(FakeProfile::default());
+    let h = harness_with(HarnessOptions {
+        session_host: Some(host.clone()),
+        usage: Some(profile.clone()),
+        ..HarnessOptions::default()
+    })?;
+    let admin = setup_superadmin_creds(&h).await?;
+
+    let created = call(
+        &h.router,
+        Method::POST,
+        "/api/admin/accounts",
+        Some(json!({"provider": "anthropic", "label": "Agent TEAM"})),
+        &admin,
+    )
+    .await?;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    let id = AccountId::parse(created.body["account"]["id"].as_str().ok_or("id")?)?;
+    let path = format!("/api/admin/accounts/{id}");
+    // Claude refuses the profile to this sign-in, as it does to a `setup-token`: unknown.
+    let record = answered(&h, &profile, &id, REFUSED, 1).await?;
+    assert_eq!(record.email, None);
+
+    let typed = call(
+        &h.router,
+        Method::PATCH,
+        &path,
+        Some(json!({"email": "agent@example.com"})),
+        &admin,
+    )
+    .await?;
+    assert_eq!(typed.status, StatusCode::OK, "{}", typed.body);
+
+    // Signed in again, and this time Claude names another address: the typed one stays.
+    let relogin = call(
+        &h.router,
+        Method::POST,
+        &format!("{path}/relogin"),
+        None,
+        &admin,
+    )
+    .await?;
+    assert_eq!(relogin.status, StatusCode::OK, "{}", relogin.body);
+    let record = answered(&h, &profile, &id, WITH_EMAIL, 1).await?;
+    assert_eq!(record.email.as_deref(), Some("agent@example.com"));
+    assert_eq!(record.status, AccountStatus::Ok);
+    assert_eq!(
+        h.app
+            .deps
+            .crypto
+            .open(record.credential.as_ref().ok_or("credential")?)?,
+        WITH_EMAIL.as_bytes(),
+        "the new sign-in's credential"
+    );
+    // Claude answered for this sign-in: the background round has nothing to ask.
+    h.app.refresh_usage_round(&mut HashMap::new()).await;
+    assert_eq!(profile.calls(WITH_EMAIL), 1);
+    let list = call(&h.router, Method::GET, "/api/admin/accounts", None, &admin).await?;
+    assert_eq!(list.body[0]["email"], "agent@example.com", "{}", list.body);
+
+    // Removed: Claude is asked once more, and its answer shows.
+    let removed = call(
+        &h.router,
+        Method::PATCH,
+        &path,
+        Some(json!({"email": ""})),
+        &admin,
+    )
+    .await?;
+    assert_eq!(removed.status, StatusCode::OK, "{}", removed.body);
+    assert!(removed.body["email"].is_null(), "{}", removed.body);
+    h.app.refresh_usage_round(&mut HashMap::new()).await;
+    h.app.refresh_usage_round(&mut HashMap::new()).await;
+    assert_eq!(profile.calls(WITH_EMAIL), 2, "asked again, once");
+    let list = call(&h.router, Method::GET, "/api/admin/accounts", None, &admin).await?;
+    assert_eq!(list.body[0]["email"], "pawel@example.com", "{}", list.body);
     Ok(())
 }

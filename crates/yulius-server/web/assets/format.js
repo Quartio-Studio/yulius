@@ -184,7 +184,19 @@ export function describeCron(expr) {
   return expr;
 }
 
-/** A subscription's email, or "email unknown" until Claude gave one (SPEC-244 SUB-005). */
+/**
+ * Whether `text` looks like an email address, by the server's rule for one (`plausible_email`):
+ * one `@` with text on both sides, no whitespace or control characters (Unicode's White_Space
+ * and Cc, as the server reads them), at most 254 characters.
+ */
+export function plausibleEmail(text) {
+  return /^[^@\p{White_Space}\p{Cc}]+@[^@\p{White_Space}\p{Cc}]+$/u.test(text) && [...text].length <= 254;
+}
+
+/**
+ * A subscription's email, or "email unknown" until Claude gave one or an administrator typed it
+ * (SPEC-244 SUB-005, SPEC-463).
+ */
 export function accountEmail(email) {
   return email || 'email unknown';
 }
