@@ -14,6 +14,18 @@ failOnPageErrors();
 const CHECK = 'Check now for a Claude Code release';
 const bodyText = (browser: { evaluate: (fn: () => string) => Promise<string> }) => browser.evaluate(() => document.body.innerText);
 const cardText = (browser: { evaluate: (fn: () => string) => Promise<string> }) => browser.evaluate(() => (document.querySelector('.claude-code') as HTMLElement).innerText);
+/** The channel's controls in page order, each with whether it can be used: "select on, button off". */
+const channelControls = (browser: { evaluate: (fn: () => string) => Promise<string> }) => browser.evaluate(() => [...document.querySelectorAll('.claude-channel select, .claude-channel button')]
+  .map((control) => `${control.tagName.toLowerCase()} ${(control as HTMLButtonElement).disabled ? 'off' : 'on'}`).join(', '));
+/** The channel the select shows, and whether it can be used: "stable on". */
+const channelSelect = (browser: { evaluate: (fn: () => string) => Promise<string> }) => browser.evaluate(() => {
+  const el = document.getElementById('claude-channel') as HTMLSelectElement;
+  return `${el.value} ${el.disabled ? 'off' : 'on'}`;
+});
+/** The mock's Claude Code state a test reaches into. */
+type MockClaude = { __yuliusMock: { claude: { holdRead: Promise<void> | null; releaseRead?: () => void; failRead?: () => void; readsHeld?: number; lateAnswers?: string[] }; heldWaiting?: number } };
+/** What each read the mock answered late said: its channel, and ", checking" when a check ran as it was asked. */
+const lateAnswers = (browser: { evaluate: (fn: () => string[]) => Promise<string[]> }) => browser.evaluate(() => (window as unknown as MockClaude).__yuliusMock.claude.lateAnswers ?? []);
 
 test('the card shows the version, npm’s releases, the last check and the tasks still on an older one', async ({ app, browser, screen }) => {
   await app.open(mock('/admin/instance'));
@@ -136,10 +148,7 @@ test('the channel is changed in place: Stable, back to the server’s, and Off',
 test('a channel change or a check the server refuses leaves the card as the server has it, and usable', async ({ app, browser, screen }) => {
   await app.open(mock('/admin/instance', '&claude_channel_fail=1&failpost=/api/admin/claude-code/check'));
   await firstShown(screen.getByText('Claude Code 2.1.322'));
-  const select = () => browser.evaluate(() => {
-    const el = document.getElementById('claude-channel') as HTMLSelectElement;
-    return `${el.value} ${el.disabled ? 'off' : 'on'}`;
-  });
+  const select = () => channelSelect(browser);
   await screen.getByRole('combobox', 'Release channel').selectOption({ label: 'Stable' });
   await expect(screen.getByText(/Couldn’t change the channel/)).toBeVisible();
   // The select is back on the channel in effect and can be used again.
@@ -156,6 +165,151 @@ test('a channel change or a check the server refuses leaves the card as the serv
   await screen.getByRole('combobox', 'Release channel').selectOption({ label: 'Stable' });
   await expect(screen.getByText(/Claude Code follows Stable now\. Checking for a release…/)).toBeVisible();
   await expect.poll(select).toBe('stable on');
+
+  // The way back, refused too: both controls are usable again, and then it goes through.
+  const fails = (now: boolean) => browser.evaluate((value: boolean) => {
+    (window as unknown as { __yuliusMock: { claude: { channelFails: boolean } } }).__yuliusMock.claude.channelFails = value;
+  }, now);
+  const controls = () => channelControls(browser);
+  await fails(true);
+  await screen.getByRole('button', 'Use the server’s (Latest)').click();
+  await expect.poll(controls).toBe('select on, button on');
+  await expect.poll(select).toBe('stable on');
+  await fails(false);
+  await screen.getByRole('button', 'Use the server’s (Latest)').click();
+  await expect(screen.getByText(/Claude Code follows Latest now\. Checking for a release…/)).toBeVisible();
+  await expect.poll(controls).toBe('select on');
+});
+
+test('while a channel change is being saved neither the select nor “Use the server’s” takes another', async ({ app, browser, screen }) => {
+  // The channel's request waits until the test lets it go (#1192).
+  await app.open(mock('/admin/instance', '&holdpost=/api/admin/claude-code/channel'));
+  await firstShown(screen.getByText('Claude Code 2.1.322'));
+  // A channel was chosen here before: the card, drawn again by a check, offers the way back.
+  await browser.evaluate(() => {
+    const claude = (window as unknown as { __yuliusMock: { claude: { channel: string; chosen: { by: string; at: string } } } }).__yuliusMock.claude;
+    claude.channel = 'stable';
+    claude.chosen = { by: 'mkarp', at: new Date().toISOString() };
+  });
+  await screen.getByRole('button', CHECK).click();
+  // The check has ended, so nothing redraws the card while the change is saved.
+  await expect(screen.getByText(/Up to date: runs get 2\.1\.322\./)).toBeVisible({ timeout: 10000 });
+  const controls = () => channelControls(browser);
+  expect(await controls()).toBe('select on, button on');
+  await screen.getByRole('button', 'Use the server’s (Latest)').click();
+  // The request waits at the hold: what is read now is read while the change is being saved.
+  await expect.poll(() => browser.evaluate(() => (window as unknown as MockClaude).__yuliusMock.heldWaiting ?? 0)).toBe(1);
+  expect(await controls()).toBe('select off, button off');
+
+  await browser.evaluate(() => (window as unknown as { __yuliusMock: { release(): void } }).__yuliusMock.release());
+  await expect(screen.getByText(/Claude Code follows Latest now\. Checking for a release…/)).toBeVisible();
+  await expect(screen.getByText(/From the server’s configuration \(YULIUS_CLAUDE_UPDATES\)/)).toBeVisible();
+  await expect.poll(controls).toBe('select on');
+});
+
+test('a read asked before a check or a channel change does not undo what that drew, answered or failed after it', async ({ app, browser, screen }) => {
+  const readsHeld = () => browser.evaluate(() => (window as unknown as MockClaude).__yuliusMock.claude.readsHeld ?? 0);
+  const releaseRead = () => browser.evaluate(() => {
+    const claude = (window as unknown as MockClaude).__yuliusMock.claude;
+    claude.holdRead = null;
+    claude.releaseRead?.();
+  });
+
+  // The page's first read is answered late: "Check now" is pressed first, and its answer drawn.
+  await app.open(mock('/admin/instance', '&claude_hold_read=1'));
+  await expect.poll(readsHeld).toBe(1);
+  // Only that read is kept back: the card's later reads are answered as they come.
+  await browser.evaluate(() => { (window as unknown as MockClaude).__yuliusMock.claude.holdRead = null; });
+  await screen.getByRole('button', CHECK).click();
+  await expect(screen.getByText(/Checking npm for a newer release…/)).toBeVisible();
+  // The first read's answer comes now and says nothing of the check: the card goes on asking, and
+  // shows what the check did.
+  await releaseRead();
+  await expect.poll(() => lateAnswers(browser)).toEqual(['latest']);
+  await expect(screen.getByText(/Up to date: runs get 2\.1\.322\./)).toBeVisible({ timeout: 10000 });
+
+  // The same for a channel change. A check runs, so the card asks again; that read is answered late.
+  await browser.evaluate(() => {
+    const claude = (window as unknown as MockClaude).__yuliusMock.claude;
+    claude.holdRead = new Promise((resolve) => { claude.releaseRead = resolve; });
+  });
+  await screen.getByRole('button', CHECK).click();
+  await expect.poll(readsHeld, { timeout: 10000 }).toBe(1);
+  // Only that read is kept back. It was asked while the channel was Latest; then the channel changes.
+  await browser.evaluate(() => { (window as unknown as MockClaude).__yuliusMock.claude.holdRead = null; });
+  await screen.getByRole('combobox', 'Release channel').selectOption({ label: 'Stable' });
+  await expect(screen.getByText(/Chosen here by mkarp/)).toBeVisible();
+  await expect.poll(() => channelSelect(browser)).toBe('stable on');
+  // Its answer arrives after the change was drawn, and names the old channel. The card keeps the
+  // change, and the check the change started is followed to its end.
+  await releaseRead();
+  await expect.poll(() => lateAnswers(browser)).toEqual(['latest', 'latest']);
+  await expect(screen.getByText(/Up to date: runs get 2\.1\.322\./)).toBeVisible({ timeout: 10000 });
+  expect(await channelSelect(browser)).toBe('stable on');
+  await expect(screen.getByText(/Chosen here by mkarp/)).toBeVisible();
+
+  // And when such a read fails instead: the card keeps what the change drew and says nothing.
+  await browser.evaluate(() => {
+    const claude = (window as unknown as MockClaude).__yuliusMock.claude;
+    claude.holdRead = new Promise((resolve, reject) => { claude.failRead = () => reject(new Error('lost')); });
+  });
+  await screen.getByRole('button', CHECK).click();
+  await expect.poll(readsHeld, { timeout: 10000 }).toBe(1);
+  await browser.evaluate(() => { (window as unknown as MockClaude).__yuliusMock.claude.holdRead = null; });
+  await screen.getByRole('button', 'Use the server’s (Latest)').click();
+  await expect(screen.getByText(/From the server’s configuration \(YULIUS_CLAUDE_UPDATES\)/)).toBeVisible();
+  await browser.evaluate(() => { (window as unknown as MockClaude).__yuliusMock.claude.failRead?.(); });
+  await expect.poll(readsHeld).toBe(0);
+  const unread = async () => [await cardText(browser), ...await browser.evaluate(() => [...document.querySelectorAll('#toasts .toast-msg')].map((el) => (el as HTMLElement).innerText))]
+    .filter((text) => /Couldn’t read/.test(text));
+  expect(await unread()).toEqual([]);
+  await expect(screen.getByText(/Up to date: runs get 2\.1\.322\./)).toBeVisible({ timeout: 10000 });
+  expect(await unread()).toEqual([]);
+  expect(await channelSelect(browser)).toBe('latest on');
+});
+
+test('a read asked while a channel change is being saved, and answered after it, does not undo it either', async ({ app, browser, screen }) => {
+  const readsHeld = () => browser.evaluate(() => (window as unknown as MockClaude).__yuliusMock.claude.readsHeld ?? 0);
+  await app.open(mock('/admin/instance', '&holdpost=/api/admin/claude-code/channel'));
+  await firstShown(screen.getByText('Claude Code 2.1.322'));
+  // A check runs, so the card will ask again; that read's answer is kept back.
+  await screen.getByRole('button', CHECK).click();
+  await expect(screen.getByText(/Checking npm for a newer release…/)).toBeVisible();
+  await browser.evaluate(() => {
+    const claude = (window as unknown as MockClaude).__yuliusMock.claude;
+    claude.holdRead = new Promise((resolve) => { claude.releaseRead = resolve; });
+  });
+  // The change waits at the hold, and the card's read is asked meanwhile: the channel is Latest still.
+  await screen.getByRole('combobox', 'Release channel').selectOption({ label: 'Stable' });
+  await expect.poll(() => browser.evaluate(() => (window as unknown as MockClaude).__yuliusMock.heldWaiting ?? 0)).toBe(1);
+  await expect.poll(readsHeld, { timeout: 10000 }).toBe(1);
+  await browser.evaluate(() => { (window as unknown as MockClaude).__yuliusMock.claude.holdRead = null; });
+  // The change is saved and drawn; then the read's answer arrives.
+  await browser.evaluate(() => (window as unknown as { __yuliusMock: { release(): void } }).__yuliusMock.release());
+  await expect(screen.getByText(/Chosen here by mkarp/)).toBeVisible();
+  await browser.evaluate(() => { (window as unknown as MockClaude).__yuliusMock.claude.releaseRead?.(); });
+  await expect.poll(() => lateAnswers(browser)).toEqual(['latest']);
+  await expect(screen.getByText(/Up to date: runs get 2\.1\.322\./)).toBeVisible({ timeout: 10000 });
+  expect(await channelSelect(browser)).toBe('stable on');
+});
+
+test('“Check now” stays off while its request is on its way, also when the card is drawn meanwhile', async ({ app, browser, screen }) => {
+  // The page's first read is answered late and the check's request waits at the hold.
+  await app.open(mock('/admin/instance', '&claude_hold_read=1&holdpost=/api/admin/claude-code/check'));
+  await expect.poll(() => browser.evaluate(() => (window as unknown as MockClaude).__yuliusMock.claude.readsHeld ?? 0)).toBe(1);
+  await screen.getByRole('button', CHECK).click();
+  await expect.poll(() => browser.evaluate(() => (window as unknown as MockClaude).__yuliusMock.heldWaiting ?? 0)).toBe(1);
+  // Off from the press, before anything draws the card.
+  await expect(screen.getByRole('button', CHECK)).toBeDisabled();
+  // The first read draws the card while the check is still being asked for.
+  await browser.evaluate(() => { (window as unknown as MockClaude).__yuliusMock.claude.releaseRead?.(); });
+  await firstShown(screen.getByText('Claude Code 2.1.322'));
+  await expect(screen.getByRole('button', CHECK)).toBeDisabled();
+  // The check is taken: the card says it runs, then what it did, and the button is back.
+  await browser.evaluate(() => (window as unknown as { __yuliusMock: { release(): void } }).__yuliusMock.release());
+  await expect(screen.getByText(/Checking npm for a newer release…/)).toBeVisible();
+  await expect(screen.getByText(/Up to date: runs get 2\.1\.322\./)).toBeVisible({ timeout: 10000 });
+  await expect(screen.getByRole('button', CHECK)).toBeEnabled();
 });
 
 test('a server that does not isolate sandboxes says why nothing is kept current', async ({ app, browser, screen }) => {
