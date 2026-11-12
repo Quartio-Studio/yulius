@@ -586,7 +586,7 @@ fn a_refused_move_at_a_usage_credits_limit_still_asks_a_person() -> TestResult {
         );
         assert_eq!(
             resolved(&app, &id).await,
-            ["the session goes on past the usage limit that cut its turn"]
+            ["Yulius takes the session on past the usage limit that cut its turn"]
         );
         stop(&app, &id).await?;
         Ok::<_, Box<dyn std::error::Error>>(())
@@ -807,7 +807,7 @@ fn a_limit_nothing_says_the_end_of_is_retried_once_then_asks_a_person() -> TestR
         needs_nobody(&app, &id).await?;
         assert_eq!(
             resolved(&app, &id).await,
-            ["the session goes on past the usage limit that cut its turn"]
+            ["Yulius takes the session on past the usage limit that cut its turn"]
         );
 
         // Refused there too, and the way back cannot be taken (the first subscription's
@@ -927,9 +927,50 @@ fn a_request_at_a_limit_nothing_says_the_end_of_ends_when_the_agent_works_again(
     Ok(())
 }
 
-/// The same across a restart of Yulius (SPEC-469 GPW-004 for this request): the request is
-/// still open and the session still refused, so the request stays, whatever the session did
-/// before the limit. Work that comes later ends it.
+/// Why a request ended when Yulius paused its task at a usage limit.
+const WAITS: &str = "Yulius waits for the usage limit to end and resumes the session by itself";
+
+/// A restart of Yulius forgets that the task was retried (the count is in memory), so the task
+/// is taken on once more: it waits for the next reading. Its request said "the task does not go
+/// on by itself"; that is no longer so, and the request ends with the wait (review round 3).
+#[test]
+fn a_request_at_a_limit_nothing_says_the_end_of_ends_when_a_restart_retries_the_task() -> TestResult
+{
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let first = runtime()?;
+    let (probe, agent, id) = first.block_on(async {
+        let refused = refused_twice(&data, &fake, None, None).await?;
+        assert!(limit_request(&refused.app, &refused.id).await?.is_some());
+        Ok::<_, Box<dyn std::error::Error>>((refused.probe, refused.agent, refused.id))
+    })?;
+    first.shutdown_timeout(Duration::from_secs(5));
+
+    let second = runtime()?;
+    second.block_on(async {
+        let app = build_with(&data, &fake, probe, agent)?;
+        app.reconcile().await?;
+        // The restart reads the refusal again and takes the task on from there: it waits.
+        wait_for("the pause", Duration::from_secs(30), || {
+            has_status(&app, &id, TaskStatus::WaitingCapacity)
+        })
+        .await?;
+        wait_for("the request to end", Duration::from_secs(30), || async {
+            matches!(app.deps.store.task_needs_you(&id).await, Ok(None))
+        })
+        .await?;
+        assert_eq!(resolved(&app, &id).await, [WAITS]);
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    second.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// The request across a restart of Yulius (SPEC-469 GPW-004 for this request). While Yulius was
+/// down the session got a prompt and has not answered it yet, so the limit is no longer the
+/// session's last word and nothing takes the task on. The request is still open, whatever the
+/// session did before the limit, and the answer that comes then ends it.
 #[test]
 fn a_request_at_a_limit_nothing_says_the_end_of_ends_with_work_after_a_restart() -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
@@ -944,25 +985,29 @@ fn a_request_at_a_limit_nothing_says_the_end_of_ends_with_work_after_a_restart()
     })?;
     first.shutdown_timeout(Duration::from_secs(5));
 
+    let transcript = session_transcript(&data, "msg_fake_credits_out").ok_or("transcript")?;
+    append_lines(&transcript, "down", &[Line::Prompt])?;
+
     let second = runtime()?;
     second.block_on(async {
         let app = build_with(&data, &fake, probe, agent)?;
         app.reconcile().await?;
-        // The restart reads the refusal again and takes the task on from there: it waits.
-        wait_for("the pause", Duration::from_secs(30), || {
-            has_status(&app, &id, TaskStatus::WaitingCapacity)
-        })
-        .await?;
         let runtime = app.runtime(&id);
-        let rounds = runtime.transcript_rounds();
-        wait_for("the transcript read", Duration::from_secs(20), || async {
-            runtime.transcript_rounds() >= rounds + 2
+        wait_for("the transcript read", Duration::from_secs(30), || async {
+            runtime.transcript_rounds() >= 2
         })
         .await?;
+        let rounds = runtime.transcript_rounds();
+        wait_for(
+            "the transcript applied",
+            Duration::from_secs(20),
+            || async { runtime.transcript_rounds() >= rounds + 2 },
+        )
+        .await?;
+        assert!(has_status(&app, &id, TaskStatus::Running).await);
         assert_eq!(limit_request(&app, &id).await?.as_ref(), Some(&asked));
         assert_eq!(resolved(&app, &id).await, Vec::<String>::new());
 
-        let transcript = session_transcript(&data, "msg_fake_credits_out").ok_or("transcript")?;
         append_lines(&transcript, "works", &[Line::Work])?;
         wait_for(
             "the request to end with the agent's work",
@@ -1001,6 +1046,72 @@ async fn first_turn(
     })
     .await?;
     Ok((id, user, transcript.ok_or("transcript")?))
+}
+
+/// A request that says "the task does not go on by itself" ends when Yulius takes the task on
+/// at a usage limit, by pausing it as by moving it (SPEC-464 UCL-007; review round 3): the pool
+/// resumes the task past the limit by itself, so nobody has to send it a message. Here Claude
+/// Code paused the goal with no limit before it, which asks a person. Then a check-in nobody
+/// typed is refused for usage credits, with no goal notice (the goal is paused already, as in
+/// task #438's records), and no other subscription can take the task: it waits.
+#[test]
+fn a_goal_pauses_request_ends_when_yulius_pauses_the_task_at_a_limit() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let agent = FakeAgentOptions {
+            transcript: true,
+            ..FakeAgentOptions::default()
+        };
+        let app = build_with(&data, &fake, probe.clone(), agent)?;
+        let (id, _user, transcript) = first_turn(&app, &data).await?;
+        append_lines(
+            &transcript,
+            "paused",
+            &[Line::Prompt, Line::GoalPause, Line::TurnDuration],
+        )?;
+        wait_for(
+            "the goal pause's request",
+            Duration::from_secs(30),
+            || async {
+                pauses_audited(&app, &id).await == 1
+                    && app
+                        .deps
+                        .store
+                        .task_needs_you(&id)
+                        .await
+                        .is_ok_and(|asked| asked.is_some())
+            },
+        )
+        .await?;
+        let asked = app.deps.store.task_needs_you(&id).await?.ok_or("request")?;
+        assert!(
+            asked.action.starts_with("Send the task a message"),
+            "{asked:?}"
+        );
+
+        append_lines(
+            &transcript,
+            "refused",
+            &[Line::Prompt, Line::CreditsRefusal, Line::TurnDuration],
+        )?;
+        wait_for("the pause", Duration::from_secs(30), || {
+            has_status(&app, &id, TaskStatus::WaitingCapacity)
+        })
+        .await?;
+        wait_for("the request to end", Duration::from_secs(30), || async {
+            matches!(app.deps.store.task_needs_you(&id).await, Ok(None))
+        })
+        .await?;
+        assert_eq!(resolved(&app, &id).await, [WAITS]);
+        assert_eq!(pauses_audited(&app, &id).await, 1, "asked once");
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
 }
 
 /// The bound is the model's limit's (SPEC-464 UCL-010): a limit of the subscription that names
