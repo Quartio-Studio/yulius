@@ -186,23 +186,26 @@ function usedUp(w) {
   return Boolean(w) && Number(w.used_percent) >= 100 && !(w.resets_at && Date.parse(w.resets_at) <= Date.now());
 }
 
+/** Whether a limit Claude reported for the whole subscription is in effect now. */
+function limitInEffect(usage) {
+  return Boolean(usage.limit_reached) && !(usage.limit_resets_at && Date.parse(usage.limit_resets_at) <= Date.now());
+}
+
 /**
- * Why a subscription cannot take a task a person moves (SPEC-447 MOV-002), or null. The windows
- * that bind the task's model decide, as on the server: a subscription also reads "limited" while
- * only the default model's window is used up, and a task of another model still runs on it
- * (SPEC-464). A task whose model is not known is not let through on that.
+ * Why a subscription cannot take a task a person moves (SPEC-447 MOV-002), or null. What binds
+ * the task's model decides, as on the server: a limit Claude reported for the whole subscription
+ * (`usage.limit_reached`) and the 5-hour, weekly and the model's own window. A subscription also
+ * reads "limited" while only the default model's own window is used up, and a task of another
+ * model still runs on it (SPEC-464). A task whose model is not known is not let through on that.
  */
 export function cannotTake(account, task) {
   if (['relogin', 'error', 'pending_login'].includes(account.status)) return 'Needs a new sign-in';
   const usage = account.usage || {};
   const known = Boolean(task && task.model);
   const own = known ? modelWindow(usage, task.model) : null;
-  if ([usage.primary, usage.secondary, own].some(usedUp)) return 'At its usage limit';
-  if (account.status !== 'limited') return null;
-  // Limited, and no window binding this task says why: a limit Claude reported for the whole
-  // subscription, unless another model's window is the one used up.
-  const others = [usage.weekly_opus, usage.weekly_sonnet, usage.weekly_fable].filter((w) => w && w !== own);
-  return known && others.some(usedUp) ? null : 'At its usage limit';
+  if (limitInEffect(usage) || [usage.primary, usage.secondary, own].some(usedUp)) return 'At its usage limit';
+  // Limited with nothing that binds this task: the default model's own window is the one used up.
+  return account.status === 'limited' && !known ? 'At its usage limit' : null;
 }
 
 /** "5 h 40% · week 12%", or that the use is not known yet. */
@@ -221,19 +224,29 @@ function useLine(account) {
  */
 export async function openSubscriptionMenu(ctx, anchor, task) {
   let accounts;
+  let model = task.model || null;
   try {
-    const status = await ctx.api.get('/api/status');
+    // Which subscriptions can take the task depends on its model, which only its details carry.
+    // A caller that does not have them yet (the task view draws the chip before it read them) is
+    // not judged as a task of no known model: the menu reads the model itself (SPEC-464). When
+    // that read fails the menu still opens, with the model not known.
+    const [status, detail] = await Promise.all([
+      ctx.api.get('/api/status'),
+      model ? null : ctx.api.get(`/api/tasks/${enc(task.id)}`).catch(() => null),
+    ]);
     accounts = (status.accounts || []).filter((a) => a.id && a.provider === 'anthropic');
+    model = model || (detail && detail.model) || null;
   } catch (error) {
     errorToast(error, 'Couldn’t read the subscriptions');
     return;
   }
+  const judged = { ...task, model };
   const moving = task.status === 'running' || task.status === 'waiting_capacity';
   openMenu(anchor, [
     { header: moving ? `Run #${task.number} on…` : `Continue #${task.number} on…` },
     ...accounts.map((account) => {
       const current = task.account_id ? account.id === task.account_id : account.label === task.account_label;
-      const why = cannotTake(account, task);
+      const why = cannotTake(account, judged);
       // A running task is on it already; a waiting one may start on it all the same (MOV-002).
       const here = current && task.status === 'running';
       return {

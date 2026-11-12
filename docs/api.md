@@ -1528,6 +1528,7 @@ Account = {"id","provider","label",
   "usage":{"primary":{"used_percent":42.0,"resets_at":"…","window_minutes":300}|null,
            "secondary":{…}|null,"weekly_opus":{…}|null,"weekly_sonnet":{…}|null,
            "weekly_fable":{…}|null,
+           "limit_reached":false,"limit_resets_at":"…|null",
            "observed_at":"…|null"},
   "last_error":"…|null","in_use_by":0,
   "email":"…|null","plan":"Pro|Max 5x|Max 20x|…|null"}
@@ -1540,8 +1541,10 @@ up, then at 100 until its `resets_at` (SPEC-464). Its `resets_at` is `null` when
 say when it ends, or named a time further ahead than a window lasts: the next provider's reading
 of the subscription ends it then. `status` is `limited` while the default model cannot run on the
 subscription: a limit Claude reported is in effect, or a window that binds that model is at 100.
-A task of another model can still be moved there (`POST /api/tasks/{tid}/switch` goes by the
-windows that bind the task's own model). Unknown usage is `null`, never zero. Credentials are
+`limit_reached` is a limit Claude reported for the whole subscription, which binds every model
+until `limit_resets_at` (`null` when Claude did not say when). A task of another model can still
+be moved to a subscription that is `limited` only by the default model's own window
+(`POST /api/tasks/{tid}/switch` goes by what binds the task's own model). Unknown usage is `null`, never zero. Credentials are
 never returned. `email` is the email of the Claude account behind the subscription (SPEC-244,
 ADR-0185). After a sign-in stores a credential, Yulius reads it from Claude's profile
 (`GET /api/oauth/profile`, `account.email`) with that credential. The background usage round

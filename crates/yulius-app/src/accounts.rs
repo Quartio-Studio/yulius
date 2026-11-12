@@ -288,6 +288,8 @@ pub fn usage_view(usage: &AccountUsage) -> AccountUsageView {
         weekly_opus: usage.weekly_opus.as_ref().map(window_view),
         weekly_sonnet: usage.weekly_sonnet.as_ref().map(window_view),
         weekly_fable: usage.weekly_fable.as_ref().map(window_view),
+        limit_reached: usage.limit_reached,
+        limit_resets_at: usage.limit_resets_at.map(rfc3339),
         observed_at: usage.observed_at.map(rfc3339),
     }
 }
@@ -517,8 +519,13 @@ impl App {
     }
 
     fn publish_account(&self, view: AccountView) {
-        self.events
-            .publish(None, true, UiEvent::AccountUpdated { account: view });
+        self.events.publish(
+            None,
+            true,
+            UiEvent::AccountUpdated {
+                account: Box::new(view),
+            },
+        );
     }
 
     pub(crate) async fn publish_account_id(&self, id: &AccountId) {
@@ -1760,6 +1767,22 @@ mod tests {
             Some(100.0)
         );
         assert!(fable.secondary.is_none() && fable.weekly_opus.is_none());
+        assert!(
+            !fable.limit_reached,
+            "a model's limit is not the subscription's"
+        );
+        // A limit of the whole subscription is shown as one, with its end when Claude named it:
+        // "Run #N on…" refuses every task for it (SPEC-464).
+        let whole = usage_view(&AccountUsage {
+            limit_reached: true,
+            limit_resets_at: Some(Timestamp(0)),
+            ..AccountUsage::default()
+        });
+        assert!(whole.limit_reached);
+        assert_eq!(
+            whole.limit_resets_at.as_deref(),
+            Some("1970-01-01T00:00:00Z")
+        );
     }
 
     #[test]
