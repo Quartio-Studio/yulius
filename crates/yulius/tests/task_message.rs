@@ -362,23 +362,25 @@ fn read_alone(app: &App, id: &TaskId, line: &str) -> bool {
     screen(app, id).lines().any(|shown| shown.trim() == answer)
 }
 
-/// SPEC-480 AC1 (DRF-001, DRF-004; issue #1199): text a person typed into the prompt box and
-/// did not send keeps a message out however long ago they typed it. Two minutes later the
-/// Superagent's message is refused with the reason, and the agent got neither text. Once the
-/// person sent theirs, the message arrives as a prompt of its own. The message used to be
-/// pasted behind a draft older than a minute and submitted with it.
+/// SPEC-480 AC1, AC4 (DRF-001, DRF-004; issue #1199): text a person typed into the prompt box
+/// and did not send keeps a message out however long ago they typed it. Two minutes later, and
+/// eleven, the Superagent's message is refused with the reason, the agent got neither text,
+/// and the task is not flagged (the sender was told). Once the person sent theirs, the message
+/// arrives as a prompt of its own. The message used to be pasted behind a draft older than a
+/// minute and submitted with it.
 #[test]
 fn a_persons_draft_keeps_the_message_out_however_old() -> TestResult {
     let (_dir, data) = data_dir()?;
     let rt = runtime()?;
     rt.block_on(async {
-        let (app, clock) = app_behind(&data, 2 * MINUTE).await?;
+        let (app, clock) = app_behind(&data, 11 * MINUTE).await?;
         let (id, caller) = running(&app, &data).await?;
         let (ctx, attach) = terminal(&app, &caller, &id).await?;
+        let mut watch = app.runtime(&id).hub.watch();
         // They type half a prompt and leave it; two minutes pass.
         app.terminal_input(&ctx, &attach, b"half a thought", false)
             .await?;
-        clock.0.store(0, Ordering::SeqCst);
+        clock.0.store(-9 * MINUTE, Ordering::SeqCst);
 
         let message = json!({"task_id": id.as_str(), "text": "Go on"});
         let Err(refused) = app.tool_task_message(&caller, &message).await else {
@@ -397,6 +399,16 @@ fn a_persons_draft_keeps_the_message_out_however_old() -> TestResult {
             matches!(&refused, AppError::Conflict(why) if why.contains("prompt box")),
             "{refused:?}"
         );
+        // Eleven minutes after their last key it is refused all the same, and its sender is
+        // the one who was told: no flag, no line in the terminal.
+        clock.0.store(0, Ordering::SeqCst);
+        let again = app.tool_task_message(&caller, &message).await.err();
+        assert!(
+            matches!(&again, Some(AppError::Conflict(why)) if why.contains("prompt box")),
+            "{again:?}"
+        );
+        assert_eq!(support::attention(&app, id.as_str()).await?, Value::Null);
+        assert_eq!(notices(&mut watch), Vec::<String>::new());
         // Whatever reaches the agent shows within a second; nothing did.
         tokio::time::sleep(Duration::from_secs(1)).await;
         let shown = screen(&app, &id);
