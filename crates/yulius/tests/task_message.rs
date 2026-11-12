@@ -656,6 +656,9 @@ enum BeforeRestart {
     TrustDialog,
     /// A running task.
     Running,
+    /// A running task into whose prompt box its person typed "half a thought" and did not
+    /// send it.
+    Draft,
 }
 
 /// Runs `before` on a first server with `agent` (waiting until its run was spawned more than
@@ -675,7 +678,9 @@ fn restarted(
         let probe = Arc::new(ScriptedUsage::default());
         let (app, port) = start(data, &fake, agent.clone(), 0, probe).await?;
         let (id, caller) = match before {
-            BeforeRestart::TrustWords | BeforeRestart::Running => running(&app, data).await?,
+            BeforeRestart::TrustWords | BeforeRestart::Running | BeforeRestart::Draft => {
+                running(&app, data).await?
+            }
             BeforeRestart::TrustDialog => {
                 let (sandbox, user) = seed(&app, data, &["a-only"]).await?;
                 let id = new_task(&app, &sandbox, &user, "Make it blue", TaskMode::Goal).await?;
@@ -684,6 +689,12 @@ fn restarted(
         };
         if matches!(before, BeforeRestart::TrustWords) {
             app.send_input(&id, b"Yes, I trust this folder\r").await?;
+        }
+        if matches!(before, BeforeRestart::Draft) {
+            let (ctx, attach) = terminal(&app, &caller, &id).await?;
+            app.terminal_input(&ctx, &attach, b"half a thought", false)
+                .await?;
+            app.terminal_leave(&attach).await;
         }
         wait_for(
             "the screen before the restart",
@@ -740,6 +751,55 @@ fn a_run_reattached_after_a_restart_takes_messages() -> TestResult {
             screen(&app, &id).contains("ECHO: Message from admin")
         })
         .await?;
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-480 AC5 (DRF-009; review round 1): a draft typed before a restart of the server still
+/// keeps a message out after it. The keystroke that began it is kept in the run folder, which
+/// the restarted server reads; the server used to know keystrokes in memory alone, and typed
+/// behind such a draft. The person's next prompt removes the mark.
+#[test]
+fn a_draft_typed_before_a_restart_still_keeps_the_message_out() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let shown = "half a thought";
+    let before = BeforeRestart::Draft;
+    let (rt, app, id, caller) = restarted(&data, &fake_agent(), before, 0, 600_000, shown)?;
+    rt.block_on(async {
+        let Err(refused) = send(&app, &caller, &id).await else {
+            wait_for("what the agent read", Duration::from_secs(30), || async {
+                screen(&app, &id).contains("ECHO: half a thought")
+            })
+            .await?;
+            return Err(format!(
+                "the message was typed onto a draft from before the restart:\n{}",
+                screen(&app, &id)
+            )
+            .into());
+        };
+        assert!(
+            matches!(&refused, AppError::Conflict(why) if why.contains("prompt box")),
+            "{refused:?}"
+        );
+        let run_dir = app
+            .deps
+            .store
+            .live_attempt(&id)
+            .await?
+            .ok_or("run")?
+            .run_dir;
+        let mark = Path::new(&run_dir).join("person-typed");
+        assert!(mark.exists(), "the draft's mark is kept in the run folder");
+        // They send it: the agent reads it alone, and the mark goes with the draft.
+        let (ctx, attach) = terminal(&app, &caller, &id).await?;
+        app.terminal_input(&ctx, &attach, b"\r", false).await?;
+        wait_for("the person's prompt", Duration::from_secs(30), || async {
+            read_alone(&app, &id, "half a thought") && !mark.exists()
+        })
+        .await?;
+        app.terminal_leave(&attach).await;
         stop(&app, &id).await
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
