@@ -240,6 +240,21 @@ fn a_stopped_unit_with_processes_is_refused() -> TestResult {
     Ok(())
 }
 
+/// The export copies what a stopped unit's processes may still write once thawed: it refuses
+/// them also while the kernel holds them frozen (unlike [`left_running`], SPEC-478).
+#[test]
+fn a_stopped_unit_with_frozen_processes_is_refused_too() -> TestResult {
+    let mut fake = Fake::new(&[("inactive", "running")]);
+    fake.files.insert(
+        format!("/sys/fs/cgroup{CGROUP}/cgroup.events"),
+        "populated 1\nfrozen 1\n".into(),
+    );
+    let err = run(&fake).err().ok_or("expected an error")?;
+    assert!(err.contains("still run"), "{err}");
+    assert!(fake.calls().is_empty());
+    Ok(())
+}
+
 #[test]
 fn a_stopped_unit_without_processes_needs_no_freeze() -> TestResult {
     let mut fake = Fake::new(&[("inactive", "running")]);
@@ -889,10 +904,17 @@ fn a_stopped_unit_is_named_while_its_processes_run() -> TestResult {
     events(&mut fake, "", "populated 1\nfrozen 0\n");
     assert!(left_running(&mut fake, UNIT)?.is_empty());
 
-    // What the kernel holds frozen does not run.
-    let mut fake = Fake::new(&[("failed", "frozen")]);
-    events(&mut fake, CGROUP, "populated 1\nfrozen 1\n");
-    assert!(left_running(&mut fake, UNIT)?.is_empty());
+    // What the kernel holds frozen does not run. The kernel's word, not systemd's: systemd 259
+    // keeps saying `FreezerState=frozen` of a unit that failed while frozen, and says
+    // `running` of a group that was frozen behind its back.
+    for freezer in ["frozen", "running"] {
+        let mut fake = Fake::new(&[("failed", freezer)]);
+        events(&mut fake, CGROUP, "populated 1\nfrozen 1\n");
+        assert!(left_running(&mut fake, UNIT)?.is_empty(), "{freezer}");
+        let mut fake = Fake::new(&[("failed", freezer)]);
+        events(&mut fake, CGROUP, "populated 1\nfrozen 0\n");
+        assert_eq!(left_running(&mut fake, UNIT)?, [UNIT], "{freezer}");
+    }
 
     // A unit that runs is not this question, whatever its group holds: whether it is frozen
     // is systemd's to say.

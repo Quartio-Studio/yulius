@@ -1644,7 +1644,7 @@ fn a_recorded_start_freezes_whatever_unit_runs_beside_the_new_instance() -> Test
     assert!(
         shown.contains(
             "stop it for good instead: `systemctl stop yulius.service \
-             yulius-sandboxes.service; systemctl kill --kill-whom=all --signal=SIGKILL \
+             yulius-sandboxes.service; systemctl kill --kill-who=all --signal=SIGKILL \
              yulius.service yulius-sandboxes.service`"
         ),
         "{shown}"
@@ -1724,7 +1724,7 @@ fn a_recorded_start_with_a_stopped_server_freezes_its_sessions() -> TestResult {
             shown.contains(
                 "yulius.service does not run here any more, and the new instance runs. Make \
                  sure nothing of the old one runs here: `systemctl stop yulius.service \
-                 yulius-sandboxes.service; systemctl kill --kill-whom=all --signal=SIGKILL \
+                 yulius-sandboxes.service; systemctl kill --kill-who=all --signal=SIGKILL \
                  yulius.service yulius-sandboxes.service; systemctl disable yulius.service`"
             ),
             "{shown}"
@@ -1754,11 +1754,11 @@ fn a_recorded_start_with_a_stopped_server_freezes_its_sessions() -> TestResult {
 }
 
 /// What a resumed start says of a stopped server's unit whose processes still run.
-const STILL_RUN: &str = "yulius.service has stopped, but processes of it still run here beside \
-                         the new instance (a stopped server's unit keeps the agents, terminals \
-                         and sandbox engines it started: KillMode=process), and systemd freezes \
-                         nothing of a unit that has stopped. End them: `systemctl kill \
-                         --kill-whom=all --signal=SIGKILL yulius.service`, then run the command \
+const STILL_RUN: &str = "yulius.service does not run any more, but processes of it still run \
+                         here beside the new instance (the server's unit keeps what the server \
+                         started in it when it stops: KillMode=process), and systemd freezes \
+                         nothing of a unit that does not run. End them: `systemctl kill \
+                         --kill-who=all --signal=SIGKILL yulius.service`, then run the command \
                          again. The move is not recorded as done until then";
 
 /// SPEC-478 RSL-001 (issue #1178): a server's unit that was stopped by hand is not an old
@@ -1876,8 +1876,16 @@ fn a_recorded_start_names_every_stopped_unit_whose_processes_run() -> TestResult
     // The sessions unit has stopped too and processes of it are left (a stop that did not end
     // them all): it is named, alone or with the server's unit, in the one command.
     for (server, names) in [
-        (false, "yulius-sandboxes.service has"),
-        (true, "yulius.service and yulius-sandboxes.service have"),
+        (
+            false,
+            "yulius-sandboxes.service does not run any more, but processes of it still run here \
+             beside the new instance, and systemd",
+        ),
+        (
+            true,
+            "yulius.service and yulius-sandboxes.service do not run any more, but processes of \
+             them still run here beside the new instance (the server's unit keeps",
+        ),
     ] {
         let mut s = killed_while_starting()?;
         if let Ok(mut unit) = s.world.systemd.lock() {
@@ -1888,10 +1896,7 @@ fn a_recorded_start_names_every_stopped_unit_whose_processes_run() -> TestResult
         }
         assert_eq!(s.run()?, 1, "{}", s.shown());
         let shown = s.shown();
-        assert!(
-            shown.contains(&format!("{names} stopped, but processes of")),
-            "{shown}"
-        );
+        assert!(shown.contains(names), "{shown}");
         let units = if server {
             "yulius.service yulius-sandboxes.service"
         } else {
@@ -1899,7 +1904,7 @@ fn a_recorded_start_names_every_stopped_unit_whose_processes_run() -> TestResult
         };
         assert!(
             shown.contains(&format!(
-                "End them: `systemctl kill --kill-whom=all --signal=SIGKILL {units}`, then run \
+                "End them: `systemctl kill --kill-who=all --signal=SIGKILL {units}`, then run \
                  the command again"
             )),
             "{shown}"
@@ -1928,8 +1933,8 @@ fn a_recorded_start_does_not_guess_what_a_stopped_unit_left() -> TestResult {
     let shown = s.shown();
     assert!(
         shown.contains(
-            "systemd does not say whether processes of yulius.service, which has stopped, \
-             still run here beside the new instance (Failed to connect to bus). The move is \
+            "yulius.service has stopped, and systemd does not say whether processes of the old \
+             instance still run here beside the new one (Failed to connect to bus). The move is \
              not recorded as done: run the command again when it answers"
         ),
         "{shown}"
@@ -3105,12 +3110,12 @@ fn a_finish_that_was_done_but_not_recorded_is_found_done() -> TestResult {
 /// The way out a failed freeze beside a running new instance names. SIGKILL: a process that
 /// ignores SIGTERM (an interactive shell) would be left.
 const STOP_FOR_GOOD: &str = "stop it for good instead: `systemctl stop yulius.service; systemctl \
-                             kill --kill-whom=all --signal=SIGKILL yulius.service`";
+                             kill --kill-who=all --signal=SIGKILL yulius.service`";
 /// How the line for an old instance of which nothing runs begins.
 const MAKE_SURE_OF: &str = "Make sure nothing of the old one runs here";
 /// What that line tells to run on a host without a sessions unit.
 const MAKE_SURE: &str = "Make sure nothing of the old one runs here: `systemctl stop \
-                         yulius.service; systemctl kill --kill-whom=all --signal=SIGKILL \
+                         yulius.service; systemctl kill --kill-who=all --signal=SIGKILL \
                          yulius.service; systemctl disable yulius.service`";
 
 #[test]
