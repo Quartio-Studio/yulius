@@ -465,12 +465,17 @@ test('the page reads an old card by itself once per visit and says nothing when 
   });
   await firstShown(browser.locator('main .account-card').first());
   await expect.poll(async () => (await usageRequests(browser)).acc_x3).toBe(1);
-  // The list is drawn again (a rename elsewhere): the old card is not asked for again.
+  // The list is drawn again (a rename elsewhere): the old card is not asked for again. The
+  // cards on the page are marked, so the redraw is seen when a card without the mark is there.
+  await browser.evaluate(() => { for (const card of document.querySelectorAll('main .account-card')) (card as HTMLElement & { old?: boolean }).old = true; });
   await screen.getByRole('button', 'Rename Claude #4').click();
   await screen.getByRole('textbox', 'New name for Claude #4').fill('Claude four');
   await screen.getByRole('textbox', 'New name for Claude #4').press('Enter');
   await expect(screen.getByText('Subscription renamed to Claude four.')).toBeVisible();
-  await expect.poll(() => browser.evaluate(() => ((window as unknown as Usage).__yuliusMock.asked ?? {})['/api/admin/accounts'])).toBeGreaterThan(1);
+  await expect.poll(() => browser.evaluate(() => {
+    const cards = [...document.querySelectorAll('main .account-card')] as (HTMLElement & { old?: boolean })[];
+    return cards.length > 0 && cards.every((card) => !card.old);
+  }), { message: 'the list was never drawn again' }).toBe(true);
   expect(await usageRequests(browser)).toEqual({ acc_x3: 1 });
   await expect(browser.locator('.toast-error')).toHaveCount(0);
   await expect(browser.locator('main .account-card:has-text("Claude spare") .account-note')).toHaveCount(0);
