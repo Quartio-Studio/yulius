@@ -504,13 +504,23 @@ recorded while a reading is under way is kept.
 A model's limit nothing says the end of, with no subscription the task can go to, makes the task
 wait, and the provider's reading that ends it lets the pool try the task once
 (`BLIND_LIMIT_RETRIES`). Refused the same way again before the model answered (`BlindLimits`),
-the task is not started on that subscription by itself again, so no session is restarted at
-every reading with nobody told. What follows depends on what is known. When another subscription
-says when it resets, the task waits for that reset and the pool leaves the refusing subscription
-out for it, whatever its readings say meanwhile (`rotation::decide_leaving_out`). When nothing
-says when the task can go on, its session stays at the refusal and Yulius asks a person
-(`task.limit_without_end`); that request ends when the task goes on past the limit. The count is
-the task's and in memory: an answer from the model clears it, and so does a restart of Yulius.
+the task is not started on that subscription at each of its readings, so no session is restarted
+every few minutes with nobody told. What follows depends on what is known. When another
+subscription says when it resets, the task waits for that reset and the pool leaves the refusing
+subscription out for the waiting task, whatever its readings say meanwhile
+(`rotation::decide_leaving_out`). When nothing says when the task can go on, its session stays
+at the refusal and Yulius asks a person (`task.limit_without_end`). Two starts on that
+subscription remain possible, one each: once no reset is known any more (the other subscription
+was removed or needs a sign-in) it is a candidate again, and a task that went on elsewhere and
+is refused there may be sent back by that limit's own decision; refused again, the task waits
+or asks as above. The count is the task's and in memory: an answer from the model clears it, and
+so does a restart of Yulius. Only a model's limit is bounded this way
+(`ReportedLimit::without_an_end`): a provider's reading shows the windows of the subscription's
+own limit.
+
+Yulius's request says the task does not go on by itself, like the one for a goal Claude Code
+paused, and ends the same way ([decision 0304](decisions/0304-a-request-yulius-opens-for-a-goal-pause-ends-when-the-agent-works-again.md)):
+when the session's agent works again, or sooner when the task goes on past the limit.
 
 ```mermaid
 flowchart TD
@@ -626,9 +636,10 @@ path already moves the task or resumes it at the reset, so nobody is asked
 ([decision 0301](decisions/0301-a-models-usage-credits-are-a-limit-of-that-model.md)). Its notice
 is held meanwhile (`LimitGoalPause`): when the switch past the limit is refused before it ends the
 session, the session stays at the refusal, and the held pause puts the task in Needs you after
-all; a later move past the limit ends that request. It is asked and audited once per limit: an
-audit entry written at or after Claude Code recorded the limit says the limit was asked about, so
-a restart that reads the same pause again only puts the task back under Needs you.
+all; a later move past the limit ends that request and says so in the audit log
+(`task.needs_you.resolved`). It is asked and audited once per limit: an audit entry written at or
+after Claude Code recorded the limit says the limit was asked about, so a restart that reads the
+same pause again only puts the task back under Needs you.
 
 That request says the task does not go on by itself, so it ends when the session does go on
 ([SPEC-469](../.ai/specs/SPEC-469-even-if-it-woke-up-it-still-has-needs-yo.md),
@@ -643,7 +654,10 @@ from the task's state, which a restart of Yulius forgot. That time stands only w
 still reads the flag it belongs to (`standing_notice_ms`): a status change replaces a flag
 without a word, and one raised later is not answered by work. The replay after a restart folds when
 the agent first worked after the last pause (`TranscriptFacts::worked_since_goal_pause`): the
-request ends, and the task the pause flagged follows its session.
+request ends, and the task the pause flagged follows its session. The request Yulius opens for a
+usage limit nothing says the end of follows the same rule (`STALLED_ACTIONS`, one flag helper
+`flag_stalled`), and so does a goal pause's asked at a limit; a limit that cut the turn counts as
+a pause there, so work before it answers nothing.
 
 ```mermaid
 stateDiagram-v2

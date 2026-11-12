@@ -1085,8 +1085,9 @@ Vidoc off, it also says `Vidoc scans are switched off for the instance`.
    provider's next reading of the subscription ends the limit (a session's own reading does
    not), and a task with nowhere else to go is tried once more. Refused again, it waits for
    another subscription's reset when one is known, off the subscription that refused it;
-   otherwise it is under Needs you until a person runs it elsewhere or sends it a message
-   (audit `task.limit_without_end`; SPEC-464).
+   otherwise it is under Needs you (audit `task.limit_without_end`) until a person runs it
+   elsewhere or sends it a message, or until its agent works again because the limit is over
+   (audit `task.needs_you.resolved`; SPEC-464).
    Do this before importing: until a Claude account is usable, Yulius refuses every agent start a
    person asks for, Start onboarding included (SPEC-246, ADR-0190).
 6. Import or create projects (sandboxes). Product and Studio are detected and get the `product` and

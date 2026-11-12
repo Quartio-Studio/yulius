@@ -4,7 +4,9 @@
 
 Accepted. Specified in [SPEC-464](../../.ai/specs/SPEC-464-we-still-have-healthy-subscribtionsbut-w.md);
 task #449, issue #1172. Refines [ADR-0225](0225-claude-code-owns-the-goal-retry-after-an-api-error.md)
-(which goal pauses need a person) and SPEC-001 ROT-009 (what a usage reading replaces).
+(which goal pauses need a person) and SPEC-001 ROT-009 (what a usage reading replaces). The
+request it adds follows [ADR-0304](0304-a-request-yulius-opens-for-a-goal-pause-ends-when-the-agent-works-again.md)
+(a request Yulius opens for a state ends when that state does).
 
 ## Context
 
@@ -75,14 +77,23 @@ wrong:
 - **One blind retry, then no more by itself.** A model's limit nothing says the end of, with no
   subscription the task can go to, makes the task wait; a provider's reading ends such a limit
   and the pool tries the task once (`BLIND_LIMIT_RETRIES`). Refused the same way again before
-  the model answered, the task is not started on that subscription by itself again. When another
-  subscription says when it resets, the task waits for that reset, and the pool leaves the
-  refusing subscription out for this task whatever its readings say
+  the model answered, the task is not started on that subscription at each of its readings.
+  When another subscription says when it resets, the task waits for that reset, and the pool
+  leaves the refusing subscription out for the waiting task whatever its readings say
   (`rotation::decide_leaving_out`). When nothing says when the task can go on, its session stays
   at the refusal, and Yulius asks a person in the terminal and under Needs you
-  (`task.limit_without_end`); further readings start nothing, and the request ends when the task
-  goes on past the limit. The bound is for a model's limit: a limit of the subscription ends by
-  what a reading shows of its windows.
+  (`task.limit_without_end`); further readings start nothing. Two starts on the refusing
+  subscription remain, one each: when no reset is known any more it is a candidate again, and a
+  task that went on elsewhere and is refused there may be sent back by that limit's own
+  decision; refused again, the task waits or asks as before. The bound is for a model's limit
+  (`ReportedLimit::without_an_end`): a limit of the subscription ends by what a reading shows
+  of its windows.
+- **That request ends when what it says stops being true**
+  ([ADR-0304](0304-a-request-yulius-opens-for-a-goal-pause-ends-when-the-agent-works-again.md)).
+  It says "the task does not go on by itself", as the request for a goal Claude Code paused
+  does. Both end when the session's agent works again, whatever woke it, live and after a
+  restart of Yulius, and sooner when the task goes on past the limit that cut its turn; the
+  audit log says which (`task.needs_you.resolved`). A request the agent made stays.
 - **A goal pause at a limit is the limit's.** A pause notice that follows a usage limit or a
   refused subscription in the same turn opens no Needs you and writes no
   `task.goal_retries_spent` while Yulius takes the task on, live (`goal_retry_observed`, by the
@@ -133,6 +144,10 @@ wrong:
   that case). Each reading of the refusing subscription ended its limit, so the session was
   started there and refused again, every few minutes until the other one's reset. Rejected for
   leaving the subscription out for that task.
+- **End Yulius's own request only at a move or a person's message.** ADR-0304, merged while
+  this change was in review, ends the goal pause's request when the agent works again; a second
+  request with the same words and another rule would stay open over a session that works.
+  Rejected.
 - **Tell "used up" from "switched off" by Claude's `overageDisabledReason`.** Claude Code 2.1.311
   records carry none, and a refusal whose body alone says credits are required names no window.
   Left to the probe of task #451, which reads the model's state itself.
