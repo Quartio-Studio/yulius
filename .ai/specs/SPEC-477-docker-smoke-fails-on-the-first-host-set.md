@@ -1,11 +1,11 @@
 ---
 yulius-task: bddd6293-420b-4d90-9a39-83f7a8fbd8b4
-status: in-progress
+status: done
 ---
 
 # SPEC-477: A starting server leaves a running Docker smoke test's sandbox alone
 
-Status: in-progress
+Status: done
 Date: 2026-11-12
 Owner: Yulius task #459, issue #1160
 Scope authorization: the request of task #459 (from task #458, which works through open issues):
@@ -95,24 +95,24 @@ type, and the smoke's checks themselves.
 
 ## Plan
 
-- [ ] Reproduce the defect on a fresh Ubuntu 24.04 guest and name its cause
-- [ ] Spec and the manager test that fails without the fix
-- [ ] A starting server leaves a running smoke test's holders alone
-- [ ] Documents and the decision record say whose the smoke's sandbox is
-- [ ] The first host setup of a fresh Ubuntu 24.04 guest passes the smoke with the fix
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] Reproduce the defect on a fresh Ubuntu 24.04 guest and name its cause
+- [x] Spec and the manager test that fails without the fix
+- [x] A starting server leaves a running smoke test's holders alone
+- [x] Documents and the decision record say whose the smoke's sandbox is
+- [x] The first host setup of a fresh Ubuntu 24.04 guest passes the smoke with the fix
+- [x] Independent review in a fresh session, findings fixed test-first
 
 ## Acceptance criteria
 
-- [ ] The cause is named with a test that fails without the fix:
+- [x] The cause is named with a test that fails without the fix:
   `manager::tests::a_starting_server_leaves_a_running_smoke_tests_holders_alone` (SMK-001,
   SMK-002).
-- [ ] `sudo yulius host setup` on a fresh Ubuntu 24.04 host ends with `Docker smoke test` ok on
+- [x] `sudo yulius host setup` on a fresh Ubuntu 24.04 host ends with `Docker smoke test` ok on
   its first run (a QEMU guest from Ubuntu's cloud image, binary built from this branch).
-- [ ] `yulius doctor --docker-smoke` still passes beside the running server on later runs (same
+- [x] `yulius doctor --docker-smoke` still passes beside the running server on later runs (same
   guest), and a server restarted while the smoke's Docker-off holder runs does not change its
   result.
-- [ ] `scripts/dev ci` and `scripts/dev security` pass (or say why a part did not run).
+- [x] `scripts/dev ci` and `scripts/dev security` pass (or say why a part did not run).
 
 ## Test plan
 
@@ -252,8 +252,13 @@ from `dev` `0dd7a58a5` ("before") and from this branch at `8b5a87815`, the fix's
 - `scripts/dev check`: passed. `scripts/dev security`: "Security scan disabled: Vidoc is turned
   off in Yulius, for this project or the whole instance; nothing was scanned." (exit 0; disabled,
   not passed).
-- `scripts/dev ci` at `b1b7996d9`: stopped at the test stage, 4031 tests run, 4030 passed, 1
-  failed, 16 skipped. The failure is
+- `scripts/dev ci` at `7fb0900bc` (the code as delivered): passed, exit 0; its test stage ran
+  4031 tests, 4031 passed, 16 skipped.
+- Two earlier runs did not pass. At `26117a086` the tests passed (4031 of 4031) and the
+  documentation step refused a link from `Manager::adopt`'s public documentation to the private
+  `smoke_runs` (`rustdoc::private-intra-doc-links`); `7fb0900bc` names it without a link. At
+  `b1b7996d9` the run stopped at the test stage, 4031 tests run, 4030 passed, 1 failed, 16
+  skipped. The failure is
   `yulius mcp_bridge::tests::a_call_held_through_an_outage_is_answered_once_yulius_is_back`
   (`crates/yulius/src/mcp_bridge.rs:540`), outside this change (which touches
   `crates/yulius-sandbox/src/manager.rs` and a comment in `docker_smoke.rs`): the test frees an
@@ -261,7 +266,9 @@ from `dev` `0dd7a58a5` ("before") and from this branch at `8b5a87815`, the fix's
   test's listener got that port (its output: "Yulius cannot be reached (connect: connection
   refused)" then "Yulius is back" before the test's own listener existed). Alone it passes:
   `cargo nextest run -p yulius -E 'test(/^mcp_bridge::tests::/)' --stress-count 30`: 30 of 30
-  iterations. No issue tracks it; reported on issue #1160 (this task opens no issue).
+  iterations, and it passed in both later full runs. That another listener took the port is read
+  from the test and its output, not proven by a probe. No issue tracks it; it is recorded in a
+  comment on issue #1160 (this task opens no issue).
 
 **Not tested here.** Hosts other than Ubuntu 24.04 (the issue also saw 26.04 and Debian 13; the
 changed code has nothing of the host in it). `yulius instance migrate`'s setup on a new host and
