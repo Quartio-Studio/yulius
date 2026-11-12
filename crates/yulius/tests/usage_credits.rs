@@ -421,6 +421,94 @@ fn a_limit_reported_during_a_usage_reading_is_kept() -> TestResult {
     Ok(())
 }
 
+/// #1211: a subscription Claude refuses for good while its usage is being stored stays "needs a
+/// new sign-in". The usage write is held once it has read the subscription's status, which is
+/// still `ok`. A session on the subscription is refused. Unlocked, the refusal is stored at
+/// once and the usage write then stores `ok` over it, so the pool places tasks there again;
+/// under the lock every usage write takes, the refusal waits and is stored after it.
+#[test]
+fn a_subscription_refused_while_its_usage_is_stored_stays_refused() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let agent = FakeAgentOptions {
+            transcript: true,
+            limit_after: Some(1),
+            access_lost: true,
+            ..FakeAgentOptions::default()
+        };
+        let app = build_with(&data, &fake, probe.clone(), agent)?;
+        // Subscriptions of this test's own, so its holds meet no other test's writes.
+        let (first, second) = ("held-status-first", "held-status-second");
+        let (sandbox, user) = seed(&app, &data, &[first, second]).await?;
+        probe.set(second, usage(99.0, 4 * HOUR, 30.0, 100));
+        refresh(&app, &user, second).await?;
+        let id = new_task(&app, &sandbox, &user, "Refused while read").await?;
+        ready(&app, &id).await?;
+        assert_eq!(run_accounts(&app, &id).await, [Some(first.to_owned())]);
+        probe.set(second, usage(0.0, 5 * HOUR, 30.0, 100));
+        refresh(&app, &user, second).await?;
+
+        probe.set(first, usage(10.0, 4 * HOUR, 61.0, 100));
+        let (read, go_on) = hold_point(Point::UsageStatusRead, first);
+        let (marking, pass) = hold_point(Point::AccessLostRecord, first);
+        pass.send(())?;
+        let reading = {
+            let (app, user) = (app.clone(), user.clone());
+            tokio::spawn(async move {
+                refresh(&app, &user, first)
+                    .await
+                    .map_err(|err| err.to_string())
+            })
+        };
+        point_reached(read).await?;
+        app.send_input(&id, b"hello\r").await?;
+        point_reached(marking).await?;
+        let account = AccountId::parse(first)?;
+        let refused = || async {
+            app.deps.store.account(&account).await.is_ok_and(|record| {
+                record.is_some_and(|record| record.status == AccountStatus::Relogin)
+            })
+        };
+        // Half a second for the refusal to be stored while the usage write is held: unlocked it
+        // is, under the lock it waits (a bounded negative check).
+        let written = wait_for("the refusal's write", Duration::from_millis(500), refused)
+            .await
+            .is_ok();
+        go_on.send(())?;
+        reading.await??;
+        wait_for(
+            "the refusal after the usage write",
+            Duration::from_secs(10),
+            refused,
+        )
+        .await
+        .map_err(|_| {
+            format!("the usage write stored ok over the refusal (stored while held: {written})")
+        })?;
+        let record = app.deps.store.account(&account).await?.ok_or("account")?;
+        assert!(
+            record
+                .last_error
+                .as_deref()
+                .is_some_and(|error| error.contains("disabled Claude subscription access")),
+            "{:?}",
+            record.last_error
+        );
+        // The reading's windows are stored too: neither write is lost.
+        let (_, stored) = stored_usage(&app, first).await?;
+        assert_eq!(stored["secondary"]["used_percent"], 61.0, "{stored}");
+        live_run(&app, &id, 2).await?;
+        assert_eq!(run_accounts(&app, &id).await[1].as_deref(), Some(second));
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// No other subscription can take the task: it waits at its limit and goes on at the reset
 /// Claude named, by itself, past the refused turn: no usage reading and no message (the person's
 /// requirement of 2026-11-11: "tasks paused for capacity resume at the reset by themselves").
@@ -586,7 +674,7 @@ fn a_refused_move_at_a_usage_credits_limit_still_asks_a_person() -> TestResult {
         );
         assert_eq!(
             resolved(&app, &id).await,
-            ["Yulius takes the session on past the usage limit that cut its turn"]
+            ["Yulius takes the session on past the refusal that cut its turn"]
         );
         stop(&app, &id).await?;
         Ok::<_, Box<dyn std::error::Error>>(())
@@ -807,7 +895,7 @@ fn a_limit_nothing_says_the_end_of_is_retried_once_then_asks_a_person() -> TestR
         needs_nobody(&app, &id).await?;
         assert_eq!(
             resolved(&app, &id).await,
-            ["Yulius takes the session on past the usage limit that cut its turn"]
+            ["Yulius takes the session on past the refusal that cut its turn"]
         );
 
         // Refused there too, and the way back cannot be taken (the first subscription's
@@ -928,7 +1016,8 @@ fn a_request_at_a_limit_nothing_says_the_end_of_ends_when_the_agent_works_again(
 }
 
 /// Why a request ended when Yulius paused its task at a usage limit.
-const WAITS: &str = "Yulius waits for the usage limit to end and resumes the session by itself";
+const WAITS: &str =
+    "Yulius waits for a subscription that can take the task and resumes the session then";
 
 /// A restart of Yulius forgets that the task was retried (the count is in memory), so the task
 /// is taken on once more: it waits for the next reading. Its request said "the task does not go
@@ -1048,65 +1137,127 @@ async fn first_turn(
     Ok((id, user, transcript.ok_or("transcript")?))
 }
 
+/// Claude Code paused the goal with no limit before it, which asks a person. Then a check-in
+/// nobody typed is refused with `refusal`, with no goal notice (the goal is paused already, as
+/// in task #438's records), and no other subscription can take the task: it waits. Returns
+/// once the goal pause's request ended with that wait.
+async fn goal_pause_then_a_wait(
+    data: &Path,
+    fake: &Path,
+    refusal: Line,
+) -> Result<(Arc<App>, TaskId), Box<dyn std::error::Error>> {
+    let probe = Arc::new(ScriptedUsage::default());
+    let agent = FakeAgentOptions {
+        transcript: true,
+        ..FakeAgentOptions::default()
+    };
+    let app = build_with(data, fake, probe, agent)?;
+    let (id, _user, transcript) = first_turn(&app, data).await?;
+    append_lines(
+        &transcript,
+        "paused",
+        &[Line::Prompt, Line::GoalPause, Line::TurnDuration],
+    )?;
+    wait_for(
+        "the goal pause's request",
+        Duration::from_secs(30),
+        || async {
+            pauses_audited(&app, &id).await == 1
+                && app
+                    .deps
+                    .store
+                    .task_needs_you(&id)
+                    .await
+                    .is_ok_and(|asked| asked.is_some())
+        },
+    )
+    .await?;
+    let asked = app.deps.store.task_needs_you(&id).await?.ok_or("request")?;
+    assert!(
+        asked.action.starts_with("Send the task a message"),
+        "{asked:?}"
+    );
+
+    append_lines(
+        &transcript,
+        "refused",
+        &[Line::Prompt, refusal, Line::TurnDuration],
+    )?;
+    wait_for("the pause", Duration::from_secs(30), || {
+        has_status(&app, &id, TaskStatus::WaitingCapacity)
+    })
+    .await?;
+    wait_for(
+        "the goal pause's request to end",
+        Duration::from_secs(30),
+        || async { resolved(&app, &id).await == [WAITS] },
+    )
+    .await?;
+    assert_eq!(pauses_audited(&app, &id).await, 1, "asked once");
+    Ok((app, id))
+}
+
 /// A request that says "the task does not go on by itself" ends when Yulius takes the task on
 /// at a usage limit, by pausing it as by moving it (SPEC-464 UCL-007; review round 3): the pool
-/// resumes the task past the limit by itself, so nobody has to send it a message. Here Claude
-/// Code paused the goal with no limit before it, which asks a person. Then a check-in nobody
-/// typed is refused for usage credits, with no goal notice (the goal is paused already, as in
-/// task #438's records), and no other subscription can take the task: it waits.
+/// resumes the task past the limit by itself, so nobody has to send it a message. Here the
+/// limit is the model's, and nothing says when it ends.
 #[test]
 fn a_goal_pauses_request_ends_when_yulius_pauses_the_task_at_a_limit() -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
     let (_dir, data) = temp()?;
     let rt = runtime()?;
     rt.block_on(async {
-        let probe = Arc::new(ScriptedUsage::default());
-        let agent = FakeAgentOptions {
-            transcript: true,
-            ..FakeAgentOptions::default()
-        };
-        let app = build_with(&data, &fake, probe.clone(), agent)?;
-        let (id, _user, transcript) = first_turn(&app, &data).await?;
-        append_lines(
-            &transcript,
-            "paused",
-            &[Line::Prompt, Line::GoalPause, Line::TurnDuration],
-        )?;
+        let (app, id) = goal_pause_then_a_wait(&data, &fake, Line::CreditsRefusal).await?;
+        assert!(app.deps.store.task_needs_you(&id).await?.is_none());
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// The same at any limit Yulius waits for, not only one nothing says the end of (the final
+/// review, T-1): here the subscription's own 5-hour limit.
+#[test]
+fn a_goal_pauses_request_ends_when_yulius_pauses_the_task_at_the_subscriptions_limit() -> TestResult
+{
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let (app, id) = goal_pause_then_a_wait(&data, &fake, Line::SessionLimit).await?;
+        assert!(app.deps.store.task_needs_you(&id).await?.is_none());
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// And when Claude refuses the subscription for good and none is left (the final review, N-1):
+/// the task waits for a subscription that can take it, so the goal pause's request gives way to
+/// the one that says what a person has to do now: sign a subscription in.
+#[test]
+fn a_goal_pauses_request_gives_way_when_the_last_subscription_is_refused() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let (app, id) = goal_pause_then_a_wait(&data, &fake, Line::AccessLost).await?;
         wait_for(
-            "the goal pause's request",
+            "the request for a subscription",
             Duration::from_secs(30),
             || async {
-                pauses_audited(&app, &id).await == 1
-                    && app
-                        .deps
-                        .store
-                        .task_needs_you(&id)
-                        .await
-                        .is_ok_and(|asked| asked.is_some())
+                app.deps.store.task_needs_you(&id).await.is_ok_and(|asked| {
+                    asked.is_some_and(|asked| {
+                        asked
+                            .action
+                            .starts_with("Sign a Claude subscription in again")
+                    })
+                })
             },
         )
         .await?;
-        let asked = app.deps.store.task_needs_you(&id).await?.ok_or("request")?;
-        assert!(
-            asked.action.starts_with("Send the task a message"),
-            "{asked:?}"
-        );
-
-        append_lines(
-            &transcript,
-            "refused",
-            &[Line::Prompt, Line::CreditsRefusal, Line::TurnDuration],
-        )?;
-        wait_for("the pause", Duration::from_secs(30), || {
-            has_status(&app, &id, TaskStatus::WaitingCapacity)
-        })
-        .await?;
-        wait_for("the request to end", Duration::from_secs(30), || async {
-            matches!(app.deps.store.task_needs_you(&id).await, Ok(None))
-        })
-        .await?;
-        assert_eq!(resolved(&app, &id).await, [WAITS]);
-        assert_eq!(pauses_audited(&app, &id).await, 1, "asked once");
         stop(&app, &id).await?;
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
@@ -1416,6 +1567,8 @@ enum Line {
     CreditsRefusal,
     /// The subscription's own 5-hour limit, in a record that names no reset.
     SessionLimit,
+    /// The refusal of a lapsed subscription, as Claude Code 2.1.311 writes it.
+    AccessLost,
     /// The notice of a goal Claude Code paused at a refusal.
     GoalPause,
     /// The record closing a turn.
@@ -1467,6 +1620,13 @@ fn append_lines(transcript: &Path, tag: &str, lines: &[Line]) -> TestResult {
                     "apiErrorParams": {"rate_limit_info":
                         {"status": "rejected", "rateLimitType": "five_hour"}},
                     "message": refusal(&uuid, "You've hit your session limit")}),
+            ),
+            Line::AccessLost => (
+                "assistant",
+                json!({"isApiErrorMessage": true, "error": "oauth_org_not_allowed",
+                    "apiErrorStatus": 403, "apiErrorCode": "oauth_not_allowed_for_organization",
+                    "message": refusal(&uuid, "Your organization has disabled Claude \
+                        subscription access for Claude Code")}),
             ),
             Line::GoalPause => (
                 "system",

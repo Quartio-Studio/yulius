@@ -4128,6 +4128,10 @@ impl App {
             }
             _ => None,
         };
+        crate::race::reached(
+            crate::race::Point::UsageStatusRead,
+            Path::new(account.as_str()),
+        );
         // Nor does it erase why it needs one (SPEC-447 MOV-005).
         let kept_error = needs_sign_in.as_ref().and_then(|(_, error)| error.clone());
         let status = if let Some((status, _)) = needs_sign_in {
@@ -4165,6 +4169,10 @@ impl App {
     /// text as its error. The pool no longer places tasks on it, the usage round skips it, and
     /// paused tasks are reconsidered for the subscriptions left.
     pub(crate) async fn record_access_lost(&self, account: &AccountId, message: &str) {
+        crate::race::reached(
+            crate::race::Point::AccessLostRecord,
+            Path::new(account.as_str()),
+        );
         if let Err(err) = self
             .deps
             .store

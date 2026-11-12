@@ -1,11 +1,11 @@
 ---
 yulius-task: bf4157c9-9530-4f30-b545-d23684dc1641
-status: done
+status: in-progress
 ---
 
 # SPEC-464: a subscription out of usage credits for its model is a usage limit
 
-Status: done
+Status: in progress
 Date: 2026-11-11
 Owner: Yulius task #449
 Scope authorization: the person's request of 2026-11-11 ("we still have healthy subscriptions but
@@ -102,6 +102,7 @@ follows SPEC-469's (UCL-007, UCL-010).
 - [x] Every gate green on the reviewed head
 - [x] Review round 2 answered: the menu knows the task's model, the blind retry is bounded in every case and each clause has its test
 - [x] Review round 3's findings answered test-first, both rules kept at the merge with SPEC-469
+- [ ] After the merge: the final review's leftovers and the two issues the reviews noted (#1211, #1212) closed
 
 ## Acceptance criteria
 
