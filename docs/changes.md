@@ -6,6 +6,32 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-12
 
+- A task that reads "Needs your action" says why, and Reply shows where the answer goes
+  (SPEC-472, task #455, ADR-0306, #1221). The bar over a flagged task's terminal read "The agent
+  needs your attention. Its question is in the terminal below." for every such task, and its
+  Reply changed nothing on screen. That is true for one way to the flag, Claude Code's own
+  question. Yulius raises the flag itself when the Stop gate gave up after three blocks, a goal
+  was never set, Claude Code still asks whether to trust the folder, a restart cut the first
+  message, a full context could not be recovered, a session could not be ended, or the agent
+  asked for a secret or for an action in the sandbox browser; none of these puts a question in
+  the terminal, and each said why only in a notice that the viewers connected at that moment saw
+  for six seconds (a secret request said nothing, a browser request told only the pages that
+  heard it). The flag now keeps its reason with the task (`tasks.attention`, migration 0053; the
+  task's API view has `attention`), written by the statement that raises the flag and read only
+  while the task still reads that flag. The bar shows a reason of Yulius's own as it shows a
+  request: Needs you, Problem, To do, and Open for the page where it is answered (the Secrets
+  page, the browser tab). Claude Code's question keeps its sentence, with Claude Code's own
+  words, and a flag without a reason says "Look at its terminal below." and claims no question;
+  the task row's hidden line follows. Reply gives the terminal the keyboard and the terminal says
+  so ("The terminal has the keyboard: answer there."); a read-only terminal says why instead. A
+  second cause of the same sight is fixed with it: the agent's work answers a flag that Claude
+  Code's question raised, but only by a time the server kept in memory, so after an instance
+  update (which freezes agents mid-turn) such a task stayed "Needs your action" over a working
+  session until its turn ended. The reason now says that work answers the flag, and a run that
+  is watched again takes the flag's time back. A flag raised before this update has no reason
+  until it ends. Left as they are: a worker's permission prompt still ends only at the turn's
+  end or a typed message (nothing says when its dialog was answered; its bar now says what was
+  asked), and a second ask on a flagged task (#1200).
 - A superadmin moves the instance to another host from Settings → Instance (SPEC-470, task #447,
   ADR-0305; slice D of the move). The card **Move to another host** takes the new host, its SSH
   port, a public URL and data disks and shows the plan of `yulius instance migrate`: first the line

@@ -17,7 +17,8 @@ with a screenshot of a task of the `product` sandbox on the running instance. Is
 
 Whoever opens a task that reads "Needs your action", at any time, reads in its bar why it was
 flagged and what to do. Only a flag raised by Claude Code's own question says that the question is
-in the terminal. Reply shows that the terminal took the keyboard.
+in the terminal, and that flag ends once the question is answered and the agent goes on, also
+after a restart of Yulius. Reply shows that the terminal took the keyboard.
 
 ## Context
 
@@ -46,21 +47,39 @@ in the terminal. Reply shows that the terminal took the keyboard.
   | `context_full.rs` `give_up_on_full_context` | a full context could not be recovered | notice (not when re-flagged) |
   | `supervisor.rs` (a run's host could not be terminated) | the session could not be ended | notice |
   | `vault/users.rs` `flag_secret_wait` (four callers) | the agent asked for a secret; a person answers on the Secrets page | nothing |
+  | `browser.rs` `browser_request_user_action` | the agent asked for an action in the sandbox browser | an event, to the pages connected then |
 
   A notice is `Hub::notice` (`crates/yulius-app/src/hub.rs`): a frame broadcast to the viewers
   connected at that moment, which the page shows for 6 s (`showNotice` in `terminal-core.js`).
   Nothing is stored. Whoever opens the task later, or looks away for 6 s, gets the bar's sentence
   about a question that does not exist. Two of the paths run at a start of Yulius, when no viewer
-  is connected at all, so nobody ever reads their notice. The task row's second line
-  (`activityLine` in `status.js`) assumes the same: "Approve or answer in the terminal".
+  is connected at all, so nobody ever reads their notice. A browser request has its own row in
+  the bar, but only on a page that has the request: from the event, or from the tab list that
+  its Browser panel reads while open. A page opened later, with the panel closed, has neither
+  and showed the terminal sentence too. The task row's second line (`activityLine` in
+  `status.js`) assumes the same: "Approve or answer in the terminal".
 - Why the flag stands over ordinary work: the agent's work lifts only a flag a notice raised
   (`activity_on_work`, STA-003). After the gate gave up, a goal session goes on (Claude Code's
   goal check continues the turn) and the flag stays until a clean Stop or a typed prompt; a
   secret request's flag stays until a person answers it (SPEC-213), while the agent "goes on with
   other work" as the tool tells it.
+- A second cause of the same sight: a flag that Claude Code's own question raised is no longer
+  lifted after a restart of Yulius. The agent's work answers such a flag (STA-003) by the time it
+  was raised, `notice_attention_ms`, which lives in the server's memory (`TaskRuntime`). An
+  instance update freezes every agent mid-turn (SPEC-160) and the new server reattaches the runs,
+  so a task flagged before the update is still flagged after it, and its time is gone: the
+  person answers, the agent works on, and the task reads "Needs your action" with "Its question
+  is in the terminal below." until the turn's Stop or a typed prompt, which in a goal session can
+  be hours. SPEC-469 restored that time for a goal pause's flag (from its request); a notice's
+  flag had nothing to restore it from. Reproduced: the fake agent is flagged by a
+  `permission_prompt` notice, Yulius restarts, the agent goes on with a tool call, and the task
+  stays `needs_attention` ("timed out waiting for Working with the agent's work").
 - Which path the screenshot's task took cannot be read from here (another sandbox's data is not
-  visible to this one). A goal session at work under the flag fits the gate and a secret request;
-  the fix does not depend on which.
+  visible to this one). Sessions Yulius starts run with permissions bypassed
+  (`--dangerously-skip-permissions`), so Claude Code's permission prompts are rare there and a
+  flag of Yulius's own is the likelier one for a goal session at work: the gate, or a secret
+  request. A dialog Claude Code still shows (a question, a plan to approve) with an update in
+  between is the other. The fix covers both and does not depend on which.
 - Reproduced on `dev` (`92ba83cc2`) with a probe test in `crates/yulius/tests/agent_hooks.rs`:
   after the gate's fourth Stop the task reads `needs_attention`; a receiver subscribed before got
   "… stopped 3 times without fixing …"; a viewer that subscribes afterwards gets no notice; the
@@ -77,6 +96,18 @@ in the terminal. Reply shows that the terminal took the keyboard.
   question. In the web UI these are the bar and the row's second line; both are in this change.
   The server's own readers (`AttentionFacts`, the pull request watch, the outage wake-up) only ask
   whether a person must act, which stays true.
+- What stays as it is, and why:
+  - A flag that the main session's work does not answer by design (a worker's permission prompt,
+    an agent that needs input: `notice_answered_by_work`) still ends only at the turn's Stop or a
+    typed prompt: nothing tells Yulius that such a dialog was answered. Its bar now carries
+    Claude Code's words, so it says what was asked.
+  - A second ask on a task that is already flagged does not move the flag's time or its reason
+    (issue #1200, open: a work line read after the second ask lifts the flag). This change keeps
+    the first reason for the same reason the time is kept; #1200 changes both together.
+  - A task that is stopping when its session cannot be ended is not running, so it reads no
+    flag and no reason, before and after this change: its strip says Stopping, the notice says
+    to stop it again, and deleting it is refused (SPEC-065). The flag and its reason are for the
+    running task whose close could not end the session.
 
 ## Requirements
 
@@ -103,6 +134,7 @@ in the terminal. Reply shows that the terminal took the keyboard.
   | A full context | (why). | Find what fills it (…), then type `/compact` or `/clear` in the terminal, or stop and continue the task. |
   | The session could not be ended | Yulius could not end this session ((error)). It still counts as running, so the task cannot be deleted. | Stop the task again to retry. |
   | A secret request | The agent asked for a secret, and a person has to answer its request. | Answer it on the Secrets page. (link: the sandbox's Secrets page, at the secret's tab) |
+  | A browser request | The agent asks you to act in the sandbox's browser: (the request's reason) | Open the browser tab and do what it asks. (link: the tab) |
 
 - ATN-005: a flag raised by a Claude Code notice has kind `terminal` and Claude Code's own words
   as its problem. Every problem and to-do is one line of at most 400 characters (a longer one
@@ -112,14 +144,20 @@ in the terminal. Reply shows that the terminal took the keyboard.
   you", Problem, To do, an Open link when the reason has one, and Reply for the owner. A
   `terminal` reason reads "The agent needs your attention. Its question is in the terminal
   below.", with Claude Code's words when given. A flag without a reason (raised before this
-  change, or by a path whose own card says it) reads "The agent needs your attention. Look at its
-  terminal below.": it no longer claims a question. A `needs_you` request and a browser request
-  keep their place before the reason.
+  change, or by a path whose own request says it) reads "The agent needs your attention. Look at
+  its terminal below.": it no longer claims a question. A `needs_you` request, and a browser
+  request the page has, keep their place before the reason.
 - ATN-008: the task row's second line says a `yulius` reason's to-do (its problem when it has
   none) instead of "Approve or answer in the terminal".
 - ATN-009: Reply that gives the terminal the keyboard says so where the person looks: the
   terminal's notice reads "The terminal has the keyboard: answer there." A terminal that refuses
   input says why instead (read-only), as it does for typing. Phones keep the quick input.
+- ATN-010: a flag that the session's work answers (Claude Code's own question; not a worker's
+  prompt or an agent that needs input, STA-003) is answered by that work after a restart of
+  Yulius too. The reason kept with the flag says that work answers it, the store says when the
+  flag was raised, and a run that is watched again takes that time back. Every other flag stays
+  through the agent's work, as before: one that work does not answer, one of Yulius's own, and
+  one another matter raised after the notice's flag was replaced.
 
 ## Plan
 
@@ -128,7 +166,7 @@ in the terminal. Reply shows that the terminal took the keyboard.
 - [x] A flag keeps its reason: the store column, the API field and the gate's flag
 - [x] Every flag Yulius raises says why, and a notice's flag carries Claude Code's words
 - [x] The task view shows the reason and Reply says the terminal took the keyboard
-- [ ] Docs, ADR-0306 and the changes entry true to the fix
+- [x] Docs, ADR-0306 and the changes entry true to the fix
 - [ ] Independent review in a fresh session, findings fixed test-first
 
 ## Acceptance criteria
@@ -136,6 +174,9 @@ in the terminal. Reply shows that the terminal took the keyboard.
 - The new integration tests fail on `dev` (the task's view has no `attention`) and pass with the
   fix, one per flag of ATN-004 and one for a notice.
 - A task flagged by the gate, read after a restart of Yulius, still says why.
+- A task flagged by a Claude Code notice before a restart of Yulius reads Working once the agent
+  works after it (the test fails without the fix: it stays `needs_attention`); a worker's notice
+  and another matter's later flag stay.
 - A task that worked again after its flag, and one flagged anew without a reason, show no reason.
 - The new e2e tests fail on `dev` (the bar reads the terminal sentence for a `yulius` reason; no
   notice after Reply) and pass with the fix; the existing reply, watching and needs-you e2e tests
@@ -154,11 +195,20 @@ in the terminal. Reply shows that the terminal took the keyboard.
   gate flagged keeps the gate's reason.
 - `crates/yulius/tests/first_message.rs`, `context_full.rs`, `task_delete.rs`, `secrets_env.rs`,
   `secrets_copy.rs`, `secrets.rs`, `cd.rs`: the existing test of each flag also reads the task's
-  `attention` (it fails on `dev`).
-- e2e `reply.e2e.ts`: a `yulius` reason shows as Needs you with Problem, To do, Open and Reply; a
-  `terminal` reason shows the sentence and Claude Code's words; no reason shows the neutral
-  sentence; Reply shows the terminal's notice; a read-only terminal says so; the row's second
-  line. The page has no axe violations with a reason shown.
+  `attention` (it fails on `dev`); a new one covers the folder-trust question in front of a typed
+  first message.
+- `crates/yulius/tests/task_done.rs` (the fake agent's `/notify <type>` and `/tool`, across a
+  restart of Yulius on the same data directory): a `permission_prompt` notice's flag is answered
+  by the agent's work after the restart (red before the fix); a `worker_permission_prompt`
+  notice's flag is not; a flag another matter raised after the notice's was replaced is not.
+- `crates/yulius/tests/browser.rs`: the browser request's test also reads the task's `attention`
+  (red before the fix).
+- e2e `attention.e2e.ts` (new): a `yulius` reason shows as Needs you with Problem, To do and
+  Reply, and with Open for a page; a browser request reads from the task until the page has the
+  request, then from the request's own row; a `terminal` reason shows the sentence and Claude
+  Code's words; no reason shows the neutral sentence; Reply shows the terminal's notice; a
+  read-only terminal says why instead; a watcher reads the reason without Reply; the row's
+  second line. The page has no axe violations with a reason shown.
 - Mutation checks: each part of the fix is removed in turn; each must fail a test (Evidence).
 
 ## Decisions
@@ -180,7 +230,16 @@ in the terminal. Reply shows that the terminal took the keyboard.
   options unseen. The click's visible result is the terminal's own notice.
 - A notice in the terminal's corner, not a focus ring on every terminal: the ring would change
   every terminal of the product (shells, the Superagent) for one button.
-- The three flags with their own card or request (a browser request, a goal pause, a host move)
-  give no reason: their card says it, before the reason's place in the bar.
+- Two flags give no reason: a goal pause's and a host move's. Each comes with a `needs_you`
+  request, which is kept with the task and shown before the reason's place in the bar. A browser
+  request is not kept with the task for a page that comes later, so its flag does give its
+  reason; a page that has the request shows the request's own row, with the button that opens
+  the tab in place.
+- Whether work answers a flag is kept with its reason (`work_answers`), not derived from the
+  kind: a worker's prompt is a question in the terminal too, and the main session's work says
+  nothing about it. It is no part of the API view: clients have no use for it.
+- The restart case is fixed here and not filed: it shows the same bar over the same working
+  session, and its fix is the reason this change starts to keep. The time is taken back when a
+  run is watched (once per run), not looked up at every line of the agent's work.
 - [ADR-0306](../../docs/decisions/0306-a-needs-attention-flag-keeps-its-reason.md): a flag
   Yulius raises keeps its reason with the task.
