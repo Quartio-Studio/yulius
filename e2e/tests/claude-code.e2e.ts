@@ -248,6 +248,48 @@ test('a read asked before a check or a channel change does not undo what that dr
   expect(await channelSelect(browser)).toBe('latest on');
 });
 
+test('a read asked while a channel change is being saved, and answered after it, does not undo it either', async ({ app, browser, screen }) => {
+  const readsHeld = () => browser.evaluate(() => (window as unknown as MockClaude).__yuliusMock.claude.readsHeld ?? 0);
+  await app.open(mock('/admin/instance', '&holdpost=/api/admin/claude-code/channel'));
+  await firstShown(screen.getByText('Claude Code 2.1.322'));
+  // A check runs, so the card will ask again; that read's answer is kept back.
+  await screen.getByRole('button', CHECK).click();
+  await expect(screen.getByText(/Checking npm for a newer release…/)).toBeVisible();
+  await browser.evaluate(() => {
+    const claude = (window as unknown as MockClaude).__yuliusMock.claude;
+    claude.holdRead = new Promise((resolve) => { claude.releaseRead = resolve; });
+  });
+  // The change waits at the hold, and the card's read is asked meanwhile: the channel is Latest still.
+  await screen.getByRole('combobox', 'Release channel').selectOption({ label: 'Stable' });
+  await expect.poll(() => browser.evaluate(() => (window as unknown as MockClaude).__yuliusMock.heldWaiting ?? 0)).toBe(1);
+  await expect.poll(readsHeld, { timeout: 10000 }).toBe(1);
+  await browser.evaluate(() => { (window as unknown as MockClaude).__yuliusMock.claude.holdRead = null; });
+  // The change is saved and drawn; then the read's answer arrives.
+  await browser.evaluate(() => (window as unknown as { __yuliusMock: { release(): void } }).__yuliusMock.release());
+  await expect(screen.getByText(/Chosen here by mkarp/)).toBeVisible();
+  await browser.evaluate(() => { (window as unknown as MockClaude).__yuliusMock.claude.releaseRead?.(); });
+  await expect.poll(readsHeld).toBe(0);
+  await expect(screen.getByText(/Up to date: runs get 2\.1\.322\./)).toBeVisible({ timeout: 10000 });
+  expect(await channelSelect(browser)).toBe('stable on');
+});
+
+test('“Check now” stays off while its request is on its way, also when the card is drawn meanwhile', async ({ app, browser, screen }) => {
+  // The page's first read is answered late and the check's request waits at the hold.
+  await app.open(mock('/admin/instance', '&claude_hold_read=1&holdpost=/api/admin/claude-code/check'));
+  await expect.poll(() => browser.evaluate(() => (window as unknown as MockClaude).__yuliusMock.claude.readsHeld ?? 0)).toBe(1);
+  await screen.getByRole('button', CHECK).click();
+  await expect.poll(() => browser.evaluate(() => (window as unknown as MockClaude).__yuliusMock.heldWaiting ?? 0)).toBe(1);
+  // The first read draws the card while the check is still being asked for.
+  await browser.evaluate(() => { (window as unknown as MockClaude).__yuliusMock.claude.releaseRead?.(); });
+  await firstShown(screen.getByText('Claude Code 2.1.322'));
+  await expect(screen.getByRole('button', CHECK)).toBeDisabled();
+  // The check is taken: the card says it runs, then what it did, and the button is back.
+  await browser.evaluate(() => (window as unknown as { __yuliusMock: { release(): void } }).__yuliusMock.release());
+  await expect(screen.getByText(/Checking npm for a newer release…/)).toBeVisible();
+  await expect(screen.getByText(/Up to date: runs get 2\.1\.322\./)).toBeVisible({ timeout: 10000 });
+  await expect(screen.getByRole('button', CHECK)).toBeEnabled();
+});
+
 test('a server that does not isolate sandboxes says why nothing is kept current', async ({ app, browser, screen }) => {
   await app.open(mock('/admin/instance', '&claude=unmanaged'));
   await firstShown(screen.getByText(/Sandboxes are not isolated on this server, so they run the host’s Claude Code as it is/));

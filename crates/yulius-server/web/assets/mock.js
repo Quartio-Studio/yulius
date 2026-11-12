@@ -13,7 +13,8 @@
 // recovery=1 (setup issues a recovery code), update=1|fail (an update is on offer | its install rolls back), helper=0 (no update helper),
 // jev=config (a Jev key file is configured), vidoc=config (a Vidoc key file), vidoc_repo=off|bad (studio's .config/vidoc.toml), vidoc_patch_fail=1 (a sandbox's Vidoc switch is refused), protect_patch_fail=1 (a sandbox's production protection switch is refused), fail=<path> (GETs of that path answer 500),
 // failpost=<path> (POSTs of that path answer 500), holdpost=<path> (POSTs, PATCHes and PUTs of that path wait for
-// `__yuliusMock.release()`, as hold= does for GETs; `heldWaiting` counts those waiting), as=<login> (signed in as another member, a
+// `__yuliusMock.release()`, as hold= does for GETs; `heldWaiting` counts those waiting), claude_hold_read=1 (the Claude Code
+// card's reads are answered late, once `__yuliusMock.claude.releaseRead()` is called), as=<login> (signed in as another member, a
 // teammate in a second window: mock pages of one origin relay presence to each other, SPEC-127).
 // guestlink=1|dead (signed out, holding a live or an ended guest link to the playground `lab`, SPEC-410;
 // guestlink=mine: signed in as its maker),

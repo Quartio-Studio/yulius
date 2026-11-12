@@ -100,14 +100,13 @@ export function claudeCodeCard(ctx) {
   let timer = null;
   let gone = false;
   let failed = false;
+  /** A channel change is being saved: its controls stay off however the card is drawn meanwhile. */
   let saving = false;
+  /** A check is being asked for: "Check now" stays off likewise. */
+  let asking = false;
   /** What is drawn: a poll that reads the same leaves the card (its focus, its alert) alone. */
   let drawn = '';
-  /**
-   * Counts what this card asks the server to change and each outcome it learns (a check, a
-   * channel change). A read asked before the latest of them may say what was true before it, so
-   * its answer is dropped: the outcome's own draw, or the read after a refusal, is the newer word.
-   */
+  /** How many changes this card asked for have had their outcome (see `change`). */
   let changes = 0;
 
   /** The channel choice, and where the channel in effect is set. */
@@ -132,7 +131,7 @@ export function claudeCodeCard(ctx) {
     const shown = JSON.stringify([view, saving]);
     if (shown === drawn) return;
     drawn = shown;
-    checkButton.disabled = !view.managed || view.checking || view.channel === 'off';
+    checkButton.disabled = asking || !view.managed || view.checking || view.channel === 'off';
     checkButton.classList.toggle('busy', Boolean(view.checking));
     checkButton.title = !view.managed ? `${BRAND.name} keeps nothing current on this server` : view.channel === 'off' ? 'Updates are off' : '';
     const parts = [
@@ -167,18 +166,31 @@ export function claudeCodeCard(ctx) {
     }
   }
 
-  async function checkNow() {
-    checkButton.disabled = true;
-    // Switched off by hand, so the card is no longer as it was drawn: what comes next (the
-    // answer, or the read after a refusal) draws it again, and the button with it.
-    drawn = '';
-    changes += 1;
+  /**
+   * Sends a change this card asks for (a check, a channel change) and marks its outcome, taken
+   * or refused. From then on the card is drawn again whatever the next view says, because the
+   * change's controls were switched off by hand. And a read asked before the outcome may say
+   * what was true before the change, so `refresh` drops its answer: the outcome's own draw, or
+   * the read after a refusal, is the newer word.
+   */
+  async function change(send) {
     try {
-      const view = await ctx.api.post(`${API}/check`, {});
+      return await send();
+    } finally {
       changes += 1;
+      drawn = '';
+    }
+  }
+
+  async function checkNow() {
+    asking = true;
+    checkButton.disabled = true;
+    try {
+      const view = await change(() => ctx.api.post(`${API}/check`, {}));
+      asking = false;
       render(view);
     } catch (error) {
-      changes += 1;
+      asking = false;
       errorToast(error, 'Couldn’t check for a Claude Code release');
       refresh();
     }
@@ -191,20 +203,14 @@ export function claudeCodeCard(ctx) {
   async function setChannel(id, select) {
     saving = true;
     for (const control of select.closest('.claude-channel').querySelectorAll('select, button')) control.disabled = true;
-    // The controls were switched off by hand, so the card is no longer as it was drawn: whatever
-    // comes next (the answer, a refusal, a poll) draws it again, and the controls with it.
-    drawn = '';
-    changes += 1;
     try {
-      const view = await ctx.api.put(`${API}/channel`, { channel: id });
+      const view = await change(() => ctx.api.put(`${API}/channel`, { channel: id }));
       saving = false;
-      changes += 1;
       toast(view.channel === 'off' ? 'Claude Code updates are off: sandboxes run the host’s install from their next start.'
         : `Claude Code follows ${channelName(view.channel)} now. Checking for a release…`, { kind: 'ok' });
       render(view);
     } catch (error) {
       saving = false;
-      changes += 1;
       errorToast(error, 'Couldn’t change the channel');
       // The select shows the refused choice: the card is drawn again from what the server says.
       refresh();
