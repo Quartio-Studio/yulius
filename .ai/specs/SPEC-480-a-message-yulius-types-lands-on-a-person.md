@@ -294,7 +294,12 @@ Run in this task's worktree on 2026-11-12; logs under the ignored `target/eviden
 - **The gate**: `scripts/dev ci` at 26168d119 (the head of review round 1): exit 0, 4033 tests
   passed, 16 skipped. Again at 9951d297a (round 1's fixes and their documents): exit 0, 4036
   tests passed, 16 skipped. Again at cf35c4e8a (round 2's fixes and their documents): exit 0,
-  4040 tests passed, 16 skipped. After that only this line of the spec changed.
+  4040 tests passed, 16 skipped. After that only this line of the spec changed, and
+  `origin/dev` at a859995b8 was merged in without a conflict (its changes are in the sandbox
+  manager, the Docker smoke test and `instance migrate`; the decisions index was put back in
+  order): on the merged head `python3 scripts/check_repository.py` passed and the tests of
+  `task_message::`, `claude_code_moves::` and `restart::` passed again (72 of 72). The full
+  gate on the merged head is Yulius CI's run on the pull request.
 - **Security scan**: `yulius security-scan` printed "Security scan disabled: Vidoc is turned
   off in Yulius, for this project or the whole instance; nothing was scanned." Unrun, not
   passed.
