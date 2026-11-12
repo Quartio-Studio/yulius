@@ -320,13 +320,20 @@ after a restart of Yulius. Reply shows that the terminal took the keyboard.
   - `5861ce1cc` (review round 1's tests, before their fix): the two `secrets_env` tests read
     the secret's reason where the question's was expected, `secrets.rs` read the answered
     request's tab (`section=agents`), the unit test kept the bidi override and the zero-width
-    space, and the e2e row test found "Look at its terminal".
+    space, and the e2e row test found "Look at its terminal". The store test of
+    `replace_attention` came with the statement, in the fix's commit.
+  - `3aa1b2891` (review round 2's tests, before their fix): on a second server the secret's
+    answer left the task `needs_attention` (`left: Some(NeedsAttention)`), a worker's prompt
+    there left the secret's reason, the taken-over question's reason did not say that work
+    answers it, and the real-run test timed out "waiting for Working with the agent's work".
 - **Fix.** `5d6595ced` (the column, the statement that flags with a reason, the API field, the
   gate), `8d6bfc0fd` (every other flag of Yulius's own, and the notice's words), `d736a3871` (the
   bar, the row's line, Reply's notice), `15bca64fa` (the restart), `e33e15a6e` (the browser
   request), `db7bc1a22` (a goal never set behind the trust question; the mock drops a reason
   with its flag), `c80a37a3f` (documents), `c43b39cc9` (review round 1: a reason follows the
-  owner of its flag, format characters, the row's line).
+  owner of its flag, format characters, the row's line), `7acfad035` (review round 2: whose
+  flag it is survives a restart, and a question that took a secret request's flag over is
+  answered by work).
 - **The real CLI.** Claude Code 2.1.322 was run in a terminal against a local stand-in for the
   API (nothing left this host; the scripts are kept outside the repository). The stand-in asks
   for one Bash call, so the permission dialog opens in the default permission mode. Read from
@@ -339,8 +346,9 @@ after a restart of Yulius. Reply shows that the terminal took the keyboard.
     line within 0.1 s, both dated after the notice: the work that answers the flag.
   The CLI's own code names the hook input's fields (`message`, `title`, `notification_type`) and
   waits 6 s before it notifies (`rDn=6000`).
-- **Mutation checks** (each on a clean tree, at `db7bc1a22` and for the last seven rows at
-  `8fe945493`, restored from `HEAD` afterwards). Every mutation fails a test:
+- **Mutation checks** (each on a clean tree, at `db7bc1a22`, for round 1's seven rows at
+  `8fe945493` and for round 2's six at `7acfad035`, restored from `HEAD` afterwards). Every
+  mutation fails a test:
 
   | Removed or broken | Failing test |
   | --- | --- |
@@ -363,22 +371,28 @@ after a restart of Yulius. Reply shows that the terminal took the keyboard.
   | A reason's page gets its Open link | the secret and browser request tests |
   | Reply stays the owner's | "a watcher reads the reason, and Reply stays the owner's" |
   | A flag handed over says its new owner's reason | `a_flag_raised_after_the_request_outlives_its_answer`, `a_flag_that_takes_a_secret_requests_over_says_its_own_reason` |
-  | A reason handed over is kept as one that work does not answer | `a_flag_raised_after_the_request_outlives_its_answer` |
+  | A reason handed over says whether work answers it (round 1: never; since round 2: as its matter does) | `a_flag_raised_after_the_request_outlives_its_answer` |
   | A flag that waits for another request points at it | `a_flag_points_at_the_secret_request_that_still_waits` |
   | A reason is replaced only on the flag it was read from | `a_flags_reason_is_replaced_only_on_the_flag_it_was_read_from` |
   | The same reason again is no change | the same store test |
   | A replaced reason keeps its flag's time | the same store test |
   | Format characters are dropped | `reasons_are_single_bounded_lines` |
+  | A secret request's reason says that its answer ends the flag | `a_secret_requests_flag_ends_with_its_answer_after_a_restart`, `a_flag_taken_over_after_a_restart_outlives_the_requests_answer` |
+  | Whose flag it is is read from the reason when memory has nothing | the same two |
+  | An answer is settled for a task this server has no runtime for yet | `a_secret_requests_flag_ends_with_its_answer_after_a_restart` |
+  | A question that took the flag over keeps its notice time | `a_question_that_took_a_secret_requests_flag_over_is_answered_by_the_agents_work`, `a_notices_time_is_kept_only_for_a_flag_of_its_own` |
+  | A takeover is reported as one | `a_question_that_took_a_secret_requests_flag_over_is_answered_by_the_agents_work` |
 
-- **Gate.** `scripts/dev ci` exited 0 at `8fe945493`, the head with review round 1's fixes and
-  `dev` merged (`2a31d50ae`, no conflict): repository checks, the scripts' unit tests, `cargo
-  check`, `fmt`, `clippy` for Linux and macOS, the tests (3974 run, 3974 passed, 16 skipped),
-  doctests, `cargo deny`, `cargo shear`, `cargo doc`. It had exited 0 at `674e88784` too (3971
-  passed), and the first reviewer ran it again at `7d6d66bcb` (3971 passed). The commit after
-  `8fe945493` changes this spec only.
-- **End-to-end suite** (a web change). The whole suite at `8fe945493`: 83 files passed, 1
-  skipped; 995 tests passed, 1 skipped; the same at `674e88784`, and in the reviewer's own run
-  at `7d6d66bcb`. A first whole run, at `d736a3871`, had one failure in a
+- **Gate.** `scripts/dev ci` exited 0 at `48fec54b8`, the head with both rounds' fixes and
+  `dev` merged (`8e8ef9c77`, no conflict): repository checks, the scripts' unit tests, `cargo
+  check`, `fmt`, `clippy` for Linux and macOS, the tests (3978 run, 3978 passed, 16 skipped),
+  doctests, `cargo deny`, `cargo shear`, `cargo doc`. Earlier runs exited 0 too: `674e88784`
+  (3971 passed), `8fe945493` (3974), `7acfad035` (3978), and the reviewers' own at `7d6d66bcb`
+  (3971) and `1fee5e06d` (3974). The commit after `48fec54b8` changes this spec only.
+- **End-to-end suite** (a web change). The whole suite at `8fe945493`, since which no web
+  asset and no e2e file changed: 83 files passed, 1 skipped; 995 tests passed, 1 skipped; the
+  same at `674e88784`, and in the reviewers' own runs at `7d6d66bcb` and `1fee5e06d`. A first
+  whole run, at `d736a3871`, had one failure in a
   file this change does not touch: `cd.e2e.ts` "a scrolled needs_you list survives task updates
   and its to-do stays opaque" read the list's `tabindex` once, before the page had set it
   (`expected [null,40] to equal ["0",40]`). Its file passed alone three times, and the same
@@ -409,7 +423,26 @@ after a restart of Yulius. Reply shows that the terminal took the keyboard.
     - Its notes on coverage: the reason when a secret flag is raised again after an answer is
       now read by `a_flag_points_at_the_secret_request_that_still_waits`' path for a request
       that still waits; a flag raised anew in the moment of an answer has no test.
-  - Round 2 reviews the head with these fixes; its verdict is the review summary recorded with
+  - Round 2, on `1fee5e06d` (the same reviewer; it ran the gate and the e2e suite itself, both
+    passed): round 1's findings fixed and their tests real; the worker-prompt test accepted in
+    place of the gate case. Verdict: request changes, one major, one minor and two nits, all in
+    this change's own code and all fixed test-first in `7acfad035` (tests first, `3aa1b2891`):
+    - Major: after a restart of Yulius a secret request's answer no longer ended its flag,
+      because whose flag it is lived in the server's memory only, and the flag then kept
+      "Answer it on the Secrets page" until the turn's end. The reason now records it
+      (`answer_ends`) and a server without the memory reads it; another matter takes the flag
+      over after a restart as before one.
+    - Minor: a Claude Code question that took a secret request's flag over was not answered by
+      the agent's work, so "its question is in the terminal" stayed over an answered question.
+      The notice's time is kept for such a flag and its reason says that work answers it.
+    - Nit: `waiting_secret_links` said "each page once" and dropped only neighbours. It keeps
+      each page once.
+    - Nit: this Evidence said every round 1 test was red before its fix; the store test came
+      with the statement. Said so above.
+    - Also changed, found while fixing the major: the last-resort flag of a secret request (the
+      task kept changing under the compare-and-set) is the request's too when the statement
+      raised it. It has no test: the path needs three lost races in a row.
+  - Round 3 reviews the head with these fixes; its verdict is the review summary recorded with
     the merge.
 - **Not tested.**
   - The task of the screenshot: it is another sandbox's, on the running instance, and nothing
@@ -424,5 +457,8 @@ after a restart of Yulius. Reply shows that the terminal took the keyboard.
     server on the first one's data directory and reattach the run, as an update does.
   - The folder-trust question in front of a typed goal has no integration test, before or
     after this change; its words are unit-tested.
+  - A secret request's flag raised by its last resort (three lost races with the task's own
+    state changes) and a question that took a secret request's flag over, answered after a
+    restart of Yulius: each is the combination of two tested paths, not tested as one.
   - Browsers other than Chromium, and a real touch screen (phones keep the quick input, which
     this change does not touch).
