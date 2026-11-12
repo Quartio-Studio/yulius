@@ -57,14 +57,23 @@ A task that cannot take it says why, so the Superagent can tell the person what 
   becomes LF.
 - TMS-004 (refusals): nothing is typed, and the answer says why, when the text is empty or longer
   than 64 KiB, the task is the caller's own (not possible for a Superagent, kept for safety), a
-  person typed into the task's terminal in the last minute (their draft is theirs), Claude Code's
+  person's draft may sit in the session's prompt box (their draft is theirs: they typed into the
+  task's terminal since its prompt box was last empty, that is since the run started or the last
+  prompt was submitted from the box, however long ago; every keystroke counts, because Yulius
+  sees keys and not the box) or a person typed there in the last minute
+  ([SPEC-480](SPEC-480-a-message-yulius-types-lands-on-a-person.md), issue #1199: until then
+  only the last minute counted, and an older draft was submitted with the message), Claude Code's
   session has not started (no SessionStart hook yet, which leaves a marker in the run folder that
   a restarted server reads; without the hook, half the goal-ready timeout after the run's spawn),
   Claude Code shows its folder-trust dialog before the session started (only a person answers
   it, SPEC-117 ONE-005; a paste and Enter would answer it with its default), Yulius is still
   typing the task's first message, another message to the task is being typed, or the task is
   neither waiting to start nor running (stopped, done, failed, starting, switching, paused): it
-  names the state and what to do (continue the task, or create a new one).
+  names the state and what to do (continue the task, or create a new one). The same guards hold
+  for what Yulius types by itself through `type_into_session` (a pull request's news, "Yulius is
+  back; continue", the MCP watch's texts): those wait in their watch, and when a person's
+  possible draft holds one back, the person is told once their last keystroke is ten minutes old
+  (the task is flagged with the reason and its terminal says so; SPEC-480 DRF-006).
 - TMS-005 (authority and audit): the person needs write access to the project (as for the task
   view); each sent or queued message is audited `task.messaged` with the caller and the task, never
   the text.

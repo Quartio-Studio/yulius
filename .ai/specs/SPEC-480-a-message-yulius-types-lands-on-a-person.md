@@ -83,8 +83,9 @@ why at once; a message of Yulius's own waits, and after a bound the person is to
 - DRF-007 (it ends by itself). The next prompt submitted from the session's prompt box, by
   anyone, or a new run ends the hold (CCF-010's knowledge): the watches' next pass types.
   Yulius never clears or sends a person's text.
-- DRF-008 (documents). SPEC-230 TMS-004, ADR-0178, `docs/operations.md`, `docs/architecture.md`
-  and the `task_message` tool description say when a message waits for a person's draft.
+- DRF-008 (documents). SPEC-230 TMS-004, ADR-0178, `docs/operations.md`, `docs/architecture.md`,
+  `docs/product.md` and the `task_message` tool description say when a message waits for a
+  person's draft.
 
 ## Plan
 
@@ -98,36 +99,43 @@ why at once; a message of Yulius's own waits, and after a bound the person is to
 ## Acceptance criteria
 
 - AC1 (DRF-001, DRF-004; the issue's first criterion). With real processes: a person types text
-  into a running task's prompt box and does not send it; two minutes later `task_message` is
-  refused with the draft reason, the agent got neither the person's text nor the message, and
-  nothing is audited. After the person sends their text (the agent reads it alone), the same
-  message is typed and arrives as a prompt of its own. Fails on dev: the agent reads the
-  person's text and the message as one prompt.
-- AC2 (DRF-003, DRF-005, DRF-006, DRF-007). With real processes: a task that went idle during
-  an outage and whose person typed a draft 11 minutes ago is not woken: the wake is not typed,
-  the task reads Needs your action with the reason of DRF-006 and its terminal says so once (a
-  second pass adds no line). After the person sends their text the next pass types "Yulius is
-  back; continue" as a prompt of its own.
+  into a running task's prompt box and does not send it; two minutes later, and eleven,
+  `task_message` is refused with the draft reason, the agent got neither the person's text nor
+  the message, and nothing is audited. After the person sends their text (the agent reads it
+  alone) and the minute after their Enter passed, the same message is typed and arrives as a
+  prompt of its own. Fails on dev: the agent reads the person's text and the message as one
+  prompt.
+- AC2 (DRF-003, DRF-005, DRF-006, DRF-007). With real processes: an idle task whose Yulius MCP
+  is silent and whose person typed a draft 11 minutes ago gets no `/mcp reconnect yulius`: the
+  command is not typed, the task reads Needs your action with the reason of DRF-006 and its
+  terminal says so once (a second pass adds no line). After the person sends their text the
+  next pass types the command, which the agent reads alone. Fails on dev: the watch types the
+  command behind the draft.
 - AC3 (DRF-001, DRF-002, DRF-006; pure rule). `policy::box_held`: no keystroke holds nothing; a
   keystroke after the box was emptied is a draft at any age; a keystroke before the box was
   emptied holds for a minute only; the person is told from 10 minutes on, not before.
-- AC4 (DRF-006). Within the 10 minutes a held message of Yulius's own raises no flag and no
-  terminal line; `task_message` never raises one.
+- AC4 (DRF-006). Two minutes after the person's last key a held message of Yulius's own raises
+  no flag and no terminal line; `task_message` raises none at eleven minutes either.
 - AC5 (DRF-008; the issue's third criterion). `docs/operations.md` and SPEC-230 TMS-004 say when
   a message waits for a person's draft; the gate's document checks pass.
 
 ## Test plan
 
 - `crates/yulius/tests/task_message.rs`: `a_persons_draft_keeps_the_message_out_however_old`
-  (AC1) on a clock the test can move (system time plus an offset: the server starts two minutes
-  behind and is set right after the draft was typed, so the hooks' times stay in order).
-- `crates/yulius/tests/restart.rs`: `a_wake_waits_for_a_persons_draft_and_tells_them` (AC2,
-  AC4) on the same clock.
-- `crates/yulius-domain/src/intake.rs`: unit tests of `box_held` and `tells_person` (AC3).
+  (AC1, AC4) on a clock the test can move (`ShiftedClock`, system time plus an offset: the
+  server starts minutes behind and is moved forward after the draft was typed, so the hooks'
+  times, which are the earlier of the client's and the server's, stay in order).
+- The same file: `a_message_of_yulius_waits_for_a_persons_draft_and_tells_them` (AC2, AC4) on
+  the same clock, with the MCP watch as the typist: its reconnect is the command of DRF-003,
+  and it needs no pull request and no restart. The pull-request watch and the outage wake call
+  the same function with the same `Sender::Yulius`.
+- `crates/yulius-domain/src/intake.rs`: `a_persons_draft_holds_the_prompt_box_however_old`
+  (AC3).
 - The existing tests of typed messages, the watches and the Claude Code moves stay green
   (`task_message::`, `restart::`, `pr_watch`, `claude_code_moves::`).
-- Mutation check by hand: with the draft branch of `type_into_session` removed, AC1 and AC2
-  fail; with the bound set to 0 or never, AC2/AC4 fail.
+- Mutation checks by hand (Evidence): without the draft rule AC1, AC2 and AC3 fail; with the
+  bound at 0, with nobody ever told, with a sender's refusal flagging too, and with the person
+  told at every pass, one of the two tests fails each time.
 
 ## Decisions
 

@@ -6,6 +6,16 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-12
 
+- A message Yulius types into a session no longer lands on a person's unsent draft (SPEC-480,
+  task #463, ADR-0309, issue #1199). Yulius held a message back only while someone had typed in
+  the last minute; an older draft got the message pasted behind it and was sent with it, as one
+  prompt. Now nothing is typed while someone typed into the task's terminal since its prompt
+  box was last empty, however long ago: a person's `task_message`, a pull request's news,
+  "Yulius is back; continue" and the MCP watch's texts all wait. `task_message` answers with
+  the reason at once. For a message of Yulius's own the task reads Needs your action and its
+  terminal says so once the person's last key is ten minutes old; the next prompt sent from
+  the box releases it. Every key counts, because Yulius sees keys and not the box, so a session
+  someone typed into without leaving text also waits for one prompt.
 - The Subscriptions page reads usage and limit state again on request (SPEC-473, task #451,
   ADR-0307). Each signed-in subscription's card has **Refresh**, and the page has **Refresh
   all**. A refresh reads the usage and then asks Claude about each limit stored for the
