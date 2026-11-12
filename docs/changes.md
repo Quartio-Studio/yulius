@@ -24,6 +24,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   longer make a card say "just now", and the background round reads the window such sessions
   do not report. The round does not read a model's allowance ahead of its limit; ADR-0307
   states the cost.
+- The CI test of the security job's independence no longer fails under load (SPEC-454, task #436;
+  delivered by task #457, SPEC-475; #1079).
+  `local_ci::the_security_job_and_the_others_never_cancel_each_other` queued two runs whose held
+  jobs competed for the fixture's three job slots, so it passed or failed by the order in which
+  they took them and by the fixture's 8 s job limit. Now the integration branch's run and the
+  pull request's first run pass before the test holds any job, the test asserts that, and its
+  jobs have a limit of an hour: only the test ends them. Nothing in the product changes.
 - Moving from Settings → Instance: three notes of the review that approved it, answered after the
   merge (SPEC-470, task #447, follow-up of #1214). The card no longer says "A move to … is
   recorded" over the checklist of a move that was aborted or finished: it says the last move is
