@@ -1714,9 +1714,13 @@ itself, not a signal
 and not a lost terminal. If the new instance does not come up, it is stopped and disabled, and
 only then is the old one thawed; the copy there was started and must be removed (`rm -rf` the
 data directory on the new host) before the next run. If the new host stops answering at that
-point, the old instance stays frozen: run the command again when it answers. Once the new
+point, the old instance stays frozen: run the command again when it answers (`--abort` only once
+the new instance is known to be stopped: it thaws the old one). Once the new
 instance reports the build it has taken over: the old unit stays frozen and is disabled, and
 whatever fails after that (the helper, the Docker smoke) is a line to act on, never a rollback.
+That includes the old unit itself: when it cannot be frozen or disabled, the move stands, the
+run goes on to its finish and ends with exit 1, and the move is not finished until the old
+instance is held ([The old instance held](#the-old-instance-held), below).
 
 **After.** The flow waits for `https://<new host>/healthz`, reads what the new instance did with
 the tasks that were live (its first start puts them back in the queue, whoever owns them; tasks a
@@ -1808,6 +1812,46 @@ asks again each time and goes on to the finish once nothing is left. A stopped u
 cgroup (the old host was restarted, or the stop left nothing), with an empty one, or whose
 processes the kernel holds frozen gets the "make sure" line and the run goes on, as before.
 When systemd does not answer the question, the run fails saying so and asks again next time.
+Such a unit must be disabled too: when `systemctl is-enabled` does not say so, the run adds a
+`FAIL` line with `systemctl disable yulius.service` and ends with exit 1 (below).
+
+#### The old instance held
+
+Once the new instance has taken over, the move is finished only while the old one is held, and
+no record says that it is: every run of the same command asks systemd again, also long after
+the finish (SPEC-481, ADR-0311). Held means all of this:
+
+- no unit of it runs unfrozen: the server's unit and its sessions unit are frozen, or the
+  server's unit has stopped (`inactive` or `failed`) and its sessions unit does not run
+  unfrozen;
+- no unit of it that does not run left processes that run (the question above);
+- `systemctl is-enabled yulius.service` says `disabled` (or `masked`), so a restart of the old
+  host does not start it beside the new instance.
+
+Held: the run says `ok` for the old instance and `finished`, with exit 0. Not held, or systemd
+does not answer: a `FAIL` line under **Cutover** says what was found and what to run, the run
+ends with exit 1 and says nothing of "finished", and `--status` shows that line until a run
+finds the instance held:
+
+```sh
+sudo systemctl freeze yulius.service yulius-sandboxes.service   # the units the line names
+sudo systemctl disable yulius.service
+sudo yulius instance migrate root@new-host                      # looks again
+```
+
+For a unit that runs unfrozen the line also names the way out of a freeze that keeps failing
+(`systemctl stop` and the kill above, of both units); for a stopped unit that left processes it
+names the kill; for a stopped unit that is still enabled, the disable alone.
+
+A run after the one that started the new instance only looks: it freezes, thaws, stops and
+disables nothing of the old instance (it cannot ask the new one once its key is gone, and you
+may have gone back by hand). The steps after the cutover and the finish (the tasks, the old
+URL's redirect, the key, the firewall on the new host) do not wait for the old instance: a run
+that finds the move not yet finished does them whether or not it is held, and ends with exit 1
+when it is not. So after a run that ended with `FAIL … must be frozen and disabled now`, the
+same command says the same and ends with exit 1 until the old instance is held; and a move that
+was finished long ago fails the same way when its old unit was thawed, started or enabled
+since.
 
 Not part of a move: packages installed inside sandboxes keep their files; on another release the
 checklist names those sandboxes. The sandbox base is built for the new host while preparing, so
