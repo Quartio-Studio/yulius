@@ -2161,6 +2161,19 @@ impl<'a> Move<'a> {
             return self.end_abort(false);
         }
         if reachable {
+            // The step that removes the key there is run by this build. A plan that ended with
+            // the key to add never brought it (a person added the key and aborts): it goes
+            // there for this step, which removes it again with the flow's other files.
+            let there = Request::Facts {
+                data_dir: self.opts.data_dir.clone(),
+                service: unit.clone(),
+                ports: Vec::new(),
+            };
+            if self.remote.try_call(&there).is_none() {
+                let exe = self.world.exe();
+                // A copy that fails is said by the step that then cannot run.
+                let _ = self.remote.put_build(&exe);
+            }
             let _ = self.call(
                 "one-time key",
                 &Request::Finish {

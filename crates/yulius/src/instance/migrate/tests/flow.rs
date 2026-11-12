@@ -2489,3 +2489,65 @@ fn the_finished_checklist_travels_to_the_new_host() -> TestResult {
     assert!(s.state()?.finished);
     Ok(())
 }
+
+/// Found by a real move asked from Settings → Instance (SPEC-470): a plan that ends with the key
+/// to add never brings this build to the new host. When a person then adds the key and aborts,
+/// the step that removes the key there is run by that build, which is not there: the abort
+/// failed with the key left behind. It brings the build first.
+#[test]
+fn an_abort_after_a_plan_that_only_asked_for_the_key_removes_the_key_there() -> TestResult {
+    let mut s = setup()?;
+    s.remote.signs_in = false;
+    s.opts.yes = false;
+    assert_eq!(s.run()?, 0);
+    assert!(
+        !s.remote.host.is_staged(),
+        "the plan ended before the build"
+    );
+    // The person adds the key on the new host, then thinks better of the move.
+    let key = format!("ssh-ed25519 AAAAC3FAKE {}", s.remote.comment);
+    s.remote.key = true;
+    s.remote.host.file_as(
+        "/root/.ssh/authorized_keys",
+        &format!("ssh-ed25519 AAAA admin@laptop\n{key}\n"),
+        0,
+        0o600,
+    );
+    assert_eq!(s.abort()?, 0, "{}", s.shown());
+    assert_eq!(
+        s.remote.host.text("/root/.ssh/authorized_keys"),
+        Some("ssh-ed25519 AAAA admin@laptop\n"),
+        "the move's key stayed on the new host"
+    );
+    // The build went there for that step only, and the step removed it with the flow's files.
+    assert!(s.events().contains(&"new: build copied".to_owned()));
+    assert!(!s.remote.host.is_staged());
+    assert!(State::load(&s.opts.state_dir).is_none());
+    let status = s.status()?;
+    assert_eq!(status.phase, "aborted");
+    assert!(
+        status
+            .lines
+            .iter()
+            .all(|l| l.outcome != HostOutcome::Failed),
+        "{:?}",
+        status.lines
+    );
+    assert!(!s.remote.key, "the key is deleted here");
+
+    // A new host that had this build already gets nothing copied again.
+    let mut s = setup()?;
+    s.opts.yes = false;
+    assert_eq!(s.run()?, 0);
+    assert!(s.remote.host.is_staged());
+    let copies = |s: &Setup| {
+        s.events()
+            .iter()
+            .filter(|e| *e == "new: build copied")
+            .count()
+    };
+    let before = copies(&s);
+    assert_eq!(s.abort()?, 0, "{}", s.shown());
+    assert_eq!(copies(&s), before);
+    Ok(())
+}
