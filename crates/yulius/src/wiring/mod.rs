@@ -11,6 +11,7 @@ pub mod github;
 pub mod github_client;
 pub mod harness;
 pub mod jev;
+pub mod migrate_files;
 pub mod pending;
 pub mod proxy;
 pub mod release;

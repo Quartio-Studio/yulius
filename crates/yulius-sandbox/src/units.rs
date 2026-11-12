@@ -34,6 +34,29 @@ pub fn adopt_unit(service: &str) -> Option<String> {
     stem(service).map(|stem| format!("{stem}-adopt{SERVICE}"))
 }
 
+/// The root oneshot that runs a move asked from Settings → Instance (SPEC-470).
+///
+/// ```
+/// use yulius_sandbox::units::migrate_unit;
+/// assert_eq!(migrate_unit("yulius.service").as_deref(), Some("yulius-migrate.service"));
+/// assert_eq!(migrate_unit("yulius"), None);
+/// ```
+#[must_use]
+pub fn migrate_unit(service: &str) -> Option<String> {
+    stem(service).map(|stem| format!("{stem}-migrate{SERVICE}"))
+}
+
+/// The path unit that starts [`migrate_unit`] when the server writes a request.
+///
+/// ```
+/// use yulius_sandbox::units::migrate_path_unit;
+/// assert_eq!(migrate_path_unit("yulius.service").as_deref(), Some("yulius-migrate.path"));
+/// ```
+#[must_use]
+pub fn migrate_path_unit(service: &str) -> Option<String> {
+    stem(service).map(|stem| format!("{stem}-migrate.path"))
+}
+
 /// The slice shared by `service` and its sessions unit. A dash in a slice's name nests it
 /// (`a-b.slice` lives in `a.slice`), so everything but letters and digits becomes `_`.
 ///

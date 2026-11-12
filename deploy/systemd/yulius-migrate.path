@@ -1,0 +1,15 @@
+# Yulius move requests (SPEC-470; docs/operations.md "Move from Settings → Instance").
+# The server (user yulius) writes /var/lib/yulius/migrate/request.json; this root-owned unit then
+# starts yulius-migrate.service, which accepts nothing but "plan", "move" or "abort" a move of this
+# instance to the host the request names. Enabling it lets the service user ask root for that:
+# enable it when you want to move from the page, disable it afterwards, or pin the hosts in
+# yulius-migrate.service. Install: /etc/systemd/system/yulius-migrate.path (root, 0644).
+[Unit]
+Description=Yulius move requests
+
+[Path]
+PathChanged=/var/lib/yulius/migrate/request.json
+Unit=yulius-migrate.service
+
+[Install]
+WantedBy=multi-user.target

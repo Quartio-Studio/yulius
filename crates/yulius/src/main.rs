@@ -297,6 +297,9 @@ enum Command {
     /// Root helper: build or install the commit the server requested (yulius-update.service).
     #[command(name = "update-helper", hide = true)]
     UpdateHelper(Box<yulius::update_helper::HelperArgs>),
+    /// Root helper: run the move Settings → Instance asked for (yulius-migrate.service).
+    #[command(name = "migrate-helper", hide = true)]
+    MigrateHelper(Box<yulius::migrate_helper::MoveHelperArgs>),
 }
 
 #[derive(Debug, Subcommand)]
@@ -365,6 +368,11 @@ enum InstanceAction {
         /// copies again, and after five such passes it stops without freezing.
         #[arg(long = "max-downtime", value_name = "MINUTES", value_parser = clap::value_parser!(u64).range(1..))]
         max_downtime: Option<u64>,
+        /// Never sign in to the new host as root does (root's own keys, agent and ssh
+        /// configuration, a password): reach it with the move's one-time key alone, and show
+        /// the key's line for a person to add there. The move helper runs the command so.
+        #[arg(long = "no-sign-in")]
+        no_sign_in: bool,
         /// Print the recorded move and its checklist.
         #[arg(long, conflicts_with_all = ["abort", "target"])]
         status: bool,
@@ -869,6 +877,7 @@ fn main() -> ExitCode {
                     data_disk,
                     yes,
                     max_downtime,
+                    no_sign_in,
                     status,
                     abort,
                     data_dir,
@@ -888,6 +897,7 @@ fn main() -> ExitCode {
                 update_service,
                 state_dir,
                 max_downtime,
+                no_sign_in,
             },
             if status {
                 yulius::instance::migrate::Action::Status
@@ -910,6 +920,7 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Command::UpdateHelper(args) => yulius::update_helper::main(&args),
+        Command::MigrateHelper(args) => yulius::migrate_helper::main(&args),
         Command::Serve(args) => run_async(yulius::serve::serve(*args)),
         Command::Backup { data_dir, dest } => run_async(yulius::serve::backup(data_dir, dest)),
     }
@@ -940,9 +951,119 @@ where
 
 #[cfg(test)]
 mod tests {
-    use clap::CommandFactory;
+    use clap::{CommandFactory, Parser as _};
+    use yulius::migrate_helper::{MoveHelperArgs, command_args};
+    use yulius_contracts::migrate::{MoveAction, MoveRequest};
 
-    use super::Cli;
+    use super::{Cli, Command, InstanceAction};
+
+    /// SPEC-470 MVB-004: what the move helper runs is the command's own syntax. Each value of a
+    /// request arrives as the option it is meant for, a plan says no `--yes`, a move does, and
+    /// an abort names nothing of the request.
+    #[test]
+    fn the_move_helpers_arguments_are_the_commands_own() -> Result<(), Box<dyn std::error::Error>> {
+        let args = MoveHelperArgs {
+            data_dir: "/srv/yulius".into(),
+            state_dir: "/srv/yulius-migrate".into(),
+            service: "yulius-b.service".into(),
+            update_service: "yulius-b-update.service".into(),
+            targets: Vec::new(),
+            systemctl: "systemctl".into(),
+            program: None,
+        };
+        let request = |action| MoveRequest {
+            version: 1,
+            id: "0123abcd-request".into(),
+            action,
+            target: Some("root@new.example".into()),
+            ssh_port: Some(2222),
+            public_url: Some("https://new.example".into()),
+            data_disks: vec!["/dev/vdc".into(), "/dev/vdd".into()],
+            requested_at: 0,
+        };
+        let parsed = |request: &MoveRequest| {
+            let argv = std::iter::once("yulius".to_owned()).chain(command_args(&args, request));
+            Cli::try_parse_from(argv).map(|cli| cli.command)
+        };
+        for (action, says_yes) in [(MoveAction::Plan, false), (MoveAction::Move, true)] {
+            let Command::Instance {
+                action:
+                    InstanceAction::Migrate {
+                        target,
+                        ssh_port,
+                        public_url,
+                        data_disk,
+                        max_downtime,
+                        no_sign_in,
+                        yes,
+                        status,
+                        abort,
+                        data_dir,
+                        service,
+                        update_service,
+                        state_dir,
+                    },
+            } = parsed(&request(action))?
+            else {
+                return Err("not `instance migrate`".into());
+            };
+            assert_eq!(target.as_deref(), Some("root@new.example"));
+            assert_eq!(ssh_port, 2222);
+            assert_eq!(public_url.as_deref(), Some("https://new.example"));
+            assert_eq!(data_disk, ["/dev/vdc", "/dev/vdd"]);
+            assert_eq!(yes, says_yes, "{action:?}");
+            // A request has no field for a bound on the freeze: the command decides by itself
+            // when to freeze (SPEC-465), as it does without `--max-downtime`.
+            assert_eq!(max_downtime, None);
+            // Root's helper is nobody's sign-in: only the move's own key reaches the new host.
+            assert!(no_sign_in, "{action:?}");
+            assert!(!status && !abort);
+            assert_eq!(data_dir, std::path::Path::new("/srv/yulius"));
+            assert_eq!(service, "yulius-b.service");
+            assert_eq!(update_service, "yulius-b-update.service");
+            assert_eq!(state_dir, std::path::Path::new("/srv/yulius-migrate"));
+        }
+        let abort = MoveRequest {
+            target: None,
+            ssh_port: None,
+            public_url: None,
+            data_disks: Vec::new(),
+            ..request(MoveAction::Abort)
+        };
+        let Command::Instance {
+            action:
+                InstanceAction::Migrate {
+                    target,
+                    yes,
+                    abort,
+                    no_sign_in,
+                    service,
+                    state_dir,
+                    ..
+                },
+        } = parsed(&abort)?
+        else {
+            return Err("not `instance migrate`".into());
+        };
+        assert!(abort && !yes && no_sign_in);
+        assert_eq!(target, None);
+        assert_eq!(service, "yulius-b.service");
+        assert_eq!(state_dir, std::path::Path::new("/srv/yulius-migrate"));
+        // The helper itself is a command of this binary, with its unit's defaults.
+        let Command::MigrateHelper(helper) = Cli::try_parse_from([
+            "yulius",
+            "migrate-helper",
+            "--targets",
+            "a.example,b.example",
+        ])?
+        .command
+        else {
+            return Err("not `migrate-helper`".into());
+        };
+        assert_eq!(helper.targets, ["a.example", "b.example"]);
+        assert_eq!(helper.update_service, "yulius-update.service");
+        Ok(())
+    }
 
     /// SPEC-451 WRP-002: every subcommand documented "In a task's session" gets through the
     /// agent's `yulius` wrapper at `/yulius/bin`, which is first on a session's `PATH`, and

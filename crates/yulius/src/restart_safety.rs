@@ -170,13 +170,20 @@ pub fn own_service(own: &str) -> Option<&str> {
         .find(|part| part.len() > ".service".len() && part.ends_with(".service"))
 }
 
+/// The service unit this process runs in; `None` outside one (a development server, a test).
+#[must_use]
+pub fn this_service() -> Option<String> {
+    let own = std::fs::read_to_string("/proc/self/cgroup").ok()?;
+    let own = yulius_sandbox::cgroup::own_path(&own)?;
+    own_service(&own).map(str::to_owned)
+}
+
 /// Why a restart of the unit this server runs in would leave it down (SPEC-458 RST-003); `None`
 /// when it would come back, and outside a service unit.
 #[must_use]
 pub fn of_this_server() -> Option<String> {
-    let own = std::fs::read_to_string("/proc/self/cgroup").ok()?;
-    let own = yulius_sandbox::cgroup::own_path(&own)?;
-    let service = own_service(&own)?;
+    let service = this_service()?;
+    let service = service.as_str();
     let root = Path::new(yulius_sandbox::cgroup::CGROUP_ROOT);
     let facts = read(root, service, &|args: &[&str]| {
         crate::doctor::output_of(Path::new("systemctl"), args)

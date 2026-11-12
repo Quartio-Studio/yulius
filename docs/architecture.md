@@ -3216,9 +3216,9 @@ the new one only through `ssh` with a one-time key and a handful of constant rem
 line. The new host's steps (`target.rs`) are Rust code over `host_setup::Host`, run there by the
 same build, which the flow copies first (`yulius instance migrate-target`). The old host's profile
 (`profile.rs`: the unit and its drop-ins, key files, apt sources and the manual package list,
-software outside apt, the update helper, Caddy, ufw) is read live and fitted to the new host by
-pure rewrites (release codename, public URL, host name). The copy is the export's own stream,
-sent in passes into a staged copy (`warm.rs`; SPEC-465, ADR-0303): passes while the old instance
+software outside apt, the update helper, the move helper, Caddy, ufw) is read live and fitted to
+the new host by pure rewrites (release codename, public URL, host name). The copy is the export's
+own stream, sent in passes into a staged copy (`warm.rs`; SPEC-465, ADR-0303): passes while the old instance
 runs, then one exact pass while it is frozen. The old host keeps a receipt for every path the new
 host took in and synced (`receipts.rs`: a digest of the entry's archive headers, its inode number
 and its inode's change time) and leaves an entry out only while its receipt matches; an entry
@@ -3265,6 +3265,51 @@ build). Remote clients follow the move by themselves: the old host's proxy answe
 `X-Yulius-Moved-To`, and `yulius remote` (`yulius-import::remote`) takes exactly that redirect
 (a bare `https` origin, the same path) as a move: the saved sign-in is kept under the new URL, the
 old name is remembered (`moved` in `remote-credentials.json`) and the call is repeated once.
+
+A superadmin asks for the same move from Settings → Instance (SPEC-470, ADR-0305). The server is
+the unprivileged service user and is frozen during the copy, so root runs the command for it, as it
+installs updates: the server writes `<data>/migrate/request.json` (plan, move or abort, with the
+host, SSH port, public URL and data disks; `yulius-contracts::migrate`), the root-owned path unit
+`yulius-migrate.path` starts `yulius migrate-helper` (`crates/yulius/src/migrate_helper.rs`), and
+the helper runs `yulius instance migrate --no-sign-in` as a child process with each value as one
+argument: such a run never signs in as root does (the command's operator sign-in is not tried, no
+ssh configuration is read, every connection offers the move's one-time key alone), so the new host
+is one where a person added the key's line and never one that merely trusts root here. The helper
+trusts nothing in the file: it takes it only from the data directory's owner, with the exact
+schema, fresh and once, never while the update helper's unit runs, and checks every value again
+with the rules the server used (`yulius-app::migration::rules`, where `destination_ok` now lives).
+It reports the request, a heartbeat and the command's exit code in `helper.json`, keeps every id it
+handled until its request would be stale, never touches the command's checklist, and passes an
+abort that arrives meanwhile on as SIGTERM, which the command answers by its own rule. The
+application (`yulius-app::migration`, port `ports::migration::MoveHelper`, adapter
+`wiring::migrate_files`) stores nothing: `GET /api/admin/instance/migration` is computed from the
+request file, the helper's report and the command's `status.json` on every read, because the
+database travels with the copy and a row "running" would arrive on the new host as a move of that
+host. For the same reason no copy takes the request along (`migrate/` is left out of every copy, as
+`update/` is). Asks are taken one at a time and audited before the request is written; a removal
+and a repeated write name the request's id; and the checklist's time tells whose it is: one written
+before the helper's last run started is the recorded move's, not what that run found. A move needs
+the plan that was shown for the same values, and the host typed by the person. The finished
+checklist travels with the Finish step (`target::Request::Carry`, then the new host's Finish leaves
+it as `/var/lib/yulius-migrate/arrived.json`, in root's directory and not in the data directory the
+running instance's user owns), so the new instance's page shows it. The page
+(`web/assets/instancemove.js`) keeps trying while nothing answers, and notices the old address's
+redirect with a request that follows none.
+
+```mermaid
+flowchart LR
+  B["Settings → Instance: Move to another host (superadmin)"] -->|"POST /api/admin/instance/migration: plan, move (typed host), abort"| S["yulius.service (service user)"]
+  S -->|"<data>/migrate/request.json, 0600"| P["yulius-migrate.path (root)"]
+  P --> H["yulius migrate-helper: owner, schema, fresh, once, no update running, rules"]
+  H -->|"child process, one argument per value"| M["yulius instance migrate --no-sign-in"]
+  M -->|"status.json: phase, lines, key line, new URL"| F["/var/lib/yulius-migrate (root, 0711)"]
+  H -->|"helper.json: running, heartbeat, exit code or refusal"| F
+  F -->|"read on every GET, nothing stored"| S
+  S -->|"MigrationView"| B
+  M -->|"the one-time key alone, added there by a person; Finish: the checklist travels"| N["new host: arrived.json"]
+  N -->|"its server reads it"| B2["Settings → Instance on the new instance"]
+  B -. "nothing answers: frozen; a redirect: the new address" .-> B2
+```
 
 ```mermaid
 sequenceDiagram

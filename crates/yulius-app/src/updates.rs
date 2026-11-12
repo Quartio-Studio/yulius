@@ -271,6 +271,19 @@ fn step_message(step: &str) -> Option<&'static str> {
 }
 
 impl App {
+    /// SPEC-470 MVB-023: no update or restart starts while a move's request waits or its run
+    /// is in flight: it would stop and start the unit the move is about to freeze.
+    async fn refuse_during_a_move(&self) -> AppResult<()> {
+        if self.move_in_flight().await {
+            return Err(AppError::Conflict(
+                "the instance is being moved to another host (Settings → Instance): update or \
+                 restart once the move ended or was aborted"
+                    .into(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Installs the update services (once; later calls are ignored and return `false`).
     pub fn set_updates(&self, services: UpdateServices) -> bool {
         self.updates.services.set(services).is_ok()
@@ -897,6 +910,7 @@ impl App {
                 "the commit must be a full 40-character id".into(),
             ));
         }
+        self.refuse_during_a_move().await?;
         let services = self
             .update_services()
             .ok_or_else(|| AppError::Conflict("updates are not available on this server".into()))?;
@@ -1000,6 +1014,7 @@ impl App {
                 "confirm the restart: tasks pause while the server restarts".into(),
             ));
         }
+        self.refuse_during_a_move().await?;
         let services = self.update_services().ok_or_else(|| {
             AppError::Conflict("restarts are not available on this server".into())
         })?;
