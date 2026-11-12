@@ -211,6 +211,8 @@ struct FakeRemote {
     /// The one-time key's comment (the move's id), as the real connection is given it.
     comment: String,
     signs_in: bool,
+    /// How often the operator's own sign-in was tried ([`Remote::install_key`]).
+    sign_ins: u32,
     /// The new host cannot be reached at all.
     down: bool,
     /// How often the key was tried ([`Remote::reachable`]).
@@ -302,6 +304,7 @@ impl Remote for FakeRemote {
     }
 
     fn install_key(&mut self) -> Result<(), String> {
+        self.sign_ins += 1;
         if self.down {
             return Err("the sign-in to root@185.189.47.160 ended with exit status: 255".into());
         }
@@ -814,6 +817,7 @@ fn setup() -> Result<Setup, Box<dyn std::error::Error>> {
             update_service: "yulius-update.service".into(),
             state_dir,
             max_downtime: None,
+            no_sign_in: false,
         },
         local,
         remote: FakeRemote {
@@ -823,6 +827,7 @@ fn setup() -> Result<Setup, Box<dyn std::error::Error>> {
             key: false,
             comment: String::new(),
             signs_in: true,
+            sign_ins: 0,
             down: false,
             asked: 0,
             keyless: 0,
@@ -1870,6 +1875,49 @@ fn a_new_instance_that_does_not_come_up_is_stopped_before_the_old_one_thaws() ->
             .iter()
             .any(|e| e.starts_with("old: systemctl"))
     );
+    Ok(())
+}
+
+/// SPEC-470 MVB-004: a run asked without a person at this host (the move helper's) never
+/// signs in as root does, also when that sign-in would work: the key's line is shown, and the
+/// move goes on only once a person added it on the new host.
+#[test]
+fn a_run_without_a_sign_in_never_uses_roots_own() -> TestResult {
+    let mut s = setup()?;
+    s.opts.no_sign_in = true;
+    assert!(s.remote.signs_in, "root's own sign-in would work");
+    assert_eq!(s.run()?, 0, "{}", s.shown());
+    assert_eq!(s.remote.sign_ins, 0, "root's own sign-in was used");
+    let status = s.status()?;
+    let key = line(&status, "one-time key").ok_or("no key line")?;
+    assert_eq!(key.outcome, HostOutcome::Manual);
+    assert!(
+        key.detail.contains("never signs in as root")
+            && key
+                .detail
+                .contains("ssh-ed25519 AAAAC3FAKE yulius-migrate-"),
+        "{}",
+        key.detail
+    );
+    assert_eq!(status.lines.len(), 2, "the plan went on: {}", s.shown());
+    assert!(
+        status
+            .public_key
+            .as_deref()
+            .is_some_and(|line| line.starts_with("ssh-ed25519 AAAAC3FAKE"))
+    );
+    assert!(!s.shown().contains("Signing in to"), "{}", s.shown());
+    // Nothing was done on the new host, and its authorized_keys were not written.
+    assert!(s.events().is_empty() && s.remote.host.log.is_empty());
+
+    // A person added the line there: the same command goes on, still without a sign-in.
+    s.remote.key = true;
+    s.opts.yes = true;
+    assert_eq!(s.run()?, 0, "{}", s.shown());
+    assert_eq!(s.remote.sign_ins, 0);
+    let status = s.status()?;
+    assert_eq!(status.phase, "done");
+    assert_eq!(status.public_key, None);
     Ok(())
 }
 

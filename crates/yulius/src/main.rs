@@ -368,6 +368,11 @@ enum InstanceAction {
         /// copies again, and after five such passes it stops without freezing.
         #[arg(long = "max-downtime", value_name = "MINUTES", value_parser = clap::value_parser!(u64).range(1..))]
         max_downtime: Option<u64>,
+        /// Never sign in to the new host as root does (root's own keys, agent and ssh
+        /// configuration, a password): reach it with the move's one-time key alone, and show
+        /// the key's line for a person to add there. The move helper runs the command so.
+        #[arg(long = "no-sign-in")]
+        no_sign_in: bool,
         /// Print the recorded move and its checklist.
         #[arg(long, conflicts_with_all = ["abort", "target"])]
         status: bool,
@@ -872,6 +877,7 @@ fn main() -> ExitCode {
                     data_disk,
                     yes,
                     max_downtime,
+                    no_sign_in,
                     status,
                     abort,
                     data_dir,
@@ -891,6 +897,7 @@ fn main() -> ExitCode {
                 update_service,
                 state_dir,
                 max_downtime,
+                no_sign_in,
             },
             if status {
                 yulius::instance::migrate::Action::Status
@@ -987,6 +994,7 @@ mod tests {
                         public_url,
                         data_disk,
                         max_downtime,
+                        no_sign_in,
                         yes,
                         status,
                         abort,
@@ -1007,6 +1015,8 @@ mod tests {
             // A request has no field for a bound on the freeze: the command decides by itself
             // when to freeze (SPEC-465), as it does without `--max-downtime`.
             assert_eq!(max_downtime, None);
+            // Root's helper is nobody's sign-in: only the move's own key reaches the new host.
+            assert!(no_sign_in, "{action:?}");
             assert!(!status && !abort);
             assert_eq!(data_dir, std::path::Path::new("/srv/yulius"));
             assert_eq!(service, "yulius-b.service");
@@ -1026,6 +1036,7 @@ mod tests {
                     target,
                     yes,
                     abort,
+                    no_sign_in,
                     service,
                     state_dir,
                     ..
@@ -1034,7 +1045,7 @@ mod tests {
         else {
             return Err("not `instance migrate`".into());
         };
-        assert!(abort && !yes);
+        assert!(abort && !yes && no_sign_in);
         assert_eq!(target, None);
         assert_eq!(service, "yulius-b.service");
         assert_eq!(state_dir, std::path::Path::new("/srv/yulius-migrate"));

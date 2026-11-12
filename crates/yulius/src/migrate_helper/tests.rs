@@ -225,6 +225,8 @@ if [ -f "$d/command.do" ]; then . "$d/command.do"; fi"#,
             "yqa-test-update.service".into(),
             "--state-dir".into(),
             self.args.state_dir.display().to_string(),
+            // Whatever is asked: root's helper never signs in as root does.
+            "--no-sign-in".into(),
         ]
     }
 }

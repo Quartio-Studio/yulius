@@ -120,6 +120,8 @@ pub struct Ssh {
     dir: PathBuf,
     /// The key's comment: what [`Request::Finish`] removes from `authorized_keys`.
     comment: String,
+    /// Nothing of root's own signs in: see [`Ssh::without_sign_in`].
+    key_only: bool,
 }
 
 impl Ssh {
@@ -131,7 +133,17 @@ impl Ssh {
             port,
             dir: dir.to_path_buf(),
             comment: comment.to_owned(),
+            key_only: false,
         }
+    }
+
+    /// A connection that only the one-time key opens (SPEC-470): no call is the operator's
+    /// own sign-in, and nothing of root's is offered to the new host or read on the way: not
+    /// its keys, its agent or its ssh configuration (which may name a key for the host).
+    #[must_use]
+    pub fn without_sign_in(mut self) -> Self {
+        self.key_only = true;
+        self
     }
 
     fn key_file(&self) -> PathBuf {
@@ -143,7 +155,13 @@ impl Ssh {
     #[must_use]
     pub fn args(&self, key: bool, command: &str) -> Vec<String> {
         let dir = self.dir.display();
-        let mut args: Vec<String> = vec![
+        let mut args: Vec<String> = Vec::new();
+        if self.key_only {
+            // First, so that no file of root's is read at all: its configuration may name a
+            // key, a proxy command or another user for the host.
+            args.extend(["-F".into(), "none".into()]);
+        }
+        args.extend([
             "-p".into(),
             self.port.to_string(),
             "-o".into(),
@@ -160,14 +178,21 @@ impl Ssh {
             "ControlMaster=no".into(),
             "-o".into(),
             "ControlPath=none".into(),
-        ];
-        if key {
+        ]);
+        if key || self.key_only {
             for option in ["IdentitiesOnly=yes", "BatchMode=yes", "ConnectTimeout=20"] {
                 args.push("-o".into());
                 args.push(option.into());
             }
             args.push("-i".into());
             args.push(self.key_file().display().to_string());
+        }
+        if self.key_only {
+            // Neither an agent's keys nor another way in (a ticket, the host's own key).
+            for option in ["IdentityAgent=none", "PreferredAuthentications=publickey"] {
+                args.push("-o".into());
+                args.push(option.into());
+            }
         }
         args.push("--".into());
         args.push(self.destination.clone());
@@ -292,6 +317,9 @@ impl Remote for Ssh {
     }
 
     fn install_key(&mut self) -> Result<(), String> {
+        if self.key_only {
+            return Err("this run never signs in as root does".into());
+        }
         let public = std::fs::File::open(self.key_file().with_extension("pub"))
             .map_err(|e| format!("cannot read the one-time key: {e}"))?;
         // The operator's own sign-in: ssh asks for a password or a second factor on the

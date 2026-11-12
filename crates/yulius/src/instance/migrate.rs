@@ -60,6 +60,10 @@ pub struct Options {
     pub state_dir: PathBuf,
     /// The longest freeze the move may begin, in minutes: above it, it copies again.
     pub max_downtime: Option<u64>,
+    /// Never sign in to the new host as root does (its own keys, its agent, its ssh
+    /// configuration, a password): only the move's one-time key reaches it, and its line is
+    /// shown for a person to add there. How the move helper runs the command (SPEC-470).
+    pub no_sign_in: bool,
 }
 
 /// What to do.
@@ -743,6 +747,28 @@ impl<'a> Move<'a> {
     fn add_key(&mut self) -> Result<(), Stop> {
         const ITEM: &str = "one-time key";
         let public = self.remote.key().map_err(|why| self.fail(ITEM, why))?;
+        if self.opts.no_sign_in {
+            // Asked without a person at this host (SPEC-470): one look with the key itself,
+            // which also records the new host's key for the person to compare, and never
+            // root's own sign-in, which would reach every host that trusts root here.
+            return match self.remote.reachable() {
+                Ok(()) => {
+                    self.key_signs_in();
+                    Ok(())
+                }
+                Err(_) => {
+                    let seen = self.host_key_note();
+                    self.key_line = Some(public.clone());
+                    self.manual(
+                        ITEM,
+                        format!(
+                            "is not on the new host yet{seen}. This run never signs in as root                              does (root's keys, its ssh configuration, a password): add this                              line to root's ~/.ssh/authorized_keys on the new host, then ask                              again: {public}"
+                        ),
+                    );
+                    Err(Stop::Ended)
+                }
+            };
+        }
         self.world.show(&format!(
             "Signing in to {} once to add the move's key (a password or a second factor may be \
              asked):",
@@ -2819,6 +2845,9 @@ pub fn main(opts: &Options, action: Action) -> ExitCode {
         &opts.state_dir,
         &state.key_comment(),
     );
+    if opts.no_sign_in {
+        ssh = ssh.without_sign_in();
+    }
     let mut host = host_setup::system::RealHost { quiet: false };
     let mut world = RealWorld {
         signal: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(freeze::LEAVE)),

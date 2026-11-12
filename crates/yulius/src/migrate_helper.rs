@@ -169,6 +169,10 @@ pub fn command_args(args: &MoveHelperArgs, request: &MoveRequest) -> Vec<String>
         args.update_service.clone(),
         "--state-dir".to_owned(),
         args.state_dir.display().to_string(),
+        // The request comes from the service user, and root's helper is nobody's sign-in: only
+        // the move's one-time key, which a person adds on the new host, reaches it. Without
+        // this the service user would reach every host that trusts root's own keys.
+        "--no-sign-in".to_owned(),
     ]);
     if request.action == MoveAction::Abort {
         return argv;
