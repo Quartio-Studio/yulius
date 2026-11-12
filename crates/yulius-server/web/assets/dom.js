@@ -875,21 +875,25 @@ export function popoverFocus(panel, trigger, close) {
 
 /**
  * Rebuild `container` with `rebuild()` and put focus back on the same control, if it had it: the
- * control of the same `aria-label` when that label is unique before and after (a card may gain
- * controls before it, SPEC-197), else the one at the same place.
+ * control with the same `data-focus-key` when it has one (what it belongs to and which control
+ * it is, so a row that was renamed and moved keeps the keyboard, SPEC-463), else the control of
+ * the same `aria-label` when that label is unique before and after (a card may gain controls
+ * before it, SPEC-197), else the one at the same place.
  */
 export function keepFocus(container, rebuild) {
   const before = [...container.querySelectorAll(FOCUSABLE)];
   const active = document.activeElement;
   const index = before.indexOf(active);
+  const key = index >= 0 ? active.getAttribute('data-focus-key') : null;
   const label = index >= 0 ? active.getAttribute('aria-label') : null;
   const labelled = (list) => list.filter((el) => el.getAttribute('aria-label') === label);
   const unique = label !== null && labelled(before).length === 1;
   rebuild();
   if (index < 0) return;
   const after = [...container.querySelectorAll(FOCUSABLE)];
+  const keyed = key ? after.filter((el) => el.getAttribute('data-focus-key') === key) : [];
   const same = unique ? labelled(after) : [];
-  const target = (same.length === 1 ? same[0] : after[Math.min(index, after.length - 1)]) || container;
+  const target = (keyed.length === 1 ? keyed[0] : same.length === 1 ? same[0] : after[Math.min(index, after.length - 1)]) || container;
   target.focus({ preventScroll: true });
 }
 

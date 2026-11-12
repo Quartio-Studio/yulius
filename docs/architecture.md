@@ -515,20 +515,32 @@ flowchart LR
 A subscription (an `accounts` row) has the name a person gives it and the email of the Claude
 account behind its credential ([SPEC-244](../.ai/specs/SPEC-244-rename-claude-sessions-and-show-account.md),
 [decision 0185](decisions/0185-a-subscription-email-comes-from-claudes-profile-at-sign-in.md)).
-Administrators rename it in place on the Subscriptions page (`PATCH /api/admin/accounts/{id}`).
-The email is read, never typed. After a sign-in stores a credential, the app asks Claude's profile
-with that credential through the usage adapter. The background usage round asks the same for
-every signed-in account whose email was never answered. A definite answer is stored with
-`email_checked_at`; a temporary failure backs that account off. A new credential clears both.
-Only administrators get the email in views (UI-022); task summaries never carry it.
+Administrators edit both in place on the Subscriptions page (`PATCH /api/admin/accounts/{id}` with
+`label`, `email` or both; [SPEC-463](../.ai/specs/SPEC-463-hey-i-want-to-do-a-quick-change.md),
+[decision 0300](decisions/0300-an-administrator-can-type-a-subscriptions-email.md)).
+
+The email is Claude's unless an administrator types it. After a sign-in stores a credential, the
+app asks Claude's profile with that credential through the usage adapter. The background usage
+round asks the same for every signed-in account whose email was never answered. A definite answer
+is stored with `email_checked_at`; a temporary failure backs that account off. A new credential
+clears both.
+
+A typed email is marked `email_typed` and is the person's, like the name. A new credential keeps
+it, and Claude's answer stores only `email_checked_at` beside it. Removing it (an empty `email`)
+clears the email, the mark and the check, so the round asks Claude again. Each of these writes
+settles the email in one SQL statement (a name changed with it goes in the same transaction), so
+an answer that arrives while a person types cannot replace what they typed.
+`AccountView.email_typed` tells the two apart: the toast after a sign-in names only an email
+Claude gave. Only administrators get the email in views (UI-022); task summaries never carry it.
 
 ```mermaid
 flowchart LR
-  L["Sign-in (claude setup-token)"] -->|"set_account_credential: email, email_checked_at = NULL"| DB[("accounts")]
+  L["Sign-in (claude setup-token)"] -->|"set_account_credential: email_checked_at = NULL, email = NULL unless typed"| DB[("accounts")]
   L -->|"record_account_email"| P["UsageProbe::account_email: GET /api/oauth/profile"]
   R["Background usage round"] -->|"backfill_account_emails: email_checked_at IS NULL"| P
-  P -->|"address, none or 401/403: set_account_email(email, now)"| DB
+  P -->|"address, none or 401/403: set_account_email(email, now); beside a typed email only the time"| DB
   P -->|"timeout, 5xx, 429: back off"| R
+  A["Administrator: Subscriptions page"] -->|"PATCH email: update_account, email_typed = 1; empty: email, mark and check cleared"| DB
   DB -->|"label + email (administrators)"| V["Subscriptions page, Status, Dashboard, Task details, analytics"]
 ```
 
@@ -3091,9 +3103,14 @@ software outside apt, the update helper, Caddy, ufw) is read live and fitted to 
 pure rewrites (release codename, public URL, host name). The copy is the export's own stream into
 the import; both hosts then count the copy's inventory (`inventory.rs`: entries and bytes per
 top-level folder and a fingerprint over every entry's metadata, as the import installs it and in
-the old host's ids), and the new instance is started only when they are equal. Only the move's
+the old host's ids; the import's own limits mark is left out of the export and of both counts,
+`walk::left_out`), and the new instance is started only when they are equal. Only the move's
 identity and the cutover's progress are stored (`/var/lib/yulius-migrate/state.json`); every step
-reads the facts and acts if needed, so the same command continues a move. The copy carries a mark
+reads the facts and acts if needed, so the same command continues a move. A run that goes on from
+a recorded start asks the new instance first and never ends well with both running: whatever
+unit of the old instance (the server's, its sessions unit) runs unfrozen beside a new instance
+that has taken over is frozen again, to stay, or the run fails saying so (SPEC-467). The copy
+carries a mark
 (`move-pending.json`): the first start that finds it queues the tasks whose runs were lost with the
 old host (`yulius-app::host_move`).
 

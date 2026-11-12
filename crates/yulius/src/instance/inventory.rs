@@ -13,7 +13,7 @@ use sha2::{Digest as _, Sha256};
 
 use super::archive::{Entry, Kind, headers};
 use super::extract::{IdMap, restorable};
-use super::walk::{self, LEFT_OUT, ROOT};
+use super::walk::{self, ROOT};
 use super::{IdRange, Manifest};
 
 /// The data directory itself in [`Inventory::folders`].
@@ -244,15 +244,15 @@ impl Counter {
 
 /// The inventory of the copy installed at `root` with `map`, over the top-level names `old`
 /// lists: what the new host put beside them (a skeleton's dotfiles, the import's marks, its own
-/// sandbox base) is not the copy.
+/// sandbox base) is not the copy, and neither is what a copy leaves out whatever `old` lists
+/// ([`walk::left_out`]).
 ///
 /// # Errors
 /// A directory or file that cannot be read, or an entry whose owner the import never gives.
 pub fn of_copy(root: &Path, map: &IdMap, old: &Inventory) -> io::Result<Inventory> {
     let mut tally = Tally::new();
     let copied = |name: &[u8]| {
-        !LEFT_OUT.iter().any(|l| name == l.as_bytes())
-            && old.folders.iter().any(|f| f.name.as_bytes() == name)
+        !walk::left_out(name) && old.folders.iter().any(|f| f.name.as_bytes() == name)
     };
     walk::walk_top(root, &copied, &mut |e, _| {
         let e = as_exported(e, map).ok_or_else(|| {

@@ -430,6 +430,7 @@ async fn a_held_capacity_resume_keeps_its_pause() -> TestResult {
             updated_at: yulius_domain::time::Timestamp(1),
             email: None,
             email_checked_at: None,
+            email_typed: false,
         })
         .await?;
     let s = create(
