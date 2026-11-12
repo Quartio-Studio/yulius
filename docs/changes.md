@@ -21,6 +21,15 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   directory; after a restart of the old host, or when its clock was set back, the receipts are
   dropped and everything is sent into the staged copy again. The operations guide §7 describes
   it.
+- A task whose session works again after a goal pause leaves Needs you by itself (SPEC-469, task
+  #453, fixes #1183, ADR-0304). When Claude Code stops retrying a goal ("Goal paused · the request
+  was rate limited", "Goal paused after 3 automatic retries"), Yulius asks a person to send the
+  task a message. That request ended only when a person typed, so a session that Claude Code
+  woke, or that Yulius restarted, kept "Needs you: Send the task a message…" while its agent
+  worked (task #154 of another project: 33 minutes into its turn). It now ends at the agent's
+  first work after the pause, whatever woke the session, and the task reads Working. A woken turn
+  the API refuses again keeps the request, and a request the agent made itself stays. Tasks an
+  older Yulius left in that state lose the request at the first start with this change.
 - The instance move's last review findings are fixed (SPEC-467, task #450; the command is
   SPEC-460's). An instance that systemd does not report frozen as a whole right after the freeze
   is no longer left frozen behind "is not running any more": it is thawed (the sessions unit of
@@ -148,7 +157,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   starting one, and `yulius instance import` names the step. Run `sudo yulius host setup` again
   after a release upgrade from 24.04 to 26.04. A follow-up (#1165) makes the check and the
   dry run name a kernel limit on user namespaces (`user.max_user_namespaces` or
-  `kernel.unprivileged_userns_clone` set to 0) like setup does.
+  `kernel.unprivileged_userns_clone` set to 0) like setup does. A second one (#1165, #1177) finds
+  a person's profile for bwrap in a spelling Yulius does not read (an alternation, a pattern, an
+  `alias`, a variable) by what it does: setup loads `/etc/apparmor.d` as a boot does beside its
+  own profile and proves bwrap then; where bwrap does not start it proves once more without
+  Yulius's profile, adopts a person's profile that lets bwrap in (Yulius's is removed,
+  whichever run wrote it) and otherwise puts Yulius's back as it was and says how to disable
+  the other.
 - Resource limits are sized from the host (SPEC-459, task #441, ADR-0294). Live sessions, CI
   jobs, CI runs per sandbox, the sandbox disk quota and the CD run disk no longer have fixed
   defaults (8, 4, 2, 100 GB, 20 GB): like the sandbox memory they follow the host's CPUs, memory
