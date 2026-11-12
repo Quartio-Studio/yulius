@@ -184,7 +184,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   own profile and proves bwrap then; where bwrap does not start it proves once more without
   Yulius's profile, adopts a person's profile that lets bwrap in (Yulius's is removed,
   whichever run wrote it) and otherwise puts Yulius's back as it was and says how to disable
-  the other.
+  the other. A third one lets Yulius's own profile from an earlier run give way in the same
+  manner to a person's profile in a plain spelling (the old host's hand-written rule copied
+  to a host that setup had prepared), and a proof that fails no longer rewrites Yulius's file.
 - Resource limits are sized from the host (SPEC-459, task #441, ADR-0294). Live sessions, CI
   jobs, CI runs per sandbox, the sandbox disk quota and the CD run disk no longer have fixed
   defaults (8, 4, 2, 100 GB, 20 GB): like the sandbox memory they follow the host's CPUs, memory
