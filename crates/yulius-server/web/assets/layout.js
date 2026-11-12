@@ -2,8 +2,8 @@
 // left sidebar with navigation, the active task list and the user menu at its foot.
 
 import { DRAG_TAB_HINT, h, icon, iconButton, openMenu, setChildren, statusMark, popoverFocus, keepFocus, loadError, coalesce, pollPaused, prChip, skeleton, bar, skeletonOf } from './dom.js';
-import { relLong, bytes, duration, dateTime, resetLabel, compact, accountEmail, plausibleEmail } from './format.js';
-import { limitsNow } from './usage.js';
+import { bytes, duration, dateTime, resetLabel, compact, accountEmail, plausibleEmail } from './format.js';
+import { limitsNow, percentNow } from './usage.js';
 import { sparkline, usd } from './charts.js';
 import { taskTime } from './tasktime.js';
 import { taskInfo, taskActions, activityLine, allows, otherOwner } from './status.js';
@@ -677,37 +677,85 @@ function editableEmail(account, setEmail) {
   }, setEmail);
 }
 
+// The cards on the page that follow the clock (SPEC-473 RFR-012): what a card says depends on
+// the time (a window resets, a reading ages), so each second every shown card works out what it
+// says and is drawn again when that changed. One timer for all, stopped with the last card.
+const clockCards = new Set();
+let clockTimer = null;
+/** How long a card that was never put on the page is kept waiting for it. */
+const CLOCK_GRACE_MS = 60_000;
+
+function followClock(el, paint) {
+  clockCards.add({ el, paint, shown: false, since: Date.now() });
+  if (!clockTimer) clockTimer = setInterval(tickClock, 1000);
+}
+
+function tickClock() {
+  const now = Date.now();
+  for (const card of clockCards) {
+    if (card.el.isConnected) {
+      card.shown = true;
+      if (!document.hidden) card.paint(now);
+    } else if (card.shown || now - card.since > CLOCK_GRACE_MS) {
+      clockCards.delete(card);
+    }
+  }
+  if (!clockCards.size) {
+    clearInterval(clockTimer);
+    clockTimer = null;
+  }
+}
+
+/** The usage windows a card can show, by their key in the API's usage. */
+const USAGE_KEYS = ['primary', 'secondary', 'weekly_opus', 'weekly_sonnet', 'weekly_fable'];
+
 /**
  * One account, shared by the Status panel (foldable: a row that expands) and the Accounts page:
  * an avatar with initials, label, email for administrators (`showEmail`; "email unknown" until
  * Claude gave one or an administrator typed it) and plan (when the provider reports it), its
- * state when it is not ready, and each usage window as a horizontal row like Claude's own usage
- * page. With `rename` and `setEmail` (the Accounts page) the name and the email are edited in
- * place.
+ * state when it is not ready, how old its reading is, which windows are used up, and each usage
+ * window as a horizontal row like Claude's own usage page. With `rename` and `setEmail` (the
+ * Accounts page) the name and the email are edited in place.
+ *
+ * What depends on the time (the state, the age, the used-up windows, a window past its reset) is
+ * worked out when the card is drawn and again every second while it is on the page, and drawn
+ * again only when it changed (SPEC-473): a card stops saying "Limit reached" the moment its
+ * window resets. The name and the email are not part of that, so a field being typed in stays.
+ *
+ * `refresh` (the Accounts page) is `{ busy(), run() }`: a Refresh button beside the age, off and
+ * reading "Reading…" while `busy()`. `note()` gives a sentence the page has about this card (a
+ * refresh that failed, or read nothing new). The page tells the card that either changed with a
+ * `yulius:usage-changed` event on the card.
  */
-export function accountUsage(account, { foldable = false, open = false, rename = null, setEmail = null, showEmail = false } = {}) {
-  const usage = account.usage || {};
+export function accountUsage(account, { foldable = false, open = false, rename = null, setEmail = null, showEmail = false, refresh = null, note = null } = {}) {
   const provider = account.provider === 'anthropic' ? 'Claude' : account.provider;
-  // The state the windows give now, not the status stored at the last reading (SPEC-473 RFR-008).
-  const now = limitsNow(account);
-  const state = ACCOUNT_STATES[now.state] || { icon: 'warn', tone: 'muted', label: now.state || 'Unknown' };
+  const label = () => account.label || account.id;
   // Usage not read yet: a shimmering bar where the reset time will be (SPEC-092).
   const reading = () => [h('span', { class: 'skeleton-line', 'aria-hidden': 'true' }), h('span', { class: 'sr-only' }, 'Reading usage…')];
-  const usageRow = (w, fallback) => {
+  // A window past its reset began anew and nobody read it since: not its old percent (RFR-011).
+  const usageRow = (w, fallback, at) => {
     const name = limitName(w && w.window_minutes, fallback);
-    const used = w ? w.used_percent : null;
+    const used = percentNow(w, at);
+    const reset = Boolean(w) && Number.isFinite(w.used_percent) && used === null;
     return h('div', { class: 'usage-row' },
-      h('div', { class: 'usage-name' }, h('span', null, name), h('span', { class: 'usage-reset', title: w && w.resets_at ? dateTime(w.resets_at) : '' }, w && w.resets_at ? resetLabel(w.resets_at) : Number.isFinite(used) ? '' : reading())),
+      h('div', { class: 'usage-name' }, h('span', null, name), h('span', { class: 'usage-reset', title: w && w.resets_at ? dateTime(w.resets_at) : '' }, reset ? 'Reset since this reading' : w && w.resets_at ? resetLabel(w.resets_at, at) : Number.isFinite(used) ? '' : reading())),
       usageBar(used, name),
       h('span', { class: ['usage-pct', `tone-${toneOf(used)}`] }, Number.isFinite(used) ? `${Math.round(used)}% used` : '—'));
   };
   // Folded, both windows show at a glance: a short name, a bar named in full and the percent (SPEC-172).
-  const glanceWindows = [[usage.primary, '5 h', '5-hour window'], [usage.secondary, 'Week', 'This week']].map(([w, short, name]) => ({ used: w ? w.used_percent : null, short, name }));
-  const glance = () => h('span', { class: 'account-glance', title: glanceWindows.map((g) => `${g.name}: ${Number.isFinite(g.used) ? `${Math.round(g.used)}% used` : 'not known yet'}`).join(' · ') },
-    glanceWindows.map((g) => h('span', { class: 'glance-line' },
-      h('span', { class: 'glance-name' }, g.short),
-      usageBar(g.used, g.name),
-      h('span', { class: ['usage-pct', `tone-${toneOf(g.used)}`] }, percentText(g.used)))));
+  const glance = (usage, at) => {
+    const windows = [[usage.primary, '5 h', '5-hour window'], [usage.secondary, 'Week', 'This week']].map(([w, short, name]) => ({ used: percentNow(w, at), short, name }));
+    return h('span', { class: 'account-glance', title: windows.map((g) => `${g.name}: ${Number.isFinite(g.used) ? `${Math.round(g.used)}% used` : 'not known yet'}`).join(' · ') },
+      windows.map((g) => h('span', { class: 'glance-line' },
+        h('span', { class: 'glance-name' }, g.short),
+        usageBar(g.used, g.name),
+        h('span', { class: ['usage-pct', `tone-${toneOf(g.used)}`] }, percentText(g.used)))));
+  };
+  // The three parts the clock draws again; `display: contents`, so the head's row and the body's
+  // column lay their children out as before.
+  const stateHost = h('span', { class: 'account-live' });
+  const glanceHost = foldable ? h('span', { class: 'account-live' }) : null;
+  const liveHost = h('div', { class: 'account-live' });
   const head = [
     h('span', { class: 'avatar account-avatar', 'aria-hidden': 'true' }, accountInitials(account)),
     h('span', { class: 'account-who' },
@@ -718,32 +766,67 @@ export function accountUsage(account, { foldable = false, open = false, rename =
       !showEmail ? h('span', { class: 'account-sub' }, provider)
         : setEmail && !foldable ? editableEmail(account, setEmail)
           : h('span', { class: ['account-sub', account.email ? null : 'account-email-unknown'], title: account.email ? `${provider} account` : 'Shown after the subscription’s next sign-in, when Claude shares it' }, accountEmail(account.email))),
-    state.tone !== 'ok' ? h('span', { class: ['account-state', `state-${state.tone}`], title: state.label }, icon(state.icon, { size: 12 }), h('span', { class: 'account-state-label' }, state.label)) : null,
-    foldable ? glance() : null,
+    stateHost,
+    glanceHost,
     foldable ? icon('down', { size: 14 }) : null,
   ];
-  // A usage reading that failed for now ("usage: …", one plain sentence) is a quiet note, not a
-  // broken account: tasks still run on it and the last known usage stays (ROT-009, #27). Usage
-  // comes from the subscription's running tasks (ADR-17), so an idle one simply has none yet.
-  const usageNote = Boolean(account.last_error) && account.last_error.startsWith('usage:') && !['relogin', 'error'].includes(account.status);
-  const body = h('div', { class: 'account-body' },
-    account.last_error && usageNote ? h('div', { class: 'account-note' }, icon('clock', { size: 13 }), h('span', null, account.last_error.slice('usage:'.length).trim())) : null,
-    // Claude refusing a subscription (cancelled, downgraded, revoked) marks it for a new sign-in
-    // with Claude's words, said as why (SPEC-447 MOV-005).
-    account.last_error && !usageNote ? h('div', { class: 'account-error' }, icon('warn', { size: 13 }), h('span', null, account.status === 'relogin' ? `Claude refused it: ${account.last_error.trim().replace(/\.$/, '')}. Sign in again.` : account.last_error)) : null,
-    usageRow(usage.primary, '5-hour window'),
-    usageRow(usage.secondary, 'This week'),
-    // Per-model weekly caps, when the plan has them (they bind only tasks of that model).
-    usage.weekly_opus ? usageRow({ ...usage.weekly_opus, window_minutes: null }, 'Opus this week') : null,
-    usage.weekly_sonnet ? usageRow({ ...usage.weekly_sonnet, window_minutes: null }, 'Sonnet this week') : null,
-    // Fable runs on a weekly allowance of usage credits no reading shows: the row appears once
-    // Claude reported it used up, full until its reset (SPEC-464).
-    usage.weekly_fable ? usageRow({ ...usage.weekly_fable, window_minutes: null }, 'Fable this week') : null,
-    h('div', { class: 'account-foot' },
-      account.in_use_by ? h('span', { class: 'status-count live' }, h('span', { class: 'live-dot' }), `${account.in_use_by} ${account.in_use_by === 1 ? 'task' : 'tasks'} on this subscription`) : h('span', null, 'No tasks right now'),
-      h('span', null, usage.observed_at ? `Updated ${relLong(usage.observed_at)}` : 'Usage is read every few minutes')));
-  if (!foldable) return h('div', { class: 'account-card' }, h('div', { class: 'account-head' }, head), body);
-  return rememberOpen(h('details', { class: 'account-fold' }, h('summary', { class: 'account-head' }, head), body), `account:${account.id}`, open);
+  const foot = h('div', { class: 'account-foot' });
+  const body = h('div', { class: 'account-body' }, liveHost, foot);
+  const el = foldable
+    ? rememberOpen(h('details', { class: 'account-fold' }, h('summary', { class: 'account-head' }, head), body), `account:${account.id}`, open)
+    : h('div', { class: 'account-card' }, h('div', { class: 'account-head' }, head), body);
+
+  let drawn = null;
+  const paint = (at) => {
+    const usage = account.usage || {};
+    const now = limitsNow(account, at);
+    const busy = Boolean(refresh && refresh.busy());
+    const said = note ? note() : null;
+    // Everything the card says that the time, a refresh or a new reading can change.
+    const says = JSON.stringify([now, busy, said, account.status, account.last_error, account.in_use_by,
+      USAGE_KEYS.map((key) => [percentNow(usage[key], at), usage[key] && usage[key].resets_at ? resetLabel(usage[key].resets_at, at) : null])]);
+    if (says === drawn) return;
+    drawn = says;
+    const state = ACCOUNT_STATES[now.state] || { icon: 'warn', tone: 'muted', label: now.state || 'Unknown' };
+    const outOfDate = `${now.age}, may be out of date`;
+    // A subscription that needs a sign-in and was never read has no reading to date.
+    const dated = Boolean(usage.observed_at) || now.state === 'ok' || now.state === 'limited';
+    // A usage reading that failed for now ("usage: …", one plain sentence) is a quiet note, not a
+    // broken account: tasks still run on it and the last known usage stays (ROT-009, #27). What
+    // the page knows about its own refresh comes first (SPEC-473 RFR-013).
+    const usageNote = Boolean(account.last_error) && account.last_error.startsWith('usage:') && !['relogin', 'error'].includes(account.status);
+    const quiet = said || (usageNote ? account.last_error.slice('usage:'.length).trim() : null);
+    keepFocus(el, () => {
+      setChildren(stateHost, state.tone !== 'ok' ? h('span', { class: ['account-state', `state-${state.tone}`], title: state.label }, icon(state.icon, { size: 12 }), h('span', { class: 'account-state-label' }, state.label)) : null);
+      // Folded, a reading that may be out of date is marked beside the glance: an icon, with
+      // the words for a screen reader and on hover (RFR-009).
+      if (glanceHost) setChildren(glanceHost, now.stale ? h('span', { class: 'account-stale', title: outOfDate }, icon('clock', { size: 12 }), h('span', { class: 'sr-only' }, outOfDate)) : null, glance(usage, at));
+      setChildren(liveHost,
+        dated || refresh ? h('div', { class: 'account-reading', dataset: { stale: String(now.stale) } },
+          dated ? h('span', { class: 'account-age', title: usage.observed_at ? dateTime(usage.observed_at) : null }, now.stale ? icon('clock', { size: 13 }) : null, h('span', null, now.stale ? `${now.age} · may be out of date` : now.age)) : h('span'),
+          // Off while it reads without losing the keyboard: aria-disabled, not disabled.
+          refresh ? h('button', { type: 'button', class: 'btn btn-sm account-refresh', 'aria-label': `Refresh usage of ${label()}`, 'aria-busy': busy ? 'true' : null, 'aria-disabled': busy ? 'true' : null, dataset: { focusKey: `account:${account.id}:refresh` }, onClick: () => { if (!refresh.busy()) refresh.run(); } },
+            icon('refresh', { size: 13 }), busy ? 'Reading…' : 'Refresh') : null) : null,
+        now.lines.map((line) => h('div', { class: 'account-limit', dataset: { window: line.key } }, icon('clock', { size: 13 }), h('span', null, line.text))),
+        quiet ? h('div', { class: 'account-note' }, icon('clock', { size: 13 }), h('span', null, quiet)) : null,
+        // Claude refusing a subscription (cancelled, downgraded, revoked) marks it for a new sign-in
+        // with Claude's words, said as why (SPEC-447 MOV-005).
+        account.last_error && !usageNote ? h('div', { class: 'account-error' }, icon('warn', { size: 13 }), h('span', null, account.status === 'relogin' ? `Claude refused it: ${account.last_error.trim().replace(/\.$/, '')}. Sign in again.` : account.last_error)) : null,
+        usageRow(usage.primary, '5-hour window', at),
+        usageRow(usage.secondary, 'This week', at),
+        // Per-model weekly caps, when the plan has them (they bind only tasks of that model).
+        usage.weekly_opus ? usageRow({ ...usage.weekly_opus, window_minutes: null }, 'Opus this week', at) : null,
+        usage.weekly_sonnet ? usageRow({ ...usage.weekly_sonnet, window_minutes: null }, 'Sonnet this week', at) : null,
+        // Fable runs on a weekly allowance of usage credits no reading shows: the row appears once
+        // Claude reported it used up, full until its reset (SPEC-464).
+        usage.weekly_fable ? usageRow({ ...usage.weekly_fable, window_minutes: null }, 'Fable this week', at) : null);
+      setChildren(foot, account.in_use_by ? h('span', { class: 'status-count live' }, h('span', { class: 'live-dot' }), `${account.in_use_by} ${account.in_use_by === 1 ? 'task' : 'tasks'} on this subscription`) : h('span', null, 'No tasks right now'));
+    });
+  };
+  paint(Date.now());
+  followClock(el, paint);
+  el.addEventListener('yulius:usage-changed', () => paint(Date.now()));
+  return el;
 }
 
 /** A number tile of the capacity panel: name, value, detail lines and its 7-day chart (no meter). */

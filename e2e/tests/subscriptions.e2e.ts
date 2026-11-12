@@ -52,6 +52,148 @@ test('a subscription out of its model\'s usage credits shows that model\'s week 
   expect(await axeViolations(browser)).toEqual([]);
 });
 
+/**
+ * What the card of the subscription `named` (a text on it) says, top down: its state, the
+ * reading's age, the used-up windows and the rows. `cards` selects the cards to look among.
+ */
+const cardSays = (browser: Browser, cards: string, named: string) => browser.evaluate(([css, text]) => {
+  const el = [...document.querySelectorAll(css)].find((card) => card.textContent!.includes(text))!;
+  const reading = el.querySelector('.account-reading');
+  return {
+    state: el.querySelector('.account-state')?.textContent ?? null,
+    // The body's first line: the first thing in the part the clock draws, which heads the body.
+    first: el.querySelector('.account-body > :first-child > :first-child')?.className ?? null,
+    age: reading?.querySelector('.account-age')?.textContent ?? null,
+    stale: reading?.getAttribute('data-stale') ?? null,
+    limits: [...el.querySelectorAll('.account-limit')].map((line) => line.textContent),
+    rows: [...el.querySelectorAll('.usage-row')].map((row) => [row.querySelector('.usage-name > span')?.textContent, row.querySelector('.usage-reset')?.textContent, row.querySelector('.usage-pct')?.textContent]),
+    foot: el.querySelector('.account-foot')?.textContent ?? null,
+  };
+}, [cards, named]);
+
+// SPEC-473 RFR-009, RFR-010: a card starts with how old its reading is and marks one that may be
+// out of date; under it, each used-up window is named with its reset. The foot no longer holds
+// the age. Claude spare's own reading by the page is held, so its card stays as old as it is.
+test('each card says how old its reading is and which window is used up (SPEC-473)', async ({ app, browser }) => {
+  await app.open(mock('/admin/accounts', '&ambient=0&holdpost=/api/admin/accounts/acc_x3/usage'));
+  await firstShown(browser.locator('main .account-card').first());
+  const fresh = await cardSays(browser, 'main .account-card', 'mkarp@example.com');
+  expect(fresh.first).toBe('account-reading');
+  expect(fresh.age).toBe('Usage read 2 min ago');
+  expect(fresh.stale).toBe('false');
+  expect(fresh.limits).toEqual([]);
+  expect(fresh.state).toBeNull();
+  expect(fresh.foot).toBe('1 task on this subscription');
+  const old = await cardSays(browser, 'main .account-card', 'Claude spare');
+  expect(old.age).toBe('Usage read 3 d ago · may be out of date');
+  expect(old.stale).toBe('true');
+  expect(old.foot).toBe('No tasks right now');
+  // Out of the default model's allowance: the line names that window and its reset.
+  const out = await cardSays(browser, 'main .account-card', 'studio@example.com');
+  expect(out.state).toBe('Limit reached');
+  expect(out.limits.length).toBe(1);
+  expect(out.limits[0]).toMatch(/^Fable this week used up · resets \S+ \d/);
+  // One that needs a sign-in and was never read has no reading to date.
+  const refused = await cardSays(browser, 'main .account-card', 'ops@example.com');
+  expect(refused.age).toBeNull();
+  expect(refused.state).toBe('Sign in again');
+  expect(await axeViolations(browser)).toEqual([]);
+});
+
+// SPEC-473 RFR-009, RFR-011: folded (the Dashboard, the Status panel), a row whose reading may be
+// out of date says so in its summary, with words for a screen reader; unfolded, its body starts
+// with the age like a card. A window past its reset shows as not read, never as its old percent.
+test('a folded subscription marks a reading that may be out of date, and a window past its reset reads as not read (SPEC-473)', async ({ app, browser }) => {
+  await app.open(mock('/s/studio', '&ambient=0'));
+  await browser.evaluate(() => {
+    type Account = { label: string; usage: Record<string, unknown> };
+    const db = (window as unknown as { __yuliusMock: { accounts: Account[] } }).__yuliusMock;
+    const four = db.accounts.find((a) => a.label === 'Claude #4')!;
+    four.usage = { ...four.usage, primary: { used_percent: 100, resets_at: new Date(Date.now() - 60e3).toISOString(), window_minutes: 300 } };
+    location.hash = '#/s/studio/dashboard';
+  });
+  await expect(browser.locator('.db-card .account-fold').first()).toBeVisible();
+  const marks = await browser.evaluate(() => Object.fromEntries([...document.querySelectorAll('.db-card .account-fold')].map((fold) => {
+    const mark = fold.querySelector('summary .account-stale');
+    return [fold.querySelector('.account-name strong')!.textContent, mark ? [mark.textContent, mark.getAttribute('title'), Boolean(mark.querySelector('svg'))] : null];
+  })));
+  expect(marks['Claude spare']).toEqual(['Usage read 3 d ago, may be out of date', 'Usage read 3 d ago, may be out of date', true]);
+  expect(marks['Claude #1']).toBeNull();
+  expect(marks['Claude #3']).toBeNull();
+  const rows = await glances(browser, '.db-card');
+  expect(rows.find((r) => r.label === 'Claude #4')!.lines.map((l) => l.pct)).toEqual(['—', '33%']);
+  expect(rows.find((r) => r.label === 'Claude #4')!.state).toBeNull();
+  await browser.locator('.db-card .account-fold:has-text("Claude spare") > summary').click();
+  const open = await cardSays(browser, '.db-card .account-fold', 'Claude spare');
+  expect(open.first).toBe('account-reading');
+  expect(open.age).toBe('Usage read 3 d ago · may be out of date');
+  await expect(browser.locator('.db-card .account-fold:has-text("Claude spare") summary .account-stale')).toBeHidden();
+  await browser.locator('.db-card .account-fold:has-text("Claude #4") > summary').click();
+  const reset = await cardSays(browser, '.db-card .account-fold', 'Claude #4');
+  expect(reset.rows[0]).toEqual(['5-hour window', 'Reset since this reading', '—']);
+  expect(reset.limits).toEqual([]);
+  expect(await axeViolations(browser)).toEqual([]);
+});
+
+/**
+ * Opens the Subscriptions page with Claude #4 stored `ok`, read just now, its 5-hour window at
+ * 100 % and resetting `ms` from now: at its limit until then, by the clock alone.
+ */
+async function openWithAWindowAboutToReset(app: { open: (path: string) => Promise<void> }, browser: Browser, ms: number) {
+  await app.open(mock('/s/studio', '&ambient=0'));
+  await browser.evaluate((ms) => {
+    type Account = { label: string; status: string; usage: Record<string, unknown> };
+    const db = (window as unknown as { __yuliusMock: { accounts: Account[] } }).__yuliusMock;
+    const four = db.accounts.find((a) => a.label === 'Claude #4')!;
+    Object.assign(four, { status: 'ok', usage: { ...four.usage, primary: { used_percent: 100, resets_at: new Date(Date.now() + ms).toISOString(), window_minutes: 300 }, observed_at: new Date().toISOString() } });
+    location.hash = '#/admin/accounts';
+  }, ms);
+  await firstShown(browser.locator('main .account-card').first());
+}
+
+const FOUR = 'main .card:has-text("pawel@example.com") .account-card';
+type Sent = { __yuliusMock: { sent?: Record<string, number>; asked?: Record<string, number> } };
+
+// SPEC-473 RFR-008, RFR-012: the card follows the clock. A subscription at 100 % of its 5-hour
+// window reads "Limit reached" though its last reading stored `ok`; the moment the window resets
+// the card stops saying so, with no reading and no list read; the row then says the window has
+// reset since.
+test('a card stops saying Limit reached the moment its window resets, with no new reading (SPEC-473)', async ({ app, browser }) => {
+  await openWithAWindowAboutToReset(app, browser, 4000);
+  const before = await cardSays(browser, 'main .account-card', 'pawel@example.com');
+  expect(before.state).toBe('Limit reached');
+  expect(before.limits.length).toBe(1);
+  expect(before.limits[0]).toMatch(/^5-hour window used up · resets at \d/);
+  expect(before.rows[0].slice(0, 1).concat(before.rows[0].slice(2))).toEqual(['5-hour window', '100% used']);
+  expect(await axeViolations(browser)).toEqual([]);
+  await expect(browser.locator(`${FOUR} .account-state`)).toBeHidden({ timeout: 15_000 });
+  const after = await cardSays(browser, 'main .account-card', 'pawel@example.com');
+  expect(after.limits).toEqual([]);
+  expect(after.rows[0]).toEqual(['5-hour window', 'Reset since this reading', '—']);
+  expect(after.rows[1][2]).toBe('33% used');
+  // Nothing was read meanwhile: no usage request for it, and the list was read once.
+  const requests = await browser.evaluate(() => {
+    const db = (window as unknown as Sent).__yuliusMock;
+    return { usage: (db.sent ?? {})['POST /api/admin/accounts/acc_x1/usage'] ?? 0, list: (db.asked ?? {})['/api/admin/accounts'] ?? 0 };
+  });
+  expect(requests).toEqual({ usage: 0, list: 1 });
+  expect(await axeViolations(browser)).toEqual([]);
+});
+
+// SPEC-473 RFR-012: the clock draws only what depends on it. A name being typed stays as it is,
+// with the keyboard in its field, while the card's state changes beside it.
+test('a name being edited survives the clock drawing its card again (SPEC-473)', async ({ app, browser, screen }) => {
+  await openWithAWindowAboutToReset(app, browser, 4000);
+  await screen.getByRole('button', 'Rename Claude #4').click();
+  const name = screen.getByRole('textbox', 'New name for Claude #4');
+  await name.fill('Half typed');
+  await expect(browser.locator(`${FOUR} .account-state`)).toHaveText('Limit reached');
+  await expect(browser.locator(`${FOUR} .account-state`)).toBeHidden({ timeout: 15_000 });
+  await expect(name).toBeFocused();
+  await expect(name).toHaveValue('Half typed');
+  await name.press('Escape');
+});
+
 test('a task shows its subscription and a person runs it on another (SPEC-447 MOV-001, MOV-004)', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12'));
   const chip = browser.locator('.taskview .stepstrip-main button.account-chip');
