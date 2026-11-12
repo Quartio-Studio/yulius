@@ -128,6 +128,9 @@ test('"Run #N on…" judges a subscription by the windows that bind the task\'s 
       windowPastItsReset: cannotTake({ status: 'ok', usage: { primary: w(100, past) } }, opus),
       needsSignIn: cannotTake({ status: 'relogin', usage: {} }, opus),
       room: cannotTake({ status: 'ok', usage: { primary: w(40), secondary: w(12) } }, { model: 'claude-fable-5-2' }),
+      // Stored "limited" at the last reading, and the window that made it so has reset since
+      // (SPEC-473 RFR-008): a task of no known model is no longer held back by the stored status.
+      storedLimitedPastItsReset: cannotTake({ status: 'limited', usage: { primary: w(10), weekly_fable: w(100, past) } }, {}),
     };
   });
   expect(reasons).toEqual({
@@ -142,7 +145,109 @@ test('"Run #N on…" judges a subscription by the windows that bind the task\'s 
     windowPastItsReset: null,
     needsSignIn: 'Needs a new sign-in',
     room: null,
+    storedLimitedPastItsReset: null,
   });
+});
+
+// SPEC-473 RFR-008: one function says what a subscription's stored usage means at a moment: whether
+// the default model can run, which windows are used up with their resets, and how old the reading
+// is. The stored status is the last reading's; the card, the Status panel and "Run #N on…" go by
+// this.
+test('what a subscription\'s usage means now is worked out from its windows (unit, in the page; SPEC-473)', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const read = await browser.evaluate(async () => {
+    const [{ limitsNow, percentNow, STALE_AFTER_MS }, { resetLabel }] = await Promise.all([import('/assets/usage.js' as string), import('/assets/format.js' as string)]);
+    const now = Date.parse('2026-11-12T12:00:00Z');
+    const iso = (ms: number) => new Date(now + ms).toISOString();
+    const ahead = iso(3 * 3600e3);
+    const past = iso(-60e3);
+    const resets = (at: string) => { const label = resetLabel(at, now); return `${label[0].toLowerCase()}${label.slice(1)}`; };
+    const w = (used: number, resets_at: string | null = ahead) => ({ used_percent: used, resets_at, window_minutes: 10080 });
+    const of = (status: string, usage: Record<string, unknown>) => {
+      const { state, limited, lines, age, stale } = limitsNow({ status, usage }, now);
+      return { state, limited, lines: lines.map((l: { text: string }) => l.text), age, stale };
+    };
+    return {
+      resets: resets(ahead),
+      staleAfterMin: STALE_AFTER_MS / 60e3,
+      room: of('ok', { primary: w(40), secondary: w(12), observed_at: iso(-2 * 60e3) }),
+      // A stored "ok" with a binding window at 100 % is at its limit now (evidence (b)).
+      fiveHour: of('ok', { primary: w(100), secondary: w(12), observed_at: iso(-30e3) }),
+      week: of('limited', { primary: w(10), secondary: w(100) }),
+      fable: of('limited', { primary: w(10), weekly_fable: w(100) }),
+      // Another model's window: its line, and the default model still runs here.
+      opus: of('ok', { primary: w(10), weekly_opus: w(100), weekly_sonnet: w(100, null) }),
+      noReset: of('limited', { weekly_fable: w(100, null) }),
+      // A limit of the whole subscription that no window shows, with and without its reset.
+      reported: of('limited', { primary: w(10), limit_reached: true, limit_resets_at: ahead }),
+      reportedBlind: of('limited', { limit_reached: true, limit_resets_at: null }),
+      // Shown by its window: said once.
+      reportedByItsWindow: of('limited', { primary: w(100), limit_reached: true, limit_resets_at: ahead }),
+      // Stored "limited", and everything that made it so has reset or ended since.
+      reset: of('limited', { primary: w(100, past), weekly_fable: w(100, past), limit_reached: true, limit_resets_at: past, observed_at: iso(-11 * 60e3) }),
+      several: of('limited', { primary: w(100), secondary: w(100), weekly_fable: w(100) }),
+      // A subscription that needs a sign-in keeps saying so, whatever its windows.
+      relogin: of('relogin', { primary: w(100) }),
+      pending: of('pending_login', {}),
+      // The reading's age, to the second it turns stale.
+      neverRead: of('ok', {}),
+      atTheEdge: of('ok', { observed_at: iso(-STALE_AFTER_MS) }),
+      pastTheEdge: of('ok', { observed_at: iso(-STALE_AFTER_MS - 1000) }),
+      // A window's percent is not known after its reset.
+      percents: [percentNow(w(55), now), percentNow(w(55, past), now), percentNow(w(55, null), now), percentNow(null, now), percentNow({ used_percent: null, resets_at: ahead }, now)],
+    };
+  });
+  const none = { state: 'ok', limited: false, lines: [] as string[] };
+  expect(read.staleAfterMin).toBe(10);
+  expect(read.resets).toMatch(/^resets at \d/);
+  expect(read.room).toEqual({ ...none, age: 'Usage read 2 min ago', stale: false });
+  expect(read.fiveHour).toEqual({ state: 'limited', limited: true, lines: [`5-hour window used up · ${read.resets}`], age: 'Usage read just now', stale: false });
+  expect(read.week).toEqual({ state: 'limited', limited: true, lines: [`This week used up · ${read.resets}`], age: 'Usage not read yet', stale: false });
+  expect(read.fable.lines).toEqual([`Fable this week used up · ${read.resets}`]);
+  expect(read.fable.limited).toBe(true);
+  expect(read.opus).toEqual({ ...none, lines: [`Opus this week used up · ${read.resets}`, 'Sonnet this week used up · Claude did not say when it resets'], age: 'Usage not read yet', stale: false });
+  expect(read.noReset.lines).toEqual(['Fable this week used up · Claude did not say when it resets']);
+  expect(read.reported).toEqual({ state: 'limited', limited: true, lines: [`Claude reported a usage limit · ${read.resets}`], age: 'Usage not read yet', stale: false });
+  expect(read.reportedBlind.lines).toEqual(['Claude reported a usage limit without saying when it resets']);
+  expect(read.reportedBlind.limited).toBe(true);
+  expect(read.reportedByItsWindow.lines).toEqual([`5-hour window used up · ${read.resets}`]);
+  expect(read.reset).toEqual({ ...none, age: 'Usage read 11 min ago', stale: true });
+  expect(read.several.lines).toEqual([`5-hour window used up · ${read.resets}`, `This week used up · ${read.resets}`, `Fable this week used up · ${read.resets}`]);
+  expect(read.relogin).toEqual({ state: 'relogin', limited: true, lines: [`5-hour window used up · ${read.resets}`], age: 'Usage not read yet', stale: false });
+  expect(read.pending.state).toBe('pending_login');
+  expect(read.neverRead).toEqual({ ...none, age: 'Usage not read yet', stale: false });
+  expect(read.atTheEdge).toEqual({ ...none, age: 'Usage read 10 min ago', stale: false });
+  expect(read.pastTheEdge.stale).toBe(true);
+  expect(read.percents).toEqual([55, null, 55, null, null]);
+});
+
+// SPEC-473 RFR-008: the Status panel counts and marks a subscription by what its windows say now,
+// not by the status stored at its last reading: one at 100 % of its 5-hour window is at the limit
+// though it was stored "ok" (the person's evidence), and one whose full window has reset is ready
+// though it was stored "limited".
+test('the Status panel goes by what the windows say now, not by the stored status (SPEC-473)', async ({ app, browser }) => {
+  await app.open(mock('/s/studio/git', '&ambient=0'));
+  await browser.evaluate(() => {
+    type Account = { label: string; status: string; usage: Record<string, unknown> };
+    const db = (window as unknown as { __yuliusMock: { accounts: Account[] } }).__yuliusMock;
+    const find = (label: string) => db.accounts.find((a) => a.label === label)!;
+    const ahead = new Date(Date.now() + 3600e3).toISOString();
+    const past = new Date(Date.now() - 60e3).toISOString();
+    const one = find('Claude #1');
+    one.usage = { ...one.usage, primary: { used_percent: 100, resets_at: ahead, window_minutes: 300 } };
+    const two = find('Claude #2');
+    Object.assign(two, { status: 'limited', usage: { ...two.usage, weekly_fable: { used_percent: 100, resets_at: past, window_minutes: 10080 } } });
+  });
+  await browser.locator('.btn-status').click();
+  await expect(browser.locator('.status-pop .account-fold').first()).toBeVisible();
+  const rows = await glances(browser, '.status-pop');
+  const state = (label: string) => rows.find((r) => r.label === label)!.state;
+  expect(state('Claude #1')).toBe('Limit reached');
+  expect(state('Claude #2')).toBeNull();
+  expect(state('Claude #5')).toBe('Limit reached');
+  const summary = (await sectionHeads(browser)).find((h) => h.title === 'Subscriptions')!.summary;
+  expect(summary).toBe('3 ready · 2 at the limit · 1 need attention');
+  expect(await axeViolations(browser)).toEqual([]);
 });
 
 // "Limit reached" also means only the default model's own window is used up (SPEC-464), so the
@@ -150,8 +255,11 @@ test('"Run #N on…" judges a subscription by the windows that bind the task\'s 
 test('the status line of a pool at its limits says so without claiming nothing runs (SPEC-464)', async ({ app, browser }) => {
   await app.open(mock('/s/studio', '&ambient=0'));
   await browser.evaluate(() => {
-    const db = (window as unknown as { __yuliusMock: { accounts: { status: string }[] } }).__yuliusMock;
-    for (const account of db.accounts) account.status = 'limited';
+    const db = (window as unknown as { __yuliusMock: { accounts: { status: string; usage: Record<string, unknown> }[] } }).__yuliusMock;
+    // Each one's 5-hour window is used up; what their last reading stored as status does not
+    // matter (SPEC-473 RFR-008).
+    const resets_at = new Date(Date.now() + 3600e3).toISOString();
+    db.accounts.forEach((account, i) => Object.assign(account, { status: i % 2 ? 'ok' : 'limited', usage: { primary: { used_percent: 100, resets_at, window_minutes: 300 }, secondary: null, observed_at: new Date().toISOString() } }));
   });
   await browser.locator('.btn-status').click();
   await expect(browser.locator('.status-pop .status-health')).toHaveText('Every subscription is at a usage limit: tasks continue when a window resets');
