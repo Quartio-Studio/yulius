@@ -213,10 +213,10 @@ Settings → Instance
 - [x] `yulius migrate-helper`: owner checks, one request once, never during an update, runs the command, reports, stops a run on an abort
 - [x] Units in `deploy/systemd`, carried by a move and enabled on the new host as on the old one
 - [x] The command tells readers the key line and the new URL, and the finished checklist travels to the new host
-- [ ] Application and API: the view, plan, move and abort for the superadmin, audited, updates and moves refuse each other
+- [x] Application and API: the view, plan, move and abort for the superadmin, audited, updates and moves refuse each other
 - [ ] The card "Move to another host": form, plan with the key line, typed confirmation, live checklist, abort, on the mock with e2e
 - [ ] Frozen and moved: the card keeps trying, follows the old URL's redirect, and the new instance shows the finished checklist
-- [ ] Operations guide §7 and §8, API, architecture, product summary, changes
+- [x] Operations guide §7 and §8, API, architecture, product summary, changes
 - [ ] Gates green and the independent review answered
 
 ## Acceptance criteria

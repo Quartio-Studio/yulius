@@ -1481,7 +1481,8 @@ use the next section.
 ### Move the instance to another host
 
 `yulius instance migrate` (SPEC-460, ADR-0297) moves the whole instance with one command. Run it as
-root on the old host over SSH (not from a Yulius terminal: it freezes the service):
+root on the old host over SSH (not from a Yulius terminal: it freezes the service), or let a
+superadmin ask root for it from the page ([Move from Settings → Instance](#move-from-settings--instance)):
 
 ```sh
 sudo yulius instance migrate root@new-host            # shows the plan, asks once, then moves
@@ -1543,7 +1544,8 @@ boot and network packages are left to the machine); coreutils of the old host's 
 uutils); `/usr/local`, the entries of `/opt` no package owns and root's Rust toolchain, copied as
 they are; `host setup`'s host items; the build at the unit's path; the unit file, its drop-ins,
 its environment and key files outside the data directory, the update helper's units and its
-record of the installed commit. In the unit file, its drop-ins and the Caddyfile the old public
+record of the installed commit, the move helper's units when the old host has them
+([the move helper](#the-move-helper-moves-from-settings--instance)). In the unit file, its drop-ins and the Caddyfile the old public
 URL and host name are replaced; environment and key files travel as they are, and the plan names
 one that mentions the old host, for you to edit; Caddy's directory
 and drop-ins for the new host name, validated and started, so its certificate is there before the
@@ -1572,7 +1574,10 @@ the tasks that were live (its first start puts them back in the queue, whoever o
 person had paused or was stopping stay stopped), and replaces what the old host's Caddy site
 proxied to Yulius by a temporary redirect (307) to the same path at the new URL, with the header
 `X-Yulius-Moved-To`; the site keeps its name and TLS settings, and other sites in the file stay.
-It then removes its key from the new host, enables ufw there with the old host's rules (first
+It enables the move helper's path unit on the new host when it was enabled on the old one (a
+helper that is installed and switched off stays off there), leaves the finished checklist for the
+new instance's page (`/var/lib/yulius-migrate/arrived.json` there; remove the file to drop it),
+then removes its key from the new host, enables ufw there with the old host's rules (first
 admitting the old host itself on the SSH port the move used; make sure the carried rules let
 you in on the new host's SSH port), deletes the key on the old host and lists what is left for
 people: the DNS record if still open; the GitHub App, which the new instance is asked about once
@@ -1605,6 +1610,47 @@ abort's stop and starts nothing.
 Not part of a move: packages installed inside sandboxes keep their files; on another release the
 checklist names those sandboxes. The sandbox base is built for the new host while preparing, so
 a host that cannot run sandboxes is found before anything freezes.
+
+### Move from Settings → Instance
+
+A superadmin moves the instance from **Settings → Instance → Move to another host** (SPEC-470,
+ADR-0305). Root runs the same command for it: the page asks through a request file, as updates do,
+and shows the command's own checklist. It needs [the move helper](#the-move-helper-moves-from-settings--instance)
+on the old host; without it the card says so and names the command above.
+
+1. **Show the plan.** The form takes the new host (`root@new-host`), its SSH port, a new public
+   URL (empty: as the command decides) and one or two blank disks. The plan changes nothing but the
+   move's own files and freezes nothing. Nobody can type a password for root's helper, so unless
+   root on the old host already signs in to the new one with a key of its own, the first plan
+   ends with **the key line to add**: copy it into root's `~/.ssh/authorized_keys` on the new host
+   and show the plan again. The lines a person has to act on (`manual`: a DNS record, the GitHub
+   App, what is not carried) and the failed ones are repeated above the checklist; a plan with a
+   failed line offers no move.
+2. **Run migration…** names the host that root will give the instance's data to (every repository,
+   secret and key) and the freeze the plan estimated, and is confirmed by typing the host's name.
+   It is the plan that was shown: the same host, port, URL and disks, shown at most an hour ago
+   (else show it again). The card then shows the phases and the checklist as it grows.
+3. **While the instance is frozen** nothing answers, the page included: the card says so, keeps
+   the last checklist and keeps trying. With the same public URL the new instance answers the
+   page once the name leads to it, and the card shows **the finished checklist**. With another
+   URL the old address redirects: the card links to the same page at the new address, where you
+   sign in again (a sign-in belongs to one address) and find the finished checklist. If the move
+   did not complete, the old instance answers again and the card says where it stopped, with
+   **Continue the move…** (the same values, the same confirmation) and **Abort…**.
+4. **Abort…** says what it does first: a run in flight is stopped (before the new instance's
+   start is ordered that leaves everything running here; after it the command finishes by
+   itself), then `--abort` runs as above, without `--yes`: when it needs a person's word that the
+   new instance is stopped, the checklist names the command to run on this host. After a
+   finished move the old instance is frozen and cannot be asked: go back with `sudo yulius
+   instance migrate --abort` on the old host.
+
+Only the superadmin sees the card (403 for everyone else); every plan, move and abort is in the
+audit log (`migration.planned`, `migration.started`, `migration.aborted`: who, the host, the
+values). While a move's request waits or its run is in flight, **Update now** and **Restart…**
+are refused, and nothing is asked of a move while an update or restart runs. A move started with
+the command on the host shows on the page as a recorded checklist; whether it still runs is known
+only for runs the page started. On the new instance the card shows the move that brought it
+there until the next move does, or until `/var/lib/yulius-migrate/arrived.json` is removed.
 
 ### Copy or move the whole instance
 
@@ -2074,6 +2120,113 @@ and `yulius.db` (and `yulius.db-wal`, if present) to `/var/lib/yulius/` owned by
 0600, remove `yulius.db-shm`, start `yulius`. The helper keeps the last 3 backups. A manual build
 should set the commit it is built from: `YULIUS_BUILD_COMMIT=$(git rev-parse HEAD) cargo build
 --release --locked -p yulius` (a checkout does it by itself; a tarball has no Git).
+
+### The move helper (moves from Settings → Instance)
+
+**Settings → Instance → Move to another host** ([Move from Settings → Instance](#move-from-settings--instance),
+SPEC-470, ADR-0305) asks root for `yulius instance migrate` the way updates ask for an install:
+the server writes `/var/lib/yulius/migrate/request.json`, a root-owned **path unit** starts
+`yulius migrate-helper`, and the helper runs the command. The request can only say `plan`,
+`move` or `abort` and name the new host, its SSH port, a public URL and data disks; there is no
+field for anything else, and nothing secret is in it. Everything else (the data directory, the
+units, the state directory) comes from the root-owned unit.
+
+**What enabling it allows.** With the path unit enabled, the service user can have root move the
+instance to any host that accepts the move's key. The service user already reads all of the
+instance's data; what a takeover of the server process gains through the helper is the host's
+files a move carries (the unit's environment and key files, the proxy's configuration,
+`/usr/local`, root's Rust toolchain) and the stop of this instance. So `yulius host setup` does
+not install the helper: root does, on purpose. Two ways to limit it: enable the path unit when
+you want to move from the page and disable it afterwards (`systemctl disable --now
+yulius-migrate.path`), or pin the hosts a request may name with `YULIUS_MIGRATE_TARGETS` in the
+service unit. A move carries the units and enables the path unit on the new host only when it
+was enabled on the old one.
+
+**Install the helper** (once, as root; the unit files are in the repository under
+`deploy/systemd/`; a second instance names them after its own unit, `<unit>-migrate`):
+
+```sh
+install -m 0644 deploy/systemd/yulius-migrate.path deploy/systemd/yulius-migrate.service /etc/systemd/system/
+# Edit the lines marked "local" in yulius-migrate.service if this server differs.
+systemctl daemon-reload
+systemctl enable --now yulius-migrate.path
+systemctl status yulius-migrate.path       # active (waiting): the card offers "Show the plan"
+```
+
+```ini
+# /etc/systemd/system/yulius-migrate.path
+[Unit]
+Description=Yulius move requests
+
+[Path]
+PathChanged=/var/lib/yulius/migrate/request.json
+Unit=yulius-migrate.service
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```ini
+# /etc/systemd/system/yulius-migrate.service
+[Unit]
+Description=Yulius move helper
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/bin/yulius migrate-helper
+Environment=YULIUS_DATA=/var/lib/yulius
+Environment=YULIUS_MIGRATE_STATE=/var/lib/yulius-migrate
+Environment=YULIUS_MIGRATE_SERVICE=yulius.service
+Environment=YULIUS_MIGRATE_UPDATE_SERVICE=yulius-update.service
+#Environment=YULIUS_MIGRATE_TARGETS=new-host.example.com
+Environment=HOME=/root
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+TimeoutStartSec=infinity
+TimeoutStopSec=10min
+UMask=0022
+```
+
+The unit has no start timeout (a copy takes as long as the data needs) and no file system
+sandboxing: the command reads the whole host, writes the proxy's configuration and freezes units,
+as it does from a root shell. A stop of the unit, or a shutdown, reaches the command as SIGTERM:
+before the new instance's start is ordered it thaws the old instance and ends; after that it
+finishes the cutover, for which it has ten minutes.
+
+**What the helper checks.** The request must be a regular file (not a link) owned by the data
+directory's owner, who is not root, at most 16 KiB, with exactly the fields above, at most 15
+minutes old, and an id it has not acted on. Every value is checked again with the rules the server
+used: the host as `ssh` takes it (`root@host` or `host`, nothing that reads as an option), a port
+from 1 to 65535, a public URL that is `https://host` and nothing more, at most two different
+disks under `/dev/`; an abort names none of them. It refuses while the update helper's unit runs,
+and a host outside `YULIUS_MIGRATE_TARGETS` when that is set. A refused request changes nothing;
+the page shows the reason, which never repeats the request's content. An accepted one runs
+`yulius instance migrate` with each value as one argument (no shell): the plan without `--yes`,
+the move with it, the abort as `--abort` and never with `--yes`. While the command runs, an
+abort request ends it with SIGTERM and is then handled.
+
+**Files.** In `/var/lib/yulius-migrate` (root's, mode 0711): `helper.json` (0644: the request it
+took, `running` with a heartbeat every 5 s, then `ended` with the command's exit code, or
+`refused` with the reason), the command's `status.json` (0644: the phase and the checklist, with
+the key line while a person has to add it and the new URL once decided), `state.json` and the
+one-time key (0600), and on a host a move arrived at `arrived.json` (0644: that move's finished
+checklist). None holds a secret value. The server reads them and stores nothing about a move:
+its database travels with the copy.
+
+| Setting (flag / environment) | Default | Meaning |
+| --- | --- | --- |
+| `--migrate-state-dir` / `YULIUS_MIGRATE_STATE` (server and helper) | `/var/lib/yulius-migrate` | Where the helper and the command report, and where a move to this host left its checklist. |
+| `YULIUS_MIGRATE_TARGETS` (helper's unit) | unset | The only hosts a request may name, separated by commas; unset or empty: any host. |
+| `YULIUS_MIGRATE_SERVICE`, `YULIUS_MIGRATE_UPDATE_SERVICE` (helper's unit) | `yulius.service`, `yulius-update.service` | The server's unit and the update helper's, as the command takes them. |
+
+**Logs.** `journalctl -u yulius-migrate` shows each request (its action, host and id, or why it
+was refused) and the command's own output. "The move helper did not take the request" on the page
+means the path unit is not enabled or could not start the service: `systemctl status
+yulius-migrate.path yulius-migrate.service`. A helper that stopped without a word (it was killed,
+the host restarted) is said on the page after a minute; the move is continued or aborted from
+there, or with the command.
 
 ### Notes for specific upgrades
 
