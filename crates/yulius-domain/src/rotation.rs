@@ -26,7 +26,7 @@
 use crate::harness::Provider;
 use crate::ids::AccountId;
 use crate::time::Timestamp;
-use crate::usage::{AccountUsage, ModelFamily, UsageWindow};
+use crate::usage::{AccountUsage, LimitScope, ModelFamily, ReportedLimit, UsageWindow};
 
 /// Proactive switch and pause threshold in percent of any binding window (SPEC-001 ROT-003,
 /// F 2026-10-10).
@@ -341,14 +341,15 @@ pub fn decide(input: &RotationInput, trigger: Trigger) -> (Decision, DecisionRea
 
 /// [`decide`] for a task the pool keeps off `left_out`: the subscription that refused it at a
 /// limit nothing says the end of, again right after its retry (SPEC-464 UCL-010). While a reset
-/// of another subscription is known to wait for, `left_out` counts as limited with no known
-/// reset, whatever a reading said since: the task waits for that reset and is not started on
+/// is known to wait for, `left_out` counts as out of the task's model with no known reset,
+/// whatever a reading said since: the task waits for that reset and is not started on
 /// `left_out` at every reading. With no reset known, nothing would ever take the task on, so
 /// `left_out` is a candidate like any other.
 ///
-/// Leaving out is about the task's own model (SPEC-482 FBK-007): it never makes a fallback by
-/// itself, and a pool that is in fallback anyway leaves nothing out, since the fallback is
-/// another model than the one `left_out` refused.
+/// Leaving out is about the task's own model (SPEC-482 FBK-007). A pool that places the task
+/// with its fallback anyway leaves nothing out: the fallback is another model than the one
+/// `left_out` refused. And a placement with the fallback that only leaving out makes is not
+/// taken: the launch asks the policy without it and would place the task's own model.
 #[must_use]
 pub fn decide_leaving_out(
     input: &RotationInput,
@@ -359,15 +360,23 @@ pub fn decide_leaving_out(
         return decide(input, trigger);
     }
     let mut without = input.clone();
-    without.fallback = None;
     for account in &mut without.accounts {
         if &account.id == left_out {
-            account.usage.limit_reached = true;
-            account.usage.limit_resets_at = None;
+            // The model's own window, full with no reset; the subscription's limit for a model
+            // that has no window.
+            let refused = ReportedLimit {
+                scope: LimitScope::Model(None),
+                window_minutes: None,
+                resets_at: None,
+            };
+            account.usage.record_limit(refused, input.family, input.now);
         }
     }
     match decide(&without, trigger.clone()) {
         (Decision::Wait { until: None }, _) => decide(input, trigger),
+        (Decision::Switch { .. }, _) if placing_family(&without) != input.family => {
+            decide(input, trigger)
+        }
         decided => decided,
     }
 }
@@ -1277,13 +1286,41 @@ mod tests {
         Ok(())
     }
 
-    /// SPEC-482 FBK-007: leaving a subscription out (SPEC-464 UCL-010) never makes a fallback by
-    /// itself, and while the pool is in fallback nothing is left out: the fallback is another
-    /// model than the one that subscription refused.
+    /// SPEC-482 FBK-007: a subscription is left out (SPEC-464 UCL-010) for the task's own model.
+    /// The fallback's reset is one to wait for; a pool in fallback leaves nothing out; and a
+    /// fallback that only leaving out would make is not taken (the launch would not agree).
     #[test]
     fn a_subscription_left_out_and_the_fallback() -> Result<(), IdError> {
         let refusing = id("refusing")?;
-        // The reading of "refusing" shows Fable again; "later" is out until its reset.
+        // Its reading shows Fable again, and Opus is used up on it for 30 more hours: the task
+        // waits for Opus, and is not started on it at every reading.
+        let mut alone = fable_task(
+            None,
+            vec![account("refusing", usage(0.0, 10.0, Some(100)))?],
+        )?;
+        alone.accounts[0].usage.weekly_opus = Some(window(100.0, Some(30)));
+        assert_eq!(
+            switched_to(&decide(&alone, Trigger::Start).0),
+            Some("refusing")
+        );
+        assert_eq!(
+            decide_leaving_out(&alone, Trigger::Start, &refusing).0,
+            Decision::Wait {
+                until: Some(NOW.plus_millis(30 * HOUR))
+            }
+        );
+        // The same for a session still held there.
+        let mut held = alone.clone();
+        held.current = Some(refusing.clone());
+        assert_eq!(
+            decide_leaving_out(&held, Trigger::Proactive, &refusing).0,
+            Decision::Wait {
+                until: Some(NOW.plus_millis(30 * HOUR))
+            }
+        );
+        // Another subscription could run the fallback now, but only leaving out says the task
+        // needs it: the launch would place Fable, so the task is tried where the reading shows
+        // Fable. Refused there again, its limit is stored and the pool falls back by itself.
         let known = fable_task(
             None,
             vec![
@@ -1291,12 +1328,21 @@ mod tests {
                 account("later", fable_out(10.0, Some(40)))?,
             ],
         )?;
+        assert_eq!(placing_family(&known), ModelFamily::Fable);
         assert_eq!(
-            decide_leaving_out(&known, Trigger::Start, &refusing).0,
-            Decision::Wait {
-                until: Some(NOW.plus_millis(40 * HOUR))
-            }
+            switched_to(&decide_leaving_out(&known, Trigger::Start, &refusing).0),
+            Some("refusing")
         );
+        // A third subscription that runs Fable takes the task, as before.
+        let mut third = known.clone();
+        third
+            .accounts
+            .push(account("third", usage(20.0, 20.0, Some(100)))?);
+        assert_eq!(
+            switched_to(&decide_leaving_out(&third, Trigger::Start, &refusing).0),
+            Some("third")
+        );
+        // The pool is in fallback anyway: the subscription is a candidate for the other model.
         let mut all_out = known.clone();
         all_out.accounts[0].usage = fable_out(0.0, None);
         all_out.accounts[1].in_use = 1;

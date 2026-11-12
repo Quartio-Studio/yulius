@@ -730,8 +730,8 @@ mod tests {
     /// SPEC-482 FBK-005: a run records the model it was launched with; the runs of a version-53
     /// database have none, and the column round-trips.
     #[tokio::test]
-    async fn version_fifty_three_runs_have_no_launch_model() -> Result<(), Box<dyn std::error::Error>>
-    {
+    async fn version_fifty_three_runs_have_no_launch_model()
+    -> Result<(), Box<dyn std::error::Error>> {
         use yulius_app::ports::store::TaskStore as _;
         use yulius_domain::ids::TaskId;
         let dir = tempfile::tempdir()?;

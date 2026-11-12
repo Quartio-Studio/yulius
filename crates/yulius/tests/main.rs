@@ -66,6 +66,7 @@ mod mcp_scopes;
 mod merge_train;
 mod metrics_recount;
 mod migration;
+mod model_fallback;
 mod notes;
 mod playground;
 mod playground_guests;

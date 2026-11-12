@@ -82,16 +82,21 @@ session runs and why. Fable is used again by itself once a subscription can run 
   family of the model that run was launched with, not the task's: a limit of Opus hit on the
   fallback fills `weekly_opus` and leaves `weekly_fable` as it is.
 - FBK-007 (left-out subscriptions). A subscription the pool keeps a task off because it refused
-  the task's model at a limit nothing says the end of (SPEC-464 UCL-010) is left out for the
-  task's own model only: while the pool places the task with the fallback, nothing is left out,
-  and leaving a subscription out never makes a fallback by itself (what the launch then asks the
-  policy would not agree with it).
+  the task's model at a limit nothing says the end of (SPEC-464 UCL-010) is left out for that
+  model: it counts as out of the model's own window with no reset (before: as limited as a
+  whole). So the fallback's known reset on it is a reset to wait for, and the task is not
+  started on it at each reading meanwhile. While the pool places the task with the fallback
+  anyway, nothing is left out. A placement with the fallback that only leaving out would make
+  is not taken: the launch asks the policy without it, so the task is tried with its own model
+  where a reading shows it, and falls back by the limit stored at that refusal.
 - FBK-008 (said in the terminal and the history). The session's terminal says in one line that
-  it continues on the fallback and why ("Fable 5.2 is used up on every subscription: this
-  session continues on Opus 5.5."), and in one line when a later launch runs the task's model
-  again ("Fable 5.2 can run again: this session continues on it."). The move's entry under the
-  task's switches names the model the session moved to when it is the fallback. Nobody is asked
-  anything: no Needs you, no `task.goal_retries_spent`, no `task.limit_without_end`.
+  it runs on the fallback and why ("Fable 5.2 is used up on every subscription: this session
+  runs on Opus 5.5."), at the launch that falls back and not at each later one, and in one line
+  when a later launch runs the task's model again ("Fable 5.2 can run again: this session runs
+  on it."). The move's entry under the task's switches names the model the session moved to
+  when it is the fallback ("Claude Code (label), Opus 5.5"). Nobody is asked anything: no Needs
+  you, no `task.goal_retries_spent`, no `task.limit_without_end`, unless the fallback is refused
+  with no end too (then SPEC-464 UCL-010 holds for both models: one retry, then a person).
 - FBK-009 (the task view). `TaskDetail` gains `fallback_model`: the model the task's live run
   was launched with when it is not the task's own, else `null`. The task view shows it beside
   the model ("Opus 5.5 while Fable 5.2 is used up").
@@ -118,7 +123,7 @@ launch; the price shown for a run, which already follows the model that answered
 - [x] Read the product context and related work, then write and validate the spec
 - [x] The pool policy places a Fable run with Opus 5.5's family when no subscription can run Fable (FBK-001 to FBK-004, FBK-007)
 - [x] A run records the model it was launched with: migration 0054 and the attempt record (FBK-005)
-- [ ] A task's launch takes the placed model, says so, and a limit binds the run's model (FBK-005, FBK-006, FBK-008)
+- [x] A task's launch takes the placed model, says so, and a limit binds the run's model (FBK-005, FBK-006, FBK-008)
 - [ ] The task view and the capacity view say that sessions run on the fallback (FBK-009, FBK-010)
 - [ ] The Superagent falls back by the same rule (FBK-011)
 - [ ] Independent review in a fresh session, findings fixed test-first

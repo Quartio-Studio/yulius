@@ -200,14 +200,30 @@ pub(crate) fn default_family() -> ModelFamily {
     model_family(None)
 }
 
+/// The model a run of a task set to `model` is launched with instead while no subscription can
+/// run that model (SPEC-482): Opus 5.5 for a Fable model, the default one included.
+#[must_use]
+pub(crate) fn fallback_of(model: Option<&str>) -> Option<&'static str> {
+    yulius_domain::harness::fallback_model(
+        model.unwrap_or(yulius_domain::harness::DEFAULT_CLAUDE_MODEL),
+    )
+}
+
+/// The family of the model a run was launched with (SPEC-482 FBK-005): `launched`, the model
+/// its record names, else the one its task is set to (a run recorded before schema version 54).
+#[must_use]
+pub(crate) fn run_family(launched: Option<&str>, task_model: Option<&str>) -> ModelFamily {
+    model_family(launched.or(task_model))
+}
+
 impl App {
     /// Wakes the resume loop: usage changed, an account was added or removed, a task paused.
     pub fn capacity_changed(&self) {
         self.capacity.wake.notify_one();
     }
 
-    /// The policy input for `task` (its provider and model family) with `current` as the
-    /// account it runs on.
+    /// The policy input for `task` (its provider, its model family and its fallback's) with
+    /// `current` as the account it runs on, and the model its live run was launched with.
     ///
     /// # Errors
     /// Store failures.
@@ -216,26 +232,37 @@ impl App {
         task: &TaskRecord,
         current: Option<AccountId>,
     ) -> AppResult<RotationInput> {
+        let model = task.model.as_deref();
+        // A run stays, and its subscription is left out, by the model the run was launched
+        // with, which is the fallback's while no subscription could run the task's own.
+        let running = match &current {
+            Some(_) => self
+                .deps
+                .store
+                .live_attempt(&task.id)
+                .await?
+                .map(|run| run_family(run.model.as_deref(), model)),
+            None => None,
+        };
         Ok(RotationInput {
             current,
             task_provider: task.harness.provider(),
             // A task without a model runs the default, Fable 5.2.
-            family: model_family(task.model.as_deref()),
-            fallback: None,
-            running: None,
+            family: model_family(model),
+            fallback: fallback_of(model).map(|fallback| model_family(Some(fallback))),
+            running,
             accounts: self.account_views().await?,
             now: self.now(),
             threshold: rotation::THRESHOLD,
         })
     }
 
-    /// The family of the model the task `task_id` runs; the default model's when the task cannot
-    /// be read.
-    pub(crate) async fn task_family(&self, task_id: &TaskId) -> ModelFamily {
-        match self.deps.store.task(task_id).await {
-            Ok(Some(task)) => model_family(task.model.as_deref()),
-            _ => default_family(),
-        }
+    /// The family of the model `run` was launched with ([`run_family`]); the default model's
+    /// when its record names none and its task cannot be read.
+    pub(crate) async fn run_family_of(&self, run: &crate::model::AttemptRecord) -> ModelFamily {
+        let task = self.deps.store.task(&run.task_id).await.ok().flatten();
+        let task_model = task.as_ref().and_then(|task| task.model.as_deref());
+        run_family(run.model.as_deref(), task_model)
     }
 
     /// Reads `account`'s stored usage, changes it with `change` and stores what that gives,
@@ -1021,6 +1048,31 @@ fn pool_view(pool: &PoolTokens) -> PoolTokensView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SPEC-482: a task of a Fable model, the default one included, falls back to Opus 5.5; a
+    /// run's family is that of the model its record names, else of its task's (a run recorded
+    /// before the launch model was).
+    #[test]
+    fn a_runs_family_is_its_launch_models() {
+        assert_eq!(fallback_of(None), Some("claude-opus-5-5"));
+        assert_eq!(
+            fallback_of(Some("claude-fable-5-1")),
+            Some("claude-opus-5-5")
+        );
+        assert_eq!(fallback_of(Some("claude-opus-5-5")), None);
+        assert_eq!(fallback_of(Some("claude-sonnet-5-5")), None);
+        let opus = Some("claude-opus-5-5");
+        assert_eq!(run_family(opus, None), ModelFamily::Opus);
+        assert_eq!(run_family(None, None), ModelFamily::Fable);
+        assert_eq!(
+            run_family(None, Some("claude-sonnet-5-5")),
+            ModelFamily::Sonnet
+        );
+        assert_eq!(
+            run_family(Some("claude-fable-5-2"), opus),
+            ModelFamily::Fable
+        );
+    }
 
     /// SPEC-464: a task that names no model runs the default one, Fable, whose weekly allowance
     /// of usage credits binds it; a task that names one is bound by that model's family.
