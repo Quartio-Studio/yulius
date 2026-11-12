@@ -452,7 +452,7 @@ impl App {
             None => {
                 tokio::time::timeout_at(deadline, self.await_transcript_read(task_id))
                     .await
-                    .map_err(|_| Self::log_out_of_time(task_id))
+                    .map_err(|_| Self::log_out_of_time(task_id, false))
                     .ok()?;
                 lines_read = true;
                 self.run_cli_version(task_id, attempt).await??
@@ -472,12 +472,12 @@ impl App {
         if !lines_read {
             tokio::time::timeout_at(deadline, self.await_transcript_read(task_id))
                 .await
-                .map_err(|_| Self::log_out_of_time(task_id))
+                .map_err(|_| Self::log_out_of_time(task_id, true))
                 .ok()?;
         }
         let background = tokio::time::timeout_at(deadline, self.background_or_wait_now(task_id))
             .await
-            .map_err(|_| Self::log_out_of_time(task_id))
+            .map_err(|_| Self::log_out_of_time(task_id, true))
             .ok()?;
         crate::race::reached(
             crate::race::Point::ClaudeMoveProbed,
@@ -498,13 +498,24 @@ impl App {
 
     /// Says in the log that a turn's end could not decide in its time
     /// ([`crate::context::AppConfig::claude_code_decision_ms`]): the session stays, and a
-    /// later turn's end decides.
-    fn log_out_of_time(task_id: &TaskId) {
-        tracing::info!(
-            task = %task_id,
-            why = "the look at the session took longer than a turn's end may",
-            "the session is not restarted on the newer Claude Code at this turn's end"
-        );
+    /// later turn's end decides. `due` is whether the session was known to run an older
+    /// Claude Code than runs get: before its lines named its version that is not known, and
+    /// the line does not say a newer one waits for it.
+    fn log_out_of_time(task_id: &TaskId, due: bool) {
+        let why = "the look at the session took longer than a turn's end may";
+        if due {
+            tracing::info!(
+                task = %task_id,
+                why,
+                "the session is not restarted on the newer Claude Code at this turn's end"
+            );
+        } else {
+            tracing::info!(
+                task = %task_id,
+                why,
+                "whether the session is due for a newer Claude Code was not told at this turn's end"
+            );
+        }
     }
 
     /// Says in the log what keeps a session that is due for the newer Claude Code where it
