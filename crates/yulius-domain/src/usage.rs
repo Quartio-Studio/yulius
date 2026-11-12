@@ -442,6 +442,18 @@ impl AccountUsage {
         self.binding_windows(ModelFamily::Any)
     }
 
+    /// Whether both of the subscription's own windows are read and current at `now`: the
+    /// 5-hour and the weekly one are there, and neither is past its reset. A session's reading
+    /// may carry one of them only (Claude Code's status line has a window only while the API
+    /// reports it and its reset has not passed), which leaves the other for a provider's
+    /// reading (SPEC-473 RFR-006).
+    #[must_use]
+    pub fn has_both_windows(&self, now: Timestamp) -> bool {
+        [self.primary, self.secondary]
+            .iter()
+            .all(|window| window.is_some_and(|w| !w.is_reset(now)))
+    }
+
     /// Highest reported window percentage, ignoring reset times; `None` when no window
     /// percentage is known.
     #[must_use]
