@@ -268,6 +268,16 @@ async fn an_allowed_secret_is_copied_into_the_ignored_env() -> TestResult {
         task.activity,
         Some(yulius_domain::task::Activity::NeedsAttention)
     );
+    // The task says what its person does, and where (SPEC-472 ATN-004).
+    assert_eq!(
+        support::attention(&w.h.app, "t1").await?,
+        json!({
+            "kind": "yulius",
+            "problem": "The agent asked for a secret, and a person has to answer its request.",
+            "action": "Answer it on the Secrets page.",
+            "link": text["link"],
+        })
+    );
 
     let allowed = answer(&w, &w.writer, true).await?;
     assert_eq!(allowed.status, StatusCode::OK, "{}", allowed.body);

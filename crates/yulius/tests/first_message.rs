@@ -307,6 +307,17 @@ fn a_draft_typed_during_the_opening_turn_is_left_alone() -> TestResult {
         .await?;
         let said = notices(&mut watch);
         assert!(said.iter().any(|n| n.contains("no goal yet")), "{said:?}");
+        // The task says it to whoever opens it later (SPEC-472 ATN-004).
+        assert_eq!(
+            support::attention(&app, id.as_str()).await?,
+            serde_json::json!({
+                "kind": "yulius",
+                "problem": "Someone typed in the terminal before Yulius set the task's goal, so \
+                            their draft was left alone. The task has no goal yet.",
+                "action": "Type `/goal` and the request in the terminal, or stop and continue the task.",
+                "link": null,
+            })
+        );
         let shown = screen(&app, &id);
         assert!(!shown.contains("/goal"), "the goal was typed:\n{shown}");
         assert!(!shown.contains("GOAL SET"), "{shown}");
@@ -429,6 +440,17 @@ fn an_unanswered_trust_prompt_gets_nothing_typed_and_flags_the_task() -> TestRes
                     && n.ends_with("the task starts by itself once it is answered.")),
             "{said:?}"
         );
+        assert_eq!(
+            support::attention(&app, id.as_str()).await?,
+            serde_json::json!({
+                "kind": "yulius",
+                "problem": "Claude Code still asks whether to trust this folder, so Yulius typed \
+                            nothing.",
+                "action": "Answer it in the terminal; the task starts by itself once it is \
+                           answered.",
+                "link": null,
+            })
+        );
         stop(&app, &id).await
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
@@ -498,6 +520,15 @@ fn a_launch_goal_never_taken_flags_the_task() -> TestResult {
             said.iter()
                 .any(|n| n.contains("Claude Code did not take the task's goal")),
             "{said:?}"
+        );
+        assert_eq!(
+            support::attention(&app, id.as_str()).await?,
+            serde_json::json!({
+                "kind": "yulius",
+                "problem": "Claude Code did not take the task's goal. The task has no goal yet.",
+                "action": "Type `/goal` and the request in the terminal, or stop and continue the task.",
+                "link": null,
+            })
         );
         assert!(
             !screen(&app, &id).contains("/goal"),
@@ -701,6 +732,18 @@ fn a_first_message_cut_by_a_restart_flags_the_task() -> TestResult {
                 .any(|n| n.contains("first message was never sent")),
             "{said:?}"
         );
+        // No viewer is connected when a server starts: the task itself says it (SPEC-472).
+        assert_eq!(
+            support::attention(&app, id.as_str()).await?,
+            serde_json::json!({
+                "kind": "yulius",
+                "problem": "Yulius restarted while it typed this task's first message, so the \
+                            first message was never sent and may be half typed in the prompt box.",
+                "action": "Complete it (paste the attached images again if they are missing; \
+                           the task's request lists them) and press Enter.",
+                "link": null,
+            })
+        );
         let shown = screen(&app, &id);
         assert!(
             !shown.contains("ECHO:"),
@@ -851,6 +894,16 @@ fn a_goal_run_of_an_older_server_held_across_the_update_is_flagged() -> TestResu
             said.iter()
                 .any(|n| n.contains("Yulius restarted before it set this task's goal")),
             "{said:?}"
+        );
+        assert_eq!(
+            support::attention(&app, id.as_str()).await?,
+            serde_json::json!({
+                "kind": "yulius",
+                "problem": "Yulius restarted before it set this task's goal. The task has no \
+                            goal yet.",
+                "action": "Type `/goal` and the request in the terminal, or stop and continue the task.",
+                "link": null,
+            })
         );
         stop(&app, &id).await
     })?;
