@@ -40,12 +40,13 @@ whatever woke it. "Send the task a message…" is shown only while nothing goes 
   13 pauses "the request was rate limited" in six sessions. Nine of them were followed by the
   session's own work, each time after Yulius had restarted the session (the limit path: another
   subscription, or the reset) and typed its goal again, which is no person's prompt and ended
-  nothing. A pause that follows a refused try finds the request still open, so the 13 pauses
-  made nine requests. Counted from the first pause of each, the model's first output came 10
-  to 76 minutes later, and in five of the nine only after two to four restarts (tasks #440,
-  #446, #449, #450, #438): a restart alone brought nothing. Claude Code also wakes a session
-  whose goal is paused: after two pauses for another cause ("goal checks kept finding it unmet
-  this turn") its `<task-notification>` for ended background work started a working turn.
+  nothing. The 13 pauses fall into nine stretches, each from a first pause to the model's next
+  output; a refused try in between paused the goal again. Counted from the first pause of each
+  stretch, that output came 10 to 76 minutes later, and in five of the nine only after two to
+  four restarts (tasks #440, #446, #449, #450, #438): a restart alone brought nothing. Claude
+  Code also wakes a session whose goal is paused: after two pauses for another cause ("goal
+  checks kept finding it unmet this turn") its `<task-notification>` for ended background work
+  started a working turn.
 - A prompt alone does not show that the session recovered. The other four pauses were followed
   by another refusal. Three are in task #438's session, which was paused six times that day:
   after a goal check-in 16 minutes after the pause (Claude Code closed that turn without a new
@@ -297,7 +298,8 @@ whatever woke it. "Send the task a message…" is shown only while nothing goes 
     run in 200): its helper now waits until the hook has returned and a watcher round has
     passed. The nits were in this Evidence: a table row and a sentence out of place, counts not
     carried forward, a test left unnamed, pauses and requests counted without saying which, and
-    "end" where the replay shows "would end".
+    "end" where the replay shows "would end". The last look added one: "nine requests" where
+    a person's typed message had ended a request in between; they are nine stretches.
   - The last look reviews the head with those answers; its verdict is the review summary
     recorded with the follow-up's merge. A clean merge of `dev` after this file's last commit
     is named there, not here.
@@ -308,12 +310,14 @@ whatever woke it. "Send the task a message…" is shown only while nothing goes 
   were replayed through the production watcher (`HarnessAdapter::watch`) and
   `TranscriptFacts::fold`, with a throwaway test that is not committed (it reads private
   files). All 13 notices are read as pauses. The replay ran the watcher and the fold, not the
-  request's life cycle: by this change's rule the nine requests would end at a work line of
-  the model, never at a prompt, at the resumed session's own "No response requested." or at an
-  error record, and the fold agrees at every step. In 6 of the 9 no prompt record lies between
-  the pause and that work: a session Yulius restarts writes none. Counted from the first pause
-  of each request, the model's first output came 10 to 76 minutes later, in five of the nine
-  only after two to four restarts.
+  request's life cycle: by this change's rule the request of each of the nine stretches would
+  end at a work line of the model, never at a prompt, at the resumed session's own "No response
+  requested." or at an error record, and the fold agrees at every step. A message a person
+  typed in between ends a request too, and the next pause asks anew; hooks are not in
+  transcripts, so the replay does not show that. In 6 of the 9 stretches no prompt record lies
+  between the first pause and that work: a session Yulius restarts writes none. Counted from
+  the first pause of each stretch, the model's first output came 10 to 76 minutes later, in
+  five of the nine only after two to four restarts.
 - **Not tested.**
   - A live Claude Code session on an instance with this change: the running instance is on
     `main` and gets it when a person promotes `dev`. The real transcripts were replayed instead.
