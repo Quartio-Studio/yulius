@@ -399,6 +399,10 @@ pub const USAGE_BACKOFF_MAX_MS: i64 = 2 * 60 * 60 * 1000;
 /// The longest a refresh waits for the provider (SPEC-473 RFR-003): under the 30 s the web
 /// client waits for an answer, so the page always gets one.
 pub const USAGE_REFRESH_DEADLINE: Duration = Duration::from_secs(25);
+/// What a refresh says when the subscription was signed in again while its usage was read
+/// (SPEC-473 RFR-005).
+pub const SIGNED_IN_MEANWHILE: &str =
+    "This subscription was signed in again while its usage was read; refresh it once more.";
 /// What a refresh says when its deadline passed (SPEC-473 RFR-003).
 pub const REFRESH_TOO_SLOW: &str =
     "Claude took too long to answer; what it had answered by then is stored.";
@@ -677,8 +681,7 @@ impl App {
         let refreshed = match refreshed {
             Ok(refreshed) => refreshed,
             Err(_) => {
-                let note = format!("{USAGE_NOTE_PREFIX}{REFRESH_TOO_SLOW}");
-                let _ = store.set_usage_error(&id, &note, self.now()).await;
+                self.note_usage(&account, Some(REFRESH_TOO_SLOW)).await;
                 Err(UsageFailure::new(REFRESH_TOO_SLOW))
             }
         };
@@ -714,6 +717,9 @@ impl App {
     /// both of the subscription's windows.
     async fn read_usage_and_limits(&self, account: &AccountRecord) -> Result<bool, UsageFailure> {
         let (reading, unread) = match self.fetch_and_record_usage(account, true).await {
+            // The reading came back for a sign-in that is no longer the stored one: nothing
+            // was stored, and nothing is asked with a sign-in the person just replaced.
+            Ok(None) => return Err(UsageFailure::new(SIGNED_IN_MEANWHILE)),
             Ok(reading) => (reading, None),
             Err(failure)
                 if matches!(
@@ -750,6 +756,26 @@ impl App {
         self.fetch_and_record_usage(&account, false)
             .await
             .map(|_| ())
+    }
+
+    /// Sets the usage note of `account` (`Some`: one sentence, stored with its prefix) or
+    /// clears it (`None`), unless the subscription was signed in again since `account` was
+    /// read: the note would be about the previous sign-in. Under the usage lock, which a
+    /// sign-in takes too.
+    async fn note_usage(&self, account: &AccountRecord, sentence: Option<&str>) {
+        let _writing = self.capacity.usage_writes.lock().await;
+        let store = &self.deps.store;
+        match store.account(&account.id).await {
+            Ok(Some(current)) if current.credential == account.credential => {}
+            _ => return,
+        }
+        let _ = match sentence {
+            Some(sentence) => {
+                let note = format!("{USAGE_NOTE_PREFIX}{sentence}");
+                store.set_usage_error(&account.id, &note, self.now()).await
+            }
+            None => store.clear_usage_error(&account.id, self.now()).await,
+        };
     }
 
     /// The account's stored credential, opened.
@@ -830,8 +856,7 @@ impl App {
                     if failure.kind != UsageFailureKind::Rejected {
                         LIMIT_UNASKED.clone_into(&mut failure.message);
                     }
-                    let note = format!("{USAGE_NOTE_PREFIX}{}", failure.message);
-                    let _ = self.deps.store.set_usage_error(id, &note, self.now()).await;
+                    self.note_usage(&record, Some(&failure.message)).await;
                     return Err(failure);
                 }
             };
@@ -894,22 +919,14 @@ impl App {
             Err(failure) if failure.kind == UsageFailureKind::NotShared => {
                 // Not an error: the sessions on this subscription report its usage. An earlier
                 // note about usage goes away; other errors stay.
-                let _ = self
-                    .deps
-                    .store
-                    .clear_usage_error(&account.id, self.now())
-                    .await;
+                self.note_usage(account, None).await;
                 Err(failure)
             }
             Err(failure) if failure.kind == UsageFailureKind::Throttled => {
                 // Not an error: the provider asks to wait (the round backs off for its
                 // Retry-After) and the last reading stays with its time. A note here sat on
                 // every subscription at once (F 2026-10-11); an earlier one goes away.
-                let _ = self
-                    .deps
-                    .store
-                    .clear_usage_error(&account.id, self.now())
-                    .await;
+                self.note_usage(account, None).await;
                 Err(failure)
             }
             Err(failure) => {
@@ -917,12 +934,7 @@ impl App {
                 // read (a task's limit hit during the request), and must stay (#72). The
                 // `usage:` prefix marks it as a note about usage, not a broken account; it never
                 // replaces a sign-in or re-login error written meanwhile.
-                let message = format!("{USAGE_NOTE_PREFIX}{}", failure.message);
-                let _ = self
-                    .deps
-                    .store
-                    .set_usage_error(&account.id, &message, self.now())
-                    .await;
+                self.note_usage(account, Some(&failure.message)).await;
                 Err(failure)
             }
         }
