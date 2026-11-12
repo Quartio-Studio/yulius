@@ -317,7 +317,8 @@ export function moveCard(ctx) {
         h('div', { class: 'row' }, icon('check', { size: 16 }), h('strong', null, `The move finished: ${BRAND.name} now runs on the new host.`)),
         h('p', { class: 'small' }, 'This page is answered by the new instance. The old host keeps a frozen copy.')) : null,
       h('p', { class: 'small move-arrived-head' },
-        `${BRAND.name} was moved to this host ${relLong(arrived.finished_at)} (${dateTime(arrived.finished_at)})${arrived.from ? `, from ${arrived.from}` : ''}. ${summary(arrived.lines)}.`),
+        // The old address is named when it is another one: a move may keep the URL.
+        `${BRAND.name} was moved to this host ${relLong(arrived.finished_at)} (${dateTime(arrived.finished_at)})${arrived.from && arrived.from !== arrived.to ? `, from ${arrived.from}` : ''}. ${summary(arrived.lines)}.`),
       failed.length || yours.length ? h('div', { class: 'stack-sm' },
         h('strong', { class: 'small' }, 'Still for a person, as the move left it:'),
         h('ul', { class: 'move-attention-list small' }, [...failed, ...yours].map((l) => h('li', null, h('strong', null, l.name), ': ', l.detail)))) : null,

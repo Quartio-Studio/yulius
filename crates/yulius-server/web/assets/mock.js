@@ -18,10 +18,11 @@
 // guestlink=1|dead (signed out, holding a live or an ended guest link to the playground `lab`, SPEC-410;
 // guestlink=mine: signed in as its maker),
 // guest=1 (signed in as Carol, a guest of the playground `lab`: the server's guest fence applies).
-// move=nohelper|key|planfail|fail|rollback|redirect|arrived|cli|unanswered|refused (the move to another host, SPEC-470:
+// move=nohelper|key|planfail|fail|rollback|redirect|arrived|cli|lost|unanswered|refused (the move to another host, SPEC-470:
 // no move helper | the first plan ends with the key line to add | the plan finds a problem | the move fails while
 // preparing | it freezes and the old instance answers again | after it this address redirects | the instance arrived
-// here by a move | a move run on the host is recorded | the helper never takes a request | the helper refuses it),
+// here by a move | a move run on the host is recorded | a move whose helper stopped reporting | the helper never
+// takes a request | the helper refuses it),
 // movepoll=<ms> (how often the card reads a move in flight; 3 s without it).
 
 import { counter, taskInfo } from './status.js';
@@ -4730,9 +4731,15 @@ const moveLine = (name, outcome, detail) => ({ name, outcome, detail });
 function migrationState(mode) {
   return {
     mode, helper: mode !== 'nohelper', stepMs: 500, ackMs: 20000, plans: 0, serial: 0,
-    request: null, run: null, moving: mode === 'cli' ? {
+    request: null,
+    // `lost`: a move whose helper was killed while it prepared the new host.
+    run: mode === 'lost' ? {
+      id: 'mock-0-move', action: 'move', target: 'root@new.yulius.example', ssh_port: 22, public_url: null, data_disks: [],
+      state: 'lost', exit_code: null, error: null, started_at: iso(9 * MIN), updated_at: iso(4 * MIN), ended_at: null,
+    } : null,
+    moving: mode === 'cli' || mode === 'lost' ? {
       id: MOVE_ID, target: 'root@new.yulius.example', phase: 'Prepare', public_key: null, new_url: 'https://new.yulius.example',
-      updated_at: iso(4 * MIN), by_command: true,
+      updated_at: iso(4 * MIN), by_command: mode === 'cli',
       lines: [moveLine('old host', 'ok', 'ubuntu 24.04, x86_64, 12 CPUs, 47.0 GiB of memory'), moveLine('packages', 'changed', 'installed 43 packages of the old host')],
     } : null,
     arrived: mode === 'arrived' ? {
@@ -4810,9 +4817,10 @@ function moveCan(m) {
   const lines = m.moving ? m.moving.lines : [];
   const ended = m.run && m.run.state === 'ended';
   const planned = ended && m.run.action === 'plan' && m.run.exit_code === 0 && m.moving && !m.moving.public_key && !lines.some((l) => l.outcome === 'failed');
-  const stopped = ended && m.run.action === 'move' && m.run.exit_code !== 0;
+  const lost = Boolean(m.run && m.run.state === 'lost');
+  const stopped = (ended && m.run.action === 'move' && m.run.exit_code !== 0) || (lost && m.run.action === 'move');
   const recorded = running ? m.run.action !== 'abort'
-    : Boolean((m.moving && !['done', 'aborted'].includes(m.moving.phase)) || (ended && m.run.exit_code !== 0));
+    : Boolean(lost || (m.moving && !['done', 'aborted'].includes(m.moving.phase)) || (ended && m.run.exit_code !== 0));
   return {
     plan: m.helper && !waiting && !running,
     move: m.helper && !waiting && !running && Boolean(planned || stopped) && !(m.moving && m.moving.by_command),

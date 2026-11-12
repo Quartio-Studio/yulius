@@ -183,6 +183,8 @@ test('a move shows its checklist, says when the instance is frozen, and ends on 
   await expect(c.getByText('The move finished: Yulius now runs on the new host.')).toBeVisible({ timeout: 15000 });
   await expect(c.getByText(`Yulius is frozen while its data is copied to ${HOST}.`)).toBeHidden();
   await expect(c.getByText(/^Yulius was moved to this host .*changed 11, left alone 15, manual 4, failed 0\.$/)).toBeVisible();
+  // It came from another address, which is named (the mock's own address, before the move).
+  expect(await cardText(browser)).toMatch(/Yulius was moved to this host .*, from http:\/\/127\.0\.0\.1:\d+\. changed 11/);
   const still = await browser.evaluate(() => {
     const el = document.querySelector<HTMLElement>('section.move .move-arrived .move-attention-list');
     return el ? el.innerText : '';
@@ -464,6 +466,17 @@ test('the card shows the move that brought the instance here, and a move run on 
   // A new move can be planned from here.
   await expect(c.getByRole('button', 'Show the plan')).toBeEnabled();
   expect(await axeViolations(browser)).toEqual([]);
+  // A move that kept the address names no old one.
+  await browser.evaluate(() => {
+    const m = (window as unknown as { __yuliusMock: { migration: { arrived: { from: string; to: string } } } }).__yuliusMock.migration;
+    m.arrived.from = m.arrived.to;
+  });
+  // The page is left and opened again: the card reads the move anew.
+  await browser.evaluate(() => { window.location.hash = '#/'; });
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Sandboxes');
+  await browser.evaluate(() => { window.location.hash = '#/admin/instance'; });
+  await expect(c.getByText(/^Yulius was moved to this host .*\)\. changed 3, left alone 14, manual 4, failed 0\.$/)).toBeVisible();
+  expect(await cardText(browser)).not.toMatch(/, from http/);
 
   await app.open(mock('/admin/instance', '&move=cli'));
   await firstShown(c.getByText(/A move to root@new\.yulius\.example is recorded on this host by the command line \(yulius instance migrate\), phase Prepare/));
@@ -471,6 +484,16 @@ test('the card shows the move that brought the instance here, and a move run on 
   expect(await lineNames(browser)).toEqual(['old host', 'packages']);
   await expect(c.getByRole('button', 'Abort…')).toBeVisible();
   await expect(c.getByRole('button', 'Run migration…')).toBeHidden();
+  expect(await axeViolations(browser)).toEqual([]);
+
+  // A move whose helper stopped without a word: said, with how far it got, and continued or
+  // aborted from here.
+  await app.open(mock('/admin/instance', '&move=lost'));
+  await firstShown(c.getByText('The move helper stopped without a word.'));
+  await expect(c.getByText(/It was killed, or this host restarted, 4 min ago\. The checklist below is how far it got: continue the move, or abort it\./)).toBeVisible();
+  expect(await lineNames(browser)).toEqual(['old host', 'packages']);
+  await expect(c.getByRole('button', 'Continue the move…')).toBeVisible();
+  await expect(c.getByRole('button', 'Abort…')).toBeVisible();
   expect(await axeViolations(browser)).toEqual([]);
 
   await app.open(mock('/admin/instance', '&role=member'));
