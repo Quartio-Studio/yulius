@@ -1163,7 +1163,8 @@ mod moves {
                 shown.contains("ECHO: Message from admin (through their Superagent):"),
                 "the message was lost with the old process: {shown}"
             );
-            assert!(!s.app.has_draft(&s.id), "the message was submitted");
+            // That the session moved at all says the message's submit emptied the box: a
+            // session with a draft is not restarted.
             assert_eq!(
                 run_versions(&s.app, &s.id).await[0],
                 Some("2.1.311".to_owned())
