@@ -268,6 +268,16 @@ async fn an_allowed_secret_is_copied_into_the_ignored_env() -> TestResult {
         task.activity,
         Some(yulius_domain::task::Activity::NeedsAttention)
     );
+    // The task says what its person does, and where (SPEC-472 ATN-004).
+    assert_eq!(
+        support::attention(&w.h.app, "t1").await?,
+        json!({
+            "kind": "yulius",
+            "problem": "The agent asked for a secret, and a person has to answer its request.",
+            "action": "Answer it on the Secrets page.",
+            "link": text["link"],
+        })
+    );
 
     let allowed = answer(&w, &w.writer, true).await?;
     assert_eq!(allowed.status, StatusCode::OK, "{}", allowed.body);
@@ -430,9 +440,186 @@ async fn a_flag_raised_after_the_request_outlives_its_answer() -> TestResult {
     )
     .await?;
     assert_eq!(notice.status, StatusCode::OK, "{}", notice.body);
+    // The flag is the question's from now on, and so is what it says (SPEC-472 ATN-011): the
+    // secret's answer will not end it, so the secret's reason must not stay on it.
+    let question = json!({"kind": "terminal", "problem": "Pick one", "action": null, "link": null});
+    assert_eq!(support::attention(&w.h.app, "t1").await?, question);
+    // A question of the session's own: its work answers it, on this flag as on one the question
+    // raised (review round 2), and the reason kept for a restart of Yulius says so.
+    assert!(kept_reason(&w).await?.work_answers);
     let allowed = answer(&w, &w.writer, true).await?;
     assert_eq!(allowed.status, StatusCode::OK, "{}", allowed.body);
     assert_eq!(task_activity(&w).await?, Some(Activity::NeedsAttention));
+    assert_eq!(
+        support::attention(&w.h.app, "t1").await?,
+        question,
+        "not the answered secret's page"
+    );
+    Ok(())
+}
+
+/// SPEC-472 ATN-011 (review round 1): whatever takes a secret request's flag over brings its
+/// own reason, also a matter the session's work does not answer (a worker's permission prompt),
+/// and the secret's later answer (here: dismissed) changes neither the flag nor what it says.
+#[tokio::test]
+async fn a_flag_that_takes_a_secret_requests_over_says_its_own_reason() -> TestResult {
+    use yulius_domain::task::Activity;
+    let w = world().await?;
+    let asked = support::mcp_tool(
+        &w.h,
+        TOKEN,
+        "secret_copy_to_env",
+        json!({"secrets": ["STRIPE_KEY"]}),
+    )
+    .await?;
+    assert_eq!(support::tool_text(&asked)["waiting"], json!(["STRIPE_KEY"]));
+    let secret = support::attention(&w.h.app, "t1").await?;
+    assert_eq!(
+        secret["action"], "Answer it on the Secrets page.",
+        "{secret}"
+    );
+    // A worker's permission prompt: a flag the session's work does not answer.
+    let notice = call(
+        &w.h.internal,
+        Method::POST,
+        "/hooks/claude/Notification",
+        Some(json!({"notification_type": "worker_permission_prompt", "message": "builder needs permission for Bash"})),
+        &Creds {
+            bearer: Some(TOKEN.into()),
+            ..Creds::default()
+        },
+    )
+    .await?;
+    assert_eq!(notice.status, StatusCode::OK, "{}", notice.body);
+    let worker = json!({
+        "kind": "terminal",
+        "problem": "builder needs permission for Bash",
+        "action": null,
+        "link": null,
+    });
+    assert_eq!(support::attention(&w.h.app, "t1").await?, worker);
+    assert!(
+        !kept_reason(&w).await?.work_answers,
+        "a worker's prompt is not the session's work to answer"
+    );
+    // The flag's time is kept: it is the same flag, with another owner.
+    let dismissed = answer(&w, &w.writer, false).await?;
+    assert_eq!(dismissed.status, StatusCode::OK, "{}", dismissed.body);
+    assert_eq!(task_activity(&w).await?, Some(Activity::NeedsAttention));
+    assert_eq!(support::attention(&w.h.app, "t1").await?, worker);
+    Ok(())
+}
+
+/// The reason kept with t1's flag, as the store has it (what the API view leaves out included).
+async fn kept_reason(
+    w: &World,
+) -> Result<yulius_app::attention::AttentionRecord, Box<dyn std::error::Error>> {
+    use yulius_app::ports::store::TaskStore as _;
+    let id = yulius_domain::ids::TaskId::parse("t1")?;
+    let (kept, _) =
+        w.h.store
+            .task_attention(&id)
+            .await?
+            .ok_or("no reason kept")?;
+    Ok(kept)
+}
+
+/// Yulius restarts: another server on the same database, with no memory of the first one's
+/// flags.
+fn restarted(w: &World) -> Result<support::Harness, Box<dyn std::error::Error>> {
+    support::harness_with(support::HarnessOptions {
+        store: Some(w.h.store.clone()),
+        ..support::HarnessOptions::default()
+    })
+}
+
+/// Allows the `.env` request of the world's secret on `server`, as its person sees it now.
+async fn allow_on(
+    w: &World,
+    server: &support::Harness,
+) -> Result<support::Resp, Box<dyn std::error::Error>> {
+    let secret = w.h.store.vault_get(&w.id).await?.ok_or("secret")?;
+    call(
+        &server.router,
+        Method::POST,
+        &format!("/api/agent-secrets/{}/env", w.id),
+        Some(json!({
+            "allow": true,
+            "env_files": secret.env_files.as_str(),
+            "env_requested_by": secret.env_requested_by,
+        })),
+        &w.writer,
+    )
+    .await
+}
+
+/// SPEC-472 ATN-011 (review round 2): a secret request's flag is still the request's after a
+/// restart of Yulius (an update, while the request waits for its person): the answer ends it,
+/// and with it the reason that says to answer on the Secrets page.
+#[tokio::test]
+async fn a_secret_requests_flag_ends_with_its_answer_after_a_restart() -> TestResult {
+    use yulius_domain::task::Activity;
+    let w = world().await?;
+    let asked = support::mcp_tool(
+        &w.h,
+        TOKEN,
+        "secret_copy_to_env",
+        json!({"secrets": ["STRIPE_KEY"]}),
+    )
+    .await?;
+    assert_eq!(support::tool_text(&asked)["waiting"], json!(["STRIPE_KEY"]));
+    assert_eq!(task_activity(&w).await?, Some(Activity::NeedsAttention));
+
+    let again = restarted(&w)?;
+    let why = support::attention(&again.app, "t1").await?;
+    assert_eq!(why["action"], "Answer it on the Secrets page.", "{why}");
+    let allowed = allow_on(&w, &again).await?;
+    assert_eq!(allowed.status, StatusCode::OK, "{}", allowed.body);
+    assert_eq!(task_activity(&w).await?, Some(Activity::Working));
+    assert!(support::attention(&again.app, "t1").await?.is_null());
+    Ok(())
+}
+
+/// SPEC-472 ATN-011, SPEC-213 SRA-003 (review round 2): after a restart of Yulius another
+/// matter still takes a secret request's flag over, with its reason, and the request's answer
+/// then leaves the flag, as without the restart.
+#[tokio::test]
+async fn a_flag_taken_over_after_a_restart_outlives_the_requests_answer() -> TestResult {
+    use yulius_domain::task::Activity;
+    let w = world().await?;
+    let asked = support::mcp_tool(
+        &w.h,
+        TOKEN,
+        "secret_copy_to_env",
+        json!({"secrets": ["STRIPE_KEY"]}),
+    )
+    .await?;
+    assert_eq!(support::tool_text(&asked)["waiting"], json!(["STRIPE_KEY"]));
+
+    let again = restarted(&w)?;
+    let notice = call(
+        &again.internal,
+        Method::POST,
+        "/hooks/claude/Notification",
+        Some(json!({"notification_type": "worker_permission_prompt", "message": "builder needs permission for Bash"})),
+        &Creds {
+            bearer: Some(TOKEN.into()),
+            ..Creds::default()
+        },
+    )
+    .await?;
+    assert_eq!(notice.status, StatusCode::OK, "{}", notice.body);
+    let worker = json!({
+        "kind": "terminal",
+        "problem": "builder needs permission for Bash",
+        "action": null,
+        "link": null,
+    });
+    assert_eq!(support::attention(&again.app, "t1").await?, worker);
+    let allowed = allow_on(&w, &again).await?;
+    assert_eq!(allowed.status, StatusCode::OK, "{}", allowed.body);
+    assert_eq!(task_activity(&w).await?, Some(Activity::NeedsAttention));
+    assert_eq!(support::attention(&again.app, "t1").await?, worker);
     Ok(())
 }
 

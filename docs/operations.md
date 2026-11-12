@@ -2429,6 +2429,12 @@ move is continued or aborted from there, or with the command.
 
 ### Notes for specific upgrades
 
+- Upgrading to flags that say why (SPEC-472, ADR-0306, 2026-11-12): migration 0053 adds
+  `tasks.attention`. Nothing to do. A task that was flagged "Needs your action" before the update
+  has no reason kept: its bar reads "The agent needs your attention. Look at its terminal below."
+  until that flag ends (a typed message, or the turn's end), and a flag that Claude Code's own
+  question raised before the update is not yet lifted by the agent's work. Flags raised from then
+  on say why, and keep saying it across later updates.
 - Upgrading to sessions in their own unit (SPEC-458, ADR-0298, 2026-11-11). **On a host with
   systemd 258 or later (Ubuntu 26.04: `systemctl --version`), do the first step before Update
   now.** On systemd 257 and earlier (Ubuntu 24.04) the update needs nothing first; run `sudo

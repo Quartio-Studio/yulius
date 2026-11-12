@@ -10,6 +10,7 @@ use yulius_domain::ids::{SandboxId, TaskId};
 use yulius_domain::task::{Activity, TaskStatus};
 use yulius_domain::time::Timestamp;
 
+use crate::attention::AttentionRecord;
 use crate::context::App;
 use crate::coordination::{AgentContext, ProjectCaller};
 use crate::error::AppResult;
@@ -27,6 +28,17 @@ pub(crate) enum SecretUser<'a> {
     /// A person's Superagent (its `ck_` caller, or a Global Superagent's `gs_` one in a project;
     /// no task).
     Superagent(&'a ProjectCaller),
+}
+
+/// What a flag raised for a secret request says (SPEC-472 ATN-004): a person answers it on the
+/// Secrets page at `link`, not in the task's terminal.
+fn secret_reason(link: &str) -> AttentionRecord {
+    AttentionRecord::yulius(
+        "The agent asked for a secret, and a person has to answer its request.",
+        "Answer it on the Secrets page.",
+    )
+    .on_page(link)
+    .ended_by_its_answer()
 }
 
 impl SecretUser<'_> {
@@ -120,15 +132,25 @@ impl App {
     /// Flags a task whose agent waits for a person (`what` names it in the log); a Superagent's
     /// person is in front of it, so nothing is flagged. A flag it raises itself is remembered,
     /// so the person's answer ends it ([`Self::settle_secret_waits`]); one set before is not
-    /// its own (SPEC-213 SRA-003).
+    /// its own (SPEC-213 SRA-003). The flag says what its person does and where: on the Secrets
+    /// page at `link`, the one the agent prints (SPEC-472); the task's terminal shows no
+    /// question for it.
     ///
     /// # Errors
     /// None: a flag that cannot be raised or ended is logged, and the request stands.
-    pub(super) async fn flag_secret_wait(&self, user: SecretUser<'_>, what: &str) -> AppResult<()> {
+    pub(super) async fn flag_secret_wait(
+        &self,
+        user: SecretUser<'_>,
+        what: &str,
+        link: &str,
+    ) -> AppResult<()> {
         let SecretUser::Task(ctx) = user else {
             return Ok(());
         };
-        if let Err(err) = self.raise_secret_flag(&ctx.task.id).await {
+        if let Err(err) = self
+            .raise_secret_flag(&ctx.task.id, &secret_reason(link))
+            .await
+        {
             tracing::warn!(task = %ctx.task.id, error = %err, "could not flag {what}");
         }
         // A person who answered between the request and its flag found no flag to end: it ends
@@ -149,8 +171,8 @@ impl App {
     /// Flags a running task for its secret request, unless it reads flagged already, and marks
     /// the flag as its own. Under the task's attention lock, so no other flag, request or answer
     /// interleaves; the write is a compare-and-set from the state it read, as a Stop does not
-    /// take the lock (SPEC-213 SRA-003, review rounds 2 and 3).
-    async fn raise_secret_flag(&self, task_id: &TaskId) -> AppResult<()> {
+    /// take the lock (SPEC-213 SRA-003, review rounds 2 and 3). The flag carries `reason`.
+    async fn raise_secret_flag(&self, task_id: &TaskId, reason: &AttentionRecord) -> AppResult<()> {
         let store = &self.deps.store;
         let runtime = self.runtime(task_id);
         let _held = runtime.attention_lock.lock().await;
@@ -167,7 +189,7 @@ impl App {
             let now = self.now();
             let from = (task.activity, times.state_at);
             if store
-                .set_activity_from(task_id, from, Some(Activity::NeedsAttention), now)
+                .flag_attention(task_id, Some(from), Some(reason), now)
                 .await?
             {
                 runtime.secret_wait_at.store(now.0, Ordering::SeqCst);
@@ -175,20 +197,44 @@ impl App {
                 return Ok(());
             }
         }
-        // The task kept changing: flagged all the same, not as the request's (it ends at the
-        // turn's end, as before SPEC-213).
-        runtime.secret_wait_at.store(0, Ordering::SeqCst);
-        if store
-            .task(task_id)
-            .await?
-            .is_some_and(|t| t.status == TaskStatus::Running)
-        {
-            store
-                .set_activity(task_id, Some(Activity::NeedsAttention), self.now())
-                .await?;
+        // The task kept changing: flagged from whatever it reads now. The statement says
+        // whether it raised the flag, so the flag is the request's all the same (its reason
+        // says so, and an answer must end what says "answer it on the Secrets page").
+        let now = self.now();
+        let raised = store
+            .flag_attention(task_id, None, Some(reason), now)
+            .await?;
+        runtime
+            .secret_wait_at
+            .store(if raised { now.0 } else { 0 }, Ordering::SeqCst);
+        if raised {
             self.publish_task(task_id).await;
         }
         Ok(())
+    }
+
+    /// When the flag `task_id` reads was raised, if it is a secret request's and still that
+    /// request's to end; 0 otherwise. From this server's memory, or, for a flag raised before
+    /// the server started (an update while the request waits), from the flag's own reason: a
+    /// reason is read only while the task reads the flag it was written with, and another
+    /// matter that takes the flag over writes its own (SPEC-472 ATN-011). Call it under the
+    /// task's attention lock.
+    pub(crate) async fn secret_flag_at(
+        &self,
+        runtime: &crate::supervisor::TaskRuntime,
+        task_id: &TaskId,
+    ) -> AppResult<i64> {
+        let kept = runtime.secret_wait_at.load(Ordering::SeqCst);
+        if kept != 0 {
+            return Ok(kept);
+        }
+        Ok(match self.deps.store.task_attention(task_id).await? {
+            Some((reason, flagged)) if reason.answer_ends => {
+                runtime.secret_wait_at.store(flagged.0, Ordering::SeqCst);
+                flagged.0
+            }
+            _ => 0,
+        })
     }
 
     /// A person answered a request for a secret of `sandbox` (`None`: of every sandbox), or
@@ -217,12 +263,35 @@ impl App {
 
     /// Ends `task`'s flag if its own secret request raised it, still stands, and nothing waits.
     async fn settle_secret_wait(&self, task: &TaskRecord) -> AppResult<()> {
-        let Some(runtime) = self.existing_runtime(&task.id) else {
-            return Ok(());
-        };
+        // A server that started after the flag was raised has no runtime for the task until
+        // its run is watched again, and the answer may come first: the flag's reason says
+        // whose it is.
+        let runtime = self.runtime(&task.id);
         let held = runtime.attention_lock.lock().await;
-        let flagged = runtime.secret_wait_at.load(Ordering::SeqCst);
-        if flagged == 0 || self.secret_waits_for(task).await? {
+        let flagged = self.secret_flag_at(&runtime, &task.id).await?;
+        if flagged == 0 {
+            return Ok(());
+        }
+        let waiting = self.waiting_secret_links(task).await?;
+        if let Some(first) = waiting.first() {
+            // Another request still waits (SRA-002): the flag stays and points at one that
+            // does, not at the page of the request just answered (SPEC-472 ATN-011).
+            let store = &self.deps.store;
+            let shown = store.task_attention(&task.id).await?;
+            let shown = shown.and_then(|(reason, _)| reason.link);
+            if !shown.is_some_and(|link| waiting.contains(&link))
+                && store
+                    .replace_attention(
+                        &task.id,
+                        Timestamp(flagged),
+                        Some(&secret_reason(first)),
+                        self.now(),
+                    )
+                    .await?
+            {
+                drop(held);
+                self.publish_task(&task.id).await;
+            }
             return Ok(());
         }
         // Only the flag it raised (SRA-003); a Stop that settled the task meanwhile stays.
@@ -242,44 +311,55 @@ impl App {
         self.publish_task(&task.id).await;
         // The agent asked again while this looked (its request is written before it flags, which
         // waited for the lock and found the task flagged): it shows here, and flags the task anew.
-        if self.secret_waits_for(task).await? {
-            self.raise_secret_flag(&task.id).await?;
+        if let Some(link) = self.waiting_secret_links(task).await?.first() {
+            self.raise_secret_flag(&task.id, &secret_reason(link))
+                .await?;
         }
         Ok(())
     }
 
-    /// Whether a `.env`, host or copy request (SPEC-440) of `task`'s agent still waits for a
-    /// person: the task is among its askers (`#N`, `#N in <slug>` for a secret of every sandbox).
-    async fn secret_waits_for(&self, task: &TaskRecord) -> AppResult<bool> {
+    /// Where a person answers each `.env`, host or copy request (SPEC-440) of `task`'s agent
+    /// that still waits: the Secrets page at the tab of its secret (a copy's request shows on
+    /// the production secret). The task is among the request's askers (`#N`, `#N in <slug>` for
+    /// a secret of every sandbox). Empty when nothing waits; each page once.
+    async fn waiting_secret_links(&self, task: &TaskRecord) -> AppResult<Vec<String>> {
         let store = &self.deps.store;
         let records = store.vault_agent_in(&task.sandbox_id).await?;
         let me = SecretUser::task_asker(task.number);
+        let slug = store.sandbox(&task.sandbox_id).await?.map(|s| s.slug);
+        let slug = slug.unwrap_or_default();
         // A secret of every sandbox names its askers with their sandbox.
-        let everywhere = if records.iter().any(|r| r.sandbox_id.is_none()) {
-            let slug = store.sandbox(&task.sandbox_id).await?.map(|s| s.slug);
-            super::requests::requester(None, false, &me, Some(&slug.unwrap_or_default()))
-        } else {
-            String::new()
+        let everywhere = super::requests::requester(None, false, &me, Some(&slug));
+        let mut links: Vec<String> = Vec::new();
+        let mut add = |link: String| {
+            if !links.contains(&link) {
+                links.push(link);
+            }
         };
         // A copy is asked for the task's own project: its askers carry no sandbox.
-        if store
-            .vault_copy_requests(&task.sandbox_id)
-            .await?
-            .iter()
-            .any(|c| super::requests::among_askers(Some(&c.requested_by), &me))
-        {
-            return Ok(true);
+        for copy in store.vault_copy_requests(&task.sandbox_id).await? {
+            if !super::requests::among_askers(Some(&copy.requested_by), &me) {
+                continue;
+            }
+            add(match store.vault_get(&copy.secret_id).await? {
+                Some(source) => self.agent_secret_link(&slug, &source),
+                None => self.agent_secrets_link(&slug),
+            });
         }
-        Ok(records.iter().any(|record| {
+        for record in &records {
             let asker = if record.sandbox_id.is_some() {
                 &me
             } else {
                 &everywhere
             };
-            (record.env_files == EnvFiles::Asked
+            if (record.env_files == EnvFiles::Asked
                 && super::requests::among_askers(record.env_requested_by.as_deref(), asker))
                 || (!record.requested_hosts.is_empty()
                     && super::requests::among_askers(record.requested_by.as_deref(), asker))
-        }))
+            {
+                add(self.agent_secret_link(&slug, record));
+            }
+        }
+        Ok(links)
     }
 }

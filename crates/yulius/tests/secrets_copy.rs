@@ -197,6 +197,16 @@ async fn a_person_allows_the_copy_an_agent_asked_for() -> TestResult {
     );
     assert!(!asked.to_string().contains(VALUE), "{asked}");
     assert_eq!(activity(&w, "t1").await?, Some(Activity::NeedsAttention));
+    // The task says what its person does, and where (SPEC-472 ATN-004).
+    assert_eq!(
+        support::attention(&w.h.app, "t1").await?,
+        json!({
+            "kind": "yulius",
+            "problem": "The agent asked for a secret, and a person has to answer its request.",
+            "action": "Answer it on the Secrets page.",
+            "link": text["link"],
+        })
+    );
 
     // The Secrets page shows it on the production secret; only a manager may answer.
     let me = asker(&w, "t1").await?;

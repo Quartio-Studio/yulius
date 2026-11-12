@@ -267,7 +267,16 @@ export function activityLine(task, info = statusInfo(task)) {
   const steps = task.steps || {};
   if (task.status === 'running') {
     if (task.activity === 'done') return steps.total ? `Goal achieved · ${steps.done || 0}/${steps.total} steps` : 'Goal achieved';
-    if (task.activity === 'needs_attention') return 'Approve or answer in the terminal';
+    if (task.activity === 'needs_attention') {
+      // What Yulius asks for itself, Claude Code's question in the terminal, or a flag that says
+      // nothing of why (SPEC-472).
+      const why = task.attention;
+      if (why && why.kind === 'yulius' && (why.action || why.problem)) return why.action || why.problem;
+      if (why && why.kind === 'terminal') return 'Approve or answer in the terminal';
+      // A flag whose request says it (a goal pause): the request, as the row's label does.
+      if (task.needs_you && task.needs_you.action) return task.needs_you.action.replaceAll('`', '');
+      return 'Look at its terminal';
+    }
     if (task.activity === 'waiting') {
       if (steps.total && steps.done >= steps.total) return 'All steps done — review it';
       // Nothing open and nothing asked: not the person's turn (SPEC-429).

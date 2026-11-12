@@ -212,7 +212,7 @@ const updateTitle = async (browser: Browser, title: string) => {
 test('Reply pressed across a task update still focuses the terminal (#406)', async ({ app, browser }) => {
   await app.open(mock('/s/studio/t/12'));
   await terminalShown(browser);
-  await touchTask(browser, 'sb_studio', 12, { activity: 'needs_attention' });
+  await touchTask(browser, 'sb_studio', 12, { activity: 'needs_attention', attention: { kind: 'terminal', problem: null, action: null, link: null } });
   await expect(browser.locator('.attention-bar .attention-text')).toHaveText('The agent needs your attention. Its question is in the terminal below.');
   // Away from the terminal first, so focusing it is the click's doing.
   await browser.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());

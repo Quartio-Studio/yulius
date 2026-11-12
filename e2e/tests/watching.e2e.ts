@@ -276,7 +276,7 @@ test('a watcher of a waiting task is told it waits for the owner, not to type in
   await expect(bar).not.toHaveText(/terminal below|your reply/);
   await expect(screen.getByRole('button', 'Reply')).toBeHidden();
 
-  await touchTask(browser, 'sb_studio', 12, { activity: 'needs_attention' });
+  await touchTask(browser, 'sb_studio', 12, { activity: 'needs_attention', attention: { kind: 'terminal', problem: null, action: null, link: null } });
   await expect(browser.locator(".attention-bar .attention-text:has-text(\"The agent needs @anna-q's attention.\")")).toBeVisible();
   await expect(bar).not.toHaveText(/terminal below|your attention/);
   await expect(screen.getByRole('button', 'Reply')).toBeHidden();
