@@ -364,11 +364,15 @@ Where things are in Yulius:
   record's hold file and of a scheduled prompt failed on the option or the order that did
   not exist yet, and the one that pins the old order passes with and without the change
   (AC8). The hand-over's tests with real processes (AC6) passed when written, since the rule
-  was there: their failure is mutants 8, 10 and 28 below.
+  was there: their failure is mutants 8, 10, 28 and 30 below. Round 2: the fake agent's test
+  of a scheduled prompt failed while the fake sent that prompt no hook, and the domain test
+  failed on the time of two hand-overs read out of order and of a batch with a record that
+  names no time; the test of a queue whose lock is poisoned passed when written (its failure
+  is mutant 33).
   `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^claude_code_(moves|admin)::/)'`
-  at 68ab2d96: 46 passed. `cargo nextest run -p fake-agent`: 26 passed.
-- **Mutations** at 68ab2d96 (a script over 32 mutants, each applied alone, its tests run,
-  reverted with `git checkout`): all 32 caught.
+  at c4987b13: 46 passed. `cargo nextest run -p fake-agent`: 26 passed.
+- **Mutations** at 942b7cb8 (a script over 36 mutants, each applied alone, its tests run,
+  reverted with `git checkout`): all 36 caught.
   1. the queue not asked: the five tests of AC2 to AC6 fail;
   2. the queue asked in the first cheap check as well: AC6's test fails, whose decision is
      held inside the look (no outcome differs: Decisions);
@@ -397,14 +401,22 @@ Where things are in Yulius:
   28. the watcher not asking the model's work: the scheduled prompt's test with real
       processes never moves;
   29. a due session kept by a fact without a name: `kept_by`'s test;
-  30. an `enqueue` not read, 31. `popAll` read as an entry put in, 32. a queue record's time
+  30. the watcher asking the model's answer alone, not its lines: the scheduled prompt's test
+      with real processes, which asks at the turn's tool line while its answer is held;
+  31. of two hand-overs the last one read counting, not the latest, and 32. a hand-over
+      without a time keeping the time of another: the domain test;
+  33. a queue that cannot be read counting as empty: the runtime's test with a poisoned lock;
+  34. an `enqueue` not read, 35. `popAll` read as an entry put in, 36. a queue record's time
       dropped: the harness test.
-- **Gate.** `scripts/dev ci` at 68ab2d96 (every code and test change of this task, `dev` up
+- **Gate.** `scripts/dev ci` at 942b7cb8 (every code and test change of this task, `dev` up
   to 2a31d50a merged): exit 0. `cargo check`, `fmt --check`, clippy `-D warnings` on Linux and
-  for `aarch64-apple-darwin`, nextest 3981 passed / 16 skipped, doctests, `cargo deny`
-  (advisories, bans, licenses, sources ok), `cargo shear`, `cargo doc`. After it comes this
-  section alone. The review ran the gate itself at 5bafbc37: exit 0, 3978 passed.
-- **e2e.** The whole suite at 68ab2d96 (`npx e2e run`): 82 files passed, 1 skipped; 985 tests
+  for `aarch64-apple-darwin`, nextest 3982 passed / 16 skipped, doctests, `cargo deny`
+  (advisories, bans, licenses, sources ok), `cargo shear`, `cargo doc`. After it come `dev`'s
+  8e8ef9c7, merged without a conflict as c4987b13 (a test of the local CI, two specs and its
+  line of the changes log; `cargo check --workspace --all-targets` and the two test runs
+  above are of that head), and this section. The review ran the gate itself at 5bafbc37
+  (exit 0, 3978 passed) and at 60960503 (exit 0, 3981 passed).
+- **e2e.** The whole suite at 942b7cb8 (`npx e2e run`): 82 files passed, 1 skipped; 985 tests
   passed, 1 skipped. This change touches no page.
 - **Security scan.** Disabled: `yulius security-scan` says "Security scan disabled: Vidoc is
   turned off in Yulius"; nothing was scanned, which is not a pass.
@@ -423,6 +435,25 @@ Where things are in Yulius:
   the changes log. Outside this change, as the review put them: the gate's count that is not
   reset for a handed-on prompt and a task that can read Working after a handed-on turn
   shorter than the watcher's second, both said on issue #1206.
+- **Independent review, round 2** (the same reviewer, head 60960503; it ran the gate, the 12
+  new and changed tests with real processes twelve rounds, the fake agent's ten, mutants of
+  its own over the whole workspace and a prompt the real tool scheduled for itself):
+  "APPROVE. No blocker and no major in the change's own code; the gate is green at this exact
+  head. Round 1's major is fixed. Two minors and four nits are left in own code, which the
+  project's rule has the author fix in this pull request (a new head then needs a look at its
+  delta)." Minor 1, the fake's scheduled prompt got no prompt hook, where the real one gets
+  it 13 and 17 ms after its `dequeue`: the fake sends it there and both tests pin the order
+  (CCQ-005). Minor 2, the live watcher's half of the hand-over's rule was pinned for a turn's
+  answer alone: the fake's scheduled turn writes a tool line before its answer and the test
+  asks at that line (mutant 30). The order the comment claimed ("so that the task reads
+  Working first") is claimed no longer, since such a prompt has had its hook by then; the
+  review's mutant of that order still passes the 46 tests (run again at c4987b13). Nits: a
+  poisoned lock has its test (mutant 33); a batch's hand-over time is the latest, and not
+  known once a record names none (mutants 31 and 32); CCQ-004 says how a scheduled prompt
+  reads to Yulius; a decision that runs out of its time says so in the log. Pre-existing,
+  filed as #1225: Yulius reads the hook of a prompt Claude Code scheduled for itself as a
+  submit from the prompt box. The delta after 60960503 goes to the same reviewer before the
+  merge.
 - **Not tested here.** A restart Yulius makes of a real, signed-in Claude Code session (no
   subscription can be signed in for a test): the fake agent stands in, in the order the real
   tool was seen to have. Claude Code 2.1.292 and 2.1.311 were not run; their transcripts in
