@@ -6,6 +6,25 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-11
 
+- The restart of a running task on a newer Claude Code keeps a goal a person set and a draft in
+  the prompt box, and tells nobody twice (SPEC-468, task #452: the two minors and seven nits the
+  last review of SPEC-461 left open). A prompt-mode session in which a person set a goal of
+  their own (`/goal …`) keeps its version while that goal is open, since Yulius could not follow
+  the goal across a restart (Claude Code restores it by itself; what the review saw lost was the
+  test agent's goal and Yulius's own reading). So does a session with a draft in its prompt box
+  (typed since its last prompt was sent), not only one typed into in the last minute; a prompt
+  Yulius holds for its person's choice counts, since Claude Code keeps it in the box, and so
+  does a message Yulius types until it is submitted. An idle session that is restarted reads
+  "Continuing" and then as before, with no "Working" in between and no second "Your turn"
+  notification. Two turn ends that decide at once make one restart, and the breaker watches it.
+  While running tasks are no longer moved to a version, the card and a task's info promise it
+  only at the task's next start, and the card says when the binary in use could not be read for
+  its models. The model a transcript names is cut as its Claude Code version is. The gate's
+  block case of the move has its test. Not covered, and reported: a prompt entered while the
+  agent works waits in Claude Code's queue, and a restart at that turn's end still loses it
+  (#1204; the review ran the real Claude Code to see it); after a move to another subscription
+  Yulius no longer knows a goal a person set in a prompt-mode session until Claude Code records
+  its next verdict (#1182), and such a move loses a queued prompt too (#1194).
 - A move copies while the instance runs and freezes only for the changes (SPEC-465, task #445,
   ADR-0303; SPEC-460's MIG-032). `sudo yulius instance migrate root@new-host` now copies the data
   directory in passes into a staged copy on the new host while the old instance runs, then
@@ -163,7 +182,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   own profile and proves bwrap then; where bwrap does not start it proves once more without
   Yulius's profile, adopts a person's profile that lets bwrap in (Yulius's is removed,
   whichever run wrote it) and otherwise puts Yulius's back as it was and says how to disable
-  the other.
+  the other. A third one lets Yulius's own profile from an earlier run give way in the same
+  manner to a person's profile in a plain spelling (the old host's hand-written rule copied
+  to a host that setup had prepared), and a proof that fails no longer rewrites Yulius's file.
 - Resource limits are sized from the host (SPEC-459, task #441, ADR-0294). Live sessions, CI
   jobs, CI runs per sandbox, the sandbox disk quota and the CD run disk no longer have fixed
   defaults (8, 4, 2, 100 GB, 20 GB): like the sandbox memory they follow the host's CPUs, memory

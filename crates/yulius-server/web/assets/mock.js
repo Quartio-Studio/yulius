@@ -12,8 +12,9 @@
 // role=member|admin|superadmin (default superadmin), contained=0 (not isolated), github=0,
 // recovery=1 (setup issues a recovery code), update=1|fail (an update is on offer | its install rolls back), helper=0 (no update helper),
 // jev=config (a Jev key file is configured), vidoc=config (a Vidoc key file), vidoc_repo=off|bad (studio's .config/vidoc.toml), vidoc_patch_fail=1 (a sandbox's Vidoc switch is refused), protect_patch_fail=1 (a sandbox's production protection switch is refused), fail=<path> (GETs of that path answer 500),
-// failpost=<path> (POSTs of that path answer 500), holdpost=<path> (POSTs and PATCHes of that path wait for
-// `__yuliusMock.release()`, as hold= does for GETs; `heldWaiting` counts those waiting), as=<login> (signed in as another member, a
+// failpost=<path> (POSTs of that path answer 500), holdpost=<path> (POSTs, PATCHes and PUTs of that path wait for
+// `__yuliusMock.release()`, as hold= does for GETs; `heldWaiting` counts those waiting), claude_hold_read=1 (the Claude Code
+// card's reads are answered late, once `__yuliusMock.claude.releaseRead()` is called), as=<login> (signed in as another member, a
 // teammate in a second window: mock pages of one origin relay presence to each other, SPEC-127).
 // guestlink=1|dead (signed out, holding a live or an ended guest link to the playground `lab`, SPEC-410;
 // guestlink=mine: signed in as its maker),
@@ -174,8 +175,10 @@ function seed(params) {
     // The Claude Code sandboxes run (SPEC-461): `claude=incident` (runs get the host's 2.1.311,
     // which does not know the default model; a check installs 2.1.322), `claude=ahead` (the
     // newest release was refused for it too), `claude=gap` (2.1.400 lacks another offered
-    // model), `claude=failed` (the last check failed), `claude=unmanaged` (sandboxes are not
-    // isolated). `version` is what new runs get, `previous` what studio's #12 and #10 still run.
+    // model, and running tasks are no longer moved to it), `claude=failed` (the last check
+    // failed), `claude=unread` (the binary could not be read for its models), `claude=unmanaged`
+    // (sandboxes are not isolated). `version` is what new runs get, `previous` what studio's #12
+    // and #10 still run.
     claude: { ...claudeState(params.get('claude') || 'ok'), channelFails: params.get('claude_channel_fail') === '1' },
     // Leftovers on the disk (SPEC-215): `leftovers=none` scans to an empty list.
     leftovers: { none: params.get('leftovers') === 'none', items: null, scannedAt: null, job: null },
@@ -207,12 +210,14 @@ function seed(params) {
     // `failedReads` counts the GET requests failed on purpose.
     failPath: params.get('fail') || null,
     failedReads: 0,
-    holdPath: params.get('hold') || null,
-    holdPostPath: params.get('holdpost') || null,
-    // failpost=<path> does the same to POST requests, to show how an action says it failed;
-    // `failedPosts` counts them.
+    // failpost=<path> answers 500 to POST requests of that path, to show how an action says it
+    // failed; `failedPosts` counts them.
     failPostPath: params.get('failpost') || null,
     failedPosts: 0,
+    // hold=<path> keeps GET requests of that path waiting until `release()`, and holdpost=<path>
+    // its POST, PATCH and PUT requests.
+    holdPath: params.get('hold') || null,
+    holdPostPath: params.get('holdpost') || null,
 
     nextId: 100,
     // Account sign-ins by login id, and the ids a person cancelled (SPEC-243).
@@ -377,6 +382,9 @@ function seed(params) {
   // `hold=<path>`: its GET requests wait until `__yuliusMock.release()`, which may come first;
   // `hold=frames` keeps the sandbox Chrome's picture back instead.
   if (db.holdPath || db.holdPostPath) db.held = new Promise((resolve) => { db.release = () => { db.released = true; resolve(); }; });
+  // `claude_hold_read=1`: the Claude Code card's reads are answered late, the page's first included
+  // (see the route).
+  if (params.get('claude_hold_read') === '1') db.claude.holdRead = new Promise((resolve) => { db.claude.releaseRead = resolve; });
   // `tasks=many`: 30 more queued tasks in studio, a long "Run after" menu (SPEC-038).
   if (params.get('tasks') === 'many') {
     for (let number = 15; number < 45; number += 1) db.tasks.push(t('sb_studio', number, `Queued idea ${number}`, 'claude', 'queued', null, { noSteps: true }));
@@ -654,6 +662,7 @@ function detail(db, task) {
     ...(task.effort && task.effort !== 'default' ? { effort: task.effort } : { effort: 'high' }),
     ...(cli ? { cli_version: cli } : {}),
     ...(cli && live && cli !== db.claude.version ? { cli_moves_to: db.claude.version } : {}),
+    cli_moves_stopped: Boolean(cli && live && cli !== db.claude.version && db.claude.movesStopped),
   };
 }
 
@@ -4489,13 +4498,14 @@ function claudeState(mode) {
   if (mode === 'ahead') return { ...base, version: '2.1.311', previous: '2.1.292', source: 'host', result: 'refused', unknown: [CLAUDE_DEFAULT_MODEL], refused: [{ version: '2.1.322', missing: [CLAUDE_DEFAULT_MODEL] }] };
   if (mode === 'gap') return { ...base, version: '2.1.400', previous: '2.1.322', latest: '2.1.400', unknown: ['claude-haiku-4-5'], result: 'up_to_date', movesStopped: 'Running tasks are no longer moved to 2.1.400: the session of task #9 ended as it restarted on it. Sessions that start or continue still get it; choose Off to run the host’s Claude Code instead.' };
   if (mode === 'failed') return { ...base, result: 'failed', error: 'registry.npmjs.org is unreachable' };
+  if (mode === 'unread') return { ...base, result: 'up_to_date', unread: true };
   return base;
 }
 
 function claudeView(db) {
   const c = db.claude;
   if (c.mode === 'unmanaged') {
-    return { managed: false, unmanaged: 'sandboxes are not isolated on this server, so they run the host’s Claude Code as it is and Yulius keeps nothing current: run Yulius contained (YULIUS_CONTAINED=true in yulius.service) with the isolation prerequisites, which `sudo yulius host setup` installs', channel: 'latest', channel_source: 'config', config_channel: 'latest', channel_set_by: null, channel_set_at: null, version: null, source: null, host_version: null, latest: null, stable: null, checked_at: null, checking: false, result: null, result_text: null, default_model: CLAUDE_DEFAULT_MODEL, models_read: false, unknown_models: [], problem: null, fix: null, refused: [], behind: [], moves_stopped: null };
+    return { managed: false, unmanaged: 'sandboxes are not isolated on this server, so they run the host’s Claude Code as it is and Yulius keeps nothing current: run Yulius contained (YULIUS_CONTAINED=true in yulius.service) with the isolation prerequisites, which `sudo yulius host setup` installs', channel: 'latest', channel_source: 'config', config_channel: 'latest', channel_set_by: null, channel_set_at: null, version: null, source: null, host_version: null, latest: null, stable: null, checked_at: null, checking: false, result: null, result_text: null, default_model: CLAUDE_DEFAULT_MODEL, models_read: false, models_unread: null, unknown_models: [], problem: null, fix: null, refused: [], behind: [], moves_stopped: null };
   }
   const lacksDefault = c.unknown.includes(CLAUDE_DEFAULT_MODEL);
   const gap = (version, missing) => `${version} does not know ${missing.map((m) => (m === CLAUDE_DEFAULT_MODEL ? `${m} (Yulius's default model)` : m)).join(', ')}`;
@@ -4514,7 +4524,8 @@ function claudeView(db) {
     version: off ? c.host : c.version, source: off ? 'host' : c.source, host_version: c.host,
     latest: c.latest, stable: c.stable, checked_at: c.checkedAt ? new Date(c.checkedAt).toISOString() : null,
     checking: c.checking, result: off ? null : c.result, result_text: off ? null : resultText,
-    default_model: CLAUDE_DEFAULT_MODEL, models_read: true, unknown_models: c.unknown,
+    default_model: CLAUDE_DEFAULT_MODEL, models_read: !c.unread, unknown_models: c.unknown,
+    models_unread: c.unread ? `The binary of Claude Code ${c.version} could not be read for the models it knows, so whether it knows ${CLAUDE_DEFAULT_MODEL}, Yulius's default model, is not known. It is read again whenever this page is opened; \`yulius doctor --contained\` names the install.` : null,
     problem: lacksDefault ? `Claude Code ${c.version} does not know ${CLAUDE_DEFAULT_MODEL}, Yulius's default model: tasks still ask for it by id, but what a session picks by itself (its model picker, a model alias, its subagents) is an older model.` : null,
     fix: !lacksDefault ? null
       : newestRefused ? `No Claude Code release knows it yet (${newestRefused}, the newest, does not): the default model is ahead of Claude Code, so choose a model it knows for tasks until a release does.`
@@ -4547,7 +4558,24 @@ function claudeCheck(db) {
   }, 2000);
 }
 
-route('GET', '/api/admin/claude-code', ({ db }) => { superadminOnly(db); return claudeView(db); });
+route('GET', '/api/admin/claude-code', async ({ db }) => {
+  superadminOnly(db);
+  const view = claudeView(db);
+  // A test can keep a read's answer back (`claude.holdRead = promise`, or `claude_hold_read=1`
+  // with `claude.releaseRead()`): the view is read when it is asked and answered when the promise
+  // resolves, as an answer that is slow on the wire; when the promise is rejected the read fails
+  // (500). `readsHeld` counts the answers kept back now, and `lateAnswers` lists what each late
+  // answer said (its channel, and whether a check ran), so a test sees that it is the older word.
+  const hold = db.claude.holdRead;
+  if (hold) {
+    db.claude.readsHeld = (db.claude.readsHeld || 0) + 1;
+    let lost = false;
+    try { await hold; } catch { lost = true; } finally { db.claude.readsHeld -= 1; }
+    if (lost) fail(500, 'internal', 'the mock failed this read');
+    db.claude.lateAnswers = [...(db.claude.lateAnswers || []), `${view.channel}${view.checking ? ', checking' : ''}`];
+  }
+  return view;
+});
 route('POST', '/api/admin/claude-code/check', ({ db }) => {
   superadminOnly(db);
   if (db.claude.mode === 'unmanaged') fail(409, 'conflict', claudeView(db).unmanaged);
@@ -5144,7 +5172,7 @@ async function handleFetchAfterLatency(db, url, init) {
   }
   // `hold=<path>` keeps GET requests of that path waiting, to look at a view while it loads (SPEC-092).
   // `heldWaiting`: the requests waiting at the hold now, so a test releases them once they are there.
-  if (db.held && ((method === 'GET' && u.pathname === db.holdPath) || ((method === 'POST' || method === 'PATCH') && u.pathname === db.holdPostPath))) {
+  if (db.held && ((method === 'GET' && u.pathname === db.holdPath) || (['POST', 'PATCH', 'PUT'].includes(method) && u.pathname === db.holdPostPath))) {
     db.heldWaiting = (db.heldWaiting || 0) + 1;
     try { await db.held; } finally { db.heldWaiting -= 1; }
   }

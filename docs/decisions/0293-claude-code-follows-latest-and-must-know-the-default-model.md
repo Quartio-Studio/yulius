@@ -6,7 +6,9 @@ Accepted (2026-11-11). Specified in
 [SPEC-461](../../.ai/specs/SPEC-461-claude-code-in-sandboxes-always-knows-yu.md); task #443.
 Amends [ADR-0266](0266-yulius-keeps-claude-code-current-in-its-data-directory.md): its default
 channel (`stable`), what a release must be before it becomes current, and "a running process keeps
-its binary until its next start".
+its binary until its next start". The rules of the move were refined on 2026-11-11 by
+[SPEC-468](../../.ai/specs/SPEC-468-claude-code-moves-the-last-review-s-left.md) (task #452):
+what else keeps a session where it is, and that an idle restart is no news.
 
 ## Context
 
@@ -37,11 +39,16 @@ knows as plain text (2.1.322 holds `claude-fable-5-2` 26 times, 2.1.311 not once
   transcript names. When a turn ends and the session runs an older one than runs get now, Yulius
   restarts it on the newer one in the same Claude session, on the same subscription, through the
   subscription switch (reason `claude_code`): never while background work runs (a `yulius wait`
-  included) or a person typed in the last minute, once per version. A version a session could
+  included), a person typed in the last minute or left a draft (typed since the session's last
+  prompt), a message Yulius typed into it is not submitted yet, or a goal its person set in a
+  prompt-mode session is open (Yulius could not follow it across the restart); once per version,
+  one restart of a task at a time. A prompt that waits in Claude Code's queue (entered while a
+  turn runs) is not known to Yulius and is lost by such a restart (issue #1204). An idle session
+  that is restarted reads as it did before, so nobody is notified again. A version a session could
   not continue on gets no further moves: the restart could not start, or the restarted session
-  ended by itself or stayed silent for two minutes before it started. A restart refused before
-  it began has its own ten-minute wait and is no switch decision. A goal session moves only
-  while its goal is set and unmet.
+  ended by itself or stayed silent for two minutes before it started. A restart refused before it
+  began has its own ten-minute wait and is no switch decision. A goal session moves only while its
+  goal is set and unmet.
 
 ## Alternatives
 

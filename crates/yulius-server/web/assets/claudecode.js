@@ -30,7 +30,9 @@ function models(ids) {
 
 /** The version sandboxes run, where it comes from and what it knows. */
 function versionLine(view) {
-  const knows = !view.models_read ? null
+  // A binary that could not be read says nothing about the models it knows (SPEC-468 CCF-007).
+  const knows = view.models_unread ? badge('models not read', 'warn')
+    : !view.models_read ? null
     : view.problem ? badge('default model unknown', 'danger')
       : view.unknown_models.length ? badge('an offered model unknown', 'warn')
         : badge('knows every offered model', 'ok');
@@ -64,6 +66,7 @@ function checkLine(view) {
 /** The warnings below the danger banner: another gap, a refused release, a failed check. */
 function warnings(view) {
   const items = [];
+  if (view.models_unread) items.push(view.models_unread);
   const others = view.unknown_models.filter((id) => id !== view.default_model);
   if (!view.problem && others.length) {
     items.push(`Claude Code ${view.version} does not know ${models(others)}, which the composer offers: a task that asks for it still gets it by id, but a session cannot pick it by itself.`);
@@ -75,12 +78,17 @@ function warnings(view) {
     h('div', { class: 'banner-text' }, items.length === 1 ? items[0] : h('ul', { class: 'claude-notes' }, items.map((text) => h('li', null, text)))));
 }
 
-/** The tasks whose running session still runs an older Claude Code (CCM-013). */
+/**
+ * The tasks whose running session still runs an older Claude Code (CCM-013). While running tasks
+ * are no longer moved to that version, only their next start is promised (SPEC-468 CCF-003).
+ */
 function behind(view) {
   if (!view.behind.length) return null;
+  const when = view.moves_stopped ? `Each gets ${view.version} at its next start.`
+    : `Each moves to ${view.version} when its turn ends, in the same session, or at its next start. A session waits while it has background work, a draft in its prompt box or a goal its person set.`;
   return h('div', { class: 'stack-sm claude-behind' },
     h('h3', { class: 'small', id: 'claude-behind-title' }, `Still on an older Claude Code (${view.behind.length})`),
-    h('p', { class: 'muted xs' }, `Each moves to ${view.version} when its turn ends, in the same session, or at its next start. A session with background work waits for it.`),
+    h('p', { class: 'muted xs' }, when),
     h('ul', { class: 'small claude-behind-list', 'aria-labelledby': 'claude-behind-title' }, view.behind.map((task) => {
       const route = `/s/${encodeURIComponent(task.sandbox)}/t/${task.number}`;
       return h('li', null, h('a', { href: route, dataset: { route } }, `#${task.number} ${task.title}`), ' ',
@@ -100,9 +108,14 @@ export function claudeCodeCard(ctx) {
   let timer = null;
   let gone = false;
   let failed = false;
+  /** A channel change is being saved: its controls stay off however the card is drawn meanwhile. */
   let saving = false;
+  /** A check is being asked for: "Check now" stays off likewise. */
+  let asking = false;
   /** What is drawn: a poll that reads the same leaves the card (its focus, its alert) alone. */
   let drawn = '';
+  /** How many changes this card asked for have had their outcome (see `change`). */
+  let changes = 0;
 
   /** The channel choice, and where the channel in effect is set. */
   function channel(view) {
@@ -126,7 +139,7 @@ export function claudeCodeCard(ctx) {
     const shown = JSON.stringify([view, saving]);
     if (shown === drawn) return;
     drawn = shown;
-    checkButton.disabled = !view.managed || view.checking || view.channel === 'off';
+    checkButton.disabled = asking || !view.managed || view.checking || view.channel === 'off';
     checkButton.classList.toggle('busy', Boolean(view.checking));
     checkButton.title = !view.managed ? `${BRAND.name} keeps nothing current on this server` : view.channel === 'off' ? 'Updates are off' : '';
     const parts = [
@@ -143,13 +156,14 @@ export function claudeCodeCard(ctx) {
   }
 
   async function refresh() {
+    const asked = changes;
     try {
       const view = await ctx.api.get(API);
-      if (gone) return;
+      if (gone || asked !== changes) return;
       failed = false;
       render(view);
     } catch (error) {
-      if (gone) return;
+      if (gone || asked !== changes) return;
       drawn = '';
       setChildren(body, h('p', { class: 'muted small' }, 'Couldn’t read which Claude Code sandboxes run.'));
       // One toast per outage.
@@ -160,24 +174,45 @@ export function claudeCodeCard(ctx) {
     }
   }
 
+  /**
+   * Sends a change this card asks for (a check, a channel change) and marks its outcome, taken
+   * or refused. From then on the card is drawn again whatever the next view says, because the
+   * change's controls were switched off by hand. And a read asked before the outcome may say
+   * what was true before the change, so `refresh` drops its answer: the outcome's own draw, or
+   * the read after a refusal, is the newer word.
+   */
+  async function change(send) {
+    try {
+      return await send();
+    } finally {
+      changes += 1;
+      drawn = '';
+    }
+  }
+
   async function checkNow() {
+    asking = true;
     checkButton.disabled = true;
     try {
-      render(await ctx.api.post(`${API}/check`, {}));
+      const view = await change(() => ctx.api.post(`${API}/check`, {}));
+      asking = false;
+      render(view);
     } catch (error) {
+      asking = false;
       errorToast(error, 'Couldn’t check for a Claude Code release');
-      // Drawn again from what the server says now, the button with it.
-      drawn = '';
       refresh();
     }
   }
 
-  /** Follows `id` (null: the server's configuration again); the select goes back when refused. */
+  /**
+   * Follows `id` (null: the server's configuration again); the select goes back when refused.
+   * While the change is saved neither the select nor "Use the server's" takes another one.
+   */
   async function setChannel(id, select) {
     saving = true;
-    select.disabled = true;
+    for (const control of select.closest('.claude-channel').querySelectorAll('select, button')) control.disabled = true;
     try {
-      const view = await ctx.api.put(`${API}/channel`, { channel: id });
+      const view = await change(() => ctx.api.put(`${API}/channel`, { channel: id }));
       saving = false;
       toast(view.channel === 'off' ? 'Claude Code updates are off: sandboxes run the host’s install from their next start.'
         : `Claude Code follows ${channelName(view.channel)} now. Checking for a release…`, { kind: 'ok' });
@@ -185,9 +220,7 @@ export function claudeCodeCard(ctx) {
     } catch (error) {
       saving = false;
       errorToast(error, 'Couldn’t change the channel');
-      // The select shows the refused choice and is off: the card is drawn again from what the
-      // server says, also when that reads as before.
-      drawn = '';
+      // The select shows the refused choice: the card is drawn again from what the server says.
       refresh();
     }
   }

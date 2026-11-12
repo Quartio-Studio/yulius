@@ -498,6 +498,10 @@ pub struct TaskDetail {
     /// (SPEC-461 CCM-013); absent when it runs the version new runs get, or does not run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cli_moves_to: Option<String>,
+    /// Running tasks are no longer moved to that version (a session could not continue on it):
+    /// this one gets it at its next start, not when its turn ends (SPEC-468 CCF-003).
+    #[serde(default)]
+    pub cli_moves_stopped: bool,
 }
 
 /// `POST /api/tasks/{tid}/queued-messages` (SPEC-052 QMS-001).

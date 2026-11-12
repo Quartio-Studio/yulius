@@ -27,6 +27,23 @@ an older one.
 
 ## Context
 
+- **The owner's goal (task #443, MrFishPL, 2026-11-11)**, after the incident described below:
+
+  > What I want:
+  > - Yulius never runs a Claude Code that does not know a model Yulius offers: the default
+  >   channel follows `latest` (or the newest release that passes a check), and before a release
+  >   becomes current Yulius verifies that it knows every model id in the composer's list (at
+  >   least the default), refusing and reporting one that does not.
+  > - If the installed Claude Code does not know the default model, Settings → Instance and
+  >   `yulius doctor` say so loudly, with the fix; a task's info shows the Claude Code version
+  >   and the model that actually answered.
+  > - Updates keep happening automatically (the hourly check exists); add "Check now" and show
+  >   the channel, the version in use and the newest available in Settings → Instance, with the
+  >   channel changeable there without editing the unit.
+  > - A running task moves to the new Claude Code at its next turn boundary or restart without
+  >   losing its session, and the UI says which tasks still run the old one.
+  > - Tests: a release that lacks the default model is refused; the channel default; the doctor
+  >   line.
 - **The incident (production, 2026-11-11).** The default model is `claude-fable-5-2` since
   2026-11-10 (ADR-0289, `--model claude-fable-5-2`). The Claude Code Yulius keeps current followed
   npm's `stable` dist-tag (`YULIUS_CLAUDE_UPDATES`, default `stable`): 2.1.311, while `latest` was
@@ -72,12 +89,12 @@ an older one.
 | CCM-005 | **The version in use is checked too.** The Claude Code runs get (the newer of the host's install and Yulius's `current`) is read for the offered models when the server starts, after every check and when the channel changes (cached per file while it does not change). |
 | CCM-006 | **Reported.** After every check the server records the channel, the time, npm's `latest` and `stable`, what the check did (installed, up to date, refused with the release and its missing models, or failed with the reason), the version in use, where it comes from and the offered models it does not know, in `<data>/claude-code/status.json` (for `yulius doctor`) and in memory (for the Instance page). A refusal is logged as a warning and a version in use that does not know the default model as an error. |
 | CCM-007 | **Doctor.** `yulius doctor --contained` prints "Claude Code in sandboxes" as `FAIL` when the version runs get does not know the default model, naming the version, the model and the fix (what Yulius does at its next check, "Check now" in Settings, and `sudo npm install -g @anthropic-ai/claude-code@latest` on the host; or, when npm's newest release does not know the model either, that no release knows it yet, which is said only from the server's own read of the registry in the last two hours on a channel that reads it: not on `off`, not after a failed check, as on the card); as `warn` when it lacks another offered model or the last release was refused; else `ok`. It names the channel in effect: the one chosen in Settings (read from the status file) or `YULIUS_CLAUDE_UPDATES`. |
-| CCM-008 | **Instance page.** Settings, Instance has a "Claude Code" card (superadmin): the channel and where it is set, the version in use and where it comes from, the host's version, npm's `latest` and `stable` at the last check, when it was checked and what it did; a danger banner with the fix while the version in use does not know the default model; a warning for another unknown offered model, a refused release and a failed check; "Check now"; the channel as a choice of Latest, Stable and Off; and the tasks that still run an older Claude Code (CCM-013). |
+| CCM-008 | **Instance page.** Settings, Instance has a "Claude Code" card (superadmin): the channel and where it is set, the version in use and where it comes from, the host's version, npm's `latest` and `stable` at the last check, when it was checked and what it did; a danger banner with the fix while the version in use does not know the default model; a warning for another unknown offered model, a refused release, a failed check and a binary in use that could not be read for its models ("models not read", `models_unread`; SPEC-468); "Check now"; the channel as a choice of Latest, Stable and Off; and the tasks that still run an older Claude Code (CCM-013), each promised that version when its turn ends, or only at its next start while running tasks are no longer moved to it (SPEC-468). While a change asked for on the card (a check, a channel change) is on its way, its controls take no other, however the card is drawn meanwhile; and a read of the card asked before the change's outcome never undoes what that outcome drew. |
 | CCM-009 | **Channel in Settings.** `PUT /api/admin/claude-code/channel {"channel": "latest"\|"stable"\|"off"\|null}` (superadmin) stores the channel in the database (`null`: back to `YULIUS_CLAUDE_UPDATES`; a body without the field is refused, 422). A stored channel wins over the unit's. It applies at once, without a restart: the next check runs now, runs started from then on bind as the channel says (`off`: the host's install), and it is audited `claude_code.channel`. An unknown channel is refused (422). |
 | CCM-010 | **Check now.** `POST /api/admin/claude-code/check` (superadmin) starts a check at once and answers 202 with the view saying it runs; one check runs at a time (a second request joins the running one). The hourly check and the first check 2 minutes after a start stay. `GET /api/admin/claude-code` answers the view. |
-| CCM-011 | **Sessions record what ran.** Each session of a task records the Claude Code version the records of its own thread in its transcript name (`metrics.cli_version`; Claude Code writes its version on every record, and a sub-agent's names nothing for the session), beside the model that answered (kept already), as soon as a line names it: a session resumed with nothing typed names it with the first record it writes, not with its next prompt. A recount of a run's transcript records it too. At most 64 bytes of what a record names are kept. |
-| CCM-012 | **Task info.** A task's info shows the model it asks for with its effort (marked "default" when the task names none), the models that answered, and the Claude Code version of its latest session, with "moves to X when its turn ends, or at its next start" while its running session is on an older one; each row of its Sessions table shows what that session ran on (its Claude Code version and model). `GET /api/tasks/{tid}` carries them (`model`, `model_default`, `effort`, `cli_version`, `cli_moves_to`; per attempt `model`, `cli_version`). |
-| CCM-013 | **A running task moves.** When a turn of a running task ends and its session runs an older Claude Code than runs get now, Yulius restarts the session on the newer one in the same Claude session (`claude --resume`, same subscription, the path a subscription move takes at a turn boundary) and says so in one line in its terminal. A session that works on after the turn (a gate's block, a goal that is set and not yet achieved) moves at that turn's Stop hook and gets the gate's reasons, and its goal again, as after a subscription move; a goal task that is Done keeps its session at a follow-up's end (its goal would be typed again); a prompt-mode session that goes idle moves once the turn has settled (its pull request opened, chains advanced), with nothing typed, and is idle again. Not while its background shells, agents or monitors run, a shell that only runs `yulius wait` included (its news would never arrive), not while a person typed into it in the last minute or paused it, not while an instance update holds the runs, not within ten minutes of a refused subscription switch or of a refused restart, and once per version per task. Deciding takes at most 3.5 s of the Stop hook's 5 s (one wait for the turn's lines, one look at the session's processes); a decision that would take longer is left to a later turn's end. A restart that cannot start now (its subscription at its limit, a sandbox that cannot be joined) says nothing, is no switch decision, keeps no subscription switch waiting (it has its own ten-minute wait) and is tried at a later turn's end. A version a session could not continue on gets no other running session, and the card names the task and what happened: the restart could not be launched, the restarted session ended by itself before it started (its SessionStart hook), or it did not start within two minutes (that session is left as it is, for its person). A newer version, or a restart of the server, lifts it. A task that is idle keeps its version until its next turn ends or its next start, and so does a run without hooks. The Superagent, shells and CI jobs get the newer version when they next start, as before. A restart for a newer Claude Code is no subscription switch in the task's info. |
+| CCM-011 | **Sessions record what ran.** Each session of a task records the Claude Code version the records of its own thread in its transcript name (`metrics.cli_version`; Claude Code writes its version on every record, and a sub-agent's names nothing for the session), beside the model that answered (kept already), as soon as a line names it: a session resumed with nothing typed names it with the first record it writes, not with its next prompt. A recount of a run's transcript records it too. At most 64 bytes of the version a record names are kept, and 128 of the model's name (SPEC-468): both are the agent's own words. |
+| CCM-012 | **Task info.** A task's info shows the model it asks for with its effort (marked "default" when the task names none), the models that answered, and the Claude Code version of its latest session, with "moves to X when its turn ends, or at its next start" while its running session is on an older one ("gets X at its next start" while running tasks are no longer moved to X, SPEC-468); each row of its Sessions table shows what that session ran on (its Claude Code version and model). `GET /api/tasks/{tid}` carries them (`model`, `model_default`, `effort`, `cli_version`, `cli_moves_to`, `cli_moves_stopped`; per attempt `model`, `cli_version`). |
+| CCM-013 | **A running task moves.** When a turn of a running task ends and its session runs an older Claude Code than runs get now, Yulius restarts the session on the newer one in the same Claude session (`claude --resume`, same subscription, the path a subscription move takes at a turn boundary) and says so in one line in its terminal. A session that works on after the turn (a gate's block, a goal that is set and not yet achieved) moves at that turn's Stop hook and gets the gate's reasons, and its goal again, as after a subscription move; a goal task that is Done keeps its session at a follow-up's end (its goal would be typed again); a prompt-mode session that goes idle moves once the turn has settled (its pull request opened, chains advanced), with nothing typed, and is idle again: it reads "continuing" and then as it did, never working in between, so its person is not notified a second time (SPEC-468). Not while its background shells, agents or monitors run, a shell that only runs `yulius wait` included (its news would never arrive), not while a person typed into it in the last minute, or since its last prompt was submitted (what they typed may still sit in its prompt box, as a prompt Yulius holds for their choice does; SPEC-468), or paused it, not while a message Yulius typed into it (a person's message, a pull request's news) is not submitted yet (SPEC-468; a prompt that was submitted while a turn runs waits in Claude Code's queue, which Yulius does not know, and a restart at that turn's end loses it: issue #1204), not while a goal its person set in a prompt-mode session (`/goal …`) is open (Yulius types nothing into such a session and reads a goal only from the new run's lines, so it could not follow the goal across the restart, and a Claude Code that does not restore an open goal at a resume would lose it; such a session moves at a later turn's end once the goal is met, failed or cleared, or at its next start; SPEC-468), not while an instance update holds the runs, not within ten minutes of a refused subscription switch or of a refused restart, once per version per task, and one restart of a task at a time (a turn end that decided while another's restart is under way leaves the session to it; SPEC-468). Deciding takes at most 3.5 s of the Stop hook's 5 s (one wait for the turn's lines, one look at the session's processes); a decision that would take longer is left to a later turn's end. A restart that cannot start now (its subscription at its limit, a sandbox that cannot be joined) says nothing, is no switch decision, keeps no subscription switch waiting (it has its own ten-minute wait) and is tried at a later turn's end. A version a session could not continue on gets no other running session, and the card names the task and what happened: the restart could not be launched, the restarted session ended by itself before it started (its SessionStart hook), or it did not start within two minutes (that session is left as it is, for its person). A newer version, or a restart of the server, lifts it. A task that is idle keeps its version until its next turn ends or its next start, and so does a run without hooks. The Superagent, shells and CI jobs get the newer version when they next start, as before. A restart for a newer Claude Code is no subscription switch in the task's info. |
 
 ## Plan
 
@@ -92,6 +109,7 @@ an older one.
 - [x] Independent review round 1 answered, every finding fixed with its test
 - [x] Independent review round 2 answered, every finding fixed with its test
 - [x] A session resumed with nothing typed names its Claude Code with its first record
+- [x] A change asked for on the card keeps its controls off until its outcome, and no late read undoes it
 
 ## Acceptance criteria
 
@@ -343,6 +361,49 @@ an older one.
     built this change with task #452's branch on top: the harness, move-decision, wiring and
     `claude_`/`metrics_recount` tests of both pass there (the rest of the suite and the e2e
     suite were not run on that tree).
+  - *Seen on the real host and fixed in a pull request of its own (#1192).* While a channel
+    change was being saved the select was off and "Use the server's" was not: a second click
+    sent the request again and showed its toast twice (nothing else: the server finds the
+    channel as asked). Both controls are off until the outcome is drawn, and so is "Check now"
+    while a check is being asked for (`saving`, `asking`): a card drawn meanwhile keeps them
+    off. The mock's `holdpost` holds a PUT too.
+  - *A late read never undoes a change made on the card* (found by the review of that fix, in
+    the card's script as PR #1167 wrote it). A read asked before a check or a channel change (a
+    poll, the page's first read), or while the change was being saved, and answered after the
+    change's own answer was drawn over it: the select went back to the old channel while the
+    server had the new one, and a card told that no check runs stopped asking, so it stayed
+    wrong until the page was opened again. The card marks the outcome of every change it asks
+    for in one place (`change`): from then on it is drawn again whatever the next view says
+    (its controls were switched off by hand), and the answer, or the failure, of a read asked
+    before the outcome is dropped; the outcome's own draw, or the read after a refusal, is the
+    newer word. The count is taken at the outcome, not when the change is sent: a read asked
+    during the save can be the older one too.
+  - *The review of the card's fixes* (independent, fresh session, at 09daf532: approved; three
+    minors and three nits in the fix, and the late read above, all answered here). The held
+    test read the controls before its request waited at the hold, so nothing pinned that the
+    hold takes a PUT: it waits for the mock's `heldWaiting` first. The mock's list of options
+    said POSTs and PATCHes only. The Evidence named 13 e2e files as "every file that holds a
+    request or shows the Instance page", which they were not: the whole suite is cited now.
+    Nits: the mock's `failpost` comment read as "holds" after the new one above it; the e2e
+    README said both controls are usable again after a saved change (only the select is left);
+    the tests read the controls with one helper. A first reviewer's session ended without a
+    report; its experiment logs showed one reset pinned by no test, which is gone with the one
+    marker, and its whole-suite run at 1c44dbde passed (941 tests).
+  - *Its second look* (at 18be448f): approved; one minor, one nit and one question left to the
+    author, all answered. Nothing pinned that "Check now" is switched off at the press, before
+    anything draws the card: the test looks at the button there too. Nothing pinned that the
+    mock reads a kept-back read's view when the read is asked, on which the late-read tests
+    rest: the mock lists what each late answer said (`lateAnswers`), and the tests assert that
+    it is the older word. Its third look (at 9e781fd8, approved) found that this assertion made
+    the first late-read test depend on the runner's speed: it kept every read back until it let
+    the first one go, so a runner two seconds slow listed the poll's read too. Only the first
+    read is kept back now.
+  - *An older answer that is not a late read is left to the next poll* (the question). A
+    check's own answer that arrives after a channel change made meanwhile was drawn shows the
+    old channel; and of two reads asked after one refusal the older can answer last. In both
+    the older view says that a check runs, so the card asks again two seconds later and is
+    right. Holding back a change's own answer for it would add a branch to every change, for a
+    two-second flicker that needs two changes within one answer's time.
   - *The version is cut at 64 bytes where it is kept* (`UsageAccumulator::note_cli_version`).
     Task #452 answers the third review's finding that the stored version is whatever a
     transcript line holds (a line may be megabytes) by cutting it in the parser's prompt
@@ -350,6 +411,11 @@ an older one.
     would have merged without a conflict and left the string unbounded. Cut where every path
     ends, with the parser's own rule (a character boundary, an ellipsis, a version that is no
     plain `X.Y.Z` kept), the two agree whichever merges first.
+- **Amended by SPEC-468** (task #452): review round 3 approved e9e11c0a and listed two minors
+  and seven nits, split off so the approved head could merge. They are answered in
+  [SPEC-468](SPEC-468-claude-code-moves-the-last-review-s-left.md), which changes CCM-008,
+  CCM-011, CCM-012 and CCM-013 above (each change names it) and adds the quotation under
+  Context that this header promised.
 - **Migration `0050_claude_code.sql` is schema version 51.** Its number was reserved first, but
   SPEC-459's `0051_instance_limits.sql` merged first as version 50; a version is a migration's
   place in the list, so this one goes after it.
@@ -459,6 +525,27 @@ an older one.
   810, and at the same line twice.
 - Seen failing first: `wiring::harness::tests::a_run_resumed_with_nothing_typed_names_its_claude_code_at_once`
   read `None` after the resumed run's first record.
+- #1192 and the late read (web only; no Rust file changed):
+  - Seen failing first: "while a channel change is being saved neither the select nor “Use the
+    server’s” takes another" with `select off, button on`; "a read asked before a check or a
+    channel change does not undo what that drew, answered or failed after it" with the check's
+    result never shown (the page's first read, answered late, had stopped the card's asking).
+  - `e2e/tests/claude-code.e2e.ts` passes (11), and the whole e2e suite at fdb21d05 (the last
+    change to a script or a test; `dev` up to 0fc557ba merged): 80 files passed, 1 skipped
+    (`agent.e2e.ts` needs a model key); 967 tests passed, 1 skipped; exit 0
+    (`target/evidence/e2e-whole-1192.log`). The reviewer's whole-suite runs: 964 passed at
+    09daf532, 967 at 18be448f, 1 skipped each.
+  - Twelve mutants, each caught by a test and reverted (`target/evidence/mutants-1192.log`): no
+    count of outcomes; the count taken when the change is sent; no redraw mark at the
+    outcome; an answered late read not dropped; a failed one not dropped; "Check now" not kept
+    off across a draw; `asking` never ended after a check that was taken, and after one that
+    was refused; only the select switched off; a hold that does not hold a PUT; "Check now"
+    not switched off at the press; the mock reading a late answer's view when it is let go.
+  - Rust: the tests that read the web files pass at 73a051cc (`ui_contract`, 9; the
+    `yulius-server` crate, 25), and the script tests (152); the commits after it change the
+    mock, the tests and this file. `scripts/dev ci` last ran at f08aa9a6 (exit 0, nextest
+    3687 passed / 16 skipped), before the card's script changed again and `dev` was merged
+    again; Yulius CI runs the gate and the e2e suite at the pull request's head.
 - After the merge, a real host (2026-11-11 21:07 to 21:18 UTC): an Ubuntu 26.04.1 guest (QEMU,
   kernel 7.0.0-38) with Node 22 and `npm install -g @anthropic-ai/claude-code@2.1.311`, the
   incident's host (`claude --version`: 2.1.311; its binary holds `claude-fable-5-2` 0 times
