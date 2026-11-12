@@ -28,8 +28,7 @@ use clap::Args;
 use yulius_app::migration::rules;
 use yulius_contracts::migrate::{
     HELPER_STATUS_FILE, MAX_REQUEST_BYTES, MoveAction, MoveHelperState, MoveHelperStatus,
-    MoveRequest, REQUEST_AHEAD_MS, REQUEST_DIR, REQUEST_FILE, REQUEST_TTL_MS, STATUS_FILE, VERSION,
-    Values,
+    MoveRequest, REQUEST_AHEAD_MS, REQUEST_DIR, REQUEST_FILE, REQUEST_TTL_MS, VERSION, Values,
 };
 
 use crate::update_helper::read_owned_file;
@@ -459,9 +458,9 @@ impl Helper {
             updated_at: now_ms(),
             ended_at: None,
         };
-        // The checklist is the command's; one of an earlier run would read as this run's until
-        // its first line.
-        let _ = std::fs::remove_file(self.state(STATUS_FILE));
+        // The command's checklist is not touched here: a run the command refuses (a move to
+        // another host is recorded, another run holds its lock) must change nothing. The
+        // server tells an earlier run's checklist from this run's by its time.
         self.write_status(&status);
         let program = match &self.args.program {
             Some(program) => Ok(program.clone()),

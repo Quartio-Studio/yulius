@@ -4891,9 +4891,20 @@ function playMove(db, request, values, steps) {
       Object.assign(m.run, { target: null, ssh_port: null, public_url: null, data_disks: [], state: 'refused', ended_at: now, error: 'The request was refused: an update is running (yulius-update.service): ask again once it has finished.' });
       return;
     }
-    // The checklist of an earlier run goes before the command starts.
+    // What an earlier run recorded is not this run's: it is not shown until the command wrote
+    // its own checklist, and it is still there when the command refuses (it changes nothing).
+    const recorded = m.moving;
     m.moving = null;
     m.seen = {};
+    if (recorded && request.action !== 'abort' && values.target !== recorded.target && !['Plan', 'done', 'aborted'].includes(recorded.phase)) {
+      later(() => {
+        if (!live()) return;
+        const at = new Date().toISOString();
+        Object.assign(m.run, { state: 'ended', exit_code: 2, error: `a move to ${recorded.target} is recorded here: finish it with the same command`, updated_at: at, ended_at: at });
+        m.moving = { ...recorded, earlier: true };
+      }, m.stepMs / 2);
+      return;
+    }
     const next = (index) => {
       if (!live()) return;
       if (index >= steps.length) return;
@@ -4908,7 +4919,7 @@ function playMove(db, request, values, steps) {
 function moveSay(db, phase, line) {
   const m = db.migration;
   const target = m.run.target || (m.moving && m.moving.target) || '';
-  if (!m.moving) m.moving = { id: MOVE_ID, target, phase, lines: [], public_key: null, new_url: null, updated_at: new Date().toISOString(), by_command: false };
+  if (!m.moving) m.moving = { id: MOVE_ID, target, phase, lines: [], public_key: null, new_url: null, updated_at: new Date().toISOString(), by_command: false, earlier: false };
   m.moving.phase = phase;
   if (line) m.moving.lines.push(line);
   m.moving.updated_at = new Date().toISOString();

@@ -116,10 +116,8 @@ impl FakeMoveHelper {
                 ended_at: None,
             });
         }
-        // As the real helper does before it starts the command.
-        if let Ok(mut status) = self.status.lock() {
-            *status = None;
-        }
+        // The checklist of an earlier run stays where it is: the helper does not touch it, and
+        // the command replaces it once it has accepted the run.
         Ok(request)
     }
 
@@ -682,15 +680,18 @@ async fn an_abort_is_of_the_recorded_move_and_may_stop_a_run() -> TestResult {
     );
     i.refused(abort(), StatusCode::CONFLICT, NOTHING).await?;
 
-    // A recorded move the command refused to go on with (another host is recorded) left no
-    // checklist: the abort is what the command names, so it is offered.
+    // A recorded move the command refused to go on with (another host is recorded) wrote no
+    // checklist: the one that was there stays, as an earlier run's, and the abort is what the
+    // command names, so it is offered.
+    i.later(2_000);
     assert_eq!(i.ask(plan()).await?.status, StatusCode::ACCEPTED);
     i.helper.takes(i.now())?;
     i.helper.ends(Some(2), i.now());
     i.helper
         .says(|status| status.error = Some("a move to root@old.example is recorded here".into()));
     let refused = i.view().await?;
-    assert_eq!(refused["move"], Value::Null);
+    assert_eq!(refused["move"]["phase"], "aborted");
+    assert_eq!(refused["move"]["earlier"], true);
     assert_eq!(
         refused["run"]["error"],
         "a move to root@old.example is recorded here"
@@ -851,6 +852,136 @@ async fn an_unanswered_request_and_a_silent_helper_are_said() -> TestResult {
     // A heartbeat brings it back.
     i.helper.says(|status| status.updated_at += 30_000);
     assert_eq!(i.view().await?["run"]["state"], "running");
+    Ok(())
+}
+
+/// MVB-020: a run the command refuses changes nothing, the recorded move's checklist
+/// included. It stays, said to be an earlier run's and never read as this run's, and what is
+/// recorded can still be aborted.
+#[tokio::test]
+async fn a_refused_run_keeps_the_recorded_moves_checklist() -> TestResult {
+    let i = instance().await?;
+    i.planned(&GOOD, None).await?;
+    i.later(1_000);
+    assert_eq!(i.ask(moving()).await?.status, StatusCode::ACCEPTED);
+    i.helper.takes(i.now())?;
+    // Before its first line, the plan's checklist is not the move's.
+    let begun = i.view().await?;
+    assert_eq!(begun["run"]["action"], "move");
+    assert_eq!(begun["move"], Value::Null);
+    i.helper.checklist(
+        "Copy",
+        &[("old host", HostOutcome::Ok), ("copy", HostOutcome::Failed)],
+        None,
+        i.now(),
+    );
+    i.helper.ends(Some(1), i.now());
+    let stopped = i.view().await?;
+    assert_eq!(stopped["move"]["earlier"], false);
+    assert_eq!(
+        stopped["can"],
+        json!({"plan": true, "move": true, "abort": true})
+    );
+
+    // A plan for another host: the command refuses it, since a move is recorded here.
+    i.later(5_000);
+    let mut other = plan();
+    other["target"] = "root@other.example".into();
+    assert_eq!(i.ask(other.clone()).await?.status, StatusCode::ACCEPTED);
+    i.helper.takes(i.now())?;
+    let running = i.view().await?;
+    assert_eq!(running["run"]["state"], "running");
+    assert_eq!(
+        running["move"],
+        Value::Null,
+        "the failed move's lines as the plan's"
+    );
+    i.helper.says(|status| {
+        status.error = Some(
+            "a move to root@new.example is recorded here: finish it with the same command".into(),
+        );
+    });
+    i.helper.ends(Some(2), i.now());
+    let refused = i.view().await?;
+    assert_eq!(refused["run"]["exit_code"], 2);
+    assert_eq!(refused["move"]["phase"], "Copy");
+    assert_eq!(refused["move"]["earlier"], true);
+    assert_eq!(refused["move"]["by_command"], false);
+    assert_eq!(refused["move"]["lines"].as_array().map(Vec::len), Some(2));
+    // The lines are not this plan's: no move of the other host, and the recorded one can go.
+    assert_eq!(
+        refused["can"],
+        json!({"plan": true, "move": false, "abort": true})
+    );
+    other["action"] = "move".into();
+    other["confirm"] = "other.example".into();
+    i.refused(
+        other,
+        StatusCode::CONFLICT,
+        "show the plan for these values first",
+    )
+    .await?;
+
+    // A helper that stopped without a word before its first line shows no earlier checklist.
+    i.later(5_000);
+    assert_eq!(i.ask(plan()).await?.status, StatusCode::ACCEPTED);
+    i.helper.takes(i.now())?;
+    i.later(60_001);
+    let silent = i.view().await?;
+    assert_eq!(silent["run"]["state"], "lost");
+    assert_eq!(silent["move"], Value::Null);
+    Ok(())
+}
+
+/// MVB-021: an abort the command refused because nothing is recorded leaves nothing to abort;
+/// one that did not complete can be asked again.
+#[tokio::test]
+async fn an_abort_that_found_nothing_is_not_offered_again() -> TestResult {
+    let i = instance().await?;
+    // A plan that a signal ended before its first line: what it began may be recorded.
+    assert_eq!(i.ask(plan()).await?.status, StatusCode::ACCEPTED);
+    i.helper.takes(i.now())?;
+    i.helper.ends(None, i.now());
+    assert_eq!(i.view().await?["can"]["abort"], true);
+    assert_eq!(
+        i.ask(json!({"action": "abort"})).await?.status,
+        StatusCode::ACCEPTED
+    );
+    i.helper.takes(i.now())?;
+    i.helper
+        .says(|status| status.error = Some("no move is recorded on this host".into()));
+    i.helper.ends(Some(2), i.now());
+    let nothing = i.view().await?;
+    assert_eq!(nothing["run"]["action"], "abort");
+    assert_eq!(
+        nothing["can"],
+        json!({"plan": true, "move": false, "abort": false})
+    );
+    i.refused(
+        json!({"action": "abort"}),
+        StatusCode::CONFLICT,
+        "nothing to abort",
+    )
+    .await?;
+
+    // An abort that did not complete says so in its checklist, and is asked again.
+    assert_eq!(i.ask(plan()).await?.status, StatusCode::ACCEPTED);
+    i.helper.takes(i.now())?;
+    i.helper.checklist("Plan", &GOOD, None, i.now());
+    i.helper.ends(Some(0), i.now());
+    assert_eq!(
+        i.ask(json!({"action": "abort"})).await?.status,
+        StatusCode::ACCEPTED
+    );
+    i.helper.takes(i.now())?;
+    i.helper.checklist(
+        "Abort",
+        &[("new instance", HostOutcome::Failed)],
+        None,
+        i.now(),
+    );
+    i.helper.ends(Some(1), i.now());
+    assert_eq!(i.view().await?["can"]["abort"], true);
     Ok(())
 }
 

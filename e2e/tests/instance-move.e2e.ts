@@ -411,6 +411,23 @@ test('a plan with a failed line offers no move, and a failed preparation says so
   expect(await cardText(browser)).not.toMatch(/is frozen while the last changes/);
   await expect(c.getByRole('button', 'Continue the move…')).toBeVisible();
   await expect(c.getByRole('button', 'Abort…')).toBeVisible();
+
+  // A plan for another host while that move is recorded: the command refuses it and changes
+  // nothing. The recorded move's checklist stays, said to be that move's, and is not read as
+  // what the plan found; the move it tells can still be aborted.
+  await c.getByLabel('New host').fill('root@other.yulius.example');
+  await c.getByRole('button', 'Show the plan').click();
+  await expect(c.getByText('The plan could not be shown')).toBeVisible({ timeout: 15000 });
+  await expect(c.getByText('The command refused before it changed anything.')).toBeVisible();
+  await expect(c.getByText(`a move to ${TARGET} is recorded here: finish it with the same command`)).toBeVisible();
+  await expect(c.getByText(new RegExp(`^ ?A move to ${TARGET.replaceAll('.', '\\.')} is recorded on this host \\(phase Prepare, last line .*\\)\\. The checklist below is that move’s, not this request’s\\.$`))).toBeVisible();
+  expect(await cardText(browser)).toMatch(/Failed \(1\)\s+software: the new host: tar: \/usr\/local: Cannot write/);
+  expect(await cardText(browser)).not.toMatch(/found problems/);
+  expect(await lineNames(browser)).toContain('software');
+  await expect(c.getByRole('button', 'Continue the move…')).toBeHidden();
+  await expect(c.getByRole('button', 'Run migration…')).toBeHidden();
+  await expect(c.getByRole('button', 'Abort…')).toBeVisible();
+  expect(await axeViolations(browser)).toEqual([]);
 });
 
 // MVB-030, MVB-033: what is typed is checked where it was typed; a helper that does not answer,

@@ -91,6 +91,10 @@ pub struct MigrationMove {
     pub updated_at: String,
     /// Written after the helper's last run ended: by a run started on the host.
     pub by_command: bool,
+    /// Written before the helper's last run started, which ended without a checklist of its
+    /// own (the command refused it): the move that is recorded, not what that run found.
+    #[serde(default)]
+    pub earlier: bool,
 }
 
 /// The checklist of the move that brought the instance to this host.

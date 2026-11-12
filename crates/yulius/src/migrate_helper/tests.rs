@@ -350,9 +350,13 @@ fn a_plan_runs_the_command_once_and_reports_how_it_ended() -> TestResult {
     env.run()?;
 
     assert_eq!(env.argv(), command_args(&env.args, &request));
-    assert!(
-        !env.bin.join("status-was-there").exists(),
-        "the checklist of an earlier run is removed before the command starts"
+    // The checklist that is there is the command's to replace, once it has accepted the run:
+    // a run it refuses (a move to another host is recorded) must change nothing.
+    assert!(env.bin.join("status-was-there").exists());
+    assert_eq!(
+        std::fs::read_to_string(env.args.state_dir.join(STATUS_FILE))?,
+        "{\"an\":\"earlier run\"}",
+        "the recorded checklist was touched"
     );
     let said = env.said()?;
     assert_eq!(said.id, "0123abcd-plan");

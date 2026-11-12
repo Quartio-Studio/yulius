@@ -58,6 +58,17 @@ struct Files {
     arrived: Option<MoveChecklist>,
 }
 
+/// Whose the command's checklist is, as far as the helper's report tells.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Whose {
+    /// The helper's last run's: written since it started.
+    Run,
+    /// An earlier run's: written before the helper's last run started.
+    Earlier,
+    /// A run's started on the host: written after the helper's last run ended, or without any.
+    Command,
+}
+
 /// Where a move stands, from [`Files`] at one moment.
 struct Facts {
     files: Files,
@@ -94,21 +105,40 @@ impl Facts {
             .map(|(run, _)| run.action)
     }
 
+    /// Whose the checklist file is. The helper never touches it (a run the command refuses
+    /// must change nothing), so its time tells: the command stamps it in whole seconds.
+    fn whose(&self) -> Option<Whose> {
+        let status = self.files.status.as_ref()?;
+        let Some(run) = &self.files.helper else {
+            return Some(Whose::Command);
+        };
+        let written = i64::try_from(status.updated_at)
+            .unwrap_or(i64::MAX)
+            .saturating_mul(1000);
+        Some(if run.ended_at.is_some_and(|ended| written > ended) {
+            Whose::Command
+        } else if written.saturating_add(999) < run.started_at {
+            // The whole second it was written in had passed when the run began.
+            Whose::Earlier
+        } else {
+            Whose::Run
+        })
+    }
+
+    /// The checklist to show. While the helper's run has written none of its own (it runs, or
+    /// stopped without a word before its first line), an earlier run's is not shown as its.
+    fn status(&self) -> Option<&MoveStatus> {
+        let unwritten = self.whose() == Some(Whose::Earlier)
+            && self
+                .run()
+                .is_some_and(|(_, state)| matches!(state, "running" | "lost"));
+        self.files.status.as_ref().filter(|_| !unwritten)
+    }
+
     /// Whether the checklist was written after the helper's last run ended (or without any):
     /// by a run started on the host.
     fn by_command(&self) -> bool {
-        let Some(status) = &self.files.status else {
-            return false;
-        };
-        match &self.files.helper {
-            None => true,
-            Some(run) => run.ended_at.is_some_and(|ended| {
-                i64::try_from(status.updated_at)
-                    .unwrap_or(i64::MAX)
-                    .saturating_mul(1000)
-                    > ended
-            }),
-        }
+        self.whose() == Some(Whose::Command)
     }
 
     /// Whether a move of `values` may be asked: the plan the person saw, or a move that
@@ -120,7 +150,8 @@ impl Facts {
         if self.by_command() || values.is_some_and(|values| *values != run.values) {
             return Err(PLAN_FIRST);
         }
-        let status = self.files.status.as_ref();
+        // Only what this run wrote says what it found.
+        let status = self.status().filter(|_| self.whose() == Some(Whose::Run));
         match (run.action, state) {
             (MoveAction::Plan, "ended") => {
                 let failed = status.is_some_and(|status| {
@@ -159,14 +190,15 @@ impl Facts {
     /// Whether something is recorded that an abort goes back from.
     fn recorded(&self) -> bool {
         let unfinished = self
-            .files
-            .status
-            .as_ref()
+            .status()
             .is_some_and(|status| !matches!(status.phase.as_str(), "done" | "aborted"));
         let run = self.run().is_some_and(|(run, state)| match state {
             "running" => run.action != MoveAction::Abort,
             "lost" => true,
-            "ended" => run.exit_code != Some(0),
+            // A plan or a move that did not end well may have recorded something, also when
+            // the command refused it (a move to another host is recorded). How an abort ended
+            // is in its checklist: one that found nothing to abort is not offered again.
+            "ended" => run.action != MoveAction::Abort && run.exit_code != Some(0),
             _ => false,
         });
         unfinished || run
@@ -198,6 +230,7 @@ impl Facts {
     fn view(&self, public_url: &str) -> MigrationView {
         let at = |ms: i64| rfc3339(Timestamp(ms));
         let by_command = self.by_command();
+        let earlier = self.whose() == Some(Whose::Earlier);
         MigrationView {
             public_url: public_url.to_owned(),
             helper_installed: self.files.installed,
@@ -227,7 +260,7 @@ impl Facts {
                 updated_at: at(run.updated_at),
                 ended_at: run.ended_at.map(at),
             }),
-            moving: self.files.status.as_ref().map(|status| MigrationMove {
+            moving: self.status().map(|status| MigrationMove {
                 id: status.id.clone(),
                 target: status.target.clone(),
                 phase: status.phase.clone(),
@@ -238,6 +271,7 @@ impl Facts {
                     .unwrap_or(i64::MAX)
                     .saturating_mul(1000)),
                 by_command,
+                earlier,
             }),
             arrived: self.files.arrived.as_ref().map(|arrived| MigrationArrived {
                 id: arrived.id.clone(),

@@ -278,10 +278,13 @@ export function moveCard(ctx) {
       h('div', { class: 'row' }, icon(tone === 'ok' ? 'check' : tone === 'danger' ? 'warn' : 'info', { size: 16 }), h('strong', null, title), h('span', { class: 'muted small' }, when)),
       text ? h('p', { class: 'small' }, text) : null,
       run.error ? h('p', { class: 'small move-error' }, run.error) : null);
-    const failed = move ? attention(move.lines).failed.length : 0;
+    // A checklist written before this run started is the recorded move's (`earlier`), not
+    // what this run found: a run the command refuses writes none.
+    const mine = move && !move.earlier ? move : null;
+    const failed = mine ? attention(mine.lines).failed.length : 0;
     if (run.action === 'plan') {
-      if (move && move.public_key) return null; // the key box says it
-      if (run.exit_code === 0 && !failed) return outcome('ok', `The plan for ${of}`, `Nothing is frozen, and nothing was changed but the move’s own files. Its lines: ${summary(move ? move.lines : [])}.`);
+      if (mine && mine.public_key) return null; // the key box says it
+      if (run.exit_code === 0 && !failed) return outcome('ok', `The plan for ${of}`, `Nothing is frozen, and nothing was changed but the move’s own files. Its lines: ${summary(mine ? mine.lines : [])}.`);
       if (failed) return outcome('danger', `The plan for ${of} found problems`, 'Nothing is frozen, and nothing was changed but the move’s own files. Fix what failed, then show the plan again.');
       return outcome('danger', 'The plan could not be shown', run.exit_code === 2 ? 'The command refused before it changed anything.' : 'The command ended before its plan.');
     }
@@ -303,7 +306,10 @@ export function moveCard(ctx) {
     const head = move.by_command
       ? h('p', { class: 'small move-recorded' }, icon('terminal', { size: 14 }),
         ` A move to ${move.target} is recorded on this host by the command line (yulius instance migrate), phase ${move.phase}, last line ${relLong(move.updated_at)}. Whether it still runs is not known here.`)
-      : null;
+      : move.earlier
+        ? h('p', { class: 'small move-recorded' }, icon('info', { size: 14 }),
+          ` A move to ${move.target} is recorded on this host (phase ${move.phase}, last line ${relLong(move.updated_at)}). The checklist below is that move’s, not this request’s.`)
+        : null;
     const all = move.lines || [];
     return [
       head,
@@ -393,7 +399,7 @@ export function moveCard(ctx) {
       view.update_running ? h('p', { class: 'muted small', role: 'note' }, 'An update or restart is running: a move can be asked once it has finished.') : null,
       view.helper_installed ? null : helperNote(),
       runBlock(view),
-      view.move && view.move.public_key && !view.move.by_command && !busy ? keyBox(view) : null,
+      view.move && view.move.public_key && !view.move.by_command && !view.move.earlier && !busy ? keyBox(view) : null,
       ...moveBlock(view),
       actions(view),
       // The form is for the next plan: not while a run is in flight.
