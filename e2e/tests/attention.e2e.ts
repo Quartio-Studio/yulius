@@ -35,9 +35,11 @@ test('a flag Yulius raised says why and what to do, not that a question is in th
   await expect(browser.locator('.attention-bar a')).toHaveCount(0);
   expect(await axeViolations(browser)).toEqual([]);
 
-  // The reason goes with its flag.
+  // The reason goes with its flag: flagged again for something else, the task does not repeat it.
   await touchTask(browser, 'sb_studio', 12, { activity: 'working' });
   await expect(bar(browser)).toBeHidden();
+  await touchTask(browser, 'sb_studio', 12, { activity: 'needs_attention' });
+  await expect(browser.locator('.attention-bar .attention-text')).toHaveText('The agent needs your attention. Look at its terminal below.');
 });
 
 test('a secret request says where a person answers it, with the link', async ({ app, browser, screen }) => {

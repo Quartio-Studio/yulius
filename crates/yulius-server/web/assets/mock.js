@@ -795,7 +795,12 @@ function touch(db, task, changes = {}) {
   Object.assign(task, changes, { updated_at: changes.updated_at || new Date().toISOString() });
   // Out of `closed` it starts: it has had a run from then on, as on the server (SPEC-153).
   if (task.status !== 'closed') Object.assign(task, { neverRan: false, awaitsStart: false });
-  if (task.status !== status || task.activity !== activity) task.state_since = task.updated_at;
+  if (task.status !== status || task.activity !== activity) {
+    task.state_since = task.updated_at;
+    // A flag's reason goes with its flag, as on the server (SPEC-472): a change of state that
+    // brings no reason leaves none.
+    if (!('attention' in changes)) delete task.attention;
+  }
   task.working_since = workingSince(task);
   recount(db);
   emit(db, { type: 'task.updated', task: summary(task) });

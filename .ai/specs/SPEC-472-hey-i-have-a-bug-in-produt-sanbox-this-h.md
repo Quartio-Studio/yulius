@@ -130,6 +130,7 @@ after a restart of Yulius. Reply shows that the terminal took the keyboard.
   | The gate gave up | The agent stopped 3 times without fixing: (the gate's reasons) | Tell it how to go on, in the terminal. |
   | The goal was never set | (why). The task has no goal yet. | Type `/goal` and the request in the terminal, or stop and continue the task. |
   | The folder-trust question at a first message | Claude Code still asks whether to trust this folder, so Yulius typed nothing. | Answer it in the terminal, then type the task's first message. (Or: the task starts by itself once it is answered.) |
+  | The folder-trust question before a typed goal | Claude Code still asks whether to trust this folder, so Yulius typed nothing. The task has no goal yet. | Answer it in the terminal, then type `/goal` and the request, or stop and continue the task. |
   | A restart cut the first message | Yulius restarted while it typed this task's first message, so the first message was never sent and may be half typed in the prompt box. | Complete it (…) and press Enter. (A goal task: then type `/goal` and the request.) |
   | A full context | (why). | Find what fills it (…), then type `/compact` or `/clear` in the terminal, or stop and continue the task. |
   | The session could not be ended | Yulius could not end this session ((error)). It still counts as running, so the task cannot be deleted. | Stop the task again to retry. |
@@ -203,6 +204,10 @@ after a restart of Yulius. Reply shows that the terminal took the keyboard.
   notice's flag is not; a flag another matter raised after the notice's was replaced is not.
 - `crates/yulius/tests/browser.rs`: the browser request's test also reads the task's `attention`
   (red before the fix).
+- `crates/yulius-app`: a reason is one bounded line and its view carries the page; whether work
+  answers a flag is kept with the reason and is no part of the view; a goal never set says in
+  its terminal what it said before and keeps what is wrong apart from what to do, also behind an
+  unanswered trust question (that path has no integration test, before or after this change).
 - e2e `attention.e2e.ts` (new): a `yulius` reason shows as Needs you with Problem, To do and
   Reply, and with Open for a page; a browser request reads from the task until the page has the
   request, then from the request's own row; a `terminal` reason shows the sentence and Claude

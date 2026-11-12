@@ -875,6 +875,26 @@ const TRUST_UNANSWERED: &str =
     "Claude Code still asks whether to trust this folder, so Yulius typed nothing";
 const TRUST_ANSWER: &str = "Answer it in the terminal";
 
+/// What a task whose goal was never set says: the notice for its terminal, and the reason kept
+/// with its flag (SPEC-472). `why` is what went wrong; `first` is what its person does before a
+/// goal can be typed at all (answer the trust question), when there is such a thing.
+fn goal_missing(why: &str, first: Option<&str>) -> (String, AttentionRecord) {
+    let notice = format!(
+        "{why}{}. The task has no goal yet: type `/goal` and the request in the terminal, or stop \
+         and continue the task.",
+        first.map(|first| format!(". {first}")).unwrap_or_default()
+    );
+    let action = match first {
+        Some(first) => {
+            format!("{first}, then type `/goal` and the request, or stop and continue the task.")
+        }
+        None => "Type `/goal` and the request in the terminal, or stop and continue the task."
+            .to_owned(),
+    };
+    let reason = AttentionRecord::yulius(&format!("{why}. The task has no goal yet."), &action);
+    (notice, reason)
+}
+
 /// Whether `screen` shows Claude Code's folder-trust dialog.
 pub(crate) fn trust_prompt_shown(screen: &str) -> bool {
     TRUST_PROMPT_TEXTS.iter().any(|text| screen.contains(text))
@@ -1893,18 +1913,14 @@ impl App {
     /// The goal was never taken by the session: the task needs a person, said in its terminal
     /// and by the task itself.
     async fn goal_not_taken(&self, task_id: &TaskId, why: &str) {
-        self.runtime(task_id).hub.notice(format!(
-            "{why}. The task has no goal yet: type `/goal` and the request in the terminal, or stop \
-             and continue the task."
-        ));
-        self.flag_task(
-            task_id,
-            AttentionRecord::yulius(
-                &format!("{why}. The task has no goal yet."),
-                "Type `/goal` and the request in the terminal, or stop and continue the task.",
-            ),
-        )
-        .await;
+        self.goal_never_set(task_id, why, None).await;
+    }
+
+    /// [`Self::goal_not_taken`], with what the person does `first`, before a goal can be typed.
+    async fn goal_never_set(&self, task_id: &TaskId, why: &str, first: Option<&str>) {
+        let (notice, reason) = goal_missing(why, first);
+        self.runtime(task_id).hub.notice(notice);
+        self.flag_task(task_id, reason).await;
     }
 
     /// Claude Code still asks whether to trust the folder once the time to answer it is over
@@ -2243,7 +2259,7 @@ impl App {
             let started = tokio::time::Instant::now();
             let mut typed_before = typed_before;
             let unanswered = || async {
-                app.goal_not_taken(&task_id, &format!("{TRUST_UNANSWERED}. {TRUST_ANSWER}"))
+                app.goal_never_set(&task_id, TRUST_UNANSWERED, Some(TRUST_ANSWER))
                     .await;
             };
             match app
@@ -4926,6 +4942,52 @@ mod tests {
         assert!(!super::trust_prompt_shown(
             "\u{276f} Try \"refactor <filepath>\""
         ));
+    }
+
+    /// SPEC-472 ATN-004, ATN-006: a goal that was never set says in its terminal what it said
+    /// before, and its flag keeps what is wrong apart from what to do. Behind an unanswered
+    /// trust question the to-do starts there.
+    #[test]
+    fn a_goal_never_set_says_what_is_wrong_and_what_to_do() {
+        let (notice, reason) =
+            super::goal_missing("Claude Code did not take the task's goal", None);
+        assert_eq!(
+            notice,
+            "Claude Code did not take the task's goal. The task has no goal yet: type `/goal` and \
+             the request in the terminal, or stop and continue the task."
+        );
+        assert_eq!(
+            reason.problem.as_deref(),
+            Some("Claude Code did not take the task's goal. The task has no goal yet.")
+        );
+        assert_eq!(
+            reason.action.as_deref(),
+            Some("Type `/goal` and the request in the terminal, or stop and continue the task.")
+        );
+        assert!(reason.link.is_none() && !reason.work_answers);
+
+        let (notice, reason) =
+            super::goal_missing(super::TRUST_UNANSWERED, Some(super::TRUST_ANSWER));
+        assert_eq!(
+            notice,
+            "Claude Code still asks whether to trust this folder, so Yulius typed nothing. Answer \
+             it in the terminal. The task has no goal yet: type `/goal` and the request in the \
+             terminal, or stop and continue the task."
+        );
+        assert_eq!(
+            reason.problem.as_deref(),
+            Some(
+                "Claude Code still asks whether to trust this folder, so Yulius typed nothing. \
+                 The task has no goal yet."
+            )
+        );
+        assert_eq!(
+            reason.action.as_deref(),
+            Some(
+                "Answer it in the terminal, then type `/goal` and the request, or stop and \
+                 continue the task."
+            )
+        );
     }
 
     /// SPEC-117 ONE-003: a launch prompt that is a `/goal` sets the goal; any other prompt, or
