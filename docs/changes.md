@@ -97,8 +97,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   `kernel.unprivileged_userns_clone` set to 0) like setup does. A second one (#1165, #1177) finds
   a person's profile for bwrap in a spelling Yulius does not read (an alternation, a pattern, an
   `alias`, a variable) by what it does: setup loads `/etc/apparmor.d` as a boot does beside its
-  own profile, proves bwrap then, and takes its own profile back where bwrap does not start, so
-  two profiles for bwrap are never left behind.
+  own profile and proves bwrap then; where bwrap does not start it proves once more without
+  Yulius's profile, adopts a person's profile that lets bwrap in (Yulius's is removed,
+  whichever run wrote it) and otherwise puts Yulius's back as it was and says how to disable
+  the other.
 - Resource limits are sized from the host (SPEC-459, task #441, ADR-0294). Live sessions, CI
   jobs, CI runs per sandbox, the sandbox disk quota and the CD run disk no longer have fixed
   defaults (8, 4, 2, 100 GB, 20 GB): like the sandbox memory they follow the host's CPUs, memory

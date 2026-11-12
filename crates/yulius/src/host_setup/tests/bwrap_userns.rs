@@ -590,8 +590,9 @@ fn an_unread_rule_is_found_by_what_it_does() {
     );
 }
 
-/// BNS-012: where bwrap does not start with such a profile either, the host is left as it was:
-/// Yulius's profile is not left beside it, and the line says what a person does.
+/// BNS-012: where bwrap does not start with such a profile alone either, what Yulius has on
+/// the host is as before the run (no profile where there was none, its earlier one where
+/// there was one), and the line says what a person does.
 #[test]
 fn an_unread_rule_that_fails_gets_no_second_profile() {
     let confined = UNREAD_TEXT.replace(" flags=(unconfined)", "");

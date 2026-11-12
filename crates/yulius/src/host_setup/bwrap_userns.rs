@@ -10,7 +10,8 @@
 //! AppArmor's `disable/` link. A profile a person wrote is never changed and never joined by
 //! ours: two profiles for one program cancel each other. One whose spelling Yulius reads is
 //! named; any other is found by what it does: Yulius's profile is proven with the whole
-//! directory loaded as a boot loads it, and taken back where bwrap does not start (BNS-012).
+//! directory loaded as a boot loads it, and where bwrap does not start a person's profile that
+//! lets it in is adopted in place of Yulius's (BNS-012).
 
 use std::path::Path;
 use std::time::Duration;
