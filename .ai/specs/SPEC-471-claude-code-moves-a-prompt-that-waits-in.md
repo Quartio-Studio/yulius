@@ -283,6 +283,7 @@ Where things are in Yulius:
   typed again into the resumed session: the texts kept, a rule for a prompt the old process
   handed on just before it ended, and the order with the launch prompt. That is a design of
   its own in the rotation's code. This change gives it the count and the fake agent's order.
+  (Done since by SPEC-479, ADR-0310: the move waits for the prompt instead of carrying it.)
 - **Not in this change: #1206** (a Stop that finds a prompt pause open). Older code in
   `hook_stop`, about capacity pauses, not about the move. Its test needs a turn that reaches
   its Stop while a prompt's hook is still held, which the fake agent cannot play yet (it

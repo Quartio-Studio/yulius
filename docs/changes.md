@@ -6,6 +6,25 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-12
 
+- A move to another subscription at a turn's end no longer loses what waits in Claude Code's
+  queue (SPEC-479, task #462, ADR-0310, #1194). A message typed into a working session (a
+  person's through their Superagent, a pull request's news) or a prompt its person entered
+  meanwhile waits in a queue inside Claude Code's process until the turn ends; when the pool
+  moved the session at that end, the process ended with it and the sender had been told
+  "sent". The move now waits while such a prompt waits, as it already waits for background
+  work: the session answers it where it was entered (the gate blocks there, where it blocks)
+  and the next turn's end moves it. On a subscription at its limit that turn is refused and
+  continued past the limit on the next one, like any turn a limit cuts. A turn held for
+  capacity is released in place instead of moved while a prompt waits. The count is the one
+  of SPEC-471; new in it is what a turn's closing record found still waiting: Claude Code had
+  its hand-over and left that entry (it leaves some of its own notifications in the queue for
+  good), so it keeps no move, and a session with such an entry stays for one turn's end at
+  most. In this instance's 412 sessions with queue records none of 3,682 hand-overs took such
+  an entry. The restart on a newer Claude Code still counts every entry. The limits of
+  SPEC-471 stay (a prompt entered in the moment after the turn's end decided, a record
+  written later than two seconds); a person's own switch or stop and a turn a limit cuts
+  carry nothing over. The tests' fake agent can play an entry that is never taken out
+  (`/stuck`) and a limit that cuts a handed-on turn.
 - The Subscriptions page reads usage and limit state again on request (SPEC-473, task #451,
   ADR-0307). Each signed-in subscription's card has **Refresh**, and the page has **Refresh
   all**. A refresh reads the usage and then asks Claude about each limit stored for the
@@ -42,7 +61,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   the model API before the design (turns with tool calls included: a waiting prompt is taken
   into the running turn at the next tool result). The tests' fake agent can now queue prompts
   in Claude Code's order (`--queue-prompts`). Not in this change: a subscription switch at a
-  turn's end still loses a queued prompt (#1194).
+  turn's end still loses a queued prompt (#1194; fixed by SPEC-479, above).
 
 - A task that reads "Needs your action" says why, and Reply shows where the answer goes
   (SPEC-472, task #455, ADR-0306, #1221). The bar over a flagged task's terminal read "The agent
