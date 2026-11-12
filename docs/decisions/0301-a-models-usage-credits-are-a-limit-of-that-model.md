@@ -67,7 +67,9 @@ wrong:
   reading read, change and store it through one helper (`App::change_account_usage`) under
   `CapacityState::usage_writes`, which a new sign-in takes too. It is taken after the provider
   answered. A limit recorded while a reading is under way is added to what the reading stored,
-  not written over.
+  not written over. The write that marks a subscription refused takes the lock too: a usage
+  write stores the status it read with the usage, and one under way stored `ok` over "needs a
+  new sign-in" (#1211, older than this change and closed with it).
 - **A subscription reads `limited` while the default model cannot run on it**: a limit Claude
   reported is in effect, or a window that binds that model is at 100 %. The capacity view counts
   subscriptions for that model. "Run #N on…" judges each subscription by what binds the task's
@@ -92,9 +94,10 @@ wrong:
   ([ADR-0304](0304-a-request-yulius-opens-for-a-goal-pause-ends-when-the-agent-works-again.md)).
   It says "the task does not go on by itself", as the request for a goal Claude Code paused
   does. Both end when the session's agent works again, whatever woke it, live and after a
-  restart of Yulius, and sooner when Yulius takes the task on at the limit that cut its turn
-  (`TakenOn`): it runs the session on past the limit, or pauses the task and resumes it by
-  itself. The audit log says which (`task.needs_you.resolved`). A request the agent made stays.
+  restart of Yulius, and sooner when Yulius takes the task on at the refusal that cut its turn
+  (`TakenOn`; a usage limit, or a subscription refused for good): it runs the session on past
+  the refusal, or pauses the task until a subscription can take it and resumes it then. The
+  audit log says which (`task.needs_you.resolved`). A request the agent made stays.
   In the transcript's replay a limit that cut the turn counts as a pause, so that work before
   it answers no request asked at it. A request of an earlier goal pause, answered by work that
   such a limit then overtook while Yulius was down, is therefore ended by what Yulius does at
