@@ -231,6 +231,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   or leaving that sandbox cancels it. Found by the `e2e` job on the faster host, together with
   three test-only races (production protection, the left-composer onboarding test, the phone
   drawer's row measurement).
+- The CI test of the security job's independence no longer fails under load (SPEC-454, task #436,
+  #1079). `local_ci::the_security_job_and_the_others_never_cancel_each_other` queued two runs
+  whose held jobs competed for the fixture's three job slots, so it passed or failed by the order
+  in which they took them and by the fixture's 8 s job limit. Now the integration branch's run and
+  the pull request's first run pass before the test holds any job, the test asserts that, and its
+  jobs have a limit of an hour: only the test ends them. Nothing in the product changes.
 - `yulius host setup` lets bwrap create user namespaces (SPEC-456, task #438, ADR-0296). Ubuntu
   since 24.04 allows them only to programs with an AppArmor rule, and production ran on one
   written by hand. The new item "bwrap namespaces" starts bwrap as the service user and, where
