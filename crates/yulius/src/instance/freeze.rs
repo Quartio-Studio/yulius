@@ -72,6 +72,34 @@ fn runs(state: &Unit) -> bool {
     matches!(state.active.as_str(), "active" | "activating" | "reloading")
 }
 
+/// What the kernel says of a unit's cgroup and everything below it (its `cgroup.events`).
+#[derive(Debug, Default, Clone, Copy)]
+struct Group {
+    /// A process lives in it. A delegated unit keeps its processes in subgroups, which this
+    /// covers.
+    populated: bool,
+    /// All of it is frozen.
+    frozen: bool,
+}
+
+/// The cgroup `cgroup` of a unit, as `systemctl show` names it. A unit without one (it has
+/// stopped and left nothing, or never ran since the host started) holds nothing, and neither
+/// does a group that is gone by the time it is read.
+fn group(host: &dyn Host, cgroup: &str) -> Group {
+    if cgroup.is_empty() {
+        return Group::default();
+    }
+    let events = Path::new("/sys/fs/cgroup")
+        .join(cgroup.trim_start_matches('/'))
+        .join("cgroup.events");
+    let said = host.read(&events).unwrap_or_default();
+    let says = |line: &str| said.lines().any(|l| l.trim() == line);
+    Group {
+        populated: says("populated 1"),
+        frozen: says("frozen 1"),
+    }
+}
+
 /// A held freeze: thawed when dropped unless it was released or kept for a move.
 pub struct Freeze {
     host: Box<dyn Host>,
@@ -153,15 +181,7 @@ pub fn freeze(mut host: Box<dyn Host>, unit: &str, update_unit: &str) -> Result<
             targets.push(unit.to_owned());
         }
     } else {
-        let events = Path::new("/sys/fs/cgroup")
-            .join(state.cgroup.trim_start_matches('/'))
-            .join("cgroup.events");
-        let populated = !state.cgroup.is_empty()
-            && held
-                .host
-                .read(&events)
-                .is_some_and(|e| e.lines().any(|l| l.trim() == "populated 1"));
-        if populated {
+        if group(&*held.host, &state.cgroup).populated {
             return Err(format!(
                 "{unit} is stopped but its agents and terminals still run (KillMode=process); \
                  start it (`systemctl start {unit}`) so the export can freeze them"
@@ -254,6 +274,31 @@ pub fn freeze_to_stay(host: &mut dyn Host, unit: &str) -> Stayed {
         }
     }
     did
+}
+
+/// The units of the instance of the server's unit `unit` that systemd says do not run while
+/// processes of them still do, unfrozen: the server's unit, which keeps the agents, terminals
+/// and sandbox engines it started when it is stopped (`KillMode=process`), and its sessions
+/// unit (SPEC-458) when a stop of it did not end everything. systemd freezes nothing of such a
+/// unit ("Unit is not active"), so [`freeze_to_stay`] leaves it alone; `systemctl kill
+/// --kill-whom=all` still reaches what is left (SPEC-478 RSL-001).
+///
+/// A unit that runs is not looked at: whether it is frozen is systemd's to say. Processes the
+/// kernel holds frozen do not count: they do not run.
+///
+/// # Errors
+/// systemd did not say what a unit does. That is not "nothing is left".
+pub fn left_running(host: &mut dyn Host, unit: &str) -> Result<Vec<String>, String> {
+    let mut left = Vec::new();
+    let names = std::iter::once(unit.to_owned()).chain(yulius_sandbox::units::sessions_unit(unit));
+    for name in names {
+        let state = show(host, &name)?;
+        let held = group(host, &state.cgroup);
+        if !runs(&state) && held.populated && !held.frozen {
+            left.push(name);
+        }
+    }
+    Ok(left)
 }
 
 /// Waits until systemd says that `target`, which was sent the freeze, is frozen; never thaws.

@@ -97,7 +97,7 @@ impl Host for Fake {
                 0,
                 next(&self.sessions).unwrap_or_else(|| "LoadState=not-found\n".into()),
             )),
-            "show" => Ok((0, next(&self.shows).unwrap_or_default())),
+            "show" => Ok((code, next(&self.shows).unwrap_or_default())),
             "is-active" => {
                 let mut answers = self.helper.borrow_mut();
                 let out = if answers.len() > 1 {
@@ -852,4 +852,98 @@ fn a_signal_thaws_every_unit_the_export_froze() {
         "the second is tried although the first failed"
     );
     assert!(why.contains("thaw yulius-sandboxes.service") && why.contains("thaw yulius.service"));
+}
+
+/// The kernel's word of a unit's cgroup and everything below it.
+fn events(fake: &mut Fake, cgroup: &str, said: &str) {
+    fake.files
+        .insert(format!("/sys/fs/cgroup{cgroup}/cgroup.events"), said.into());
+}
+
+/// SPEC-478 RSL-001: a unit that has stopped is asked what it left. Real answers: Ubuntu 26.04,
+/// systemd 259 (the spec's Evidence).
+#[test]
+fn a_stopped_unit_is_named_while_its_processes_run() -> TestResult {
+    // Stopped by hand (`inactive`) or by its start limit (`failed`): `KillMode=process` left
+    // what it started, in subgroups, so only `populated` tells.
+    for active in ["inactive", "failed"] {
+        let mut fake = Fake::new(&[(active, "running")]);
+        events(&mut fake, CGROUP, "populated 1\nfrozen 0\n");
+        assert_eq!(left_running(&mut fake, UNIT)?, [UNIT], "{active}");
+        // Only asked.
+        assert!(fake.calls().is_empty());
+    }
+
+    // An empty group, one that is gone by the time it is read, and no group at all (what
+    // systemd says once nothing is left, and after a restart of the host).
+    let mut fake = Fake::new(&[("inactive", "running")]);
+    events(&mut fake, CGROUP, "populated 0\nfrozen 0\n");
+    assert!(left_running(&mut fake, UNIT)?.is_empty());
+    let mut fake = Fake::new(&[("inactive", "running")]);
+    assert!(left_running(&mut fake, UNIT)?.is_empty());
+    let mut fake = Fake::new(&[]);
+    fake.shows.borrow_mut().push_back(
+        "LoadState=loaded\nActiveState=inactive\nFreezerState=running\nControlGroup=\n".into(),
+    );
+    // Not the root group's file, which says `populated 1` on every host.
+    events(&mut fake, "", "populated 1\nfrozen 0\n");
+    assert!(left_running(&mut fake, UNIT)?.is_empty());
+
+    // What the kernel holds frozen does not run.
+    let mut fake = Fake::new(&[("failed", "frozen")]);
+    events(&mut fake, CGROUP, "populated 1\nfrozen 1\n");
+    assert!(left_running(&mut fake, UNIT)?.is_empty());
+
+    // A unit that runs is not this question, whatever its group holds: whether it is frozen
+    // is systemd's to say.
+    for active in ["active", "activating", "reloading"] {
+        let mut fake = Fake::new(&[(active, "running")]).with_sessions(&[(active, "running")]);
+        events(&mut fake, CGROUP, "populated 1\nfrozen 0\n");
+        events(&mut fake, SESSIONS_CGROUP, "populated 1\nfrozen 0\n");
+        assert!(left_running(&mut fake, UNIT)?.is_empty(), "{active}");
+    }
+    Ok(())
+}
+
+/// SPEC-478 RSL-001 beside SPEC-458: the sessions unit is asked the same way, also while a stop
+/// of it is on its way.
+#[test]
+fn a_stopped_sessions_unit_is_named_while_its_processes_run() -> TestResult {
+    for active in ["inactive", "failed", "deactivating"] {
+        let mut fake = Fake::new(&[("inactive", "running")]).with_sessions(&[(active, "running")]);
+        events(&mut fake, SESSIONS_CGROUP, "populated 1\nfrozen 0\n");
+        assert_eq!(left_running(&mut fake, UNIT)?, [SESSIONS], "{active}");
+        // Both, the server's first.
+        events(&mut fake, CGROUP, "populated 1\nfrozen 0\n");
+        assert_eq!(left_running(&mut fake, UNIT)?, [UNIT, SESSIONS], "{active}");
+    }
+    // A host without a sessions unit.
+    let mut fake = Fake::new(&[("inactive", "running")]);
+    events(&mut fake, SESSIONS_CGROUP, "populated 1\nfrozen 0\n");
+    assert!(left_running(&mut fake, UNIT)?.is_empty());
+    Ok(())
+}
+
+/// SPEC-478 RSL-003: a systemd that does not answer has not said "nothing is left".
+#[test]
+fn what_a_stopped_unit_left_is_not_guessed() {
+    // `systemctl show` fails for the server's unit.
+    let mut fake = Fake::new(&[("inactive", "running")]);
+    fake.codes.insert("show".into(), 1);
+    events(&mut fake, CGROUP, "populated 0\nfrozen 0\n");
+    let Err(why) = left_running(&mut fake, UNIT) else {
+        panic!("systemd did not say");
+    };
+    assert!(
+        why.contains("`systemctl show yulius.service` failed"),
+        "{why}"
+    );
+
+    // It answers for the server's unit and not for its sessions unit.
+    let mut fake = Fake::new(&[("inactive", "running")]);
+    fake.sessions_silent = true;
+    let Err(why) = left_running(&mut fake, UNIT) else {
+        panic!("systemd did not say");
+    };
+    assert!(why.contains("Failed to connect to bus"), "{why}");
 }

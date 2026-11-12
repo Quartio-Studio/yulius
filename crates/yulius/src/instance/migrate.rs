@@ -321,9 +321,9 @@ struct Old {
 }
 
 impl Old {
-    /// Nothing of it runs, as far as systemd says: the server's unit has stopped and its
-    /// sessions unit, where it runs, is frozen. (What a unit stopped by hand left running is
-    /// not looked at here: issue #1178.)
+    /// No unit of it runs unfrozen, as far as systemd says: the server's unit has stopped and
+    /// its sessions unit, where it runs, is frozen. A unit that has stopped may still have left
+    /// processes that run: [`freeze::left_running`] says (SPEC-478 RSL-001).
     fn down(self) -> bool {
         self.stopped && !self.sessions_run
     }
@@ -1887,7 +1887,9 @@ impl<'a> Move<'a> {
                 }
                 if old.is_some_and(Old::down) {
                     // The server's unit has stopped, which systemd does not freeze, and
-                    // nothing of its sessions runs unfrozen (any more).
+                    // nothing of its sessions runs unfrozen (any more). What a stopped unit
+                    // left is asked before that is called "does not run".
+                    self.nothing_left_running()?;
                     let units = self.old_units();
                     self.manual(
                         "old instance",
@@ -1931,6 +1933,53 @@ impl<'a> Move<'a> {
                 Err(Stop::Failed)
             }
         }
+    }
+
+    /// A recorded start whose old units have stopped while the new instance runs: refuses to
+    /// call that "nothing of it runs" while processes of a stopped unit still do (SPEC-478
+    /// RSL-001, issue #1178). The server's unit keeps what it started when it is stopped
+    /// (`KillMode=process`), and systemd freezes nothing of a unit that does not run, so the
+    /// line names the command that ends them. Nothing is killed here and nothing is recorded:
+    /// the same command looks again.
+    fn nothing_left_running(&mut self) -> Result<(), Stop> {
+        let unit = self.opts.service.clone();
+        let left = match freeze::left_running(&mut *self.world.freezer(), &unit) {
+            Ok(left) if left.is_empty() => return Ok(()),
+            Ok(left) => left,
+            // Not knowing is not "nothing is left" (RSL-003).
+            Err(why) => {
+                return Err(self.fail(
+                    "old instance",
+                    format!(
+                        "systemd does not say whether processes of {unit}, which has stopped, \
+                         still run here beside the new instance ({why}). The move is not \
+                         recorded as done: run the command again when it answers"
+                    ),
+                ));
+            }
+        };
+        let (have, of) = if left.len() == 1 {
+            ("has", "it")
+        } else {
+            ("have", "them")
+        };
+        let kept = if left.contains(&unit) {
+            " (a stopped server's unit keeps the agents, terminals and sandbox engines it \
+             started: KillMode=process)"
+        } else {
+            ""
+        };
+        Err(self.fail(
+            "old instance",
+            format!(
+                "{} {have} stopped, but processes of {of} still run here beside the new \
+                 instance{kept}, and systemd freezes nothing of a unit that has stopped. End \
+                 them: `systemctl kill --kill-whom=all --signal=SIGKILL {}`, then run the \
+                 command again. The move is not recorded as done until then",
+                left.join(" and "),
+                left.join(" ")
+            ),
+        ))
     }
 
     /// Freezes what runs of an old instance beside a new one that has taken over (a recorded
