@@ -25,6 +25,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   written later than two seconds); a person's own switch or stop and a turn a limit cuts
   carry nothing over. The tests' fake agent can play an entry that is never taken out
   (`/stuck`) and a limit that cuts a handed-on turn.
+- The first `sudo yulius host setup` on a fresh host no longer fails its Docker smoke test
+  (SPEC-477, task #459, ADR-0308, issue #1160). The setup starts `yulius.service` and runs the
+  smoke seconds later; the starting server adopted the smoke's throwaway sandbox like a holder of
+  a previous server process and replaced the refusing Docker front of its Docker-off holder with
+  an engine front, so the step "a sandbox without Docker answers why" read a live engine. A
+  starting server now leaves `docker-smoke-<pid>` and its production holder alone while that
+  smoke's process runs. The same holds for a server restarted while an operator's `sudo yulius
+  doctor --docker-smoke` runs, which failed that smoke the same way.
 - The Subscriptions page reads usage and limit state again on request (SPEC-473, task #451,
   ADR-0307). Each signed-in subscription's card has **Refresh**, and the page has **Refresh
   all**. A refresh reads the usage and then asks Claude about each limit stored for the
