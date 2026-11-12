@@ -342,6 +342,16 @@ test('a move that does not complete is continued or aborted, and the abort says 
   await expect(c.getByRole('button', 'Show the plan')).toBeEnabled();
   const last = (await asked(browser)).pop();
   expect(last).toEqual({ action: 'abort', target: null, ssh_port: null, public_url: null, data_disks: [], confirm: null });
+
+  // A request the helper then refuses leaves that checklist where it is. It is the last move's,
+  // which is over: nothing is said to be recorded.
+  await browser.evaluate(() => { (window as unknown as { __yuliusMock: { migration: { mode: string } } }).__yuliusMock.migration.mode = 'refused'; });
+  await c.getByRole('button', 'Show the plan').click();
+  await expect(c.getByText('The move helper refused the request.')).toBeVisible({ timeout: 15000 });
+  await expect(c.getByText(new RegExp(`^ ?The last move of this host, to ${TARGET.replaceAll('.', '\\.')}, was aborted .*\\. The checklist below is that move’s, not this request’s\\.$`))).toBeVisible();
+  expect(await cardText(browser)).not.toMatch(/is recorded on this host/);
+  expect(await lineNames(browser)).toEqual(['old instance', 'one-time key']);
+  await expect(c.getByRole('button', 'Abort…')).toBeHidden();
 });
 
 // MVB-033, MVB-034: an abort stops a run in flight, and a read that was on its way before the

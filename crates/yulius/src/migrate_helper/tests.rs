@@ -393,6 +393,8 @@ fn a_request_that_cannot_be_recorded_is_not_run() -> TestResult {
     env.request(&plan("0123abcd-plan"))?;
     let said = env.helper().run().err().ok_or("the helper ended well")?;
     assert!(said.contains("cannot record the request"), "{said}");
+    // It is not taken for an empty record and written over: the ids it holds would be lost.
+    assert!(said.contains("what was handled cannot be read"), "{said}");
     assert_eq!(env.runs(), 0, "a request that could be run again was run");
     assert!(env.status().is_none());
 
@@ -442,6 +444,21 @@ fn a_request_handled_before_another_is_not_acted_on_again() -> TestResult {
         "0123abcd-bad",
         "the refusal's report was replaced"
     );
+    // A record that is damaged in part (bytes that are no text) still tells what it holds: its
+    // other lines are read, and they stay when the next id is added.
+    let record = env.args.state_dir.join(HANDLED_FILE);
+    let mut bytes = std::fs::read(&record)?;
+    bytes.splice(0..0, [0xff, 0xfe, b'\n']);
+    std::fs::write(&record, &bytes)?;
+    env.request(&first)?;
+    env.run()?;
+    assert_eq!(env.runs(), 2, "a damaged record forgot what it held");
+    env.request(&plan("0123abcd-third"))?;
+    env.run()?;
+    assert_eq!(env.runs(), 3);
+    env.request(&first)?;
+    env.run()?;
+    assert_eq!(env.runs(), 3, "adding an id dropped the others");
     // Only root reads what it handled.
     let mode = std::fs::metadata(env.args.state_dir.join(HANDLED_FILE))?
         .permissions()

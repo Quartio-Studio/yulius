@@ -112,10 +112,15 @@ impl Facts {
         let written = i64::try_from(status.updated_at)
             .unwrap_or(i64::MAX)
             .saturating_mul(1000);
+        // A run that was refused wrote none: the helper refused the request, or the command
+        // refused before it changed anything (exit 2). So nothing is this run's then, also
+        // when another run wrote in the very second this one began.
+        let refused = run.state == MoveHelperState::Refused
+            || (run.state == MoveHelperState::Ended && run.exit_code == Some(2));
         Some(if run.ended_at.is_some_and(|ended| written > ended) {
             Whose::Command
-        } else if written.saturating_add(999) < run.started_at {
-            // The whole second it was written in had passed when the run began.
+        } else if refused || written.saturating_add(999) < run.started_at {
+            // Or the whole second it was written in had passed when the run began.
             Whose::Earlier
         } else {
             Whose::Run

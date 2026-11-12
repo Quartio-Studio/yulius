@@ -937,6 +937,61 @@ async fn a_refused_run_keeps_the_recorded_moves_checklist() -> TestResult {
     Ok(())
 }
 
+/// MVB-020: a run that was refused wrote no checklist: the helper refused the request, or the
+/// command refused before it changed anything (exit 2). One that is there is another run's,
+/// also when it was written in the very second the refused run began.
+#[tokio::test]
+async fn a_refused_run_has_no_checklist_of_its_own() -> TestResult {
+    let i = instance().await?;
+    // A move run on the host wrote a failed line this second, and holds the command's lock.
+    i.helper.checklist(
+        "Prepare",
+        &[("software", HostOutcome::Failed)],
+        None,
+        i.now(),
+    );
+    assert_eq!(i.ask(plan()).await?.status, StatusCode::ACCEPTED);
+    i.helper.takes(i.now())?;
+    i.helper.says(|status| {
+        status.error = Some("another `yulius instance migrate` runs on this host".into());
+    });
+    i.helper.ends(Some(2), i.now());
+    let refused = i.view().await?;
+    assert_eq!(refused["run"]["exit_code"], 2);
+    assert_eq!(refused["move"]["phase"], "Prepare");
+    assert_eq!(
+        refused["move"]["earlier"], true,
+        "the host run's failed line as what the plan found"
+    );
+    assert_eq!(refused["can"]["move"], false);
+
+    // The same when the helper itself refused the request.
+    assert_eq!(i.ask(plan()).await?.status, StatusCode::ACCEPTED);
+    i.helper.takes(i.now())?;
+    let now = i.now();
+    i.helper.says(|status| {
+        status.state = MoveHelperState::Refused;
+        status.error = Some("The request was refused: an update is running.".into());
+        status.ended_at = Some(now);
+    });
+    let refused = i.view().await?;
+    assert_eq!(refused["run"]["state"], "refused");
+    assert_eq!(refused["move"]["earlier"], true);
+
+    // A run that failed a step (exit 1) in that second wrote the checklist itself.
+    assert_eq!(i.ask(plan()).await?.status, StatusCode::ACCEPTED);
+    i.helper.takes(i.now())?;
+    i.helper.checklist(
+        "Plan",
+        &[("disk space", HostOutcome::Failed)],
+        None,
+        i.now(),
+    );
+    i.helper.ends(Some(1), i.now());
+    assert_eq!(i.view().await?["move"]["earlier"], false);
+    Ok(())
+}
+
 /// MVB-021: an abort the command refused because nothing is recorded leaves nothing to abort;
 /// one that did not complete can be asked again.
 #[tokio::test]
