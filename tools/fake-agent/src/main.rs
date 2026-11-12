@@ -23,7 +23,8 @@
 //!            [--prompt TEXT] [--limit-continues-ms MS [--limit-continues-answer-only]]
 //!            [--idle-compact-ms MS] [--trust-prompt] [--goal-api-errors N [--goal-retry-ms MS]
 //!            [--goal-check-errors] [--goal-cleared-on-retry]
-//!            [--paused-wake-file PATH [--paused-wake-dies | --paused-wake-hidden]]]
+//!            [--paused-wake-file PATH [--paused-wake-dies | --paused-wake-hidden]]
+//!            [--pause-hold-file PATH]]
 //!            [--no-response-line]
 //! ```
 //!
@@ -109,7 +110,9 @@
 //! and no Stop hook (`WAKE DIED`), as Claude Code 2.1.311 did in task #438's session 16 minutes
 //! after its pause. With `--paused-wake-hidden` the session goes on with no prompt anyone sees,
 //! as Claude Code continues a cut turn by itself (`--limit-continues-ms`): a hidden `isMeta`
-//! prompt with no `UserPromptSubmit` hook, then the same working turn.
+//! prompt with no `UserPromptSubmit` hook, then the same working turn. With `--pause-hold-file
+//! PATH` the notice that pauses the goal is written only once PATH exists (bounded by 60 s; `PAUSE
+//! HELD` while it waits), so a test changes the task between the last failed turn and the pause.
 //!
 //! `--no-response-line` starts like a session Claude Code 2.1.322 resumed with nothing to answer:
 //! before anything else it writes its own line "No response requested." (the model `<synthetic>`,
@@ -275,6 +278,7 @@ struct Options {
     paused_wake_file: Option<PathBuf>,
     paused_wake_dies: bool,
     paused_wake_hidden: bool,
+    pause_hold_file: Option<PathBuf>,
     no_response_line: bool,
     goal_delay_ms: u64,
     goal_met_on_wake_ms: Option<u64>,
@@ -339,6 +343,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
         paused_wake_file: None,
         paused_wake_dies: false,
         paused_wake_hidden: false,
+        pause_hold_file: None,
         no_response_line: false,
         goal_delay_ms: 0,
         goal_met_on_wake_ms: None,
@@ -448,6 +453,10 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
             }
             "--paused-wake-dies" => options.paused_wake_dies = true,
             "--paused-wake-hidden" => options.paused_wake_hidden = true,
+            "--pause-hold-file" => {
+                options.pause_hold_file =
+                    Some(args.next().ok_or("--pause-hold-file needs a path")?.into());
+            }
             "--no-response-line" => options.no_response_line = true,
             "--goal-retry-ms" => {
                 let ms: u64 = parse_number(&flag, args.next())?;
@@ -1839,6 +1848,10 @@ fn goal_api_errors(
         failed += 1;
         say("API ERROR")?;
         if failed > GOAL_RETRIES {
+            if let Some(file) = &options.pause_hold_file {
+                say("PAUSE HELD")?;
+                wait_for_file(file, MAX_WORK_MS);
+            }
             write(&|t| {
                 t.notice(
                     &format!(
@@ -2618,6 +2631,7 @@ mod tests {
         assert!(parse(&["--stuck-at-start-file"]).is_err());
         assert!(parse(&["--turn-hold-file"]).is_err());
         assert!(parse(&["--paused-wake-file"]).is_err());
+        assert!(parse(&["--pause-hold-file"]).is_err());
         assert!(parse(&["--paused-wake-hidden"]).is_ok_and(|o| o.paused_wake_hidden));
         assert!(parse(&["--no-response-line"]).is_ok_and(|o| o.no_response_line));
         assert!(parse(&["--paused-wake-dies", "--paused-wake-hidden"]).is_err());

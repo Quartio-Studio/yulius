@@ -375,6 +375,54 @@ fn a_resumed_session_starts_with_claude_codes_own_line() -> TestResult {
     Ok(())
 }
 
+/// SPEC-469: with `--pause-hold-file` the notice that pauses the goal is written only once the
+/// file exists; until then the session says `PAUSE HELD` and the transcript ends in the last
+/// failed turn's error.
+#[test]
+fn the_goal_pause_waits_for_its_hold_file() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("projects/x/s-7.jsonl");
+    let hold = dir.path().join("hold-pause");
+    let mut child = Command::new(EXE)
+        .args(["--session-id", "s-7", "--transcript"])
+        .arg(&path)
+        .args(["--goal-api-errors", "4", "--goal-retry-ms", "1"])
+        .arg("--pause-hold-file")
+        .arg(&hold)
+        .args(["--prompt", "/goal Merge on green"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()?;
+    let mut lines = std::io::BufReader::new(child.stdout.take().ok_or("no stdout")?).lines();
+    let mut until = |marker: &str| -> TestResult {
+        loop {
+            let line = lines.next().ok_or_else(|| format!("no {marker:?}"))??;
+            if line == marker {
+                return Ok(());
+            }
+        }
+    };
+    until("PAUSE HELD")?;
+    let paused = |records: &[Value]| {
+        records.iter().any(|r| {
+            r["content"]
+                .as_str()
+                .is_some_and(|c| c.starts_with("Goal paused"))
+        })
+    };
+    assert!(!paused(&read_jsonl(&path)?), "no pause while it is held");
+    std::fs::write(&hold, "")?;
+    until("GOAL PAUSED")?;
+    assert!(paused(&read_jsonl(&path)?));
+    child
+        .stdin
+        .take()
+        .ok_or("no stdin")?
+        .write_all(b"/exit\n")?;
+    child.wait()?;
+    Ok(())
+}
+
 #[test]
 fn only_claude_transcripts_are_written() -> TestResult {
     let output = Command::new(EXE)
