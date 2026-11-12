@@ -1712,7 +1712,9 @@ mod moves {
     /// SPEC-471 CCQ-003 (AC6): Claude Code writes the `dequeue` of a hand-over before the
     /// prompt record of the turn it starts. Between the two its queue is empty and no turn
     /// shows: here the agent holds the turn's start, and the turn's end decides once the
-    /// hand-over was read. The session stays, and moves at the handed-on turn's end.
+    /// hand-over was read. The session stays, and moves at the handed-on turn's end. The
+    /// hand-over counts until the task reads Working for that turn, not only until its prompt
+    /// record was read.
     #[test]
     fn a_hand_over_keeps_the_session_until_its_turn_shows() -> TestResult {
         const HELD: Duration = Duration::from_secs(60);
@@ -1722,8 +1724,11 @@ mod moves {
         let turn_starts = data.join("queued-turn-starts");
         let rt = runtime()?;
         rt.block_on(async {
+            // Each turn takes three seconds, so the handed-on one still runs when its prompt
+            // record is read.
             let options = FakeAgentOptions {
                 queue_turn_file: Some(turn_starts.clone()),
+                echo_turn_ms: Some(3_000),
                 ..queueing(&may_end)
             };
             let s = server(&data, &version, options, TaskMode::Prompt, "2.1.322").await?;
@@ -1764,9 +1769,29 @@ mod moves {
                 "the session was restarted between a hand-over and its turn"
             );
             assert!(s.app.queue_holds(&s.id), "handed on, and its turn not seen");
-            // The handed-on turn starts: the prompt is answered, and its end restarts the
-            // session.
+            // The handed-on turn starts. When its prompt record is read, the task does not
+            // read Working yet: the hand-over still counts there.
+            let (app, id) = (Arc::clone(&s.app), s.id.clone());
+            let counted = Arc::new(AtomicBool::new(false));
+            let seen = Arc::clone(&counted);
+            race::on(
+                Point::UserTurnChecked,
+                Path::new(s.id.as_str()),
+                move || {
+                    seen.store(app.queue_holds(&id), Ordering::SeqCst);
+                },
+            );
             std::fs::write(&turn_starts, "")?;
+            settled(&s, Activity::Working).await?;
+            assert!(
+                counted.load(Ordering::SeqCst),
+                "the hand-over ended before its turn was known"
+            );
+            wait_for("the hand-over's end", Duration::from_secs(30), || async {
+                !s.app.queue_holds(&s.id)
+            })
+            .await?;
+            // The prompt is answered, and that turn's end restarts the session.
             let mut shown = String::new();
             wait_for("the restarted session", Duration::from_secs(90), || {
                 shown.push_str(&printed(&mut watch));
