@@ -138,6 +138,7 @@ mod tests {
             last_error: None,
             email: None,
             email_checked_at: None,
+            email_typed: false,
             created_at: Timestamp(0),
             updated_at: Timestamp(0),
         })

@@ -123,6 +123,9 @@ Confirmed against `dev` at 84b45934.
   processes' sockets and files), `update/` (a pending request would start an update on the new
   host), `yulius.db-shm`, sockets, FIFOs and block or character devices other than 0:0. Nothing
   else is left out: caches included (the copy is the whole state; "the size" is the size).
+  Since SPEC-467 (LFT-005) also a top-level `.yulius-limits-adapt`, the mark every import writes
+  anew (SPEC-459 HSL-005): the old host's own, left from an import it once came from, never
+  travels, so a move's two counts cannot differ by it.
 - **IMP-001 Import.** `yulius instance import [FILE]` (stdin without FILE or with `-`) runs as root
   on the new host with the `yulius` binary installed. The target is `--data-dir` (`YULIUS_DATA`,
   default `/var/lib/yulius`), never the manifest's alone. It reads the manifest first and

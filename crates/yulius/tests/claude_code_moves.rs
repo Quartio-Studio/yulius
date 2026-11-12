@@ -87,12 +87,25 @@ fn a_session_records_its_claude_code_and_the_task_shows_it() -> TestResult {
         assert!(before.model_default, "the task names no model");
         assert_eq!(before.effort.as_deref(), Some(DEFAULT_CLAUDE_EFFORT));
         assert_eq!(before.cli_moves_to, None);
+        // A run taken to be on a version (a session restarted on it that wrote nothing yet)
+        // shows that one until its transcript names its own.
+        let run = app.deps.store.live_attempt(&id).await?.ok_or("a run")?.id;
+        let store = &app.deps.store;
+        store
+            .assume_run_cli_version(&run, &id, "2.1.300", app.now())
+            .await?;
+        assert_eq!(run_versions(&app, &id).await, [Some("2.1.300".to_owned())]);
 
         app.send_input(&id, b"first turn\r").await?;
         wait_for("the version", Duration::from_secs(30), || async {
             run_versions(&app, &id).await == [Some("2.1.311".to_owned())]
         })
         .await?;
+        // What the transcript named is never replaced by an assumption.
+        store
+            .assume_run_cli_version(&run, &id, "2.1.999", app.now())
+            .await?;
+        assert_eq!(run_versions(&app, &id).await, [Some("2.1.311".to_owned())]);
         wait_for("the answering model", Duration::from_secs(60), || async {
             app.task_detail(&ctx, id.as_str())
                 .await
@@ -122,6 +135,126 @@ fn a_session_records_its_claude_code_and_the_task_shows_it() -> TestResult {
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-461 CCM-013 (review of the first-record fix): the version a run is taken to run fills
+/// only what its transcript left open: a run without a row, a run whose figures were saved
+/// first, never a version the transcript named; and a version named later replaces it.
+#[tokio::test]
+async fn an_assumed_version_fills_only_what_the_transcript_left_open() -> TestResult {
+    use crate::support::{harness, insert_sandbox};
+    use yulius_app::model::{
+        AttemptRecord, LaunchKind, MetricsRecord, Sealed, TaskMode, TaskOrigin, TaskRecord,
+    };
+    use yulius_app::ports::store::TaskStore as _;
+    use yulius_domain::harness::Harness;
+    use yulius_domain::ids::{AttemptId, SandboxId};
+    use yulius_domain::task::{AttemptState, TaskStatus};
+    use yulius_domain::time::Timestamp;
+
+    let h = harness()?;
+    insert_sandbox(&h, "s1", "studio", 20000).await?;
+    let task = TaskId::parse("t1")?;
+    let at = Timestamp(1_794_000_000_000);
+    h.store
+        .insert_task(&TaskRecord {
+            id: task.clone(),
+            sandbox_id: SandboxId::parse("s1")?,
+            number: 0,
+            title: "Versions".into(),
+            prompt: String::new(),
+            harness: Harness::ClaudeCode,
+            model: None,
+            effort: None,
+            workflow_id: None,
+            status: TaskStatus::Running,
+            activity: None,
+            branch: None,
+            worktree_path: None,
+            spec_path: None,
+            origin: TaskOrigin::Ui,
+            automation_run: None,
+            created_by: UserId::parse("u")?,
+            owner: UserId::parse("u")?,
+            created_at: at,
+            updated_at: at,
+            closed_at: None,
+            archived_at: None,
+            queued_at: None,
+            gate_blocks: 0,
+            wake_enabled: true,
+            mode: TaskMode::Prompt,
+            supertask: false,
+        })
+        .await?;
+    let mut runs = Vec::new();
+    for seq in 1..=3_u32 {
+        let id = AttemptId::parse(&format!("t1-a{seq}"))?;
+        h.store
+            .insert_attempt(&AttemptRecord {
+                id: id.clone(),
+                task_id: task.clone(),
+                seq,
+                harness: Harness::ClaudeCode,
+                account_id: None,
+                provider_session_id: None,
+                launch_kind: LaunchKind::Resume,
+                state: AttemptState::Exited,
+                run_dir: "/nonexistent".into(),
+                token_hash: format!("hash-{seq}"),
+                host_token: Sealed(vec![0]),
+                ptyhost_pid: None,
+                child_pid: None,
+                started_at: at,
+                ended_at: Some(at),
+                exit_code: None,
+                exit_reason: None,
+            })
+            .await?;
+        runs.push(id);
+    }
+    let facts = |of: usize| {
+        let (store, task, run) = (&h.store, task.clone(), runs[of].clone());
+        async move {
+            let all = store.task_run_facts(&task).await.unwrap_or_default();
+            let mine = all.into_iter().find(|facts| facts.attempt == run);
+            mine.map(|facts| (facts.cli_version, facts.model))
+        }
+    };
+    let named = |version: &str| Some((Some(version.to_owned()), None));
+
+    // The watcher saved the second run's figures, without a version; the third run's transcript
+    // named one.
+    let figures = MetricsRecord {
+        model: Some("fake-model".into()),
+        ..MetricsRecord::default()
+    };
+    h.store.put_metrics(&runs[1], &task, &figures, at).await?;
+    h.store
+        .set_run_cli_version(&runs[2], &task, "2.1.330", at)
+        .await?;
+    for run in &runs {
+        h.store
+            .assume_run_cli_version(run, &task, "2.1.322", at)
+            .await?;
+    }
+    assert_eq!(facts(0).await, named("2.1.322"), "a run without a row");
+    assert_eq!(
+        facts(1).await,
+        Some((Some("2.1.322".to_owned()), Some("fake-model".to_owned()))),
+        "a run whose figures were saved first keeps them"
+    );
+    assert_eq!(facts(2).await, named("2.1.330"), "the transcript's word");
+
+    // The transcript names a version later: it replaces the assumption, for good.
+    h.store
+        .set_run_cli_version(&runs[0], &task, "2.1.330", at)
+        .await?;
+    h.store
+        .assume_run_cli_version(&runs[0], &task, "2.1.322", at)
+        .await?;
+    assert_eq!(facts(0).await, named("2.1.330"));
     Ok(())
 }
 
@@ -901,6 +1034,61 @@ mod moves {
             .await?;
             assert_eq!(s.app.claude_code_view(&ctx).await?.moves_stopped, None);
             Ok::<_, Box<dyn std::error::Error>>(())
+        })?;
+        rt.shutdown_timeout(Duration::from_secs(5));
+        Ok(())
+    }
+
+    /// Review of the first-record fix: a release lands while a session restarts. The restarted
+    /// process names its own, newer version with its first record; the version it was sent to,
+    /// written after that, does not replace it.
+    #[test]
+    fn a_restarted_session_keeps_the_version_its_transcript_named_first() -> TestResult {
+        let (_dir, data) = data_dir()?;
+        let version = data.join("claude-version");
+        let rt = runtime()?;
+        rt.block_on(async {
+            let options = FakeAgentOptions {
+                resume_record: true,
+                ..hooked()
+            };
+            let s = server(&data, &version, options, TaskMode::Prompt, "2.1.311").await?;
+            turn_that_stays(&s, "one").await?;
+            release(&s, &version, "2.1.322")?;
+            // A newer release lands as the session restarts: its process runs 2.1.330.
+            std::fs::write(&version, "2.1.330\n")?;
+            // The restart's own word waits here until the transcript's is recorded.
+            let (named, wait) = std::sync::mpsc::channel::<()>();
+            race::on(
+                Point::ClaudeMoveRestarted,
+                Path::new(s.id.as_str()),
+                move || {
+                    let _ = wait.recv_timeout(Duration::from_secs(60));
+                },
+            );
+            let restarted = decided(&s.id);
+            turn(&s, "two").await?;
+            let both = [Some("2.1.311".to_owned()), Some("2.1.330".to_owned())];
+            wait_for(
+                "the transcript's version",
+                Duration::from_secs(60),
+                || async { run_versions(&s.app, &s.id).await == both },
+            )
+            .await?;
+            named.send(())?;
+            until_decided(&restarted).await?;
+            assert_eq!(
+                run_versions(&s.app, &s.id).await,
+                both,
+                "what the transcript named stays"
+            );
+            // It runs a newer one than runs got when it was sent: nothing restarts it again.
+            let flag = decided(&s.id);
+            turn(&s, "three").await?;
+            until_decided(&flag).await?;
+            settled(&s, Activity::Waiting).await?;
+            assert_eq!(runs(&s).await, 2);
+            stop(&s.app, &s.id).await
         })?;
         rt.shutdown_timeout(Duration::from_secs(5));
         Ok(())

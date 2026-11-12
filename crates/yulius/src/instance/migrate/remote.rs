@@ -30,6 +30,12 @@ pub const ADD_KEY: &str =
 pub const SINK: &str = "cat > /dev/null";
 /// Answers a sign-in.
 pub const HELLO: &str = "true";
+/// In [`Remote::reachable`]'s error when this host holds no one-time key: none was made yet, or
+/// a finish deleted it ([`Remote::forget`]).
+pub const NO_KEY: &str = "there is no one-time key";
+/// In [`Remote::reachable`]'s error when the new host refuses the key (`ssh`'s own words): it
+/// was removed there.
+pub const KEY_REFUSED: &str = "Permission denied";
 
 /// The new host, as a move uses it.
 pub trait Remote {
@@ -245,10 +251,10 @@ fn follow(out: impl io::Read) -> Option<Reply> {
 impl Remote for Ssh {
     fn reachable(&mut self) -> Result<(), String> {
         if !self.key_file().is_file() {
-            return Err("there is no one-time key yet".into());
+            return Err(format!("{NO_KEY} yet"));
         }
-        // Its words are kept: "Permission denied" (the key was removed there) is told from a
-        // host that cannot be reached.
+        // Its words are kept: [`KEY_REFUSED`] (the key was removed there) is told from a host
+        // that cannot be reached.
         let out = Command::new("ssh")
             .args(self.args(true, HELLO))
             .stdin(Stdio::null())

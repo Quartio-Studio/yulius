@@ -11,11 +11,12 @@ use yulius_domain::time::Timestamp;
 
 use crate::error::AppResult;
 use crate::model::{
-    AccountRecord, AccountStatus, ApiTokenRecord, AttemptRecord, CachedAccess, ControlRequest,
-    DeviceGrantBounds, DeviceGrantInsert, DeviceGrantRecord, FeedbackRecord, GitHubTokenRecord,
-    InboxEntry, InstanceRecord, MessageRecord, MetricsRecord, PersonPause, ProviderSessionRecord,
-    RecordReservation, RecountOutcome, RunFacts, SandboxRecord, ScopeClaimRecord, Sealed,
-    StepRecord, SwitchDecisionRecord, TaskRecord, TaskTimes, UserRecord, WebSessionRecord,
+    AccountChange, AccountRecord, AccountStatus, ApiTokenRecord, AttemptRecord, CachedAccess,
+    ControlRequest, DeviceGrantBounds, DeviceGrantInsert, DeviceGrantRecord, FeedbackRecord,
+    GitHubTokenRecord, InboxEntry, InstanceRecord, MessageRecord, MetricsRecord, PersonPause,
+    ProviderSessionRecord, RecordReservation, RecountOutcome, RunFacts, SandboxRecord,
+    ScopeClaimRecord, Sealed, StepRecord, SwitchDecisionRecord, TaskRecord, TaskTimes, UserRecord,
+    WebSessionRecord,
 };
 
 /// Instance singleton and setup.
@@ -487,6 +488,16 @@ pub trait TaskStore: Send + Sync {
         version: &str,
         at: Timestamp,
     ) -> AppResult<()>;
+    /// Records the agent CLI version a run is taken to run until its transcript names one (a
+    /// session restarted on a newer Claude Code that has written nothing yet, SPEC-461 CCM-013):
+    /// a version the transcript named already stays, and one it names later replaces this.
+    async fn assume_run_cli_version(
+        &self,
+        attempt: &AttemptId,
+        task: &TaskId,
+        version: &str,
+        at: Timestamp,
+    ) -> AppResult<()>;
     /// What each run of a task ran on: its attempt, the model that answered and its agent CLI
     /// version (each `None` while unknown).
     async fn task_run_facts(&self, task: &TaskId) -> AppResult<Vec<RunFacts>>;
@@ -528,12 +539,21 @@ pub trait AccountStore: Send + Sync {
     async fn account(&self, id: &AccountId) -> AppResult<Option<AccountRecord>>;
     /// All accounts.
     async fn accounts(&self) -> AppResult<Vec<AccountRecord>>;
-    /// Renames an account.
-    async fn update_account(&self, id: &AccountId, label: &str, at: Timestamp) -> AppResult<()>;
+    /// Applies what a person changes on an account, as one write: its name, and the email they
+    /// typed for it (SPEC-463 EML-004). A typed email stays until its person changes or removes
+    /// it: a new sign-in keeps it and Claude's answer never replaces it. Removing it also clears
+    /// Claude's check, so Claude is asked again. An empty change writes nothing.
+    async fn update_account(
+        &self,
+        id: &AccountId,
+        change: &AccountChange,
+        at: Timestamp,
+    ) -> AppResult<()>;
     /// Stores the email of the account's Claude account (`None`: unknown) and when Claude answered
     /// for it definitely (`None`: never, the background round asks again) (SPEC-244), only while
     /// the account still holds `credential`, the one the answer is for. `false` when it does not
-    /// (signed in again meanwhile) and nothing was written.
+    /// (signed in again meanwhile) and nothing was written. Beside an email a person typed, only
+    /// the time of the answer is stored (SPEC-463 EML-004).
     async fn set_account_email(
         &self,
         id: &AccountId,
@@ -543,7 +563,8 @@ pub trait AccountStore: Send + Sync {
         at: Timestamp,
     ) -> AppResult<bool>;
     /// Stores the sealed credential and status. A new credential is a new sign-in, perhaps of
-    /// another Claude account: the email and its check are cleared.
+    /// another Claude account: the email read from Claude and its check are cleared. An email a
+    /// person typed stays (SPEC-463 EML-004).
     async fn set_account_credential(
         &self,
         id: &AccountId,

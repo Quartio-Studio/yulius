@@ -395,6 +395,7 @@ async fn seed(app: &App, data: &Path) -> Result<(SandboxId, UserId), BoxError> {
             updated_at: Timestamp(1),
             email: None,
             email_checked_at: None,
+            email_typed: false,
         })
         .await?;
     let origin = data.join("origin.git");
@@ -1530,6 +1531,7 @@ fn the_goal_is_typed_after_the_turn_continued_past_a_limit() -> TestResult {
                 updated_at: Timestamp(1),
                 email: None,
                 email_checked_at: None,
+                email_typed: false,
             })
             .await?;
         let id = app
@@ -2293,6 +2295,7 @@ fn a_switch_waits_for_a_background_agent_launched_in_the_turn() -> TestResult {
                 updated_at: Timestamp(1),
                 email: None,
                 email_checked_at: None,
+                email_typed: false,
             })
             .await?;
         let id = goal_task(&app, &sandbox, &user, "Review the merge").await?;
@@ -4277,6 +4280,816 @@ fn a_restart_after_spent_goal_retries_puts_the_task_in_needs_you() -> TestResult
     })
 }
 
+/// The fake agent of a goal task whose retries Claude Code spends (SPEC-469): four API errors,
+/// then its pause.
+fn pausing_agent() -> FakeAgentOptions {
+    FakeAgentOptions {
+        transcript: true,
+        hooks: true,
+        goal_api_errors: Some(4),
+        goal_retry_ms: Some(1_000),
+        ..FakeAgentOptions::default()
+    }
+}
+
+/// The request Yulius opened for the goal's pause ("Send the task a message…"), while it is open.
+async fn goal_pause_request(
+    app: &App,
+    id: &TaskId,
+) -> Result<Option<yulius_contracts::api::tasks::NeedsYouView>, BoxError> {
+    let summary = app.task_summary(&task(app, id).await?).await?;
+    Ok(summary
+        .needs_you
+        .filter(|request| request.action.contains("Send the task a message")))
+}
+
+/// The newest audit entry of a request of the task that ended without a person or its agent
+/// (`task.needs_you.resolved`).
+async fn resolved_audit(
+    app: &App,
+    id: &TaskId,
+) -> AppResult<Option<yulius_app::automations::AuditEntry>> {
+    app.deps
+        .store
+        .last_audit(id.as_str(), "task.needs_you.resolved", Timestamp(0))
+        .await
+}
+
+/// Whether the request for the goal's pause is still open (an error reads as open).
+async fn pause_asks(app: &App, id: &TaskId) -> bool {
+    !matches!(goal_pause_request(app, id).await, Ok(None))
+}
+
+/// A goal task Claude Code stopped retrying: it reads Needs you, with the request for the pause.
+async fn paused_goal_task(app: &Arc<App>, data: &Path) -> Result<TaskId, BoxError> {
+    let (sandbox, user) = seed(app, data).await?;
+    let id = goal_task(app, &sandbox, &user, "Merge on green").await?;
+    wait_for("the goal's pause", Duration::from_secs(120), || async {
+        activity(app, &id).await == Some(Activity::NeedsAttention)
+    })
+    .await?;
+    let request = goal_pause_request(app, &id).await?.ok_or("no request")?;
+    assert!(
+        request
+            .happened
+            .as_deref()
+            .is_some_and(|h| h.contains("Goal paused after 3 automatic retries")),
+        "{request:?}"
+    );
+    Ok(id)
+}
+
+/// SPEC-469 GPW-001 (task #154 of another project, 2026-11-11: "even if it woke up, it still has
+/// needs you status"): Claude Code paused the goal, so the task asks a person to send a message.
+/// Then Claude Code wakes the session itself (background work ended) and the agent works. The
+/// request ends with the agent's first line, the task reads Working while the turn runs, and it
+/// asks nobody once the turn ended. Before, the request stayed open for good.
+#[test]
+fn a_session_claude_code_wakes_after_its_goal_pause_no_longer_needs_you() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let (wake, hold) = (data.join("wake"), data.join("hold-turn"));
+        let agent = FakeAgentOptions {
+            paused_wake_file: Some(wake.clone()),
+            turn_hold_file: Some(hold.clone()),
+            ..pausing_agent()
+        };
+        let (app, _) = start(&data, &fake, agent, 0).await?;
+        let id = paused_goal_task(&app, &data).await?;
+        std::fs::write(&wake, "")?;
+        wait_for("the woken turn's work", Duration::from_secs(60), || {
+            screen_contains(&app, &id, "WOKEN")
+        })
+        .await?;
+        wait_for(
+            "the request to end with the agent's work",
+            Duration::from_secs(20),
+            || async { !pause_asks(&app, &id).await },
+        )
+        .await?;
+        assert_eq!(
+            activity(&app, &id).await,
+            Some(Activity::Working),
+            "the woken turn runs"
+        );
+        // The end is audited for `system`; the row is written after the change is published.
+        wait_for(
+            "the audit of the request's end",
+            Duration::from_secs(20),
+            || async {
+                matches!(
+                    resolved_audit(&app, &id).await,
+                    Ok(Some(entry)) if entry.actor == "system"
+                        && entry.detail.as_deref().is_some_and(|d| d.contains("works again"))
+                )
+            },
+        )
+        .await?;
+        // The turn ends (no goal verdict): the task waits, and still asks nobody.
+        std::fs::write(&hold, "")?;
+        wait_for("the woken turn's end", Duration::from_secs(60), || async {
+            activity(&app, &id).await == Some(Activity::Waiting)
+        })
+        .await?;
+        assert!(!pause_asks(&app, &id).await, "the request stays ended");
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-469 GPW-001: the paused session goes on with no prompt anyone sees (a hidden
+/// continuation: no prompt hook, no prompt record that starts a turn). The agent's work alone
+/// says so: the request ends, and the task that read Needs you from the pause reads Working, as
+/// it does after a visible wake-up.
+#[test]
+fn a_session_that_goes_on_unprompted_after_its_goal_pause_no_longer_needs_you() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let (wake, hold) = (data.join("wake"), data.join("hold-turn"));
+        let agent = FakeAgentOptions {
+            paused_wake_file: Some(wake.clone()),
+            paused_wake_hidden: true,
+            turn_hold_file: Some(hold.clone()),
+            ..pausing_agent()
+        };
+        let (app, _) = start(&data, &fake, agent, 0).await?;
+        let id = paused_goal_task(&app, &data).await?;
+        std::fs::write(&wake, "")?;
+        wait_for("the session's work", Duration::from_secs(60), || {
+            screen_contains(&app, &id, "WOKEN")
+        })
+        .await?;
+        wait_for(
+            "the request to end with the agent's work",
+            Duration::from_secs(20),
+            || async { !pause_asks(&app, &id).await },
+        )
+        .await?;
+        wait_for("Working", Duration::from_secs(10), || async {
+            activity(&app, &id).await == Some(Activity::Working)
+        })
+        .await?;
+        std::fs::write(&hold, "")?;
+        wait_for("the turn's end", Duration::from_secs(60), || async {
+            activity(&app, &id).await == Some(Activity::Waiting)
+        })
+        .await?;
+        assert!(!pause_asks(&app, &id).await, "the request stays ended");
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-469 GPW-001 (tasks #446, #450 and #452 on 2026-11-11: paused "the request was rate
+/// limited", then resumed by Yulius 12 to 28 minutes later and working with the request still
+/// open): Yulius restarts the paused session and the API answers again in the resumed one. The
+/// restart alone ends nothing (the resumed session has not answered yet); its first answer does.
+#[test]
+fn a_session_yulius_restarts_after_its_goal_pause_no_longer_needs_you() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let hold = data.join("hold-turn");
+        let agent = FakeAgentOptions {
+            api_recovers_on_resume: true,
+            no_response_line: true,
+            turn_hold_file: Some(hold.clone()),
+            ..pausing_agent()
+        };
+        let (app, _) = start(&data, &fake, agent, 0).await?;
+        let id = paused_goal_task(&app, &data).await?;
+        app.switch_task_now(&id, None, "manual", None).await?;
+        // The resumed session took its goal; its turn is held before its first line. Its own
+        // screen: until the run attaches, the task still shows the paused run's.
+        wait_for(
+            "the resumed session's goal",
+            Duration::from_secs(90),
+            || async {
+                let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
+                attempts.len() == 2
+                    && attempts[1].state == AttemptState::Live
+                    && screen_contains(&app, &id, "GOAL SET").await
+                    && !screen_contains(&app, &id, "GOAL PAUSED").await
+            },
+        )
+        .await?;
+        let runtime = app.runtime(&id);
+        let rounds = runtime.transcript_rounds();
+        wait_for(
+            "the resumed session read",
+            Duration::from_secs(20),
+            || async { runtime.transcript_rounds() >= rounds + 2 },
+        )
+        .await?;
+        // Claude Code's own "No response requested." of the resumed session is no answer either.
+        assert!(
+            pause_asks(&app, &id).await,
+            "a session that has not answered yet shows nothing"
+        );
+        std::fs::write(&hold, "")?;
+        wait_for(
+            "the request to end with the resumed session's answer",
+            Duration::from_secs(30),
+            || async { !pause_asks(&app, &id).await },
+        )
+        .await?;
+        wait_for("Done", Duration::from_secs(60), || async {
+            activity(&app, &id).await == Some(Activity::Done)
+        })
+        .await?;
+        assert!(!pause_asks(&app, &id).await, "the request stays ended");
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-469 GPW-001 and SPEC-333 AER-002 together: the session Yulius restarted works (a tool
+/// call), which ends the request, and then the API fails again until Claude Code pauses the goal
+/// once more. The task is in Needs you again, with a request asked anew: the one it had ended
+/// with the work, so its wait does not count from the first pause.
+#[test]
+fn a_session_paused_again_after_it_worked_asks_again() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            no_response_line: true,
+            ..pausing_agent()
+        };
+        let (app, _) = start(&data, &fake, agent, 0).await?;
+        let id = paused_goal_task(&app, &data).await?;
+        let first = goal_pause_request(&app, &id).await?.ok_or("no request")?;
+        app.switch_task_now(&id, None, "manual", None).await?;
+        // The resumed run's own screen first: until it attaches, the task still shows the
+        // paused run's, with its pause.
+        wait_for("the resumed session", Duration::from_secs(90), || async {
+            let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
+            attempts.len() == 2
+                && attempts[1].state == AttemptState::Live
+                && screen_contains(&app, &id, "FAKE-AGENT READY").await
+                && !screen_contains(&app, &id, "GOAL PAUSED").await
+        })
+        .await?;
+        wait_for(
+            "the resumed session's pause",
+            Duration::from_secs(120),
+            || screen_contains(&app, &id, "GOAL PAUSED"),
+        )
+        .await?;
+        wait_for("Needs you again", Duration::from_secs(20), || async {
+            activity(&app, &id).await == Some(Activity::NeedsAttention)
+        })
+        .await?;
+        let again = goal_pause_request(&app, &id).await?.ok_or("no request")?;
+        assert!(
+            again.at > first.at,
+            "asked anew after the work: {again:?} after {first:?}"
+        );
+        let ended = app
+            .deps
+            .store
+            .audit_details(id.as_str(), "task.needs_you.resolved", 5)
+            .await?;
+        assert_eq!(ended.len(), 1, "the first request ended once: {ended:?}");
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-469 GPW-002 (task #438's session, 2026-11-11 15:05: a goal check-in woke the paused
+/// session, the API refused again within a second and Claude Code closed the turn without a new
+/// notice): a woken turn that brings no work leaves the request open. The person still has to
+/// act, and still reads why.
+#[test]
+fn a_woken_turn_the_api_refuses_again_still_needs_you() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let wake = data.join("wake");
+        let agent = FakeAgentOptions {
+            paused_wake_file: Some(wake.clone()),
+            paused_wake_dies: true,
+            ..pausing_agent()
+        };
+        let (app, _) = start(&data, &fake, agent, 0).await?;
+        let id = paused_goal_task(&app, &data).await?;
+        std::fs::write(&wake, "")?;
+        wait_for("the refused turn", Duration::from_secs(60), || {
+            screen_contains(&app, &id, "WAKE DIED")
+        })
+        .await?;
+        // The record that closes the refused turn settles it (no Stop hook ran): Your turn.
+        wait_for(
+            "the refused turn's end",
+            Duration::from_secs(30),
+            || async { activity(&app, &id).await == Some(Activity::Waiting) },
+        )
+        .await?;
+        let request = goal_pause_request(&app, &id)
+            .await?
+            .ok_or("the request ended although the session did not work")?;
+        assert!(
+            request
+                .happened
+                .as_deref()
+                .is_some_and(|h| h.contains("Goal paused after 3 automatic retries")),
+            "{request:?}"
+        );
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-469 GPW-006: the store refuses the write that ends the request (a trigger aborts it)
+/// when the agent's first work is read. Nothing is lost: the request stays, and the agent's
+/// next work ends it once the store takes the write.
+#[test]
+fn a_request_the_store_could_not_end_ends_at_the_agents_next_work() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let (wake, hold) = (data.join("wake"), data.join("hold-turn"));
+        let agent = FakeAgentOptions {
+            paused_wake_file: Some(wake.clone()),
+            turn_hold_file: Some(hold.clone()),
+            ..pausing_agent()
+        };
+        let (app, _) = start(&data, &fake, agent, 0).await?;
+        let id = paused_goal_task(&app, &data).await?;
+        let db = rusqlite::Connection::open(data.join("yulius.db"))?;
+        db.execute_batch(
+            "CREATE TRIGGER refuse_the_end BEFORE UPDATE OF needs_you ON tasks \
+             WHEN NEW.needs_you IS NULL \
+             BEGIN SELECT RAISE(ABORT, 'refused for the test'); END",
+        )?;
+        std::fs::write(&wake, "")?;
+        wait_for("the woken turn's work", Duration::from_secs(60), || {
+            screen_contains(&app, &id, "WOKEN")
+        })
+        .await?;
+        // The work line was written before the marker: two more rounds read it.
+        let runtime = app.runtime(&id);
+        let rounds = runtime.transcript_rounds();
+        wait_for("the work read", Duration::from_secs(20), || async {
+            runtime.transcript_rounds() >= rounds + 2
+        })
+        .await?;
+        assert!(
+            pause_asks(&app, &id).await,
+            "the store refused the write: the request stays"
+        );
+        db.execute_batch("DROP TRIGGER refuse_the_end")?;
+        // The answer is the agent's next work.
+        std::fs::write(&hold, "")?;
+        wait_for(
+            "the request to end at the agent's next work",
+            Duration::from_secs(30),
+            || async { !pause_asks(&app, &id).await },
+        )
+        .await?;
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-469 GPW-003: the agent asked a person for something before Claude Code paused the goal
+/// (Yulius opens no second request). The session's work after the pause is no answer to the
+/// agent's question: its request stays, as SPEC-134 says.
+#[test]
+fn the_agents_own_request_stays_when_the_session_works_after_a_goal_pause() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let (wake, hold) = (data.join("wake"), data.join("hold-turn"));
+        let agent = FakeAgentOptions {
+            paused_wake_file: Some(wake.clone()),
+            turn_hold_file: Some(hold.clone()),
+            ..pausing_agent()
+        };
+        let (app, _) = start(&data, &fake, agent, 0).await?;
+        let (sandbox, user) = seed(&app, &data).await?;
+        let id = goal_task(&app, &sandbox, &user, "Merge on green").await?;
+        let asked = yulius_app::needs_you::NeedsYouRecord {
+            action: "Add DEV_SSH_KEY on the Secrets page".into(),
+            happened: None,
+            problem: Some("The deploy needs it.".into()),
+            decision: false,
+            link: None,
+            at: 1,
+        };
+        app.deps
+            .store
+            .set_task_needs_you(&id, Some(&asked), Timestamp(1))
+            .await?;
+        wait_for("the goal's pause", Duration::from_secs(120), || async {
+            activity(&app, &id).await == Some(Activity::NeedsAttention)
+        })
+        .await?;
+        std::fs::write(&wake, "")?;
+        wait_for("the woken turn's work", Duration::from_secs(60), || {
+            screen_contains(&app, &id, "WOKEN")
+        })
+        .await?;
+        let runtime = app.runtime(&id);
+        let rounds = runtime.transcript_rounds();
+        wait_for("the work read", Duration::from_secs(20), || async {
+            runtime.transcript_rounds() >= rounds + 2
+        })
+        .await?;
+        let summary = app.task_summary(&task(&app, &id).await?).await?;
+        assert_eq!(
+            summary.needs_you.map(|request| request.action),
+            Some(asked.action.clone()),
+            "the agent's request is its own to end"
+        );
+        assert_eq!(resolved_audit(&app, &id).await?, None, "nothing ended");
+        std::fs::write(&hold, "")?;
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// Two more rounds of the transcript watcher: every line written before is read and applied.
+async fn transcript_read(app: &App, id: &TaskId) -> TestResult {
+    let runtime = app.runtime(id);
+    let rounds = runtime.transcript_rounds();
+    wait_for("the transcript read", Duration::from_secs(20), || async {
+        runtime.transcript_rounds() >= rounds + 2
+    })
+    .await
+}
+
+/// A goal task that another matter flagged (Needs you) before Claude Code paused its goal: the
+/// pause is held (`hold`) until the flag is in place, and the request for the pause is asked
+/// beside that flag.
+async fn flagged_then_paused_goal_task(
+    app: &Arc<App>,
+    data: &Path,
+    hold: &Path,
+) -> Result<TaskId, BoxError> {
+    let (sandbox, user) = seed(app, data).await?;
+    let id = goal_task(app, &sandbox, &user, "Merge on green").await?;
+    wait_for("the held pause", Duration::from_secs(120), || {
+        screen_contains(app, &id, "PAUSE HELD")
+    })
+    .await?;
+    // The last failed turn's prompt and work are read: nothing sets the activity after them.
+    transcript_read(app, &id).await?;
+    app.deps
+        .store
+        .set_activity(&id, Some(Activity::NeedsAttention), app.now())
+        .await?;
+    std::fs::write(hold, "")?;
+    wait_for(
+        "the request for the pause",
+        Duration::from_secs(60),
+        || async { matches!(goal_pause_request(app, &id).await, Ok(Some(_))) },
+    )
+    .await?;
+    assert_eq!(activity(app, &id).await, Some(Activity::NeedsAttention));
+    Ok(id)
+}
+
+/// The session goes on with no visible prompt (`wake`), the agent's work ends the request for
+/// the pause, and the task still reads Needs you once that work is applied: the flag it reads is
+/// not the pause's to lift.
+async fn the_request_ends_and_the_flag_stays(
+    app: &Arc<App>,
+    id: &TaskId,
+    wake: &Path,
+) -> TestResult {
+    std::fs::write(wake, "")?;
+    wait_for("the session's work", Duration::from_secs(60), || {
+        screen_contains(app, id, "WOKEN")
+    })
+    .await?;
+    wait_for(
+        "the request to end with the agent's work",
+        Duration::from_secs(20),
+        || async { !pause_asks(app, id).await },
+    )
+    .await?;
+    transcript_read(app, id).await?;
+    assert_eq!(
+        activity(app, id).await,
+        Some(Activity::NeedsAttention),
+        "another matter's flag stays"
+    );
+    Ok(())
+}
+
+/// The fake agent of a session that goes on after its goal pause with no visible prompt, its
+/// turn held (`hold`) after its first work.
+fn unprompted_agent(wake: &Path, hold: &Path) -> FakeAgentOptions {
+    FakeAgentOptions {
+        paused_wake_file: Some(wake.to_owned()),
+        paused_wake_hidden: true,
+        turn_hold_file: Some(hold.to_owned()),
+        ..pausing_agent()
+    }
+}
+
+/// SPEC-469 GPW-003 (review round 1): a task that another matter flagged before Claude Code
+/// paused the goal keeps that flag. The pause asks its request beside it; the session's work
+/// (no visible prompt) ends the request, and the task still reads Needs you.
+#[test]
+fn a_task_flagged_before_the_goal_pause_keeps_that_flag_through_the_agents_work() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let (wake, hold) = (data.join("wake"), data.join("hold-turn"));
+        let pause = data.join("hold-pause");
+        let agent = FakeAgentOptions {
+            pause_hold_file: Some(pause.clone()),
+            ..unprompted_agent(&wake, &hold)
+        };
+        let (app, _) = start(&data, &fake, agent, 0).await?;
+        let id = flagged_then_paused_goal_task(&app, &data, &pause).await?;
+        the_request_ends_and_the_flag_stays(&app, &id, &wake).await?;
+        std::fs::write(&hold, "")?;
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-469 GPW-003 and GPW-004 (review round 1): the same across a restart of Yulius. The new
+/// server takes the time of the pause's flag from the task's state only when the task reads
+/// Needs you since the request was asked; this task was flagged before.
+#[test]
+fn a_task_flagged_before_the_goal_pause_keeps_that_flag_after_a_restart() -> TestResult {
+    let (_keep, files) = data_dir()?;
+    let (wake, hold) = (files.join("wake"), files.join("hold-turn"));
+    let pause = files.join("hold-pause");
+    let agent = FakeAgentOptions {
+        pause_hold_file: Some(pause.clone()),
+        ..unprompted_agent(&wake, &hold)
+    };
+    a_restart_after(
+        agent,
+        async |app, data| flagged_then_paused_goal_task(app, data, &pause).await,
+        async |_| Ok(()),
+        async |app, id| {
+            // The replay is applied (the transcript ends in the pause): as it was.
+            let runtime = app.runtime(id);
+            wait_for(
+                "the transcript read again",
+                Duration::from_secs(30),
+                || async { runtime.transcript_rounds() >= 2 },
+            )
+            .await?;
+            assert!(pause_asks(app, id).await, "still paused: still asked");
+            the_request_ends_and_the_flag_stays(app, id, &wake).await?;
+            std::fs::write(&hold, "")?;
+            Ok(())
+        },
+    )
+}
+
+/// SPEC-469 (review round 1): the flag the pause raised is replaced without a word (a status
+/// change does that, as when a held turn ends), and another matter flags the task afterwards.
+/// The time of the pause's flag says nothing about that later one: the session's work ends the
+/// request for the pause and leaves the task in Needs you.
+#[test]
+fn a_flag_raised_after_the_goal_pause_is_not_lifted_by_the_agents_work() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let (wake, hold) = (data.join("wake"), data.join("hold-turn"));
+        let (app, _) = start(&data, &fake, unprompted_agent(&wake, &hold), 0).await?;
+        let id = paused_goal_task(&app, &data).await?;
+        // Later than the pause's flag by more than the clock's step.
+        transcript_read(&app, &id).await?;
+        let store = &app.deps.store;
+        store
+            .set_activity(&id, Some(Activity::Working), app.now())
+            .await?;
+        store
+            .set_activity(&id, Some(Activity::NeedsAttention), app.now())
+            .await?;
+        the_request_ends_and_the_flag_stays(&app, &id, &wake).await?;
+        std::fs::write(&hold, "")?;
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-469 GPW-004: Yulius restarts while a session whose goal Claude Code paused waits for a
+/// person (Needs you, with the request). `down` runs while no server does, with the session's
+/// transcript; `check` runs with the new server, once it reattached the run.
+fn a_restart_while_a_goal_is_paused(
+    agent: FakeAgentOptions,
+    down: impl AsyncFnOnce(&Path) -> TestResult,
+    check: impl AsyncFnOnce(&Arc<App>, &TaskId) -> TestResult,
+) -> TestResult {
+    a_restart_after(
+        agent,
+        async |app, data| paused_goal_task(app, data).await,
+        down,
+        check,
+    )
+}
+
+/// [`a_restart_while_a_goal_is_paused`], with `pause` bringing the first server's task to its
+/// paused goal.
+fn a_restart_after(
+    agent: FakeAgentOptions,
+    pause: impl AsyncFnOnce(&Arc<App>, &Path) -> Result<TaskId, BoxError>,
+    down: impl AsyncFnOnce(&Path) -> TestResult,
+    check: impl AsyncFnOnce(&Arc<App>, &TaskId) -> TestResult,
+) -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let first = runtime()?;
+    let (port, id) = first.block_on(async {
+        let (app, port) = start(&data, &fake, agent.clone(), 0).await?;
+        let id = pause(&app, &data).await?;
+        Ok::<_, BoxError>((port, id))
+    })?;
+    first.shutdown_timeout(Duration::from_secs(5));
+
+    let rt = runtime()?;
+    rt.block_on(async {
+        let store = SqliteStore::open(&data.join("yulius.db"))?;
+        let record = TaskStore::task(&store, &id).await?.ok_or("task")?;
+        let worktree = PathBuf::from(record.worktree_path.ok_or("no worktree")?);
+        let attempt = TaskStore::live_attempt(&store, &id)
+            .await?
+            .ok_or("attempt")?;
+        let session = attempt.provider_session_id.ok_or("session")?;
+        let adapter = HarnessAdapter::new(PathBuf::from(env!("CARGO_BIN_EXE_yulius")), "x");
+        let home = data.join("sandboxes").join("s-done").join("home");
+        let transcript = adapter.claude_transcript(&home, &worktree, &session);
+        drop(store);
+        down(&transcript).await?;
+        let (app, _) = start(&data, &fake, agent, port).await?;
+        app.reconcile().await?;
+        check(&app, &id).await?;
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-469 GPW-004: the session is still paused when Yulius starts again, and keeps its request.
+/// Claude Code wakes it afterwards: the request ends then, although the new server never saw the
+/// pause itself.
+#[test]
+fn a_session_woken_after_a_restart_no_longer_needs_you() -> TestResult {
+    let (_keep, files) = data_dir()?;
+    let (wake, hold) = (files.join("wake"), files.join("hold-turn"));
+    let agent = FakeAgentOptions {
+        paused_wake_file: Some(wake.clone()),
+        turn_hold_file: Some(hold.clone()),
+        ..pausing_agent()
+    };
+    a_restart_while_a_goal_is_paused(
+        agent,
+        async |_| Ok(()),
+        async |app, id| {
+            // The replay is applied (the transcript ends in the pause): still Needs you.
+            let runtime = app.runtime(id);
+            wait_for(
+                "the transcript read again",
+                Duration::from_secs(30),
+                || async { runtime.transcript_rounds() >= 2 },
+            )
+            .await?;
+            assert_eq!(activity(app, id).await, Some(Activity::NeedsAttention));
+            assert!(pause_asks(app, id).await, "still paused: still asked");
+            std::fs::write(&wake, "")?;
+            wait_for(
+                "the request to end with the agent's work",
+                Duration::from_secs(60),
+                || async { !pause_asks(app, id).await },
+            )
+            .await?;
+            assert_eq!(activity(app, id).await, Some(Activity::Working));
+            std::fs::write(&hold, "")?;
+            wait_for("the woken turn's end", Duration::from_secs(60), || async {
+                activity(app, id).await == Some(Activity::Waiting)
+            })
+            .await?;
+            assert!(!pause_asks(app, id).await, "the request stays ended");
+            Ok(())
+        },
+    )
+}
+
+/// SPEC-469 GPW-004 (review round 1): Yulius restarts while the session is paused, and the
+/// session then goes on with no prompt anyone sees. The new server never saw the pause flag the
+/// task, and still the agent's work is past that flag: the request ends and the task reads
+/// Working, not Needs you until the turn ends.
+#[test]
+fn a_session_that_goes_on_unprompted_after_a_restart_no_longer_needs_you() -> TestResult {
+    let (_keep, files) = data_dir()?;
+    let (wake, hold) = (files.join("wake"), files.join("hold-turn"));
+    let agent = FakeAgentOptions {
+        paused_wake_file: Some(wake.clone()),
+        paused_wake_hidden: true,
+        turn_hold_file: Some(hold.clone()),
+        ..pausing_agent()
+    };
+    a_restart_while_a_goal_is_paused(
+        agent,
+        async |_| Ok(()),
+        async |app, id| {
+            let runtime = app.runtime(id);
+            wait_for(
+                "the transcript read again",
+                Duration::from_secs(30),
+                || async { runtime.transcript_rounds() >= 2 },
+            )
+            .await?;
+            assert_eq!(activity(app, id).await, Some(Activity::NeedsAttention));
+            assert!(pause_asks(app, id).await, "still paused: still asked");
+            std::fs::write(&wake, "")?;
+            wait_for(
+                "the request to end with the agent's work",
+                Duration::from_secs(60),
+                || async { !pause_asks(app, id).await },
+            )
+            .await?;
+            wait_for("Working", Duration::from_secs(10), || async {
+                activity(app, id).await == Some(Activity::Working)
+            })
+            .await?;
+            std::fs::write(&hold, "")?;
+            wait_for("the turn's end", Duration::from_secs(60), || async {
+                activity(app, id).await == Some(Activity::Waiting)
+            })
+            .await?;
+            assert!(!pause_asks(app, id).await, "the request stays ended");
+            Ok(())
+        },
+    )
+}
+
+/// SPEC-469 GPW-004: Claude Code wakes the paused session while Yulius is down, and the agent
+/// works. The start reads that from the transcript: the request ends and the task follows its
+/// session (Working while the woken turn runs, waiting once it ended), not Needs you for good.
+#[test]
+fn a_session_woken_while_yulius_was_down_no_longer_needs_you() -> TestResult {
+    let (_keep, files) = data_dir()?;
+    let (wake, hold) = (files.join("wake"), files.join("hold-turn"));
+    let agent = FakeAgentOptions {
+        paused_wake_file: Some(wake.clone()),
+        turn_hold_file: Some(hold.clone()),
+        ..pausing_agent()
+    };
+    a_restart_while_a_goal_is_paused(
+        agent,
+        async |transcript| {
+            std::fs::write(&wake, "")?;
+            wait_for("the woken turn's work", Duration::from_secs(60), || async {
+                std::fs::read_to_string(transcript).is_ok_and(|t| {
+                    t.rsplit_once("bfakepaused")
+                        .is_some_and(|(_, after)| after.contains(r#""stop_reason":"tool_use""#))
+                })
+            })
+            .await
+        },
+        async |app, id| {
+            wait_for(
+                "the request to end at the start",
+                Duration::from_secs(30),
+                || async { !pause_asks(app, id).await },
+            )
+            .await?;
+            wait_for("Working", Duration::from_secs(10), || async {
+                activity(app, id).await == Some(Activity::Working)
+            })
+            .await?;
+            std::fs::write(&hold, "")?;
+            wait_for("the woken turn's end", Duration::from_secs(60), || async {
+                activity(app, id).await == Some(Activity::Waiting)
+            })
+            .await?;
+            assert!(!pause_asks(app, id).await, "the request stays ended");
+            Ok(())
+        },
+    )
+}
+
 /// TSK-014 recovery: a restart replays the transcripts of reattached runs. A Done task stays Done
 /// (a replayed prompt used to put it back to Working), and a goal achieved while Yulius was down
 /// (its Stop hook unanswered) makes that task Done.
@@ -4594,6 +5407,7 @@ async fn a_chain_starts_when_its_predecessor_achieves_its_goal() -> TestResult {
             updated_at: Timestamp(1),
             email: None,
             email_checked_at: None,
+            email_typed: false,
         })
         .await?;
     let pred = support::seed_task(&h, "t-pred", "s1", "u-alice", TaskStatus::Running, None).await?;
