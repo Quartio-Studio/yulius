@@ -377,7 +377,10 @@ an older one.
     anything draws the card: the test looks at the button there too. Nothing pinned that the
     mock reads a kept-back read's view when the read is asked, on which the late-read tests
     rest: the mock lists what each late answer said (`lateAnswers`), and the tests assert that
-    it is the older word.
+    it is the older word. Its third look (at 9e781fd8, approved) found that this assertion made
+    the first late-read test depend on the runner's speed: it kept every read back until it let
+    the first one go, so a runner two seconds slow listed the poll's read too. Only the first
+    read is kept back now.
   - *An older answer that is not a late read is left to the next poll* (the question). A
     check's own answer that arrives after a channel change made meanwhile was drawn shows the
     old channel; and of two reads asked after one refusal the older can answer last. In both

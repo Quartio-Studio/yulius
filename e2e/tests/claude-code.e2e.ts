@@ -203,6 +203,8 @@ test('a read asked before a check or a channel change does not undo what that dr
   // The page's first read is answered late: "Check now" is pressed first, and its answer drawn.
   await app.open(mock('/admin/instance', '&claude_hold_read=1'));
   await expect.poll(readsHeld).toBe(1);
+  // Only that read is kept back: the card's later reads are answered as they come.
+  await browser.evaluate(() => { (window as unknown as MockClaude).__yuliusMock.claude.holdRead = null; });
   await screen.getByRole('button', CHECK).click();
   await expect(screen.getByText(/Checking npm for a newer release…/)).toBeVisible();
   // The first read's answer comes now and says nothing of the check: the card goes on asking, and
