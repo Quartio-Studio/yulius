@@ -236,26 +236,33 @@ async function openSubscriptions(app: { open: (path: string) => Promise<void> },
   await expect.poll(async () => (await cardSays(browser, 'main .account-card', 'Claude spare')).age).toBe('Usage read just now');
 }
 const refreshOf = (screen: Screen, name: string) => screen.getByRole('button', `Refresh usage of ${name}`);
+/** The Refresh button on the card that shows `who`, whatever it reads at the moment. */
+const refreshIn = (browser: Browser, who: string) => browser.locator(`main .card:has-text("${who}") .account-refresh`);
+/** A press that reaches the button's own handler, also while it is off (`aria-disabled`). */
+const press = (browser: Browser, css: string, who = '') => browser.evaluate(([css, who]) => {
+  [...document.querySelectorAll<HTMLElement>(css)].find((el) => !who || el.closest('.card')!.textContent!.includes(who))!.click();
+}, [css, who]);
 
 test('Refresh reads one subscription again: the button says so and keeps the keyboard, and the card shows the new reading (SPEC-473)', async ({ app, browser, screen }) => {
   await openSubscriptions(app, browser);
   await holdUsage(browser);
-  const button = refreshOf(screen, 'Claude #1');
-  await expect(button).toHaveText('Refresh');
+  const button = refreshIn(browser, 'mkarp@example.com');
+  await expect(refreshOf(screen, 'Claude #1')).toHaveText('Refresh usage of Claude #1');
   await button.click();
-  await expect(button).toHaveText('Reading…');
+  // It says that it is reading, by its text and by its name, and whose it is.
+  await expect(screen.getByRole('button', 'Reading… usage of Claude #1')).toBeVisible();
   await expect(button).toHaveAttribute('aria-busy', 'true');
   // Off without losing the keyboard, and a second press asks nothing more.
   await expect(button).toHaveAttribute('aria-disabled', 'true');
   await expect(button).toBeFocused();
-  await button.click();
+  await press(browser, 'main .account-refresh', 'mkarp@example.com');
   await browser.keyboard.press('Enter');
   expect((await cardSays(browser, 'main .account-card', 'mkarp@example.com')).age).toBe('Usage read 2 min ago');
   expect(await axeViolations(browser)).toEqual([]);
   await openUsageGate(browser);
   await expect.poll(async () => (await cardSays(browser, 'main .account-card', 'mkarp@example.com')).age).toBe('Usage read just now');
   await expect(browser.locator('.toast-ok .toast-msg:has-text("Usage of Claude #1 read again.")')).toBeVisible();
-  await expect(button).toHaveText('Refresh');
+  await expect(refreshOf(screen, 'Claude #1')).toBeVisible();
   expect(await button.getAttribute('aria-busy')).toBeNull();
   expect(await button.getAttribute('aria-disabled')).toBeNull();
   await expect(button).toBeFocused();
@@ -276,7 +283,7 @@ test('a refresh that Claude does not answer says why in one sentence, on a toast
   await expect(browser.locator('.toast-error .toast-msg')).toHaveText(`Couldn’t refresh Claude #4: ${sentence}`);
   const note = browser.locator('main .account-card:has-text("pawel@example.com") .account-note');
   await expect(note).toHaveText(sentence);
-  await expect(button).toHaveText('Refresh');
+  await expect(button).toBeVisible();
   expect(await browser.evaluate(() => (document.querySelector('main') || document.body).innerText.includes('HTTP'))).toBe(false);
   expect((await cardSays(browser, 'main .account-card', 'pawel@example.com')).age).toBe('Usage read 4 min ago');
   // The card was drawn from the list read again, and the sentence is still there.
@@ -327,23 +334,25 @@ test('Refresh all reads every signed-in subscription, three at a time, and says 
   await openSubscriptions(app, browser);
   await browser.evaluate(() => { const db = (window as unknown as Usage).__yuliusMock; db.sent = {}; db.usageMostInFlight = 0; });
   await holdUsage(browser);
-  const all = screen.getByRole('button', 'Refresh all');
-  await all.click();
+  const all = browser.locator('.page-actions .refresh-all');
+  await screen.getByRole('button', 'Refresh all').click();
   await expect(all).toHaveText('Reading…');
+  await expect(all).toHaveAttribute('aria-busy', 'true');
   await expect(all).toHaveAttribute('aria-disabled', 'true');
   await expect(all).toBeFocused();
   // Each card says that it is being read, and three requests are under way, not five.
-  await expect(refreshOf(screen, 'Claude #1')).toHaveText('Reading…');
-  await expect(refreshOf(screen, 'Claude spare')).toHaveText('Reading…');
+  await expect(refreshIn(browser, 'mkarp@example.com')).toHaveText('Reading… usage of Claude #1');
+  await expect(refreshIn(browser, 'Claude spare')).toHaveText('Reading… usage of Claude spare');
   await expect.poll(() => browser.evaluate(() => (window as unknown as Usage).__yuliusMock.usageInFlight)).toBe(3);
   // A press on a card meanwhile, and on the button again, join what is under way.
-  await refreshOf(screen, 'Claude #1').click();
-  await all.click();
+  await press(browser, 'main .account-refresh', 'mkarp@example.com');
+  await press(browser, '.page-actions .refresh-all');
   expect(await axeViolations(browser)).toEqual([]);
   await openUsageGate(browser);
   await expect(browser.locator('.toast-ok .toast-msg:has-text("Usage read again for 5 subscriptions.")')).toBeVisible();
   await expect(all).toHaveText('Refresh all');
   expect(await all.getAttribute('aria-disabled')).toBeNull();
+  expect(await all.getAttribute('aria-busy')).toBeNull();
   // Each signed-in one once; the one that needs a sign-in not at all.
   expect(await usageRequests(browser)).toEqual({ acc_c1: 1, acc_c2: 1, acc_x1: 1, acc_x2: 1, acc_x3: 1 });
   expect(await browser.evaluate(() => (window as unknown as Usage).__yuliusMock.usageMostInFlight)).toBe(3);
@@ -355,7 +364,7 @@ test('Refresh all reads every signed-in subscription, three at a time, and says 
   const sentence = 'Claude did not accept this subscription’s sign-in. If its tasks fail too, sign in again.';
   await browser.evaluate((fail) => { (window as unknown as Usage).__yuliusMock.usageAnswers = { acc_c2: { fail } }; }, sentence);
   await all.click();
-  await expect(browser.locator('.toast-msg:has-text("1 of 5 subscriptions could not be read: each card says why.")')).toBeVisible();
+  await expect(browser.locator('.toast-error .toast-msg:has-text("1 of 5 subscriptions could not be read: each card says why.")')).toBeVisible();
   await expect(browser.locator('main .account-card:has-text("team@example.com") .account-note')).toHaveText(sentence);
   await expect(all).toHaveText('Refresh all');
 });
@@ -383,8 +392,11 @@ test('Refresh all is off when no subscription is signed in, and one subscription
   await firstShown(browser.locator('main .account-card').first());
   await expect(all).toHaveAttribute('aria-disabled', 'true');
   await expect(all).toHaveAttribute('title', 'No subscription is signed in');
-  await all.click();
+  expect(await all.getAttribute('aria-busy')).toBeNull();
+  await press(browser, '.page-actions .refresh-all');
+  await expect(all).toHaveText('Refresh all');
   expect(await usageRequests(browser)).toEqual({ acc_c1: 1 });
+  expect(await axeViolations(browser)).toEqual([]);
 });
 
 // RFR-015: the page reads a card that may be out of date by itself once per visit. A redraw of the

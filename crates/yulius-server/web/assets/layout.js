@@ -804,9 +804,11 @@ export function accountUsage(account, { foldable = false, open = false, rename =
       setChildren(liveHost,
         dated || refresh ? h('div', { class: 'account-reading', dataset: { stale: String(now.stale) } },
           dated ? h('span', { class: 'account-age', title: usage.observed_at ? dateTime(usage.observed_at) : null }, now.stale ? icon('clock', { size: 13 }) : null, h('span', null, now.stale ? `${now.age} · may be out of date` : now.age)) : h('span'),
-          // Off while it reads without losing the keyboard: aria-disabled, not disabled.
-          refresh ? h('button', { type: 'button', class: 'btn btn-sm account-refresh', 'aria-label': `Refresh usage of ${label()}`, 'aria-busy': busy ? 'true' : null, 'aria-disabled': busy ? 'true' : null, dataset: { focusKey: `account:${account.id}:refresh` }, onClick: () => { if (!refresh.busy()) refresh.run(); } },
-            icon('refresh', { size: 13 }), busy ? 'Reading…' : 'Refresh') : null) : null,
+          // Off while it reads without losing the keyboard: aria-disabled, not disabled. Its
+          // name is what it shows plus whose it is ("Refresh usage of Claude #1"), so it says
+          // "Reading…" to a screen reader too.
+          refresh ? h('button', { type: 'button', class: 'btn btn-sm account-refresh', 'aria-busy': busy ? 'true' : null, 'aria-disabled': busy ? 'true' : null, dataset: { focusKey: `account:${account.id}:refresh` }, onClick: () => { if (!refresh.busy()) refresh.run(); } },
+            icon('refresh', { size: 13 }), h('span', null, busy ? 'Reading…' : 'Refresh', h('span', { class: 'sr-only' }, ` usage of ${label()}`))) : null) : null,
         now.lines.map((line) => h('div', { class: 'account-limit', dataset: { window: line.key } }, icon('clock', { size: 13 }), h('span', null, line.text))),
         quiet ? h('div', { class: 'account-note' }, icon('clock', { size: 13 }), h('span', null, quiet)) : null,
         // Claude refusing a subscription (cancelled, downgraded, revoked) marks it for a new sign-in
