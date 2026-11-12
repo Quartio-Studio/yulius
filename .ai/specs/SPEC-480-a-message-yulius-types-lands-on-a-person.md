@@ -15,9 +15,10 @@ decision in [ADR-0309](../../docs/decisions/0309-yulius-types-nothing-onto-a-per
 ## Goal
 
 A message Yulius types into a running session (a person's `task_message`, a pull request's
-news, "Yulius is back; continue", the MCP watch's texts) is never appended to text a person
-typed into the prompt box and did not send, however long ago they typed it. The sender is told
-why at once; a message of Yulius's own waits, and after a bound the person is told.
+news, "Yulius is back; continue", the MCP watch's texts) is not appended to text a person
+typed into the prompt box and did not send, however long ago they typed it, also before a
+restart of the server. The sender is told why at once; a message of Yulius's own waits, and
+after a bound the person is told.
 
 ## Context
 
@@ -70,7 +71,8 @@ why at once; a message of Yulius's own waits, and after a bound the person is to
   the task's `needs_you` stays open, as for every refusal.
 - DRF-005 (Yulius's own messages wait). The watches keep what they had to say and try again at
   their own pace, as on every `Conflict`; nothing new is queued. The outage wake still ends 10
-  minutes after the start: a session with a draft goes on with its person's next prompt.
+  minutes after the start: a session with a draft goes on with its person's next prompt, and
+  that person is told at the wake's last try (DRF-006).
 - DRF-006 (the bound: the person is told). When a message of Yulius's own (DRF-005) is held by
   a possible draft whose last keystroke is at least 10 minutes old (`policy::DRAFT_TOLD_MS`),
   the task is flagged Needs your action with the reason (Yulius has a message for the session
@@ -78,24 +80,37 @@ why at once; a message of Yulius's own waits, and after a bound the person is to
   send any prompt) and its terminal gets one line saying the same, once per keystroke: typing
   again starts the 10 minutes anew. A flag that ended while the message still waits (a turn's
   end settles a flagged task) is raised again at the watch's next try. Before the 10 minutes
-  Yulius waits silently: the person may still be writing. A session a person typed into without leaving a draft is thus not served by a guess:
+  Yulius waits silently: the person may still be writing. A message Yulius gives up tells the
+  person at its last try whatever the key's age: the wake after an outage, at the last of its
+  passes (`Sender::YuliusLastTry`), because no key typed since the restart can be ten minutes
+  old before the wakes end. A session a person typed into without leaving a draft is thus not served by a guess:
   its sender is told at once, and its person within 10 minutes of their last key plus one pass
   of the watch that has the message (20 s for a pull request's news).
 - DRF-007 (it ends by itself). The next prompt submitted from the session's prompt box, by
   anyone, or a new run ends the hold (CCF-010's knowledge): the watches' next pass types.
+  The flag of DRF-006 ends with it, also when that prompt starts no turn (`/compact`, which
+  leaves the task's activity alone): only that flag, and only while the task still reads it.
   Yulius never clears or sends a person's text.
 - DRF-008 (documents). SPEC-230 TMS-004, ADR-0178, `docs/operations.md`, `docs/architecture.md`,
   `docs/product.md` and the `task_message` tool description say when a message waits for a
   person's draft.
+- DRF-009 (a restart of the server does not forget a draft). The keystroke that begins a
+  possible draft (a person's first key after the box was last empty) writes its time into the
+  run's folder (`person-typed`), before the key is passed on to the session; a prompt
+  submitted from the box removes the file, unless a key typed after that submit began a new
+  draft. A server that reattaches the run reads it as the person's last keystroke, so
+  DRF-001 holds for a draft typed before the restart: the wake after an outage is typed only
+  after one. A new run starts in a new folder, without a mark.
 
 ## Plan
 
-- [ ] Write the spec and the decision (ADR-0309), and report the plan on issue #1199
-- [ ] Regression tests with real processes fail on dev: a draft older than a minute is submitted with a message
-- [ ] type_into_session holds every typed message while a person's draft may sit in the prompt box
-- [ ] A held message of Yulius's own flags the task and says so in its terminal after ten minutes
-- [ ] SPEC-230, ADR-0178, the guide, the architecture and the tool description say when a message waits
-- [ ] Gate green, independent review approved, pull request with Fixes #1199 ready to merge
+- [x] Write the spec and the decision (ADR-0309), and report the plan on issue #1199
+- [x] Regression tests with real processes fail on dev: a draft older than a minute is submitted with a message
+- [x] type_into_session holds every typed message while a person's draft may sit in the prompt box
+- [x] A held message of Yulius's own flags the task and says so in its terminal after ten minutes
+- [x] SPEC-230, ADR-0178, the guide, the architecture and the tool description say when a message waits
+- [ ] Review round 1 answered: a draft from before a restart holds messages, the last wake tells its person, the flag ends with its hold
+- [ ] The full gate passes on the final code and the spec carries the evidence
 
 ## Acceptance criteria
 
@@ -120,6 +135,17 @@ why at once; a message of Yulius's own waits, and after a bound the person is to
   no flag and no terminal line; `task_message` raises none at eleven minutes either.
 - AC5 (DRF-008; the issue's third criterion). `docs/operations.md` and SPEC-230 TMS-004 say when
   a message waits for a person's draft; the gate's document checks pass.
+- AC6 (DRF-009; review round 1). With real processes and a restarted server: a draft typed
+  before the restart keeps `task_message` out after it, its mark is in the run folder, and the
+  person's prompt (read alone by the agent) removes the mark. Fails without the mark: the
+  agent reads the draft and the message as one prompt.
+- AC7 (DRF-005, DRF-006; review round 1). With real processes and a restarted server: a wake
+  held by a draft two minutes old says nothing at a pass that is not the last, and at the last
+  pass the task is flagged and its terminal says so; nothing is typed. The person's prompt
+  ends the flag.
+- AC8 (DRF-007; review round 1). On the test's clock: a task flagged for a held message whose
+  person submits `/compact` (a prompt that starts no turn) reads no flag afterwards and is
+  Waiting. In AC2 the flag is gone once the person's prompt was read.
 
 ## Test plan
 
@@ -133,6 +159,15 @@ why at once; a message of Yulius's own waits, and after a bound the person is to
   the same function with the same `Sender::Yulius`.
 - `crates/yulius-domain/src/intake.rs`: `a_persons_draft_holds_the_prompt_box_however_old`
   (AC3).
+- `crates/yulius/tests/task_message.rs`:
+  `a_draft_typed_before_a_restart_still_keeps_the_message_out` (AC6) and
+  `the_last_wake_after_an_outage_tells_the_person_of_their_draft` (AC7), both across a real
+  restart of the server (a run's last turn is known to a server only from a transcript it read
+  again, so the wake cannot be shown on one server).
+- `crates/yulius/tests/claude_code_moves.rs`:
+  `a_prompt_that_starts_no_turn_ends_the_flag_of_a_held_message` (AC8), on the test's clock
+  with the hook sent over the internal listener: the fake agent runs no prompt hook for
+  `/compact`, as Claude Code 2.1.292 did not.
 - The existing tests of typed messages, the watches and the Claude Code moves stay green
   (`task_message::`, `restart::`, `pr_watch`, `claude_code_moves::`).
 - Mutation checks by hand (Evidence): without the draft rule AC1, AC2 and AC3 fail; with the
@@ -164,10 +199,30 @@ why at once; a message of Yulius's own waits, and after a bound the person is to
 - **The prompt box is not read from the screen.** Its frame and what is drawn in it without
   being typed differ between Claude Code versions (the issue's verification judged it
   fragile), and a wrong "empty" is the defect.
-- **Limits, not fixed here.** Keystrokes are kept in memory, as for SPEC-468: after a restart
-  of the server a draft typed before it is not known, so the wake after an outage can still
-  land on one. A prompt Claude Code scheduled for itself counts as emptying the box (issue
-  #1225) and so ends a hold early. A person's keys in the 300 ms between Yulius's paste and its
-  Enter still join the message (ADR-0178). The goal typist and the `/compact` typist have rules
-  of their own (SPEC-068 TYP-003, SPEC-085) and are not changed. A CLI without the prompt hook
-  never reports a submit: there a keystroke holds messages until the run ends.
+- **The draft's mark is kept in the run folder** (review round 1). Keystrokes were in memory
+  alone, as for SPEC-468, which left the issue's defect for the one typist that types only
+  after a restart ("Yulius is back; continue"). One small file per draft, written at its first
+  key and removed at the submit: no write per keystroke. After a restart the time known is
+  that first key's, so a person may be told earlier than ten minutes after their last key.
+  `App::has_draft` reads the same time: a session with a draft from before a restart of the
+  server is not restarted on a newer Claude Code either.
+- **A message that is given up tells at its last try** (review round 1). A key typed after a
+  restart cannot be ten minutes old before the wakes end, so the wake would be dropped with
+  nobody told. The flag then outlives the wake; the prompt it asks for is what continues the
+  session.
+- **The flag ends where the box is known empty** (review round 1). A prompt that starts a turn
+  sets the task Working and so ends every flag; one that starts none left this flag standing
+  over a reason that was gone, and a flagged task gets no pull request's news. The hook that
+  records the emptied box ends it.
+- **A flagged task is not idle.** While its person has not sent a prompt, a finished task that
+  is flagged does not count as done for the tasks chained after it (`task_is_done`; read in
+  the code, not run). That holds for every flag Yulius raises and is accepted here: a flag is
+  how a person is told.
+- **Limits, not fixed here.** A prompt Claude Code scheduled for itself counts as emptying the
+  box (issue #1225) and so ends a hold early. A person's keys in the 300 ms between Yulius's
+  paste and its Enter still join the message (ADR-0178). The goal typist and the `/compact`
+  typist have rules of their own (SPEC-068 TYP-003, SPEC-085) and do not go through
+  `type_into_session`: the `/compact` typist for a full context leaves alone only keys typed
+  since it asked (`context_full.rs`), so an older draft gets `/compact` behind it (found by the
+  review, older code; reported on issue #1199). A CLI without the prompt hook never reports a
+  submit: there a keystroke holds messages until the run ends.

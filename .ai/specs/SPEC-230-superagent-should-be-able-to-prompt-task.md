@@ -99,7 +99,8 @@ A task that cannot take it says why, so the Superagent can tell the person what 
 - AC-2: Escape sequences and other control characters in the text never reach the session (an
   embedded `ESC[201~` does not end the paste).
 - AC-3: A person who typed into the running task within the last minute makes `task_message`
-  refuse, and nothing is typed.
+  refuse, and nothing is typed. (Since SPEC-480 also a person whose draft may sit in the prompt
+  box, however long ago they typed.)
 - AC-4: A queued task given a message has it in its request under "Added by <login> before the
   task started"; the answer says `queued`.
 - AC-5: A stopped or done task refuses with its state named; an empty text is refused; a task of
@@ -139,6 +140,8 @@ A task that cannot take it says why, so the Superagent can tell the person what 
   another without a person; the person's own Superagent is the person speaking.
 - **A person's draft wins.** As for the goal and `/compact`, a person who typed in the last minute
   owns the prompt box; the Superagent is told to try later rather than mixing its text into theirs.
+  (A minute was too short for a draft, issue #1199: SPEC-480 and ADR-0309 hold a message for as
+  long as the draft may sit there.)
 - **The text is labelled.** The agent and anyone reading the transcript see the message came from
   the person through their Superagent, not from the task's own flow.
 

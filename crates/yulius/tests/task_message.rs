@@ -558,7 +558,7 @@ fn a_message_of_yulius_waits_for_a_persons_draft_and_tells_them() -> TestResult 
     Ok(())
 }
 
-/// SPEC-480 AC6 (DRF-006; review round 1): the wake after an outage is given up ten minutes
+/// SPEC-480 AC7 (DRF-006; review round 1): the wake after an outage is given up ten minutes
 /// after the start, so at its last pass a wake that a person's draft holds tells them, however
 /// young their keystroke is: here two minutes, at which an earlier pass says nothing. The task
 /// used to stay idle with nobody told. Their prompt then continues the session, and no wake
@@ -860,7 +860,7 @@ fn a_run_reattached_after_a_restart_takes_messages() -> TestResult {
     Ok(())
 }
 
-/// SPEC-480 AC5 (DRF-009; review round 1): a draft typed before a restart of the server still
+/// SPEC-480 AC6 (DRF-009; review round 1): a draft typed before a restart of the server still
 /// keeps a message out after it. The keystroke that began it is kept in the run folder, which
 /// the restarted server reads; the server used to know keystrokes in memory alone, and typed
 /// behind such a draft. The person's next prompt removes the mark.

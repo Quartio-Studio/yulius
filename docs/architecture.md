@@ -1670,7 +1670,9 @@ however long ago) or they typed in the last minute (`App::box_held`, `policy::bo
 [SPEC-480](../.ai/specs/SPEC-480-a-message-yulius-types-lands-on-a-person.md),
 [decision 0309](decisions/0309-yulius-types-nothing-onto-a-persons-possible-draft.md): the
 sender is told, and for a message of Yulius's own, which waits in its watch, the task is flagged
-and its terminal says so once the person's last key is ten minutes old), while Claude Code's
+and its terminal says so once the person's last key is ten minutes old; the key that begins a
+possible draft leaves `person-typed` in the run folder, removed when a prompt is submitted from
+the box and read by `reconcile` for a reattached run), while Claude Code's
 folder-trust dialog shows
 (`trust_prompt_shown`), while Yulius types the first message or while another
 message is typed (`TaskRuntime::typing_message`); audited `task.messaged`

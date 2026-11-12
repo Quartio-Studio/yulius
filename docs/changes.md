@@ -15,7 +15,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   the reason at once. For a message of Yulius's own the task reads Needs your action and its
   terminal says so once the person's last key is ten minutes old; the next prompt sent from
   the box releases it. Every key counts, because Yulius sees keys and not the box, so a session
-  someone typed into without leaving text also waits for one prompt.
+  someone typed into without leaving text also waits for one prompt. A draft typed before a
+  restart of Yulius counts too: the run's folder keeps its mark (`person-typed`), so the wake
+  after an outage does not land on it.
 - The Subscriptions page reads usage and limit state again on request (SPEC-473, task #451,
   ADR-0307). Each signed-in subscription's card has **Refresh**, and the page has **Refresh
   all**. A refresh reads the usage and then asks Claude about each limit stored for the

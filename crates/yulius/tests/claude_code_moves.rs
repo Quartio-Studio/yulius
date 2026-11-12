@@ -1368,7 +1368,7 @@ mod moves {
         Ok(())
     }
 
-    /// SPEC-480 AC7 (DRF-007; review round 1): the flag that says a message of Yulius's own
+    /// SPEC-480 AC8 (DRF-007; review round 1): the flag that says a message of Yulius's own
     /// waits for a person's draft ends when the prompt box is emptied, also by a prompt that
     /// starts no turn (`/compact`), which leaves the task's activity alone. The flag used to
     /// outlast its reason there, and a flagged task gets no pull request's news typed. On the

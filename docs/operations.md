@@ -886,12 +886,15 @@ silent. It types none of them while a person's draft may sit in the session's pr
   again (a pull request's news every 20 seconds; the wake after an outage until 10 minutes
   after the start, then it is dropped). Once the person's last key is 10 minutes old, the task
   reads **Needs your action** ("Yulius has a message for this session and does not type it…")
-  and its terminal says the same in one line.
+  and its terminal says the same in one line; a wake that is dropped says so at its last try,
+  whatever the key's age. A flagged task is not idle, so a finished one does not count as done
+  for the tasks chained after it until its person sent a prompt.
 - **What ends it.** Send what you typed in the task's terminal, or clear it and send any
   prompt (`continue` will do). Yulius types its message after the next prompt sent from there;
   it never sends or clears a person's text.
-- Keystrokes are kept in memory: after a restart of Yulius a draft typed before it is not
-  known.
+- A restart of Yulius does not forget a draft: the key that begins one leaves `person-typed`
+  (its time) in the run's folder (`<data>/runs/…`), removed when a prompt is sent from the
+  box, and a restarted server reads it when it reattaches the run.
 
 ### Docker in sandboxes
 

@@ -36,10 +36,21 @@ a prompt is submitted from it.
   the hold; the watch types at its next pass.
 - **Ten minutes, counted from the person's last key.** Long enough that someone still writing
   is not flagged, short enough that a pull request's news is not silently late for long. It
-  needs no state per waiting message.
+  needs no state per waiting message. A message Yulius gives up (the wake after an outage ends
+  ten minutes after the start) tells the person at its last try, whatever the key's age.
+- **The flag ends with the hold.** A prompt that starts a turn sets the task Working, which
+  ends every flag. One that starts none (`/compact`) only empties the box, so the hook that
+  records the emptied box also ends this flag, and only this one.
+- **The draft's mark is kept in the run folder.** The keystroke that begins a possible draft
+  writes `person-typed` (its time) into the run's folder, once; a prompt submitted from the box
+  removes it. A restarted server reads it when it reattaches the run, so the wake after an
+  outage, which is typed only after a restart, does not land on a draft typed before it.
 
 ## Alternatives
 
+- **Keep keystrokes in memory only.** As SPEC-468 does for restarts on a newer Claude Code. But
+  "Yulius is back; continue" is typed only after a restart of the server, when memory is
+  empty: the issue's defect would stay for the typist it names. Rejected (review, round 1).
 - **Wait some minutes, then type anyway.** Bounded delivery to a session without a draft, but a
   real draft older than the bound is still submitted with the message. Rejected: it is what the
   issue reports.
@@ -63,17 +74,30 @@ a prompt is submitted from it.
 
 ## Consequences
 
-- A person's unsent text is never submitted by Yulius, at any age.
-- A session a person typed into without leaving a draft (an answered dialog, Escape) gets no
-  typed message until a prompt is submitted from its box. Its person is told within ten
-  minutes of their last key plus one pass of the watch, and one prompt releases it. This is
-  the price of not guessing; tasks run without approval prompts, so such keys are rare.
+- A message that goes through `type_into_session` is not typed behind text a person typed
+  into the session's terminal and did not send, at any age, for keystrokes Yulius saw (those
+  of a viewer of the task's terminal, also before a restart of the server). The limits below
+  and Yulius's other typists (the goal typist, the `/compact` typist for a full context) are
+  outside this decision.
+- A session a person typed into without leaving a draft (an answered dialog, Escape, an arrow
+  key) gets no typed message until a prompt is submitted from its box. Its person is told
+  within ten minutes of their last key plus one pass of the watch, and one prompt releases it.
+  This is the price of not guessing. How often such keys are typed and left was not measured.
+- The telling is a `needs_attention` flag, and a flagged task is not idle: until its person
+  sends a prompt, a finished task that is flagged does not count as done where "done" asks for
+  an idle task (`task_is_done`: chained tasks, supertasks). As read in the code, not run. It
+  is the same for every flag Yulius raises.
+- After the wake is given up the flag still says a message waits; the person's prompt, which
+  the flag asks for, is what continues the session.
 - The pull-request watch types nothing into a flagged task anyway (a person must act first),
   so the flag and the hold end together, at the person's prompt.
 - The outage wake still gives up ten minutes after the start: a session with a draft continues
   with its person's prompt.
-- Keystrokes are kept in memory: after a restart of the server an earlier draft is not known
-  (as for SPEC-468). A prompt Claude Code scheduled for itself ends the hold early until issue
-  #1225 is fixed.
+- After a restart the server knows a draft from its mark, with the time of the key that began
+  it (later keys of the same draft are not written): the person may be told earlier than ten
+  minutes after their last key. `App::has_draft` (SPEC-468) reads the same time, so a session
+  with a draft from before a restart of the server is not restarted on a newer Claude Code
+  either. A mark that could not be written is logged and tried again at the next key.
+- A prompt Claude Code scheduled for itself ends the hold early until issue #1225 is fixed.
 - Reversible: the rule is `policy::box_held` and one constant; a later, proven way to know the
   box is empty only has to move `box_emptied_ms`.
