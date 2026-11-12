@@ -84,14 +84,16 @@ test('the plan asks for the key first, then says what is yours, and a move needs
   expect(key).toMatch(/^ssh-ed25519 \S+ yulius-migrate-7c1e09ab$/);
   await expect(c.getByRole('button', 'Copy the key line')).toBeVisible();
   await expect(c.getByRole('button', 'Run migration…')).toBeHidden();
-  // The line is in the checklist too, as the command wrote it.
+  // The line is in the checklist too, as the command wrote it; the key box is what says it is
+  // the person's, once.
   expect(await lineNames(browser)).toEqual(['old host', 'one-time key']);
+  expect(await browser.evaluate(() => document.querySelector('section.move .move-attention') === null)).toBe(true);
   expect(await axeViolations(browser)).toEqual([]);
 
   // The key is added on the new host: the same plan goes to its end.
   await c.getByRole('button', 'Show the plan').click();
   await expect(c.getByText(new RegExp(`^The plan for ${TARGET.replaceAll('.', '\\.')}, public URL`))).toBeVisible();
-  await expect(c.getByText('Nothing was changed. changed 1, left alone 12, manual 2, failed 0.')).toBeVisible();
+  await expect(c.getByText('Nothing is frozen, and nothing was changed but the move’s own files. Its lines: changed 1, left alone 12, manual 2, failed 0.')).toBeVisible();
   await expect(c.getByText('Add the move’s key on the new host, then show the plan again.')).toBeHidden();
   // What a person has to act on is repeated before the checklist.
   const yours = await browser.evaluate(() => {
@@ -144,15 +146,22 @@ test('a move shows its checklist, says when the instance is frozen, and ends on 
   // Asked with the plan's values and the host that was typed.
   await expect.poll(async () => (await asked(browser))[1] ?? null).toEqual({ action: 'move', target: TARGET, ssh_port: 22, public_url: URL, data_disks: ['/dev/vdc', '/dev/vdd'], confirm: HOST });
 
-  // The phases, with the one in progress, and the lines as the command writes them.
+  // The phases, with the one in progress, and the lines as the command writes them. The answer
+  // is at the top of the card, which the page shows: the button pressed was a long way below.
   await expect(c.getByText(`Moving to ${HOST}`)).toBeVisible();
+  const top = await browser.evaluate(() => {
+    const el = document.querySelector<HTMLElement>('section.move');
+    return el ? Math.round(el.getBoundingClientRect().top) : -1;
+  });
+  expect(top).toBeGreaterThanOrEqual(0);
+  expect(top).toBeLessThan(200);
   await expect.poll(() => browser.evaluate(() => {
     const step = document.querySelector<HTMLElement>('section.move .move-phases .update-step-current .update-step-title');
     return step ? step.innerText : '';
   })).toMatch(/^Prepare/);
   await expect.poll(() => lineNames(browser)).toContain('software');
   // No form and no second move while it runs; it can be aborted.
-  await expect(c.getByLabel('New host')).toBeDisabled();
+  await expect(c.getByLabel('New host')).toBeHidden();
   await expect(c.getByRole('button', 'Abort…')).toBeVisible();
   expect(await axeViolations(browser)).toEqual([]);
 
@@ -267,7 +276,7 @@ test('an abort stops a plan in flight, and a read answered late does not undo it
   await showThePlan(screen);
   await expect(c.getByText('Asking the move helper for the plan…')).toBeVisible();
   await expect(c.getByText(new RegExp(`^Planning the move to ${TARGET.replaceAll('.', '\\.')}`))).toBeVisible({ timeout: 15000 });
-  await expect(c.getByRole('button', 'Show the plan')).toBeDisabled();
+  await expect(c.getByRole('button', 'Show the plan')).toBeHidden();
   await expect(c.getByRole('button', 'Run migration…')).toBeHidden();
 
   // The card's next read stays on its way while the person aborts.
@@ -303,7 +312,7 @@ test('a plan with a failed line offers no move, and a failed preparation says so
   await pace(browser, 60);
   await showThePlan(screen);
   await expect(c.getByText(new RegExp(`^The plan for ${TARGET.replaceAll('.', '\\.')}.* found problems$`))).toBeVisible();
-  await expect(c.getByText('Nothing was changed. Fix what failed, then show the plan again.')).toBeVisible();
+  await expect(c.getByText('Nothing is frozen, and nothing was changed but the move’s own files. Fix what failed, then show the plan again.')).toBeVisible();
   const failed = await browser.evaluate(() => {
     const box = document.querySelector<HTMLElement>('section.move .move-attention[role="alert"]');
     return box ? box.innerText : '';

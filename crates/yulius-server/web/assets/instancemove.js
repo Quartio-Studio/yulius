@@ -109,9 +109,14 @@ function checklist(lines, label) {
   return h('ol', { class: 'move-lines', 'aria-label': label }, (lines || []).map(lineItem));
 }
 
-/** The lines a person has to act on and the failed ones, repeated before the whole checklist. */
-function attentionBlocks(lines) {
-  const { yours, failed } = attention(lines);
+/**
+ * The lines a person has to act on and the failed ones, repeated before the whole checklist;
+ * `keyShown`: the key to add has its own box, so its line is not said twice.
+ */
+function attentionBlocks(lines, keyShown = false) {
+  const found = attention(lines);
+  const failed = found.failed;
+  const yours = keyShown ? found.yours.filter((l) => l.name !== 'one-time key') : found.yours;
   return [
     failed.length ? h('div', { class: 'banner banner-danger move-attention', role: 'alert' }, icon('warn', { size: 16 }),
       h('div', { class: 'banner-text' }, h('strong', null, `Failed (${failed.length})`),
@@ -262,8 +267,8 @@ export function moveCard(ctx) {
     const failed = move ? attention(move.lines).failed.length : 0;
     if (run.action === 'plan') {
       if (move && move.public_key) return null; // the key box says it
-      if (run.exit_code === 0 && !failed) return outcome('ok', `The plan for ${of}`, `Nothing was changed. ${summary(move ? move.lines : [])}.`);
-      if (failed) return outcome('danger', `The plan for ${of} found problems`, 'Nothing was changed. Fix what failed, then show the plan again.');
+      if (run.exit_code === 0 && !failed) return outcome('ok', `The plan for ${of}`, `Nothing is frozen, and nothing was changed but the move’s own files. Its lines: ${summary(move ? move.lines : [])}.`);
+      if (failed) return outcome('danger', `The plan for ${of} found problems`, 'Nothing is frozen, and nothing was changed but the move’s own files. Fix what failed, then show the plan again.');
       return outcome('danger', 'The plan could not be shown', run.exit_code === 2 ? 'The command refused before it changed anything.' : 'The command ended before its plan.');
     }
     if (run.action === 'abort') {
@@ -288,7 +293,7 @@ export function moveCard(ctx) {
     const all = move.lines || [];
     return [
       head,
-      ...attentionBlocks(all),
+      ...attentionBlocks(all, Boolean(move.public_key)),
       all.length ? h('details', { class: 'move-checklist', open: true },
         h('summary', null, `Checklist (${plural(all.length, 'line')})`),
         checklist(all, 'Checklist')) : null,
@@ -376,7 +381,8 @@ export function moveCard(ctx) {
       view.move && view.move.public_key && !view.move.by_command && !busy ? keyBox(view) : null,
       ...moveBlock(view),
       actions(view),
-      view.helper_installed ? form : null,
+      // The form is for the next plan: not while a run is in flight.
+      view.helper_installed && !busy ? form : null,
     ];
     // A click re-renders the card: focus stays on the control that had it.
     keepFocus(body, () => setChildren(body, ...parts.filter(Boolean)));
@@ -479,6 +485,8 @@ export function moveCard(ctx) {
     }
     if (mine === latest) show(view);
     schedule();
+    // What was asked is answered at the top of the card, which may be a long way up.
+    card.scrollIntoView({ block: 'start' });
     return true;
   }
 
