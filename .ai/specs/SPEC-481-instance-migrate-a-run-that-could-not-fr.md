@@ -202,7 +202,12 @@ that names the pull request.
   frozen unit is held as it is, so naming it gains nothing and can cost the way back. This
   change would have repeated the line in every later run, so both places now go by one rule;
   the later run's way out also ends with the disable (review, nit 6), since a person takes it
-  instead of the two commands.
+  instead of the two commands. The third place (confirming round, minor 2) is the resumed
+  start's "make sure" line for a stopped server, which named the sessions unit beside it: that
+  unit is frozen there. Measured with the real `yulius-sandboxes.service` frozen: `systemctl
+  stop` is refused, the kill exits 0 and leaves it `failed` and `FreezerState=frozen`, thaw and
+  start are refused, and only `systemctl reset-failed` lets it start again. The line now names
+  the stopped server's unit alone.
 - **The look's line stands under the heading `Cutover`, held or not (review, nit 12).**
 - **What the review saw in code that was there before and this change leaves** (written in a
   comment on issue #1179, with what was measured): a server's unit whose file in
@@ -220,10 +225,10 @@ that names the pull request.
 ## Evidence
 
 Runs of 2026-11-12. Logs and scripts are kept in the task's ignored `target/evidence/` while it
-runs; what they showed is quoted here. The code's last state is `2f7c4882`, the documents'
-`d5d364fd`; this section is committed after them. The independent review's first round, at
-`742779e7`, is recorded below with its answers; its confirming look at this commit comes after
-this commit.
+runs; what they showed is quoted here. The code's last state is `ab9b0459`, the documents'
+`73b04f48`; this section is committed after them. The independent review's first round, at
+`742779e7`, and its confirming round, at `ef16e0d0`, are recorded below with their answers;
+its look at the answers of the confirming round comes after this commit.
 
 - **The defect, by test.** At `df0600a4` (the tests and the fake systemd's `is-enabled` alone)
   `cargo nextest run -p yulius --no-fail-fast -E 'test(/instance::/)'`: 338 run, 331 passed, 7
@@ -243,7 +248,11 @@ this commit.
   (tests alone) 340 run, 331 passed, 9 failed (the unit test of `freeze::disabled`, the new
   `a_unit_without_an_install_section_is_held_once_its_link_is_gone`,
   `a_recorded_start_freezes_whatever_unit_runs_beside_the_new_instance` and six of the tests
-  above); at `2f7c4882`: 340 run, 340 passed.
+  above); at `2f7c4882`: 340 run, 340 passed. The confirming round's: at `fd57d9a4` (tests
+  alone) 340 run, 339 passed, 1 failed
+  (`a_recorded_start_with_a_stopped_server_freezes_its_sessions`, on the "make sure" line; the
+  three cases that pin the way out pass there, as pins do); at `ab9b0459`: 340 run, 340
+  passed.
 - **Mutations** (`target/evidence/mutants.py` at `2f7c4882`, each applied alone and undone): 41
   of 41 fail a test (one of them written wrongly at first, so that it did not compile; run
   again alone once corrected). They are the 27 of the round before the review (27 of 27 then;
@@ -255,7 +264,12 @@ this commit.
   told "runs" in a later run; the way out naming a frozen server, leaving out the sessions
   unit, or lacking the disable; the resumed start's way out naming every unit; the look said
   under the plan. The reviewer's own 18 mutants: 14 killed at `742779e7`, 4 survived there, and
-  each of the 4 is among the 41.
+  each of the 4 is among the 41. At `ab9b0459`, 5 more, 5 of 5 killed
+  (`target/evidence/mutants-round3.log`; one again written wrongly at first): the four of the
+  reviewer's six on the delta that had survived at `ef16e0d0` (the way out leaving out a server
+  that is not active; naming frozen sessions; the server read as frozen with its sessions; the
+  resumed start's way out naming only the first unit) and the "make sure" line naming the
+  frozen sessions unit.
 - **What systemd answers** (a QEMU guest from the Ubuntu cloud image: Ubuntu 26.04.1, systemd
   259.5; `target/evidence/guest/probe-is-enabled-259.log`, `probe-masked-and-freeze-259.log`,
   `probe-kill-frozen-259.log`). `systemctl is-enabled`, word and exit code: never enabled
@@ -276,6 +290,10 @@ this commit.
   `ActiveState=activating`, `SubState=auto-restart`, `FreezerState=frozen`, `ControlGroup=`;
   `systemctl thaw` "Unit is not active", exit 1; `systemctl start` and `systemctl enable
   --now` "Cannot perform operation on frozen unit", exit 1. A restart of the guest cleared it.
+  The real `yulius-sandboxes.service` frozen (no `Restart=`; in `scenario-i-*.log`): `stop`
+  refused the same way; the kill exits 0, then `ActiveState=failed`, `FreezerState=frozen`;
+  `thaw` "Unit is not active"; `start` refused; after `systemctl reset-failed` `inactive`,
+  `FreezerState=running`, and `start` exits 0.
 - **The real command on the guest** (`target/evidence/guest/scenario.sh`; logs
   `scenario-before-df0600a4b.log` for A to F with the build of before, and
   `scenario-fix-d5d364fdf.log` for A to H with this change; A to F also at `9cb8bd5d` and
@@ -338,9 +356,20 @@ this commit.
     --signal=SIGKILL yulius-sandboxes.service; systemctl disable yulius.service`, exit 1. Those
     three commands (exit 0 each), then the run: `ok`, "finished", exit 0. The frozen server's
     unit was not touched: `systemctl thaw yulius.service` exit 0, `active`, `running`.
-- **Gates.** `scripts/dev ci` at `d5d364fd`, 21:22 to 21:27 UTC: exit 0; "4058 tests run: 4058
-  passed, 16 skipped". Before the review, at `2bbf653e`, 20:26 to 20:34 UTC: exit 0; "4057
-  tests run: 4057 passed, 16 skipped". `yulius security-scan`: exit 0, "Security scan
+  - **I, a resumed start with a stopped server and frozen sessions** (`scenario-i.sh`; logs
+    `scenario-i-before-df0600a4b.log`, `scenario-i-fix-73b04f489.log`; the new instance is a
+    stand-in on the guest: the same build, its own data directory, the old listeners). Build of
+    before: `manual old instance yulius.service does not run here any more, and the new
+    instance runs. Make sure nothing of the old one runs here: `systemctl stop yulius.service
+    yulius-sandboxes.service; systemctl kill --kill-who=all --signal=SIGKILL yulius.service
+    yulius-sandboxes.service; systemctl disable yulius.service``, exit 0. This change: the same
+    line with `yulius.service` alone in the stop and the kill, exit 0, state `Moved`,
+    `finished`; the same command again: `ok old instance yulius.service does not run here,
+    nothing of it is left running, and it is disabled`, "finished", exit 0.
+- **Gates.** `scripts/dev ci` at `73b04f48`, 21:41 to 21:46 UTC: exit 0; "4058 tests run: 4058
+  passed, 16 skipped". Before the confirming round, at `d5d364fd`, 21:22 to 21:27 UTC: exit 0;
+  "4058 tests run: 4058 passed, 16 skipped". Before the review, at `2bbf653e`, 20:26 to 20:34
+  UTC: exit 0; "4057 tests run: 4057 passed, 16 skipped". `yulius security-scan`: exit 0, "Security scan
   disabled: Vidoc is turned off in Yulius, for this project or the whole instance; nothing was
   scanned." A disabled scan is not a passed one.
 - **Independent review** (a fresh session given the diff range `3393b2ad..742779e7`, this spec
@@ -375,10 +404,30 @@ this commit.
     both lines (HLD-009, Decisions, guest H);
   - P2, pre-existing, a symlinked unit file and the cutover's disable: not this change;
     written in a comment on issue #1179.
+- **The confirming round** (the same reviewer, the delta `742779e7..ef16e0d0`). Its words:
+  "**approve.** There is no blocker and no major in the change's own code, and every
+  first-round finding is answered correctly." And: "The delta brings 2 new minor findings and 3
+  nits, all in or around the new HLD-009. They are fixed in this pull request, which moves the
+  head again." It ran the 340 instance tests, `cargo fmt --check`, `cargo clippy -p yulius
+  --all-targets`, `scripts/check_repository.py`, 6 mutants on the delta (4 survived) and
+  probes on the guest, and checked this section against the logs ("All as written"). Its
+  findings, answered in `fd57d9a4` (tests first), `ab9b0459` and `73b04f48`:
+  - minor 1, half of HLD-009 unpinned: three flow cases (a later run with the server's unit
+    thawed beside frozen sessions, with one on its way up, and with one stopped beside
+    sessions that run; a resumed start whose two freezes fail), and its four mutants are
+    killed;
+  - minor 2, the "make sure" line named a frozen sessions unit: it names the stopped server's
+    unit alone (HLD-009, Decisions, guest I), measured with the real sessions unit;
+  - nit 3, "when systemd does not answer": the guide and ADR-0311 say "does not say what the
+    units do";
+  - nit 4, HLD-009 before HLD-008: in order;
+  - nit 5, a line of 122 columns in the change log: the entry is wrapped again.
 - **Not tested.** A move between two real hosts (the guest stands in for its own new host, so
   the steps on the new host after the cutover ran against the same machine); the real command
   on systemd 255 and 249 (this build runs on the 26.04 guest alone; what those versions answer
   to `is-enabled` was not measured); the page of an old host that reads the phase `Cutover`
   (`yulius-app::migration` is unchanged and reads any phase but `done` and `aborted` as not
   finished); the review's P2 with the real command (the reviewer measured systemd with a
-  stand-in unit and read the move's side from the code).
+  stand-in unit and read the move's side from the code); whether systemd 259 refuses to stop
+  a unit whose freeze is still on its way (the way out names such a unit; neither the
+  reviewer nor this task could produce the state).
