@@ -1,11 +1,11 @@
 ---
 yulius-task: 57d7619e-9b14-4e4a-81e8-6a431b4d5b7c
-status: in-progress
+status: done
 ---
 
 # SPEC-468: Claude Code moves: the last review's leftovers of SPEC-461
 
-Status: in progress
+Status: implemented
 Date: 2026-11-11
 Owner: Yulius task #452
 Scope authorization: the request of task #452 (by MrFishPL, 2026-11-11): fix the two minors and
@@ -106,7 +106,7 @@ The question of direction: the restart waits only while a person typed in the la
 - [x] A message Yulius typed keeps the session until its submit, and the draft rule is checked against the real Claude Code (the claim about Claude Code's queue was withdrawn in round 3)
 - [x] Independent review round 2 answered: only what will be submitted counts (its Enter rule was withdrawn in round 3)
 - [x] Independent review round 3 answered: the rules say what holds with the real Claude Code (the Enter rule and the queue claim are withdrawn, issue #1204)
-- [ ] Second delivery: a failed answer inside a prompt's hold keeps the hold (the last look's minor)
+- [x] Second delivery: a failed answer inside a prompt's hold keeps the hold (the last look's minor)
 
 ## Acceptance criteria
 
@@ -569,8 +569,23 @@ The question of direction: the restart waits only while a person typed in the la
     the Enter rule's corner with two waiting prompts, and "Send anyway" not stamping its
     Enter (both gone with the rule); a failed hook emptying the box had no test (it has one);
     "what a real Claude Code does with two prompts that wait" can be said (it is, above);
-    older code: a Stop that finds a prompt pause open (issue #1206). The same reviewer looked
-    at everything since fa9cbd63; its verdict goes with the merge.
+    older code: a Stop that finds a prompt pause open (issue #1206).
+  - Its fourth look approved the head a3f45a4a (3849 passed and 16 skipped; 970 passed and 1
+    skipped in two e2e runs alone, while its first, run beside its own cargo runs, failed
+    once in `cd.e2e.ts`, the flake of issue #1171), with the major answered, one minor and
+    one nit left in own code, and two notes on older code (#1171; the e2e README's table,
+    issue #1210). That head, with a clean merge of `dev`, was merged as #1209 (512e42a8).
+- Second delivery, after #1209. The minor: a failing answer inside a prompt's hold ended the
+  hold, so the next request counted as a new submit. The reviewer's probe is kept as
+  `a_failed_answer_inside_a_hold_keeps_the_hold` and was seen failing first ("what was typed
+  while the prompt was held is still a draft"). Mutations, each caught: the hold not kept
+  through an error (that test); every error keeping a hold
+  (`a_prompt_whose_hook_fails_was_submitted_all_the_same`). The nit: two Plan lines named
+  what round 3 withdrew; they say so now. `scripts/dev ci` at 49d9907b: exit 0, nextest 3852
+  passed / 16 skipped, the other steps as above; after it come only this section and the
+  Plan's last tick. `claude_code_moves` (30 tests) 6 times over, all passed. The web files
+  are those of the first delivery, so the e2e suite was not run again here (Yulius CI runs
+  it). The same reviewer looked at this delta; its verdict goes with the merge.
 - Not tested: a restart that Yulius makes of a real, signed-in Claude Code session (no
   subscription can be signed in for a test: the fake agent stands in for the process, and
   what the real one does was read in its binaries and transcripts); an operating system's
