@@ -1778,8 +1778,7 @@ that did not complete within a minute is left on its way. A server's unit that h
 (`inactive` or `failed`) is not frozen by systemd: its sessions unit is frozen where it still
 runs, and both are named for you to make sure nothing of the old instance is left. A server's
 unit that systemd reports on its way up or down is not taken for stopped (a sessions unit that
-is being stopped is not frozen any more; it counts as ended once no process of it is left, see
-below). A unit that was frozen is named also when the other could not
+is being stopped counts as ended once no process of it is left, see below). A unit that was frozen is named also when the other could not
 be. When the new instance answers
 and does not run, `--abort` is the way back; when the new host does not answer the question,
 nothing is touched and the same command asks again once it does.
