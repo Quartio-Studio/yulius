@@ -19,6 +19,8 @@
 //!            [--interrupts] [--rate-limits-file PATH] [--session-start] [--opening-turn-ms MS]
 //!            [--cli-version-file PATH] [--exit-at-start-file PATH] [--stuck-at-start-file PATH]
 //!            [--turn-hold-file PATH] [--resume-record]
+//!            [--queue-prompts [--queue-record-ms MS] [--queue-handover-file PATH]
+//!            [--queue-turn-file PATH]]
 //!            [--echo-turn-ms MS] [--context-full-after N] [--compact-fails] [--compact-hangs]
 //!            [--prompt TEXT] [--limit-continues-ms MS [--limit-continues-answer-only]]
 //!            [--idle-compact-ms MS] [--trust-prompt] [--goal-api-errors N [--goal-retry-ms MS]
@@ -151,6 +153,27 @@
 //! ends only once PATH exists (bounded by 60 s), so a test says when a turn ends instead of a
 //! timer.
 //!
+//! `--queue-prompts` makes an echoed turn take the lines entered while it runs as Claude Code
+//! 2.1.322 takes prompts entered during a turn (seen with the real tool against a stub of the
+//! model API, SPEC-471). The turn's prompt record is written at its start. A line entered while
+//! the turn runs (while it is held, or while one of its Stop hooks is answered) gets its
+//! `UserPromptSubmit` hook at once and, unless the hook blocks it, a `queue-operation` record
+//! `enqueue` with its text, and prints `QUEUED: <line>`; it is not answered yet. A Stop answer
+//! that blocks releases nothing: the turn goes on (Claude Code's "Stop hook feedback" record
+//! and another answer) to another Stop. After the Stop that lets the turn end, the waiting
+//! lines are handed on together: one `dequeue` record each, then the ended turn's closing
+//! records, then one `user` record each (`promptSource: "queued"`) and one turn that answers
+//! them all (`ECHO: <line>` each), with no further prompt hook; lines entered during that turn
+//! wait in the same way. Without the option a line is read, and its hook run, only after the
+//! turn before it, as ever. `--queue-record-ms MS` writes a waiting line's `enqueue` record MS
+//! after its hook returned (Claude Code's record reaches the file about 100 ms after it is
+//! made). `--queue-handover-file PATH` hands the queue on only once PATH exists, and
+//! `--queue-turn-file PATH` starts the handed-on turn (its prompt records) only once PATH
+//! exists, after the `dequeue` records; both are bounded by 60 s, so a test says when each
+//! happens. The agent says when it waits: `TURN HELD` (for `--turn-hold-file`), `QUEUE HELD`
+//! and `QUEUED TURN HELD`. A command line (`/exit`, `/work …`) entered during such a turn is
+//! queued like any other text and echoed, and `--limit-after` is not applied to such turns.
+//!
 //! `--resume-record`: at its start the agent writes a record a real Claude Code writes before
 //! any prompt when it resumes a session whose turn was interrupted: a meta user record with
 //! its version (the transcript then names the version before any prompt, SPEC-461).
@@ -228,6 +251,10 @@ const CHECK_CAUSE: &str = "the goal check could not complete";
 const GOAL_RETRIES: u32 = 3;
 const MAX_HOOK_OUTPUT: u64 = 1024 * 1024;
 const MAX_WORK_MS: u64 = 60_000;
+/// Most lines entered and not yet taken by the agent (`--queue-prompts`): the reader waits.
+const MAX_ENTERED: usize = 64;
+/// Most Stops of one turn that a block sends on to another (a hook that always blocks).
+const MAX_STOP_BLOCKS: u32 = 16;
 /// How long a paused session waits for `--paused-wake-file`: a test may restart its server in
 /// between, and a leaked fixture still ends.
 const MAX_PAUSED_WAKE_MS: u64 = 120_000;
@@ -300,6 +327,10 @@ struct Options {
     exit_at_start_file: Option<PathBuf>,
     stuck_at_start_file: Option<PathBuf>,
     turn_hold_file: Option<PathBuf>,
+    queue_prompts: bool,
+    queue_record_ms: u64,
+    queue_handover_file: Option<PathBuf>,
+    queue_turn_file: Option<PathBuf>,
     resume_record: bool,
     context_full_after: Option<u64>,
     compact_fails: bool,
@@ -365,6 +396,10 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
         exit_at_start_file: None,
         stuck_at_start_file: None,
         turn_hold_file: None,
+        queue_prompts: false,
+        queue_record_ms: 0,
+        queue_handover_file: None,
+        queue_turn_file: None,
         resume_record: false,
         context_full_after: None,
         compact_fails: false,
@@ -518,6 +553,22 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
             "--turn-hold-file" => {
                 options.turn_hold_file =
                     Some(args.next().ok_or("--turn-hold-file needs a path")?.into());
+            }
+            "--queue-prompts" => options.queue_prompts = true,
+            "--queue-record-ms" => {
+                let ms: u64 = parse_number(&flag, args.next())?;
+                options.queue_record_ms = ms.min(MAX_WORK_MS);
+            }
+            "--queue-handover-file" => {
+                options.queue_handover_file = Some(
+                    args.next()
+                        .ok_or("--queue-handover-file needs a path")?
+                        .into(),
+                );
+            }
+            "--queue-turn-file" => {
+                options.queue_turn_file =
+                    Some(args.next().ok_or("--queue-turn-file needs a path")?.into());
             }
             "--resume-record" => options.resume_record = true,
             "--context-full-after" => {
@@ -809,6 +860,43 @@ impl Transcript {
         user["message"] = json!({"role": "user", "content": prompt});
         self.last_uuid = Some(uuid);
         self.append(&[user])
+    }
+
+    /// A `queue-operation` record as Claude Code 2.1.322 writes it: `enqueue` with the entry's
+    /// text, `dequeue` with nothing else (`--queue-prompts`).
+    fn queue_operation(&self, operation: &str, content: Option<&str>) -> io::Result<()> {
+        let mut record = json!({"type": "queue-operation", "operation": operation,
+            "timestamp": rfc3339(now_ms()), "sessionId": self.session_id});
+        if let Some(content) = content {
+            record["content"] = json!(content);
+        }
+        self.append(&[record])
+    }
+
+    /// The prompt record of a line that waited in the queue, at the start of the turn that
+    /// takes it.
+    fn queued_prompt(&mut self, prompt: &str) -> io::Result<()> {
+        self.turns += 1;
+        let uuid = format!("fake-{}-{}-u", self.session_id, self.turns);
+        let mut user = self.claude_envelope("user", &uuid, &rfc3339(now_ms()));
+        user["promptSource"] = json!("queued");
+        user["message"] = json!({"role": "user", "content": prompt});
+        self.last_uuid = Some(uuid);
+        self.append(&[user])
+    }
+
+    /// A Stop hook blocked the turn's end: Claude Code's record of the hook's reason, and the
+    /// answer the model gives to it.
+    fn stop_feedback(&mut self, reason: &str) -> io::Result<()> {
+        self.turns += 1;
+        let uuid = format!("fake-{}-{}-feedback", self.session_id, self.turns);
+        let mut meta = self.claude_envelope("user", &uuid, &rfc3339(now_ms()));
+        meta["isMeta"] = json!(true);
+        meta["message"] = json!({"role": "user",
+            "content": format!("Stop hook feedback:\n{reason}")});
+        self.last_uuid = Some(uuid);
+        self.append(&[meta])?;
+        self.answer("Stop hook feedback", "AGAIN")
     }
 
     /// The answer that ends a `/work` turn.
@@ -1318,16 +1406,213 @@ impl Hooks {
     }
 
     fn stop(&self) -> io::Result<()> {
-        let answer = run_hook(
-            &self.exe,
-            "Stop",
-            &json!({"session_id": self.session_id, "hook_event_name": "Stop",
-                "stop_hook_active": false}),
-        );
-        if answer.contains("\"block\"") {
+        if self.stop_answer(false).contains("\"block\"") {
             say("STOP BLOCKED")?;
         }
         Ok(())
+    }
+
+    /// What the Stop hook answered; `active` says a Stop of this turn was blocked before.
+    fn stop_answer(&self, active: bool) -> String {
+        run_hook(
+            &self.exe,
+            "Stop",
+            &json!({"session_id": self.session_id, "hook_event_name": "Stop",
+                "stop_hook_active": active}),
+        )
+    }
+}
+
+/// The lines entered into the agent, read by a thread of their own (`--queue-prompts`), so a
+/// turn takes the ones entered while it runs.
+struct Entered(std::sync::mpsc::Receiver<String>);
+
+impl Entered {
+    fn start() -> Self {
+        let (lines, entered) = std::sync::mpsc::sync_channel(MAX_ENTERED);
+        std::thread::spawn(move || {
+            let stdin = io::stdin();
+            let mut input = stdin.lock();
+            while let Ok(Some(line)) = read_message(&mut input) {
+                if lines.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+        Self(entered)
+    }
+
+    /// The next line, waiting for it; `None` at the input's end.
+    fn next(&self) -> Option<String> {
+        self.0.recv().ok()
+    }
+
+    /// A line entered meanwhile, if one was.
+    fn meanwhile(&self) -> Option<String> {
+        self.0.try_recv().ok()
+    }
+}
+
+/// The lines that wait for the running turn's end (`--queue-prompts`), as Claude Code's queue.
+struct Waiting<'a> {
+    options: &'a Options,
+    transcript: Option<&'a Arc<Mutex<Transcript>>>,
+    hooks: Option<&'a Hooks>,
+    entered: &'a Entered,
+    lines: Vec<String>,
+    /// `enqueue` records still to be written (`--queue-record-ms`).
+    records: Vec<std::thread::JoinHandle<()>>,
+}
+
+impl Waiting<'_> {
+    /// Takes the lines entered meanwhile: each gets its prompt hook now, at its Enter, and
+    /// then waits, with its `enqueue` record.
+    fn take_entered(&mut self) -> io::Result<()> {
+        while let Some(line) = self.entered.meanwhile() {
+            if let Some(reason) = self.hooks.and_then(|h| h.prompt(&line)) {
+                say(&format!("PROMPT BLOCKED: {reason}"))?;
+                continue;
+            }
+            if let Some(transcript) = self.transcript {
+                let (transcript, text) = (Arc::clone(transcript), line.clone());
+                let later = Duration::from_millis(self.options.queue_record_ms);
+                let record = move || {
+                    std::thread::sleep(later);
+                    if let Ok(t) = transcript.lock() {
+                        let _ = t.queue_operation("enqueue", Some(&text));
+                    }
+                };
+                if later.is_zero() {
+                    record();
+                } else {
+                    self.records.push(std::thread::spawn(record));
+                }
+            }
+            say(&format!("QUEUED: {line}"))?;
+            self.lines.push(line);
+        }
+        Ok(())
+    }
+
+    /// Takes entered lines until `done`.
+    fn until(&mut self, mut done: impl FnMut() -> bool) -> io::Result<()> {
+        while !done() {
+            self.take_entered()?;
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        self.take_entered()
+    }
+
+    /// Takes entered lines until `file` exists (bounded by [`MAX_WORK_MS`]); nothing without
+    /// one.
+    fn until_file(&mut self, file: Option<&PathBuf>, held: &str) -> io::Result<()> {
+        let Some(file) = file else {
+            return Ok(());
+        };
+        if !file.exists() {
+            say(held)?;
+        }
+        let started = std::time::Instant::now();
+        self.until(|| file.exists() || started.elapsed() >= Duration::from_millis(MAX_WORK_MS))
+    }
+
+    /// Runs the Stop hook, taking the lines entered while it is answered; the reason when it
+    /// blocks.
+    fn stop(&mut self, active: bool) -> io::Result<Option<String>> {
+        let Some(hooks) = self.hooks.cloned() else {
+            return Ok(None);
+        };
+        let stop = std::thread::spawn(move || hooks.stop_answer(active));
+        self.until(|| stop.is_finished())?;
+        let answer: Value =
+            serde_json::from_str(&stop.join().unwrap_or_default()).unwrap_or_default();
+        Ok(
+            (answer.get("decision").and_then(Value::as_str) == Some("block")).then(|| {
+                let reason = answer.get("reason").and_then(Value::as_str);
+                reason.unwrap_or_default().to_owned()
+            }),
+        )
+    }
+
+    /// Hands the waiting lines on once the turn ended: every `enqueue` record written, then a
+    /// `dequeue` each. The lines, which the next turn answers.
+    fn hand_on(&mut self) -> io::Result<Vec<String>> {
+        for record in self.records.drain(..) {
+            let _ = record.join();
+        }
+        if let Some(transcript) = self.transcript
+            && let Ok(t) = transcript.lock()
+        {
+            for _ in &self.lines {
+                t.queue_operation("dequeue", None)?;
+            }
+        }
+        Ok(std::mem::take(&mut self.lines))
+    }
+}
+
+/// An echoed message in Claude Code's order (`--queue-prompts`, see the module docs): its turn,
+/// and the turns of the lines entered while it and they ran.
+fn queued_echo(
+    options: &Options,
+    line: &str,
+    transcript: Option<&Arc<Mutex<Transcript>>>,
+    hooks: Option<&Hooks>,
+    state: &mut EchoState,
+    entered: &Entered,
+) -> io::Result<()> {
+    let write = |record: &mut dyn FnMut(&mut Transcript) -> io::Result<()>| match transcript {
+        Some(transcript) => match transcript.lock() {
+            Ok(mut t) => record(&mut t),
+            Err(_) => Ok(()),
+        },
+        None => Ok(()),
+    };
+    let mut waiting = Waiting {
+        options,
+        transcript,
+        hooks,
+        entered,
+        lines: Vec::new(),
+        records: Vec::new(),
+    };
+    let mut turn = vec![line.to_owned()];
+    write(&mut |t| t.begin(line))?;
+    loop {
+        // The turn runs: what is entered now waits for its end.
+        let started = std::time::Instant::now();
+        let runs = Duration::from_millis(options.echo_turn_ms);
+        waiting.until(|| started.elapsed() >= runs)?;
+        waiting.until_file(options.turn_hold_file.as_ref(), "TURN HELD")?;
+        let answers: Vec<String> = turn.iter().map(|one| format!("ECHO: {one}")).collect();
+        for answer in &answers {
+            say(answer)?;
+        }
+        state.turns += 1;
+        state.echoed += turn.len() as u64;
+        write(&mut |t| t.answer(&turn.join("\n"), &answers.join("\n")))?;
+        // A Stop that is blocked sends the turn on, and releases nothing.
+        let mut blocks = 0;
+        while let Some(reason) = waiting.stop(blocks > 0)? {
+            say("STOP BLOCKED")?;
+            blocks += 1;
+            if blocks > MAX_STOP_BLOCKS {
+                break;
+            }
+            write(&mut |t| t.stop_feedback(&reason))?;
+        }
+        let took = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        if waiting.lines.is_empty() {
+            write(&mut |t| t.close_turn(took, 0))?;
+            return status_line(options, hooks);
+        }
+        // The turn ended: the lines that waited are handed on together, and get one turn.
+        waiting.until_file(options.queue_handover_file.as_ref(), "QUEUE HELD")?;
+        turn = waiting.hand_on()?;
+        write(&mut |t| t.close_turn(took, 0))?;
+        status_line(options, hooks)?;
+        waiting.until_file(options.queue_turn_file.as_ref(), "QUEUED TURN HELD")?;
+        write(&mut |t| turn.iter().try_for_each(|one| t.queued_prompt(one)))?;
     }
 }
 
@@ -2107,6 +2392,7 @@ fn echo_loop(options: &Options, session_id: &str) -> io::Result<i32> {
             keys,
         )?;
     }
+    let entered = options.queue_prompts.then(Entered::start);
     if let Some(prompt) = &options.prompt {
         if prompt.starts_with("/goal ") && (transcript.is_some() || hooks.is_some()) {
             // Claude Code runs a slash command given as its prompt argument (SPEC-117).
@@ -2119,13 +2405,20 @@ fn echo_loop(options: &Options, session_id: &str) -> io::Result<i32> {
                 transcript.as_ref(),
                 hooks.as_ref(),
                 &mut state,
+                entered.as_ref(),
             )?;
         }
     }
-    let stdin = io::stdin();
-    let mut input = stdin.lock();
+    // Read directly, or through a thread of their own so that a turn takes the lines entered
+    // while it runs (`--queue-prompts`).
+    let mut direct = entered.is_none().then(|| io::stdin().lock());
+    let mut next = || match (&entered, &mut direct) {
+        (Some(entered), _) => Ok(entered.next()),
+        (None, Some(input)) => read_message(input),
+        (None, None) => Ok(None),
+    };
     let mut to_drop = options.drop_lines;
-    while let Some(line) = read_message(&mut input)? {
+    while let Some(line) = next()? {
         // A submit the TUI lost (`--drop-lines`): the first typed lines never reach the agent.
         if to_drop > 0 && !line.is_empty() {
             to_drop -= 1;
@@ -2250,6 +2543,7 @@ fn echo_loop(options: &Options, session_id: &str) -> io::Result<i32> {
                 transcript.as_ref(),
                 hooks.as_ref(),
                 &mut state,
+                entered.as_ref(),
             )?,
         }
     }
@@ -2284,6 +2578,7 @@ fn echo_message(
     transcript: Option<&Arc<Mutex<Transcript>>>,
     hooks: Option<&Hooks>,
     state: &mut EchoState,
+    entered: Option<&Entered>,
 ) -> io::Result<()> {
     if let Some(reason) = hooks.and_then(|h| h.prompt(line)) {
         return say(&format!("PROMPT BLOCKED: {reason}"));
@@ -2303,6 +2598,9 @@ fn echo_message(
             t.prompt_too_long()?;
         }
         return status_line(options, hooks);
+    }
+    if let Some(entered) = entered {
+        return queued_echo(options, line, transcript, hooks, state, entered);
     }
     std::thread::sleep(Duration::from_millis(options.echo_turn_ms));
     hold_turn(options);
@@ -2659,6 +2957,13 @@ mod tests {
         assert!(parse(&["--exit-at-start-file"]).is_err());
         assert!(parse(&["--stuck-at-start-file"]).is_err());
         assert!(parse(&["--turn-hold-file"]).is_err());
+        assert!(parse(&["--queue-prompts"]).is_ok_and(|o| o.queue_prompts));
+        assert!(parse(&["--queue-record-ms"]).is_err());
+        assert!(
+            parse(&["--queue-record-ms", "999999"]).is_ok_and(|o| o.queue_record_ms == MAX_WORK_MS)
+        );
+        assert!(parse(&["--queue-handover-file"]).is_err());
+        assert!(parse(&["--queue-turn-file"]).is_err());
         assert!(parse(&["--paused-wake-file"]).is_err());
         assert!(parse(&["--pause-hold-file"]).is_err());
         assert!(parse(&["--paused-wake-hidden"]).is_ok_and(|o| o.paused_wake_hidden));

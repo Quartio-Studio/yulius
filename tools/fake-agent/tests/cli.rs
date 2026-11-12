@@ -517,3 +517,304 @@ fn invalid_arguments_are_a_usage_error() -> TestResult {
     assert_eq!(output.status.code(), Some(2));
     Ok(())
 }
+
+/// A stand-in for the Yulius executable the agent runs its hooks with (`--hooks`): it appends
+/// `<event> <prompt>` to the log beside it and answers a Stop with a block while the file
+/// `<log>.block` exists, taking the file away.
+fn hooks_exe(dir: &std::path::Path) -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
+    use std::os::unix::fs::PermissionsExt as _;
+    let exe = dir.join("hooks");
+    let log = dir.join("hooks.log");
+    let script = format!(
+        "#!/bin/sh\nlog='{}'\ninput=\"$(cat)\"\n\
+         prompt=\"$(printf '%s' \"$input\" | sed -n 's/.*\"prompt\":\"\\([^\"]*\\)\".*/\\1/p')\"\n\
+         if [ \"$3\" = Stop ] && [ -e \"$log.block\" ]; then\n  rm -f \"$log.block\"\n\
+         \x20 printf '%s\\n' \"Stop blocked\" >> \"$log\"\n\
+         \x20 printf '{{\"decision\":\"block\",\"reason\":\"again\"}}\\n'\n  exit 0\nfi\n\
+         printf '%s\\n' \"$3 $prompt\" >> \"$log\"\n",
+        log.display()
+    );
+    std::fs::write(&exe, script)?;
+    std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755))?;
+    Ok(exe)
+}
+
+/// The hooks the stand-in logged so far, one per line.
+fn hooks_logged(dir: &std::path::Path) -> Vec<String> {
+    std::fs::read_to_string(dir.join("hooks.log"))
+        .unwrap_or_default()
+        .lines()
+        .map(|line| line.trim_end().to_owned())
+        .collect()
+}
+
+/// Waits (bounded) until `done` holds, looking every few milliseconds.
+fn until(what: &str, mut done: impl FnMut() -> bool) -> TestResult {
+    let started = Instant::now();
+    while !done() {
+        if started.elapsed() > Duration::from_secs(30) {
+            return Err(format!("no {what} within 30 s").into());
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    Ok(())
+}
+
+/// The `type`, and what tells records of that type apart, of each transcript record.
+fn shapes(path: &std::path::Path) -> Vec<String> {
+    read_jsonl(path)
+        .unwrap_or_default()
+        .iter()
+        .map(|r| {
+            let kind = r["type"].as_str().unwrap_or("?");
+            match kind {
+                "queue-operation" => format!(
+                    "{} {}",
+                    r["operation"].as_str().unwrap_or("?"),
+                    r["content"].as_str().unwrap_or("-")
+                ),
+                "user" => format!(
+                    "user {} {}",
+                    r["promptSource"]
+                        .as_str()
+                        .unwrap_or(if r["isMeta"] == true { "meta" } else { "-" }),
+                    r["message"]["content"]
+                        .as_str()
+                        .unwrap_or("?")
+                        .lines()
+                        .next()
+                        .unwrap_or("")
+                ),
+                "system" => r["subtype"].as_str().unwrap_or("?").to_owned(),
+                _ => kind.to_owned(),
+            }
+        })
+        .collect()
+}
+
+/// A fake agent with a transcript, the stand-in hooks, a turn held until `hold` exists, and
+/// `extra` arguments.
+fn held_agent(
+    dir: &std::path::Path,
+    extra: &[&str],
+) -> Result<std::process::Child, Box<dyn std::error::Error>> {
+    let exe = hooks_exe(dir)?;
+    Ok(Command::new(EXE)
+        .args(["--session-id", "s-q", "--transcript"])
+        .arg(dir.join("s-q.jsonl"))
+        .arg("--hooks")
+        .arg(exe)
+        .arg("--turn-hold-file")
+        .arg(dir.join("hold"))
+        .args(extra)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()?)
+}
+
+/// SPEC-471 CCQ-005: with `--queue-prompts` the agent takes a prompt entered while a turn runs
+/// as Claude Code 2.1.322 does: its prompt hook at the Enter and an `enqueue` record; a Stop
+/// that is blocked releases nothing and the turn goes on to another Stop; after the Stop that
+/// ends the turn all that wait are handed on (a `dequeue` each, before the ended turn's closing
+/// records) and answered in one turn, with no further prompt hook.
+#[test]
+fn queued_prompts_get_their_hook_at_the_enter_and_one_turn_after_the_ending_stop() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let (dir, path) = (dir.path(), dir.path().join("s-q.jsonl"));
+    let mut child = held_agent(dir, &["--queue-prompts"])?;
+    let mut stdin = child.stdin.take().ok_or("no stdin")?;
+    stdin.write_all(b"first\n")?;
+    until("the first prompt's hook", || {
+        hooks_logged(dir) == ["UserPromptSubmit first"]
+    })?;
+    // Entered while the turn runs: each gets its hook and its record now, not after the turn.
+    stdin.write_all(b"second\n")?;
+    until("the second prompt's hook", || hooks_logged(dir).len() == 2)?;
+    stdin.write_all(b"third\n")?;
+    until("the waiting prompts' records", || {
+        shapes(&path)
+            .iter()
+            .filter(|s| s.starts_with("enqueue"))
+            .count()
+            == 2
+    })?;
+    assert_eq!(
+        hooks_logged(dir),
+        [
+            "UserPromptSubmit first",
+            "UserPromptSubmit second",
+            "UserPromptSubmit third"
+        ],
+        "no Stop yet: the turn is held"
+    );
+    assert_eq!(
+        shapes(&path),
+        ["user - first", "enqueue second", "enqueue third"]
+    );
+    // The turn ends; its first Stop is blocked, the second lets it end.
+    std::fs::write(dir.join("hooks.log.block"), "")?;
+    std::fs::write(dir.join("hold"), "")?;
+    // Its closing records are the last thing a turn writes: what is entered now is a command.
+    until("the handed-on turn's end", || shapes(&path).len() == 15)?;
+    stdin.write_all(b"/exit\n")?;
+    drop(stdin);
+    let output = child.wait_with_output()?;
+    let text = stdout(&output);
+    assert_eq!(
+        hooks_logged(dir)[3..],
+        ["Stop blocked", "Stop", "Stop", "SessionEnd"],
+        "no prompt hook at the hand-over"
+    );
+    assert_eq!(
+        shapes(&path),
+        [
+            "user - first",
+            "enqueue second",
+            "enqueue third",
+            "assistant",
+            // The blocked Stop: the turn goes on, and nothing was handed on.
+            "user meta Stop hook feedback:",
+            "assistant",
+            "dequeue -",
+            "dequeue -",
+            "stop_hook_summary",
+            "turn_duration",
+            "user queued second",
+            "user queued third",
+            "assistant",
+            "stop_hook_summary",
+            "turn_duration",
+        ]
+    );
+    let order = [
+        "QUEUED: second",
+        "QUEUED: third",
+        "ECHO: first",
+        "STOP BLOCKED",
+        "ECHO: second",
+        "ECHO: third",
+        "BYE",
+    ];
+    let mut rest = text.as_str();
+    for word in order {
+        let at = rest
+            .find(word)
+            .ok_or_else(|| format!("no {word:?} in order: {text}"))?;
+        rest = &rest[at + word.len()..];
+    }
+    Ok(())
+}
+
+/// SPEC-471 CCQ-005: without the option the agent is as before: a line entered while a turn
+/// runs is read after that turn, gets its prompt hook then, and leaves no queue record.
+#[test]
+fn without_the_option_a_line_entered_during_a_turn_is_read_after_it() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let (dir, path) = (dir.path(), dir.path().join("s-q.jsonl"));
+    let mut child = held_agent(dir, &[])?;
+    let mut stdin = child.stdin.take().ok_or("no stdin")?;
+    stdin.write_all(b"first\nsecond\n")?;
+    until("the first prompt's hook", || !hooks_logged(dir).is_empty())?;
+    std::fs::write(dir.join("hold"), "")?;
+    stdin.write_all(b"/exit\n")?;
+    drop(stdin);
+    child.wait()?;
+    assert_eq!(
+        hooks_logged(dir),
+        [
+            "UserPromptSubmit first",
+            "Stop",
+            "UserPromptSubmit second",
+            "Stop",
+            "SessionEnd"
+        ]
+    );
+    assert_eq!(
+        shapes(&path),
+        ["user - first", "assistant", "user - second", "assistant"]
+    );
+    Ok(())
+}
+
+/// SPEC-471 CCQ-005: a test says when a waiting line's record is written
+/// (`--queue-record-ms`, as Claude Code writes it a moment after the hook), when the queue is
+/// handed on (`--queue-handover-file`) and when the handed-on turn starts
+/// (`--queue-turn-file`); the agent says when it waits for each.
+#[test]
+fn the_record_the_hand_over_and_the_handed_on_turn_can_be_held() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let (dir, path) = (dir.path(), dir.path().join("s-q.jsonl"));
+    let (handover, turn) = (dir.join("handover"), dir.join("turn"));
+    let mut child = Command::new(EXE)
+        .args(["--session-id", "s-q", "--transcript"])
+        .arg(&path)
+        .arg("--hooks")
+        .arg(hooks_exe(dir)?)
+        .arg("--turn-hold-file")
+        .arg(dir.join("hold"))
+        .args(["--queue-prompts", "--queue-record-ms", "400"])
+        .arg("--queue-handover-file")
+        .arg(&handover)
+        .arg("--queue-turn-file")
+        .arg(&turn)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()?;
+    let mut stdin = child.stdin.take().ok_or("no stdin")?;
+    let mut lines = std::io::BufReader::new(child.stdout.take().ok_or("no stdout")?).lines();
+    let mut said = |marker: &str| -> TestResult {
+        loop {
+            let line = lines.next().ok_or_else(|| format!("no {marker:?}"))??;
+            if line == marker {
+                return Ok(());
+            }
+        }
+    };
+    stdin.write_all(b"first\n")?;
+    said("TURN HELD")?;
+    let entered = Instant::now();
+    stdin.write_all(b"second\n")?;
+    // Said once its hook returned: its record comes later.
+    said("QUEUED: second")?;
+    assert_eq!(hooks_logged(dir).len(), 2);
+    assert_eq!(shapes(&path), ["user - first"]);
+    until("the waiting prompt's record", || shapes(&path).len() == 2)?;
+    assert!(
+        entered.elapsed() >= Duration::from_millis(400),
+        "written {:?} after the Enter",
+        entered.elapsed()
+    );
+    // The turn ends: nothing is handed on until the test says so.
+    std::fs::write(dir.join("hold"), "")?;
+    said("QUEUE HELD")?;
+    assert_eq!(hooks_logged(dir)[2..], ["Stop"]);
+    assert_eq!(
+        shapes(&path),
+        ["user - first", "enqueue second", "assistant"],
+        "the queue is held"
+    );
+    std::fs::write(&handover, "")?;
+    said("QUEUED TURN HELD")?;
+    assert_eq!(
+        shapes(&path)[3..],
+        ["dequeue -", "stop_hook_summary", "turn_duration"],
+        "the handed-on turn is held"
+    );
+    std::fs::write(&turn, "")?;
+    said("ECHO: second")?;
+    until("the handed-on turn's end", || shapes(&path).len() == 10)?;
+    stdin.write_all(b"/exit\n")?;
+    drop(stdin);
+    said("BYE")?;
+    child.wait()?;
+    assert_eq!(
+        shapes(&path)[6..],
+        [
+            "user queued second",
+            "assistant",
+            "stop_hook_summary",
+            "turn_duration"
+        ]
+    );
+    Ok(())
+}

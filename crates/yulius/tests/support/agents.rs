@@ -150,6 +150,18 @@ pub struct FakeAgentOptions {
     pub stuck_at_start_file: Option<PathBuf>,
     /// A goal turn or an echoed turn ends only once this file exists (`--turn-hold-file`).
     pub turn_hold_file: Option<PathBuf>,
+    /// An echoed turn takes the lines entered while it runs as Claude Code takes prompts
+    /// entered during a turn (`--queue-prompts`, SPEC-471): the prompt hook at the Enter, an
+    /// `enqueue` record, nothing released by a blocked Stop, and one turn for all that wait
+    /// after the Stop that ends the turn.
+    pub queue_prompts: bool,
+    /// A waiting line's `enqueue` record is written this long after its hook returned
+    /// (`--queue-record-ms`).
+    pub queue_record_ms: Option<u64>,
+    /// The queue is handed on only once this file exists (`--queue-handover-file`).
+    pub queue_handover_file: Option<PathBuf>,
+    /// The handed-on turn starts only once this file exists (`--queue-turn-file`).
+    pub queue_turn_file: Option<PathBuf>,
     /// The agent writes a meta record, no prompt, with its version at each start, as a real
     /// Claude Code may before any prompt when it resumes an interrupted turn
     /// (`--resume-record`).
@@ -251,10 +263,18 @@ impl HarnessPort for FakeAgentHarness {
             ("--exit-at-start-file", &self.options.exit_at_start_file),
             ("--stuck-at-start-file", &self.options.stuck_at_start_file),
             ("--turn-hold-file", &self.options.turn_hold_file),
+            ("--queue-handover-file", &self.options.queue_handover_file),
+            ("--queue-turn-file", &self.options.queue_turn_file),
         ] {
             if let Some(path) = path {
                 argv.extend([flag.into(), path.to_string_lossy().into_owned()]);
             }
+        }
+        if self.options.queue_prompts {
+            argv.push("--queue-prompts".into());
+        }
+        if let Some(ms) = self.options.queue_record_ms {
+            argv.extend(["--queue-record-ms".into(), ms.to_string()]);
         }
         if self.options.resume_record {
             argv.push("--resume-record".into());
