@@ -468,15 +468,6 @@ impl App {
             let of_run = facts.run().and_then(|(run, _)| run.values.target.clone());
             of_run.or_else(|| facts.files.status.as_ref().map(|s| s.target.clone()))
         });
-        let written = {
-            let request = request.clone();
-            tokio::task::spawn_blocking(move || helper.request(&request))
-                .await
-                .map_err(AppError::internal)?
-        };
-        written.map_err(|why| {
-            AppError::Conflict(format!("the move's request could not be written: {why}"))
-        })?;
         let login = self.login_of(&ctx.user.id).await;
         let mut detail = format!("request {}", request.id);
         if let Some(port) = values.ssh_port {
@@ -493,10 +484,38 @@ impl App {
             MoveAction::Move => "migration.started",
             MoveAction::Abort => "migration.aborted",
         };
+        // Before the request: nothing is asked of root that the log does not hold. A log that
+        // cannot be written ends the ask here.
         self.deps
             .store
             .audit(now, &login, action, target.as_deref(), Some(&detail))
             .await?;
+        let written = {
+            let request = request.clone();
+            tokio::task::spawn_blocking(move || helper.request(&request))
+                .await
+                .map_err(AppError::internal)?
+        };
+        if let Err(why) = written {
+            // Said as well, so that the entry above is not read as something root was asked.
+            let unwritten = format!(
+                "request {}: it could not be written, so nothing was asked of root",
+                request.id
+            );
+            let said = self.deps.store.audit(
+                now,
+                &login,
+                "migration.unwritten",
+                target.as_deref(),
+                Some(&unwritten),
+            );
+            if let Err(err) = said.await {
+                tracing::warn!(error = %err, request = %request.id, "an unwritten move request could not be audited");
+            }
+            return Err(AppError::Conflict(format!(
+                "the move's request could not be written: {why}"
+            )));
+        }
         tracing::info!(
             actor = %login,
             action,

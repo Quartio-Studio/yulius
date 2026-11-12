@@ -33,6 +33,8 @@ struct FakeMoveHelper {
     unwritable: AtomicBool,
     /// A write takes a while, as on a slow disk: another ask has time to come.
     slow: AtomicBool,
+    /// A write waits until a test lets it go.
+    held: AtomicBool,
     helper: Mutex<Option<MoveHelperStatus>>,
     status: Mutex<Option<MoveStatus>>,
     arrived: Mutex<Option<MoveChecklist>>,
@@ -49,6 +51,10 @@ impl MoveHelper for FakeMoveHelper {
         }
         if self.slow.load(Ordering::SeqCst) {
             std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        let waited = std::time::Instant::now();
+        while self.held.load(Ordering::SeqCst) && waited.elapsed().as_secs() < 10 {
+            std::thread::sleep(std::time::Duration::from_millis(5));
         }
         if let (Ok(mut pending), Ok(mut written)) = (self.pending.lock(), self.written.lock()) {
             *pending = Some(request.clone());
@@ -1097,14 +1103,51 @@ async fn without_the_helper_nothing_is_asked() -> TestResult {
     )
     .await?;
 
-    // Enabled, and the request cannot be written.
+    // Enabled, and the request cannot be written: the ask is in the log (it is written
+    // first), and so is that nothing came of it.
     i.helper.installed.store(true, Ordering::SeqCst);
     i.helper.unwritable.store(true, Ordering::SeqCst);
     i.refused(plan(), StatusCode::CONFLICT, "could not be written")
         .await?;
-    assert_eq!(
-        i.audited(TARGET, "migration.planned").await?,
-        Vec::<String>::new()
+    let asked = i.audited(TARGET, "migration.planned").await?;
+    assert_eq!(asked.len(), 1, "{asked:?}");
+    let unwritten = i.audited(TARGET, "migration.unwritten").await?;
+    assert_eq!(unwritten.len(), 1, "{unwritten:?}");
+    assert!(
+        unwritten[0].contains("could not be written") && unwritten[0].contains("request "),
+        "{unwritten:?}"
     );
+    Ok(())
+}
+
+/// MVB-022: nothing is asked of root that the audit log does not hold: the entry is written
+/// before the request.
+#[tokio::test]
+async fn an_ask_is_audited_before_its_request_is_written() -> TestResult {
+    let i = instance().await?;
+    i.planned(&GOOD, None).await?;
+    i.helper.held.store(true, Ordering::SeqCst);
+    let (answer, audited) = tokio::join!(i.ask(moving()), async {
+        let waited = std::time::Instant::now();
+        let seen = loop {
+            let entries = i.audited(TARGET, "migration.started").await;
+            if !matches!(&entries, Ok(found) if found.is_empty()) {
+                break entries;
+            }
+            if waited.elapsed().as_secs() >= 3 {
+                break Err("the ask was not audited while its request was held".into());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        };
+        // The move's request is still on its way: only the plan's was written.
+        let written = i.helper.written().len();
+        i.helper.held.store(false, Ordering::SeqCst);
+        seen.map(|entries| (entries, written))
+    });
+    let (entries, written) = audited?;
+    assert_eq!(entries.len(), 1, "{entries:?}");
+    assert_eq!(written, 1, "the request was written before its audit entry");
+    assert_eq!(answer?.status, StatusCode::ACCEPTED);
+    assert_eq!(i.helper.written().len(), 2);
     Ok(())
 }
