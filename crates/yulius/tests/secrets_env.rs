@@ -444,6 +444,18 @@ async fn a_flag_raised_after_the_request_outlives_its_answer() -> TestResult {
     // secret's answer will not end it, so the secret's reason must not stay on it.
     let question = json!({"kind": "terminal", "problem": "Pick one", "action": null, "link": null});
     assert_eq!(support::attention(&w.h.app, "t1").await?, question);
+    // The flag is still the one the request raised, which no work of the session answers: the
+    // reason kept for a restart of Yulius says so, as the running server has it.
+    {
+        use yulius_app::ports::store::TaskStore as _;
+        let id = yulius_domain::ids::TaskId::parse("t1")?;
+        let (kept, _) =
+            w.h.store
+                .task_attention(&id)
+                .await?
+                .ok_or("no reason kept")?;
+        assert!(!kept.work_answers, "{kept:?}");
+    }
     let allowed = answer(&w, &w.writer, true).await?;
     assert_eq!(allowed.status, StatusCode::OK, "{}", allowed.body);
     assert_eq!(task_activity(&w).await?, Some(Activity::NeedsAttention));
