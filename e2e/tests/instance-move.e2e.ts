@@ -186,11 +186,13 @@ test('a move shows its checklist, says when the instance is frozen, and ends on 
   await expect(c.getByText(FROZEN)).toBeHidden();
   await expect(c.getByRole('button', 'Abort…')).toBeVisible();
 
-  // Nothing answers: the card says why, with the estimate the copy measured, keeps the
-  // checklist and keeps trying.
+  // Nothing answers: the card says why, with what the plan said of the freeze (the estimate
+  // the copy measures comes a moment before the freeze: a page may never have read it), keeps
+  // the checklist and keeps trying.
   await holdAt(browser, 'frozen');
   await expect(c.getByText(FROZEN)).toBeVisible();
-  await expect(c.getByText(/Nothing answers here meanwhile\. The estimate: about 9 min frozen: the entries are counted four times.*This page keeps trying/)).toBeVisible();
+  await expect(c.getByText(/Nothing answers here meanwhile\. The plan said: the instance runs during the copy .*then it is frozen for about 9 min.*This page keeps trying/)).toBeVisible();
+  expect(await cardText(browser)).not.toMatch(/The plan said: about 9 min frozen: the entries are counted four times/);
   expect(await lineNames(browser)).toContain('software');
   await expect(c.getByRole('button', 'Abort…')).toBeHidden();
   expect(await axeViolations(browser)).toEqual([]);

@@ -55,12 +55,13 @@ export function summary(lines) {
 }
 
 /**
- * What the move last said about the time frozen: the plan's first estimate, then the one the
- * copy measured before the freeze (SPEC-465).
+ * What the plan said about the time frozen: the first `downtime` line. The copy measures it
+ * again (SPEC-465), but writes that a moment before the freeze, which a page that reads every
+ * few seconds may never see; the plan's line is there whenever a move runs.
  */
 export function estimate(lines) {
-  const said = (lines || []).filter((l) => l.name === 'downtime' && l.outcome !== 'failed');
-  return said.length ? said[said.length - 1].detail : '';
+  const line = (lines || []).find((l) => l.name === 'downtime' && l.outcome !== 'failed');
+  return line ? line.detail : '';
 }
 
 /** A new public URL as the move decides one (`https://host`), or null: nothing else is linked. */
@@ -347,7 +348,7 @@ export function moveCard(ctx) {
     return h('div', { class: 'banner banner-info move-frozen', role: 'status' }, h('span', { class: 'spinner', 'aria-hidden': 'true' }),
       h('div', { class: 'banner-text' },
         h('strong', null, `${BRAND.name} is frozen while the last changes are sent to ${host} and the copy is proven.`),
-        h('p', null, `Nothing answers here meanwhile. ${followed.estimate ? `The estimate: ${followed.estimate}. ` : ''}This page keeps trying and shows what answers: ${BRAND.name} on the new host, or here again if the move did not complete.`)));
+        h('p', null, `Nothing answers here meanwhile. ${followed.estimate ? `The plan said: ${followed.estimate}. ` : ''}This page keeps trying and shows what answers: ${BRAND.name} on the new host, or here again if the move did not complete.`)));
   }
 
   function actions(view) {

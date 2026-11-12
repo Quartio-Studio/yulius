@@ -172,8 +172,8 @@ Settings → Instance
   move that had started the new instance, the abort stops it there first; an abort that needs a
   person's word says so and names the command.
 - MVB-035 **Frozen.** When reads fail while a move runs, the card says that the instance is
-  frozen while the last changes are sent and the copy is proven (with the last estimate the
-  move gave: the plan's, or the one the copy measured), keeps the last checklist and keeps trying
+  frozen while the last changes are sent and the copy is proven (with the plan's estimate),
+  keeps the last checklist and keeps trying
   every 3 s with a short timeout. When this address answers again it shows what answers: the
   old instance with why the move did not complete, or the new one (MVB-037).
 - MVB-036 **Moved to another URL.** While frozen the card also asks this address without
@@ -330,8 +330,10 @@ Settings → Instance
 - **The warm copy, as the page shows it.** SPEC-465 merged into `dev` while this change was
   ready for review. The card names the phase `Copy` (unknown, it read as "Plan"), says in the
   confirmation that the data is copied while the instance works and what the freeze is for,
-  shows the last estimate the move gave while frozen, and says in the abort's dialog that data
-  already copied stays on the new host with its secrets. The request has no field for
+  and says in the abort's dialog that data already copied stays on the new host with its
+  secrets. While frozen it quotes the plan's estimate, not the one the copy measures: that
+  line is written a moment before the freeze, and on a real host the page, which reads every
+  3 s, never saw it. The request has no field for
   `--max-downtime`: MIG-060 names the target, the URL and the disks, and the move then decides
   as the command does without the option (it copies again while that shortens the freeze). A
   field for it on the page is issue #1202.

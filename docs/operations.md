@@ -1739,8 +1739,9 @@ on the old host; without it the card says so and names the command above.
    as the command does without `--max-downtime` (it copies again while that shortens the
    freeze). Use the command to set one.
 3. **While the instance is frozen** for the last changes, the proof of the copy and the start on
-   the new host, nothing answers, the page included: the card says so with the estimate the copy
-   measured, keeps the last checklist and keeps trying. With the same public URL the new instance
+   the new host, nothing answers, the page included: the card says so with the plan's estimate (the
+   copy measures it again a moment before the freeze; that line is in the checklist once something
+   answers), keeps the last checklist and keeps trying. With the same public URL the new instance
    answers the page once the name leads to it, and the card shows **the finished checklist**. With
    another URL the old address redirects: the card links to the same page at the new address, where
    you sign in again (a sign-in belongs to one address) and find the finished checklist. If the
