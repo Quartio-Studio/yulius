@@ -271,8 +271,8 @@ Run in this task's worktree on 2026-11-12; logs under the ignored `target/eviden
 - **The restart case reproduced** (commit c19f5ce0c, before the mark):
   `a_draft_typed_before_a_restart_still_keeps_the_message_out` failed with the same glued
   prompt on the restarted server.
-- **After the fix**: the same command, 17 passed (the three new tests of this file with the
-  earlier 14); `claude_code_moves::moves::a_prompt_that_starts_no_turn_ends_the_flag_of_a_held_message`
+- **After the fix**: the same command, 20 passed (the eight new tests of this file with the
+  earlier 12); `claude_code_moves::moves::a_prompt_that_starts_no_turn_ends_the_flag_of_a_held_message`
   passed; `cargo test -p yulius-domain a_persons_draft_holds`: 1 passed.
 - **Mutation checks by hand** (each restored and rebuilt afterwards; a restored file keeps an
   older time, so it was touched before the next run):
@@ -292,8 +292,9 @@ Run in this task's worktree on 2026-11-12; logs under the ignored `target/eviden
   14. a mark the server does not remember stays: AC10 (stale mark) fails;
   15. a mark ahead of the clock is kept as it is: AC10 (clock) fails.
 - **The gate**: `scripts/dev ci` at 26168d119 (the head of review round 1): exit 0, 4033 tests
-  passed, 16 skipped. Again at 9951d297a (the review's fixes and their documents): exit 0, 4036
-  tests passed, 16 skipped. After that only this spec changed (status, Plan, Evidence).
+  passed, 16 skipped. Again at 9951d297a (round 1's fixes and their documents): exit 0, 4036
+  tests passed, 16 skipped. Again at cf35c4e8a (round 2's fixes and their documents): exit 0,
+  4040 tests passed, 16 skipped. After that only this line of the spec changed.
 - **Security scan**: `yulius security-scan` printed "Security scan disabled: Vidoc is turned
   off in Yulius, for this project or the whole instance; nothing was scanned." Unrun, not
   passed.
