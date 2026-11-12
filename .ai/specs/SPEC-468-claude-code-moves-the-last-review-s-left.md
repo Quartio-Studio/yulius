@@ -1,11 +1,11 @@
 ---
 yulius-task: 57d7619e-9b14-4e4a-81e8-6a431b4d5b7c
-status: done
+status: in-progress
 ---
 
 # SPEC-468: Claude Code moves: the last review's leftovers of SPEC-461
 
-Status: implemented
+Status: in progress
 Date: 2026-11-11
 Owner: Yulius task #452
 Scope authorization: the request of task #452 (by MrFishPL, 2026-11-11): fix the two minors and
@@ -88,7 +88,7 @@ The question of direction: the restart waits only while a person typed in the la
 | CCF-007 | **The card says when the binary could not be read.** When Yulius keeps Claude Code current and the binary runs get cannot be read for the models it knows, the card shows a warning badge and a sentence saying that whether it knows the default model is not known (`ClaudeCodeView.models_unread`), as `yulius doctor` warns. |
 | CCF-008 | **An idle restart is no news.** A prompt-mode session that was idle and is restarted with nothing typed never reads Working: its task goes from switching back to the activity it had, and what Claude Code last recorded of the session's goal (unfinished or not) still counts, so the task reads as it did. The notification center remembers a task's state through a switch, so a task that reads after it as it did before gets no second notification, in the bell or on the desktop. |
 | CCF-009 | **SPEC-461 says what is true.** Its Context quotes the owner's goal; CCM-008, CCM-011, CCM-012 and CCM-013 state the rules of this spec; ADR-0293, the operations guide and the API reference follow. |
-| CCF-010 | **A draft keeps the session.** A session a person typed into since its last prompt was submitted (and since it started) is not restarted, however long ago they typed: what they typed may still sit in its prompt box. A prompt submitted by a person or by Yulius empties the box, once: a prompt that is held at its submit (an update, a pause, no subscription with room) is sent again by the hook client until it goes on, which is the same submit, so what is typed meanwhile is a draft. Claude Code's own wake-up empties nothing. The box counts as emptied at the prompt's hook, which Claude Code runs at the Enter, also for a prompt entered while a turn runs (seen with 2.1.322): what is typed after it is a draft. A prompt whose hook Yulius answers with an error goes on all the same (the hook client fails open) and empties the box. A prompt Yulius's own scope check holds (TSK-013) is blocked, and Claude Code puts its text back into the box: that submit empties nothing, also when the prompt first waited for a subscription with room. The minute after any keystroke stays as well (a person who just sent a prompt is still at the keyboard). |
+| CCF-010 | **A draft keeps the session.** A session a person typed into since its last prompt was submitted (and since it started) is not restarted, however long ago they typed: what they typed may still sit in its prompt box. A prompt submitted by a person or by Yulius empties the box, once: a prompt that is held at its submit (an update, a pause, no subscription with room) is sent again by the hook client until it goes on, which is the same submit, so what is typed meanwhile is a draft. Claude Code's own wake-up empties nothing. The box counts as emptied at the prompt's hook, which Claude Code runs at the Enter, also for a prompt entered while a turn runs (seen with 2.1.322): what is typed after it is a draft. A prompt whose hook Yulius answers with an error at its first request goes on all the same (the hook client fails open) and empties the box; an error while the prompt is held leaves it held (the client asks again). A prompt Yulius's own scope check holds (TSK-013) is blocked, and Claude Code puts its text back into the box: that submit empties nothing, also when the prompt first waited for a subscription with room. The minute after any keystroke stays as well (a person who just sent a prompt is still at the keyboard). |
 | CCF-011 | **What Yulius typed counts until it is submitted.** A message Yulius typed into the session (a person's message through their Superagent or their own agent, a pull request's news, "Yulius is back") is a draft from the moment it is typed until its submit (its prompt hook). A command Claude Code runs itself (the MCP watch's `/mcp reconnect yulius`) submits no prompt and is no draft, and neither is a message that could not be typed. Claude Code submits at Yulius's own Enter, also while a turn runs, and then keeps the message in its queue until the turn ends: this rule covers the message from its paste to that submit only. A restart at the turn's end still loses a prompt that waits in that queue, a person's or Yulius's, as before this change (Decisions; issue #1204). |
 
 ## Plan
@@ -103,9 +103,10 @@ The question of direction: the restart waits only while a person typed in the la
 - [x] SPEC-461, ADR-0293, the operations guide, the API reference and the changes log say so (finding 9)
 - [x] Gate and the whole e2e suite green, evidence recorded
 - [x] Independent review round 1 answered, every finding fixed with its test
-- [x] A message Yulius typed that Claude Code still queues keeps the session, and the draft rule is checked against the real Claude Code
-- [x] Independent review round 2 answered: a submit empties the box as of its Enter, and only what will be submitted counts
+- [x] A message Yulius typed keeps the session until its submit, and the draft rule is checked against the real Claude Code (the claim about Claude Code's queue was withdrawn in round 3)
+- [x] Independent review round 2 answered: only what will be submitted counts (its Enter rule was withdrawn in round 3)
 - [x] Independent review round 3 answered: the rules say what holds with the real Claude Code (the Enter rule and the queue claim are withdrawn, issue #1204)
+- [ ] Second delivery: a failed answer inside a prompt's hold keeps the hold (the last look's minor)
 
 ## Acceptance criteria
 
@@ -148,7 +149,9 @@ The question of direction: the restart waits only while a person typed in the la
   check holds is answered with the block and leaves the session with a draft: the turn that
   ran meanwhile ends without a look at the session. A prompt that waited for a subscription
   with room and is held by the scope check once the limit reset leaves the session with a
-  draft as well. A prompt whose hook is answered with an error leaves none.
+  draft as well. A prompt whose hook is answered with an error leaves none; an error at one
+  request of a prompt that is held changes nothing: what was typed while it waited is a draft
+  when it goes on.
 - AC10 (CCF-011). In the test agent's order, which submits a line when it reads it after its
   turn: a prompt-mode session on 2.1.311 runs a turn the gate will block, while runs get
   2.1.322. Its person's Superagent sends it a message, which is typed into the session and
@@ -180,8 +183,9 @@ The question of direction: the restart waits only while a person typed in the la
   no process runs, so a restart that is tried is refused, which shows the try), a prompt
   held at a usage limit, asked for again and let through once the limit reset, a prompt the
   scope check holds (a Jev that reads prompts as new scope), at once or after it waited for
-  room, a prompt whose hook fails (its task deleted at a race point), and a message that
-  cannot be typed because nothing runs.
+  room, a prompt whose hook fails (its task deleted at a race point), a failing answer inside
+  a hold (a store in a file whose table a second connection takes away for one request), and
+  a message that cannot be typed because nothing runs.
 - Integration, `crates/yulius/tests/claude_code_admin.rs`: AC7's view.
 - e2e, `e2e/tests/claude-code.e2e.ts` (mock): AC3 (`claude=gap`), AC7 (`claude=unread`);
   `e2e/tests/notifications.e2e.ts`: AC8's UI half (`ambient=0`, the test changes the tasks).
@@ -193,10 +197,11 @@ The question of direction: the restart waits only while a person typed in the la
   every request, a new run keeping a held prompt; a message Yulius typed not stamped, or its
   stamp not asked; a command stamped like a message; the stamp kept when nothing could be typed;
   a blocked prompt emptying the box, at once or at its first request while it waited; a failed
-  hook not emptying it; the launch reading Working; the goal's state not carried; the Stop not
-  asking about the goal again after its look, or not before it; a stop of moves read for every
-  version; a finished restart keeping the task's slot; the notification center not remembering
-  through a switch; the card's and task info's old words; the unread binary not said.
+  hook not emptying it; a failed answer ending a hold; the launch reading Working; the goal's
+  state not carried; the Stop not asking about the goal again after its look, or not before it;
+  a stop of moves read for every version; a finished restart keeping the task's slot; the
+  notification center not remembering through a switch; the card's and task info's old words;
+  the unread binary not said.
 - Checked against real artifacts instead of the fake agent (Evidence): what Claude Code does
   with an open goal and with an unsent prompt across a restart, read in the binaries of three
   releases and in the transcripts of this instance's real sessions; and, by the reviewer and
@@ -324,26 +329,28 @@ The question of direction: the restart waits only while a person typed in the la
   only breaks a line, "Send anyway"), so it is gone: the hook's time is the rule again.
 - **A prompt Yulius holds is still in the box** (found in the author's reading of round 2's
   answers; seen with the real tool in round 3). A typed prompt that the scope check holds
-  (TSK-013) is answered with a block. Claude Code then shows the reason and puts the text
-  back into the prompt box: the intake module checked that with 2.1.295, and the reviewer's
-  runs of 2.1.322 show it for an idle session and for a prompt entered while a turn runs (a
-  bare Enter, which is what "Send anyway" presses, submits the same text again). The first
-  rule counted that hook as a submit, so a turn that ran meanwhile could end in a restart
-  and the held text went with the old process, while the task's card still offered "Send
-  anyway". A blocked prompt now empties nothing. For that the emptying is worked out at a
-  prompt's first request and taken when the prompt goes on: one that waited for room and is
-  then held by the scope check (which reads it again after the wait) empties nothing either.
-  While a prompt waits for room its own text reads as a draft. With the hook at the Enter
-  the turn before it can end meanwhile, and the session then stays, which is right: the
-  prompt has not gone on (what the Stop itself makes of a prompt pause that is open at that
-  moment is older code: issue #1206). Should Claude Code give a held hook up (its client
-  holds for eight days), the prompt goes on unseen and the session reads as holding a draft
-  until the prompt after the next one is submitted: later than needed, never as holding
-  none. A prompt whose hook Yulius answers with an error goes on too, since the client fails
-  open: the box is empty. An earlier text of this spec said a blocked prompt goes into a
-  warning line and not back into the box; that read only half of the binary's path and was
-  wrong. A held prompt a person then edits, or clears by hand, reads as a draft until the
-  next prompt is submitted.
+  (TSK-013) is answered with a block. Claude Code then shows the reason and puts the text back
+  into the prompt box: the intake module checked that with 2.1.295, and the reviewer's runs of
+  2.1.322 show it for an idle session and for a prompt entered while a turn runs (a bare Enter,
+  which is what "Send anyway" presses, submits the same text again). The first rule counted that
+  hook as a submit, so a turn that ran meanwhile could end in a restart and the held text went
+  with the old process, while the task's card still offered "Send anyway". A blocked prompt now
+  empties nothing. For that the emptying is worked out at a prompt's first request and taken
+  when the prompt goes on: one that waited for room and is then held by the scope check (which
+  reads it again after the wait) empties nothing either. While a prompt waits for room its own
+  text reads as a draft. With the hook at the Enter the turn before it can end meanwhile, and
+  the session then stays, which is right: the prompt has not gone on (what the Stop itself makes
+  of a prompt pause that is open at that moment is older code: issue #1206). Should Claude Code
+  give a held hook up (its client holds for eight days), the prompt goes on unseen and the
+  session reads as holding a draft until the prompt after the next one is submitted: later than
+  needed, never as holding none. A prompt whose hook Yulius answers with an error at its first
+  request goes on too, since the client fails open: the box is empty. Once the client holds a
+  prompt it asks again after a failing answer, so an error inside a hold leaves the prompt held
+  (the last look's minor: it used to end the hold, and the next request counted as a new submit
+  at its later time; any error on a request sent again is read so, which errs toward a draft).
+  An earlier text of this spec said a blocked prompt goes into a warning line and not back into
+  the box; that read only half of the binary's path and was wrong. A held prompt a person then
+  edits, or clears by hand, reads as a draft until the next prompt is submitted.
 - **How two decisions for one task overlap.** The review read the race and did not reproduce
   it. It has an everyday trigger: a Stop hook that decided a restart is answered with a hold,
   and the hook client sends a held hook again every 10 s, while the switch waits up to 60 s
