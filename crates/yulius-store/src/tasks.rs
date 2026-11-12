@@ -2,6 +2,7 @@
 
 use async_trait::async_trait;
 use rusqlite::{OptionalExtension, Row, params};
+use yulius_app::attention::AttentionRecord;
 use yulius_app::error::{AppError, AppResult};
 use yulius_app::model::{
     AttemptRecord, ControlRequest, FeedbackRecord, LaunchKind, MetricsRecord, PersonPause,
@@ -394,6 +395,65 @@ impl TaskStore for SqliteStore {
             Ok(n == 1)
         })
         .await
+    }
+
+    async fn flag_attention(
+        &self,
+        id: &TaskId,
+        from: Option<(Option<Activity>, Timestamp)>,
+        reason: Option<&AttentionRecord>,
+        at: Timestamp,
+    ) -> AppResult<bool> {
+        let id = id.as_str().to_owned();
+        let reason = reason
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(AppError::internal)?;
+        self.call(move |c| {
+            let n = c
+                .execute(
+                    // The reason carries the time of its flag: it is read only while the
+                    // task's state is still of that time (`task_attention`).
+                    "UPDATE tasks SET activity = 'needs_attention', updated_at = ?2, \
+                     state_at = ?2, working_since = NULL, \
+                     attention = CASE WHEN ?3 IS NULL THEN NULL ELSE json_set(?3, '$.at', ?2) END \
+                     WHERE id = ?1 AND status = 'running' AND activity IS NOT 'needs_attention' \
+                     AND (?4 = 0 OR (activity IS ?5 AND state_at = ?6))",
+                    params![
+                        id,
+                        at.0,
+                        reason,
+                        i64::from(from.is_some()),
+                        from.and_then(|f| f.0).map(Activity::as_str),
+                        from.map_or(0, |f| f.1.0),
+                    ],
+                )
+                .map_err(db)?;
+            Ok(n == 1)
+        })
+        .await
+    }
+
+    async fn task_attention(&self, id: &TaskId) -> AppResult<Option<AttentionRecord>> {
+        let id = id.as_str().to_owned();
+        let text: Option<String> = self
+            .call(move |c| {
+                c.query_row(
+                    // CASE orders the checks: a row that is not JSON gives no reason, not an
+                    // error.
+                    "SELECT attention FROM tasks WHERE id = ?1 AND status = 'running' \
+                     AND activity = 'needs_attention' AND CASE WHEN json_valid(attention) \
+                       THEN json_extract(attention, '$.at') END = state_at",
+                    [id],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+                .optional()
+                .map(Option::flatten)
+                .map_err(db)
+            })
+            .await?;
+        // JSON of another shape (a newer Yulius wrote it) gives no reason either.
+        Ok(text.and_then(|text| serde_json::from_str(&text).ok()))
     }
 
     async fn delete_task(&self, id: &TaskId) -> AppResult<bool> {
@@ -1368,4 +1428,63 @@ fn person_pause_of(row: PauseRow) -> AppResult<Option<PersonPause>> {
         attempt: AttemptId::parse(&attempt)
             .map_err(|_| db(bad_column("tasks.paused_attempt", &attempt)))?,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    /// SPEC-472 ATN-001: a row whose reason is not JSON, or is JSON of another shape, gives no
+    /// reason instead of an error; a reason without a kind is none.
+    #[tokio::test]
+    async fn a_reason_that_cannot_be_read_is_none() -> TestResult {
+        let store = SqliteStore::open_in_memory()?;
+        store
+            .call(|c| {
+                c.execute_batch(
+                    "INSERT INTO users (id, display_name, created_at) VALUES ('u1', 'U', 1);
+                     INSERT INTO sandboxes (id, slug, repo_owner, repo_name, default_branch, profile, port_base, port_count, created_by, onboarding_state, created_at)
+                       VALUES ('s1', 's', 'o', 'r', 'main', '{}', 20000, 10, 'u1', 'not_needed', 1);
+                     INSERT INTO tasks (id, sandbox_id, number, title, prompt, harness, status, activity, origin, created_by, created_at, updated_at, state_at, owner_id)
+                       VALUES ('t1', 's1', 1, 'T', 'p', 'claude', 'running', 'needs_attention', 'ui', 'u1', 100, 100, 100, 'u1');",
+                )
+                .map_err(db)
+            })
+            .await?;
+        let task = TaskId::parse("t1")?;
+        let row = |text: &'static str| {
+            let store = &store;
+            async move {
+                store
+                    .call(move |c| {
+                        c.execute("UPDATE tasks SET attention = ?1 WHERE id = 't1'", [text])
+                            .map(|_| ())
+                            .map_err(db)
+                    })
+                    .await
+            }
+        };
+        for junk in [
+            "not json",
+            "[1, 2]",
+            "100",
+            r#"{"at": 100}"#,
+            r#"{"kind": "other", "at": 100}"#,
+            // Of another time: an earlier flag's.
+            r#"{"kind": "terminal", "at": 99}"#,
+            r#"{"kind": "terminal"}"#,
+        ] {
+            row(junk).await?;
+            assert_eq!(store.task_attention(&task).await?, None, "{junk}");
+        }
+        row(r#"{"kind": "terminal", "at": 100, "later": true}"#).await?;
+        assert_eq!(
+            store.task_attention(&task).await?,
+            Some(AttentionRecord::terminal(None)),
+            "a field a newer Yulius added is ignored"
+        );
+        Ok(())
+    }
 }

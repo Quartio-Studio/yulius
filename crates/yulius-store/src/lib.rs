@@ -135,6 +135,10 @@ const MIGRATIONS: &[&str] = &[
     // task; it goes after every migration `dev` had when it merged (the position is the
     // version).
     include_str!("migrations/0052_account_email_typed.sql"),
+    // Schema version 53 (SPEC-472). The file is 0053, the number `record_number` gave this
+    // task; it goes after every migration `dev` had when it merged (the position is the
+    // version).
+    include_str!("migrations/0053_task_attention.sql"),
 ];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;

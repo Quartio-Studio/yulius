@@ -413,14 +413,16 @@ impl App {
     }
 
     /// Sets a running task's activity and publishes it. `NeedsAttention` is raised from the task
-    /// as it is now, not as `task` says ([`Self::flag_needs_attention`]).
+    /// as it is now, not as `task` says ([`Self::flag_needs_attention`]), and without a reason:
+    /// for a flag whose own card or request says it (a browser request, a goal pause, a host
+    /// move). Every other flag gives its reason ([`Self::flag_attention`], SPEC-472).
     pub(crate) async fn set_task_activity(
         &self,
         task: &TaskRecord,
         activity: Activity,
     ) -> AppResult<()> {
         if activity == Activity::NeedsAttention {
-            return self.flag_needs_attention(&task.id).await;
+            return self.flag_needs_attention(&task.id, None).await;
         }
         if task.status != TaskStatus::Running || task.activity == Some(activity) {
             return Ok(());
@@ -449,22 +451,24 @@ impl App {
     /// Flags a running task as needing a person, for anything but a secret request: a flag
     /// that is no secret request's to end, even over one already set (SPEC-213 SRA-003). Under
     /// the task's attention lock, from the task as it is now, so that a secret request's answer
-    /// ending its flag at the same moment cannot swallow this one.
-    async fn flag_needs_attention(&self, task_id: &TaskId) -> AppResult<()> {
+    /// ending its flag at the same moment cannot swallow this one. The flag and its `reason`
+    /// are one write (SPEC-472): a task already flagged keeps both.
+    pub(crate) async fn flag_needs_attention(
+        &self,
+        task_id: &TaskId,
+        reason: Option<&crate::attention::AttentionRecord>,
+    ) -> AppResult<()> {
         let runtime = self.runtime(task_id);
         let _held = runtime.attention_lock.lock().await;
         runtime.secret_wait_at.store(0, Ordering::SeqCst);
-        let Some(task) = self.deps.store.task(task_id).await? else {
-            return Ok(());
-        };
-        if task.status != TaskStatus::Running || task.activity == Some(Activity::NeedsAttention) {
-            return Ok(());
-        }
-        self.deps
+        if self
+            .deps
             .store
-            .set_activity(task_id, Some(Activity::NeedsAttention), self.now())
-            .await?;
-        self.publish_task(task_id).await;
+            .flag_attention(task_id, None, reason, self.now())
+            .await?
+        {
+            self.publish_task(task_id).await;
+        }
         Ok(())
     }
 
@@ -930,12 +934,23 @@ impl App {
         }
 
         if task.gate_blocks >= MAX_GATE_BLOCKS {
-            self.set_task_activity(task, Activity::NeedsAttention)
-                .await?;
-            self.runtime(&task.id).hub.notice(format!(
-                "Yulius: the agent stopped {MAX_GATE_BLOCKS} times without fixing: {}",
+            let stopped = format!(
+                "stopped {MAX_GATE_BLOCKS} times without fixing: {}",
                 reasons.join(" ").chars().take(300).collect::<String>()
-            ));
+            );
+            // Said by the task itself, for whoever opens it later (SPEC-472), and in its
+            // terminal for the viewers there now.
+            self.flag_attention(
+                &task.id,
+                crate::attention::AttentionRecord::yulius(
+                    &format!("The agent {stopped}"),
+                    "Tell it how to go on, in the terminal.",
+                ),
+            )
+            .await?;
+            self.runtime(&task.id)
+                .hub
+                .notice(format!("Yulius: the agent {stopped}"));
             return Ok(HookReply::Output(HookOutput::default()));
         }
         let update = TaskFieldUpdate {

@@ -1,11 +1,11 @@
 ---
 yulius-task: 3ce7fca4-c720-4005-ab26-1fb3c4348632
-status: draft
+status: in-progress
 ---
 
 # SPEC-472: A task flagged "needs attention" says why, and Reply shows where the answer goes
 
-Status: draft
+Status: in progress
 Date: 2026-11-12
 Owner: Yulius task #455
 Scope authorization: the person's request of 2026-11-12 ("I have a bug in product sandbox, this
@@ -123,7 +123,7 @@ in the terminal. Reply shows that the terminal took the keyboard.
 ## Plan
 
 - [x] Reproduce the defect and find its root cause
-- [ ] Write the fix spec and the regression test that fails
+- [x] Write the fix spec and the regression test that fails
 - [ ] A flag keeps its reason: the store column, the API field and the gate's flag
 - [ ] Every flag Yulius raises says why, and a notice's flag carries Claude Code's words
 - [ ] The task view shows the reason and Reply says the terminal took the keyboard
