@@ -66,6 +66,8 @@ struct Fake {
     containerd_tasks: usize,
     /// Files whose write fails as on a read-only `/etc` (the update helper's, #674).
     read_only: BTreeSet<PathBuf>,
+    /// Files that take one more write and are read-only after it.
+    write_once: BTreeSet<PathBuf>,
     /// AppArmor profiles the kernel holds, by name (SPEC-456).
     profiles: BTreeMap<String, Profile>,
     /// `apparmor_parser` cannot read a profile (no `abi/4.0`).
@@ -134,6 +136,7 @@ impl Fake {
             docker_ps_fails: false,
             containerd_tasks: 0,
             read_only: BTreeSet::new(),
+            write_once: BTreeSet::new(),
             profiles: BTreeMap::new(),
             parser_fails: false,
             failing: Vec::new(),
@@ -339,6 +342,9 @@ impl Host for Fake {
             path.to_path_buf(),
             (content.to_owned(), 0, 0o100_000 | mode),
         );
+        if self.write_once.remove(path) {
+            self.read_only.insert(path.to_path_buf());
+        }
         Ok(())
     }
 
@@ -759,6 +765,14 @@ impl Host for Fake {
                             "AppArmor parser error for {file} in profile {file} at line 3: Could \
                              not open 'abi/4.0': No such file or directory"
                         ),
+                    )
+                } else if self
+                    .text(file)
+                    .is_some_and(|text| text.contains("# broken"))
+                {
+                    fail(
+                        1,
+                        &format!("AppArmor parser error for {file} at line 1: syntax error"),
                     )
                 } else if self.load_profiles(Path::new(file)) {
                     ok("")

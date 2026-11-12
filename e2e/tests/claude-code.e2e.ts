@@ -91,6 +91,10 @@ test('a refused release, another unknown model, a failed check and stopped moves
   text = await cardText(browser);
   expect(text).toMatch(/Claude Code 2\.1\.400 does not know Haiku 4\.5 \(claude-haiku-4-5\), which the composer offers/);
   expect(text).toMatch(/Running tasks are no longer moved to 2\.1\.400: the session of task #9 ended as it restarted on it\. Sessions that start or continue still get it; choose Off/);
+  // With moves stopped, the tasks on an older version are promised their next start only.
+  expect(text).toMatch(/Still on an older Claude Code \(2\)/);
+  expect(text).toMatch(/Each gets 2\.1\.400 at its next start\./);
+  expect(text).not.toMatch(/when its turn ends/);
   expect(await browser.locator('.claude-problem').count()).toBe(0);
   expect(await axeViolations(browser)).toEqual([]);
 
@@ -100,6 +104,17 @@ test('a refused release, another unknown model, a failed check and stopped moves
   text = await cardText(browser);
   expect(text).toMatch(/Checked .* ago: npm had latest 2\.1\.322 · stable 2\.1\.311 when it was last read\./);
   expect(text).not.toMatch(/npm has/);
+});
+
+test('a Claude Code whose binary could not be read for its models says so', async ({ app, browser, screen }) => {
+  // What `yulius doctor` warns about: neither "knows every offered model" nor the danger banner.
+  await app.open(mock('/admin/instance', '&claude=unread'));
+  await firstShown(screen.getByText('models not read'));
+  const text = await cardText(browser);
+  expect(text).toMatch(/The binary of Claude Code 2\.1\.322 could not be read for the models it knows, so whether it knows claude-fable-5-2, Yulius's default model, is not known\./);
+  expect(text).not.toMatch(/knows every offered model/);
+  expect(await browser.locator('.claude-problem').count()).toBe(0);
+  expect(await axeViolations(browser)).toEqual([]);
 });
 
 test('the channel is changed in place: Stable, back to the server’s, and Off', async ({ app, browser, screen }) => {
@@ -302,6 +317,8 @@ test('a server that does not isolate sandboxes says why nothing is kept current'
   await firstShown(screen.getByText(/Sandboxes are not isolated on this server, so they run the host’s Claude Code as it is/));
   await expect(screen.getByRole('button', CHECK)).toBeDisabled();
   expect(await browser.locator('#claude-channel').count()).toBe(0);
+  // Nothing is kept current, so there was no binary to read for its models.
+  expect(await cardText(browser)).not.toMatch(/models not read|could not be read/);
   expect(await axeViolations(browser)).toEqual([]);
 });
 
@@ -328,4 +345,9 @@ test('a task’s info shows the model asked for, what answered and the Claude Co
   await app.open(mock('/s/studio/tasks/11'));
   await firstShown(screen.getByRole('heading', { level: 2, name: 'Details' }));
   await expect.poll(async () => (await details())['Claude Code']).toBe('2.1.322');
+
+  // While running tasks are no longer moved to that version, only its next start is promised.
+  await app.open(mock('/s/studio/tasks/12', '&claude=gap'));
+  await firstShown(screen.getByRole('heading', { level: 2, name: 'Details' }));
+  await expect.poll(async () => (await details())['Claude Code']).toBe('2.1.322 · gets 2.1.400 at its next start');
 });

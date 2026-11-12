@@ -277,10 +277,12 @@ mod moves {
     use async_trait::async_trait;
     use yulius_app::auth::AuthContext;
     use yulius_app::context::{App, AppConfig};
+    use yulius_app::events::Envelope;
     use yulius_app::hub::HubFrame;
     use yulius_app::model::{LaunchKind, TaskMode};
     use yulius_app::ports::agent_cli::{AgentCli, AgentCliStatus, CliSource};
     use yulius_app::race::{self, Point};
+    use yulius_contracts::events::UiEvent;
     use yulius_domain::agent_cli::{Channel, Version};
     use yulius_domain::ids::{SandboxId, TaskId, UserId};
     use yulius_domain::task::{Activity, AttemptState, StopReason, TaskStatus};
@@ -499,9 +501,14 @@ mod moves {
     }
 
     async fn second_run_live(s: &Server) -> TestResult {
+        run_live(s, 2).await
+    }
+
+    /// Waits until the task has `runs` runs and the last one is live.
+    async fn run_live(s: &Server, runs: usize) -> TestResult {
         wait_for("the restarted session", Duration::from_secs(90), || async {
             let attempts = s.app.deps.store.attempts(&s.id).await.unwrap_or_default();
-            attempts.len() == 2 && attempts[1].state == AttemptState::Live
+            attempts.len() == runs && attempts[runs - 1].state == AttemptState::Live
         })
         .await
     }
@@ -514,6 +521,34 @@ mod moves {
             }
         }
         out
+    }
+
+    /// What a task read in one update published to the UI: its status and its activity.
+    type Read = (String, Option<String>);
+
+    /// What the task `id` read in each update published to the UI on `events` so far, oldest
+    /// first.
+    fn published(
+        events: &mut tokio::sync::broadcast::Receiver<Envelope>,
+        id: &TaskId,
+    ) -> Result<Vec<Read>, Box<dyn std::error::Error>> {
+        use tokio::sync::broadcast::error::TryRecvError;
+        let mut read = Vec::new();
+        loop {
+            match events.try_recv() {
+                Ok(envelope) => {
+                    if let UiEvent::TaskUpdated { task } = envelope.event
+                        && task.id == id.as_str()
+                    {
+                        read.push((task.status.clone(), task.activity.clone()));
+                    }
+                }
+                Err(TryRecvError::Lagged(lost)) => {
+                    return Err(format!("{lost} updates were lost").into());
+                }
+                Err(_) => return Ok(read),
+            }
+        }
     }
 
     /// Set once the next settled turn of `id` decided whether its session moves (and started
@@ -571,10 +606,12 @@ mod moves {
             assert_eq!(behind[0].sandbox, "pool");
             let detail = s.app.task_detail(&ctx, s.id.as_str()).await?;
             assert_eq!(detail.cli_moves_to.as_deref(), Some("2.1.322"));
+            assert!(!detail.cli_moves_stopped, "it moves when its turn ends");
             assert_eq!(runs(&s).await, 1, "an idle session is left alone");
 
             // Its next turn ends: the session restarts on the new Claude Code.
             let mut watch = s.app.runtime(&s.id).hub.subscribe().rx;
+            let mut events = s.app.events.subscribe();
             let restarted = decided(&s.id);
             turn(&s, "two").await?;
             second_run_live(&s).await?;
@@ -588,6 +625,27 @@ mod moves {
             );
             assert_eq!(attempts[0].account_id, attempts[1].account_id);
             settled(&s, Activity::Waiting).await?;
+            // The restart is no news (SPEC-468 CCF-008): the task was its person's turn, read
+            // "continuing" while it restarted, and is their turn again. It never read Working
+            // in between, which viewers took for work and a notification for a new "Your turn".
+            let read = published(&mut events, &s.id)?;
+            let restart = read.iter().position(|(status, _)| status == "switching");
+            let from_restart: Vec<(&str, Option<&str>)> = read
+                [restart.ok_or("it read switching")?..]
+                .iter()
+                .map(|(status, activity)| (status.as_str(), activity.as_deref()))
+                .collect();
+            assert!(
+                from_restart
+                    .iter()
+                    .all(|(_, activity)| *activity != Some("working")),
+                "{from_restart:?}"
+            );
+            assert_eq!(
+                from_restart.last(),
+                Some(&("running", Some("waiting"))),
+                "{from_restart:?}"
+            );
             // One line, about Claude Code, and none about subscriptions.
             let notices = said(&mut watch);
             assert_eq!(
@@ -622,6 +680,28 @@ mod moves {
                 "no subscription switch: {:?}",
                 detail.switches
             );
+
+            // A later release moves it again at its next turn's end: the first restart gave
+            // the task's one restart at a time back when it was over.
+            release(&s, &version, "2.1.330")?;
+            let again = decided(&s.id);
+            turn(&s, "four").await?;
+            run_live(&s, 3).await?;
+            until_decided(&again).await?;
+            settled(&s, Activity::Waiting).await?;
+            wait_for(
+                "the third session's version",
+                Duration::from_secs(30),
+                || async {
+                    run_versions(&s.app, &s.id).await
+                        == [
+                            Some("2.1.311".to_owned()),
+                            Some("2.1.322".to_owned()),
+                            Some("2.1.330".to_owned()),
+                        ]
+                },
+            )
+            .await?;
             stop(&s.app, &s.id).await
         })?;
         rt.shutdown_timeout(Duration::from_secs(5));
@@ -641,6 +721,10 @@ mod moves {
             crate::pool_supervision::add_account(&s.app, "b-second").await?;
             turn(&s, "one").await?;
             settled(&s, Activity::Waiting).await?;
+            // What a person typed into the old session is no draft in the new one, whose
+            // prompt box starts empty (SPEC-468 CCF-010).
+            s.app.record_typing(&s.id, &s.user);
+            assert!(s.app.has_draft(&s.id));
             let ctx = s.ctx().await?;
             s.app
                 .switch_task(
@@ -652,6 +736,7 @@ mod moves {
                 )
                 .await?;
             second_run_live(&s).await?;
+            assert!(!s.app.has_draft(&s.id), "a new run's prompt box is empty");
             settled(&s, Activity::Waiting).await?;
             // The next turn works and rests as before.
             turn(&s, "two").await?;
@@ -699,6 +784,495 @@ mod moves {
             stop(&s.app, &s.id).await
         })?;
         rt.shutdown_timeout(Duration::from_secs(5));
+        Ok(())
+    }
+
+    /// The task token of the run [`on_the_test_clock`] seeds.
+    const CLOCK_TOKEN: &str = "task-token-for-claude-move-tests-0123456789";
+    const MINUTE: i64 = 60_000;
+
+    /// A prompt-mode task on the test's clock, with no process: its live run names Claude Code
+    /// 2.1.311, runs get 2.1.322, and its hooks come over the internal listener ([`hook`]). Its
+    /// subscription has room, or with `limited` is at a usage limit that resets in an hour.
+    async fn on_the_test_clock(
+        limited: bool,
+    ) -> Result<(crate::support::Harness, TaskId), Box<dyn std::error::Error>> {
+        on_the_test_clock_limited_for(limited.then_some(60 * MINUTE)).await
+    }
+
+    /// [`on_the_test_clock`] whose subscription is at a usage limit that resets in `limited_ms`.
+    async fn on_the_test_clock_limited_for(
+        limited_ms: Option<i64>,
+    ) -> Result<(crate::support::Harness, TaskId), Box<dyn std::error::Error>> {
+        use crate::support::{harness, seed_github_user, seed_sandbox, seed_task};
+        use yulius_app::model::{AccountRecord, AccountStatus, AttemptRecord};
+        use yulius_domain::harness::{Harness, Provider};
+        use yulius_domain::ids::{AccountId, AttemptId};
+        use yulius_domain::time::Timestamp;
+        let h = harness()?;
+        seed_github_user(&h, "u-alice", "alice").await?;
+        seed_sandbox(&h, "s1", "fixture", "u-alice").await?;
+        let now = h.app.now();
+        let usage = limited_ms.map(|resets_in| {
+            serde_json::json!({"primary": null, "secondary": null, "limit_reached": true,
+                "limit_resets_at": now.0 + resets_in, "observed_at": now.0})
+            .to_string()
+        });
+        let account = AccountId::parse("acc-1")?;
+        let store = &h.app.deps.store;
+        store
+            .insert_account(&AccountRecord {
+                id: account.clone(),
+                provider: Provider::Anthropic,
+                label: "Claude acc-1".into(),
+                credential: Some(h.app.deps.crypto.seal(b"acc-1")?),
+                status: AccountStatus::Ok,
+                usage_json: usage,
+                last_error: None,
+                created_at: Timestamp(1),
+                updated_at: Timestamp(1),
+                email: None,
+                email_checked_at: None,
+                email_typed: false,
+            })
+            .await?;
+        let task = seed_task(&h, "t-draft", "s1", "u-alice", TaskStatus::Running, None).await?;
+        let run = AttemptId::parse("a-t-draft")?;
+        store
+            .insert_attempt(&AttemptRecord {
+                id: run.clone(),
+                task_id: task.id.clone(),
+                seq: 1,
+                harness: Harness::ClaudeCode,
+                account_id: Some(account),
+                provider_session_id: None,
+                launch_kind: LaunchKind::New,
+                state: AttemptState::Live,
+                run_dir: "/nonexistent/run".into(),
+                token_hash: h.app.deps.crypto.sha256_hex(CLOCK_TOKEN.as_bytes()),
+                host_token: h.app.deps.crypto.seal(&[1u8; 32])?,
+                ptyhost_pid: None,
+                child_pid: None,
+                started_at: now,
+                ended_at: None,
+                exit_code: None,
+                exit_reason: None,
+            })
+            .await?;
+        store
+            .set_run_cli_version(&run, &task.id, "2.1.311", now)
+            .await?;
+        let installed = Arc::new(Installed(Mutex::new(Some(v("2.1.322")))));
+        assert!(h.app.set_agent_cli(installed as Arc<_>, Channel::Latest));
+        Ok((h, task.id))
+    }
+
+    /// A hook of that run, sent now: its turn's Stop, or with `prompt` the submit of that
+    /// prompt. The status it is answered with (200, or 202 while it is held) and what it said.
+    async fn hook_answered(
+        h: &crate::support::Harness,
+        prompt: Option<&str>,
+    ) -> Result<(axum::http::StatusCode, serde_json::Value), Box<dyn std::error::Error>> {
+        use tower::ServiceExt as _;
+        let (event, body) = match prompt {
+            Some(text) => (
+                "UserPromptSubmit",
+                serde_json::json!({"hook_event_name": "UserPromptSubmit", "session_id": "s",
+                    "prompt": text}),
+            ),
+            None => (
+                "Stop",
+                serde_json::json!({"hook_event_name": "Stop", "session_id": "s",
+                    "stop_hook_active": false}),
+            ),
+        };
+        let request = axum::http::Request::post(format!("/hooks/claude/{event}"))
+            .header("authorization", format!("Bearer {CLOCK_TOKEN}"))
+            .header("content-type", "application/json")
+            .header("x-yulius-hook-sent-ms", h.app.now().0.to_string())
+            .body(axum::body::Body::from(body.to_string()))?;
+        let answer = h.internal.clone().oneshot(request).await?;
+        let status = answer.status();
+        let said = axum::body::to_bytes(answer.into_body(), 1 << 20).await?;
+        Ok((status, serde_json::from_slice(&said).unwrap_or_default()))
+    }
+
+    /// [`hook_answered`], for its status alone: 200, or 202 while it is held.
+    async fn hook(
+        h: &crate::support::Harness,
+        prompt: Option<&str>,
+    ) -> Result<axum::http::StatusCode, Box<dyn std::error::Error>> {
+        Ok(hook_answered(h, prompt).await?.0)
+    }
+
+    /// A Jev that reads a typed prompt as new scope, so Yulius holds it (TSK-013), once it
+    /// read `passes` prompts as context.
+    struct HoldsPrompts {
+        passes: std::sync::atomic::AtomicUsize,
+    }
+
+    /// Installs [`HoldsPrompts`] as the scope check of `h`.
+    fn scope_check_holds_after(h: &crate::support::Harness, passes: usize) {
+        let jev = Arc::new(HoldsPrompts {
+            passes: std::sync::atomic::AtomicUsize::new(passes),
+        }) as Arc<dyn yulius_app::ports::intake::ChoiceEvaluator>;
+        assert!(
+            h.app
+                .set_intake(yulius_app::intake::IntakeServices::new(Some(jev), None))
+        );
+    }
+
+    #[async_trait]
+    impl yulius_app::ports::intake::ChoiceEvaluator for HoldsPrompts {
+        async fn evaluate(
+            &self,
+            _state: &str,
+            question: &yulius_domain::intake::ChoiceQuestion<'_>,
+            _deadline: Duration,
+        ) -> Result<yulius_domain::intake::ChoiceAnswer, yulius_app::ports::intake::JevFailure>
+        {
+            let passed = self
+                .passes
+                .try_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                    left.checked_sub(1)
+                })
+                .is_ok();
+            let choice = if passed { "context" } else { "new_scope" };
+            let odds = |key: &str| if key == choice { 0.97 } else { 0.01 };
+            Ok(yulius_domain::intake::ChoiceAnswer {
+                choice: choice.to_owned(),
+                confidence: 0.97,
+                probabilities: question
+                    .options
+                    .iter()
+                    .map(|option| (option.key.to_owned(), odds(option.key)))
+                    .collect(),
+            })
+        }
+    }
+
+    /// SPEC-468 CCF-010: a prompt Yulius's scope check holds (TSK-013) never reaches the agent,
+    /// and Claude Code puts its text back into the prompt box (the intake module's own check
+    /// with 2.1.295; 2.1.322 lands a line a hook dropped in the composer). That submit emptied
+    /// nothing: the turn that ran meanwhile ends and the session stays. The hook used to count
+    /// as a submit, so the held text went with the old process while the task's card still
+    /// offered "Send anyway".
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_prompt_yulius_holds_is_still_in_the_prompt_box() -> TestResult {
+        use axum::http::StatusCode;
+        let (h, task) = on_the_test_clock(false).await?;
+        let alice = UserId::parse("u-alice")?;
+        scope_check_holds_after(&h, 0);
+
+        // A turn runs (a prompt of three words or fewer is not checked).
+        assert_eq!(hook(&h, Some("first")).await?, StatusCode::OK);
+        // Its person types the next prompt and enters it; Yulius holds it.
+        let next = "Also add a dark mode to the whole settings page";
+        h.clock.0.fetch_add(1_000, Ordering::SeqCst);
+        h.app.record_typing(&task, &alice);
+        h.clock.0.fetch_add(1_000, Ordering::SeqCst);
+        h.app.record_typing(&task, &alice);
+        h.clock.0.fetch_add(100, Ordering::SeqCst);
+        let (status, answer) = hook_answered(&h, Some(next)).await?;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(answer["decision"], "block", "{answer}");
+        assert!(
+            h.app.has_draft(&task),
+            "the held prompt is back in the prompt box"
+        );
+        // The turn that ran meanwhile ends five minutes later: the session stays.
+        h.clock.0.fetch_add(5 * MINUTE, Ordering::SeqCst);
+        let probed = reached(Point::ClaudeMoveProbed, &task);
+        let flag = decided(&task);
+        assert_eq!(hook(&h, None).await?, StatusCode::OK);
+        until_decided(&flag).await?;
+        assert!(
+            !probed.load(Ordering::SeqCst) && !h.app.claude_move_cooling(&task),
+            "a session with a held prompt in its box is not looked at, and no restart is tried"
+        );
+        Ok(())
+    }
+
+    /// SPEC-468 CCF-010: a prompt that waits for a subscription with room and is then held by
+    /// the scope check (which let it through before the wait and reads it again after) was
+    /// never taken by the agent: Claude Code puts it back into the prompt box. Its first
+    /// request used to empty the box at once, so the text was forgotten.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_prompt_held_for_room_and_then_by_the_scope_check_is_still_in_the_box() -> TestResult
+    {
+        use axum::http::StatusCode;
+        let (h, task) = on_the_test_clock_limited_for(Some(30_000)).await?;
+        let alice = UserId::parse("u-alice")?;
+        scope_check_holds_after(&h, 1);
+
+        // Its person types a prompt and enters it: no subscription has room, so it waits.
+        let prompt = "Also add a dark mode to the whole settings page";
+        h.app.record_typing(&task, &alice);
+        h.clock.0.fetch_add(1_000, Ordering::SeqCst);
+        h.app.record_typing(&task, &alice);
+        h.clock.0.fetch_add(100, Ordering::SeqCst);
+        assert_eq!(hook(&h, Some(prompt)).await?, StatusCode::ACCEPTED);
+        h.clock.0.fetch_add(10_000, Ordering::SeqCst);
+        assert_eq!(hook(&h, Some(prompt)).await?, StatusCode::ACCEPTED);
+        // The limit resets half a minute later. The prompt goes on to the scope check, which
+        // holds it for its person's choice.
+        h.clock.0.fetch_add(25_000, Ordering::SeqCst);
+        let _ = h.app.resume_round().await;
+        let (status, answer) = hook_answered(&h, Some(prompt)).await?;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(answer["decision"], "block", "{answer}");
+        assert!(
+            h.app.has_draft(&task),
+            "the prompt is back in the prompt box"
+        );
+        Ok(())
+    }
+
+    /// SPEC-468 CCF-010 (review round 3): a prompt whose hook Yulius answers with an error
+    /// goes on all the same, since the hook client fails open: the box is empty. Here the task
+    /// is deleted while its prompt is answered.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_prompt_whose_hook_fails_was_submitted_all_the_same() -> TestResult {
+        use axum::http::StatusCode;
+        use yulius_app::ports::store::TaskStore as _;
+        let (h, task) = on_the_test_clock(false).await?;
+        let alice = UserId::parse("u-alice")?;
+        h.app.record_typing(&task, &alice);
+        assert!(h.app.has_draft(&task));
+        h.clock.0.fetch_add(1_000, Ordering::SeqCst);
+        let (store, gone) = (h.store.clone(), task.clone());
+        race::on(
+            Point::PromptTurnChecked,
+            Path::new(task.as_str()),
+            move || {
+                tokio::task::block_in_place(|| {
+                    let deleted =
+                        tokio::runtime::Handle::current().block_on(store.delete_task(&gone));
+                    assert!(matches!(deleted, Ok(true)), "{deleted:?}");
+                });
+            },
+        );
+        let status = hook(&h, Some("first")).await?;
+        assert_eq!(
+            status,
+            StatusCode::NOT_FOUND,
+            "the hook was answered with an error"
+        );
+        assert!(
+            !h.app.has_draft(&task),
+            "the prompt went on: what was typed before it is no draft"
+        );
+        Ok(())
+    }
+
+    /// SPEC-468 CCF-010 (the review's question of direction): a draft that sits in a session's
+    /// prompt box keeps the session however long ago it was typed. Yulius cannot read the box,
+    /// but it sees every keystroke and every submitted prompt: a session typed into since its
+    /// last prompt is left alone, and the next submitted prompt lifts that. The clock is the
+    /// test's, the hooks come over the internal listener, and no process runs: a restart that
+    /// is tried is refused (the sandbox has no repository), which is what shows the try.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_draft_typed_since_the_last_prompt_keeps_the_session() -> TestResult {
+        use axum::http::StatusCode;
+        let (h, task) = on_the_test_clock(false).await?;
+        let alice = UserId::parse("u-alice")?;
+
+        // A prompt is submitted and its turn runs. Meanwhile its person types the next message
+        // and does not send it.
+        assert_eq!(hook(&h, Some("first")).await?, StatusCode::OK);
+        h.clock.0.fetch_add(1_000, Ordering::SeqCst);
+        h.app.record_typing(&task, &alice);
+        assert!(h.app.has_draft(&task));
+        // Claude Code wakes the session by itself (a background shell ended): that prompt did
+        // not come through the prompt box, and empties nothing.
+        h.clock.0.fetch_add(1_000, Ordering::SeqCst);
+        let wake = "<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>\n\
+                    </task-notification>";
+        assert_eq!(hook(&h, Some(wake)).await?, StatusCode::OK);
+        assert!(h.app.has_draft(&task), "a wake-up is no submit");
+        // The turn ends five minutes later: the minute after a keystroke is long over.
+        h.clock.0.fetch_add(5 * MINUTE, Ordering::SeqCst);
+        let probed = reached(Point::ClaudeMoveProbed, &task);
+        let flag = decided(&task);
+        assert_eq!(hook(&h, None).await?, StatusCode::OK);
+        until_decided(&flag).await?;
+        assert!(
+            !probed.load(Ordering::SeqCst) && !h.app.claude_move_cooling(&task),
+            "a session with a draft is not looked at, and no restart is tried"
+        );
+
+        // They send it: the box is empty again, and that turn's end restarts the session.
+        h.clock.0.fetch_add(1_000, Ordering::SeqCst);
+        assert_eq!(hook(&h, Some("second")).await?, StatusCode::OK);
+        assert!(!h.app.has_draft(&task), "typed, then submitted");
+        h.clock.0.fetch_add(5 * MINUTE, Ordering::SeqCst);
+        let flag = decided(&task);
+        assert_eq!(hook(&h, None).await?, StatusCode::OK);
+        until_decided(&flag).await?;
+        assert!(probed.load(Ordering::SeqCst), "the session was looked at");
+        assert!(h.app.claude_move_cooling(&task), "the restart was tried");
+        Ok(())
+    }
+
+    /// SPEC-468 CCF-010: a prompt that is held at its submit (here: no subscription has room)
+    /// is sent again by the hook client every ten seconds, stamped anew each time, until it
+    /// goes on. That is one submit: what a person types while it is held is a draft, and it
+    /// is one still when the prompt goes on. Each request used to count as a submit, so the
+    /// draft was forgotten ten seconds after it was typed.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_draft_typed_while_a_prompt_is_held_stays_a_draft() -> TestResult {
+        use axum::http::StatusCode;
+        let (h, task) = on_the_test_clock(true).await?;
+        let alice = UserId::parse("u-alice")?;
+
+        // The prompt waits for a subscription with room, and its person types on meanwhile.
+        assert_eq!(hook(&h, Some("first")).await?, StatusCode::ACCEPTED);
+        h.clock.0.fetch_add(1_000, Ordering::SeqCst);
+        h.app.record_typing(&task, &alice);
+        assert!(h.app.has_draft(&task));
+        // The hook client asks again: the same submit, still held.
+        h.clock.0.fetch_add(10_000, Ordering::SeqCst);
+        assert_eq!(hook(&h, Some("first")).await?, StatusCode::ACCEPTED);
+        assert!(
+            h.app.has_draft(&task),
+            "a prompt that is held is one submit"
+        );
+        // The limit resets and the prompt goes on: what was typed meanwhile is still there.
+        h.clock.0.fetch_add(61 * MINUTE, Ordering::SeqCst);
+        let _ = h.app.resume_round().await;
+        assert_eq!(hook(&h, Some("first")).await?, StatusCode::OK);
+        assert!(h.app.has_draft(&task), "it went on, and the draft stays");
+        // The next prompt they send empties the box.
+        h.clock.0.fetch_add(1_000, Ordering::SeqCst);
+        h.app.record_typing(&task, &alice);
+        h.clock.0.fetch_add(1_000, Ordering::SeqCst);
+        assert_eq!(hook(&h, Some("second")).await?, StatusCode::OK);
+        assert!(!h.app.has_draft(&task), "typed, then submitted");
+        Ok(())
+    }
+
+    /// What the session's terminal printed since `watch` was last read.
+    fn printed(watch: &mut tokio::sync::broadcast::Receiver<HubFrame>) -> String {
+        let mut out = String::new();
+        while let Ok(frame) = watch.try_recv() {
+            if let HubFrame::Output { bytes, .. } = frame {
+                out.push_str(&String::from_utf8_lossy(&bytes));
+            }
+        }
+        out
+    }
+
+    /// The task's person tells it "Keep the header blue" through their Superagent
+    /// (`task_message`): what the call answered.
+    async fn told(
+        app: &Arc<App>,
+        sandbox: &SandboxId,
+        user: &UserId,
+        id: &TaskId,
+    ) -> Result<serde_json::Value, yulius_app::error::AppError> {
+        use yulius_app::coordination::{Channel as Through, ProjectCaller};
+        let caller = ProjectCaller {
+            sandbox: sandbox.clone(),
+            user: user.clone(),
+            task: None,
+            channel: Through::Superagent,
+            actor: "cockpit:admin".into(),
+            detail: serde_json::json!({"via": "cockpit", "shell": "sh-test"}),
+        };
+        app.tool_task_message(
+            &caller,
+            &serde_json::json!({"task_id": id.as_str(), "text": "Keep the header blue"}),
+        )
+        .await
+    }
+
+    /// SPEC-468 CCF-011: a message Yulius typed for a person (here: through their Superagent)
+    /// is a draft until it is submitted: a turn's end before that, which the gate blocks here,
+    /// leaves the session where it is, the message gets its turn, and that turn's end
+    /// restarts the session.
+    ///
+    /// This runs in the fake agent's order: it submits a line (the prompt hook) when it reads
+    /// it, after its turn. Claude Code submits at the Enter, also while a turn runs (seen with
+    /// 2.1.322), and then keeps the message in its queue until the turn ends. There this rule
+    /// covers the message from its paste to that submit only, and a restart at the turn's end
+    /// still loses it from the queue: issue #1204.
+    #[test]
+    fn a_message_yulius_typed_keeps_the_session_until_its_submit() -> TestResult {
+        let (_dir, data) = data_dir()?;
+        let version = data.join("claude-version");
+        let may_end = data.join("turn-may-end");
+        let rt = runtime()?;
+        rt.block_on(async {
+            let options = FakeAgentOptions {
+                turn_hold_file: Some(may_end.clone()),
+                ..hooked()
+            };
+            // Runs get 2.1.322 from the start; the first session started on 2.1.311.
+            let s = server(&data, &version, options, TaskMode::Prompt, "2.1.322").await?;
+            std::fs::write(&version, "2.1.322\n")?;
+            change_code(&s).await?;
+            let mut watch = s.app.runtime(&s.id).hub.subscribe().rx;
+            // A turn runs, and the gate will block its end.
+            let submitted = reached(Point::PromptTurnChecked, &s.id);
+            s.app.send_input(&s.id, b"one\r").await?;
+            wait_for("the prompt's submit", Duration::from_secs(60), || async {
+                submitted.load(Ordering::SeqCst)
+            })
+            .await?;
+            // Meanwhile the task's person tells it something through their Superagent: typed
+            // into the session, where the fake agent reads it once its turn ended.
+            let answer = told(&s.app, &s.sandbox, &s.user, &s.id).await?;
+            assert_eq!(answer["delivered"], "sent", "{answer}");
+            assert!(
+                s.app.has_draft(&s.id),
+                "typed into the session and not submitted yet"
+            );
+            // The turn ends, the message gets its turn, and the session moves at that turn's end.
+            std::fs::write(&may_end, "")?;
+            let mut shown = String::new();
+            wait_for("the restarted session", Duration::from_secs(90), || {
+                shown.push_str(&printed(&mut watch));
+                async { runs(&s).await == 2 }
+            })
+            .await?;
+            second_run_live(&s).await?;
+            shown.push_str(&printed(&mut watch));
+            assert!(
+                shown.contains("ECHO: Message from admin (through their Superagent):"),
+                "the message was lost with the old process: {shown}"
+            );
+            // That the session moved at all says the message's submit emptied the box: a
+            // session with a draft is not restarted.
+            assert_eq!(
+                run_versions(&s.app, &s.id).await[0],
+                Some("2.1.311".to_owned())
+            );
+            stop(&s.app, &s.id).await
+        })?;
+        rt.shutdown_timeout(Duration::from_secs(5));
+        Ok(())
+    }
+
+    /// SPEC-468 CCF-011 (review round 2): a message that could not be typed (here: no process
+    /// runs, so the session has no terminal to type into) is in no prompt box and no queue:
+    /// it leaves no draft behind.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_message_that_could_not_be_typed_is_no_draft() -> TestResult {
+        use axum::http::StatusCode;
+        let (h, task) = on_the_test_clock(false).await?;
+        h.github
+            .set_perm("alice", "acme/fixture", crate::support::perms("write"));
+        assert_eq!(hook(&h, Some("first")).await?, StatusCode::OK);
+        h.clock.0.fetch_add(1_000, Ordering::SeqCst);
+        let refused = told(
+            &h.app,
+            &SandboxId::parse("s1")?,
+            &UserId::parse("u-alice")?,
+            &task,
+        )
+        .await;
+        assert!(refused.is_err(), "no process runs: {refused:?}");
+        assert!(!h.app.has_draft(&task), "nothing was typed: {refused:?}");
         Ok(())
     }
 
@@ -823,6 +1397,269 @@ mod moves {
         Ok(())
     }
 
+    /// A prompt-mode session on 2.1.311 while runs get 2.1.322, in which a person sets a goal
+    /// of their own and whose goal evaluator gives no verdict; with `code` changed in its
+    /// worktree and no spec, so the gate blocks its turn's end. With `may_end` the goal's turn
+    /// ends when that file exists, and Yulius has read that the goal is set when this returns;
+    /// without it the turn ends by itself, milliseconds after the goal was set.
+    async fn session_with_own_goal(
+        data: &Path,
+        version: &Path,
+        may_end: Option<&Path>,
+        code: bool,
+    ) -> Result<Server, Box<dyn std::error::Error>> {
+        let options = FakeAgentOptions {
+            turn_hold_file: may_end.map(Path::to_path_buf),
+            goal_verdict: Some("none"),
+            ..hooked()
+        };
+        let s = server(data, version, options, TaskMode::Prompt, "2.1.322").await?;
+        std::fs::write(version, "2.1.322\n")?;
+        if code {
+            change_code(&s).await?;
+        }
+        s.app
+            .send_input(&s.id, b"/goal keep the header blue\r")
+            .await?;
+        if may_end.is_some() {
+            goal_read(&s).await?;
+        }
+        Ok(s)
+    }
+
+    /// Waits until Yulius read from the transcript that the session's goal is set.
+    async fn goal_read(s: &Server) -> TestResult {
+        wait_for("the goal to be read", Duration::from_secs(60), || async {
+            s.app.goal_is_open(&s.id)
+        })
+        .await
+    }
+
+    /// Waits until the goal turn's Stop was answered: with the gate's block, or by a restart
+    /// of the session.
+    async fn stop_answered(s: &Server) -> TestResult {
+        wait_for("the Stop's answer", Duration::from_secs(60), || async {
+            screen(&s.app, &s.id).contains("STOP BLOCKED") || runs(s).await > 1
+        })
+        .await
+    }
+
+    /// Code changed in the task's worktree, and no spec: the gate blocks the next turn's end.
+    async fn change_code(s: &Server) -> TestResult {
+        let task = s.app.deps.store.task(&s.id).await?.ok_or("the task")?;
+        let worktree = PathBuf::from(task.worktree_path.ok_or("a worktree")?);
+        std::fs::create_dir_all(worktree.join("src"))?;
+        std::fs::write(
+            worktree.join("src/lib.rs"),
+            "pub fn answer() -> u32 {\n    42\n}\n",
+        )?;
+        Ok(())
+    }
+
+    /// What became of a session that held its person's goal: its runs, how often its screen
+    /// says the goal was set, and whether the goal is still open.
+    async fn own_goal(s: &Server) -> (usize, usize, bool) {
+        let goals = screen(&s.app, &s.id).matches("GOAL SET").count();
+        (runs(s).await, goals, s.app.goal_is_open(&s.id))
+    }
+
+    /// SPEC-468 CCF-001 (review round 3, minor 1): Yulius types nothing into a prompt-mode
+    /// session it restarts and reads a goal only from the new run's lines, so it could not
+    /// follow a goal its person set there across a restart; and the fake agent, unlike the
+    /// Claude Code binaries read (2.1.292, 2.1.311, 2.1.322), forgets a goal when it is
+    /// resumed. A turn that closes with that goal open and no verdict leaves the task its
+    /// person's turn: the session is not restarted idle, so the goal stays in force and known.
+    #[test]
+    fn a_persons_own_goal_keeps_an_idle_prompt_session_where_it_is() -> TestResult {
+        let (_dir, data) = data_dir()?;
+        let version = data.join("claude-version");
+        let may_end = data.join("turn-may-end");
+        let rt = runtime()?;
+        rt.block_on(async {
+            let s = session_with_own_goal(&data, &version, Some(&may_end), false).await?;
+            let flag = decided(&s.id);
+            std::fs::write(&may_end, "")?;
+            until_decided(&flag).await?;
+            assert_eq!(
+                own_goal(&s).await,
+                (1, 1, true),
+                "{}",
+                screen(&s.app, &s.id)
+            );
+            settled(&s, Activity::Waiting).await?;
+            stop(&s.app, &s.id).await
+        })?;
+        rt.shutdown_timeout(Duration::from_secs(5));
+        Ok(())
+    }
+
+    /// SPEC-468 CCF-001: the same session at a Stop the gate blocks. A restart there would give
+    /// the resumed session the gate's reasons and no goal: the Stop is answered with the block
+    /// instead, and the session keeps its goal. Its goal is known when the Stop comes, so the
+    /// session is not even looked at.
+    #[test]
+    fn a_persons_own_goal_keeps_the_session_at_a_stop_the_gate_blocks() -> TestResult {
+        let (_dir, data) = data_dir()?;
+        let version = data.join("claude-version");
+        let may_end = data.join("turn-may-end");
+        let rt = runtime()?;
+        rt.block_on(async {
+            let s = session_with_own_goal(&data, &version, Some(&may_end), true).await?;
+            let looked_at = reached(Point::ClaudeMoveProbed, &s.id);
+            std::fs::write(&may_end, "")?;
+            stop_answered(&s).await?;
+            assert_eq!(
+                own_goal(&s).await,
+                (1, 1, true),
+                "{}",
+                screen(&s.app, &s.id)
+            );
+            assert!(
+                screen(&s.app, &s.id).contains("STOP BLOCKED"),
+                "the gate blocks as it would without a newer Claude Code"
+            );
+            assert!(
+                !looked_at.load(Ordering::SeqCst),
+                "a session known to hold its person's goal is not looked at"
+            );
+            stop(&s.app, &s.id).await
+        })?;
+        rt.shutdown_timeout(Duration::from_secs(5));
+        Ok(())
+    }
+
+    /// SPEC-468 CCF-001 (review round 1 of this change, minor 1): the goal is set in the very
+    /// turn whose Stop the gate blocks, and that Stop comes before Yulius read the goal's
+    /// record: the transcript is read once a second, and this turn takes milliseconds. The
+    /// Stop asks again once the turn's lines were read, and the session stays. It asked only
+    /// before, so the session was restarted with the gate's reasons and Yulius no longer knew
+    /// the goal (which the fake agent had forgotten as well).
+    /// That the record was unread when the Stop came is not asserted: in the rare run in which
+    /// a read falls between the two, the first question keeps the session, and it must stay
+    /// either way.
+    #[test]
+    fn a_goal_set_in_the_turn_the_gate_blocks_keeps_the_session() -> TestResult {
+        let (_dir, data) = data_dir()?;
+        let version = data.join("claude-version");
+        let rt = runtime()?;
+        rt.block_on(async {
+            let s = session_with_own_goal(&data, &version, None, true).await?;
+            stop_answered(&s).await?;
+            assert_eq!(runs(&s).await, 1, "{}", screen(&s.app, &s.id));
+            goal_read(&s).await?;
+            assert_eq!(
+                own_goal(&s).await,
+                (1, 1, true),
+                "{}",
+                screen(&s.app, &s.id)
+            );
+            assert!(
+                screen(&s.app, &s.id).contains("STOP BLOCKED"),
+                "the gate blocks as it would without a newer Claude Code"
+            );
+            stop(&s.app, &s.id).await
+        })?;
+        rt.shutdown_timeout(Duration::from_secs(5));
+        Ok(())
+    }
+
+    /// SPEC-468 CCF-008: a prompt-mode session whose person's goal failed is their turn, with
+    /// work left (SPEC-429), and reads so after its idle restart too: what Claude Code last
+    /// recorded of the goal is what the agent left, in the same session with nothing typed. It
+    /// used to be forgotten with the old run, so the task read "Answered" from then on, which
+    /// its person was notified of.
+    #[test]
+    fn a_goal_that_failed_is_still_unfinished_after_an_idle_restart() -> TestResult {
+        let (_dir, data) = data_dir()?;
+        let version = data.join("claude-version");
+        let rt = runtime()?;
+        rt.block_on(async {
+            let options = FakeAgentOptions {
+                goal_verdict: Some("failed"),
+                ..hooked()
+            };
+            let s = server(&data, &version, options, TaskMode::Prompt, "2.1.322").await?;
+            std::fs::write(&version, "2.1.322\n")?;
+            let ctx = s.ctx().await?;
+            // Its person sets a goal of their own; the evaluator says it cannot be met, which
+            // ends the goal, and the settled turn restarts the idle session.
+            let restarted = decided(&s.id);
+            s.app.send_input(&s.id, b"/goal make it rain\r").await?;
+            until_decided(&restarted).await?;
+            second_run_live(&s).await?;
+            settled(&s, Activity::Waiting).await?;
+            assert!(!s.app.goal_is_open(&s.id), "the goal ended");
+            let detail = s.app.task_detail(&ctx, s.id.as_str()).await?;
+            assert!(
+                detail.summary.goal_unfinished,
+                "the work the goal left is still unfinished"
+            );
+            stop(&s.app, &s.id).await
+        })?;
+        rt.shutdown_timeout(Duration::from_secs(5));
+        Ok(())
+    }
+
+    /// SPEC-468 CCF-002 (review round 3, minor 2; SPEC-461 CCM-013's "a gate's block"): a
+    /// session that works on after its turn because the gate blocks moves at that Stop, in the
+    /// same Claude session and subscription, and the restarted session is told the gate's
+    /// reasons; it is one switch decision, for Claude Code.
+    #[test]
+    fn a_session_the_gate_blocks_moves_at_that_stop_with_the_gates_reasons() -> TestResult {
+        let (_dir, data) = data_dir()?;
+        let version = data.join("claude-version");
+        let rt = runtime()?;
+        rt.block_on(async {
+            let s = server(&data, &version, hooked(), TaskMode::Prompt, "2.1.311").await?;
+            turn_that_stays(&s, "one").await?;
+            release(&s, &version, "2.1.322")?;
+            change_code(&s).await?;
+            turn(&s, "two").await?;
+            second_run_live(&s).await?;
+            let attempts = s.app.deps.store.attempts(&s.id).await?;
+            assert_eq!(attempts[1].launch_kind, LaunchKind::Resume);
+            assert_eq!(
+                attempts[0].provider_session_id, attempts[1].provider_session_id,
+                "the same Claude session"
+            );
+            assert_eq!(attempts[0].account_id, attempts[1].account_id);
+            // The restarted session is told why its turn could not end.
+            let launch =
+                std::fs::read_to_string(Path::new(&attempts[1].run_dir).join("fake-launch.txt"))?;
+            assert!(
+                launch.contains("prompt: Some(\"This task needs a spec"),
+                "{launch}"
+            );
+            wait_for("the switch to end", Duration::from_secs(60), || async {
+                let switches = s.app.deps.store.switches(&s.id).await;
+                switches.is_ok_and(|all| {
+                    !all.is_empty() && all.iter().all(|one| one.outcome != "started")
+                })
+            })
+            .await?;
+            let switches = s.app.deps.store.switches(&s.id).await?;
+            let made: Vec<(&str, &str)> = switches
+                .iter()
+                .map(|one| (one.reason.as_str(), one.outcome.as_str()))
+                .collect();
+            assert_eq!(made, [("claude_code", "completed")]);
+            // The restarted session counts as on the new version once the move recorded it,
+            // a moment after its switch.
+            wait_for(
+                "the new session's version",
+                Duration::from_secs(30),
+                || async {
+                    run_versions(&s.app, &s.id).await
+                        == [Some("2.1.311".to_owned()), Some("2.1.322".to_owned())]
+                },
+            )
+            .await?;
+            stop(&s.app, &s.id).await
+        })?;
+        rt.shutdown_timeout(Duration::from_secs(5));
+        Ok(())
+    }
+
     /// CCM-013 (review round 1, finding 3): a session that cannot continue on a version stops
     /// its task, and no other session is sent to that version: the card says so.
     #[test]
@@ -891,6 +1728,12 @@ mod moves {
         turn_of(&s.app, &other, "hello").await?;
         until_decided(&flag).await?;
         assert_eq!(runs_of(&s.app, &other).await, 1, "not sent to that version");
+        // Its info promises that version at its next start only (SPEC-468 CCF-003).
+        let detail = s.app.task_detail(&s.ctx().await?, other.as_str()).await?;
+        assert_eq!(
+            (detail.cli_moves_to.as_deref(), detail.cli_moves_stopped),
+            (Some("2.1.322"), true)
+        );
         let behind = s.app.claude_code_view(&s.ctx().await?).await?.behind;
         assert!(
             behind
@@ -898,6 +1741,16 @@ mod moves {
                 .any(|task| task.number == 2 && task.version == "2.1.311"),
             "{behind:?}"
         );
+        // A newer release lifts it: moves were stopped for 2.1.322 only, so the task is
+        // promised the newer one when its turn ends again, and the card says nothing.
+        s.installed.release("2.1.330");
+        let ctx = s.ctx().await?;
+        let detail = s.app.task_detail(&ctx, other.as_str()).await?;
+        assert_eq!(
+            (detail.cli_moves_to.as_deref(), detail.cli_moves_stopped),
+            (Some("2.1.330"), false)
+        );
+        assert_eq!(s.app.claude_code_view(&ctx).await?.moves_stopped, None);
         stop(&s.app, &other).await
     }
 
@@ -993,8 +1846,11 @@ mod moves {
         Ok(())
     }
 
-    /// CCM-013: a restarted session that started in time shows that the version works: when its
-    /// time to start passed, nothing is stopped, also after the session ended later.
+    /// CCM-013: a restarted session that started shows that the version works: its start takes
+    /// the restart off the breaker's watch, so nothing is stopped whenever its time to start
+    /// passes, also after the session ended later. The start is seen at its race point and the
+    /// time to start is an hour, so the test does not depend on how fast a session starts
+    /// (SPEC-468 CCF-004).
     #[test]
     fn a_restarted_session_that_starts_in_time_stops_nothing() -> TestResult {
         let (_dir, data) = data_dir()?;
@@ -1007,24 +1863,31 @@ mod moves {
                 hooked(),
                 TaskMode::Prompt,
                 "2.1.311",
-                // Long enough for a session to start on a loaded machine.
-                |config| config.claude_code_start_ms = 10_000,
+                // Never reached here: what counts is the session's start, not the clock.
+                |config| config.claude_code_start_ms = 3_600_000,
             )
             .await?;
             turn_that_stays(&s, "one").await?;
             release(&s, &version, "2.1.322")?;
-            let judged = reached(Point::ClaudeMoveStartJudged, &s.id);
+            let started = reached(Point::ClaudeMoveStarted, &s.id);
+            let restarted = decided(&s.id);
             turn(&s, "two").await?;
             second_run_live(&s).await?;
             wait_for(
-                "its time to start to pass",
+                "the restarted session's start",
                 Duration::from_secs(60),
-                || async { judged.load(Ordering::SeqCst) },
+                || async { started.load(Ordering::SeqCst) },
             )
             .await?;
+            assert!(
+                !s.app.claude_code_start_watched(&s.id),
+                "a session that started is off the watch"
+            );
             let ctx = s.ctx().await?;
             assert_eq!(s.app.claude_code_view(&ctx).await?.moves_stopped, None);
-            // Its later end, by itself, says nothing about the version either.
+            // Its later end, by itself, says nothing about the version either. The restart is
+            // over first: a session's start can be noticed before its run takes input.
+            until_decided(&restarted).await?;
             s.app.send_input(&s.id, b"/crash\r").await?;
             wait_for("the session's end", Duration::from_secs(60), || async {
                 state(&s.app, &s.id)
@@ -1035,6 +1898,120 @@ mod moves {
             assert_eq!(s.app.claude_code_view(&ctx).await?.moves_stopped, None);
             Ok::<_, Box<dyn std::error::Error>>(())
         })?;
+        rt.shutdown_timeout(Duration::from_secs(5));
+        Ok(())
+    }
+
+    /// Two turn ends of one task that both decided to restart its session on 2.1.322 before
+    /// either began: the first waits for the second to decide, and the second goes on once the
+    /// first's restart reached `second_goes_on_at`. The restarted session never starts and has
+    /// 2 s for it. One restart must come of it, and it must be on the breaker's watch.
+    async fn two_turn_ends_decide(data: &Path, second_goes_on_at: Point) -> TestResult {
+        const HELD: Duration = Duration::from_secs(60);
+        let version = data.join("claude-version");
+        let stuck = data.join("stuck-at-start");
+        let options = FakeAgentOptions {
+            stuck_at_start_file: Some(stuck.clone()),
+            ..hooked()
+        };
+        let s = server_with(
+            data,
+            &version,
+            options,
+            TaskMode::Prompt,
+            "2.1.311",
+            |config| config.claude_code_start_ms = 2_000,
+        )
+        .await?;
+        turn_that_stays(&s, "one").await?;
+        release(&s, &version, "2.1.322")?;
+        std::fs::write(&stuck, "")?;
+        let first_decided = Arc::new(AtomicBool::new(false));
+        let in_order = Arc::new(AtomicBool::new(false));
+        let (second_tx, second_rx) = std::sync::mpsc::channel::<()>();
+        let (go_on_tx, go_on_rx) = std::sync::mpsc::channel::<()>();
+        let task = Path::new(s.id.as_str());
+        let there = Arc::clone(&first_decided);
+        race::on(Point::ClaudeMoveDecided, task, move || {
+            there.store(true, Ordering::SeqCst);
+            let _ = tokio::task::block_in_place(|| second_rx.recv_timeout(HELD));
+        });
+        let order = Arc::clone(&in_order);
+        race::on(Point::ClaudeMoveDecided, task, move || {
+            let _ = second_tx.send(());
+            let first = tokio::task::block_in_place(|| go_on_rx.recv_timeout(HELD));
+            order.store(first.is_ok(), Ordering::SeqCst);
+        });
+        // Hooks of one point run in the order they were set: the first's restart gets this
+        // one, and each turn's end that is over one of the flags after it.
+        race::on(second_goes_on_at, task, move || {
+            let _ = go_on_tx.send(());
+        });
+        let mut over = vec![decided(&s.id)];
+        if second_goes_on_at != Point::ClaudeMoveSettled {
+            over.push(decided(&s.id));
+        }
+        let judged = reached(Point::ClaudeMoveStartJudged, &s.id);
+        turn(&s, "two").await?;
+        wait_for(
+            "the first turn's end to decide",
+            Duration::from_secs(60),
+            || async { first_decided.load(Ordering::SeqCst) },
+        )
+        .await?;
+        turn(&s, "three").await?;
+        for flag in &over {
+            until_decided(flag).await?;
+        }
+        assert!(
+            in_order.load(Ordering::SeqCst),
+            "the second turn's end decided before the first began, and went on after it"
+        );
+        assert_eq!(runs(&s).await, 2, "one restart");
+        // It is watched: the session that never starts is noticed.
+        wait_for(
+            "its time to start to pass",
+            Duration::from_secs(60),
+            || async { judged.load(Ordering::SeqCst) },
+        )
+        .await?;
+        let view = s.app.claude_code_view(&s.ctx().await?).await?;
+        let stopped = view.moves_stopped.unwrap_or_default();
+        assert!(
+            stopped.starts_with(
+                "Running tasks are no longer moved to 2.1.322: the session of task #1 did not \
+                 start on it within 2 s."
+            ),
+            "the restart was not watched: {stopped:?}"
+        );
+        assert_eq!(runs(&s).await, 2, "one restart");
+        std::fs::remove_file(&stuck)?;
+        stop(&s.app, &s.id).await
+    }
+
+    /// SPEC-468 CCF-006 (review round 3, nit 6): two turn ends of one task that both decide to
+    /// restart its session. The second, which comes while the first's switch is under way (the
+    /// task is switching), leaves the session to it. It used to register an equal start, be
+    /// refused its switch, and take the first's start off the watch with its own, so a session
+    /// that never started stopped nothing.
+    #[test]
+    fn two_turn_ends_that_decide_at_once_make_one_watched_restart() -> TestResult {
+        let (_dir, data) = data_dir()?;
+        let rt = runtime()?;
+        rt.block_on(two_turn_ends_decide(&data, Point::SwitchDecided))?;
+        rt.shutdown_timeout(Duration::from_secs(5));
+        Ok(())
+    }
+
+    /// SPEC-468 CCF-006: the second turn's end comes once the first's restart is over. It
+    /// finds the session sent to that version and restarts nothing: the restarted session
+    /// would be ended for a third run, and the first restart's start replaced on the watch.
+    #[test]
+    fn a_turn_end_that_decided_before_a_restart_and_comes_after_it_restarts_nothing() -> TestResult
+    {
+        let (_dir, data) = data_dir()?;
+        let rt = runtime()?;
+        rt.block_on(two_turn_ends_decide(&data, Point::ClaudeMoveSettled))?;
         rt.shutdown_timeout(Duration::from_secs(5));
         Ok(())
     }
