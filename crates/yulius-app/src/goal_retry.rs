@@ -21,8 +21,9 @@
 //! (Claude Code's own wake-up, a prompt Yulius typed, a session Yulius restarted, or no prompt
 //! anyone sees). A prompt alone ends nothing: the API may refuse it again, and then the person
 //! still has to act. The request Yulius makes for a usage limit nothing says the end of (SPEC-464
-//! UCL-010) says the same and ends the same way. Both also end, sooner, when the session goes
-//! on past the limit that cut its turn.
+//! UCL-010) says the same and ends the same way. Both also end, sooner, when Yulius takes the
+//! task on at the limit that cut its turn: it runs the session on past the limit, or pauses the
+//! task and resumes it by itself.
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -58,8 +59,28 @@ const WORKS_AGAIN: &str = "the agent works again after Claude Code paused the go
 /// Why the request for a usage limit nothing says the end of ended without a person.
 const WORKS_PAST_LIMIT: &str = "the agent works again after the usage limit";
 
-/// Why either ended at a move past the limit that cut the session's turn.
-const MOVED_PAST_LIMIT: &str = "the session goes on past the usage limit that cut its turn";
+/// How Yulius takes a task on at the usage limit that cut its session's turn. Either way the
+/// task goes on by itself, so a request that says it does not ([`STALLED_ACTIONS`]) is answered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TakenOn {
+    /// The session is run on past the limit, on this subscription or another.
+    Moved,
+    /// The task waits for the limit to end, and the pool resumes it.
+    Paused,
+}
+
+impl TakenOn {
+    /// Why the request ended, for the audit log: what Yulius does at that moment (a session
+    /// that is refused again where it was moved to is asked about again).
+    fn why(self) -> &'static str {
+        match self {
+            Self::Moved => "Yulius takes the session on past the usage limit that cut its turn",
+            Self::Paused => {
+                "Yulius waits for the usage limit to end and resumes the session by itself"
+            }
+        }
+    }
+}
 
 /// The requests Yulius opens itself because a session does not go on by itself: for a goal
 /// Claude Code stopped retrying, and for a usage limit nothing says the end of (SPEC-464
@@ -252,15 +273,14 @@ impl App {
         Ok(())
     }
 
-    /// The session goes on past the limit that cut its turn, with nothing typed: a request made
-    /// for that limit is answered, be it for the goal pause written there (SPEC-464 UCL-007) or
-    /// for a limit nothing says the end of (UCL-010). Any other request stays.
-    pub(crate) async fn end_limit_requests(&self, task_id: &TaskId) {
+    /// Yulius takes the task on at the limit that cut its session's turn, with nothing typed: it
+    /// runs the session on past the limit, or pauses the task and resumes it by itself. A
+    /// request that says the task does not go on by itself is answered, be it for a goal pause
+    /// (the one written at that limit, SPEC-464 UCL-007, or an earlier one that the limit
+    /// overtook) or for a limit nothing says the end of (UCL-010). Any other request stays.
+    pub(crate) async fn end_limit_requests(&self, task_id: &TaskId, how: TakenOn) {
         match self.end_stalled_request(task_id).await {
-            Ok(Some(_)) => {
-                self.stalled_request_resolved(task_id, MOVED_PAST_LIMIT)
-                    .await
-            }
+            Ok(Some(_)) => self.stalled_request_resolved(task_id, how.why()).await,
             Ok(None) => {}
             Err(err) => {
                 tracing::warn!(task = %task_id, error = %err, "ending a limit's request failed");

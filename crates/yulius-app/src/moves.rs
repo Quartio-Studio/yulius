@@ -23,7 +23,8 @@ pub(crate) const NO_SUBSCRIPTION_ACTION: &str =
 
 /// What a task is asked for when Claude refused it at a limit nothing says the end of, again
 /// right after a retry, and no subscription can take it (SPEC-464 UCL-010). The request ends by
-/// itself when the task goes on past the limit, or its agent works again.
+/// itself when Yulius takes the task on at a limit after all (a move, or a wait it resumes
+/// from), or its agent works again.
 pub(crate) const LIMIT_WITHOUT_END_ACTION: &str = "Run the task on another subscription or model, or end the limit (for example with \
      usage credits), then send the task a message";
 

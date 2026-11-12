@@ -3400,7 +3400,8 @@ impl App {
         // The turn a limit cut is continued by the new session itself (SPEC-034): nobody has to
         // send the message a goal pause at that limit asked for (SPEC-464 UCL-007).
         if matches!(start, RunStart::AfterLimit) {
-            self.end_limit_requests(task_id).await;
+            self.end_limit_requests(task_id, crate::goal_retry::TakenOn::Moved)
+                .await;
         }
         let from_desc = match &attempt {
             Some(a) => self.account_desc(a.harness, a.account_id.as_ref()).await,
@@ -4668,8 +4669,18 @@ impl App {
                 } else {
                     PauseKind::Turn
                 };
-                if let Err(err) = self.pause_task(task_id, kind, current, None).await {
-                    tracing::warn!(error = %err, task = %task_id, "could not pause the task");
+                match self.pause_task(task_id, kind, current, None).await {
+                    // The pool resumes a task that waits at its limit by itself: a request
+                    // that says it does not go on by itself is answered, as at a move past
+                    // the limit (SPEC-464 UCL-007).
+                    Ok(()) if limit => {
+                        self.end_limit_requests(task_id, crate::goal_retry::TakenOn::Paused)
+                            .await;
+                    }
+                    Ok(()) => {}
+                    Err(err) => {
+                        tracing::warn!(error = %err, task = %task_id, "could not pause the task");
+                    }
                 }
             }
         }
