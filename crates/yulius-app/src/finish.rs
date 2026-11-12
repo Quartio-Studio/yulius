@@ -581,6 +581,19 @@ pub(crate) fn waited_turn_settles(activity: Option<Activity>, achieved: bool) ->
     }
 }
 
+/// Whether the flag raised at `noticed_ms` (a notice's, or a goal pause's) is the one the task
+/// still reads: it reads Needs you, and has since no later than that time. A status change
+/// replaces a flag without a word, and one raised afterwards is another matter's, which the
+/// agent's work does not answer (SPEC-469).
+#[must_use]
+pub(crate) fn noticed_flag_stands(
+    activity: Option<Activity>,
+    state_at: yulius_domain::time::Timestamp,
+    noticed_ms: i64,
+) -> bool {
+    activity == Some(Activity::NeedsAttention) && state_at.0 <= noticed_ms
+}
+
 /// Whether a turn closed with no Stop Yulius answered settles now: not while a full context is
 /// being recovered (`context_clear` false), at a usage limit, or with an open pause, whose own
 /// paths say how the task goes on (SPEC-290 GDW-001).
@@ -794,6 +807,7 @@ impl App {
         if task.status != TaskStatus::Running {
             return;
         }
+        let notice_ms = self.standing_notice_ms(&task).await;
         let last_stop_ms = runtime.last_stop_ms.load(Ordering::SeqCst);
         match activity_on_work(task.activity, at, last_stop_ms, notice_ms) {
             Some(next) => self.resume_working(&task, next).await,
@@ -801,6 +815,31 @@ impl App {
             None if task.activity == Some(Activity::Working) => runtime.start_turn(self.now()),
             None => {}
         }
+    }
+
+    /// When the flag that the agent's work answers was raised (a notice's, or a goal pause's;
+    /// `notice_attention_ms`), or 0 when there is none or `task` no longer reads that flag
+    /// ([`noticed_flag_stands`]). A time that went stale is dropped, so that later work answers no
+    /// other flag; a state that cannot be read answers nothing this time and drops nothing.
+    pub(crate) async fn standing_notice_ms(&self, task: &TaskRecord) -> i64 {
+        let runtime = self.runtime(&task.id);
+        let noticed_ms = runtime.notice_attention_ms.load(Ordering::SeqCst);
+        if noticed_ms == 0 {
+            return 0;
+        }
+        let Ok(Some(times)) = self.deps.store.task_times(&task.id).await else {
+            return 0;
+        };
+        if noticed_flag_stands(task.activity, times.state_at, noticed_ms) {
+            return noticed_ms;
+        }
+        let _ = runtime.notice_attention_ms.compare_exchange(
+            noticed_ms,
+            0,
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        );
+        0
     }
 
     /// The session goes on although the task read idle or flagged: it is `next` (Working).
@@ -920,7 +959,7 @@ impl App {
         }
         // So is the flag that pause raised, as it is while Yulius watches (STA-003): the task
         // follows its session, Working while the turn is open, settled below once it closed.
-        let flagged_ms = runtime.notice_attention_ms.load(Ordering::SeqCst);
+        let flagged_ms = self.standing_notice_ms(&task).await;
         if task.activity == Some(Activity::NeedsAttention)
             && activity_on_work(task.activity, facts.worked_since_goal_pause, 0, flagged_ms)
                 == Some(Activity::Working)
@@ -1674,6 +1713,34 @@ mod tests {
         // An armed retry is Claude Code's to end: the answer of another turn does not.
         let armed = reduce(&[PROMPT, retry(true), ENDED, answer_at(3)]);
         assert_eq!(armed.goal_retry, Some(GoalRetryFact::Armed));
+    }
+
+    /// SPEC-469 (review round 1): the time of a flag that work answers holds only while the task
+    /// reads that flag: Needs you, since no later than the time remembered. A flag replaced by a
+    /// status change, or one raised afterwards, is not answered by it.
+    #[test]
+    fn a_remembered_flag_stands_only_while_the_task_reads_it() {
+        use Activity as A;
+        assert!(noticed_flag_stands(
+            Some(A::NeedsAttention),
+            Timestamp(100),
+            100
+        ));
+        assert!(noticed_flag_stands(
+            Some(A::NeedsAttention),
+            Timestamp(100),
+            107
+        ));
+        assert!(
+            !noticed_flag_stands(Some(A::NeedsAttention), Timestamp(200), 107),
+            "flagged again later"
+        );
+        for replaced in [Some(A::Working), Some(A::Waiting), Some(A::Done), None] {
+            assert!(
+                !noticed_flag_stands(replaced, Timestamp(100), 107),
+                "{replaced:?}"
+            );
+        }
     }
 
     /// STA-001: a replayed turn end that says background agents are pending keeps them, until the
