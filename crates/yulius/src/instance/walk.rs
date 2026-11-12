@@ -18,13 +18,15 @@ use std::path::{Path, PathBuf};
 use super::archive::{Entry, Kind};
 
 /// Top-level names the new host makes its own (EXP-006): the sandbox base (a copy of this host's
-/// system), live processes' runtime files, the update helper's request, SQLite's shared-memory
-/// index, the filesystem's own `lost+found`, and the Claude Code builds for this host's platform
-/// (SPEC-421: the new host downloads its own within the hour).
-pub const LEFT_OUT: [&str; 6] = [
+/// system), live processes' runtime files, the update helper's request and the move helper's
+/// (SPEC-470: what was asked of this host's root is never asked of another's), SQLite's
+/// shared-memory index, the filesystem's own `lost+found`, and the Claude Code builds for this
+/// host's platform (SPEC-421: the new host downloads its own within the hour).
+pub const LEFT_OUT: [&str; 7] = [
     "system",
     "runtime",
     "update",
+    "migrate",
     "yulius.db-shm",
     "lost+found",
     "claude-code",

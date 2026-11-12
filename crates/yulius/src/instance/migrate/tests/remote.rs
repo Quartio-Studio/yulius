@@ -84,6 +84,56 @@ fn every_remote_command_is_a_constant_and_values_stay_out_of_it() {
     }
 }
 
+/// SPEC-470 MVB-004: a connection of a run that nobody signs in for offers the one-time key
+/// and nothing of root's: no call without the key, no agent, no other method, and no ssh
+/// configuration, which may name a key of root's for the host.
+#[test]
+fn a_connection_without_a_sign_in_offers_the_one_time_key_alone() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let mut ssh =
+        Ssh::new("root@new-host", 22, dir.path(), "yulius-migrate-ab12").without_sign_in();
+    for args in [ssh.args(true, STEP), ssh.args(false, ADD_KEY)] {
+        assert_eq!(args[..2], ["-F", "none"], "{args:?}");
+        for option in [
+            "IdentitiesOnly=yes",
+            "BatchMode=yes",
+            "IdentityAgent=none",
+            "PreferredAuthentications=publickey",
+        ] {
+            assert!(args.iter().any(|a| a == option), "{option}: {args:?}");
+        }
+        let key = args
+            .iter()
+            .position(|a| a == "-i")
+            .map(|i| args[i + 1].clone());
+        assert_eq!(key, Some(dir.path().join("key").display().to_string()));
+        let n = args.len();
+        assert_eq!(args[n - 3..n - 1], ["--", "root@new-host"]);
+    }
+    // The operator's sign-in is not tried at all, whether or not a key was made.
+    std::fs::write(
+        dir.path().join("key.pub"),
+        "ssh-ed25519 AAAA yulius-migrate-ab12\n",
+    )?;
+    let refused = ssh.install_key();
+    assert!(
+        refused
+            .as_ref()
+            .is_err_and(|why| why.contains("never signs in as root")),
+        "{refused:?}"
+    );
+    // The usual connection reads root's configuration and may ask.
+    let usual = Ssh::new("root@new-host", 22, dir.path(), "yulius-migrate-ab12");
+    assert!(!usual.args(true, STEP).iter().any(|a| a == "-F"));
+    assert!(
+        !usual
+            .args(false, ADD_KEY)
+            .iter()
+            .any(|a| a == "BatchMode=yes")
+    );
+    Ok(())
+}
+
 #[test]
 fn the_reply_is_the_last_marked_line_of_a_steps_output() {
     let output = "Reading package lists...\nYULIUS-REPLY {\"lines\":[]}\nSetting up caddy\n\

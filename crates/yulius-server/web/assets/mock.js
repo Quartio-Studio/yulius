@@ -19,6 +19,12 @@
 // guestlink=1|dead (signed out, holding a live or an ended guest link to the playground `lab`, SPEC-410;
 // guestlink=mine: signed in as its maker),
 // guest=1 (signed in as Carol, a guest of the playground `lab`: the server's guest fence applies).
+// move=nohelper|key|planfail|fail|rollback|redirect|arrived|cli|lost|unanswered|refused (the move to another host, SPEC-470:
+// no move helper | the first plan ends with the key line to add | the plan finds a problem | the move fails while
+// preparing | it freezes and the old instance answers again | after it this address redirects | the instance arrived
+// here by a move | a move run on the host is recorded | a move whose helper stopped reporting | the helper never
+// takes a request | the helper refuses it),
+// movepoll=<ms> (how often the card reads a move in flight; 3 s without it).
 
 import { counter, taskInfo } from './status.js';
 import { plausibleEmail } from './format.js';
@@ -202,6 +208,9 @@ function seed(params) {
     // past a hold.
     address: { state: params.get('callback') === 'fixed' ? 'missing' : params.get('callback') || 'registered', fixedOnRead: params.get('callback') === 'fixed', moved: params.get('moved') === '1', answered: 0 },
     limits: { unit: params.get('limits') === 'moved' ? { max_sessions: 8, sandbox_disk_gb: 300 } : {}, kept: false, settings: {}, runningMemory: 660, failAfterSave: false },
+    // The move to another host (SPEC-470): `move=…` (see the header). A test changes `stepMs` (the
+    // pace of the helper and the command) and `ackMs` (when an untaken request is "unanswered").
+    migration: migrationState(params.get('move') || ''),
     // The instance Vidoc key (SPEC-195): `vidoc=config` (YULIUS_VIDOC_API_KEY_FILE is set).
     protectPatchFail: params.get('protect_patch_fail') === '1',
     vidoc: { key: null, setAt: null, setBy: null, config: params.get('vidoc') === 'config', offAt: params.get('vidoc_off') ? '2026-10-30T09:00:00Z' : null, offBy: params.get('vidoc_off') ? 'superadmin' : null, fail: params.get('vidoc_fail') === '1', repo: params.get('vidoc_repo'), patchFail: params.get('vidoc_patch_fail') === '1' },
@@ -4746,6 +4755,350 @@ const addressView = (db) => ({
 });
 route('GET', '/api/admin/instance/address', ({ db }) => { superadminOnly(db); db.address.answered += 1; return addressView(db); });
 route('POST', '/api/admin/instance/address/check', ({ db }) => { superadminOnly(db); db.address.answered += 1; return addressView(db); });
+
+// The move to another host (SPEC-470 MVB-020, MVB-021): the root helper and its command are played
+// here. A request is taken after half a step, a checklist grows a line every half step, and a
+// move freezes the mock at its cutover (nothing answers, as `goOffline`) until the page has
+// asked twice in vain; then the new instance answers at this address, or (`move=redirect`) this
+// address redirects, or (`move=rollback`) the old instance answers again.
+const MOVE_API = '/api/admin/instance/migration';
+const MOVE_ID = '7c1e09ab';
+const MOVE_KEY = `ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIE9mVGhlTW9ja0tleUZvclRoZU1vdmVPbmx5 yulius-migrate-${MOVE_ID}`;
+const MOVE_ADDRESS = '185.189.47.160';
+const moveLine = (name, outcome, detail) => ({ name, outcome, detail });
+
+function migrationState(mode) {
+  return {
+    mode, helper: mode !== 'nohelper', stepMs: 500, ackMs: 20000, plans: 0, serial: 0,
+    request: null,
+    // `lost`: a move whose helper was killed while it prepared the new host.
+    run: mode === 'lost' ? {
+      id: 'mock-0-move', action: 'move', target: 'root@new.yulius.example', ssh_port: 22, public_url: null, data_disks: [],
+      state: 'lost', exit_code: null, error: null, started_at: iso(9 * MIN), updated_at: iso(4 * MIN), ended_at: null,
+    } : null,
+    moving: mode === 'cli' || mode === 'lost' ? {
+      id: MOVE_ID, target: 'root@new.yulius.example', phase: 'Prepare', public_key: null, new_url: 'https://new.yulius.example',
+      updated_at: iso(4 * MIN), by_command: mode === 'cli',
+      lines: [moveLine('old host', 'ok', 'ubuntu 24.04, x86_64, 12 CPUs, 47.0 GiB of memory'), moveLine('packages', 'changed', 'installed 43 packages of the old host')],
+    } : null,
+    arrived: mode === 'arrived' ? {
+      id: MOVE_ID, target: `root@${MOVE_ADDRESS}`, from: 'https://old.yulius.example', to: ORIGIN, finished_at: iso(2 * HOUR),
+      lines: movePlanLines({ target: `root@${MOVE_ADDRESS}`, public_url: ORIGIN, data_disks: [] }).concat(moveFinishLines(ORIGIN)),
+    } : null,
+    frozen: false, redirects: false, missed: 0,
+    // What the page has read of a running command, by phase: a move goes on to its freeze only
+    // once its Prepare phase was read, so a test sees it whatever the pace.
+    seen: {},
+    // `holdReads = true`: each read answers what it saw when it arrived, once `releaseReads()`
+    // lets it go (`holds` are those waiting).
+    holdReads: false, holds: [],
+    // `holdAt = 'Prepare' | 'Copy' | 'frozen'`: a move stays in its preparation, in its copy
+    // (the instance answers), or frozen, for as long as a test looks at that state; any other
+    // value lets it go on.
+    holdAt: null,
+    // `probeHangs = true`: while frozen, a request that follows no redirect is never answered.
+    probeHangs: false,
+  };
+}
+
+/** The plan's checklist for `values`. */
+function movePlanLines(values) {
+  const url = values.public_url || 'https://185-189-47-160.sslip.io';
+  const host = url.replace('https://', '');
+  const disks = values.data_disks || [];
+  return [
+    moveLine('old host', 'ok', 'ubuntu 24.04, x86_64, 12 CPUs, 47.0 GiB of memory; yulius.service runs as yulius with 275.8 GiB used where its data is'),
+    moveLine('one-time key', 'ok', `signs in to ${values.target} (its host key: SHA256:abcDEF123 (ED25519))`),
+    moveLine('yulius build', 'changed', 'copied this build to /var/lib/yulius-migrate/yulius'),
+    moveLine('new host', 'ok', `ubuntu 26.04, x86_64, systemd 259, 64 CPUs, 755.0 GiB of memory, at ${MOVE_ADDRESS}`),
+    moveLine('disk space', 'ok', disks.length
+      ? `will make ${disks.length === 2 ? 'a mirror' : 'ext4'} of ${disks.join(' and ')} for the data directory (275.8 GiB to copy)`
+      : '1.8 TiB free where the data directory goes, at most 275.8 GiB to copy'),
+    moveLine('link', 'ok', '112.0 MiB/s to the new host'),
+    moveLine('downtime', 'ok', 'the instance runs during the copy (about 42 min for up to 275.8 GiB at that rate); then it is frozen for about 9 min: up to 6388083 entries are counted four times (about 55000 a second here, twice on each host), what changed during the last pass is sent, and the new instance starts. It is measured again before the freeze'),
+    moveLine('public URL', 'manual', `${url} (was ${ORIGIN}): ${host} leads to nowhere, not to ${MOVE_ADDRESS}. Change its DNS record when the checklist says the new instance runs (lower its TTL now)`),
+    moveLine('GitHub App', 'manual', `GitHub does not accept the new sign-in address yet: open https://github.com/organizations/Quartio-Studio/settings/apps/yulius-quartio-studio and add the callback URL ${url}/api/auth/github/callback and the homepage ${url}`),
+    moveLine('packages', 'ok', '43 packages of the old host are installed while preparing'),
+    moveLine('settings', 'ok', 'carries the unit with 2 drop-ins and 3 key, environment and other files'),
+    moveLine('update helper', 'ok', 'its units and the installed commit are carried'),
+    moveLine('move helper', 'ok', 'its units are carried, and its path unit is enabled on the new host as it is here'),
+    moveLine('reverse proxy', 'ok', `Caddy’s configuration is carried for ${host}`),
+    moveLine('firewall', 'ok', 'ufw’s rules are carried and enabled at the end'),
+  ];
+}
+
+const MOVE_PREPARE = [
+  moveLine('packages', 'changed', 'installed 43 packages of the old host'),
+  moveLine('software', 'changed', 'copied 1.2 GiB outside apt'),
+  moveLine('unit', 'changed', 'wrote the unit, 2 drop-ins and the environment file'),
+  moveLine('reverse proxy', 'changed', 'Caddy serves the new host name'),
+];
+// The warm copy (SPEC-465): passes while the instance runs, then the estimate it measured.
+const MOVE_COPY = [
+  moveLine('copy', 'changed', 'pass 1: 6388083 of 6388083 entries sent (275.8 GiB) in 42 min while the instance runs; the new host: 6388083 changed entries installed; checksum as announced'),
+  moveLine('copy', 'changed', 'pass 2: 1204 of 6388083 entries sent (310.4 MiB) in 2 min while the instance runs; the new host: 1204 changed entries installed; checksum as announced'),
+  moveLine('downtime', 'ok', 'about 9 min frozen: the entries are counted four times (116 s each, twice on each host), what changes meanwhile takes about 6 s to send, the new host’s sync 3 s, and the start about 20 s'),
+];
+const MOVE_CUTOVER = [
+  moveLine('old instance', 'changed', 'yulius.service is frozen: every Yulius process is paused until the new one runs'),
+  moveLine('copy', 'changed', 'the frozen pass: 37 of 6388083 entries sent (2.1 MiB); the new host: 37 changed entries installed, 0 removed that the old host no longer holds; checksum and length as announced'),
+  moveLine('copy proven', 'ok', '6388083 entries and 275.8 GiB in 14 folders, the same on both hosts'),
+  moveLine('new instance', 'changed', 'yulius.service runs build 9c1e7d3'),
+  moveLine('old instance', 'changed', 'yulius.service stays frozen and is disabled: it never runs beside the new one'),
+];
+function moveFinishLines(url) {
+  return [
+    moveLine('HTTPS', 'ok', `${url} answers from the new host`),
+    moveLine('tasks', 'ok', '7 tasks that were live are back in the queue'),
+    moveLine('one-time key', 'changed', 'removed from the new host’s authorized_keys'),
+    moveLine('one-time key (old host)', 'changed', 'deleted'),
+    moveLine('remote clients', 'manual', `laptops point at the old URL: \`yulius remote\` follows the old URL’s redirect by itself while the old host answers; in Claude Code \`claude mcp remove yulius\`, then \`claude mcp add --transport http yulius ${url}/mcp\``),
+    moveLine('old host', 'manual', 'it keeps a frozen copy with master.key and every secret. `sudo yulius instance migrate --abort` here goes back, once the new instance is stopped on the new host'),
+  ];
+}
+
+function moveCan(m) {
+  const waiting = Boolean(m.request && m.request.state === 'requested');
+  const running = Boolean(m.run && m.run.state === 'running');
+  const lines = m.moving ? m.moving.lines : [];
+  const ended = m.run && m.run.state === 'ended';
+  const planned = ended && m.run.action === 'plan' && m.run.exit_code === 0 && m.moving && !m.moving.public_key && !lines.some((l) => l.outcome === 'failed');
+  const lost = Boolean(m.run && m.run.state === 'lost');
+  const stopped = (ended && m.run.action === 'move' && m.run.exit_code !== 0) || (lost && m.run.action === 'move');
+  const recorded = running ? m.run.action !== 'abort'
+    : Boolean(lost || (m.moving && !['done', 'aborted'].includes(m.moving.phase)) || (ended && m.run.exit_code !== 0));
+  return {
+    plan: m.helper && !waiting && !running,
+    move: m.helper && !waiting && !running && Boolean(planned || stopped) && !(m.moving && m.moving.by_command),
+    abort: m.helper && !waiting && !(running && m.run.action === 'abort') && recorded,
+  };
+}
+
+function migrationView(db) {
+  const m = db.migration;
+  // A request nobody took for long enough is said to be unanswered.
+  if (m.request && m.request.state === 'requested' && Date.now() - m.request.at > m.ackMs) m.request.state = 'unanswered';
+  const request = m.request ? { id: m.request.id, action: m.request.action, state: m.request.state, requested_at: new Date(m.request.at).toISOString() } : null;
+  if (m.run && m.run.state === 'running' && m.moving) m.seen[m.moving.phase] = (m.seen[m.moving.phase] || 0) + 1;
+  return clone({ public_url: ORIGIN, helper_installed: m.helper, update_running: false, request, run: m.run, move: m.moving, arrived: m.arrived, can: moveCan(m) });
+}
+
+/** Plays the helper: takes the request, then walks `steps` (functions) half a step apart while its run stands. */
+function playMove(db, request, values, steps) {
+  const m = db.migration;
+  const live = () => m.run && m.run.id === request.id && m.run.state === 'running';
+  later(() => {
+    if (m.request !== request || m.mode === 'unanswered') return;
+    m.request = null;
+    const now = new Date().toISOString();
+    m.run = { id: request.id, action: request.action, ...values, state: 'running', exit_code: null, error: null, started_at: now, updated_at: now, ended_at: null };
+    if (m.mode === 'refused') {
+      Object.assign(m.run, { target: null, ssh_port: null, public_url: null, data_disks: [], state: 'refused', ended_at: now, error: 'The request was refused: an update is running (yulius-update.service): ask again once it has finished.' });
+      return;
+    }
+    // What an earlier run recorded is not this run's: it is not shown until the command wrote
+    // its own checklist, and it is still there when the command refuses (it changes nothing).
+    const recorded = m.moving;
+    m.moving = null;
+    m.seen = {};
+    if (recorded && request.action !== 'abort' && values.target !== recorded.target && !['Plan', 'done', 'aborted'].includes(recorded.phase)) {
+      later(() => {
+        if (!live()) return;
+        const at = new Date().toISOString();
+        Object.assign(m.run, { state: 'ended', exit_code: 2, error: `a move to ${recorded.target} is recorded here: finish it with the same command`, updated_at: at, ended_at: at });
+        m.moving = { ...recorded, earlier: true };
+      }, m.stepMs / 2);
+      return;
+    }
+    const next = (index) => {
+      if (!live()) return;
+      if (index >= steps.length) return;
+      const wait = steps[index]();
+      // A step may ask to be tried again (the freeze waits for the page).
+      later(() => next(wait === 'again' ? index : index + 1), m.stepMs / 2);
+    };
+    later(() => next(0), m.stepMs / 2);
+  }, m.stepMs / 2);
+}
+
+function moveSay(db, phase, line) {
+  const m = db.migration;
+  const target = m.run.target || (m.moving && m.moving.target) || '';
+  if (!m.moving) m.moving = { id: MOVE_ID, target, phase, lines: [], public_key: null, new_url: null, updated_at: new Date().toISOString(), by_command: false, earlier: false };
+  m.moving.phase = phase;
+  if (line) m.moving.lines.push(line);
+  m.moving.updated_at = new Date().toISOString();
+  m.run.updated_at = m.moving.updated_at;
+}
+
+function moveEnd(db, exitCode, phase) {
+  const m = db.migration;
+  const now = new Date().toISOString();
+  Object.assign(m.run, { state: 'ended', exit_code: exitCode, updated_at: now, ended_at: now });
+  if (phase && m.moving) m.moving.phase = phase;
+}
+
+function movePlanSteps(db, values, thenSteps) {
+  const m = db.migration;
+  const url = values.public_url || 'https://185-189-47-160.sslip.io';
+  const first = m.mode === 'key' && m.plans === 0;
+  const lines = movePlanLines(values);
+  if (m.mode === 'planfail') lines[4] = moveLine('disk space', 'failed', '12.0 GiB and 800000 inodes free where the data directory goes; the copy needs up to 275.8 GiB and 6388083 inodes. Blank disks there: /dev/vdc (1.8 TiB), /dev/vdd (1.8 TiB): name one, or two for a mirror, with --data-disk');
+  if (first) {
+    // A move asked from the page never signs in as root does: the plan ends with the line to add.
+    return [
+      () => moveSay(db, 'Plan', lines[0]),
+      () => {
+        moveSay(db, 'Plan', moveLine('one-time key', 'manual', `is not on the new host yet (its host key: SHA256:abcDEF123 (ED25519)). This run never signs in as root does (root's keys, its ssh configuration, a password): add this line to root's ~/.ssh/authorized_keys on the new host, then ask again: ${MOVE_KEY}`));
+        m.moving.public_key = MOVE_KEY;
+        m.plans += 1;
+        moveEnd(db, 0, 'Plan');
+      },
+    ];
+  }
+  const steps = lines.map((line) => () => {
+    moveSay(db, 'Plan', line);
+    // `newUrlSaid`: what the checklist names as the new URL instead (a test of what is linked).
+    if (line.name === 'public URL') m.moving.new_url = m.newUrlSaid || url;
+  });
+  steps.push(thenSteps ? () => {} : () => { m.plans += 1; moveEnd(db, m.mode === 'planfail' ? 1 : 0, 'Plan'); });
+  return thenSteps ? steps.concat(thenSteps) : steps;
+}
+
+function moveSteps(db, values) {
+  const m = db.migration;
+  const url = values.public_url || 'https://185-189-47-160.sslip.io';
+  const steps = [];
+  for (const line of MOVE_PREPARE) {
+    steps.push(() => {
+      if (m.mode === 'fail' && line.name === 'software') {
+        moveSay(db, 'Prepare', moveLine('software', 'failed', 'the new host: tar: /usr/local: Cannot write: No space left on device'));
+        moveEnd(db, 1, 'Prepare');
+        return;
+      }
+      moveSay(db, 'Prepare', line);
+    });
+  }
+  steps.push(() => {
+    // The page reads the preparation before the copy begins.
+    if (!m.seen.Prepare || m.holdAt === 'Prepare') return 'again';
+    moveSay(db, 'Copy', MOVE_COPY[0]);
+    return undefined;
+  });
+  for (const line of MOVE_COPY.slice(1)) steps.push(() => moveSay(db, 'Copy', line));
+  steps.push(() => {
+    // The instance answers during the copy: the page reads it before anything freezes.
+    if (!m.seen.Copy || m.holdAt === 'Copy') return 'again';
+    // The cutover freezes the instance: nothing answers until the new one runs.
+    moveSay(db, 'Cutover', MOVE_CUTOVER[0]);
+    m.frozen = true;
+    m.missed = 0;
+    db.goOffline();
+    return undefined;
+  });
+  for (const line of MOVE_CUTOVER.slice(1, 3)) steps.push(() => moveSay(db, 'Cutover', line));
+  if (m.mode === 'rollback') {
+    steps.push(() => moveSay(db, 'Cutover', moveLine('new instance', 'failed', 'yulius.service did not report the old host’s build within 120 s (`journalctl -u yulius.service` says why)')));
+    steps.push(() => moveSay(db, 'Cutover', moveLine('old instance', 'changed', 'thawed: it runs as before')));
+    steps.push(() => moveSay(db, 'Cutover', moveLine('new host', 'manual', 'the copy in /var/lib/yulius there was started and is no longer a clean copy: remove it there before running the move again')));
+    steps.push(() => {
+      // The page asked in vain while it was frozen: now the old instance answers again.
+      if (m.missed < 2 || m.holdAt === 'frozen') return 'again';
+      moveEnd(db, 1, 'Cutover');
+      m.frozen = false;
+      db.goOnline();
+      return undefined;
+    });
+    return steps;
+  }
+  for (const line of MOVE_CUTOVER.slice(3)) steps.push(() => moveSay(db, 'Cutover', line));
+  for (const line of moveFinishLines(url)) steps.push(() => moveSay(db, 'Finish', line));
+  steps.push(() => {
+    if (m.missed < 2 || m.holdAt === 'frozen') return 'again';
+    const lines = m.moving.lines;
+    if (m.mode === 'redirect') {
+      // The old instance stays frozen for good; its proxy redirects to the new URL.
+      moveEnd(db, 0, 'done');
+      m.redirects = true;
+      return undefined;
+    }
+    // The name leads to the new host now: the new instance answers here, with the checklist
+    // the move left it and nothing of the old host's helper.
+    Object.assign(m, { run: null, request: null, moving: null, frozen: false, arrived: { id: MOVE_ID, target: values.target, from: ORIGIN, to: url, finished_at: new Date().toISOString(), lines } });
+    db.goOnline();
+    return undefined;
+  });
+  return steps;
+}
+
+function moveAbortSteps(db) {
+  return [
+    () => moveSay(db, 'Abort', moveLine('old instance', 'changed', 'yulius.service runs here again and is enabled')),
+    () => moveSay(db, 'Abort', moveLine('one-time key', 'changed', 'removed from the new host’s authorized_keys')),
+    () => { moveEnd(db, 0, 'aborted'); },
+  ];
+}
+
+route('GET', MOVE_API, async ({ db }) => {
+  superadminOnly(db);
+  const view = migrationView(db);
+  const m = db.migration;
+  if (m.holdReads) await new Promise((resolve) => m.holds.push(resolve));
+  return view;
+});
+route('POST', MOVE_API, ({ db, body }) => {
+  superadminOnly(db);
+  const m = db.migration;
+  const action = body.action;
+  if (!['plan', 'move', 'abort'].includes(action)) fail(422, 'invalid', 'no such action');
+  const values = action === 'abort' ? { target: null, ssh_port: null, public_url: null, data_disks: [] } : {
+    target: String(body.target || '').trim(),
+    ssh_port: body.ssh_port === undefined || body.ssh_port === null ? 22 : body.ssh_port,
+    public_url: body.public_url ? String(body.public_url).trim().replace(/\/$/, '') : null,
+    data_disks: (body.data_disks || []).map((d) => String(d).trim()).filter(Boolean),
+  };
+  if (action !== 'abort') {
+    if (!values.target) fail(422, 'invalid', 'the new host is missing');
+    if (!/^[A-Za-z0-9._:[\]-]+(@[A-Za-z0-9._:[\]-]+)?$/.test(values.target) || values.target.startsWith('-')) fail(422, 'invalid', 'the new host must be `root@host` or `host`');
+    if (values.target.includes('@') && !values.target.startsWith('root@')) fail(422, 'invalid', 'the new host is reached as root: `root@host`');
+    if (!Number.isInteger(values.ssh_port) || values.ssh_port < 1 || values.ssh_port > 65535) fail(422, 'invalid', 'the SSH port must be 1 to 65535');
+    if (values.public_url && !/^https:\/\/[A-Za-z0-9][A-Za-z0-9.-]*$/.test(values.public_url)) fail(422, 'invalid', 'the public URL must be `https://host`, with nothing after it');
+    if (values.data_disks.length > 2) fail(422, 'invalid', 'data disks: one, or two for a mirror');
+    if (!values.data_disks.every((d) => /^\/dev\/[A-Za-z0-9._/-]+$/.test(d) && !d.includes('..'))) fail(422, 'invalid', 'a data disk must be a device of the new host: `/dev/…`');
+  }
+  const host = values.target ? values.target.split('@').pop() : null;
+  if (action === 'move' && body.confirm !== host) fail(422, 'invalid', 'type the new host’s name to confirm: root on this host will give this instance’s data to it');
+  if (!m.helper) fail(409, 'conflict', 'the move helper is not enabled on this server (the operations guide has its units)');
+  const can = migrationView(db).can;
+  if (m.request && m.request.state === 'requested') fail(409, 'conflict', 'another request is waiting for the move helper');
+  if (action === 'plan' && !can.plan) fail(409, 'conflict', 'a move is running: wait for its end, or abort it');
+  if (action === 'move') {
+    const same = m.run && m.run.target === values.target && m.run.ssh_port === values.ssh_port && m.run.public_url === values.public_url
+      && JSON.stringify(m.run.data_disks) === JSON.stringify(values.data_disks);
+    if (!can.move || !same) fail(409, 'conflict', 'show the plan for these values first: a move is the plan you saw');
+  }
+  if (action === 'abort' && !can.abort) fail(409, 'conflict', 'no move is recorded on this host: nothing to abort');
+  m.serial += 1;
+  const request = { id: `mock-${m.serial}-${action}`, action, state: 'requested', at: Date.now() };
+  (m.asked = m.asked || []).push({ action, ...values, confirm: body.confirm === undefined ? null : body.confirm });
+  if (action === 'abort' && m.run && m.run.state === 'running') {
+    // The helper sees the abort, stops the command (before it froze anything it just ends),
+    // then runs the abort.
+    const stopped = m.run;
+    m.request = request;
+    later(() => {
+      if (m.run === stopped && stopped.state === 'running') Object.assign(stopped, { state: 'ended', exit_code: null, ended_at: new Date().toISOString() });
+      playMove(db, request, values, moveAbortSteps(db));
+    }, m.stepMs / 2);
+    return json(202, migrationView(db));
+  }
+  m.request = request;
+  const steps = action === 'plan' ? movePlanSteps(db, values, null)
+    : action === 'move' ? movePlanSteps(db, values, moveSteps(db, values))
+      : moveAbortSteps(db);
+  playMove(db, request, values, steps);
+  return json(202, migrationView(db));
+});
 route('GET', '/api/admin/limits', ({ db }) => { superadminOnly(db); return limitsView(db); });
 route('PUT', `/api/admin/limits/${ID}`, ({ db, body, p }) => {
   superadminOnly(db);
@@ -5159,7 +5512,21 @@ async function handleFetch(db, url, init = {}) {
 
 async function handleFetchAfterLatency(db, url, init) {
   await delay(50 + Math.random() * 150);
-  if (db.offline) throw new TypeError('Failed to fetch'); // simulated outage (__yuliusMock.goOffline())
+  if (db.offline) {
+    // A frozen instance answers nothing; once the old address redirects (SPEC-470 MVB-036), a
+    // request that does not follow redirects sees an opaque one.
+    const m = db.migration;
+    if (m.frozen && new URL(url, ORIGIN).pathname === MOVE_API) m.missed += 1;
+    if (init.redirect === 'manual' && m.frozen) {
+      // Without a proxy in front, a frozen instance takes the connection and never answers
+      // (`probeHangs`): the request ends only when the page gives it up.
+      if (m.probeHangs && !m.redirects) return new Promise(() => {});
+      // The old host's proxy still answers: with its redirect once the move ended there, else
+      // that its upstream (the frozen instance) does not answer.
+      return m.redirects ? { type: 'opaqueredirect', status: 0, ok: false, text: async () => '' } : json(502, {});
+    }
+    throw new TypeError('Failed to fetch'); // simulated outage (__yuliusMock.goOffline())
+  }
   const u = new URL(url, ORIGIN);
   const method = (init.method || 'GET').toUpperCase();
   let body = {};
@@ -6429,6 +6796,8 @@ export function createMockTransport(params) {
     for (const session of db.sessions.values()) for (const ws of [...(session.viewers || [])]) ws.serverClose(1006, '');
   };
   db.goOnline = () => { db.offline = false; };
+  // Lets the held reads of the move go, the oldest first (SPEC-470).
+  db.migration.releaseReads = () => { for (const resolve of db.migration.holds.splice(0)) resolve(); };
   // The event streams die without a close (a laptop asleep, a dropped proxy connection): nothing
   // more reaches them, heartbeats included; a new connection works (SPEC-191 LIV-002).
   db.silenceEvents = () => {
@@ -6538,6 +6907,8 @@ export function createMockTransport(params) {
     eventsHeartbeatMs: db.heartbeatMs,
     // `pullgap=<ms>`: the store's least time between announced pull request reads (SPEC-108).
     pullGapMs: params.has('pullgap') ? Number(params.get('pullgap')) : undefined,
+    // `movepoll=<ms>`: how often the Move to another host card reads a move in flight (SPEC-470).
+    movePollMs: params.has('movepoll') ? Number(params.get('movepoll')) : undefined,
     pullClock,
     // Like window.fetch, an aborted signal (a timeout, a view that went away) rejects the request.
     fetch: (url, init = {}) => {

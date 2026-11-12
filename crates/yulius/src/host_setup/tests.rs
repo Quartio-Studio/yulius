@@ -782,6 +782,16 @@ impl Host for Fake {
                     ))
                 }
             }
+            ["/usr/sbin/apparmor_parser", "-R", file]
+                if self
+                    .text(file)
+                    .is_some_and(|text| text.contains("# broken")) =>
+            {
+                fail(
+                    1,
+                    &format!("AppArmor parser error for {file} at line 1: syntax error"),
+                )
+            }
             ["/usr/sbin/apparmor_parser", "-R", file] => {
                 let names = profiles_in(self.text(file).unwrap_or_default());
                 let mut missing = false;

@@ -211,6 +211,8 @@ struct FakeRemote {
     /// The one-time key's comment (the move's id), as the real connection is given it.
     comment: String,
     signs_in: bool,
+    /// How often the operator's own sign-in was tried ([`Remote::install_key`]).
+    sign_ins: u32,
     /// The new host cannot be reached at all.
     down: bool,
     /// How often the key was tried ([`Remote::reachable`]).
@@ -302,6 +304,7 @@ impl Remote for FakeRemote {
     }
 
     fn install_key(&mut self) -> Result<(), String> {
+        self.sign_ins += 1;
         if self.down {
             return Err("the sign-in to root@185.189.47.160 ended with exit status: 255".into());
         }
@@ -814,6 +817,7 @@ fn setup() -> Result<Setup, Box<dyn std::error::Error>> {
             update_service: "yulius-update.service".into(),
             state_dir,
             max_downtime: None,
+            no_sign_in: false,
         },
         local,
         remote: FakeRemote {
@@ -823,6 +827,7 @@ fn setup() -> Result<Setup, Box<dyn std::error::Error>> {
             key: false,
             comment: String::new(),
             signs_in: true,
+            sign_ins: 0,
             down: false,
             asked: 0,
             keyless: 0,
@@ -1874,6 +1879,82 @@ fn a_new_instance_that_does_not_come_up_is_stopped_before_the_old_one_thaws() ->
         !s.events()[before..]
             .iter()
             .any(|e| e.starts_with("old: systemctl"))
+    );
+    Ok(())
+}
+
+/// SPEC-470 MVB-004: a run asked without a person at this host (the move helper's) never
+/// signs in as root does, also when that sign-in would work: the key's line is shown, and the
+/// move goes on only once a person added it on the new host.
+#[test]
+fn a_run_without_a_sign_in_never_uses_roots_own() -> TestResult {
+    let mut s = setup()?;
+    s.opts.no_sign_in = true;
+    assert!(s.remote.signs_in, "root's own sign-in would work");
+    assert_eq!(s.run()?, 0, "{}", s.shown());
+    assert_eq!(s.remote.sign_ins, 0, "root's own sign-in was used");
+    let status = s.status()?;
+    let key = line(&status, "one-time key").ok_or("no key line")?;
+    assert_eq!(key.outcome, HostOutcome::Manual);
+    assert!(
+        key.detail
+            .contains("never signs in as root does (root's keys")
+            && key
+                .detail
+                .contains("ssh-ed25519 AAAAC3FAKE yulius-migrate-"),
+        "{}",
+        key.detail
+    );
+    // One sentence after another, as it is read on the page: no runs of spaces.
+    assert!(!key.detail.contains("  "), "{:?}", key.detail);
+    assert_eq!(status.lines.len(), 2, "the plan went on: {}", s.shown());
+    assert!(
+        status
+            .public_key
+            .as_deref()
+            .is_some_and(|line| line.starts_with("ssh-ed25519 AAAAC3FAKE"))
+    );
+    assert!(!s.shown().contains("Signing in to"), "{}", s.shown());
+    // Nothing was done on the new host, and its authorized_keys were not written.
+    assert!(s.events().is_empty() && s.remote.host.log.is_empty());
+
+    // A person added the line there: the same command goes on, still without a sign-in.
+    s.remote.key = true;
+    s.opts.yes = true;
+    assert_eq!(s.run()?, 0, "{}", s.shown());
+    assert_eq!(s.remote.sign_ins, 0);
+    let status = s.status()?;
+    assert_eq!(status.phase, "done");
+    assert_eq!(status.public_key, None);
+    Ok(())
+}
+
+/// SPEC-470 MVB-004: the connection the command itself makes for such a run offers the
+/// one-time key alone and reads none of root's ssh configuration; any other run's is as before.
+#[test]
+fn the_connection_of_a_run_without_a_sign_in_is_key_only() -> TestResult {
+    let mut s = setup()?;
+    let state = s.state()?;
+    let args = |opts: &Options| super::super::connection(opts, &state).args(true, "true");
+    let usual = args(&s.opts);
+    assert!(!usual.iter().any(|a| a == "-F"), "{usual:?}");
+    s.opts.no_sign_in = true;
+    let strict = args(&s.opts);
+    assert_eq!(strict[..2], ["-F", "none"], "{strict:?}");
+    assert!(
+        strict
+            .iter()
+            .any(|a| a == "PreferredAuthentications=publickey")
+    );
+    // The recorded host, its port, and the move's own key.
+    assert!(strict.iter().any(|a| a == "root@185.189.47.160"));
+    let key = strict
+        .iter()
+        .position(|a| a == "-i")
+        .map(|i| strict[i + 1].clone());
+    assert_eq!(
+        key,
+        Some(s.opts.state_dir.join("key").display().to_string())
     );
     Ok(())
 }
@@ -4028,6 +4109,313 @@ fn no_app_or_no_new_url_leaves_nothing_to_register() -> TestResult {
     assert!(github_lines(&s.status()?).is_empty());
     assert!(s.world.asked.is_empty());
     assert!(!s.events().contains(&"new: callback".to_owned()));
+    Ok(())
+}
+
+/// The old host has the move helper's units (SPEC-470), with its path unit `enabled` or not.
+fn with_move_helper(host: &mut FakeHost, enabled: bool) {
+    host.says(
+        &["systemctl", "show", "yulius-migrate.service"],
+        "LoadState=loaded\nFragmentPath=/etc/systemd/system/yulius-migrate.service\nDropInPaths=\n",
+    );
+    host.says(
+        &["systemctl", "show", "yulius-migrate.path"],
+        "LoadState=loaded\nFragmentPath=/etc/systemd/system/yulius-migrate.path\nDropInPaths=\n",
+    );
+    host.says(
+        &["systemctl", "is-enabled", "yulius-migrate.path"],
+        if enabled { "enabled\n" } else { "disabled\n" },
+    );
+}
+
+/// SPEC-470 MVB-008: the move helper's units travel with a move, and its path unit is enabled
+/// on the new host exactly when it was on the old one; the checklist says which.
+#[test]
+fn the_move_helper_travels_and_is_enabled_as_on_the_old_host() -> TestResult {
+    let said = |s: &Setup| -> Result<Vec<(HostOutcome, String)>, Box<dyn std::error::Error>> {
+        Ok(s.status()?
+            .lines
+            .into_iter()
+            .filter(|l| l.name == "move helper")
+            .map(|l| (l.outcome, l.detail))
+            .collect())
+    };
+    let sent = |s: &Setup| {
+        s.remote
+            .sent
+            .iter()
+            .filter_map(|p| p.to_str())
+            .filter(|p| p.contains("migrate"))
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
+    };
+    const ENABLE: &str = "systemctl enable --now yulius-migrate.path";
+
+    // None on the old host: said in the plan, nothing sent, nothing enabled.
+    let mut s = setup()?;
+    assert_eq!(s.run()?, 0);
+    assert_eq!(
+        said(&s)?,
+        [(
+            HostOutcome::Ok,
+            "none on the old host: the new one offers no move from Settings → Instance either"
+                .to_owned()
+        )]
+    );
+    assert!(sent(&s).is_empty() && !s.remote.host.ran(ENABLE));
+
+    // Enabled here: carried, and enabled there once the new instance runs.
+    let mut s = setup()?;
+    with_move_helper(&mut s.local, true);
+    assert_eq!(s.run()?, 0);
+    assert_eq!(
+        said(&s)?,
+        [
+            (
+                HostOutcome::Ok,
+                "its units are carried, and its path unit is enabled on the new host as it is \
+                 here"
+                    .to_owned()
+            ),
+            (
+                HostOutcome::Changed,
+                "yulius-migrate.path is enabled".to_owned()
+            ),
+        ]
+    );
+    assert_eq!(
+        sent(&s),
+        [
+            "/etc/systemd/system/yulius-migrate.path",
+            "/etc/systemd/system/yulius-migrate.service",
+        ]
+    );
+    let events = s.world.events.lock().map_err(|e| e.to_string())?.clone();
+    let at = |what: &str| events.iter().position(|e| e == what);
+    assert!(at("new: start") < at("new: enable"), "{events:?}");
+    assert!(at("new: enable") < at("new: finish"), "{events:?}");
+
+    // Switched off here: carried, and off there.
+    let mut s = setup()?;
+    with_move_helper(&mut s.local, false);
+    assert_eq!(s.run()?, 0);
+    assert_eq!(
+        said(&s)?,
+        [(
+            HostOutcome::Ok,
+            "its units are carried; its path unit is not enabled here, so it is not enabled on \
+             the new host"
+                .to_owned()
+        )]
+    );
+    assert_eq!(sent(&s).len(), 2);
+    assert!(!s.remote.host.ran(ENABLE));
+
+    // What fails there after the start is a line, never the end of the move.
+    let mut s = setup()?;
+    with_move_helper(&mut s.local, true);
+    s.remote.host.fails(
+        &["systemctl", "enable", "--now", "yulius-migrate.path"],
+        "Unit yulius-migrate.path not found",
+    );
+    assert_eq!(s.run()?, 1);
+    let lines = said(&s)?;
+    assert_eq!(lines.last().map(|l| l.0), Some(HostOutcome::Failed));
+    assert_eq!(s.state()?.cutover, Cutover::Moved);
+    assert!(s.state()?.finished);
+    Ok(())
+}
+
+/// SPEC-470 MVB-010: `status.json` gives its readers the key line while a person has to add it,
+/// and the new URL once the plan decided it.
+#[test]
+fn the_status_names_the_key_to_add_and_the_new_url() -> TestResult {
+    let mut s = setup()?;
+    s.remote.signs_in = false;
+    s.opts.yes = false;
+    assert_eq!(s.run()?, 0);
+    let status = s.status()?;
+    let key = status.public_key.clone().ok_or("no key in the status")?;
+    assert_eq!(
+        key,
+        format!("ssh-ed25519 AAAAC3FAKE yulius-migrate-{}", status.id)
+    );
+    assert!(line(&status, "one-time key").is_some_and(|l| l.detail.ends_with(&key)));
+    assert_eq!(
+        status.new_url, None,
+        "the plan ended before it decided the URL"
+    );
+    let written = fs::read_to_string(s.opts.state_dir.join("status.json"))?;
+    assert!(
+        written.contains(r#""public_key":"ssh-ed25519 "#),
+        "{written}"
+    );
+
+    // Added by hand on the new host: the same plan goes on and asks for no key.
+    s.remote.key = true;
+    assert_eq!(s.run()?, 0, "{}", s.shown());
+    let status = s.status()?;
+    assert_eq!(status.phase, "Plan");
+    assert_eq!(status.public_key, None);
+    assert_eq!(status.new_url.as_deref(), Some(NEW_URL));
+    let written = fs::read_to_string(s.opts.state_dir.join("status.json"))?;
+    assert!(!written.contains("public_key"), "{written}");
+    Ok(())
+}
+
+/// SPEC-470 MVB-011: the finished checklist travels to the new host with the Finish step, for
+/// the new instance's page: the same lines, in the same order, as the old host's own.
+#[test]
+fn the_finished_checklist_travels_to_the_new_host() -> TestResult {
+    use yulius_contracts::migrate::MoveChecklist;
+    let carried = |s: &Setup| -> Result<MoveChecklist, Box<dyn std::error::Error>> {
+        let (text, _, mode) = s
+            .remote
+            .host
+            .files
+            .get(Path::new(target::ARRIVED))
+            .ok_or("no checklist on the new host")?;
+        assert_eq!(mode & 0o7777, 0o644);
+        Ok(serde_json::from_str(text)?)
+    };
+    let mut s = setup()?;
+    assert_eq!(s.run()?, 0, "{}", s.shown());
+    let status = s.status()?;
+    assert_eq!(status.phase, "done");
+    let list = carried(&s)?;
+    assert_eq!(list.lines, status.lines);
+    // The lines of the Finish itself and what the old host said after it are there.
+    let names: Vec<&str> = list.lines.iter().map(|l| l.name.as_str()).collect();
+    for name in [
+        "one-time key",
+        "one-time key (old host)",
+        "GitHub App",
+        "remote clients",
+        "old host",
+    ] {
+        assert!(names.contains(&name), "{name} is missing: {names:?}");
+    }
+    assert_eq!(names.last(), Some(&"old host"));
+    assert_eq!(
+        (list.version, list.id.as_str(), list.target.as_str()),
+        (1, status.id.as_str(), "root@185.189.47.160")
+    );
+    assert_eq!(list.from.as_deref(), Some(super::fake::OLD_URL));
+    assert_eq!(list.to.as_deref(), Some(NEW_URL));
+    assert!(list.finished_at > 0);
+    // Nothing else of the flow stays there, and the data directory got nothing from it.
+    let left: Vec<&PathBuf> = s
+        .remote
+        .host
+        .files
+        .keys()
+        .filter(|path| path.starts_with(target::STATE_DIR))
+        .collect();
+    assert_eq!(left, [Path::new(target::ARRIVED)]);
+    // Brought while the key still signed in, before the step that removes it.
+    let events = s.events();
+    let at = |what: &str| events.iter().position(|e| e == what);
+    assert!(at("new: carry") < at("new: finish"), "{events:?}");
+
+    // A Finish that did not reach the new host leaves no checklist; the run that finishes does,
+    // with its own lines.
+    let mut s = setup()?;
+    s.remote.refuse = vec!["finish"];
+    assert_eq!(s.run()?, 1);
+    assert!(carried(&s).is_err());
+    assert_eq!(s.run()?, 0, "{}", s.shown());
+    let status = s.status()?;
+    assert_eq!(carried(&s)?.lines, status.lines);
+
+    // A move whose Finish did not reach the new host and that is then aborted leaves none:
+    // the instance did not move there.
+    let mut s = setup()?;
+    s.remote.refuse = vec!["finish"];
+    assert_eq!(s.run()?, 1);
+    assert!(
+        s.remote
+            .host
+            .files
+            .contains_key(Path::new(target::CARRY_FILE)),
+        "nothing was staged"
+    );
+    assert_eq!(s.abort()?, 0, "{}", s.shown());
+    assert!(
+        carried(&s).is_err(),
+        "an aborted move left a finished checklist"
+    );
+
+    // A new host that cannot keep it says so, and the move ends all the same.
+    let mut s = setup()?;
+    s.remote.host.read_only.insert(target::ARRIVED.into());
+    assert_eq!(s.run()?, 0, "{}", s.shown());
+    let status = s.status()?;
+    let said = line(&status, "checklist").ok_or("nothing said")?;
+    assert_eq!(said.outcome, HostOutcome::Manual);
+    assert!(said.detail.contains("--status"), "{}", said.detail);
+    assert!(s.state()?.finished);
+    Ok(())
+}
+
+/// Found by a real move asked from Settings → Instance (SPEC-470): a plan that ends with the key
+/// to add never brings this build to the new host. When a person then adds the key and aborts,
+/// the step that removes the key there is run by that build, which is not there: the abort
+/// failed with the key left behind. It brings the build first.
+#[test]
+fn an_abort_after_a_plan_that_only_asked_for_the_key_removes_the_key_there() -> TestResult {
+    let mut s = setup()?;
+    s.remote.signs_in = false;
+    s.opts.yes = false;
+    assert_eq!(s.run()?, 0);
+    assert!(
+        !s.remote.host.is_staged(),
+        "the plan ended before the build"
+    );
+    // The person adds the key on the new host, then thinks better of the move.
+    let key = format!("ssh-ed25519 AAAAC3FAKE {}", s.remote.comment);
+    s.remote.key = true;
+    s.remote.host.file_as(
+        "/root/.ssh/authorized_keys",
+        &format!("ssh-ed25519 AAAA admin@laptop\n{key}\n"),
+        0,
+        0o600,
+    );
+    assert_eq!(s.abort()?, 0, "{}", s.shown());
+    assert_eq!(
+        s.remote.host.text("/root/.ssh/authorized_keys"),
+        Some("ssh-ed25519 AAAA admin@laptop\n"),
+        "the move's key stayed on the new host"
+    );
+    // The build went there for that step only, and the step removed it with the flow's files.
+    assert!(s.events().contains(&"new: build copied".to_owned()));
+    assert!(!s.remote.host.is_staged());
+    assert!(State::load(&s.opts.state_dir).is_none());
+    let status = s.status()?;
+    assert_eq!(status.phase, "aborted");
+    assert!(
+        status
+            .lines
+            .iter()
+            .all(|l| l.outcome != HostOutcome::Failed),
+        "{:?}",
+        status.lines
+    );
+    assert!(!s.remote.key, "the key is deleted here");
+
+    // A new host that had this build already gets nothing copied again.
+    let mut s = setup()?;
+    s.opts.yes = false;
+    assert_eq!(s.run()?, 0);
+    assert!(s.remote.host.is_staged());
+    let copies = |s: &Setup| {
+        s.events()
+            .iter()
+            .filter(|e| *e == "new: build copied")
+            .count()
+    };
+    let before = copies(&s);
+    assert_eq!(s.abort()?, 0, "{}", s.shown());
+    assert_eq!(copies(&s), before);
     Ok(())
 }
 

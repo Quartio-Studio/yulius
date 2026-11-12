@@ -49,7 +49,10 @@ other in load order, which a boot does not fix.
   profile, and a person's profile that lets it in is adopted in place of Yulius's, whichever
   run wrote that (SPEC-456 BNS-012). The same proof decides beside a profile the item reads,
   where a profile of Yulius's from an earlier run stands next to it (BNS-006): nothing of
-  Yulius's is removed because of what a file's text looks like.
+  Yulius's is removed because of what a file's text looks like. A profile of Yulius's that a
+  person's `disable/` link names is only unloaded where AppArmor still holds it; its file
+  stays. While both files are on disk and bwrap starts, the item names both and settles
+  nothing before the boot that loads them.
 - **Checks report and never fix.** `yulius host check` (the update helper's re-check, Settings →
   Instance) runs the same proof and reports what setup would do. `yulius doctor --contained`
   starts bwrap with ids mapped by `newuidmap`, as a sandbox does, and fails when that does not
