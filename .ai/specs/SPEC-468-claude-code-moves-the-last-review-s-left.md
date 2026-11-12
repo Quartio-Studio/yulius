@@ -1,11 +1,11 @@
 ---
 yulius-task: 57d7619e-9b14-4e4a-81e8-6a431b4d5b7c
-status: in-progress
+status: done
 ---
 
 # SPEC-468: Claude Code moves: the last review's leftovers of SPEC-461
 
-Status: in progress
+Status: implemented
 Date: 2026-11-11
 Owner: Yulius task #452
 Scope authorization: the request of task #452 (by MrFishPL, 2026-11-11): fix the two minors and
@@ -102,7 +102,7 @@ The question of direction: the restart waits only while a person typed in the la
 - [x] Gate and the whole e2e suite green, evidence recorded
 - [x] Independent review round 1 answered, every finding fixed with its test
 - [x] A message Yulius typed that Claude Code still queues keeps the session, and the draft rule is checked against the real Claude Code
-- [ ] Independent review round 2 answered: a submit empties the box as of its Enter, and only what will be submitted counts
+- [x] Independent review round 2 answered: a submit empties the box as of its Enter, and only what will be submitted counts
 
 ## Acceptance criteria
 
@@ -146,8 +146,8 @@ The question of direction: the restart waits only while a person typed in the la
   submitted minutes later, and that turn's end does not look at the session; once the rest is
   entered and submitted the box is empty. A prompt the scope check holds is answered with the
   block and leaves the session with a draft: the turn that ran meanwhile ends without a look
-  at the session. So does a prompt that waited for a subscription with room and is held by
-  the scope check once the limit reset.
+  at the session. A prompt that waited for a subscription with room and is held by the scope
+  check once the limit reset leaves the session with a draft as well.
 - AC10 (CCF-011). A prompt-mode session on 2.1.311 runs a turn the gate will block, while runs
   get 2.1.322. Its person's Superagent sends it a message, which is typed into the session and
   answered "sent": the session has a draft. When the turn ends the session keeps its run, the
@@ -300,23 +300,23 @@ The question of direction: the restart waits only while a person typed in the la
   could not be typed is taken back. A subscription switch at a turn's end loses a queued
   message as well (older code; it cannot wait for a subscription at its limit): a probe with
   real processes showed it, reported as issue #1194.
-- **A submit empties the box as of its Enter** (review round 2). The first rule took the
-  hook's time for the moment the box was emptied. For a prompt that waited in Claude Code's
-  queue that is later than its Enter by up to the rest of the turn, and what a person typed in
-  between (their next draft; or a draft typed while a message of Yulius waited) was forgotten
-  at that submit. Yulius sees the Enter: a viewer's input that ends with a carriage return
-  (a paste ends with its closing mark), and its own after a message it typed. When that Enter
-  lies between the time the box was last known empty and the hook, and something was typed
-  after it, the box counts as emptied at the Enter (`box_emptied_at`). An Enter Yulius does
-  not see (a terminal that sends another sequence for it) leaves the first rule in force.
-  Limits, each needing a restart to be due at that very turn's end: of two prompts that wait
-  at once (two a person entered, or one of theirs and a message of Yulius), the later counts
-  as submitted with the earlier (Claude Code hands every queued prompt on at one fold; what
-  it does with several at a turn's end is not in the transcripts, none of which has two
-  waiting); and an Enter that answers a dialog, typed after a new draft and before the queued
-  prompt is handed on, reads as that draft's Enter.
-  Rejected: counting Enters against submits, which would be exact for prompts and keep every
-  session in which a person answered a dialog or ran a command at its version for good.
+- **A submit empties the box as of its Enter** (review round 2). The first rule took the hook's
+  time for the moment the box was emptied. For a prompt that waited in Claude Code's queue that
+  is later than its Enter by up to the rest of the turn, and what a person typed in between
+  (their next draft; or a draft typed while a message of Yulius waited) was forgotten at that
+  submit. Yulius sees the Enter: a viewer's input that ends with a carriage return (a paste ends
+  with its closing mark), and its own after a message it typed. When that Enter lies between the
+  time the box was last known empty and the hook, and something was typed after it, the box
+  counts as emptied at the Enter (`box_emptied_at`). An Enter Yulius does not see (a terminal
+  that sends another sequence for it) leaves the first rule in force. Limits, each needing a
+  restart to be due at that very turn's end: of two prompts that wait at once (two a person
+  entered, or one of theirs and a message of Yulius), the later counts as submitted with the
+  earlier (Claude Code hands every queued prompt on at one fold; what it does with several at a
+  turn's end is not in the transcripts, none of which has two waiting); and an Enter that
+  answers a dialog, typed after a new draft and before the queued prompt is handed on, reads as
+  that draft's Enter. Rejected: counting Enters against submits, which would be exact for
+  prompts and keep every session in which a person answered a dialog or ran a command at its
+  version for good.
 - **A prompt Yulius holds is still in the box** (found in the author's reading of round 2's
   answers). A typed prompt that the scope check holds (TSK-013) is answered with a block.
   Claude Code then shows the reason and puts the text back into the prompt box: the intake
@@ -327,11 +327,14 @@ The question of direction: the restart waits only while a person typed in the la
   Enter on what is in the box). A blocked prompt now empties nothing. For that the emptying
   is worked out at a prompt's first request and taken when the prompt goes on: one that
   waited for room and is then held by the scope check (which reads it again after the wait)
-  empties nothing either, and while a prompt waits its own text reads as a draft, which
-  changes nothing, since no turn of that session can end meanwhile. An earlier text of this
-  spec said a blocked prompt goes into a warning line and not back into the box; that read
-  only half of the binary's path and was wrong. A held prompt a person then edits, or clears
-  by hand, reads as a draft until the next prompt is entered and submitted.
+  empties nothing either. While a prompt waits, its own text reads as a draft; no turn of
+  that session ends meanwhile. Should Claude Code give a held hook up (its client holds for
+  eight days), the prompt goes on unseen and the session reads as holding a draft until the
+  prompt after the next one is submitted: later than needed, never as holding none. An
+  earlier text of this spec said a blocked prompt goes into a warning line and not back into
+  the box; that read only half of the binary's path and was wrong. A held prompt a person
+  then edits, or clears by hand, reads as a draft until the next prompt is entered and
+  submitted.
 - **How two decisions for one task overlap.** The review read the race and did not reproduce
   it. It has an everyday trigger: a Stop hook that decided a restart is answered with a hold,
   and the hook client sends a held hook again every 10 s, while the switch waits up to 60 s
@@ -392,13 +395,15 @@ The question of direction: the restart waits only while a person typed in the la
 
 ## Evidence
 
-- `scripts/dev ci` at 65515fc7 (every code and test change of this task, with `dev` up to
-  420750d9 merged): exit 0. `cargo check`, `fmt --check`, clippy `-D warnings` on Linux and
-  for `aarch64-apple-darwin`, nextest 3707 passed / 16 skipped, doctests, `cargo deny`
+- `scripts/dev ci` at ae55896c (every code and test change of this task, with `dev` up to
+  25a0aaca merged): exit 0. `cargo check`, `fmt --check`, clippy `-D warnings` on Linux and
+  for `aarch64-apple-darwin`, nextest 3852 passed / 16 skipped, doctests, `cargo deny`
   (advisories, bans, licenses, sources ok), `cargo shear`, `cargo doc`. After it come only
-  this section and the Plan's last tick. Earlier runs passed at 42aa6838 (3648 tests) and at
-  aa0916d9 (3649 passed, 16 skipped); the first run stopped at clippy (`type_complexity` in a
-  new test helper, fixed).
+  this section, wording in this spec's AC9 and Decisions, one doc comment in `supervisor.rs`
+  (`fmt --check`, clippy and `cargo doc` of that crate run again) and the Plan's last tick.
+  Earlier runs passed at 42aa6838 (3648 tests), aa0916d9 (3649 passed, 16 skipped), 65515fc7
+  (3707 passed, 16 skipped) and at the merge before this one (3757 passed, 16 skipped); the
+  first run stopped at clippy (`type_complexity` in a new test helper, fixed).
 - e2e, the whole suite with the web files of that head
   (`cd e2e && E2E_TELEMETRY_DISABLED=1 npx e2e run`): exit 0, 966 passed, 1 skipped (the agent
   test, which needs a model key), in 81 files and that one.
@@ -421,6 +426,16 @@ The question of direction: the restart waits only while a person typed in the la
     `a_goal_that_failed_is_still_unfinished_after_an_idle_restart`: unfinished was forgotten.
   - `a_goal_set_in_the_turn_the_gate_blocks_keeps_the_session` (review round 1): the session
     was restarted with the gate's reasons.
+  - Review round 2: `what_is_typed_after_a_queued_prompts_enter_stays_a_draft` (test clock),
+    `what_a_viewer_types_after_a_queued_prompts_enter_stays_a_draft` and
+    `a_draft_typed_while_a_message_of_yulius_waits_stays_a_draft` (real processes): what was
+    typed after the Enter was forgotten at the queued prompt's submit.
+    `a_task_whose_yulius_mcp_went_silent_is_reconnected_then_continues`: "a typed command is
+    no draft". `a_message_that_could_not_be_typed_is_no_draft`: a draft was left behind by a
+    message that was refused ("the task is not running").
+  - The author's reading of round 2's answers: `a_prompt_yulius_holds_is_still_in_the_prompt_box`
+    and `a_prompt_held_for_room_and_then_by_the_scope_check_is_still_in_the_box`: the hook was
+    answered with the block and the session read as holding no draft.
   - e2e: the card's "Each moves to … when its turn ends" beside stopped moves, task info's
     "moves to … when its turn ends", no "models not read" badge; and in
     `notifications.e2e.ts` the read "Your turn" entry back as unread after the restart, and a
@@ -449,14 +464,24 @@ The question of direction: the restart waits only while a person typed in the la
   - finding 8: the launch always Working (the main move test); the goal's state not carried
     (the failed-goal test); the notification center not remembering through a switch (e2e:
     the bell's entries, and with those assertions taken out the desktop's alone).
-  - the draft: not asked in `moves_now`; a submit not emptying the box; a launch not emptying
-    it (`an_idle_session_is_idle_again_after_a_person_moves_it`, and the unit test of a new
+  - the draft: not asked in `moves_now`; a launch not emptying the box
+    (`an_idle_session_is_idle_again_after_a_person_moves_it`, and the unit test of a new
     run); a wake-up emptying it (the predicate's unit test, and its use: the draft test's
-    wake-up); a held prompt emptying it at every request; the hold not remembered; a new run
-    keeping a held prompt (unit test).
+    wake-up); a new run keeping a held prompt (unit test). On the prompt hook as it stands at
+    the end: a submit not emptying the box (three draft tests); a held prompt worked out
+    again at every request, and the hold not remembered (the held-prompt test); a blocked
+    prompt emptying the box (both scope-check tests); a prompt's emptying taken at its first
+    request while it waits (the second of them).
+  - a queued prompt's Enter (review round 2): the rule always answering the hook's time (the
+    three tests above and the rule's unit test); a viewer's Enter not read, in the record
+    (two tests) and at the terminal's call (the test through the terminal's input path);
+    Yulius's own Enter not kept (the test with a message waiting).
   - what Yulius typed: the time not stamped; the stamp not asked (both: the message test, at
-    its first assertion; with that assertion taken out, at "the message was lost").
-- Stress: `claude_code_moves` (25 tests, real processes) 6 times over, all passed.
+    its first assertion; with that assertion taken out, at "the message was lost"); a command
+    stamped like a message (the MCP watch's test); the stamp kept when nothing could be typed
+    (its test).
+- Stress: `claude_code_moves` (31 tests, real processes and the test clock) 6 times
+  over, all passed.
 - Checked against the real Claude Code instead of the fake agent. Its binaries were read with
   `strings`, never run: 2.1.322 as installed, 2.1.311 and 2.1.292 from the npm registry. The
   transcripts are those of this instance's own sessions (423 files; only record types, counts
@@ -465,13 +490,18 @@ The question of direction: the restart waits only while a person typed in the la
     session restarted from 2.1.311 on 2.1.322 shows it: its goal's "not met" verdict comes
     about 2,000 lines after the restart and before any new `/goal`. This changed what finding
     1 is said to lose (Decisions) and the text of issue #1182.
-  - An unsent prompt is kept on disk only for background jobs, and a prompt a hook blocked
-    goes into a warning line: a draft does not survive a restart, so the draft rule is needed.
+  - An unsent prompt is kept on disk only for background jobs: a draft does not survive a
+    restart, so the draft rule is needed.
   - A prompt entered while a turn runs is queued; its submit hook runs when it is handed to
     the model ("prompt.submit at the fold", or after the turn's end), and the ten prompts that
     waited over 5 s between their own enqueue and dequeue records have their prompt record
     within a second of the dequeue. The resume loader lists `queue-operation` records as
-    ignored. This is what CCF-011 came from.
+    ignored. This is what CCF-011 and the Enter rule came from. No transcript has two prompts
+    waiting at once.
+  - A prompt a hook blocks is put back into the prompt box: 2.1.322 lands a line a hook
+    dropped in the composer, at Enter and at the fold, and the intake module records the same
+    for 2.1.295. An earlier reading of mine, that it only goes into a warning line, was wrong
+    (Decisions); the held-prompt rule came from the correction.
 - Probes with real processes, not kept: a person's move of a prompt-mode session with an own
   goal open, `before=(1, 1, true) after=(2, 0, false)` (older code: issue #1182); a
   subscription switch at a turn's end with a message Yulius typed still queued,
@@ -483,25 +513,36 @@ The question of direction: the restart waits only while a person typed in the la
 - `yulius security-scan`: "Security scan disabled: Vidoc is turned off in Yulius" (exit 0):
   disabled, not passed.
 - Review. The author read the whole diff against `dev` before the independent round and found
-  the held-prompt hole and one test wait that could race. Independent round 1 (a fresh
-  session with the diff range, this spec and the skill `om-code-review`; it ran the gate and
-  the e2e suite itself: 3649 passed and 16 skipped, 932 passed and 1 skipped) approved the
-  head 5405c967 with two minors and four nits, all answered in this pull request:
-  - minor: the Stop asked about the goal before the turn's lines were read. It asks again
-    after its look, with a test.
-  - minor: three mutations survived (a wake-up emptying the box at its call site, a stop of
-    moves read for every version, a finished restart keeping the slot). Each has its test now.
-  - nit: a held prompt was not forgotten at a new run. `prompt_box_starts_empty`, unit test.
-  - nit: the carried goal state is memory only. Recorded under Decisions with its narrow case.
-  - nit: `IdleRest`'s guard for a turn begun in the new run could not be reached. Removed.
-  - nit: two early returns of the move said nothing. They log at debug level.
-  After that round came the merges of `dev` (#1168, #1184, #1188, #1193), the version's cut
-  moved to where SPEC-461 keeps it, the truthful wording about the goal, the desktop
-  notification's check and CCF-011. The same reviewer looked at that delta; its verdict goes
-  with the merge.
+  the held-prompt hole and one test wait that could race. The independent reviewer (a fresh
+  session with the diff range, this spec and the skill `om-code-review`) ran the gate and the
+  e2e suite itself each round.
+  - Round 1 approved the head 5405c967 (3649 passed and 16 skipped, 932 passed and 1 skipped)
+    with two minors and four nits, all answered in this pull request. Minor: the Stop asked
+    about the goal before the turn's lines were read; it asks again after its look, with a
+    test. Minor: three mutations survived (a wake-up emptying the box at its call site, a stop
+    of moves read for every version, a finished restart keeping the slot); each has its test.
+    Nits: a held prompt was not forgotten at a new run (`prompt_box_starts_empty`, unit
+    test); the carried goal state is memory only (recorded under Decisions); `IdleRest`'s
+    guard for a turn begun in the new run could not be reached (removed); two early returns
+    of the move said nothing (they log at debug level).
+  - Round 2 approved the head 41d57528 (3707 passed and 16 skipped, 966 passed and 1 skipped),
+    found every round-1 finding answered, and brought two minors and five nits, all answered
+    in this pull request. Minor: the MCP watch's reconnect command was stamped like a message
+    (only what will be submitted is stamped now, with the watch's test). Minor: a queued
+    prompt's submit forgot what was typed after its Enter (the Enter rule, with four tests).
+    Nits: two assertions of the message test could not fail (removed); the stamp stayed when
+    the paste failed (taken back, with a test); this section said three early returns log
+    (two do); CCF-011's limit did not name a restart of the server (it does); the e2e README
+    did not name the desktop check (it does). Two more are older code: a message typed onto a
+    person's draft that is over a minute old (issue #1199), and a decision listed twice in
+    the index on `dev` (gone since #1180).
+  - After round 2 the author read its own answers once more and found the held prompt (two
+    cases, Decisions), fixed with two tests. The same reviewer looked at everything since
+    41d57528; its verdict goes with the merge.
 - Not tested: a restart that Yulius makes of a real, signed-in Claude Code session (no
   subscription can be signed in for a test: the fake agent stands in for the process, and
   what the real one does was read in its binaries and transcripts); an operating system's
   notification (the stand-in receives what the page asks the browser to show); whether a real
   Claude Code writes its "cleared" record at `/clear` with a goal open (its binary ends the
-  goal there); a deployed instance.
+  goal there); what a real Claude Code does with two prompts that wait at a turn's end; a
+  deployed instance.
