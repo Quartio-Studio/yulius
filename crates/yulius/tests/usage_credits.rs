@@ -8,7 +8,7 @@ use crate::pool_supervision::{
     HOUR, ScriptedUsage, build_with, has_status, new_task, refresh, runtime, seed, stop, temp,
     usage, wait_for,
 };
-use crate::subscription_moves::{live_run, ready, run_accounts, running_on_first};
+use crate::subscription_moves::{live_run, notices, ready, run_accounts, running_on_first};
 use crate::support::agents::{FakeAgentOptions, limit_resume_problems};
 use crate::support::{TestResult, hold_point, point_reached};
 
@@ -584,6 +584,10 @@ fn a_refused_move_at_a_usage_credits_limit_still_asks_a_person() -> TestResult {
             app.deps.store.task_needs_you(&id).await?.is_none(),
             "the request ended with the move"
         );
+        assert_eq!(
+            resolved(&app, &id).await,
+            ["the session goes on past the usage limit that cut its turn"]
+        );
         stop(&app, &id).await?;
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
@@ -600,99 +604,159 @@ async fn audited(app: &App, id: &TaskId, action: &str) -> usize {
         .map_or(0, |entries| entries.len())
 }
 
-/// SPEC-464 UCL-010: a model's limit nothing says the end of (Claude Code 2.1.311's record, or
-/// credits switched off) with no other subscription to go to. The task waits, and a provider's
-/// reading, which ends such a limit, lets the pool try it once. Refused again the same way, it
-/// is not tried a second time: the session stays at the refusal and a person is asked, and
-/// further readings start nothing. One blind retry, never a loop of restarts nobody hears of.
-/// The request ends when a person runs the task on a subscription that works.
+/// A task Claude refused twice at a model's limit nothing says the end of, with nothing to go
+/// to, as [`refused_twice`] leaves it: Yulius asked a person.
+struct RefusedTwice {
+    app: Arc<App>,
+    probe: Arc<ScriptedUsage>,
+    agent: FakeAgentOptions,
+    id: TaskId,
+    user: UserId,
+}
+
+/// SPEC-464 UCL-010, up to Yulius's request: a model's limit nothing says the end of (Claude
+/// Code 2.1.311's record, or credits switched off; `reset_s` is the reset its record names, if
+/// any) with no other subscription to go to. The task waits, and a provider's reading, which
+/// ends such a limit, lets the pool try it once. Refused again the same way, it is not tried a
+/// second time: the session stays at the refusal and a person is asked, in the terminal too.
+/// One blind retry, never a loop of restarts nobody hears of. With `own`, that request of the
+/// agent's is open when the second refusal comes.
+async fn refused_twice(
+    data: &Path,
+    fake: &Path,
+    reset_s: Option<u64>,
+    own: Option<&yulius_app::needs_you::NeedsYouRecord>,
+) -> Result<RefusedTwice, Box<dyn std::error::Error>> {
+    use yulius_app::ports::Crypto;
+    let probe = Arc::new(ScriptedUsage::default());
+    // Refused from the first message of every run, never saying believably when it ends.
+    let agent = FakeAgentOptions {
+        limit_after: Some(0),
+        ..refused_for_credits(reset_s)
+    };
+    let app = build_with(data, fake, probe.clone(), agent.clone())?;
+    // The second subscription needs a new sign-in: nothing can take the task.
+    let (sandbox, user) = seed(&app, data, &["a-first", "b-second"]).await?;
+    let sealed = app.deps.crypto.seal(b"b-second")?;
+    app.deps
+        .store
+        .set_account_credential(
+            &AccountId::parse("b-second")?,
+            &sealed,
+            AccountStatus::Relogin,
+            app.now(),
+        )
+        .await?;
+    let id = new_task(&app, &sandbox, &user, "No end").await?;
+    ready(&app, &id).await?;
+    app.send_input(&id, b"hello\r").await?;
+    wait_for("the pause", Duration::from_secs(30), || {
+        has_status(&app, &id, TaskStatus::WaitingCapacity)
+    })
+    .await?;
+    let pause = app.deps.store.open_pause(&id).await?.ok_or("pause")?;
+    assert_eq!(pause.kind, PauseKind::Limit);
+    needs_nobody(&app, &id).await?;
+    let (status, stored) = stored_usage(&app, "a-first").await?;
+    assert_eq!(stored["weekly_fable"]["used_percent"], 100.0, "{stored}");
+    assert!(stored["weekly_fable"]["resets_at"].is_null(), "{stored}");
+    assert_eq!(status, AccountStatus::Limited);
+
+    // A provider's reading ends the limit; the pool tries the task again, once.
+    probe.set("a-first", usage(10.0, 4 * HOUR, 30.0, 100));
+    refresh(&app, &user, "a-first").await?;
+    let (status, stored) = stored_usage(&app, "a-first").await?;
+    assert!(stored["weekly_fable"].is_null(), "{stored}");
+    assert_eq!(status, AccountStatus::Ok);
+    let _ = app.resume_round().await;
+    live_run(&app, &id, 2).await?;
+    needs_nobody(&app, &id).await?;
+    if let Some(own) = own {
+        app.deps
+            .store
+            .set_task_needs_you(&id, Some(own), app.now())
+            .await?;
+    }
+
+    let mut watch = app.runtime(&id).hub.watch();
+    app.send_input(&id, b"again\r").await?;
+    wait_for("the request", Duration::from_secs(30), || async {
+        audited(&app, &id, "task.limit_without_end").await == 1
+    })
+    .await?;
+    let said = notices(&mut watch);
+    assert!(
+        said.iter()
+            .any(|notice| notice.contains("does not say when the limit ends")),
+        "the terminal says so too: {said:?}"
+    );
+    let task = app.deps.store.task(&id).await?.ok_or("task")?;
+    assert_eq!(task.status, TaskStatus::Running, "not paused again");
+    assert_eq!(task.activity, Some(Activity::NeedsAttention));
+    assert!(app.deps.store.open_pause(&id).await?.is_none());
+    assert_eq!(
+        pauses_audited(&app, &id).await,
+        0,
+        "one request, Yulius's own"
+    );
+    Ok(RefusedTwice {
+        app,
+        probe,
+        agent,
+        id,
+        user,
+    })
+}
+
+/// The request Yulius opened for a limit nothing says the end of, while it is the open one.
+async fn limit_request(
+    app: &App,
+    id: &TaskId,
+) -> Result<Option<yulius_app::needs_you::NeedsYouRecord>, Box<dyn std::error::Error>> {
+    Ok(app.deps.store.task_needs_you(id).await?.filter(|open| {
+        open.action
+            .starts_with("Run the task on another subscription or model")
+    }))
+}
+
+/// Why requests of `id` ended without a person or its agent (`task.needs_you.resolved`).
+async fn resolved(app: &App, id: &TaskId) -> Vec<String> {
+    app.deps
+        .store
+        .audit_details(id.as_str(), "task.needs_you.resolved", 10)
+        .await
+        .unwrap_or_default()
+}
+
+/// A person's context for `user`.
+async fn person(app: &App, user: &UserId) -> Result<AuthContext, Box<dyn std::error::Error>> {
+    Ok(AuthContext {
+        user: app.deps.store.user(user).await?.ok_or("user")?,
+        csrf_token: None,
+        session_hash: None,
+        token: None,
+    })
+}
+
+/// SPEC-464 UCL-010: after one blind retry a person is asked, and further readings start
+/// nothing. A person's move that is refused changes nothing; one to a subscription that works
+/// ends the request. A limit met after that is judged afresh: Yulius's earlier word about the
+/// first one does not silence the goal pause written at the next.
 #[test]
 fn a_limit_nothing_says_the_end_of_is_retried_once_then_asks_a_person() -> TestResult {
-    refused_without_an_end(None)
-}
-
-/// A reset that is not believed (further ahead than any window lasts) is no reset: the limit is
-/// one nothing says the end of, bounded the same way, not a wait until the year the record names.
-#[test]
-fn a_limit_whose_reset_is_not_believed_is_retried_once_then_asks_a_person() -> TestResult {
-    refused_without_an_end(Some(400 * 24 * 3600))
-}
-
-/// The flow of UCL-010 for a refusal whose record names the reset `reset_s` seconds ahead, or
-/// none.
-fn refused_without_an_end(reset_s: Option<u64>) -> TestResult {
     use yulius_app::ports::Crypto;
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
     let (_dir, data) = temp()?;
     let rt = runtime()?;
     rt.block_on(async {
-        let probe = Arc::new(ScriptedUsage::default());
-        // Refused from the first message of every run, never saying believably when it ends.
-        let agent = FakeAgentOptions {
-            limit_after: Some(0),
-            ..refused_for_credits(reset_s)
-        };
-        let app = build_with(&data, &fake, probe.clone(), agent)?;
-        // The second subscription needs a new sign-in: nothing can take the task.
-        let (sandbox, user) = seed(&app, &data, &["a-first", "b-second"]).await?;
-        let other = AccountId::parse("b-second")?;
-        let sealed = app.deps.crypto.seal(b"b-second")?;
-        app.deps
-            .store
-            .set_account_credential(&other, &sealed, AccountStatus::Relogin, app.now())
-            .await?;
-        let id = new_task(&app, &sandbox, &user, "No end").await?;
-        ready(&app, &id).await?;
-        app.send_input(&id, b"hello\r").await?;
-        wait_for("the pause", Duration::from_secs(30), || {
-            has_status(&app, &id, TaskStatus::WaitingCapacity)
-        })
-        .await?;
-        let pause = app.deps.store.open_pause(&id).await?.ok_or("pause")?;
-        assert_eq!(pause.kind, PauseKind::Limit);
-        needs_nobody(&app, &id).await?;
-        let (status, stored) = stored_usage(&app, "a-first").await?;
-        assert_eq!(stored["weekly_fable"]["used_percent"], 100.0, "{stored}");
-        assert!(stored["weekly_fable"]["resets_at"].is_null(), "{stored}");
-        assert_eq!(status, AccountStatus::Limited);
-
-        // A provider's reading ends the limit; the pool tries the task again, once.
-        probe.set("a-first", usage(10.0, 4 * HOUR, 30.0, 100));
-        refresh(&app, &user, "a-first").await?;
-        let (status, stored) = stored_usage(&app, "a-first").await?;
-        assert!(stored["weekly_fable"].is_null(), "{stored}");
-        assert_eq!(status, AccountStatus::Ok);
-        let _ = app.resume_round().await;
-        live_run(&app, &id, 2).await?;
-        needs_nobody(&app, &id).await?;
-
-        app.send_input(&id, b"again\r").await?;
-        wait_for("the request", Duration::from_secs(30), || async {
-            audited(&app, &id, "task.limit_without_end").await == 1
-        })
-        .await?;
-        let asked = app.deps.store.task_needs_you(&id).await?.ok_or("request")?;
-        assert!(
-            asked
-                .action
-                .starts_with("Run the task on another subscription or model"),
-            "{asked:?}"
-        );
+        let RefusedTwice { app, id, user, .. } = refused_twice(&data, &fake, None, None).await?;
+        let asked = limit_request(&app, &id).await?.ok_or("request")?;
         assert!(
             asked
                 .happened
                 .as_deref()
                 .is_some_and(|happened| happened.contains("did not say when the limit ends")),
             "{asked:?}"
-        );
-        let task = app.deps.store.task(&id).await?.ok_or("task")?;
-        assert_eq!(task.status, TaskStatus::Running, "not paused again");
-        assert_eq!(task.activity, Some(Activity::NeedsAttention));
-        assert!(app.deps.store.open_pause(&id).await?.is_none());
-        assert_eq!(
-            pauses_audited(&app, &id).await,
-            0,
-            "one request, Yulius's own"
         );
 
         // Readings start nothing now: the task waits for its person.
@@ -705,16 +769,14 @@ fn refused_without_an_end(reset_s: Option<u64>) -> TestResult {
         // A person's move that is refused before it ends the session (the credential cannot be
         // opened) changes nothing: Yulius's request stays, and the goal pause Claude Code wrote
         // at the refusal is not asked about beside it.
-        let ctx = AuthContext {
-            user: app.deps.store.user(&user).await?.ok_or("user")?,
-            csrf_token: None,
-            session_hash: None,
-            token: None,
-        };
+        let ctx = person(&app, &user).await?;
+        let other = AccountId::parse("b-second")?;
         let to_second = ContinueTask {
             account_id: Some("b-second".into()),
         };
-        let foreign = MasterKeyCrypto::from_key(&[9u8; 32])?.seal(b"b-second")?;
+        // Sealed with another instance's key: it cannot be opened here.
+        let stranger = MasterKeyCrypto::from_key(&[9u8; 32])?;
+        let foreign = stranger.seal(b"b-second")?;
         app.deps
             .store
             .set_account_credential(&other, &foreign, AccountStatus::Ok, app.now())
@@ -727,11 +789,12 @@ fn refused_without_an_end(reset_s: Option<u64>) -> TestResult {
             0,
             "one request, Yulius's own"
         );
-        let still = app.deps.store.task_needs_you(&id).await?.ok_or("request")?;
-        assert_eq!(still.action, asked.action);
+        assert_eq!(limit_request(&app, &id).await?.as_ref(), Some(&asked));
+        assert_eq!(resolved(&app, &id).await, Vec::<String>::new());
 
         // The subscription is signed in again and the person runs the task on it: the session
-        // goes on past the refusal, so Yulius's request ends with the move.
+        // goes on past the refusal, so Yulius's request ends with the move, and the log says why.
+        let sealed = app.deps.crypto.seal(b"b-second")?;
         app.deps
             .store
             .set_account_credential(&other, &sealed, AccountStatus::Ok, app.now())
@@ -744,10 +807,303 @@ fn refused_without_an_end(reset_s: Option<u64>) -> TestResult {
         );
         needs_nobody(&app, &id).await?;
         assert_eq!(
-            pauses_audited(&app, &id).await,
-            0,
-            "the goal pause asked nobody"
+            resolved(&app, &id).await,
+            ["the session goes on past the usage limit that cut its turn"]
         );
+
+        // Refused there too, and the way back cannot be taken (the first subscription's
+        // credential cannot be opened): the session stays at this refusal. It is a new limit:
+        // the goal pause written at it asks a person, though Yulius spoke for the last one.
+        app.deps
+            .store
+            .set_account_credential(
+                &AccountId::parse("a-first")?,
+                &stranger.seal(b"a-first")?,
+                AccountStatus::Ok,
+                app.now(),
+            )
+            .await?;
+        app.send_input(&id, b"once more\r").await?;
+        wait_for(
+            "the goal pause's request",
+            Duration::from_secs(30),
+            || async { pauses_audited(&app, &id).await == 1 },
+        )
+        .await?;
+        assert_eq!(refused_moves(&app, &id).await, 2);
+        let pause = app.deps.store.task_needs_you(&id).await?.ok_or("request")?;
+        assert_eq!(
+            pause.happened.as_deref(),
+            Some("Goal paused \u{b7} the request was rate limited."),
+            "{pause:?}"
+        );
+        assert_eq!(audited(&app, &id, "task.limit_without_end").await, 1);
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// A reset that is not believed (further ahead than any window lasts) is no reset: the limit is
+/// one nothing says the end of, bounded the same way, not a wait until the year the record names.
+#[test]
+fn a_limit_whose_reset_is_not_believed_is_retried_once_then_asks_a_person() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let RefusedTwice { app, id, .. } =
+            refused_twice(&data, &fake, Some(400 * 24 * 3600), None).await?;
+        assert!(limit_request(&app, &id).await?.is_some());
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// A request that is open already is kept (the agent's own is its own to end): Yulius adds
+/// none, and still says in the terminal and the log that the task does not go on by itself.
+#[test]
+fn a_request_open_at_a_limit_nothing_says_the_end_of_is_kept() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let own = yulius_app::needs_you::NeedsYouRecord {
+            action: "Add DEV_SSH_KEY on the Secrets page".into(),
+            happened: None,
+            problem: Some("The deploy needs it.".into()),
+            decision: false,
+            link: None,
+            at: 1,
+        };
+        let RefusedTwice { app, id, .. } = refused_twice(&data, &fake, None, Some(&own)).await?;
+        assert_eq!(
+            app.deps.store.task_needs_you(&id).await?.as_ref(),
+            Some(&own),
+            "the agent's request is its own to end"
+        );
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// The request Yulius opens at a limit nothing says the end of says "the task does not go on by
+/// itself", so it ends when that stops being true (ADR-0304, as a goal pause's does): the
+/// session's agent works again, with no prompt anyone sees. The task then reads Working, and
+/// the log says why the request ended.
+#[test]
+fn a_request_at_a_limit_nothing_says_the_end_of_ends_when_the_agent_works_again() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let RefusedTwice { app, id, .. } = refused_twice(&data, &fake, None, None).await?;
+        assert!(limit_request(&app, &id).await?.is_some());
+        let transcript = session_transcript(&data, "msg_fake_credits_out").ok_or("transcript")?;
+        append_lines(&transcript, "works", &[Line::Work])?;
+        wait_for(
+            "the request to end with the agent's work",
+            Duration::from_secs(30),
+            || async {
+                matches!(app.deps.store.task_needs_you(&id).await, Ok(None))
+                    && app.deps.store.task(&id).await.is_ok_and(|task| {
+                        task.is_some_and(|task| task.activity == Some(Activity::Working))
+                    })
+            },
+        )
+        .await?;
+        assert_eq!(
+            resolved(&app, &id).await,
+            ["the agent works again after the usage limit"]
+        );
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// The same across a restart of Yulius (SPEC-469 GPW-004 for this request): the request is
+/// still open and the session still refused, so the request stays, whatever the session did
+/// before the limit. Work that comes later ends it.
+#[test]
+fn a_request_at_a_limit_nothing_says_the_end_of_ends_with_work_after_a_restart() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let first = runtime()?;
+    let (probe, agent, id, asked) = first.block_on(async {
+        let refused = refused_twice(&data, &fake, None, None).await?;
+        let asked = limit_request(&refused.app, &refused.id)
+            .await?
+            .ok_or("request")?;
+        Ok::<_, Box<dyn std::error::Error>>((refused.probe, refused.agent, refused.id, asked))
+    })?;
+    first.shutdown_timeout(Duration::from_secs(5));
+
+    let second = runtime()?;
+    second.block_on(async {
+        let app = build_with(&data, &fake, probe, agent)?;
+        app.reconcile().await?;
+        // The restart reads the refusal again and takes the task on from there: it waits.
+        wait_for("the pause", Duration::from_secs(30), || {
+            has_status(&app, &id, TaskStatus::WaitingCapacity)
+        })
+        .await?;
+        let runtime = app.runtime(&id);
+        let rounds = runtime.transcript_rounds();
+        wait_for("the transcript read", Duration::from_secs(20), || async {
+            runtime.transcript_rounds() >= rounds + 2
+        })
+        .await?;
+        assert_eq!(limit_request(&app, &id).await?.as_ref(), Some(&asked));
+        assert_eq!(resolved(&app, &id).await, Vec::<String>::new());
+
+        let transcript = session_transcript(&data, "msg_fake_credits_out").ok_or("transcript")?;
+        append_lines(&transcript, "works", &[Line::Work])?;
+        wait_for(
+            "the request to end with the agent's work",
+            Duration::from_secs(30),
+            || async {
+                matches!(app.deps.store.task_needs_you(&id).await, Ok(None))
+                    && has_status(&app, &id, TaskStatus::Running).await
+            },
+        )
+        .await?;
+        assert_eq!(
+            resolved(&app, &id).await,
+            ["the agent works again after the usage limit"]
+        );
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    second.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// The first turn of a session whose agent only echoes, with its transcript.
+async fn first_turn(
+    app: &Arc<App>,
+    data: &Path,
+) -> Result<(TaskId, UserId, PathBuf), Box<dyn std::error::Error>> {
+    let (sandbox, user) = seed(app, data, &["a-first"]).await?;
+    let id = new_task(app, &sandbox, &user, "Appended").await?;
+    ready(app, &id).await?;
+    app.send_input(&id, b"hello\r").await?;
+    let mut transcript = None;
+    wait_for("the first turn", Duration::from_secs(30), || {
+        transcript = session_transcript(data, "msg_fake_1");
+        let written = transcript.is_some();
+        async move { written }
+    })
+    .await?;
+    Ok((id, user, transcript.ok_or("transcript")?))
+}
+
+/// The bound is the model's limit's (SPEC-464 UCL-010): a limit of the subscription that names
+/// no reset is read by the next provider's reading, which shows its windows, so the pool goes on
+/// as before. Refused twice in a row with nothing to go to, the task waits twice; nobody is asked.
+#[test]
+fn a_subscriptions_own_limit_without_a_reset_waits_as_before() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let agent = FakeAgentOptions {
+            transcript: true,
+            ..FakeAgentOptions::default()
+        };
+        let app = build_with(&data, &fake, probe.clone(), agent)?;
+        let (id, user, transcript) = first_turn(&app, &data).await?;
+        let started = app.now();
+        let refused = [Line::Prompt, Line::SessionLimit, Line::TurnDuration];
+        append_lines(&transcript, "first", &refused)?;
+        wait_for("the pause", Duration::from_secs(30), || {
+            has_status(&app, &id, TaskStatus::WaitingCapacity)
+        })
+        .await?;
+        let (status, stored) = stored_usage(&app, "a-first").await?;
+        assert_eq!(stored["limit_reached"], true, "{stored}");
+        assert!(stored["limit_resets_at"].is_null(), "{stored}");
+        assert!(stored["weekly_fable"].is_null(), "{stored}");
+        assert_eq!(status, AccountStatus::Limited);
+
+        probe.set("a-first", usage(10.0, 4 * HOUR, 30.0, 100));
+        refresh(&app, &user, "a-first").await?;
+        let _ = app.resume_round().await;
+        live_run(&app, &id, 2).await?;
+        append_lines(&transcript, "second", &refused)?;
+        wait_for("the second pause", Duration::from_secs(30), || async {
+            app.deps
+                .store
+                .pauses_since(started)
+                .await
+                .is_ok_and(|pauses| pauses.len() == 2)
+                && has_status(&app, &id, TaskStatus::WaitingCapacity).await
+        })
+        .await?;
+        assert_eq!(audited(&app, &id, "task.limit_without_end").await, 0);
+        needs_nobody(&app, &id).await?;
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// A task that already waits for capacity keeps its pause (SPEC-464 UCL-010): refused again
+/// while it waits (a check-in nobody typed), it asks nobody, since the pool takes it on from
+/// its pause. With nothing known to wait for, the subscription that refused it is a candidate
+/// again after its next reading.
+#[test]
+fn a_task_refused_again_while_it_waits_keeps_its_pause() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let agent = FakeAgentOptions {
+            transcript: true,
+            ..FakeAgentOptions::default()
+        };
+        let app = build_with(&data, &fake, probe.clone(), agent)?;
+        let (id, user, transcript) = first_turn(&app, &data).await?;
+        let started = app.now();
+        append_refused_turn(&transcript, "first")?;
+        wait_for("the pause", Duration::from_secs(30), || {
+            has_status(&app, &id, TaskStatus::WaitingCapacity)
+        })
+        .await?;
+        needs_nobody(&app, &id).await?;
+
+        let runtime = app.runtime(&id);
+        let rounds = runtime.transcript_rounds();
+        append_lines(
+            &transcript,
+            "second",
+            &[Line::CreditsRefusal, Line::TurnDuration],
+        )?;
+        wait_for(
+            "the second refusal read",
+            Duration::from_secs(20),
+            || async { runtime.transcript_rounds() >= rounds + 2 },
+        )
+        .await?;
+        assert!(has_status(&app, &id, TaskStatus::WaitingCapacity).await);
+
+        probe.set("a-first", usage(10.0, 4 * HOUR, 30.0, 100));
+        refresh(&app, &user, "a-first").await?;
+        let _ = app.resume_round().await;
+        live_run(&app, &id, 2).await?;
+        assert_eq!(run_accounts(&app, &id).await[1].as_deref(), Some("a-first"));
+        assert_eq!(audited(&app, &id, "task.limit_without_end").await, 0);
+        assert_eq!(app.deps.store.pauses_since(started).await?.len(), 1);
+        needs_nobody(&app, &id).await?;
         stop(&app, &id).await?;
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
@@ -920,8 +1276,8 @@ fn a_task_refused_again_waits_for_a_known_reset_off_that_subscription() -> TestR
     Ok(())
 }
 
-/// The transcript of the one session under `data`, once its first turn is in it whole.
-fn session_transcript(data: &Path) -> Option<PathBuf> {
+/// The transcript of the one session under `data`, once a record with `marker` is in it whole.
+fn session_transcript(data: &Path, marker: &str) -> Option<PathBuf> {
     let mut dirs = vec![data.to_path_buf()];
     while let Some(dir) = dirs.pop() {
         for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
@@ -931,7 +1287,7 @@ fn session_transcript(data: &Path) -> Option<PathBuf> {
             } else if path.extension().is_some_and(|e| e == "jsonl")
                 && path.components().any(|c| c.as_os_str() == "projects")
                 && std::fs::read_to_string(&path)
-                    .is_ok_and(|text| text.contains("msg_fake_1") && text.ends_with('\n'))
+                    .is_ok_and(|text| text.contains(marker) && text.ends_with('\n'))
             {
                 return Some(path);
             }
@@ -940,11 +1296,27 @@ fn session_transcript(data: &Path) -> Option<PathBuf> {
     None
 }
 
-/// Appends to `transcript` what Claude Code 2.1.311 writes when a prompt is refused for usage
-/// credits in a goal session (task #438's records of 2026-11-11, ids replaced): the prompt, the
-/// refusal, the goal's pause notice and the record closing the turn, written now, to the
-/// millisecond as Claude Code writes them. `tag` tells one such turn's records from another's.
-fn append_refused_turn(transcript: &Path, tag: &str) -> TestResult {
+/// A record of a session's transcript as Claude Code writes it, for a test to append.
+#[derive(Debug, Clone, Copy)]
+enum Line {
+    /// A prompt someone typed.
+    Prompt,
+    /// The refusal of a model for its usage credits, as Claude Code 2.1.311 writes it (task
+    /// #438's record of 2026-11-11): no window, no reset.
+    CreditsRefusal,
+    /// The subscription's own 5-hour limit, in a record that names no reset.
+    SessionLimit,
+    /// The notice of a goal Claude Code paused at a refusal.
+    GoalPause,
+    /// The record closing a turn.
+    TurnDuration,
+    /// A line of the model's own work (a tool call).
+    Work,
+}
+
+/// Appends `lines` to `transcript`, written now, to the millisecond as Claude Code writes them.
+/// `tag` tells one call's records from another's.
+fn append_lines(transcript: &Path, tag: &str, lines: &[Line]) -> TestResult {
     let now = i64::try_from(
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
@@ -959,49 +1331,83 @@ fn append_refused_turn(transcript: &Path, tag: &str) -> TestResult {
     let last: Value = serde_json::from_str(text.lines().last().ok_or("an empty transcript")?)?;
     let session = last["sessionId"].as_str().ok_or("a session id")?.to_owned();
     let mut parent = last["uuid"].as_str().ok_or("a uuid")?.to_owned();
-    let mut lines = String::new();
-    let mut record = |kind: &str, name: &str, extra: Value| {
-        let uuid = format!("{tag}-{name}");
+    let refusal = |id: &str, text: &str| {
+        json!({"id": id, "type": "message", "role": "assistant", "model": "<synthetic>",
+            "stop_reason": "stop_sequence", "content": [{"type": "text", "text": text}]})
+    };
+    let mut out = String::new();
+    for (n, line) in lines.iter().enumerate() {
+        let uuid = format!("{tag}-{n}");
+        let (kind, extra) = match line {
+            Line::Prompt => (
+                "user",
+                json!({"message": {"role": "user", "content": "go on"}}),
+            ),
+            Line::CreditsRefusal => (
+                "assistant",
+                json!({"isApiErrorMessage": true, "error": "rate_limit",
+                    "apiError": "model_requires_usage_credits", "apiErrorStatus": 429,
+                    "message": refusal(&uuid,
+                        "You're out of usage credits. /model to switch models.")}),
+            ),
+            Line::SessionLimit => (
+                "assistant",
+                json!({"isApiErrorMessage": true, "error": "rate_limit",
+                    "apiError": "usage_limit_reached", "apiErrorStatus": 429,
+                    "apiErrorParams": {"rate_limit_info":
+                        {"status": "rejected", "rateLimitType": "five_hour"}},
+                    "message": refusal(&uuid, "You've hit your session limit")}),
+            ),
+            Line::GoalPause => (
+                "system",
+                json!({"subtype": "informational", "isMeta": false, "level": "notice", "content":
+                    "Goal paused \u{b7} the request was rate limited \u{b7} send a message to retry"}),
+            ),
+            Line::TurnDuration => (
+                "system",
+                json!({"subtype": "turn_duration", "durationMs": 250, "isMeta": false}),
+            ),
+            Line::Work => (
+                "assistant",
+                json!({"requestId": format!("req-{uuid}"), "message": {"id": format!("msg-{uuid}"),
+                    "type": "message", "role": "assistant", "model": "fake-model",
+                    "content": [{"type": "tool_use", "id": format!("toolu-{uuid}"),
+                        "name": "Bash", "input": {"command": "true"}}],
+                    "stop_reason": "tool_use",
+                    "usage": {"input_tokens": 8, "cache_creation_input_tokens": 0,
+                        "cache_read_input_tokens": 0, "output_tokens": 6}}}),
+            ),
+        };
         let mut record = json!({"type": kind, "uuid": uuid, "parentUuid": parent,
             "isSidechain": false, "sessionId": session, "timestamp": at,
             "userType": "external", "version": "2.1.311"});
         if let (Some(map), Some(more)) = (record.as_object_mut(), extra.as_object()) {
             map.extend(more.clone());
         }
-        lines.push_str(&format!("{record}\n"));
+        out.push_str(&format!("{record}\n"));
         parent = uuid;
-    };
-    record(
-        "user",
-        "prompt",
-        json!({"message": {"role": "user", "content": "go on"}}),
-    );
-    record(
-        "assistant",
-        "refusal",
-        json!({"isApiErrorMessage": true, "error": "rate_limit",
-            "apiError": "model_requires_usage_credits", "apiErrorStatus": 429,
-            "message": {"id": format!("{tag}-refusal"), "type": "message", "role": "assistant",
-                "model": "<synthetic>", "stop_reason": "stop_sequence",
-                "content": [{"type": "text",
-                    "text": "You're out of usage credits. /model to switch models."}]}}),
-    );
-    record(
-        "system",
-        "notice",
-        json!({"subtype": "informational", "isMeta": false, "level": "notice", "content":
-            "Goal paused \u{b7} the request was rate limited \u{b7} send a message to retry"}),
-    );
-    record(
-        "system",
-        "duration",
-        json!({"subtype": "turn_duration", "durationMs": 250, "isMeta": false}),
-    );
+    }
     std::fs::OpenOptions::new()
         .append(true)
         .open(transcript)?
-        .write_all(lines.as_bytes())?;
+        .write_all(out.as_bytes())?;
     Ok(())
+}
+
+/// Appends to `transcript` what Claude Code 2.1.311 writes when a prompt is refused for usage
+/// credits in a goal session (task #438's records of 2026-11-11, ids replaced): the prompt, the
+/// refusal, the goal's pause notice and the record closing the turn.
+fn append_refused_turn(transcript: &Path, tag: &str) -> TestResult {
+    append_lines(
+        transcript,
+        tag,
+        &[
+            Line::Prompt,
+            Line::CreditsRefusal,
+            Line::GoalPause,
+            Line::TurnDuration,
+        ],
+    )
 }
 
 /// Yulius is down while Claude Code is refused and pauses the goal: what Claude Code wrote is
@@ -1038,7 +1444,7 @@ fn a_usage_credits_refusal_written_while_yulius_was_down_is_read_at_restart() ->
         app.send_input(&id, b"hello\r").await?;
         let mut transcript = None;
         wait_for("the first turn", Duration::from_secs(30), || {
-            transcript = session_transcript(&data);
+            transcript = session_transcript(&data, "msg_fake_1");
             let written = transcript.is_some();
             async move { written }
         })
@@ -1079,7 +1485,8 @@ fn a_usage_credits_refusal_written_while_yulius_was_down_is_read_at_restart() ->
     second.shutdown_timeout(Duration::from_secs(5));
 
     // Each restart replays the pending limit and is refused the move again. `settled` is as if
-    // the replay's settle of the closed turn had landed after the request.
+    // the replay's settle of the closed turn had landed after the request. The `last` one ends
+    // with the session going on by itself.
     let restart = |moves: usize, audits: usize, settled: bool, last: bool| -> TestResult {
         let rt = runtime()?;
         rt.block_on(async {
@@ -1114,6 +1521,25 @@ fn a_usage_credits_refusal_written_while_yulius_was_down_is_read_at_restart() ->
                 "the same request"
             );
             if last {
+                // The session goes on with no prompt anyone sees (the limit is over): the
+                // request, read again and not asked anew, ends with the agent's work, and so
+                // does the flag it was put back under (SPEC-469 for a pause at a limit).
+                append_lines(&transcript, "works", &[Line::Work])?;
+                wait_for(
+                    "the request to end with the agent's work",
+                    Duration::from_secs(30),
+                    || async {
+                        matches!(app.deps.store.task_needs_you(&id).await, Ok(None))
+                            && app.deps.store.task(&id).await.is_ok_and(|task| {
+                                task.is_some_and(|task| task.activity == Some(Activity::Working))
+                            })
+                    },
+                )
+                .await?;
+                assert_eq!(
+                    resolved(&app, &id).await,
+                    ["the agent works again after Claude Code paused the goal"]
+                );
                 stop(&app, &id).await?;
             }
             Ok::<_, Box<dyn std::error::Error>>(())
@@ -1126,7 +1552,7 @@ fn a_usage_credits_refusal_written_while_yulius_was_down_is_read_at_restart() ->
     // Refused once more while Yulius was down: a new limit, asked about once.
     append_refused_turn(&transcript, "down-again")?;
     restart(3, 2, false, false)?;
-    restart(4, 2, false, true)?;
+    restart(4, 2, true, true)?;
     Ok(())
 }
 
