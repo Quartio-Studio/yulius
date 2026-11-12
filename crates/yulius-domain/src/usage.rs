@@ -38,6 +38,9 @@ impl UsageWindow {
     }
 }
 
+/// A window at this many percent is used up.
+pub const FULL_PERCENT: f64 = 100.0;
+
 /// The five-hour session window and the weekly window, in minutes.
 pub const SESSION_WINDOW_MINUTES: u32 = 5 * 60;
 /// See [`SESSION_WINDOW_MINUTES`].
@@ -124,10 +127,35 @@ impl ReportedLimit {
     /// window (`five_hour`, `seven_day`, `seven_day_opus`, `seven_day_sonnet`,
     /// [`CREDITS_ALLOWANCE_CLAIM`]), `claim_reset` the reset given for it, and `credits` says
     /// that the model was refused for its usage credits.
+    ///
+    /// The 5-hour and weekly windows are the subscription's, and so is a claim this does not
+    /// know. A per-model cap is that family's. The allowance of usage credits is the bucket of
+    /// the model the request ran, whichever that is. A refusal for usage credits is the model's
+    /// whichever window the response claimed, and then only the allowance's own reset says
+    /// when the model runs again: another claim's window and reset are dropped.
     #[must_use]
     pub fn of_refusal(claim: Option<&str>, credits: bool, claim_reset: Option<Timestamp>) -> Self {
-        let _ = (claim, credits, claim_reset);
-        Self::default()
+        let named = match claim {
+            Some("seven_day_opus") => LimitScope::Model(Some(ModelFamily::Opus)),
+            Some("seven_day_sonnet") => LimitScope::Model(Some(ModelFamily::Sonnet)),
+            Some(CREDITS_ALLOWANCE_CLAIM) => LimitScope::Model(None),
+            _ => LimitScope::Account,
+        };
+        let window_minutes = match claim {
+            Some("five_hour") => Some(SESSION_WINDOW_MINUTES),
+            Some(kind) if kind.starts_with("seven_day") => Some(WEEKLY_WINDOW_MINUTES),
+            _ => None,
+        };
+        let own = !credits || claim == Some(CREDITS_ALLOWANCE_CLAIM);
+        Self {
+            scope: if credits && named == LimitScope::Account {
+                LimitScope::Model(None)
+            } else {
+                named
+            },
+            window_minutes: window_minutes.filter(|_| own),
+            resets_at: claim_reset.filter(|_| own),
+        }
     }
 
     /// When the limit resets, if the report says so believably: at most
@@ -265,16 +293,62 @@ impl AccountUsage {
         }
     }
 
-    /// Records Claude's answer to a request of a model of `family` (SPEC-473).
+    /// Records Claude's answer at `now` to a request of a model of `family`, asked to learn
+    /// whether a limit stored for that model still holds (SPEC-473). The 5-hour and weekly
+    /// windows the answer carried replace the stored ones, like any reading.
+    ///
+    /// - The model ran: a limit of the subscription ends, and the family's own window becomes
+    ///   the allowance the answer read while that is below 100 %, else nothing. A model that
+    ///   runs with its allowance used up runs on usage credits a person bought, and a window
+    ///   stored full would keep it off the subscription until the allowance resets.
+    /// - It was refused: recorded like a limit a session reports ([`Self::record_limit`]), so
+    ///   a window stored without a reset gets the one the answer names. An answer that names
+    ///   no believable reset keeps the one stored for the window it fills, while that is
+    ///   ahead.
     pub fn record_model_answer(&mut self, answer: ModelAnswer, family: ModelFamily, now: Timestamp) {
-        let _ = (answer, family, now);
+        self.observed_at = Some(now);
+        self.primary = answer.five_hour.or(self.primary);
+        self.secondary = answer.seven_day.or(self.secondary);
+        let Some(limit) = answer.refused else {
+            self.limit_reached = false;
+            self.limit_resets_at = None;
+            if let Some(slot) = self.model_slot(family) {
+                *slot = answer
+                    .allowance
+                    .filter(|w| w.known_percent().is_some_and(|p| p < FULL_PERCENT));
+            }
+            return;
+        };
+        let stored = match limit.scope {
+            LimitScope::Model(named) => self
+                .model_window(named.unwrap_or(family))
+                .filter(|w| !w.is_reset(now))
+                .and_then(|w| w.resets_at),
+            LimitScope::Account => None,
+        };
+        let resets_at = limit.believed_reset(now).or(stored);
+        self.record_limit(ReportedLimit { resets_at, ..limit }, family, now);
     }
 
-    /// The model families Claude is asked about to learn whether a stored limit still holds.
+    /// The model families Claude is asked about to learn whether a stored limit still holds at
+    /// `now` (SPEC-473): each family whose own weekly window is used up, and `default` (the
+    /// default model's family) when a limit of the whole subscription is in effect. The
+    /// subscription's 5-hour and weekly windows are not asked about: a usage reading shows
+    /// them.
     #[must_use]
     pub fn families_at_a_limit(&self, now: Timestamp, default: ModelFamily) -> Vec<ModelFamily> {
-        let _ = (now, default);
-        Vec::new()
+        let mut families: Vec<ModelFamily> = ModelFamily::WITH_WINDOW
+            .into_iter()
+            .filter(|family| {
+                self.model_window(*family)
+                    .and_then(|w| w.current_percent(now))
+                    .is_some_and(|p| p >= FULL_PERCENT)
+            })
+            .collect();
+        if self.limit_in_effect(now) && !families.contains(&default) {
+            families.push(default);
+        }
+        families
     }
 
     /// This reading with what it does not show kept from `stored`: the weekly window of a model

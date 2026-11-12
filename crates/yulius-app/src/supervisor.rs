@@ -24,7 +24,7 @@ use yulius_domain::task::{
     Activity, AttemptState, STOP_INTERRUPT_GRACE_MS, StopReason, TaskEvent, TaskStatus,
 };
 use yulius_domain::time::Timestamp;
-use yulius_domain::usage::{AccountUsage, ModelFamily, ReportedLimit};
+use yulius_domain::usage::{AccountUsage, FULL_PERCENT, ModelFamily, ReportedLimit};
 
 use crate::auth::hex_token;
 use crate::context::App;
@@ -43,9 +43,6 @@ use crate::usage_json;
 
 /// Boxed `Send` future (breaks recursive async cycles between start, pump and finalize).
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
-
-/// A usage window that is used up, in percent.
-const FULL_PERCENT: f64 = 100.0;
 
 /// Default PTY size before the first viewer reports its size.
 pub const DEFAULT_SIZE: (u16, u16) = (120, 40);

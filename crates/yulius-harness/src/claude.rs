@@ -19,7 +19,8 @@ use serde_json::{Map, Value};
 use yulius_domain::task::GoalOutcome;
 use yulius_domain::time::Timestamp;
 use yulius_domain::usage::{
-    LimitScope, ModelFamily, SESSION_WINDOW_MINUTES, TokenUsage, WEEKLY_WINDOW_MINUTES,
+    CREDITS_ALLOWANCE_CLAIM, LimitScope, ReportedLimit, SESSION_WINDOW_MINUTES, TokenUsage,
+    WEEKLY_WINDOW_MINUTES,
 };
 
 use crate::json::{bool_of, obj_of, owned_str, parse_object, shorten, str_of, u64_of};
@@ -81,17 +82,6 @@ const ACCESS_PHRASES: [&str; 3] = [
     "invalid api key",
 ];
 
-/// The window of Claude's `rateLimitType` (`five_hour`, `seven_day`, `seven_day_opus`, …).
-fn window_of_type(kind: &str) -> Option<u32> {
-    if kind == "five_hour" {
-        Some(SESSION_WINDOW_MINUTES)
-    } else if kind.starts_with("seven_day") {
-        Some(WEEKLY_WINDOW_MINUTES)
-    } else {
-        None
-    }
-}
-
 /// The window a lower-case limit text names ("session limit", "5-hour limit", "weekly limit").
 fn window_of_text(lower: &str) -> Option<u32> {
     if lower.contains("session limit") || lower.contains("5-hour") || lower.contains("five-hour") {
@@ -120,22 +110,6 @@ const USAGE_LIMIT_API_ERROR: &str = "usage_limit_reached";
 /// without `rate_limit_info`; 2.1.322 adds it, with `rateLimitType`
 /// `seven_day_overage_included` when the model's weekly allowance was used up.
 const CREDITS_API_ERROR: &str = "model_requires_usage_credits";
-
-/// The `rateLimitType` of the weekly allowance of usage credits included for a model that
-/// otherwise runs on them: a bucket per model, which Claude Code 2.1.322 calls the "Fable limit"
-/// after the one model that has it today.
-const CREDITS_ALLOWANCE_TYPE: &str = "seven_day_overage_included";
-
-/// What Claude's `rateLimitType` binds: the subscription, or the models of one family. The
-/// allowance of usage credits is the bucket of the model the request ran, whichever that is.
-fn scope_of_type(kind: &str) -> LimitScope {
-    match kind {
-        "seven_day_opus" => LimitScope::Model(Some(ModelFamily::Opus)),
-        "seven_day_sonnet" => LimitScope::Model(Some(ModelFamily::Sonnet)),
-        CREDITS_ALLOWANCE_TYPE => LimitScope::Model(None),
-        _ => LimitScope::Account,
-    }
-}
 
 /// Lower-case marks of a too-long prompt in an error record: Claude Code's own text ("Prompt is
 /// too long", its `PROMPT_TOO_LONG` constant), the API's error (`errorDetails`) or its code.
@@ -666,23 +640,20 @@ fn structured_limit(record: &Map<String, Value>, text: &str) -> Option<Observed>
         return None;
     }
     let kind = info.and_then(|i| str_of(i, "rateLimitType"));
-    let scope = match kind.map(scope_of_type) {
-        Some(scope @ LimitScope::Model(_)) => scope,
-        // The refusal is the model's whichever window the response claimed.
-        _ if credits => LimitScope::Model(None),
-        _ => LimitScope::Account,
-    };
-    // A credits refusal's `resetsAt` is the reset of the window the response claimed: only the
-    // allowance's own says when the model runs again.
-    let resets_at = info
-        .filter(|_| !credits || kind == Some(CREDITS_ALLOWANCE_TYPE))
+    // What the record's claim binds, its window and its reset, by the rule the usage probe
+    // reads a refused response with (`ReportedLimit::of_refusal`): a credits refusal is the
+    // model's whichever window the response claimed, and only the allowance's own reset says
+    // when the model runs again.
+    let claimed = info
         .and_then(|i| i.get("resetsAt"))
         .and_then(Value::as_i64)
         .and_then(from_epoch_seconds);
-    let window_minutes = kind
-        .and_then(window_of_type)
-        .or_else(|| window_of_text(&text.to_lowercase()))
-        .filter(|_| !credits || kind == Some(CREDITS_ALLOWANCE_TYPE));
+    let limit = ReportedLimit::of_refusal(kind, credits, claimed);
+    let (scope, resets_at) = (limit.scope, limit.resets_at);
+    let window_minutes = limit.window_minutes.or_else(|| {
+        window_of_text(&text.to_lowercase())
+            .filter(|_| !credits || kind == Some(CREDITS_ALLOWANCE_CLAIM))
+    });
     let message = if text.trim().is_empty() {
         "usage limit reached"
     } else {
@@ -758,6 +729,7 @@ fn limit_signal(text: &str) -> Option<Observed> {
 #[cfg(test)]
 mod tests {
     use yulius_domain::time::Timestamp;
+    use yulius_domain::usage::ModelFamily;
 
     /// Deterministic xorshift generator for randomized tests (no extra dependency).
     struct Rng(u64);
