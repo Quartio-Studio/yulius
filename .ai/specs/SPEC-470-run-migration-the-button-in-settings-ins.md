@@ -29,8 +29,10 @@ page shows the finished checklist.
 - `yulius instance migrate` (SPEC-460) is a root command on the old host. It keeps
   `/var/lib/yulius-migrate/state.json` (0600) and `status.json` (0644: the phase and the
   checklist so far, no secret values), ends after its plan when there is neither a terminal nor
-  `--yes`, and has `--abort`. Without a terminal the one-time key is not installed by a sign-in:
-  the plan ends with a `manual` line that holds the public key line to add on the new host.
+  `--yes`, and has `--abort`. To add its one-time key it signs in to the new host as the person
+  at the terminal does: a password, or whatever root's `ssh` offers, which without a terminal
+  still is root's own keys and the keys its ssh configuration names. When that sign-in does not
+  work the plan ends with a `manual` line that holds the public key line to add on the new host.
 - The server runs as the unprivileged service user and is frozen during the copy; after a move it
   stays frozen for good on the old host. So it cannot run the move, cannot be asked during the
   copy, and whatever it keeps in its database travels to the new host with the copy.
@@ -73,19 +75,27 @@ The request and the root helper
   path unit) takes the request only as a regular file (not a link) owned by the data directory's
   owner, which is not root, of at most 16 KiB, with the exact schema (an unknown field is
   refused), the version, a timestamp at most 15 minutes old and 60 s ahead, and an id it has not
-  acted on (`<state>/last-request`; a request it cannot record there is not run, and the helper
-  ends with an error). It refuses while the update helper's unit runs (`active`,
+  acted on: every id it handled is kept in `<state>/handled` until its request would be refused
+  as stale (16 minutes; at most 1024 ids), so an id is acted on once, whatever came after it. A
+  request it cannot record there is not run, and the helper ends with an error. It refuses
+  while the update helper's unit runs (`active`,
   `activating` or `reloading`), and a target whose host is not in `YULIUS_MIGRATE_TARGETS` when
   the root-owned unit sets that list. A refusal changes nothing and is reported with its reason,
   which never repeats the request's content.
-- MVB-004 **It runs the command.** An accepted request runs this binary's `instance migrate`
+- MVB-004 **It runs the command, as nobody's sign-in.** An accepted request runs this binary's
+  `instance migrate --no-sign-in`
   with the unit's data directory, service, update service and state directory, and the request's
   values each as one argument (`--ssh-port=`, `--public-url=`, `--data-disk=`, then `--` and the
   target): `plan` without `--yes` (no terminal, so it ends after its plan), `move` with `--yes`,
   `abort` as `--abort` and never with `--yes` (an abort that needs a person's word that the new
   instance is stopped stays a command on the host). No shell; standard input is closed; the
-  command's output goes to the journal. The checklist of an earlier run is removed first, so
-  `status.json` is always of the run in flight.
+  command's output goes to the journal. `--no-sign-in` (a new option of the command): the
+  operator's sign-in that adds the move's key is never tried, no ssh configuration is read
+  (`-F none`), and every connection offers the one-time key alone (`IdentitiesOnly`, no agent,
+  public key only). The request is the service user's: without this, root's own keys would
+  open every host that trusts root here to it. So the first plan ends with the key line, and a
+  host is reached only once a person there added it. The helper does not touch the command's
+  checklist: a run the command refuses changes nothing (MVB-020 tells whose a checklist is).
 - MVB-005 **It reports.** `<state>/helper.json` (0644): the request's id, action and values,
   `running` with a heartbeat every 5 s, then `ended` with the command's exit code, or `refused`
   with the reason and none of the request's values. When the command ended refused before its checklist (exit 2) or could not be
@@ -98,7 +108,8 @@ The request and the root helper
   At most three requests are handled in one run.
 - MVB-007 **Units.** `deploy/systemd/yulius-migrate.path` (`PathChanged=` the request file) and
   `yulius-migrate.service` (oneshot, root, no start timeout, 10 minutes to stop, no start
-  limit: requests that come quickly must not fail the path unit), named after the server's
+  limit: requests that come quickly must not fail the path unit; `KillMode=mixed`: a stop
+  reaches the helper alone, which tells the command), named after the server's
   unit as its sessions unit is (`<stem>-migrate`). `host setup` does not install them: root
   opts in, and the operations guide says what that allows.
 - MVB-008 **They travel.** A move carries the helper's unit files and drop-ins when the old host
@@ -114,6 +125,7 @@ The command, for readers
   directory): the lines so far, the new host's own Finish lines, and the lines the old host
   adds after it. Nothing is written into the data directory for it: that belongs to the user of
   an instance that already runs. A later Finish replaces it, or removes it when it brings none.
+  Only a move that finished leaves one: the Finish an abort sends removes what was staged.
 
 Application and API
 
@@ -126,12 +138,14 @@ Application and API
   `lost` when a running helper's heartbeat is more than 60 s old); `move` (the command's status:
   id, target, phase, lines, `public_key`, `new_url`, `updated_at`, and `by_command` when it was
   written after the helper's last run ended, or without any, that is by a run started on the
-  host); `arrived`
+  host, and `earlier` when it was written before the helper's last run started and that run
+  ended without one of its own: the recorded move's, not what the run found; while a run has
+  written none of its own, an earlier one is not shown at all); `arrived`
   (the checklist a move to this host left, MVB-011); and `can` (`plan`, `move`,
-  `abort`: what would be accepted now). A request the helper took is removed by the server
-  itself, read or not (it looks every 250 ms for 20 s after writing it), so a move does not
-  copy it to the new host as one that waits there; one never taken is removed when it is read
-  after 15 minutes. A removal is of the request that was looked at, never of a newer one.
+  `abort`: what would be accepted now). A request the helper took is removed when the view is
+  read, one never taken after 15 minutes, and no copy of the data directory takes the request
+  along: `migrate/` is left out of every copy, as `update/` is. A removal and a repeated write
+  are of the request that was looked at, never of a newer one.
 - MVB-021 **Ask.** `POST /api/admin/instance/migration` with `action`, `target`, `ssh_port`,
   `public_url`, `data_disks` and `confirm` answers 202 with the view. Refused: 403 for anyone
   but the superadmin and without the CSRF token; 422 for a field outside MVB-002, and for `move`
@@ -139,10 +153,13 @@ Application and API
   or restart runs, when a request waits or a run is in flight (`abort` may arrive during a run:
   it stops it), for `move` unless the last run was a plan of the same values that ended without
   a failed line and without a key to add at most an hour ago (or a `move` of the same values:
-  it continues), and for `abort` when nothing is recorded. Asks are taken one at a time: of two
+  it continues), and for `abort` when nothing is recorded (an abort that found nothing to
+  abort is not offered again). Asks are taken one at a time: of two
   at once, one is written and the other is told that a request waits.
 - MVB-022 **Audit.** `migration.planned`, `migration.started` and `migration.aborted`: the
-  actor, the target, the request's id and values.
+  actor, the target, the request's id and values, written before the request: nothing is asked
+  of root that the log does not hold. A request that then cannot be written is said too
+  (`migration.unwritten`).
 - MVB-023 **Updates wait.** "Update now" and "Restart…" are refused (409) while a move's request
   waits or its run is in flight.
 
@@ -152,16 +169,19 @@ Settings → Instance
   host, SSH port, new public URL, data disks) and "Show the plan". Without the helper: what it
   is, where the operations guide has its units, and the command to run on the host instead.
 - MVB-031 **The plan.** The checklist as the command wrote it, a line per step with its outcome;
-  the lines a person has to act on (`manual`) and the failed ones are repeated first. When the
-  key has to be added: the key line with a copy button, what to do with it, and "Show the plan"
-  again. A plan with a failed line offers no move.
+  the lines a person has to act on (`manual`) and the failed ones are repeated first. While the
+  key has to be added (the first plan for a host, MVB-004): the key line with a copy button,
+  what to do with it, and "Show the plan" again. A plan with a failed line offers no move. A
+  checklist that is the recorded move's (`earlier`: the command refused this request) is said
+  to be that move's and is never read as what the plan found.
 - MVB-032 **Run migration.** Behind a dialog that says root on this host will give this
   instance's data (every repository, secret and key) to the named host and start it there, that
   the data is copied while the instance keeps working and what the freeze is for (what changed
   since, the proof, the start), how long the plan estimated it, and that this host keeps a
   frozen copy; the host's name is typed to confirm.
 - MVB-033 **Live.** While a request waits or a run is in flight the card reads the view every
-  3 s and shows the phase (Plan, Prepare, Copy, Cutover, Finish) and the lines as they come; a
+  3 s and shows the phase (Plan, Prepare, Copy, Cutover, Finish; all of them behind a move that
+  is `done`, none in progress for a phase that is not a move's) and the lines as they come; a
   read that answers late never replaces a newer one. A run that ended says how: the plan is shown,
   moved, did not complete (with "Continue the move…"), refused with the reason, the helper did
   not answer (with the command that enables it), or lost.
@@ -347,13 +367,20 @@ Settings → Instance
   the new host (exit 127: the step that removes the key is run by the build, which such a plan
   never brings) and left the key there. That is the page's most natural abort (plan, key, think
   again), so the abort now brings the build for that step, with a flow test.
-- **A taken request is removed without a reader, and by its id.** The request went when the
-  view was read, which the page does every 3 s; with the page closed right after "Run
-  migration" it stayed, and the move copied it (the new host would have said "unanswered" for a
-  few minutes). The server now looks for the helper's answer itself. Root does not remove it:
-  that would be root deleting in a directory the service user controls. Found in my own review,
-  with two more of its kind: two asks at once both found nothing waiting (a lock now), and a
-  removal could hit a request written a moment later (it now names the id).
+- **A request never travels, and is removed by its id.** The request went when the view was
+  read, which the page does every 3 s; with the page closed right after "Run migration" it
+  stayed, and the move copied it (the new host would have said "unanswered" for a few minutes).
+  `migrate/` is now left out of every copy, as `update/` already was. (A watcher in the server
+  that removed a taken request by itself came first and went again: the copy leaving it out
+  needs nothing to run.) Root does not remove it: that would be root deleting in a directory
+  the service user controls. Two more of its kind: two asks at once both found nothing waiting
+  (a lock now), and a removal or a repeated write could hit a request written a moment later
+  (both now name the id, under the adapter's lock).
+- **Review round 1** (independent, on `19c9ad08`): one blocker, one major, three minor findings
+  and six nits, all in this change's code, all answered here with a test first (Evidence).
+  The blocker changed a decision: the helper ran the command as it runs from a root shell, so
+  its sign-in offered root's own keys to whatever host the service user's request named. A move
+  asked from the page is now nobody's sign-in (`--no-sign-in`, MVB-004, ADR-0305).
 - **An untaken request is written again, not re-triggered by the helper.** The path unit starts
   the helper on a change of the file; a change that comes while the helper is ending another
   run starts nothing (seen on a real host). Updates write their request again after 20 s for

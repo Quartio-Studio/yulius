@@ -1517,6 +1517,7 @@ sudo yulius instance migrate root@new-host --yes      # without the question
 sudo yulius instance migrate root@new-host --max-downtime 5   # never freeze for longer than about 5 minutes
 sudo yulius instance migrate root@new-host --data-disk /dev/nvme0n1 --data-disk /dev/nvme1n1
 sudo yulius instance migrate root@new-host --public-url https://yulius.example.com
+sudo yulius instance migrate root@new-host --no-sign-in   # never sign in as root: print the key's line to add
 sudo yulius instance migrate --status                 # the recorded move and its checklist
 sudo yulius instance migrate --abort                  # back to the old host
 ```
@@ -1535,9 +1536,12 @@ instance that cannot start is copied with `yulius instance export`, below).
 and nothing is frozen). Everything a person has to do is asked for here:
 
 - The SSH sign-in to the new host, once: the flow makes a one-time key and adds it to root's
-  `authorized_keys` there through your own sign-in (`ssh` asks for the password or second factor).
-  Without a terminal it prints the line to add and stops; add it and run the command again. From
-  then on it uses only that key.
+  `authorized_keys` there through your own sign-in (`ssh` asks for the password or second factor,
+  and offers root's keys as any `ssh` of root does). When that sign-in does not work it prints the
+  line to add and stops; add it and run the command again. From then on it uses only that key.
+  With `--no-sign-in` no sign-in is tried at all and root's ssh configuration is not read: the
+  line to add is printed, and every connection offers the one-time key alone. The move helper
+  always runs the command so (a move asked from Settings → Instance is nobody's sign-in).
 - The new host: release, architecture, systemd, CPUs and memory; refused when it runs or holds an
   instance or another program holds the ports of the proxy and of Yulius.
 - Disk space where the data directory goes. When it is too small the blank disks of the new host
@@ -1730,14 +1734,16 @@ ADR-0305). Root runs the same command for it: the page asks through a request fi
 and shows the command's own checklist. It needs [the move helper](#the-move-helper-moves-from-settings--instance)
 on the old host; without it the card says so and names the command above.
 
-1. **Show the plan.** The form takes the new host (`root@new-host`), its SSH port, a new public
-   URL (empty: as the command decides) and one or two blank disks. The plan changes nothing but the
-   move's own files and freezes nothing. Nobody can type a password for root's helper, so unless
-   root on the old host already signs in to the new one with a key of its own, the first plan
-   ends with **the key line to add**: copy it into root's `~/.ssh/authorized_keys` on the new host
-   and show the plan again. The lines a person has to act on (`manual`: a DNS record, the GitHub
-   App, what is not carried) and the failed ones are repeated above the checklist; a plan with a
-   failed line offers no move.
+1. **Show the plan.** The form takes the new host (`root@new-host`, a name or an address that leads
+   there by itself: root's ssh configuration is not read), its SSH port, a new public URL (empty:
+   as the command decides) and one or two blank disks. The plan changes nothing but the move's own
+   files and freezes nothing. A move asked from the page never signs in as root does (root's own
+   keys, its agent, its ssh configuration, a password), so the first plan ends with **the key line
+   to add**: copy it into root's `~/.ssh/authorized_keys` on the new host and show the plan again.
+   That is on purpose: whoever can ask root's helper would otherwise reach every host that trusts
+   root here, and so only a host where a person added the move's key is moved to. The lines a
+   person has to act on (`manual`: a DNS record, the GitHub App, what is not carried) and the
+   failed ones are repeated above the checklist; a plan with a failed line offers no move.
 2. **Run migration…** names the host that root will give the instance's data to (every repository,
    secret and key) and the freeze the plan estimated, and is confirmed by typing the host's name.
    It is the plan that was shown: the same host, port, URL and disks, shown at most an hour ago
@@ -2253,15 +2259,18 @@ field for anything else, and nothing secret is in it. Everything else (the data 
 units, the state directory) comes from the root-owned unit.
 
 **What enabling it allows.** With the path unit enabled, the service user can have root move the
-instance to any host that accepts the move's key. The service user already reads all of the
-instance's data; what a takeover of the server process gains through the helper is the host's
-files a move carries (the unit's environment and key files, the proxy's configuration,
-`/usr/local`, root's Rust toolchain) and the stop of this instance. So `yulius host setup` does
-not install the helper: root does, on purpose. Two ways to limit it: enable the path unit when
+instance to a host where a person has added the move's one-time key to root's `authorized_keys`,
+and to no other: the helper runs the command with `--no-sign-in`, so nothing root has (its keys,
+its agent, the keys and proxies its ssh configuration names, a ticket) is offered to the new host
+or read on the way. The service user already reads all of the instance's data; what a takeover of
+the server process gains through the helper is the host's files a move carries (the unit's
+environment and key files, the proxy's configuration, `/usr/local`, root's Rust toolchain) and the
+stop of this instance, on a host whose root let the move in. So `yulius host setup` does not
+install the helper: root does, on purpose. Two ways to limit it further: enable the path unit when
 you want to move from the page and disable it afterwards (`systemctl disable --now
 yulius-migrate.path`), or pin the hosts a request may name with `YULIUS_MIGRATE_TARGETS` in the
-service unit. A move carries the units and enables the path unit on the new host only when it
-was enabled on the old one.
+service unit. A move carries the units and enables the path unit on the new host only when it was
+enabled on the old one.
 
 **Install the helper** (once, as root; the unit files are in the repository under
 `deploy/systemd/`; a second instance names them after its own unit, `<unit>-migrate`):
@@ -2324,20 +2333,23 @@ reset-failed yulius-migrate.service yulius-migrate.path` and starts it again.
 
 **What the helper checks.** The request must be a regular file (not a link) owned by the data
 directory's owner, who is not root, at most 16 KiB, with exactly the fields above, at most 15
-minutes old, and an id it has not acted on (it keeps the last one in `last-request`; when it cannot
-write that file it runs nothing and the unit fails). Every value is checked again with the rules
-the server used: the host as `ssh` takes it (`root@host` or `host`, nothing that reads as an
-option), a port from 1 to 65535, a public URL that is `https://host` and nothing more, at most two
-different disks under `/dev/`; an abort names none of them. It refuses while the update helper's
-unit runs, and a host outside `YULIUS_MIGRATE_TARGETS` when that is set. A refused request changes
-nothing; the page shows the reason, which never repeats the request's content. An accepted one runs
-`yulius instance migrate` with each value as one argument (no shell): the plan without `--yes`, the
-move with it, the abort as `--abort` and never with `--yes`. While the command runs, an abort
-request ends it with SIGTERM and is then handled.
+minutes old, and an id it has not acted on: it keeps every id it handled in `handled` until that
+request would be refused as stale, and when it cannot write that file it runs nothing and the unit
+fails. Every value is checked again with the rules the server used: the host as `ssh` takes it
+(`root@host` or `host`, nothing that reads as an option), a port from 1 to 65535, a public URL that
+is `https://host` and nothing more, at most two different disks under `/dev/`; an abort names none
+of them. It refuses while the update helper's unit runs, and a host outside
+`YULIUS_MIGRATE_TARGETS` when that is set. A refused request changes nothing; the page shows the
+reason, which never repeats the request's content. An accepted one runs `yulius instance migrate
+--no-sign-in` with each value as one argument (no shell): the plan without `--yes`, the move with
+it, the abort as `--abort` and never with `--yes`. While the command runs, an abort request ends it
+with SIGTERM and is then handled. The helper does not touch the command's checklist: a run the
+command refuses (a move to another host is recorded, another run holds its lock) changes nothing,
+and the page shows the recorded move's checklist as that move's.
 
 **Files.** In `/var/lib/yulius-migrate` (root's, mode 0711): `helper.json` (0644: the request it
 took, `running` with a heartbeat every 5 s, then `ended` with the command's exit code, or
-`refused` with the reason), the command's `status.json` (0644: the phase and the checklist, with
+`refused` with the reason), `handled` (0600: the ids it acted on), the command's `status.json` (0644: the phase and the checklist, with
 the key line while a person has to add it and the new URL once decided), `state.json` and the
 one-time key (0600), and on a host a move arrived at `arrived.json` (0644: that move's finished
 checklist). None holds a secret value. The server reads them and stores nothing about a move:

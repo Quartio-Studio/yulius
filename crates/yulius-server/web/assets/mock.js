@@ -4940,11 +4940,11 @@ function movePlanSteps(db, values, thenSteps) {
   const lines = movePlanLines(values);
   if (m.mode === 'planfail') lines[4] = moveLine('disk space', 'failed', '12.0 GiB and 800000 inodes free where the data directory goes; the copy needs up to 275.8 GiB and 6388083 inodes. Blank disks there: /dev/vdc (1.8 TiB), /dev/vdd (1.8 TiB): name one, or two for a mirror, with --data-disk');
   if (first) {
-    // Nobody can sign in for the move's key from a unit: the plan ends with the line to add.
+    // A move asked from the page never signs in as root does: the plan ends with the line to add.
     return [
       () => moveSay(db, 'Plan', lines[0]),
       () => {
-        moveSay(db, 'Plan', moveLine('one-time key', 'manual', `could not be added (the sign-in to ${values.target} ended with exit status: 255) (its host key: SHA256:abcDEF123 (ED25519)): add this line to root's ~/.ssh/authorized_keys on the new host, then run the command again: ${MOVE_KEY}`));
+        moveSay(db, 'Plan', moveLine('one-time key', 'manual', `is not on the new host yet (its host key: SHA256:abcDEF123 (ED25519)). This run never signs in as root does (root's keys, its ssh configuration, a password): add this line to root's ~/.ssh/authorized_keys on the new host, then ask again: ${MOVE_KEY}`));
         m.moving.public_key = MOVE_KEY;
         m.plans += 1;
         moveEnd(db, 0, 'Plan');
