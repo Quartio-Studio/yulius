@@ -70,7 +70,7 @@ the fix. Nobody writes an AppArmor rule by hand again.
 | BNS-003 | **Missing rule.** With AppArmor on, `kernel.apparmor_restrict_unprivileged_userns` at 1 and no profile for `/usr/bin/bwrap`, when the proof fails or could not run, setup writes `/etc/apparmor.d/yulius-bwrap` (profile `yulius-bwrap`, `flags=(unconfined)`, `userns,`, `include if exists <local/yulius-bwrap>`), loads it with `apparmor_parser -r`, proves again and reports **changed**. A file that differs from this text is rewritten; one that is current but not loaded is loaded. | `a_fresh_noble_host_gets_the_profile`, `a_changed_profile_is_rewritten`, `an_unloaded_profile_is_loaded`; VM (24.04) |
 | BNS-004 | **Present.** A host where the proof passes is **ok** and nothing is written or loaded: a second run, a rebooted host, a host without AppArmor, Debian (AppArmor on, no restriction). The line says which rule allows it. | `a_set_up_host_changes_nothing`, `a_rebooted_host_changes_nothing`, `no_apparmor_writes_nothing`, `debian_writes_nothing`; VMs |
 | BNS-005 | **Shipped profile.** When `/etc/apparmor.d/bwrap-userns-restrict` is enabled, setup disables it the supported way (the link in `disable/`, then `apparmor_parser -R`), never editing or removing the file, then loads the profile that is to attach (ours, or a hand-written one again) and proves. It does so also when the proof passes at that moment (same-name race at boot). `apparmor_parser -R` may fail only with exit 254 (not loaded). A shipped profile that its link disables but the kernel may still hold (a person's link, an unload that failed) is unloaded when the proof fails. | `a_resolute_host_disables_the_shipped_profile`, `a_release_upgrade_is_reported_and_fixed`, `a_shipped_profile_beside_a_hand_written_one_is_disabled`, `a_disabled_shipped_profile_that_is_still_loaded_is_unloaded`; VM (26.04, reboot, `apparmor` reinstall) |
-| BNS-006 | **Hand-written rule.** Another enabled file in `/etc/apparmor.d` whose profile attaches to `/usr/bin/bwrap` (a top-level header, whatever its layout: on one line, with the brace on the next line, also through a variable set to bwrap's path; any other spelling: BNS-012) is never changed, disabled or removed, and Yulius's profile is never written next to it. When the proof passes the item is ok and names the adopted file. When it fails, setup loads that file again once (what a boot does). If it still fails and a file of Yulius's stands beside it that no `disable/` link names (an earlier run wrote it before the person's profile came), Yulius's profile is taken out of AppArmor and bwrap proven once more, as in BNS-012: where it starts, the person's profile is adopted, Yulius's file is removed and the item is **changed**; where not, Yulius's profile is loaded again. A failure is **FAIL** with what was done and the commands that disable the person's file; if that load fails (the parser refuses the file, so it cannot unload it either), the item is **FAIL** with the parser's words and asks for a correct file. | `a_hand_written_rule_is_adopted`, `a_hand_written_rule_that_fails_is_named_not_touched`, `yulius_earlier_profile_gives_way_to_a_rule_it_reads`, `a_profile_header_is_found_in_any_layout`; VM (24.04 with the production rule; 24.04 and 26.04: the production rule added after a setup) |
+| BNS-006 | **Hand-written rule.** Another enabled file in `/etc/apparmor.d` whose profile attaches to `/usr/bin/bwrap` (a top-level header, whatever its layout: on one line, with the brace on the next line, also through a variable set to bwrap's path; any other spelling: BNS-012) is never changed, disabled or removed, and Yulius's profile is never written next to it. When the proof passes the item is ok and names the adopted file; where a file of Yulius's that declares its profile is in the directory as well, no `disable/` link names it and user namespaces need a rule, the line names both and says that AppArmor applies neither once it holds both (which of the two it holds the files do not say). When it fails, setup loads that file again once (what a boot does). If it still fails and a file of Yulius's that declares its profile stands beside it (an earlier run wrote it before the person's profile came; a file a person emptied declares none and is left alone, since the parser reports such a file unloaded whatever AppArmor holds), Yulius's profile is taken out of AppArmor and bwrap proven once more, as in BNS-012: where it starts, the person's profile is adopted, Yulius's file is removed and the item is **changed**; where not, Yulius's profile is loaded again. A file of Yulius's that a person's `disable/` link names is neither removed nor loaded again: the link says it is not to be loaded, so a profile that AppArmor still holds from before the link is only unloaded, and the line says so. A failure is **FAIL** with what was done and the commands that disable the person's file; if that load fails (the parser refuses the file, so it cannot unload it either), the item is **FAIL** with the parser's words and asks for a correct file. | `a_hand_written_rule_is_adopted`, `a_hand_written_rule_that_fails_is_named_not_touched`, `yulius_earlier_profile_gives_way_to_a_rule_it_reads`, `a_disabled_profile_of_yulius_that_is_still_loaded_is_unloaded`, `a_file_of_yulius_without_a_profile_is_not_unloaded`, `two_profiles_on_disk_are_named`, `a_profile_header_is_found_in_any_layout`; VM (24.04 with the production rule; 24.04 and 26.04: the production rule added after a setup, copied and not loaded, and beside a disabled profile of Yulius's that is still loaded) |
 | BNS-007 | **Unsupported or broken.** When AppArmor cannot load Yulius's profile, the file is removed again and the item is FAIL with the parser's error and the word "unsupported". When the proof fails and AppArmor is off, or still fails after the fix, the item is FAIL with bwrap's error and, where they apply, the cause: `kernel.unprivileged_userns_clone = 0`, `user.max_user_namespaces = 0`, a link that disables Yulius's profile; with such a kernel limit a person's profile is not blamed and no command that disables it is printed. A failed command or write is named once; a step that fails after the write is undone (Yulius's file removed again, or given its earlier text when it existed before the run; the shipped profile enabled again) and the line says so, or says what could not be undone. | `a_parser_that_cannot_read_the_rule_is_unsupported`, `a_namespace_limit_is_named`, `a_failed_write_is_named`, `a_failed_step_is_undone_and_named` |
 | BNS-008 | **Check and dry run change nothing.** `host check` reports what setup would do as FAIL "…; run `sudo yulius host setup`" (so the update helper's re-check and Settings → Instance show it, with no new contract), and ok only when nothing is to do. `--dry-run` says "would …". Where setup has steps and the proof did not pass (it failed, or nothing could be started yet), both also name a kernel limit on user namespaces, which keeps bwrap out whatever setup does. Neither writes, links nor runs `apparmor_parser`. | `a_check_reports_and_changes_nothing`, `a_dry_run_says_what_it_would_do`, `a_namespace_limit_is_named`; VM (`host check` before and after) |
 | BNS-009 | **Doctor.** `yulius doctor --contained`, once isolation resolves, starts bwrap as sandboxes do (`Mapper`: ids mapped by `newuidmap`/`newgidmap`, the same namespace arguments, the same mount) and reports **sandbox namespaces**: ok, or FAIL (exit 1) with bwrap's error and `sudo yulius host setup` as the fix. Host setup's "contained doctor" line therefore fails on such a host. | `doctor::tests` (the line for both results), `userns::tests::the_proof_mounts_in_the_holders_namespace` (arguments); VMs (before and after) |
@@ -129,6 +129,7 @@ the fix. Nobody writes an AppArmor rule by hand again.
 - [x] A profile for bwrap that Yulius does not read is found by what it does: proven beside the whole directory, Yulius's own taken back where bwrap does not start
 - [x] The review of that answered: an adopted profile leaves no file of Yulius's whichever run wrote it, a load of the directory that does not end fails the step
 - [x] Yulius's earlier profile gives way to a person's profile it reads as well; the second review's notes: a failure writes no file it need not, each line says what is on the host
+- [x] The third review's notes: a disabled profile of Yulius's that AppArmor still holds is unloaded, two profiles on disk are named as they are, a refused unload or reload is said without guessing
 
 ## Acceptance criteria
 
@@ -149,9 +150,10 @@ the fix. Nobody writes an AppArmor rule by hand again.
   beside it: where bwrap starts with the person's alone, that one is adopted and no file of
   Yulius's is left, whichever run wrote it; where not, Yulius's file and profile are as before
   the run and the line says what to do (BNS-012).
-- On a host where Yulius's profile from an earlier run stands beside a person's working profile
-  for bwrap, in a spelling Yulius reads or not, the next setup adopts the person's and removes
-  Yulius's file (BNS-006, BNS-012).
+- On a host where Yulius's profile from an earlier run and a person's working profile for
+  bwrap are both loaded, in a spelling Yulius reads or not, the next setup adopts the person's
+  and removes Yulius's file; while only one of them is loaded and the person's is in a
+  spelling Yulius reads, setup and check say that both files are there (BNS-006, BNS-012).
 
 ## Test plan
 
@@ -164,8 +166,9 @@ the fix. Nobody writes an AppArmor rule by hand again.
   switched off by hand, an earlier version and this version from an earlier run, on 26.04),
   a taking away that fails, a load of the directory that does not end, a refused profile of
   someone else's, a catch-all profile; Yulius's earlier profile beside a rule the item reads
-  (working, not working, disabled by a link, not loaded); an adoption whose file cannot be
-  removed, an earlier text that cannot be written back or that AppArmor refuses.
+  (working, not working, disabled by a link and still loaded or not, not loaded, on disk
+  only); an adoption whose file cannot be removed, an earlier text that cannot be written
+  back or that AppArmor refuses, an unload or a reload that AppArmor refuses.
 - Unit tests for the doctor's line, the probe's arguments and the import's text.
 - Real hosts (QEMU guests): the built binary's `host setup`, `host check`, `doctor --contained` on
   Ubuntu 24.04 and 26.04 (fresh, second run, reboot, hand-written rule, the helper's hardening) and
@@ -226,6 +229,37 @@ the fix. Nobody writes an AppArmor rule by hand again.
   removed and rewrote it for every third proof). A person's profile that only AppArmor holds
   (loaded by hand from outside `/etc/apparmor.d`) is adopted like any other and is gone after
   a boot: the check fails then, and the next setup writes Yulius's profile again.
+- **Two profiles on disk are named, not settled before the boot** (BNS-006, the third
+  review's note). Where a person's profile and Yulius's file are both in the directory and
+  bwrap starts, AppArmor holds one of them and the files do not say which; the line used to
+  credit the person's file. Settling it at once would mean loading both as a boot does and
+  then choosing, and where the person's profile does not let bwrap in, a host that works
+  would fail in the middle of a setup. So the line says what is there and what happens once
+  both are loaded; after a boot the check fails, and the setup after it adopts the person's
+  profile or names it.
+- **A profile of Yulius's that its link disables is unloaded, never removed or loaded**
+  (BNS-006, the third review's note). A person's link says the profile is not to be loaded;
+  one that AppArmor still holds from before the link cancels the person's own profile until a
+  boot, and the item blamed the person's file for it. The same proof decides: Yulius's is
+  unloaded, and the person's profile is adopted or named. The file stays where the person
+  left it, as a shipped profile's does behind its link (BNS-005).
+- **What stays as it is around a person's link** (the notes of the review of `05a5e064`). A
+  `disable/` link that points nowhere counts as disabling here, although AppArmor follows
+  the link and loads the profile; and beside a profile the item does not read, a linked
+  profile of Yulius's that AppArmor still holds ends in FAIL with "remove that link". Both
+  lines name the link, and removing it is the way out in both: behind a person's link the
+  item does no more than unload what the link disables beside a profile it can name. The
+  line about two profiles on disk speaks only where it can be true: where user namespaces
+  need a rule and Yulius's file declares its profile, in this version's text or an older
+  one. A file the reader takes for a person's profile without its being one (a path named in
+  `xattrs`) still gets that line: the reader's few misreadings are older than this change.
+- **What a refused unload or reload says** (the third review's notes). The parser's exit
+  status is not what AppArmor holds: a file the parser refuses cannot be unloaded by its
+  file, whatever is loaded. The line says what was asked and what the parser answered
+  ("AppArmor did not let Yulius's profile go", "did not load Yulius's profile again"), in
+  the undoing of a failed step too. Beside a profile the item reads, the line quotes what
+  bwrap said with that profile alone, because that is what its sentence is about; what bwrap
+  said with both is the same refusal seen from the other side.
 - **Only a load that did not end fails the step, and the load has its own bound** (BNS-012).
   An exit status is a boot's outcome too (one refused file among many), and the proof speaks
   for the host as that boot leaves it. A parser killed at its bound has loaded an unknown part
@@ -558,8 +592,8 @@ container: at `b74138b1` for the first runs, at `39c85810` for the runs after re
   - Test-first on the fake host, which gained a file that takes one write and a text
     AppArmor refuses when loaded alone. Five tests failed first:
     `yulius_earlier_profile_gives_way_to_a_rule_it_reads` (adopted on 24.04 and 26.04, a
-    rule that does not let bwrap in, a file of Yulius's that AppArmor does not hold or that a
-    person's link disables), `what_cannot_be_put_back_is_said`, and the changed cases of
+    rule that does not let bwrap in, a file of Yulius's that AppArmor does not hold, does
+    not let go, or that a person's link disables), `what_cannot_be_put_back_is_said`, and the changed cases of
     `a_taking_back_that_fails_is_said`, `an_unread_rule_that_fails_gets_no_second_profile`
     (no write, no removal of a file this run did not write) and
     `a_directory_load_that_does_not_end_is_a_failed_step`.
@@ -612,6 +646,97 @@ container: at `b74138b1` for the first runs, at `39c85810` for the runs after re
     removed or written back, and an earlier text that AppArmor refuses (the fake host's
     cases). A sandbox that starts during the third proof (the cost named in Decisions) was
     not provoked.
+- **The third review's notes** (BNS-006, BNS-012), the fifth pull request of this task. The
+  review that approved #1205 at `3a39c4d8` left six notes on that change and three on what
+  `dev` had before it. Each is answered:
+  - Its N1: a file this run wrote that cannot be removed after a failed third proof stays,
+    with its profile in AppArmor; that line had lost its test and has one again
+    (`a_taking_back_that_fails_is_said`).
+  - N2 and N3: a refused reload names Yulius's profile, and a refused unload says "AppArmor
+    did not let Yulius's profile go (…)" in place of "still holds": a file the parser cannot
+    read is refused whatever AppArmor holds. The fake host's unload refuses such a text now
+    (cases in `yulius_earlier_profile_gives_way_to_a_rule_it_reads`).
+  - N4: the number of proofs is asserted where AppArmor did not hold the profile, did not let
+    it go, or a link disables it, so the guard before the third proof has its mutation.
+  - N5: the four sentences (the guide and the acceptance criterion on when the next setup
+    adopts, the change entry on which file a failed proof leaves alone, the test list of the
+    block above).
+  - N6 is kept and reasoned in Decisions: beside a profile the item reads, the line quotes
+    what bwrap said with that profile alone.
+  - On `dev` before #1205: the undoing of a failed step says a reload that AppArmor refuses
+    (`a_directory_load_that_does_not_end_is_a_failed_step`); a profile of Yulius's that a
+    person's link disables and AppArmor still holds is unloaded
+    (`a_disabled_profile_of_yulius_that_is_still_loaded_is_unloaded`); two profiles on disk
+    are named while bwrap starts (`two_profiles_on_disk_are_named`).
+  - Test-first on the fake host: those three tests, the changed lines of
+    `a_taking_back_that_fails_is_said` and `what_cannot_be_put_back_is_said`, and the new
+    cases of `yulius_earlier_profile_gives_way_to_a_rule_it_reads` failed first (six tests).
+  - 49 mutations of the code as it is now, each taking one rule out, each fail a test
+    (`target/evidence/boot/mutate4.py`, `mutate4.log`, not in the repository): those of the
+    block above as far as their code stands, and new: a third proof where AppArmor did not
+    hold the profile or let it go; a linked profile's file removed on an adoption, loaded
+    again, or its unloading unsaid; a profile that no link disables treated as linked; two
+    profiles on disk credited to the person's, named against a link, or named for a text of
+    Yulius's file that is not this version's; a refused reload in the undoing unsaid.
+  - On real hosts: the same two guests (Ubuntu 24.04.5, AppArmor 4.0.1; Ubuntu 26.04.1,
+    AppArmor 5.0.2), restarted, with the binary built at `12e5f185` (`cargo build -p yulius`,
+    stripped; its sha256 starts `412070f84fb7e711` and is printed at the head of each log).
+    Script and logs in `target/evidence/boot` (`last1.sh`; `noble-last.log`,
+    `resolute-last.log`), not in the repository. Steps 1, 2 and 13 of the blocks above give
+    their lines again. New, the same on both (26.04 with the shipped profile's step in
+    front):
+    16. the production rule copied into the directory of a host that setup prepared, not
+       loaded: check, dry run and setup say ok, "bwrap starts a user namespace as yulius: a
+       profile for bwrap is in /etc/apparmor.d/bwrap (not written by Yulius, left as it is)
+       and in Yulius's /etc/apparmor.d/yulius-bwrap; AppArmor applies neither once it holds
+       both: after a boot, run `sudo yulius host setup` again", and write nothing. Once the
+       person's is loaded too, bwrap fails ("setting up uid map: Permission denied"), the
+       check fails, and setup adopts it and removes Yulius's file, as in step 13;
+    17. Yulius's profile disabled by a person's link and not unloaded, the production rule
+       loaded beside it: setup ends "loaded /etc/apparmor.d/bwrap again: bwrap starts a user
+       namespace as yulius with /etc/apparmor.d/bwrap; Yulius's own
+       (/etc/apparmor.d/yulius-bwrap), which a link disables, was still loaded and is
+       unloaded now"; only `bwrap` is loaded, Yulius's file and the link are as the person
+       left them (same inode and time), and a second run and a check are ok;
+    18. the same with a rule that does not let bwrap in: FAIL "… with /etc/apparmor.d/bwrap
+       (bwrap: Creating new namespace failed: Permission denied); Yulius's own (…), which a
+       link disables, was still loaded and is unloaded now; Yulius does not change a profile
+       it did not write: disable it (…)"; Yulius's file is untouched and not loaded;
+    19. Yulius's file made unreadable for the parser beside a rule that does not let bwrap
+       in, both loaded: by hand `apparmor_parser -R /etc/apparmor.d/yulius-bwrap` exits 1
+       with a parser error; setup fails with "… AppArmor did not let Yulius's profile go
+       (AppArmor parser error for /etc/apparmor.d/yulius-bwrap … syntax error, unexpected
+       end of file …); Yulius does not change a profile it did not write: disable it (…)",
+       and both profiles are loaded as before.
+  - Gates at the head that carries this section, `dev` merged in: `cargo check --workspace
+    --all-targets`, `cargo fmt --all -- --check`, `cargo clippy -p yulius --all-targets -- -D
+    warnings`, `cargo test -p yulius --lib` (568 pass), `python3
+    scripts/check_repository.py` and `spec_check` here; the whole gate (`scripts/dev ci`) and
+    e2e are Yulius CI's run on the pull request's head. The security scan is turned off for
+    this project (Vidoc): nothing was scanned.
+  - The review of `05a5e064` approved with three notes, answered in `8eb288ca`: a file of
+    Yulius's that declares no profile is not taken out of AppArmor (the parser says "done"
+    for it whatever AppArmor holds, and under a link the line then claimed an unload that
+    had not happened): `a_file_of_yulius_without_a_profile_is_not_unloaded`; the line about
+    two profiles on disk speaks only where user namespaces need a rule and Yulius's file
+    declares its profile, an older version's too (cases in `two_profiles_on_disk_are_named`);
+    four sentences. Its three notes on what `dev` had are reasoned in Decisions ("What stays
+    as it is around a person's link"). 51 mutations, each noticed (`mutate5.py`,
+    `mutate5.log`). On both guests with the binary of `8eb288ca` (sha256 starts `3e690fb7daeff7e0`;
+    `last2.sh`, `noble-last2.log`, `resolute-last2.log`):
+    20. Yulius's file emptied by a person (a comment) and disabled by a link, its profile
+       still held, a rule that does not let bwrap in beside it: FAIL with the line of a
+       person's profile alone and no word of an unload; `apparmor_parser -R` on that file
+       exits 0 by hand and unloads nothing;
+    21. Yulius's profile disabled by a link and not held, the same rule beside it: the same
+       FAIL, nothing changed;
+    22. an older version of Yulius's file beside the production rule, which is on disk and
+       not loaded: the line names both files;
+    23. the same two files with `kernel.apparmor_restrict_unprivileged_userns` at 0: "allowed
+       by /etc/apparmor.d/bwrap (not written by Yulius, left as it is)".
+  - Not tested: on a real host, a reload that AppArmor refuses and a file that cannot be
+    removed or written back (the fake host's cases). A reboot between the steps of this block
+    (the reboot after an adoption is step 11 above).
 - **Met on the way, outside this change**: on every fresh host with cgroup delegation the first
   `host setup` ends with `FAIL Docker smoke test` in the step "a sandbox without Docker answers
   why" (a live engine answers the Docker-off run; a later `doctor --docker-smoke` passes): issue
