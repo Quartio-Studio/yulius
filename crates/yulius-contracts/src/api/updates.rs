@@ -412,6 +412,10 @@ pub struct ClaudeCodeView {
     pub default_model: String,
     /// Whether the version in use could be read for the models it knows.
     pub models_read: bool,
+    /// What the card says when Yulius keeps Claude Code current and that binary could not be
+    /// read: whether it knows the default model is not known (SPEC-468 CCF-007). Else null.
+    #[serde(default)]
+    pub models_unread: Option<String>,
     /// The offered models the version in use does not know, the default first.
     pub unknown_models: Vec<String>,
     /// What is wrong while it does not know the default model.
@@ -421,7 +425,8 @@ pub struct ClaudeCodeView {
     /// The releases the last check refused, in the order tried.
     pub refused: Vec<ClaudeCodeRefused>,
     /// Tasks whose running session still runs an older Claude Code (SPEC-461 CCM-013): each
-    /// moves when its turn ends, or at its next start.
+    /// moves when its turn ends, or at its next start (its next start only while
+    /// `moves_stopped` is set).
     pub behind: Vec<ClaudeCodeBehind>,
     /// Why running tasks are no longer moved to the version in use, when a session could not
     /// continue on it.

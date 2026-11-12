@@ -204,6 +204,7 @@ Resume and bound
 - [x] Operations guide §7, architecture, product summary, changes, SPEC-460's pointer
 - [x] A real move between two hosts (QEMU guests) with changes during the copy
 - [x] Independent review answered, gates green
+- [x] After the merge: the review's last wording notes, a move from an Ubuntu 24.04 host
 
 ## Acceptance criteria
 
@@ -318,7 +319,9 @@ Resume and bound
 ## Evidence
 
 Head of the gate: `1939fae4` (2026-11-12), which holds `dev` up to `cfc11cd6`; the commit after
-it changes this document only.
+it changed this document only, and that head was merged as pull request #1198. The follow-up
+after the merge (`49a6e237`: two lines of the cutover, with their test) was gated again with
+this document's last changes: exit 0, nextest 3829 run, 3829 passed, 16 skipped.
 
 - `scripts/dev ci`: exit 0; nextest 3800 run, 3800 passed, 16 skipped; clippy with `-D
   warnings`, the macOS compile, the repository contracts, `cargo deny` (advisories, bans,
@@ -331,17 +334,19 @@ it changes this document only.
   forked child's copy of the lock to close; nextest, which the gate runs, was not affected).
 - Mutation checks: 32 single changes of the new behavior by the author, each run against the
   instance tests and reverted, and the second reviewer's own (seven for the fixes of the first
-  review, three and two runs more for the fixes of its own findings); every one failed at least
-  one test (the two-second rule, the state without the change time, links not sent together, a
-  sent path not revoked, a cut prefix adopted without its digest, an acknowledgment without the
-  sync, no marker before the first entry, "nothing known" not honoured, the boot or the clock
-  not compared, the clock's lead read after the sync, a wrong unit or an empty boot id in the
-  real reading, the bound ignored, nothing removed, a warm pass removing a directory, no
-  padding, a directory's attributes kept, the stage id not compared, the update guard off, a
-  vanished path fatal, the stop word not written or not heard, an abort that closes no stream
-  or names no copy, the marker's second name accepted, a link read as a file, a walk by path, a
-  marker that stays "known" when times could not be set, an open that does not wait, a freeze
-  after a pass that lost its receipts, the waiting entries not handed to the estimate).
+  review, three and two runs more for the fixes of its own findings); every one fails at least
+  one test at the merged head, the last of them (the waiting entries not handed to the estimate)
+  only since `ef00e48e` added its test (the two-second rule, the state without the change time,
+  links not sent together, a sent path not revoked, a cut prefix adopted without its digest, an
+  acknowledgment without the sync, no marker before the first entry, "nothing known" not
+  honoured, the boot or the clock not compared, the clock's lead read after the sync, a wrong
+  unit or an empty boot id in the real reading, the bound ignored, nothing removed, a warm pass
+  removing a directory, no padding, a directory's attributes kept, the stage id not compared,
+  the update guard off, a vanished path fatal, the stop word not written or not heard, an abort
+  that closes no stream or names no copy, the marker's second name accepted, a link read as a
+  file, a walk by path, a marker that stays "known" when times could not be set, an open that
+  does not wait, a freeze after a pass that lost its receipts, the waiting entries not handed to
+  the estimate).
 - The second reviewer also ran 400 live passes beside 605,722 swaps of a directory for a link
   to a place outside the tree: no stream held a file from outside and no pass failed; with the
   walk by path the same test held one in 22 of 400 passes.
@@ -438,6 +443,18 @@ it changes this document only.
     at 00:53:29, 27 s after the freeze; exit 0. The mark is in no pass's count, the old host's
     is untouched, and the new instance's first start used the one the import wrote. The
     SHA-256 of all 20,627 files was equal on both hosts.
+  - At `f15d586d` (the tree of `dev` after the merge of #1198), from Ubuntu 24.04.5 (kernel 6.8,
+    systemd 255) to Ubuntu 26.04.1, with a build made in an Ubuntu 24.04 container for its C
+    library: the plan (`old host ubuntu 24.04 …`, `new host ubuntu 26.04, systemd 259 …`), the
+    new host prepared from the old one's packages, pass 1 with 20,196 entries (438.6 MiB) in
+    38 s, pass 2 with 816; the command was killed and the old guest killed and booted (a power
+    cut). The same command: `this host was restarted since the last pass … everything is sent
+    into the staged copy again`, pass 3 with 20,196 of 20,196, pass 4 with 816; `downtime about
+    42 s frozen`; both units frozen at 02:35:31; the frozen pass sent 20 of 21,002 entries;
+    `copy proven 21002 entries and 423.8 MiB in 13 folders, the same on both hosts` at 02:35:39;
+    the new instance listened at 02:35:49.6, 18 s after the freeze; exit 0. The SHA-256 of all
+    20,826 files was equal on both hosts, and so was the metadata of 20,937 entries but the
+    time of `sandboxes/` itself; no file of `/etc` was in the copy.
   - At `2e407d22` the plan alone said: "then it is frozen for about 54 s: up to 224698 entries
     are counted four times (about 36848 a second here, twice on each host) …", exit 0, nothing
     changed.
@@ -454,15 +471,17 @@ it changes this document only.
   instance followed a link put in a directory's place; receipts were believed after a restart
   of the old host), all fixed with tests written first (`5099f9bf`, `df6be170`, `a28d44f2`,
   `18809c30`, `aeb8e64b`, `124cb733`; one was SPEC-460's and fixed in `2c92bdd0`). The second
-  verified each of those fixes with its own mutations and reported three times: three findings
-  at `124cb733` (fixed in `d4ce9beb`, `bc653491`), two minor ones and seven notes at `bc653491`
-  (fixed in `5389761e`, `c2f39946`, `656f79fc`), then `APPROVE de8df9d1` with three notes, which
-  `ef00e48e` and this section answer. One finding lies outside this change (the plan's
-  disk-space check counts an unfinished copy that Prepare removes, on `dev` before it): issue
-  #1191. After that came the notes' fixes, two clean merges of `dev` and one with conflicts
-  (`1939fae4`: SPEC-467 changed the walk's rule of what a copy leaves out and added tests of
-  the freeze, which the warm passes now follow); the same reviewer's look at those and at this
-  section is the approval the merge was asked with.
+  verified each of those fixes with its own mutations. It was cut off once as well, at
+  `124cb733`, with three findings in its notes (fixed in `d4ce9beb`, `bc653491`), and then
+  reported three times: two minor findings and seven notes at `bc653491` (fixed in `5389761e`,
+  `c2f39946`, `656f79fc`); `APPROVE de8df9d1` with three notes (answered by `ef00e48e` and this
+  section); and, after two clean merges of `dev` and one with conflicts (`1939fae4`: SPEC-467
+  changed the walk's rule of what a copy leaves out and added tests of the freeze, which the
+  warm passes now follow), `APPROVE c5944704`, the head that was merged, with two notes on
+  wording: two lines of the cutover still said "nothing is copied" after a warm copy
+  (`49a6e237`), and two sentences of this section (corrected here). One finding lies outside
+  this change (the plan's disk-space check counts an unfinished copy that Prepare removes, on
+  `dev` before it): issue #1191.
 
 Not tested here:
 
@@ -473,7 +492,5 @@ Not tested here:
   0.4 GiB, and the measurement above had the metadata cached, as the passes before a freeze
   leave it. Owners outside the service user's ids and whiteouts are covered by the earlier
   tests of the export and by SPEC-460's real runs, not again here.
-- Ubuntu 24.04 as the old host: a build made here does not run on its glibc (SPEC-458 ran the
-  sessions unit there, SPEC-460 the move without the warm copy).
 - A clock that is set back and forward again between two looks of the move is not found, by
   design (ADR-0303).

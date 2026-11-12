@@ -799,18 +799,36 @@ SPEC-461), with no root step and no sign-in again:
 - **Running tasks.** A task's session keeps the version it started with until a turn of it ends:
   then Yulius restarts it on the version new runs get, in the same Claude session and on the
   same subscription, and says so in one line in its terminal. It waits while the session has
-  background shells, agents or monitors (they would be lost; a `yulius wait` counts) or a person
-  typed into it in the last minute, and tries once per version. A goal session moves at a turn
-  it works on after, while its goal is set and not yet achieved; an idle one, and a goal task
-  that is Done, keep their version until their next start. The card lists the
-  tasks still on an older version, and each task's info shows the version each session ran.
+  background shells, agents or monitors (they would be lost; a `yulius wait` counts), while a
+  person typed into it in the last minute, and while a draft may sit in its prompt box: a person
+  typed into it since its last prompt was sent, however long ago (Yulius sees keystrokes and
+  sent prompts, not the box, so anything typed and not sent counts, and so does a prompt Yulius
+  holds for its person's choice, which Claude Code keeps in the box). A message Yulius types
+  into the session (one sent through a Superagent, a pull request's news) counts in the same way
+  until Claude Code submits it, which it does at once. Not covered: a prompt entered while the
+  agent works, a person's or such a message, waits in Claude Code's queue until the turn ends,
+  and a restart at that turn's end loses it (issue #1204; a person's is safe while they typed in
+  the last minute). It tries once per version, one restart of a task at a time. A goal session
+  moves at a turn it works on after, while its goal is set and not yet achieved; an idle one,
+  and a goal task that is Done, keep their version until their next start. A prompt-mode session
+  in which a person set a goal of their own (`/goal …` in its terminal) keeps its version while
+  that goal is open: Yulius types nothing into such a session and learns of a goal only from
+  what the new process writes, so after a restart it would not know the goal any more (Claude
+  Code restores an open goal by itself when a session is resumed, at least since 2.1.292; Yulius
+  does not rely on it). The session moves at a later turn's end, once the goal is met, failed or
+  cleared, or at its next start: stop the task and continue it to move it at once. An idle
+  session that is restarted reads "Continuing" for a moment and then as it did: its person is
+  not notified a second time. The card lists the tasks still on an older version, and each
+  task's info shows the version each session ran.
   Yulius does not know a schedule a session set for itself (Claude Code's `/loop`): such a
   session is restarted like any other, and the schedule ends with its process.
 - **A version a session cannot continue on gets no other running session.** That is: the
   restart could not be started, the restarted session ended by itself before it started, or it
   did not start within two minutes (a dialog a release opens on; that session is left as it is,
-  for its person). The card names the task and what happened. Sessions that start or continue
-  still get that version, so choose Off (the host's install) when it does not work at all. A
+  for its person). The card names the task and what happened; from then on the card's list and
+  each task's info promise that version only at the task's next start. Sessions that start or
+  continue still get that version, so choose Off (the host's install) when it does not work at
+  all. A
   newer version, or a restart of the server, lifts it. A restart that cannot be made right now
   (the subscription is at its limit, the sandbox cannot be joined) says nothing, is no entry in
   the task's switches, and is tried again at a turn's end ten minutes later or more.
@@ -822,6 +840,11 @@ SPEC-461), with no root step and no sign-in again:
   or it is what runs get), no release knows the model yet: choose a model Claude Code knows for
   tasks until one does. The card and the doctor say that only from the server's own read of the
   registry in the last two hours: not with Off, and not after a check that failed.
+- **When the binary in use cannot be read for its models** (a file the service user may not
+  read, a read error), the card shows a "models not read" badge and says that whether it knows
+  the default model is not known; `yulius doctor --contained` warns the same and names the
+  install. Nothing is claimed either way until it can be read again (at the next view of the
+  page).
 - The host's install is never changed; updating it by hand past Yulius's version makes runs use it.
   Without an npm install on the host, sandboxes have no Claude Code and nothing is updated.
 - The server writes what it last knew (channel, npm's `latest` and `stable`, what the last check

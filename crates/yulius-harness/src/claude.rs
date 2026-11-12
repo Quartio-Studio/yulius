@@ -27,6 +27,12 @@ use crate::time::{from_epoch_seconds, parse_rfc3339};
 /// Maximum bytes of provider limit text kept in [`Observed::LimitReached`].
 const LIMIT_MESSAGE_BYTES: usize = 512;
 
+/// Maximum bytes kept of the model a record names (SPEC-468 CCF-005): the agent writes its own
+/// transcript, where a line may be megabytes, and the model is kept per run and shown. It is
+/// the bound of a model a launch asks for. The version a record names is cut where every path
+/// that reads it ends ([`crate::observe::UsageAccumulator::note_cli_version`]).
+const MODEL_NAME_BYTES: usize = 128;
+
 /// Model name Claude uses for locally generated (non-API) messages.
 const SYNTHETIC_MODEL: &str = "<synthetic>";
 
@@ -533,7 +539,9 @@ fn observe_assistant(record: &Map<String, Value>) -> Vec<Observed> {
             .into_iter()
             .collect();
     }
-    let model = owned_str(message, "model").filter(|m| m != SYNTHETIC_MODEL);
+    let model = str_of(message, "model")
+        .filter(|model| *model != SYNTHETIC_MODEL)
+        .map(|model| shorten(model, MODEL_NAME_BYTES));
     let mut out = Vec::new();
     if let Some(message_id) = owned_str(message, "id") {
         out.push(Observed::AssistantMessage {
@@ -1544,5 +1552,32 @@ mod tests {
             serde_json::json!({"origin": {"kind": "task-notification"}, "promptSource": "system"}),
         );
         assert_eq!(wake, vec![session, Observed::UserTurn { at, wake: true }]);
+    }
+
+    /// SPEC-468 CCF-005: the agent writes its own transcript, and a line may be 4 MiB. The
+    /// model a record names is kept per run and shown, so it is cut to a few bytes on a
+    /// character boundary (the version is cut where it is kept, `observe.rs`).
+    #[test]
+    fn the_model_a_record_names_is_capped() {
+        let answer = |model: &str| {
+            let record = serde_json::json!({"type": "assistant", "isSidechain": false,
+                "timestamp": "2026-10-10T05:38:01.385Z",
+                "message": {"id": "m1", "model": model, "role": "assistant", "content": [],
+                    "stop_reason": "end_turn"}});
+            observe_line(&record.to_string())
+                .into_iter()
+                .find_map(|observed| match observed {
+                    Observed::AssistantMessage { model, .. } => model,
+                    _ => None,
+                })
+        };
+        assert_eq!(
+            answer("claude-fable-5-2").as_deref(),
+            Some("claude-fable-5-2")
+        );
+        let long = answer(&"m".repeat(4 * 1024 * 1024)).unwrap_or_default();
+        assert_eq!(long, format!("{}…", "m".repeat(MODEL_NAME_BYTES)));
+        // Claude Code's own messages still name no model.
+        assert_eq!(answer(SYNTHETIC_MODEL), None);
     }
 }
