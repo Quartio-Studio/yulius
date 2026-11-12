@@ -1,11 +1,11 @@
 ---
 yulius-task: 719087ff-c914-4241-bf1d-1d0a477a2041
-status: in-progress
+status: done
 ---
 
 # SPEC-470: Run migration: the button in Settings → Instance
 
-Status: in progress
+Status: done
 Date: 2026-11-11
 Owner: Yulius task #447 (slice D of #442)
 Scope authorization: task #447, asked by the project's owner: "A superadmin starts the move from
@@ -98,8 +98,9 @@ The request and the root helper
   checklist: a run the command refuses changes nothing (MVB-020 tells whose a checklist is).
 - MVB-005 **It reports.** `<state>/helper.json` (0644): the request's id, action and values,
   `running` with a heartbeat every 5 s, then `ended` with the command's exit code, or `refused`
-  with the reason and none of the request's values. When the command ended refused before its checklist (exit 2) or could not be
-  started, its last words (the command prints no secret value, MIG-025) are the error.
+  with the reason and none of the request's values. When the command ended refused before its
+  checklist (exit 2) or could not be started, its last words (the command prints no secret
+  value, MIG-025) are the error.
 - MVB-006 **Abort stops a run.** While a command runs the helper looks at the request file twice
   a second. A new valid `abort` sends the command SIGTERM (the command's own rule decides: the
   old instance is thawed and runs on, or, once the new instance's start is ordered, the signal
@@ -251,7 +252,7 @@ Settings → Instance
 - [x] Frozen and moved: the card keeps trying, follows the old URL's redirect, and the new instance shows the finished checklist
 - [x] Operations guide §7 and §8, API, architecture, product summary, changes
 - [x] Gates green and the independent review answered
-- [ ] Review round 1 answered: no sign-in with root's own keys, a refused run keeps the recorded checklist, the rest
+- [x] Review round 1 answered: no sign-in with root's own keys, a refused run keeps the recorded checklist, the rest
 
 ## Acceptance criteria
 
@@ -400,24 +401,54 @@ Settings → Instance
     never written again (seen on the new host of run 1); fixed in `fa80784f`.
   - `a_request_that_cannot_be_recorded_is_not_run`: the plan ran three times in one helper run;
     fixed in `148f3182`.
-  - `of_two_asks_at_once_one_is_written` (`[202, 202]` instead of `[202, 409]`),
-    `a_taken_request_is_removed_with_nobody_reading` (timed out) and the file adapter's removal
-    by id (a request with another id was removed); fixed in `b2108cbc`.
+  - `of_two_asks_at_once_one_is_written` (`[202, 202]` instead of `[202, 409]`) and the file
+    adapter's removal by id (a request with another id was removed); fixed in `b2108cbc`.
   - `the_shipped_units_start_the_helper_on_the_request_file` (no `StartLimitIntervalSec=0`),
     after a real host left the path unit failed; fixed in `301cf556`.
   - After the warm copy came in from `dev`: five of the ten e2e tests (the stepper's current
     step read "" during `Copy`, the freeze was said to be for the copy, the abort's dialog did
     not name the copy it leaves); fixed in `37e5f7cf`. Then the frozen notice's estimate (run 6
     below); fixed in `e30b2988`.
+  - Review round 1: listed with its findings below.
+- **Independent review, round 1** (a fresh read-only session with the diff range, this spec and
+  `om-code-review`, on `19c9ad08`; it ran the gate and the card's e2e file itself, both green):
+  request changes. One blocker, one major, three minor findings and six nits, all in this
+  change's code. Each answer began with a test that failed:
+  - Blocker: the command run by the helper signed in to the new host with root's own keys, so
+    the service user reached every host that trusts root here. `f2322ad3`: the helper says
+    `--no-sign-in`; the operator's sign-in is never tried, no ssh configuration is read and the
+    one-time key alone is offered (`a_run_without_a_sign_in_never_uses_roots_own`,
+    `a_connection_without_a_sign_in_offers_the_one_time_key_alone`, the helper's and the
+    command's argument tests; `31bea333`: the command's own connection). On real hosts below.
+  - Major: the helper removed `status.json` before the command had accepted the run, so a
+    refused plan wiped the recorded move's checklist. `e7ca159e`: the helper leaves it alone,
+    and the view tells whose it is by its time (`a_refused_run_keeps_the_recorded_moves_checklist`,
+    the helper's test, an e2e case). On real hosts below.
+  - Minor: the repeated write of an untaken request could replace a newer one or bring back a
+    removed one. `901cdd4c`: written again only while it still waits, under the adapter's lock.
+  - Minor: an abort's Finish left a "moved here" checklist on the new host when a move's own
+    Finish had not reached it. `a17f038a`: Finish says whether the move arrived.
+  - Minor: with systemd's default `KillMode` a stop of the unit signalled the step in flight
+    directly. `e789ca55`: `KillMode=mixed`. On a real host below.
+  - Nits: an abort that found nothing was offered again (`e7ca159e`); the phase lists lacked
+    `Copy` and the stepper read "Plan" for `done` and for an abort's phase (`a2c6afa3`);
+    "acted on once" was "not twice in a row" (`edd78545`: every id is kept while its request
+    could be taken); the audit came after the request (`49acb379`: before it, and
+    `migration.unwritten`); `migrate/` was not left out of a copy (`4cb11428`, which also
+    removes the watcher that answered the same worry before).
+  - Found while checking these on real hosts, fixed in `7ebf3937`: the new key line had runs
+    of spaces in it, and the note over a recorded move's checklist had its icon on a line of
+    its own.
 - **Unit and integration tests** (all in the gate below): the helper against a fake program, a
-  fake `systemctl`, real files and signals (`migrate_helper::`, 16); the application and
-  the routes through the API with a fake of the helper's files (`tests/migration.rs`, 11); the
-  file adapter (`wiring::migrate_files`, 3); the contract (2) and the field rules (6); the
-  command (`instance::migrate::`, 155, 8 of them added here: the units travel and are
-  enabled as on the old host, the key line and the new URL in the status, the checklist carried
-  and left by Finish, the abort that brings the build).
+  fake `systemctl`, real files and signals (`migrate_helper::`, 18); the application and the
+  routes through the API with a fake of the helper's files (`tests/migration.rs`, 13); the file
+  adapter (`wiring::migrate_files`, 3); the contract (2) and the field rules (6); the command
+  (`instance::migrate::`, 158, 11 of them added here: the units travel and are enabled as on
+  the old host, the key line and the new URL in the status, the checklist carried and left by
+  Finish, the abort that brings the build, a run without a sign-in); the walk (`migrate/` is
+  left out).
 - **Mutation checks** (`target/evidence/mutate.py`: one change at a time on a clean tree, the
-  part's tests run, the file restored). 153 written, 151 fail a test:
+  part's tests run, the file restored). 185 written, 183 fail a test:
 
   | Part | Written | Fail a test | Note |
   | --- | --- | --- | --- |
@@ -426,15 +457,15 @@ Settings → Instance
   | Card (`instancemove.js`, e2e) | 41 | 41 | 1 survived first (a redirect seen in any answer): the mock now answers 502 while frozen |
   | Helper | 38 | 36 | see below |
   | Command (this change's parts) | 22 | 22 | |
+  | Review round 1 (command 10, helper 8, application 9, adapter 1, card 4) | 32 | 32 | 1 survived first (the repeated write without its id): an assertion added in `7ebf3937` |
 
   The helper's two: one pointed at a condition that the record of a taken request already
   covered, which showed that a failed record was ignored (the fix in `148f3182` removes the
   condition); one was written wrongly (a time moved by 1 ms, no change in behaviour) and was
-  replaced by two that fail a test (an invalid id in a report, a refusal that cannot be
-  recorded). Two more survived first and are caught since `148f3182` and `b2108cbc` (the
-  command's words for exit 1 and 0; an abort stopped by its own request file). All but the
-  card's last four were run before `dev`'s last two merges; the tests they fail pass on the
-  merged head.
+  replaced by two that fail a test. The first five rows were run before review round 1 and
+  before `dev`'s later merges; some of the code they changed was rewritten in that round (the
+  record of taken ids, the checklist's removal, a watcher that is gone, with its four
+  mutations), and the tests they fail pass on the final head.
 - **Two real hosts** (Ubuntu 26.04.1, systemd 259, in QEMU; release builds of the named heads;
   every step from the real page in the Yulius browser unless said):
   - Run 1, `df6e9db4`, A to B. `helper_installed` false, then true once `yulius-migrate.path`
@@ -457,11 +488,9 @@ Settings → Instance
     unit kept waiting. "Abort…" while the move ran in Prepare: journal "an abort arrived:
     stopping the command", "the command ended (by a signal)", then the abort in the same helper
     run, exit 0 after 7 s; the key removed on B. Then plan, key, plan and "Run migration…" with
-    the page closed at once: the helper took the move and the request directory was empty with
-    nobody reading. Page opened again: the running move, then the frozen message. Exit 0 after
-    9 min 24 s, 56 lines. B: the instance, the path unit enabled, the carried unit with
-    `StartLimitIntervalUSec=0`, `arrived.json` with 56 lines, no request in its data
-    directory, no key line. The page said "The move finished: Yulius now runs on the new host."
+    the page closed at once; page opened again: the running move, then the frozen message. Exit
+    0 after 9 min 24 s, 56 lines. B: the instance, the path unit enabled, `arrived.json` with
+    56 lines, no key line. The page said "The move finished: Yulius now runs on the new host."
   - Run 5, the same build, B to A: with the move in Prepare the address was made to answer every
     request with a redirect to another origin (a stand-in server; it answered 308 where the
     proxy's configuration says 307). Within 5 s the card said "Yulius now runs on the new host.
@@ -474,32 +503,45 @@ Settings → Instance
     and Prepare done, Copy in progress, Cutover, Finish. The instance of the guests holds 70
     entries, so the copy took seconds, and the line it measured ("about 34 s frozen: …") was
     written a moment before the freeze: the page never read it, which is why the frozen notice
-    quotes the plan. Exit 0 after 8 min 37 s, 59 lines. B: the instance, the path unit enabled,
-    `arrived.json` with 59 lines (the copy's passes among them), no request, no key line, no
-    import marker. The page, not reloaded: "The move finished …", "changed 16, left alone 39,
-    manual 4, failed 0".
-- **e2e.** `E2E_TELEMETRY_DISABLED=1 npx e2e run` at `b1fa9629`: 81 files passed, 1 skipped;
-  977 tests passed, 1 skipped; `instance-move.e2e.ts` 10 tests. The file ran three times in a
+    quotes the plan. Exit 0 after 8 min 37 s, 59 lines; the page, not reloaded: "The move
+    finished …", "changed 16, left alone 39, manual 4, failed 0".
+  - Review round 1 on real hosts (instance on B; A made to trust root@B's own key, so `ssh
+    root@10.0.2.2` from B signs in). With the build before the fix (`37e5f7cf`), "Show the
+    plan" ended with "one-time key: made and added to root@10.0.2.2 through your sign-in" and
+    16 lines, and A held the move's key with nobody on A having done anything: the blocker.
+    With `31bea333` the same plan ended with "one-time key: is not on the new host yet … This
+    run never signs in as root does …" and no key on A, also after root's ssh configuration
+    named that key for the host (by hand: the move's options without `-F none` sign in with
+    the configured key, with it "Permission denied (publickey)"). With the key added by hand:
+    "signs in", 16 lines. A plan for another host then: exit 2, "a move to root@10.0.2.2 is
+    recorded here …", `status.json` untouched, `--status` unchanged, and the page said the
+    plan could not be shown and that the checklist below is the recorded move's. A move in
+    Prepare and `systemctl stop yulius-migrate.service` (`KillMode=mixed`; the unit held the
+    helper, the command and `ssh -F none …`): "stopped: stopping the command", "the command
+    ended (by a signal)", systemd killed the `ssh` that was left, the instance ran on.
+  - Run 7, `8fe8b7a4` (the final code), B to A: that move continued from the page ("Continue
+    the move…", host typed). Exit 0 after 8 min 59 s, 59 lines. A: the instance, the path unit
+    enabled, the carried unit with `KillMode=mixed` and no start limit, `arrived.json` with 59
+    lines, no key line, and no `migrate/` directory at all (a copy leaves it out). The page,
+    not reloaded: "The move finished: Yulius now runs on the new host."
+- **e2e.** `E2E_TELEMETRY_DISABLED=1 npx e2e run` at `8fe8b7a4`: 82 files passed, 1 skipped;
+  981 tests passed, 1 skipped; `instance-move.e2e.ts` 11 tests. The file ran three times in a
   row and twice pinned to one CPU after its passing states were made to hold (`df6e9db4`).
-- **Gate.** `scripts/dev ci` at `b1fa9629` exited 0: repository checks, `cargo check`, `fmt`,
-  `clippy` for Linux and macOS, 3875 tests run, 3875 passed, 16 skipped, doctests, `cargo
-  deny`, `cargo shear`, `cargo doc`.
-  The commit after it changes this spec only. An earlier run (`301cf556`) reported one of this
-  change's tests as leaky (a child it left behind for 6 s): `b4691c24` ends the child with the
-  test. `dev` is merged in four times: `32b5a46a` (a conflict in `finish()` and a variable the
-  other side had renamed), `4e5bb5de` (none), `e1911ed3` (the warm copy: conflicts in
-  `finish()`, `abort()`, the flow and target tests and three documents, all resolved by hand;
-  the test that names every option of the command stopped compiling on the new
-  `--max-downtime`, which is what it is for) and `b1fa9629` (one line of the web README).
+- **Gate.** `scripts/dev ci` at `8fe8b7a4` exited 0: repository checks, `cargo check`, `fmt`,
+  `clippy` for Linux and macOS, 3908 tests run, 3908 passed, 16 skipped, doctests, `cargo
+  deny`, `cargo shear`, `cargo doc`. The commit after it changes this spec only. `dev` is
+  merged in six times: `32b5a46a` (a conflict in `finish()` and a variable the other side had
+  renamed), `4e5bb5de` (none), `e1911ed3` (the warm copy: conflicts in `finish()`, `abort()`,
+  the flow and target tests and three documents, all resolved by hand; the test that names
+  every option of the command stopped compiling on the new `--max-downtime`, which is what it
+  is for), `b1fa9629` and `8fe8b7a4` (one line of the web README each) and `59ec8cf5` (none).
 - **Security scan.** `yulius security-scan`: "Security scan disabled: Vidoc is turned off in
   Yulius … nothing was scanned." Disabled, not passed.
 - **Issues.** #1196 (the plan's own update check looks for `active` only) and #1201 (the update
   helper's units have the start limit this change switches off for its own), both in code this
   change did not write; #1202 (a field for `--max-downtime` on the page).
-- **Independent review.** A fresh read-only session, given the diff range, this spec and
-  `om-code-review`, reviews the exact head that is merged; its verdict is recorded with the
-  merge, because a commit after an approval would void it. Rounds that asked for changes are
-  listed here with their answers: none so far.
+- **Independent review, after round 1.** The head that is merged is reviewed again; that
+  verdict is recorded with the merge, because a commit after an approval would void it.
 - **Not tested.**
   - A move to another public URL behind a real reverse proxy with a certificate: the guests have
     no proxy. The card's notice for an address that redirects was shown on the real page with a
@@ -510,7 +552,8 @@ Settings → Instance
   - Data disks named on the page, on real hosts (the guests have one disk): the rules, the
     request and the command's arguments are tested, and the command's own disk step is
     SPEC-460's.
-  - A stop of the helper's unit or a shutdown during a real move (fake program only), and a
-    real update running beside a request (a fake `systemctl`; the word `activating` was read
-    from a real oneshot unit).
+  - A stop of the helper's unit after the new instance's start is ordered (the command then
+    finishes the cutover): a fake program only; before that, on a real host. A real update
+    running beside a request: a fake `systemctl` (the word `activating` was read from a real
+    oneshot unit).
   - Ubuntu 24.04: the real hosts were 26.04 only.
