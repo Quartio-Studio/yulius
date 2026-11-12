@@ -185,6 +185,17 @@ impl App {
         let Some(snapshot) = counted else {
             return Ok((RecountOutcome::NoTranscript, None));
         };
+        // The Claude Code the run's lines name is the run's, whoever read them: a run whose
+        // live watch did not read its transcript gets its version here (SPEC-461 CCM-011).
+        if let Some(version) = &snapshot.cli_version
+            && let Err(err) = self
+                .deps
+                .store
+                .set_run_cli_version(&attempt.id, &attempt.task_id, version, self.now())
+                .await
+        {
+            tracing::debug!(attempt = %attempt.id, error = %err, "the run's Claude Code version was not recorded");
+        }
         let metrics = metrics_of(snapshot);
         let counted_nothing = metrics.input_tokens.is_none()
             && metrics.output_tokens.is_none()
