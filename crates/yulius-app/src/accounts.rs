@@ -331,6 +331,7 @@ pub fn account_view(account: &AccountRecord, live: &[AttemptRecord]) -> AccountV
         in_use_by: in_use_count(&account.id, live),
         tokens_24h: None,
         tokens_7d: None,
+        usage_read: None,
     }
 }
 
@@ -681,9 +682,10 @@ impl App {
                 Err(UsageFailure::new(REFRESH_TOO_SLOW))
             }
         };
-        refreshed.map_err(|failure| AppError::Upstream(failure.message))?;
+        let usage_read = refreshed.map_err(|failure| AppError::Upstream(failure.message))?;
         let updated = store.account(&id).await?.ok_or(AppError::NotFound)?;
         let mut view = account_view(&updated, &self.working_attempts().await?);
+        view.usage_read = Some(usage_read);
         let now = self.now();
         view.tokens_24h = Some(totals_view(
             store
@@ -707,24 +709,26 @@ impl App {
     /// sign-in may not read usage, or the request is throttled) does not stop the questions; a
     /// refused sign-in or a request that failed does. A sign-in that may not read usage is not
     /// a failure: its sessions report it (ADR-17).
-    async fn read_usage_and_limits(&self, account: &AccountRecord) -> Result<(), UsageFailure> {
-        let reading = self.fetch_and_record_usage(account, true).await;
-        let unread = match reading {
-            Ok(()) => None,
+    ///
+    /// `Ok` says whether the usage was read: by the reading, or with an answer that carried
+    /// both of the subscription's windows.
+    async fn read_usage_and_limits(&self, account: &AccountRecord) -> Result<bool, UsageFailure> {
+        let (reading, unread) = match self.fetch_and_record_usage(account, true).await {
+            Ok(reading) => (reading, None),
             Err(failure)
                 if matches!(
                     failure.kind,
                     UsageFailureKind::NotShared | UsageFailureKind::Throttled
                 ) =>
             {
-                Some(failure)
+                (None, Some(failure))
             }
             Err(failure) => return Err(failure),
         };
-        self.ask_about_limits(&account.id).await?;
+        let answered = self.ask_about_limits(&account.id, reading.as_ref()).await?;
         match unread {
             Some(failure) if failure.kind == UsageFailureKind::Throttled => Err(failure),
-            _ => Ok(()),
+            _ => Ok(reading.is_some() || answered),
         }
     }
 
@@ -743,7 +747,9 @@ impl App {
             .ok()
             .flatten()
             .ok_or_else(|| UsageFailure::new("the account is not there"))?;
-        self.fetch_and_record_usage(&account, false).await
+        self.fetch_and_record_usage(&account, false)
+            .await
+            .map(|_| ())
     }
 
     /// The account's stored credential, opened.
@@ -773,16 +779,31 @@ impl App {
     /// the ones stored: a limit Claude reported to a session meanwhile is newer than the
     /// answer, and a new sign-in's limits are not the previous one's (RFR-005). A failure stops
     /// the questions, becomes the account's usage note and leaves what is stored.
-    async fn ask_about_limits(&self, id: &AccountId) -> Result<(), UsageFailure> {
+    ///
+    /// A window that `reading`, the usage reading of this refresh, itself carried is not asked
+    /// about: the reading is the provider's word on it, and an answer "the model ran" (on
+    /// credits a person bought) would end a window the next reading stores again.
+    ///
+    /// `Ok` says whether an answer that carried both of the subscription's windows was
+    /// applied: that is a reading of the usage too.
+    async fn ask_about_limits(
+        &self,
+        id: &AccountId,
+        reading: Option<&AccountUsage>,
+    ) -> Result<bool, UsageFailure> {
         let default = crate::capacity::default_family();
         let stored = || async { self.deps.store.account(id).await.ok().flatten() };
         let families = match stored().await {
             Some(record) => account_usage(&record).families_at_a_limit(self.now(), default),
-            None => return Ok(()),
+            None => return Ok(false),
         };
+        let mut read = false;
         for family in families {
+            if reading.is_some_and(|reading| reading.model_window(family).is_some()) {
+                continue;
+            }
             let Some(record) = stored().await else {
-                return Ok(());
+                return Ok(read);
             };
             let asked_about = account_usage(&record);
             // The default model for its own family, else the first one offered of the family.
@@ -815,20 +836,24 @@ impl App {
                 }
             };
             let now = self.now();
-            self.change_usage_of(id, |current, mut usage| {
-                let same = current.credential == record.credential
-                    && usage.stored_limit(family) == asked_about.stored_limit(family);
-                same.then(|| {
-                    usage.record_model_answer(answer, family, now);
-                    usage
+            let applied = self
+                .change_usage_of(id, |current, mut usage| {
+                    let same = current.credential == record.credential
+                        && usage.stored_limit(family) == asked_about.stored_limit(family);
+                    same.then(|| {
+                        usage.record_model_answer(answer, family, now);
+                        usage
+                    })
                 })
-            })
-            .await;
+                .await;
+            read |= applied.is_some() && answer.five_hour.is_some() && answer.seven_day.is_some();
         }
-        Ok(())
+        Ok(read)
     }
 
-    /// Asks the provider for one account's usage and stores it; a failure becomes the account's
+    /// Asks the provider for one account's usage and stores it (`Ok(Some)` with the reading as
+    /// the provider gave it; `Ok(None)` when the subscription was signed in again during the
+    /// request, so the reading was not stored); a failure becomes the account's
     /// last error and keeps the last known usage (ROT-009). `asking`: Claude is asked about
     /// the stored limits next, so the reading leaves a model's limit without a reset to that
     /// answer ([`AccountUsage::keeping_asked`]).
@@ -836,7 +861,7 @@ impl App {
         &self,
         account: &AccountRecord,
         asking: bool,
-    ) -> Result<(), UsageFailure> {
+    ) -> Result<Option<AccountUsage>, UsageFailure> {
         let credential = self.usage_credential(account)?;
         match self.deps.usage.fetch(account.provider, &credential).await {
             Ok(mut reading) => {
@@ -845,19 +870,26 @@ impl App {
                 // A reading replaces the windows it carries; a model's own window it does not
                 // carry (a limit Claude reported for it) stays until its reset (SPEC-464). What
                 // is stored is read now, under the lock: a limit may have been recorded during
-                // the request (#72).
-                self.change_account_usage(&account.id, |stored| {
-                    Some(if asking {
-                        reading.keeping_asked(&stored, now)
-                    } else {
-                        reading.keeping_unread(&stored, now)
+                // the request (#72). A reading is the sign-in's it was asked with: when the
+                // subscription was signed in again meanwhile, it is not stored (SPEC-473).
+                let stored = self
+                    .change_usage_of(&account.id, |current, stored| {
+                        (current.credential == account.credential).then(|| {
+                            if asking {
+                                reading.keeping_asked(&stored, now)
+                            } else {
+                                reading.keeping_unread(&stored, now)
+                            }
+                        })
                     })
-                })
-                .await;
+                    .await;
+                if stored.is_none() {
+                    return Ok(None);
+                }
                 // What the provider said, not what was kept beside it.
                 self.record_usage_samples(&account.id, &reading, crate::model::USAGE_FROM_PROBE)
                     .await;
-                Ok(())
+                Ok(Some(reading))
             }
             Err(failure) if failure.kind == UsageFailureKind::NotShared => {
                 // Not an error: the sessions on this subscription report its usage. An earlier
@@ -935,7 +967,7 @@ impl App {
                 continue;
             }
             match self.fetch_and_record_usage(account, false).await {
-                Ok(()) => {
+                Ok(_) => {
                     // An idle subscription is read from a real request: ask again in minutes.
                     not_before.insert(account.id.clone(), now.plus_millis(USAGE_READ_EVERY_MS));
                 }

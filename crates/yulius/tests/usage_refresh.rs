@@ -266,6 +266,7 @@ async fn a_member_cannot_refresh_a_subscription() -> TestResult {
     let (base, seen) = claude(|_| ran(&[])).await?;
     let h = harness_at(base).await?;
     let admin = setup_superadmin_creds(&h).await?;
+    support::configure_github_app(&h).await?;
     let alice = support::admit_and_sign_in(&h, &admin, "alice", 11, false).await?;
     let limited = AccountUsage {
         weekly_fable: Some(full_week(Some(h.app.now().0 + 2 * DAY_MS))),

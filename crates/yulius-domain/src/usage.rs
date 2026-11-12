@@ -304,8 +304,9 @@ impl AccountUsage {
     ///   person bought, and no reading would replace a window stored below its limit.
     /// - It was refused: recorded like a limit a session reports ([`Self::record_limit`]), so
     ///   a window stored without a reset gets the one the answer names. An answer that names
-    ///   no believable reset keeps the one stored for the window it fills, while that is
-    ///   ahead.
+    ///   no believable reset keeps the one stored while that is ahead: for a model's limit
+    ///   the reset of its window, for the subscription's the reset of its limit, else of the
+    ///   window the refusal names.
     pub fn record_model_answer(
         &mut self,
         answer: ModelAnswer,
@@ -330,7 +331,18 @@ impl AccountUsage {
                 .model_window(named.unwrap_or(family))
                 .filter(|w| !w.is_reset(now))
                 .and_then(|w| w.resets_at),
-            LimitScope::Account => None,
+            // The subscription's own limit: the reset stored for it, else the one a reading
+            // gave the window the refusal names; either only while it is ahead.
+            LimitScope::Account => {
+                let window = match limit.window_minutes {
+                    Some(minutes) if minutes <= SESSION_WINDOW_MINUTES => self.primary,
+                    Some(_) => self.secondary,
+                    None => None,
+                };
+                self.limit_resets_at
+                    .filter(|at| self.limit_reached && *at > now)
+                    .or_else(|| window.and_then(|w| w.resets_at).filter(|at| *at > now))
+            }
         };
         let resets_at = limit.believed_reset(now).or(stored);
         self.record_limit(ReportedLimit { resets_at, ..limit }, family, now);
@@ -1202,6 +1214,33 @@ mod tests {
         ended.record_model_answer(unnamed, fable, NOW);
         assert_eq!(ended.limit_resets_at, None, "a passed reset is not carried");
         assert!(ended.limit_in_effect(NOW));
+        // No limit stored, and a reading gave the window that is refused its reset: the limit
+        // ends then. The other window's reset is not this limit's, nor one that passed.
+        let read = AccountUsage {
+            primary: Some(window(Some(100.0), Some(3_000_000))),
+            secondary: Some(window(Some(40.0), Some(9_000_000))),
+            limit_resets_at: Some(Timestamp(8_000_000)),
+            ..AccountUsage::default()
+        };
+        let mut five = read;
+        five.record_model_answer(unnamed, fable, NOW);
+        assert_eq!(five.limit_resets_at, Some(Timestamp(3_000_000)));
+        let mut week = read;
+        week.record_model_answer(
+            refused(LimitScope::Account, Some(WEEKLY_WINDOW_MINUTES), None),
+            fable,
+            NOW,
+        );
+        assert_eq!(week.limit_resets_at, Some(Timestamp(9_000_000)));
+        let mut unknown = read;
+        unknown.record_model_answer(refused(LimitScope::Account, None, None), fable, NOW);
+        assert_eq!(unknown.limit_resets_at, None);
+        let mut passed_window = AccountUsage {
+            primary: Some(window(Some(100.0), Some(900_000))),
+            ..AccountUsage::default()
+        };
+        passed_window.record_model_answer(unnamed, fable, NOW);
+        assert_eq!(passed_window.limit_resets_at, None);
         assert_eq!(
             own.weekly_fable,
             Some(full_week(Some(5_000_000))),
