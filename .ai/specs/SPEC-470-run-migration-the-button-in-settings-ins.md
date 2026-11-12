@@ -529,12 +529,14 @@ Settings → Instance
   row and twice pinned to one CPU after its passing states were made to hold (`df6e9db4`).
 - **Gate.** `scripts/dev ci` at `8fe8b7a4` exited 0: repository checks, `cargo check`, `fmt`,
   `clippy` for Linux and macOS, 3908 tests run, 3908 passed, 16 skipped, doctests, `cargo
-  deny`, `cargo shear`, `cargo doc`. The commit after it changes this spec only. `dev` is
-  merged in six times: `32b5a46a` (a conflict in `finish()` and a variable the other side had
+  deny`, `cargo shear`, `cargo doc`. After it come this spec's Evidence and one more merge of
+  `dev` without a conflict (`4a31c6c0`: `host setup` only; the move's and `host setup`'s tests
+  were run again on it). `dev` is merged in seven times: `32b5a46a` (a conflict in `finish()` and a variable the other side had
   renamed), `4e5bb5de` (none), `e1911ed3` (the warm copy: conflicts in `finish()`, `abort()`,
   the flow and target tests and three documents, all resolved by hand; the test that names
   every option of the command stopped compiling on the new `--max-downtime`, which is what it
-  is for), `b1fa9629` and `8fe8b7a4` (one line of the web README each) and `59ec8cf5` (none).
+  is for), `b1fa9629` and `8fe8b7a4` (one line of the web README each), `59ec8cf5` and
+  `4a31c6c0` (none).
 - **Security scan.** `yulius security-scan`: "Security scan disabled: Vidoc is turned off in
   Yulius … nothing was scanned." Disabled, not passed.
 - **Issues.** #1196 (the plan's own update check looks for `active` only) and #1201 (the update
