@@ -66,6 +66,12 @@ pub struct RotationInput {
     pub task_provider: Provider,
     /// Model family of the task: its weekly cap binds too.
     pub family: ModelFamily,
+    /// Model family of the model the task falls back to while no account is a candidate for
+    /// `family` (SPEC-482); `None` for a task that waits instead.
+    pub fallback: Option<ModelFamily>,
+    /// Model family of the model the run on `current` was launched with; `None` without a run,
+    /// or for one launched with the task's own model (`family`).
+    pub running: Option<ModelFamily>,
     /// All connected accounts. For [`Trigger::LimitReached`], callers fold the observed limit
     /// into the current account's usage first so its reset time is known.
     pub accounts: Vec<AccountView>,
@@ -257,10 +263,36 @@ fn quantized(score: f64) -> i64 {
     (score * 1_000_000.0).round() as i64
 }
 
-/// Candidates for a task of the input's provider and family, best first, excluding `exclude`.
+/// The model family a run placed now is launched with (SPEC-482 FBK-002): the task's own while
+/// an account is a candidate for it, else its fallback's while an account is a candidate for
+/// that, else the task's own (it waits).
+#[must_use]
+pub fn placing_family(input: &RotationInput) -> ModelFamily {
+    let runs = |family| {
+        input.accounts.iter().any(|a| {
+            a.provider == input.task_provider
+                && assess(a, input.now, input.threshold, family).is_some()
+        })
+    };
+    match input.fallback {
+        Some(fallback) if !runs(input.family) && runs(fallback) => fallback,
+        _ => input.family,
+    }
+}
+
+/// Candidates for a run of the input's provider placed now ([`placing_family`]), best first,
+/// excluding `exclude`.
 #[must_use]
 pub fn ranked<'a>(
     input: &'a RotationInput,
+    exclude: Option<&AccountId>,
+) -> Vec<(&'a AccountView, Assessment)> {
+    ranked_for(input, placing_family(input), exclude)
+}
+
+fn ranked_for<'a>(
+    input: &'a RotationInput,
+    family: ModelFamily,
     exclude: Option<&AccountId>,
 ) -> Vec<(&'a AccountView, Assessment)> {
     let mut candidates: Vec<(&AccountView, Assessment)> = input
@@ -268,7 +300,7 @@ pub fn ranked<'a>(
         .iter()
         .filter(|a| a.provider == input.task_provider && Some(&a.id) != exclude)
         .filter_map(|a| {
-            assess(a, input.now, input.threshold, input.family).map(|assessment| (a, assessment))
+            assess(a, input.now, input.threshold, family).map(|assessment| (a, assessment))
         })
         .collect();
     candidates.sort_by(|(a, x), (b, y)| {
@@ -294,14 +326,16 @@ pub fn ranked<'a>(
 
 /// Decides whether and where a task's run should go (SPEC-001 §7.4).
 ///
-/// Never panics; an unknown current account is treated as unusable.
+/// A run is placed with [`placing_family`]: the task's fallback model while no account can run
+/// its own (SPEC-482). Never panics; an unknown current account is treated as unusable.
 #[must_use]
 pub fn decide(input: &RotationInput, trigger: Trigger) -> (Decision, DecisionReason) {
+    let placing = Placing::of(input);
     match trigger {
-        Trigger::Start => select_or_wait(input, None),
-        Trigger::Proactive => proactive(input),
-        Trigger::LimitReached => select_or_wait(input, input.current.as_ref()),
-        Trigger::Manual { account } => manual(input, account),
+        Trigger::Start => placing.select_or_wait(None),
+        Trigger::Proactive => proactive(&placing),
+        Trigger::LimitReached => placing.select_or_wait(placing.left),
+        Trigger::Manual { account } => manual(&placing, account),
     }
 }
 
@@ -311,13 +345,21 @@ pub fn decide(input: &RotationInput, trigger: Trigger) -> (Decision, DecisionRea
 /// reset, whatever a reading said since: the task waits for that reset and is not started on
 /// `left_out` at every reading. With no reset known, nothing would ever take the task on, so
 /// `left_out` is a candidate like any other.
+///
+/// Leaving out is about the task's own model (SPEC-482 FBK-007): it never makes a fallback by
+/// itself, and a pool that is in fallback anyway leaves nothing out, since the fallback is
+/// another model than the one `left_out` refused.
 #[must_use]
 pub fn decide_leaving_out(
     input: &RotationInput,
     trigger: Trigger,
     left_out: &AccountId,
 ) -> (Decision, DecisionReason) {
+    if placing_family(input) != input.family {
+        return decide(input, trigger);
+    }
     let mut without = input.clone();
+    without.fallback = None;
     for account in &mut without.accounts {
         if &account.id == left_out {
             account.usage.limit_reached = true;
@@ -334,14 +376,56 @@ fn find<'a>(input: &'a RotationInput, id: &AccountId) -> Option<&'a AccountView>
     input.accounts.iter().find(|a| &a.id == id)
 }
 
-fn proactive(input: &RotationInput) -> (Decision, DecisionReason) {
+/// One decision's view of where a run would be placed.
+struct Placing<'a> {
+    input: &'a RotationInput,
+    /// The family a run placed now is launched with ([`placing_family`]).
+    family: ModelFamily,
+    /// The account a placement after a limit, or off an account the run cannot stay on, leaves
+    /// out: the current one, while the run placed would be of the model the current run was
+    /// launched with. A run that changes its model may stay on its subscription (SPEC-482
+    /// FBK-003): what it hit there binds the other model.
+    left: Option<&'a AccountId>,
+}
+
+impl<'a> Placing<'a> {
+    fn of(input: &'a RotationInput) -> Self {
+        let family = placing_family(input);
+        Self {
+            input,
+            family,
+            left: input
+                .current
+                .as_ref()
+                .filter(|_| input.running.unwrap_or(input.family) == family),
+        }
+    }
+
+    fn select_or_wait(&self, exclude: Option<&AccountId>) -> (Decision, DecisionReason) {
+        match ranked_for(self.input, self.family, exclude).first() {
+            Some((account, assessment)) => switch(account, assessment.tier),
+            None => (
+                Decision::Wait {
+                    until: available_again(self.input),
+                },
+                DecisionReason::NoCapacity,
+            ),
+        }
+    }
+}
+
+fn proactive(placing: &Placing<'_>) -> (Decision, DecisionReason) {
+    let input = placing.input;
     let current = input
         .current
         .as_ref()
         .and_then(|id| find(input, id))
         .filter(|a| a.provider == input.task_provider);
+    // A run stays by the model it was launched with: one on the fallback is not restarted
+    // because the task's own model runs again (SPEC-482 FBK-004).
+    let running = input.running.unwrap_or(input.family);
     if let Some(current) = current
-        && let Some(assessment) = assess(current, input.now, input.threshold, input.family)
+        && let Some(assessment) = assess(current, input.now, input.threshold, running)
     {
         let reason = if assessment.tier == Tier::UnknownUsage {
             DecisionReason::CurrentUsageUnknown
@@ -350,14 +434,15 @@ fn proactive(input: &RotationInput) -> (Decision, DecisionReason) {
         };
         return (Decision::Stay, reason);
     }
-    select_or_wait(input, input.current.as_ref())
+    placing.select_or_wait(placing.left)
 }
 
-fn manual(input: &RotationInput, account: Option<AccountId>) -> (Decision, DecisionReason) {
+fn manual(placing: &Placing<'_>, account: Option<AccountId>) -> (Decision, DecisionReason) {
+    let input = placing.input;
     let refuse = |refusal| (Decision::Stay, DecisionReason::ManualRefused(refusal));
     let Some(id) = account else {
         // "Rotate now": the best other account.
-        return match ranked(input, input.current.as_ref()).first() {
+        return match ranked_for(input, placing.family, input.current.as_ref()).first() {
             Some((target, assessment)) => switch(target, assessment.tier),
             None => refuse(Refusal::NoCandidate),
         };
@@ -375,8 +460,8 @@ fn manual(input: &RotationInput, account: Option<AccountId>) -> (Decision, Decis
         return refuse(Refusal::Unavailable);
     }
     // A person may use what the pool keeps in reserve above its threshold, never a full window
-    // or a limit in effect (SPEC-447 MOV-002).
-    if target.usage.exhausted_for(input.now, 100.0, input.family) {
+    // or a limit in effect (SPEC-447 MOV-002), judged for the model the run is placed with.
+    if target.usage.exhausted_for(input.now, 100.0, placing.family) {
         return refuse(Refusal::Exhausted);
     }
     (
@@ -396,33 +481,19 @@ fn switch(account: &AccountView, tier: Tier) -> (Decision, DecisionReason) {
     )
 }
 
-fn select_or_wait(
-    input: &RotationInput,
-    exclude: Option<&AccountId>,
-) -> (Decision, DecisionReason) {
-    match ranked(input, exclude).first() {
-        Some((account, assessment)) => switch(account, assessment.tier),
-        None => (
-            Decision::Wait {
-                until: available_again(input),
-            },
-            DecisionReason::NoCapacity,
-        ),
-    }
-}
-
 /// The earliest known time a healthy account of the task's provider becomes a candidate again
-/// (ROT-010); `None` when no such time is known (for example no account at all, or limits
-/// without a reset time).
+/// (ROT-010), for the task's own model or its fallback (SPEC-482); `None` when no such time is
+/// known (for example no account at all, or limits without a reset time).
 #[must_use]
 pub fn available_again(input: &RotationInput) -> Option<Timestamp> {
     input
         .accounts
         .iter()
         .filter(|a| a.healthy && a.provider == input.task_provider)
-        .filter_map(|a| {
-            a.usage
-                .available_at_for(input.now, input.threshold, input.family)
+        .flat_map(|a| {
+            std::iter::once(input.family)
+                .chain(input.fallback)
+                .filter_map(|family| a.usage.available_at_for(input.now, input.threshold, family))
         })
         .min()
 }
@@ -472,6 +543,8 @@ mod tests {
             current: current.map(id).transpose()?,
             task_provider: A,
             family: ModelFamily::Any,
+            fallback: None,
+            running: None,
             accounts,
             now: NOW,
             threshold: THRESHOLD,
@@ -965,6 +1038,271 @@ mod tests {
         assert_eq!(
             switched_to(&decide(&rotation, Trigger::Proactive).0),
             Some("a2")
+        );
+        Ok(())
+    }
+
+    /// A subscription whose Fable allowance is used up until `resets_in_hours` from now, with
+    /// room in its 5-hour window (`five` %) and its week.
+    fn fable_out(five: f64, resets_in_hours: Option<i64>) -> AccountUsage {
+        let mut usage = usage(five, 61.0, Some(100));
+        usage.record_limit(
+            crate::usage::ReportedLimit {
+                scope: crate::usage::LimitScope::Model(None),
+                window_minutes: Some(crate::usage::WEEKLY_WINDOW_MINUTES),
+                resets_at: resets_in_hours.map(|h| NOW.plus_millis(h * HOUR)),
+            },
+            ModelFamily::Fable,
+            NOW,
+        );
+        usage
+    }
+
+    /// A Fable task that falls back to Opus, on `current`.
+    fn fable_task(
+        current: Option<&str>,
+        accounts: Vec<AccountView>,
+    ) -> Result<RotationInput, IdError> {
+        let mut rotation = input(current, accounts)?;
+        rotation.family = ModelFamily::Fable;
+        rotation.fallback = Some(ModelFamily::Opus);
+        Ok(rotation)
+    }
+
+    /// SPEC-482 FBK-002: with Fable used up on every subscription and room for Opus, a run is
+    /// placed with the fallback's family; with a subscription that still runs Fable, or without
+    /// a fallback, nothing changes.
+    #[test]
+    fn a_fable_task_is_placed_with_its_fallback_when_no_subscription_runs_fable()
+    -> Result<(), IdError> {
+        let all_out = fable_task(
+            None,
+            vec![
+                account("first", fable_out(0.0, Some(40)))?,
+                account("second", fable_out(30.0, Some(90)))?,
+            ],
+        )?;
+        assert_eq!(placing_family(&all_out), ModelFamily::Opus);
+        assert_eq!(
+            decide(&all_out, Trigger::Start),
+            (
+                Decision::Switch {
+                    account: id("first")?
+                },
+                DecisionReason::Selected { tier: Tier::Roomy }
+            )
+        );
+        // A task that has no fallback waits for the first allowance, as before (SPEC-464).
+        let mut waits = all_out.clone();
+        waits.fallback = None;
+        assert_eq!(placing_family(&waits), ModelFamily::Fable);
+        assert_eq!(
+            decide(&waits, Trigger::Start).0,
+            Decision::Wait {
+                until: Some(NOW.plus_millis(40 * HOUR))
+            }
+        );
+        // One subscription still runs Fable: the task goes there with its own model, though the
+        // other has more room.
+        let one_left = fable_task(
+            None,
+            vec![
+                account("out", fable_out(0.0, Some(40)))?,
+                account("busy", usage(41.0, 80.0, Some(100)))?,
+            ],
+        )?;
+        assert_eq!(placing_family(&one_left), ModelFamily::Fable);
+        assert_eq!(
+            switched_to(&decide(&one_left, Trigger::Start).0),
+            Some("busy")
+        );
+        // The fallback's own cap binds a run placed with it.
+        let mut capped = fable_out(0.0, Some(40));
+        capped.weekly_opus = Some(window(99.0, Some(60)));
+        let opus_capped = fable_task(
+            None,
+            vec![
+                account("capped", capped)?,
+                account("later", fable_out(30.0, Some(90)))?,
+            ],
+        )?;
+        assert_eq!(
+            switched_to(&decide(&opus_capped, Trigger::Start).0),
+            Some("later")
+        );
+        // An unhealthy subscription, or one of another provider, runs neither model.
+        let mut broken = account("broken", fable_out(0.0, Some(40)))?;
+        broken.healthy = false;
+        let none = fable_task(None, vec![broken])?;
+        assert_eq!(placing_family(&none), ModelFamily::Fable);
+        assert_eq!(
+            decide(&none, Trigger::Start).0,
+            Decision::Wait { until: None }
+        );
+        Ok(())
+    }
+
+    /// SPEC-482 FBK-003: a run that changes its model may stay on its subscription, so one
+    /// subscription is enough; a run that would keep its model is moved off it, as at any limit.
+    #[test]
+    fn a_run_that_changes_its_model_may_stay_on_its_subscription() -> Result<(), IdError> {
+        let alone = fable_task(Some("only"), vec![account("only", fable_out(10.0, None))?])?;
+        for trigger in [Trigger::LimitReached, Trigger::Proactive] {
+            assert_eq!(
+                decide(&alone, trigger.clone()),
+                (
+                    Decision::Switch {
+                        account: id("only")?
+                    },
+                    DecisionReason::Selected { tier: Tier::Roomy }
+                ),
+                "{trigger:?}"
+            );
+        }
+        // The run is on the fallback already and hit a limit there: its subscription is left
+        // out, and with nothing else the task waits.
+        let mut on_fallback = alone.clone();
+        on_fallback.running = Some(ModelFamily::Opus);
+        on_fallback.accounts[0].usage.weekly_opus = Some(window(100.0, Some(30)));
+        assert_eq!(
+            decide(&on_fallback, Trigger::LimitReached).0,
+            Decision::Wait {
+                until: Some(NOW.plus_millis(30 * HOUR))
+            }
+        );
+        // A limit reported on the fallback that shows in no window still moves the run off.
+        let mut unseen = alone.clone();
+        unseen.running = Some(ModelFamily::Opus);
+        unseen
+            .accounts
+            .push(account("other", fable_out(50.0, Some(90)))?);
+        assert_eq!(
+            switched_to(&decide(&unseen, Trigger::LimitReached).0),
+            Some("other")
+        );
+        // "Rotate now" still asks for another subscription.
+        assert_eq!(
+            decide(&alone, Trigger::Manual { account: None }),
+            (
+                Decision::Stay,
+                DecisionReason::ManualRefused(Refusal::NoCandidate)
+            )
+        );
+        Ok(())
+    }
+
+    /// SPEC-482 FBK-004: a run stays while its subscription can run the model it was launched
+    /// with. One on the fallback is not restarted because Fable runs again; its next placement
+    /// takes the task's own model.
+    #[test]
+    fn a_run_stays_by_the_model_it_was_launched_with() -> Result<(), IdError> {
+        let mut back = fable_task(
+            Some("a"),
+            vec![
+                account("a", fable_out(10.0, Some(40)))?,
+                account("b", usage(20.0, 20.0, Some(100)))?,
+            ],
+        )?;
+        back.running = Some(ModelFamily::Opus);
+        assert_eq!(placing_family(&back), ModelFamily::Fable);
+        assert_eq!(
+            decide(&back, Trigger::Proactive),
+            (Decision::Stay, DecisionReason::CurrentUsable)
+        );
+        // A run of the task's own model on that subscription cannot stay: it moves to Fable.
+        back.running = None;
+        assert_eq!(switched_to(&decide(&back, Trigger::Proactive).0), Some("b"));
+        // The run on the fallback ends anyway (its 5-hour window): placed anew, with Fable.
+        back.running = Some(ModelFamily::Opus);
+        back.accounts[0].usage.primary = Some(window(98.0, Some(2)));
+        assert_eq!(switched_to(&decide(&back, Trigger::Proactive).0), Some("b"));
+        assert_eq!(switched_to(&decide(&back, Trigger::Start).0), Some("b"));
+        Ok(())
+    }
+
+    /// SPEC-482 FBK-002: a person's choice is judged for the model the run would be placed with,
+    /// and with no subscription for either model the task waits for the first that can run one.
+    #[test]
+    fn a_choice_and_a_wait_follow_the_placing_model() -> Result<(), IdError> {
+        let choose = |name: &str| -> Result<Trigger, IdError> {
+            Ok(Trigger::Manual {
+                account: Some(id(name)?),
+            })
+        };
+        let all_out = fable_task(
+            Some("a"),
+            vec![
+                account("a", fable_out(10.0, Some(40)))?,
+                account("b", fable_out(20.0, Some(90)))?,
+            ],
+        )?;
+        assert_eq!(
+            decide(&all_out, choose("b")?),
+            (
+                Decision::Switch { account: id("b")? },
+                DecisionReason::ManualChoice
+            )
+        );
+        // While another subscription runs Fable, one that cannot is refused, as before.
+        let mut one_left = all_out.clone();
+        one_left
+            .accounts
+            .push(account("c", usage(20.0, 20.0, Some(100)))?);
+        assert_eq!(
+            decide(&one_left, choose("b")?).1,
+            DecisionReason::ManualRefused(Refusal::Exhausted)
+        );
+        // Every 5-hour window full too: the wait ends at the first 5-hour reset (in 2 h), when
+        // the fallback can run, not at the allowance's in 40 h.
+        let mut full = all_out.clone();
+        for account in &mut full.accounts {
+            account.usage.primary = Some(window(100.0, Some(2)));
+        }
+        assert_eq!(
+            decide(&full, Trigger::LimitReached),
+            (
+                Decision::Wait {
+                    until: Some(NOW.plus_millis(2 * HOUR))
+                },
+                DecisionReason::NoCapacity
+            )
+        );
+        full.fallback = None;
+        assert_eq!(
+            decide(&full, Trigger::LimitReached).0,
+            Decision::Wait {
+                until: Some(NOW.plus_millis(40 * HOUR))
+            }
+        );
+        Ok(())
+    }
+
+    /// SPEC-482 FBK-007: leaving a subscription out (SPEC-464 UCL-010) never makes a fallback by
+    /// itself, and while the pool is in fallback nothing is left out: the fallback is another
+    /// model than the one that subscription refused.
+    #[test]
+    fn a_subscription_left_out_and_the_fallback() -> Result<(), IdError> {
+        let refusing = id("refusing")?;
+        // The reading of "refusing" shows Fable again; "later" is out until its reset.
+        let known = fable_task(
+            None,
+            vec![
+                account("refusing", usage(0.0, 10.0, Some(100)))?,
+                account("later", fable_out(10.0, Some(40)))?,
+            ],
+        )?;
+        assert_eq!(
+            decide_leaving_out(&known, Trigger::Start, &refusing).0,
+            Decision::Wait {
+                until: Some(NOW.plus_millis(40 * HOUR))
+            }
+        );
+        let mut all_out = known.clone();
+        all_out.accounts[0].usage = fable_out(0.0, None);
+        all_out.accounts[1].in_use = 1;
+        assert_eq!(
+            switched_to(&decide_leaving_out(&all_out, Trigger::Start, &refusing).0),
+            Some("refusing")
         );
         Ok(())
     }
