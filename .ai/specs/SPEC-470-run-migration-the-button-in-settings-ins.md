@@ -77,7 +77,9 @@ The request and the root helper
   refused), the version, a timestamp at most 15 minutes old and 60 s ahead, and an id it has not
   acted on: every id it handled is kept in `<state>/handled` until its request would be refused
   as stale (16 minutes; at most 1024 ids), so an id is acted on once, whatever came after it. A
-  request it cannot record there is not run, and the helper ends with an error. It refuses
+  request it cannot record there is not run, and the helper ends with an error; a record that
+  is damaged in part still tells its other lines, and one that cannot be read is not written
+  over. It refuses
   while the update helper's unit runs (`active`,
   `activating` or `reloading`), and a target whose host is not in `YULIUS_MIGRATE_TARGETS` when
   the root-owned unit sets that list. A refusal changes nothing and is reported with its reason,
@@ -140,8 +142,10 @@ Application and API
   id, target, phase, lines, `public_key`, `new_url`, `updated_at`, and `by_command` when it was
   written after the helper's last run ended, or without any, that is by a run started on the
   host, and `earlier` when it was written before the helper's last run started and that run
-  ended without one of its own: the recorded move's, not what the run found; while a run has
-  written none of its own, an earlier one is not shown at all); `arrived`
+  ended without one of its own: the recorded move's, not what the run found; a run that was
+  refused, by the helper or by the command with exit 2, has none of its own whenever the
+  checklist was written; while a run has written none of its own, an earlier one is not shown
+  at all); `arrived`
   (the checklist a move to this host left, MVB-011); and `can` (`plan`, `move`,
   `abort`: what would be accepted now). A request the helper took is removed when the view is
   read, one never taken after 15 minutes, and no copy of the data directory takes the request
@@ -174,7 +178,8 @@ Settings → Instance
   key has to be added (the first plan for a host, MVB-004): the key line with a copy button,
   what to do with it, and "Show the plan" again. A plan with a failed line offers no move. A
   checklist that is the recorded move's (`earlier`: the command refused this request) is said
-  to be that move's and is never read as what the plan found.
+  to be that move's and is never read as what the plan found; when that move is over (aborted
+  or done) it is said to be the last move's, and nothing is said to be recorded.
 - MVB-032 **Run migration.** Behind a dialog that says root on this host will give this
   instance's data (every repository, secret and key) to the named host and start it there, that
   the data is copied while the instance keeps working and what the freeze is for (what changed
@@ -359,6 +364,13 @@ Settings → Instance
   `--max-downtime`: MIG-060 names the target, the URL and the disks, and the move then decides
   as the command does without the option (it copies again while that shortens the freeze). A
   field for it on the page is issue #1202.
+- **Review round 2** (on `d4c748a2`): approve, with one minor note and two nits in this change's
+  code. The approved head was merged (#1214) and the three are answered in a second pull
+  request, each with a test first: a commit for them before the merge would have voided the
+  approval while `dev` kept moving (it was merged in seven times). The 1024 ids the helper
+  keeps can be pushed out by whoever writes that many requests in 16 minutes, which is the
+  service user alone and gains it nothing (it can write a request under a new id at any time):
+  said in the code, not changed.
 - **No start limit on the helper's unit.** On a real host six requests within 10 s (the helper
   ends at once when it refuses) hit systemd's default start limit, and systemd then failed the
   path unit too: nothing was taken until root reset it, and the page said the helper was not

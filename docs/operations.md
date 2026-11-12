@@ -2361,8 +2361,8 @@ reset-failed yulius-migrate.service yulius-migrate.path` and starts it again.
 **What the helper checks.** The request must be a regular file (not a link) owned by the data
 directory's owner, who is not root, at most 16 KiB, with exactly the fields above, at most 15
 minutes old, and an id it has not acted on: it keeps every id it handled in `handled` until that
-request would be refused as stale, and when it cannot write that file it runs nothing and the unit
-fails. Every value is checked again with the rules the server used: the host as `ssh` takes it
+request would be refused as stale, and when it cannot read or write that file it runs nothing and
+the unit fails. Every value is checked again with the rules the server used: the host as `ssh` takes it
 (`root@host` or `host`, nothing that reads as an option), a port from 1 to 65535, a public URL that
 is `https://host` and nothing more, at most two different disks under `/dev/`; an abort names none
 of them. It refuses while the update helper's unit runs, and a host outside

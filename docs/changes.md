@@ -6,6 +6,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-12
 
+- Moving from Settings → Instance: three notes of the review that approved it, answered after the
+  merge (SPEC-470, task #447, follow-up of #1214). The card no longer says "A move to … is
+  recorded" over the checklist of a move that was aborted or finished: it says the last move is
+  over. A request that was refused (by the helper, or by the command before it changed anything)
+  never has a checklist of its own, also when another run wrote one in the same second. The
+  helper's record of the requests it handled survives a damaged part, and is not written over when
+  it cannot be read.
 - A superadmin moves the instance to another host from Settings → Instance (SPEC-470, task #447,
   ADR-0305; slice D of the move). The card **Move to another host** takes the new host, its SSH
   port, a public URL and data disks and shows the plan of `yulius instance migrate`: first the line
