@@ -553,10 +553,11 @@ That request says the task does not go on by itself, so it ends when the session
 whatever woke it: Claude Code's wake-up, a prompt Yulius typed, a session Yulius restarted, or no
 prompt anyone sees. A prompt alone ends nothing, since the API may refuse it again. Only the
 request Yulius opened ends this way (`end_task_needs_you_asking`, by its action in one statement);
-a request the agent made stays. The pause's flag is answered by work like a notice's, and the
-replay after a restart folds when the agent first worked after the last pause
-(`TranscriptFacts::worked_since_goal_pause`): the request ends, and a task that read Needs you
-since before that work follows its session.
+a request the agent made stays. The pause's flag is answered by work like a notice's
+(`notice_attention_ms`); a run that starts while the request is open takes the flag's time back
+from the task's state, which a restart of Yulius forgot. The replay after a restart folds when
+the agent first worked after the last pause (`TranscriptFacts::worked_since_goal_pause`): the
+request ends, and the task the pause flagged follows its session.
 
 ```mermaid
 stateDiagram-v2

@@ -49,11 +49,13 @@ Yulius had restarted, and twice a person's "continue".
 - The pause's flag (the activity `needs_attention`) is answered by work like a notice's
   (`notice_attention_ms`, STA-003): a task whose session goes on with no prompt seen reads Working.
   A task that was flagged before the pause keeps that flag.
+- A restart of Yulius forgets when the pause flagged the task. A run that starts while the
+  pause's request is open takes that time back from the task's state, when the task reads Needs
+  you since the request was asked (the request is recorded first, the flag raised next).
 - The replay after a restart of Yulius folds when the agent first worked after the last pause
   (`TranscriptFacts::worked_since_goal_pause`). With such work the request ends, the pause is no
-  longer the transcript's last word, and a task that reads Needs you since before that work
-  follows its session (Working while the turn is open, settled once it closed). A flag raised
-  after the work began is left alone: something the session did later raised it.
+  longer the transcript's last word, and the flag is answered by that work as it is live: the
+  task follows its session (Working while the turn is open, settled once it closed).
 - The end is audited as `task.needs_you.resolved` by `system`, and the request's wait is measured
   like an answered one.
 
@@ -82,3 +84,7 @@ Yulius had restarted, and twice a person's "continue".
   Yulius with this change, when their transcript is read again.
 - The match follows the request's action text. Rewording it leaves requests stored with the old
   wording to a person's message, as before.
+- A session that worked and was paused again while Yulius was down keeps the request of the
+  first pause, with its words and its age, where the live watcher ends it and asks anew. The task
+  reads Needs you either way; asking anew there needs the time of each pause, which the
+  transcript's fold does not keep (as before this change: SPEC-333 asks once).
