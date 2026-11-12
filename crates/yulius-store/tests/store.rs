@@ -374,7 +374,11 @@ async fn a_flags_reason_is_read_only_while_the_task_reads_that_flag() -> R {
         }),
         "a flagged task works for nobody (SPEC-087)"
     );
-    assert_eq!(store.task_attention(&t.id).await?, Some(gate.clone()));
+    assert_eq!(
+        store.task_attention(&t.id).await?,
+        Some((gate.clone(), Timestamp(30))),
+        "the reason, and when its flag was raised"
+    );
 
     // Flagged already: the flag, its time and its reason stay, with or without a new reason.
     assert!(
@@ -388,7 +392,10 @@ async fn a_flags_reason_is_read_only_while_the_task_reads_that_flag() -> R {
             .await?
     );
     assert_eq!(state_at().await?, Some(Timestamp(30)));
-    assert_eq!(store.task_attention(&t.id).await?, Some(gate.clone()));
+    assert_eq!(
+        store.task_attention(&t.id).await?,
+        Some((gate.clone(), Timestamp(30)))
+    );
 
     // The task works again: the reason is not read, though no statement cleared it.
     store
@@ -420,7 +427,10 @@ async fn a_flags_reason_is_read_only_while_the_task_reads_that_flag() -> R {
             .flag_attention(&t.id, None, Some(&secret), Timestamp(100))
             .await?
     );
-    assert_eq!(store.task_attention(&t.id).await?, Some(secret.clone()));
+    assert_eq!(
+        store.task_attention(&t.id).await?,
+        Some((secret.clone(), Timestamp(100)))
+    );
 
     // A task that is not running reads no reason, also when its state is of the flag's time.
     store
@@ -485,7 +495,10 @@ async fn a_flag_from_a_state_the_task_left_is_not_raised() -> R {
             .flag_attention(&t.id, Some(read), Some(&secret), Timestamp(30))
             .await?
     );
-    assert_eq!(store.task_attention(&t.id).await?, Some(secret));
+    assert_eq!(
+        store.task_attention(&t.id).await?,
+        Some((secret, Timestamp(30)))
+    );
     // A task with no activity yet is flagged from that state too.
     let u = store.insert_task(&task("t2", &sid, &uid)?).await?;
     store

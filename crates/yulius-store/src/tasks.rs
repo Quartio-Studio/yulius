@@ -434,26 +434,25 @@ impl TaskStore for SqliteStore {
         .await
     }
 
-    async fn task_attention(&self, id: &TaskId) -> AppResult<Option<AttentionRecord>> {
+    async fn task_attention(&self, id: &TaskId) -> AppResult<Option<(AttentionRecord, Timestamp)>> {
         let id = id.as_str().to_owned();
-        let text: Option<String> = self
+        let row: Option<(String, i64)> = self
             .call(move |c| {
                 c.query_row(
                     // CASE orders the checks: a row that is not JSON gives no reason, not an
                     // error.
-                    "SELECT attention FROM tasks WHERE id = ?1 AND status = 'running' \
+                    "SELECT attention, state_at FROM tasks WHERE id = ?1 AND status = 'running' \
                      AND activity = 'needs_attention' AND CASE WHEN json_valid(attention) \
                        THEN json_extract(attention, '$.at') END = state_at",
                     [id],
-                    |row| row.get::<_, Option<String>>(0),
+                    |row| Ok((row.get(0)?, row.get(1)?)),
                 )
                 .optional()
-                .map(Option::flatten)
                 .map_err(db)
             })
             .await?;
         // JSON of another shape (a newer Yulius wrote it) gives no reason either.
-        Ok(text.and_then(|text| serde_json::from_str(&text).ok()))
+        Ok(row.and_then(|(text, at)| Some((serde_json::from_str(&text).ok()?, Timestamp(at)))))
     }
 
     async fn delete_task(&self, id: &TaskId) -> AppResult<bool> {
@@ -1482,7 +1481,7 @@ mod tests {
         row(r#"{"kind": "terminal", "at": 100, "later": true}"#).await?;
         assert_eq!(
             store.task_attention(&task).await?,
-            Some(AttentionRecord::terminal(None)),
+            Some((AttentionRecord::terminal(None), Timestamp(100))),
             "a field a newer Yulius added is ignored"
         );
         Ok(())

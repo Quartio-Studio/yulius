@@ -327,10 +327,13 @@ impl App {
                 // task waiting or done, so chains and onboarding see it as finished
                 // (F 2026-10-11).
                 if notification_needs_a_person(input) {
-                    // Its question is in the terminal, in Claude Code's own words (SPEC-472).
+                    // Its question is in the terminal, in Claude Code's own words, and the flag
+                    // says whether the session's work answers it: a restart of Yulius forgets
+                    // the time kept below (SPEC-472).
                     self.flag_attention(
                         &ctx.task.id,
-                        crate::attention::AttentionRecord::terminal(input.message.as_deref()),
+                        crate::attention::AttentionRecord::terminal(input.message.as_deref())
+                            .answered_by_work(notice_answered_by_work(input)),
                     )
                     .await?;
                     // The agent's next work shows the person answered (STA-003), unless the

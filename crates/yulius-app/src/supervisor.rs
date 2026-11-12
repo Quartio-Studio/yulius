@@ -4277,6 +4277,9 @@ impl App {
         // A request for a goal pause that is still open (made before this server started) is
         // answered by this run's work, like one made while it is watched (SPEC-469 GPW-004).
         self.watch_goal_pause_request(&task_id).await;
+        // So is a flag that the session's work answers (a notice's), raised before this server
+        // started: its reason says so (SPEC-472 ATN-010).
+        self.watch_answerable_flag(&task_id).await;
         let mut session_id = attempt.provider_session_id.clone();
         let mut watch = None;
         let mut last_drift_check = Timestamp(0);

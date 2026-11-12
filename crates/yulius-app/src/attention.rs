@@ -4,7 +4,10 @@
 //! that could not be ended, a secret request). The reason is written with the flag
 //! (`tasks.attention`) and read only while the task still reads that flag, so whoever opens the
 //! task later knows what to do. The notice in its terminal reaches only the viewers connected
-//! when the flag is raised.
+//! when the flag is raised. The reason also says whether the session's own work answers the flag
+//! (STA-003), so a restart of Yulius still knows it.
+
+use std::sync::atomic::Ordering;
 
 use serde::{Deserialize, Serialize};
 use yulius_contracts::api::tasks::AttentionView;
@@ -54,6 +57,11 @@ pub struct AttentionRecord {
     /// Where they do it (a page of this Yulius).
     #[serde(default)]
     pub link: Option<String>,
+    /// The session's next work answers this flag (STA-003): its own question, which the person
+    /// answers in the terminal with no prompt to the agent. Kept with the flag so that a restart
+    /// of Yulius still knows (ATN-010); no part of the API view.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub work_answers: bool,
 }
 
 impl AttentionRecord {
@@ -65,6 +73,7 @@ impl AttentionRecord {
             problem: words.and_then(one_line),
             action: None,
             link: None,
+            work_answers: false,
         }
     }
 
@@ -76,6 +85,7 @@ impl AttentionRecord {
             problem: one_line(problem),
             action: one_line(action),
             link: None,
+            work_answers: false,
         }
     }
 
@@ -83,6 +93,13 @@ impl AttentionRecord {
     #[must_use]
     pub fn on_page(mut self, link: &str) -> Self {
         self.link = Some(link.to_owned());
+        self
+    }
+
+    /// The same reason, for a flag that the session's next work answers (or not).
+    #[must_use]
+    pub fn answered_by_work(mut self, answered: bool) -> Self {
+        self.work_answers = answered;
         self
     }
 
@@ -137,10 +154,37 @@ impl App {
             return None;
         }
         match self.deps.store.task_attention(&task.id).await {
-            Ok(reason) => reason.map(|r| r.view()),
+            Ok(reason) => reason.map(|(reason, _)| reason.view()),
             Err(err) => {
                 tracing::warn!(task = %task.id, error = %err, "reading a flag's reason failed");
                 None
+            }
+        }
+    }
+
+    /// A run of `task_id` is watched from now on: a flag that the session's work answers
+    /// (STA-003), raised before this server started and still read by the task, is answered by
+    /// that work too. A restart of Yulius forgot when the flag was raised; its reason says that
+    /// work answers it, and since when the task reads it (ATN-010). Without this the task keeps
+    /// reading Needs your action over a working session until its turn ends.
+    pub(crate) async fn watch_answerable_flag(&self, task_id: &TaskId) {
+        let runtime = self.runtime(task_id);
+        if runtime.notice_attention_ms.load(Ordering::SeqCst) != 0 {
+            return;
+        }
+        match self.deps.store.task_attention(task_id).await {
+            Ok(Some((reason, flagged))) if reason.work_answers => {
+                // Only over nothing: a flag raised meanwhile stored its own time.
+                let _ = runtime.notice_attention_ms.compare_exchange(
+                    0,
+                    flagged.0.max(1),
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                );
+            }
+            Ok(_) => {}
+            Err(err) => {
+                tracing::warn!(task = %task_id, error = %err, "reading a flag's reason failed");
             }
         }
     }
@@ -172,6 +216,25 @@ mod tests {
             AttentionRecord::yulius(&exact, "Do it.").problem.as_deref(),
             Some(exact.as_str())
         );
+    }
+
+    /// SPEC-472 ATN-010: whether work answers the flag is kept with the reason and is no part
+    /// of the view; a reason written without it says no.
+    #[test]
+    fn whether_work_answers_is_kept_with_the_reason() -> Result<(), serde_json::Error> {
+        let plain = AttentionRecord::terminal(Some("Allow Bash?"));
+        assert!(!plain.work_answers);
+        assert_eq!(
+            serde_json::to_string(&plain)?,
+            r#"{"kind":"terminal","problem":"Allow Bash?","action":null,"link":null}"#
+        );
+        let answered = plain.clone().answered_by_work(true);
+        let text = serde_json::to_string(&answered)?;
+        assert!(text.ends_with(r#""work_answers":true}"#), "{text}");
+        assert_eq!(serde_json::from_str::<AttentionRecord>(&text)?, answered);
+        assert_eq!(answered.view(), plain.view(), "the view says nothing of it");
+        assert!(!answered.answered_by_work(false).work_answers);
+        Ok(())
     }
 
     /// SPEC-472 ATN-003: the view names the kind and carries the page.

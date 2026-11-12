@@ -347,13 +347,13 @@ pub trait TaskStore: Send + Sync {
         reason: Option<&crate::attention::AttentionRecord>,
         at: Timestamp,
     ) -> AppResult<bool>;
-    /// The reason of the flag a running task reads now (SPEC-472): the one written when that
-    /// flag was raised. None for a task that reads no flag, for a flag raised without a reason
-    /// and for a reason of an earlier flag.
+    /// The reason of the flag a running task reads now (SPEC-472), the one written when that
+    /// flag was raised, and when it was raised. None for a task that reads no flag, for a flag
+    /// raised without a reason and for a reason of an earlier flag.
     async fn task_attention(
         &self,
         id: &TaskId,
-    ) -> AppResult<Option<crate::attention::AttentionRecord>>;
+    ) -> AppResult<Option<(crate::attention::AttentionRecord, Timestamp)>>;
     /// Since when `task` is in its current state and working (SPEC-087 TIM-001), if it exists.
     async fn task_times(&self, task: &TaskId) -> AppResult<Option<TaskTimes>>;
     /// Records the start of `task`'s working stretch, or its end with `None` (SPEC-087
