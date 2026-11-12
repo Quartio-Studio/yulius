@@ -660,9 +660,13 @@ ok. If not, Yulius's profile is loaded again and its file is as before the run (
 there was none), the profiles that load loaded stay loaded as after a boot, and the line says
 how to disable the second profile. The same proof decides where a person's profile in a plain
 spelling was added to a host that Yulius had set up before (the old host's hand-written rule
-copied to a new one, say): the next setup adopts it and removes Yulius's own. A dry run and a
-check name the steps up to the proof ("would load …"); what the proofs then decide only the
-run says. During that last proof Yulius's profile is out of AppArmor: a sandbox that starts
+copied to a new one, say). While only one of the two is loaded, bwrap keeps starting, and
+setup and check name both files and say what follows; once both are loaded (a boot, or the
+person loading theirs) bwrap stops starting, the check fails, and the next setup adopts the
+person's profile and removes Yulius's own. A profile of Yulius's that a person disabled with
+a link in `/etc/apparmor.d/disable/` and did not unload is unloaded by that setup, and its
+file is left where it is. A dry run and a check name the steps up to the proof
+("would load …"); what the proofs then decide only the run says. During that last proof Yulius's profile is out of AppArmor: a sandbox that starts
 in that moment fails as bwrap does without a rule. A person's profile that only AppArmor holds
 (loaded by hand from a file outside `/etc/apparmor.d`) is adopted like any other and is gone
 after a boot: the check fails then, and the next setup writes Yulius's profile again. Beside

@@ -526,6 +526,25 @@ fn the_goal_pause_waits_for_its_hold_file() -> TestResult {
     Ok(())
 }
 
+/// `/tool` is the agent going on with no prompt: one tool call in the transcript, no user record.
+#[test]
+fn the_tool_command_appends_one_tool_call() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("projects/x/s-8.jsonl");
+    let path_text = path.to_string_lossy().into_owned();
+    let output = run(
+        &["--session-id", "s-8", "--transcript", &path_text],
+        "/tool\n/notify permission_prompt\n/exit\n",
+    )?;
+    let text = stdout(&output);
+    assert!(text.contains("TOOL\nNOTIFIED\nBYE"), "{text}");
+    let records = read_jsonl(&path)?;
+    assert_eq!(records.len(), 1, "{records:?}");
+    assert_eq!(records[0]["type"], "assistant");
+    assert_eq!(records[0]["message"]["stop_reason"], "tool_use");
+    Ok(())
+}
+
 #[test]
 fn only_claude_transcripts_are_written() -> TestResult {
     let output = Command::new(EXE)
