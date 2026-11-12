@@ -68,6 +68,16 @@ fn asked_for(model: &str) -> String {
     format!("Some({model:?})")
 }
 
+/// Types `line` into run `n` of the task, once that run is live and takes input: a run is
+/// recorded live a moment before its terminal is attached, and input is refused until then.
+async fn type_into_run(app: &App, id: &TaskId, n: usize, line: &[u8]) -> TestResult {
+    live_run(app, id, n).await?;
+    wait_for("the run takes input", Duration::from_secs(30), || async {
+        app.send_input(id, line).await.is_ok()
+    })
+    .await
+}
+
 /// The stored usage of `account`, as JSON.
 async fn stored_usage(app: &App, account: &str) -> Result<Value, Box<dyn std::error::Error>> {
     let record = app
@@ -247,8 +257,7 @@ fn a_limit_on_the_fallback_binds_the_fallback_model() -> TestResult {
         assert_eq!(fable["used_percent"], 100.0, "{fable}");
         assert!(fable["resets_at"].is_number(), "{fable}");
 
-        ready(&app, &id).await?;
-        app.send_input(&id, b"again\r").await?;
+        type_into_run(&app, &id, 2, b"again\r").await?;
         wait_for("the pause", Duration::from_secs(30), || {
             has_status(&app, &id, TaskStatus::WaitingCapacity)
         })
@@ -424,8 +433,7 @@ fn a_task_refused_for_both_models_is_retried_once_then_asks_a_person() -> TestRe
         let id = new_task(&app, &sandbox, &user, "Neither model").await?;
         ready(&app, &id).await?;
         app.send_input(&id, b"hello\r").await?;
-        live_run(&app, &id, 2).await?;
-        app.send_input(&id, b"again\r").await?;
+        type_into_run(&app, &id, 2, b"again\r").await?;
         wait_for("the pause", Duration::from_secs(30), || {
             has_status(&app, &id, TaskStatus::WaitingCapacity)
         })
@@ -441,11 +449,10 @@ fn a_task_refused_for_both_models_is_retried_once_then_asks_a_person() -> TestRe
         probe.set("a-only", usage(10.0, 4 * HOUR, 30.0, 100));
         reading(&app, "a-only").await?;
         let _ = app.resume_round().await;
-        live_run(&app, &id, 3).await?;
-        app.send_input(&id, b"third\r").await?;
+        type_into_run(&app, &id, 3, b"third\r").await?;
         live_run(&app, &id, 4).await?;
         needs_nobody(&app, &id).await?;
-        app.send_input(&id, b"fourth\r").await?;
+        type_into_run(&app, &id, 4, b"fourth\r").await?;
         wait_for("the request", Duration::from_secs(30), || async {
             app.deps
                 .store
