@@ -112,6 +112,9 @@ pub struct CapacityState {
     /// marks a subscription refused takes it too, so no usage write stores the status it read
     /// before (#1211). Never held across a request to the provider.
     pub(crate) usage_writes: tokio::sync::Mutex<()>,
+    /// The deadline of a refresh in milliseconds when a test set one (0: the default,
+    /// [`crate::accounts::USAGE_REFRESH_DEADLINE`]).
+    pub(crate) refresh_deadline_ms: std::sync::atomic::AtomicU64,
 }
 
 /// A window of Claude Code's status line input as a usage window of `minutes`; `None` without a
@@ -394,7 +397,9 @@ impl App {
     /// `claude setup-token` sign-in can see: the usage endpoint refuses it. The five-hour and
     /// weekly windows replace the stored ones (per-model caps and a reported limit stay); stored
     /// when they changed — at once for a move of a point or more, a reset or the threshold, else
-    /// at most every 15 s — and sampled for the burn rate at most every 5 minutes.
+    /// at most every 15 s — and sampled for the burn rate at most every 5 minutes. Only a
+    /// reading that carries both windows says when the usage was read
+    /// ([`AccountUsage::observed_at`]).
     pub(crate) async fn session_usage(&self, account: &AccountId, limits: &RateLimits) {
         let now = self.now();
         let five_hour = session_window(limits.five_hour, 5 * 60, now);
@@ -409,7 +414,12 @@ impl App {
             .change_account_usage(account, |mut usage| {
                 usage.primary = five_hour.or(usage.primary);
                 usage.secondary = seven_day.or(usage.secondary);
-                usage.observed_at = Some(now);
+                // Claude Code's status line carries a window only while the API reports it
+                // and its reset has not passed. A reading of one window is stored, but it is
+                // no reading of the usage: the provider is asked for the rest (SPEC-473).
+                if five_hour.is_some() && seven_day.is_some() {
+                    usage.observed_at = Some(now);
+                }
                 Some(usage)
             })
             .await;

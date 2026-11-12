@@ -398,6 +398,9 @@ pub const USAGE_BACKOFF_MAX_MS: i64 = 2 * 60 * 60 * 1000;
 /// The longest a refresh waits for the provider (SPEC-473 RFR-003): under the 30 s the web
 /// client waits for an answer, so the page always gets one.
 pub const USAGE_REFRESH_DEADLINE: Duration = Duration::from_secs(25);
+/// What a refresh says when its deadline passed (SPEC-473 RFR-003).
+pub const REFRESH_TOO_SLOW: &str =
+    "Claude took too long to answer; what it had answered by then is stored.";
 /// What a refresh says when the provider did not answer the question about a stored limit
 /// (SPEC-473 RFR-004).
 pub const LIMIT_UNASKED: &str =
@@ -537,9 +540,21 @@ impl App {
         self.logins.token_grace_ms.store(ms, Ordering::SeqCst);
     }
 
+    fn usage_refresh_deadline(&self) -> Duration {
+        match self.capacity.refresh_deadline_ms.load(Ordering::SeqCst) {
+            0 => USAGE_REFRESH_DEADLINE,
+            ms => Duration::from_millis(ms),
+        }
+    }
+
     /// Overrides [`USAGE_REFRESH_DEADLINE`] for this instance (tests).
     pub fn set_usage_refresh_deadline(&self, deadline: Duration) {
-        let _ = deadline;
+        let ms = u64::try_from(deadline.as_millis())
+            .unwrap_or(u64::MAX)
+            .max(1);
+        self.capacity
+            .refresh_deadline_ms
+            .store(ms, Ordering::SeqCst);
     }
 
     fn logins_dir(&self) -> PathBuf {
@@ -650,16 +665,23 @@ impl App {
                 "the account is not signed in yet".into(),
             ));
         }
-        // A sign-in that may not read usage is not a failure: its sessions report it (ADR-17).
-        if let Err(failure) = self.fetch_and_record_usage(&account, true).await
-            && failure.kind != UsageFailureKind::NotShared
-        {
-            return Err(AppError::Upstream(failure.message));
-        }
-        // Then the limit state: whether each limit stored for it still holds (SPEC-473).
-        self.ask_about_limits(&id)
-            .await
-            .map_err(|failure| AppError::Upstream(failure.message))?;
+        // One deadline for the reading and the questions: a provider that hangs ends the
+        // refresh with a sentence, and what its finished steps stored stays (each one stores
+        // under the usage lock, or nothing).
+        let refreshed = tokio::time::timeout(
+            self.usage_refresh_deadline(),
+            self.read_usage_and_limits(&account),
+        )
+        .await;
+        let refreshed = match refreshed {
+            Ok(refreshed) => refreshed,
+            Err(_) => {
+                let note = format!("{USAGE_NOTE_PREFIX}{REFRESH_TOO_SLOW}");
+                let _ = store.set_usage_error(&id, &note, self.now()).await;
+                Err(UsageFailure::new(REFRESH_TOO_SLOW))
+            }
+        };
+        refreshed.map_err(|failure| AppError::Upstream(failure.message))?;
         let updated = store.account(&id).await?.ok_or(AppError::NotFound)?;
         let mut view = account_view(&updated, &self.working_attempts().await?);
         let now = self.now();
@@ -678,6 +700,32 @@ impl App {
                 .find(|t| t.account_id == id.as_str()),
         ));
         Ok(view)
+    }
+
+    /// A refresh's two steps (SPEC-473): the usage is read, then the provider is asked about
+    /// each limit stored for the account. A reading the provider will not give for now (the
+    /// sign-in may not read usage, or the request is throttled) does not stop the questions; a
+    /// refused sign-in or a request that failed does. A sign-in that may not read usage is not
+    /// a failure: its sessions report it (ADR-17).
+    async fn read_usage_and_limits(&self, account: &AccountRecord) -> Result<(), UsageFailure> {
+        let reading = self.fetch_and_record_usage(account, true).await;
+        let unread = match reading {
+            Ok(()) => None,
+            Err(failure)
+                if matches!(
+                    failure.kind,
+                    UsageFailureKind::NotShared | UsageFailureKind::Throttled
+                ) =>
+            {
+                Some(failure)
+            }
+            Err(failure) => return Err(failure),
+        };
+        self.ask_about_limits(&account.id).await?;
+        match unread {
+            Some(failure) if failure.kind == UsageFailureKind::Throttled => Err(failure),
+            _ => Ok(()),
+        }
     }
 
     /// One provider's reading of `id`'s usage now, as the background round makes it: no
