@@ -1775,15 +1775,41 @@ stay, the server's unit is disabled, and the checklist names the units that ran 
 instance (what their agents did meanwhile is on the old host only). If a unit cannot be frozen,
 that is a `FAIL` line with the reason, the two commands to run and, for a freeze that keeps
 failing, the commands that stop the old instance for good (`systemctl stop` and `systemctl kill
---kill-whom=all --signal=SIGKILL` of both units); nothing is thawed then either, and a freeze
+--kill-who=all --signal=SIGKILL` of both units); nothing is thawed then either, and a freeze
 that did not complete within a minute is left on its way. A server's unit that has stopped
 (`inactive` or `failed`) is not frozen by systemd: its sessions unit is frozen where it still
 runs, and both are named for you to make sure nothing of the old instance is left. A server's
 unit that systemd reports on its way up or down is not taken for stopped (a sessions unit that
-is being stopped counts as ended). A unit that was frozen is named also when the other could not
+is being stopped counts as ended once no process of it is left, see below). A unit that was frozen is named also when the other could not
 be. When the new instance answers
 and does not run, `--abort` is the way back; when the new host does not answer the question,
 nothing is touched and the same command asks again once it does.
+
+A unit that does not run is asked what it left before the run says so. The server's unit has
+`KillMode=process` (§3), so a `systemctl stop` of it ends the server alone: what the server
+started in the unit's own cgroup stays there and runs on, unfrozen, beside the new instance (on
+a host without a sessions unit that is every agent, terminal and sandbox engine; with one,
+whatever the server started outside it), and systemd freezes nothing of a unit that is not
+active. (systemd 259 refuses to stop a frozen unit; systemd 255, Ubuntu 24.04, thaws it and
+stops it, so there one `systemctl stop` of the frozen old unit is enough to get here.) While
+processes of such a unit run (the server's unit when it is `inactive` or `failed`; a sessions
+unit that has stopped or is being stopped; the group's `cgroup.events` says `populated 1` and
+not `frozen 1`), the run ends with a `FAIL` line that names the units and the command that ends
+those processes, and exit 1:
+
+```sh
+sudo systemctl kill --kill-who=all --signal=SIGKILL yulius.service
+```
+
+(`--kill-who` is the option's name before systemd 252, which calls it `--kill-whom` and still
+takes the older spelling: the lines of a move name the one that runs on every release.)
+
+The run kills nothing itself and records nothing: run the command the line names (what the old
+instance holds stays on its disk), then the same `yulius instance migrate` command again. It
+asks again each time and goes on to the finish once nothing is left. A stopped unit without a
+cgroup (the old host was restarted, or the stop left nothing), with an empty one, or whose
+processes the kernel holds frozen gets the "make sure" line and the run goes on, as before.
+When systemd does not answer the question, the run fails saying so and asks again next time.
 
 Not part of a move: packages installed inside sandboxes keep their files; on another release the
 checklist names those sandboxes. The sandbox base is built for the new host while preparing, so

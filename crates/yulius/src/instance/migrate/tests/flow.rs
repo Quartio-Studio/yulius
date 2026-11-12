@@ -80,7 +80,20 @@ struct Systemd {
     sessions: Option<bool>,
     /// systemd does not answer `show` for the sessions unit.
     sessions_silent: bool,
+    /// What a server's unit that has stopped left in its cgroup: `None` no cgroup (systemd
+    /// names none: nothing was left, or the host was restarted), `Some(false)` an empty one,
+    /// `Some(true)` processes that run (`KillMode=process`: its agents, terminals and engines).
+    left: Option<bool>,
+    /// The sessions unit has stopped (`inactive`) and processes of it still run.
+    sessions_left: bool,
+    /// systemd says what the server's unit does and stops answering before it is asked for
+    /// the unit's cgroup (the question that follows "it has stopped").
+    left_silent: bool,
 }
+
+/// The cgroup of the old server's unit, and of its sessions unit.
+const GROUP: &str = "/system.slice/yulius.service";
+const SESSIONS_GROUP: &str = "/yulius.slice/yulius-sandboxes.service";
 
 struct FakeSystemd(Arc<Mutex<Systemd>>, Events);
 
@@ -101,24 +114,38 @@ impl freeze::Host for FakeSystemd {
         match args[0] {
             "show" if unit.silent => Err("Failed to connect to bus".into()),
             "show" if of_sessions && unit.sessions_silent => Err("Failed to connect to bus".into()),
+            "show" if !of_sessions && unit.left_silent && args[1].contains("ControlGroup") => {
+                Err("Failed to connect to bus".into())
+            }
             "show" => {
                 if let Some(looks) = unit.looks.as_mut() {
                     *looks += 1;
                 }
                 if of_sessions {
                     return said(match unit.sessions {
+                        // Stopped, and systemd still names the cgroup of what it left.
+                        None if unit.sessions_left => format!(
+                            "LoadState=loaded\nActiveState=inactive\nFreezerState=running\n\
+                             ControlGroup={SESSIONS_GROUP}\n"
+                        ),
                         None => "LoadState=not-found\nActiveState=inactive\nFreezerState=running\n"
                             .into(),
                         Some(frozen) => format!(
                             "LoadState=loaded\nActiveState=active\nFreezerState={}\n\
-                             ControlGroup=/yulius.slice/yulius-sandboxes.service\n",
+                             ControlGroup={SESSIONS_GROUP}\n",
                             if frozen { "frozen" } else { "running" }
                         ),
                     });
                 }
+                // systemd names no cgroup for a unit that has stopped and left nothing.
+                let group = if (unit.stopped || unit.failed) && unit.left.is_none() {
+                    ""
+                } else {
+                    GROUP
+                };
                 said(format!(
                     "LoadState=loaded\nActiveState={}\nFreezerState={}\n\
-                     ControlGroup=/system.slice/yulius.service\n",
+                     ControlGroup={group}\n",
                     if unit.failed {
                         "failed"
                     } else if unit.stopped {
@@ -192,8 +219,24 @@ impl freeze::Host for FakeSystemd {
     }
 
     fn read(&self, path: &Path) -> Option<String> {
-        (path == Path::new("/proc/self/cgroup"))
-            .then(|| "0::/user.slice/user-0.slice/session-7.scope\n".to_owned())
+        if path == Path::new("/proc/self/cgroup") {
+            return Some("0::/user.slice/user-0.slice/session-7.scope\n".to_owned());
+        }
+        // What the kernel says of a stopped unit's cgroup and everything below it.
+        let unit = self.0.lock().ok()?;
+        let events = |group: &str| {
+            Path::new("/sys/fs/cgroup")
+                .join(group.trim_start_matches('/'))
+                .join("cgroup.events")
+        };
+        let populated = if path == events(GROUP) && (unit.stopped || unit.failed) {
+            unit.left?
+        } else if path == events(SESSIONS_GROUP) && unit.sessions.is_none() && unit.sessions_left {
+            true
+        } else {
+            return None;
+        };
+        Some(format!("populated {}\nfrozen 0\n", u8::from(populated)))
     }
 
     fn sleep(&mut self, _: Duration) {}
@@ -1601,7 +1644,7 @@ fn a_recorded_start_freezes_whatever_unit_runs_beside_the_new_instance() -> Test
     assert!(
         shown.contains(
             "stop it for good instead: `systemctl stop yulius.service \
-             yulius-sandboxes.service; systemctl kill --kill-whom=all --signal=SIGKILL \
+             yulius-sandboxes.service; systemctl kill --kill-who=all --signal=SIGKILL \
              yulius.service yulius-sandboxes.service`"
         ),
         "{shown}"
@@ -1681,7 +1724,7 @@ fn a_recorded_start_with_a_stopped_server_freezes_its_sessions() -> TestResult {
             shown.contains(
                 "yulius.service does not run here any more, and the new instance runs. Make \
                  sure nothing of the old one runs here: `systemctl stop yulius.service \
-                 yulius-sandboxes.service; systemctl kill --kill-whom=all --signal=SIGKILL \
+                 yulius-sandboxes.service; systemctl kill --kill-who=all --signal=SIGKILL \
                  yulius.service yulius-sandboxes.service; systemctl disable yulius.service`"
             ),
             "{shown}"
@@ -1707,6 +1750,203 @@ fn a_recorded_start_with_a_stopped_server_freezes_its_sessions() -> TestResult {
     );
     assert!(!shown.contains(MAKE_SURE_OF), "{shown}");
     assert_eq!(units(&s)?, (false, Some(false)));
+    Ok(())
+}
+
+/// What a resumed start says of a stopped server's unit whose processes still run.
+const STILL_RUN: &str = "yulius.service does not run any more, but processes of it still run \
+                         here beside the new instance (the server's unit keeps what the server \
+                         started in it when it stops: KillMode=process), and systemd freezes \
+                         nothing of a unit that does not run. End them: `systemctl kill \
+                         --kill-who=all --signal=SIGKILL yulius.service`, then run the command \
+                         again. The move is not recorded as done until then";
+
+/// SPEC-478 RSL-001 (issue #1178): a server's unit that was stopped by hand is not an old
+/// instance of which nothing runs. `KillMode=process` leaves its agents, terminals and engines
+/// in its cgroup, unfrozen, beside a new instance that has queued the same tasks. The run says
+/// so with the command that ends them, fails, and records nothing, so that the same command
+/// looks again; once they are ended it goes on as for a unit of which nothing runs.
+#[test]
+fn a_recorded_start_with_a_stopped_server_whose_processes_run_does_not_end_well() -> TestResult {
+    for failed in [false, true] {
+        let mut s = killed_while_starting()?;
+        if let Ok(mut unit) = s.world.systemd.lock() {
+            unit.frozen = false;
+            unit.stopped = true;
+            unit.failed = failed;
+            unit.left = Some(true);
+        }
+        assert_eq!(s.run()?, 1, "{}", s.shown());
+        let shown = s.shown();
+        assert!(shown.contains(STILL_RUN), "{shown}");
+        assert!(!shown.contains(MAKE_SURE_OF), "{shown}");
+        assert_eq!(
+            line(&s.status()?, "old instance").map(|l| l.outcome),
+            Some(HostOutcome::Failed)
+        );
+        // Only asked: nothing of either instance is started, stopped, frozen, thawed, disabled
+        // or killed by the run.
+        let events = s.events();
+        assert_eq!(events.first().map(String::as_str), Some("new: health"));
+        assert!(
+            !events
+                .iter()
+                .any(|e| e.starts_with("old: systemctl") || e == "new: start" || e == "new: stop"),
+            "{events:?}"
+        );
+        // Not a finished move, and not one that the next run takes for decided.
+        let state = State::load(&s.opts.state_dir).ok_or("no state")?;
+        assert_eq!((state.cutover, state.finished), (Cutover::Starting, false));
+
+        // The same command while they still run: the same line, again.
+        s.world.shown.clear();
+        assert_eq!(s.run()?, 1, "{}", s.shown());
+        assert!(s.shown().contains(STILL_RUN), "{}", s.shown());
+
+        // The person ran the command (the cgroup is gone with its last process): the same
+        // command goes on, as for a unit of which nothing runs.
+        s.world.systemd.lock().map_err(|e| e.to_string())?.left = None;
+        s.world.shown.clear();
+        assert_eq!(s.run()?, 0, "{}", s.shown());
+        let shown = s.shown();
+        assert!(shown.contains(MAKE_SURE), "{shown}");
+        assert!(!shown.contains("still run here"), "{shown}");
+        let state = State::load(&s.opts.state_dir).ok_or("no state")?;
+        assert_eq!((state.cutover, state.finished), (Cutover::Moved, true));
+    }
+    Ok(())
+}
+
+/// SPEC-478 RSL-002: a stopped server's unit of which nothing runs keeps its line and exit 0:
+/// with no cgroup (the old host was restarted, or the unit left nothing) and with an empty one.
+#[test]
+fn a_recorded_start_with_a_stopped_server_and_nothing_left_keeps_its_line() -> TestResult {
+    for left in [None, Some(false)] {
+        let mut s = killed_while_starting()?;
+        if let Ok(mut unit) = s.world.systemd.lock() {
+            unit.frozen = false;
+            unit.stopped = true;
+            unit.left = left;
+        }
+        assert_eq!(s.run()?, 0, "{left:?}: {}", s.shown());
+        let shown = s.shown();
+        assert!(shown.contains(MAKE_SURE), "{left:?}: {shown}");
+        assert!(!shown.contains("still run here"), "{left:?}: {shown}");
+        assert_eq!(
+            line(&s.status()?, "old instance").map(|l| l.outcome),
+            Some(HostOutcome::Manual)
+        );
+        let state = State::load(&s.opts.state_dir).ok_or("no state")?;
+        assert_eq!((state.cutover, state.finished), (Cutover::Moved, true));
+    }
+    Ok(())
+}
+
+/// SPEC-478 RSL-001 beside SPEC-458: the sessions unit is looked at the same way, and what a
+/// stopped server left does not keep a sessions unit that runs from being frozen.
+#[test]
+fn a_recorded_start_names_every_stopped_unit_whose_processes_run() -> TestResult {
+    // The server's unit left processes, and its sessions unit runs unfrozen: that one is
+    // frozen to stay first, then the run fails over what systemd cannot freeze.
+    let mut s = killed_while_starting()?;
+    if let Ok(mut unit) = s.world.systemd.lock() {
+        unit.frozen = false;
+        unit.stopped = true;
+        unit.left = Some(true);
+    }
+    sessions(&s, false)?;
+    assert_eq!(s.run()?, 1, "{}", s.shown());
+    let shown = s.shown();
+    assert!(
+        shown.contains("yulius-sandboxes.service ran here beside the new instance"),
+        "{shown}"
+    );
+    assert!(shown.contains(STILL_RUN), "{shown}");
+    assert!(!shown.contains(MAKE_SURE_OF), "{shown}");
+    assert_eq!(units(&s)?, (false, Some(true)));
+    let touched: Vec<String> = s
+        .events()
+        .into_iter()
+        .filter(|e| e.starts_with("old: systemctl"))
+        .collect();
+    assert_eq!(touched, ["old: systemctl freeze sessions"]);
+    let state = State::load(&s.opts.state_dir).ok_or("no state")?;
+    assert_eq!(state.cutover, Cutover::Starting);
+
+    // The sessions unit has stopped too and processes of it are left (a stop that did not end
+    // them all): it is named, alone or with the server's unit, in the one command.
+    for (server, names) in [
+        (
+            false,
+            "yulius-sandboxes.service does not run any more, but processes of it still run here \
+             beside the new instance, and systemd",
+        ),
+        (
+            true,
+            "yulius.service and yulius-sandboxes.service do not run any more, but processes of \
+             them still run here beside the new instance (the server's unit keeps",
+        ),
+    ] {
+        let mut s = killed_while_starting()?;
+        if let Ok(mut unit) = s.world.systemd.lock() {
+            unit.frozen = false;
+            unit.stopped = true;
+            unit.left = server.then_some(true);
+            unit.sessions_left = true;
+        }
+        assert_eq!(s.run()?, 1, "{}", s.shown());
+        let shown = s.shown();
+        assert!(shown.contains(names), "{shown}");
+        let units = if server {
+            "yulius.service yulius-sandboxes.service"
+        } else {
+            "yulius-sandboxes.service"
+        };
+        assert!(
+            shown.contains(&format!(
+                "End them: `systemctl kill --kill-who=all --signal=SIGKILL {units}`, then run \
+                 the command again"
+            )),
+            "{shown}"
+        );
+        // Only the server's unit has `KillMode=process`.
+        assert_eq!(shown.contains("KillMode=process"), server, "{shown}");
+        assert!(!shown.contains(MAKE_SURE_OF), "{shown}");
+        let state = State::load(&s.opts.state_dir).ok_or("no state")?;
+        assert_eq!(state.cutover, Cutover::Starting);
+    }
+    Ok(())
+}
+
+/// SPEC-478 RSL-003: when systemd stops answering before it said what the stopped unit left,
+/// "nothing of it runs" would be a guess: the run fails and records nothing.
+#[test]
+fn a_recorded_start_does_not_guess_what_a_stopped_unit_left() -> TestResult {
+    let mut s = killed_while_starting()?;
+    if let Ok(mut unit) = s.world.systemd.lock() {
+        unit.frozen = false;
+        unit.stopped = true;
+        unit.left = Some(true);
+        unit.left_silent = true;
+    }
+    assert_eq!(s.run()?, 1, "{}", s.shown());
+    let shown = s.shown();
+    assert!(
+        shown.contains(
+            "yulius.service has stopped, and systemd does not say whether processes of the old \
+             instance still run here beside the new one (Failed to connect to bus). The move is \
+             not recorded as done: run the command again when it answers"
+        ),
+        "{shown}"
+    );
+    assert!(!shown.contains(MAKE_SURE_OF), "{shown}");
+    assert!(
+        !s.events().iter().any(|e| e.starts_with("old: systemctl")),
+        "{:?}",
+        s.events()
+    );
+    let state = State::load(&s.opts.state_dir).ok_or("no state")?;
+    assert_eq!(state.cutover, Cutover::Starting);
     Ok(())
 }
 
@@ -2870,12 +3110,12 @@ fn a_finish_that_was_done_but_not_recorded_is_found_done() -> TestResult {
 /// The way out a failed freeze beside a running new instance names. SIGKILL: a process that
 /// ignores SIGTERM (an interactive shell) would be left.
 const STOP_FOR_GOOD: &str = "stop it for good instead: `systemctl stop yulius.service; systemctl \
-                             kill --kill-whom=all --signal=SIGKILL yulius.service`";
+                             kill --kill-who=all --signal=SIGKILL yulius.service`";
 /// How the line for an old instance of which nothing runs begins.
 const MAKE_SURE_OF: &str = "Make sure nothing of the old one runs here";
 /// What that line tells to run on a host without a sessions unit.
 const MAKE_SURE: &str = "Make sure nothing of the old one runs here: `systemctl stop \
-                         yulius.service; systemctl kill --kill-whom=all --signal=SIGKILL \
+                         yulius.service; systemctl kill --kill-who=all --signal=SIGKILL \
                          yulius.service; systemctl disable yulius.service`";
 
 #[test]
