@@ -685,6 +685,68 @@ fn a_trust_prompt_before_a_typed_first_message_takes_the_answer() -> TestResult 
     Ok(())
 }
 
+/// SPEC-106 OTR-002, SPEC-472 ATN-004: a trust prompt nobody answers in front of a prompt task's
+/// typed first message gets nothing typed into it; once the time to answer it is over the task
+/// is flagged, and it says what its person does: answer, then type the first message.
+#[test]
+fn an_unanswered_trust_prompt_before_a_typed_first_message_flags_the_task() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let agent = FakeAgentOptions {
+            trust_prompt: true,
+            ..hooked()
+        };
+        let (app, _) = start_with(&data, &fake, agent, 0, probe, |config| {
+            config.trust_answer_ms = 3_000;
+            config.goal_ready_ms = 2_000;
+        })
+        .await?;
+        let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
+        let id = new_task(
+            &app,
+            &sandbox,
+            &user,
+            "Make it blue\n\n@/srv/shot.png",
+            TaskMode::Prompt,
+        )
+        .await?;
+        let mut watch = app.runtime(&id).hub.watch();
+        wait_for("the flag", Duration::from_secs(60), || async {
+            activity(&app, &id).await == Some(Activity::NeedsAttention)
+        })
+        .await?;
+        let shown = screen(&app, &id);
+        assert!(shown.contains("Yes, I trust this folder"), "{shown}");
+        assert!(
+            !shown.contains("TRUST ANSWERED") && !shown.contains("/srv/shot.png"),
+            "something was typed:\n{shown}"
+        );
+        let said = notices(&mut watch);
+        assert!(
+            said.iter().any(|n| n
+                == "Claude Code still asks whether to trust this folder, so Yulius typed \
+                    nothing. Answer it in the terminal, then type the task's first message."),
+            "{said:?}"
+        );
+        assert_eq!(
+            support::attention(&app, id.as_str()).await?,
+            serde_json::json!({
+                "kind": "yulius",
+                "problem": "Claude Code still asks whether to trust this folder, so Yulius typed \
+                            nothing.",
+                "action": "Answer it in the terminal, then type the task's first message.",
+                "link": null,
+            })
+        );
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// SPEC-068 OPN-002, AC-OPN-1 (#266): the server restarts while the first message of a task with
 /// an image is being typed (the image pasted, no Enter yet). The new server reattaches the run
 /// and flags the task with a notice; nothing is submitted for it.

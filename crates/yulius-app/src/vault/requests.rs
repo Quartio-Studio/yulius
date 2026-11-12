@@ -246,7 +246,7 @@ impl App {
             ),
         )
         .await?;
-        self.flag_secret_wait(user, "a host request").await?;
+        self.flag_secret_wait(user, "a host request", &link).await?;
         Ok(json!({
             "requested": merged.fresh,
             "already_bound": merged.already_bound,

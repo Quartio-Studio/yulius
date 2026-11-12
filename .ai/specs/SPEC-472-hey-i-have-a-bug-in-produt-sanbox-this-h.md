@@ -105,7 +105,8 @@ in the terminal. Reply shows that the terminal took the keyboard.
   | A secret request | The agent asked for a secret, and a person has to answer its request. | Answer it on the Secrets page. (link: the sandbox's Secrets page, at the secret's tab) |
 
 - ATN-005: a flag raised by a Claude Code notice has kind `terminal` and Claude Code's own words
-  as its problem (one line, at most 300 characters, control characters as spaces).
+  as its problem. Every problem and to-do is one line of at most 400 characters (a longer one
+  is cut and ends in `…`), control characters and runs of whitespace as one space.
 - ATN-006: the notices stay as they are, for the viewers connected when the flag is raised.
 - ATN-007: the task view's bar shows a `yulius` reason as a request is shown (SPEC-327): "Needs
   you", Problem, To do, an Open link when the reason has one, and Reply for the owner. A
@@ -124,8 +125,8 @@ in the terminal. Reply shows that the terminal took the keyboard.
 
 - [x] Reproduce the defect and find its root cause
 - [x] Write the fix spec and the regression test that fails
-- [ ] A flag keeps its reason: the store column, the API field and the gate's flag
-- [ ] Every flag Yulius raises says why, and a notice's flag carries Claude Code's words
+- [x] A flag keeps its reason: the store column, the API field and the gate's flag
+- [x] Every flag Yulius raises says why, and a notice's flag carries Claude Code's words
 - [ ] The task view shows the reason and Reply says the terminal took the keyboard
 - [ ] Docs, ADR-0306 and the changes entry true to the fix
 - [ ] Independent review in a fresh session, findings fixed test-first

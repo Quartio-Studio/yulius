@@ -13,6 +13,7 @@ use yulius_domain::request::Request;
 use yulius_domain::steps::StepStatus;
 use yulius_domain::task::{Activity, StopReason, TaskStatus};
 
+use crate::attention::AttentionRecord;
 use crate::context::App;
 use crate::model::{AttemptRecord, TaskRecord};
 
@@ -72,6 +73,15 @@ enum Next {
 
 /// Why the task needs a person when the fresh session is full too.
 const STILL_FULL: &str = "the context is still full after compacting and a fresh session";
+
+/// `text` with its first letter in upper case: a reason read on its own.
+fn sentence(text: &str) -> String {
+    let mut chars = text.chars();
+    chars
+        .next()
+        .map(|first| first.to_uppercase().chain(chars).collect())
+        .unwrap_or_default()
+}
 
 impl App {
     /// The API refused the attempt's prompt as too long (CTX-002..005).
@@ -380,8 +390,24 @@ impl App {
     /// Recovery did not help: the task waits for a person, told `why` when `announce` (once per
     /// episode, CTX-005).
     async fn give_up_on_full_context(&self, task: &TaskRecord, why: &str, announce: bool) {
+        // What its person does, and where: the notice is read in the terminal ("here").
+        let to_do = |place: &str| {
+            format!(
+                "Find what fills it (a huge file, tool output or instructions), then type \
+                 `/compact` or `/clear` {place}, or stop and continue the task."
+            )
+        };
+        // The task says it too, for whoever opens it later (SPEC-472).
         if task.status == TaskStatus::Running
-            && let Err(err) = self.set_task_activity(task, Activity::NeedsAttention).await
+            && let Err(err) = self
+                .flag_attention(
+                    &task.id,
+                    AttentionRecord::yulius(
+                        &format!("{}.", sentence(why)),
+                        &to_do("in the terminal"),
+                    ),
+                )
+                .await
         {
             tracing::warn!(task = %task.id, error = %err, "could not flag a full session");
         }
@@ -393,11 +419,7 @@ impl App {
         self.runtime(&task.id)
             .hub
             .notice(if task.status == TaskStatus::Running {
-                format!(
-                    "⚠ The task needs you: {why}. Find what fills it (a huge file, tool output or \
-                     instructions), then type `/compact` or `/clear` here, or stop and continue \
-                     the task."
-                )
+                format!("⚠ The task needs you: {why}. {}", to_do("here"))
             } else {
                 format!("⚠ The task needs you: {why}.")
             });

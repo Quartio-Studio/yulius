@@ -327,8 +327,12 @@ impl App {
                 // task waiting or done, so chains and onboarding see it as finished
                 // (F 2026-10-11).
                 if notification_needs_a_person(input) {
-                    self.set_task_activity(&ctx.task, Activity::NeedsAttention)
-                        .await?;
+                    // Its question is in the terminal, in Claude Code's own words (SPEC-472).
+                    self.flag_attention(
+                        &ctx.task.id,
+                        crate::attention::AttentionRecord::terminal(input.message.as_deref()),
+                    )
+                    .await?;
                     // The agent's next work shows the person answered (STA-003), unless the
                     // task was flagged already (by the gate, say) or a worker asks, which the
                     // main session's work says nothing about.

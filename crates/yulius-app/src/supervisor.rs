@@ -26,6 +26,7 @@ use yulius_domain::task::{
 use yulius_domain::time::Timestamp;
 use yulius_domain::usage::{AccountUsage, ModelFamily, ReportedLimit};
 
+use crate::attention::AttentionRecord;
 use crate::auth::hex_token;
 use crate::context::App;
 use crate::error::{AppError, AppResult};
@@ -868,9 +869,11 @@ enum InputReady {
     TrustUnanswered,
 }
 
-/// Said when the trust dialog is still shown at the end of the wait.
-const TRUST_UNANSWERED: &str = "Claude Code still asks whether to trust this folder, so Yulius typed nothing. Answer it in \
-     the terminal";
+/// Said when the trust dialog is still shown at the end of the wait: what is wrong, and how its
+/// person's part begins.
+const TRUST_UNANSWERED: &str =
+    "Claude Code still asks whether to trust this folder, so Yulius typed nothing";
+const TRUST_ANSWER: &str = "Answer it in the terminal";
 
 /// Whether `screen` shows Claude Code's folder-trust dialog.
 pub(crate) fn trust_prompt_shown(screen: &str) -> bool {
@@ -1834,10 +1837,8 @@ impl App {
                     InputReady::Ready => app.type_opening(&task_id, &attempt_id, opening).await,
                     InputReady::Gone => {}
                     InputReady::TrustUnanswered => {
-                        app.runtime(&task_id).hub.notice(format!(
-                            "{TRUST_UNANSWERED}, then type the task's first message."
-                        ));
-                        app.flag_task(&task_id).await;
+                        app.trust_unanswered(&task_id, ", then type the task's first message.")
+                            .await;
                     }
                 }
                 // A run that is gone leaves the flag to the task's next start, which sets it
@@ -1889,22 +1890,43 @@ impl App {
         })
     }
 
-    /// The goal was never taken by the session: the task needs a person, said in its terminal.
+    /// The goal was never taken by the session: the task needs a person, said in its terminal
+    /// and by the task itself.
     async fn goal_not_taken(&self, task_id: &TaskId, why: &str) {
         self.runtime(task_id).hub.notice(format!(
             "{why}. The task has no goal yet: type `/goal` and the request in the terminal, or stop \
              and continue the task."
         ));
-        self.flag_task(task_id).await;
+        self.flag_task(
+            task_id,
+            AttentionRecord::yulius(
+                &format!("{why}. The task has no goal yet."),
+                "Type `/goal` and the request in the terminal, or stop and continue the task.",
+            ),
+        )
+        .await;
     }
 
-    /// Marks the task as needing a person (what for is said in its terminal).
-    async fn flag_task(&self, task_id: &TaskId) {
-        if let Ok(Some(task)) = self.deps.store.task(task_id).await
-            && let Err(err) = self
-                .set_task_activity(&task, Activity::NeedsAttention)
-                .await
-        {
+    /// Claude Code still asks whether to trust the folder once the time to answer it is over
+    /// (SPEC-106 OTR-002): the task needs a person, told what happens `then`.
+    async fn trust_unanswered(&self, task_id: &TaskId, then: &str) {
+        self.runtime(task_id)
+            .hub
+            .notice(format!("{TRUST_UNANSWERED}. {TRUST_ANSWER}{then}"));
+        self.flag_task(
+            task_id,
+            AttentionRecord::yulius(
+                &format!("{TRUST_UNANSWERED}."),
+                &format!("{TRUST_ANSWER}{then}"),
+            ),
+        )
+        .await;
+    }
+
+    /// Marks the task as needing a person, for `reason`: what its terminal said to the viewers
+    /// there, kept for whoever opens the task later (SPEC-472).
+    async fn flag_task(&self, task_id: &TaskId, reason: AttentionRecord) {
+        if let Err(err) = self.flag_attention(task_id, reason).await {
             tracing::warn!(task = %task_id, error = %err, "could not flag the task");
         }
     }
@@ -1930,17 +1952,18 @@ impl App {
         } else {
             ""
         };
-        self.runtime(task_id).hub.notice(format!(
-            "Yulius restarted while it typed this task's first message, so the first message was \
-             never sent and may be half typed in the prompt box. Complete it (paste the attached \
-             images again if they are missing; the task's request lists them) and press Enter.{goal}"
-        ));
-        if let Err(err) = self
-            .set_task_activity(&task, Activity::NeedsAttention)
-            .await
-        {
-            tracing::warn!(task = %task_id, error = %err, "could not flag the task");
-        }
+        let problem = "Yulius restarted while it typed this task's first message, so the first \
+                       message was never sent and may be half typed in the prompt box.";
+        let action = format!(
+            "Complete it (paste the attached images again if they are missing; the task's \
+             request lists them) and press Enter.{goal}"
+        );
+        // No viewer is connected when a server starts: the task itself has to say it.
+        self.runtime(task_id)
+            .hub
+            .notice(format!("{problem} {action}"));
+        self.flag_task(task_id, AttentionRecord::yulius(problem, &action))
+            .await;
     }
 
     /// Waits until the attempt's TUI reads input: Claude Code's SessionStart hook arrived and
@@ -2157,10 +2180,11 @@ impl App {
                 InputReady::Ready => {}
                 InputReady::Gone => return,
                 InputReady::TrustUnanswered => {
-                    app.runtime(&task_id).hub.notice(format!(
-                        "{TRUST_UNANSWERED}; the task starts by itself once it is answered."
-                    ));
-                    app.flag_task(&task_id).await;
+                    app.trust_unanswered(
+                        &task_id,
+                        "; the task starts by itself once it is answered.",
+                    )
+                    .await;
                     launch_goal_settled(&run_dir);
                     return;
                 }
@@ -2219,7 +2243,8 @@ impl App {
             let started = tokio::time::Instant::now();
             let mut typed_before = typed_before;
             let unanswered = || async {
-                app.goal_not_taken(&task_id, TRUST_UNANSWERED).await;
+                app.goal_not_taken(&task_id, &format!("{TRUST_UNANSWERED}. {TRUST_ANSWER}"))
+                    .await;
             };
             match app
                 .wait_input_ready(&task_id, &attempt_id, started, true, &mut typed_before)
@@ -2645,17 +2670,14 @@ impl App {
         if let Ok(mut failed) = runtime.end_failed.lock() {
             *failed = Some((attempt.id.clone(), err.to_string()));
         }
-        runtime.hub.notice(format!(
+        let problem = format!(
             "Yulius could not end this session ({err}). It still counts as running, so the task \
-             cannot be deleted. Stop the task again to retry."
-        ));
-        if let Ok(Some(task)) = self.deps.store.task(task_id).await
-            && let Err(err) = self
-                .set_task_activity(&task, Activity::NeedsAttention)
-                .await
-        {
-            tracing::warn!(task = %task_id, error = %err, "could not flag the task");
-        }
+             cannot be deleted."
+        );
+        let action = "Stop the task again to retry.";
+        runtime.hub.notice(format!("{problem} {action}"));
+        self.flag_task(task_id, AttentionRecord::yulius(&problem, action))
+            .await;
     }
 
     async fn mark_lost(

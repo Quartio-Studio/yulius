@@ -10,6 +10,7 @@ use yulius_domain::ids::{SandboxId, TaskId};
 use yulius_domain::task::{Activity, TaskStatus};
 use yulius_domain::time::Timestamp;
 
+use crate::attention::AttentionRecord;
 use crate::context::App;
 use crate::coordination::{AgentContext, ProjectCaller};
 use crate::error::AppResult;
@@ -27,6 +28,16 @@ pub(crate) enum SecretUser<'a> {
     /// A person's Superagent (its `ck_` caller, or a Global Superagent's `gs_` one in a project;
     /// no task).
     Superagent(&'a ProjectCaller),
+}
+
+/// What a flag raised for a secret request says (SPEC-472 ATN-004): a person answers it on the
+/// Secrets page at `link`, not in the task's terminal.
+fn secret_reason(link: &str) -> AttentionRecord {
+    AttentionRecord::yulius(
+        "The agent asked for a secret, and a person has to answer its request.",
+        "Answer it on the Secrets page.",
+    )
+    .on_page(link)
 }
 
 impl SecretUser<'_> {
@@ -120,15 +131,25 @@ impl App {
     /// Flags a task whose agent waits for a person (`what` names it in the log); a Superagent's
     /// person is in front of it, so nothing is flagged. A flag it raises itself is remembered,
     /// so the person's answer ends it ([`Self::settle_secret_waits`]); one set before is not
-    /// its own (SPEC-213 SRA-003).
+    /// its own (SPEC-213 SRA-003). The flag says what its person does and where: on the Secrets
+    /// page at `link`, the one the agent prints (SPEC-472); the task's terminal shows no
+    /// question for it.
     ///
     /// # Errors
     /// None: a flag that cannot be raised or ended is logged, and the request stands.
-    pub(super) async fn flag_secret_wait(&self, user: SecretUser<'_>, what: &str) -> AppResult<()> {
+    pub(super) async fn flag_secret_wait(
+        &self,
+        user: SecretUser<'_>,
+        what: &str,
+        link: &str,
+    ) -> AppResult<()> {
         let SecretUser::Task(ctx) = user else {
             return Ok(());
         };
-        if let Err(err) = self.raise_secret_flag(&ctx.task.id).await {
+        if let Err(err) = self
+            .raise_secret_flag(&ctx.task.id, &secret_reason(link))
+            .await
+        {
             tracing::warn!(task = %ctx.task.id, error = %err, "could not flag {what}");
         }
         // A person who answered between the request and its flag found no flag to end: it ends
@@ -149,8 +170,8 @@ impl App {
     /// Flags a running task for its secret request, unless it reads flagged already, and marks
     /// the flag as its own. Under the task's attention lock, so no other flag, request or answer
     /// interleaves; the write is a compare-and-set from the state it read, as a Stop does not
-    /// take the lock (SPEC-213 SRA-003, review rounds 2 and 3).
-    async fn raise_secret_flag(&self, task_id: &TaskId) -> AppResult<()> {
+    /// take the lock (SPEC-213 SRA-003, review rounds 2 and 3). The flag carries `reason`.
+    async fn raise_secret_flag(&self, task_id: &TaskId, reason: &AttentionRecord) -> AppResult<()> {
         let store = &self.deps.store;
         let runtime = self.runtime(task_id);
         let _held = runtime.attention_lock.lock().await;
@@ -167,7 +188,7 @@ impl App {
             let now = self.now();
             let from = (task.activity, times.state_at);
             if store
-                .set_activity_from(task_id, from, Some(Activity::NeedsAttention), now)
+                .flag_attention(task_id, Some(from), Some(reason), now)
                 .await?
             {
                 runtime.secret_wait_at.store(now.0, Ordering::SeqCst);
@@ -179,13 +200,9 @@ impl App {
         // turn's end, as before SPEC-213).
         runtime.secret_wait_at.store(0, Ordering::SeqCst);
         if store
-            .task(task_id)
+            .flag_attention(task_id, None, Some(reason), self.now())
             .await?
-            .is_some_and(|t| t.status == TaskStatus::Running)
         {
-            store
-                .set_activity(task_id, Some(Activity::NeedsAttention), self.now())
-                .await?;
             self.publish_task(task_id).await;
         }
         Ok(())
@@ -243,7 +260,11 @@ impl App {
         // The agent asked again while this looked (its request is written before it flags, which
         // waited for the lock and found the task flagged): it shows here, and flags the task anew.
         if self.secret_waits_for(task).await? {
-            self.raise_secret_flag(&task.id).await?;
+            // Which request it is was not read here: the project's Secrets page lists it.
+            let slug = self.deps.store.sandbox(&task.sandbox_id).await?;
+            let link = self.agent_secrets_link(&slug.map(|s| s.slug).unwrap_or_default());
+            self.raise_secret_flag(&task.id, &secret_reason(&link))
+                .await?;
         }
         Ok(())
     }
