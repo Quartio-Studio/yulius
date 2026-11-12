@@ -28,7 +28,7 @@ use crate::first_message::{
     ShiftedClock, activity, data_dir, hooked, new_task, notices, runtime, screen, start, start_on,
     start_with, stop, wait_for,
 };
-use crate::pool_supervision::{ScriptedUsage, seed};
+use crate::pool_supervision::{HOUR, ScriptedUsage, refresh, seed, usage};
 use crate::support::agents::FakeAgentOptions;
 use crate::support::{
     self, TestResult, add_sandbox, harness_configured, perms, seed_task, user_with_token,
@@ -903,6 +903,160 @@ fn a_draft_typed_before_a_restart_still_keeps_the_message_out() -> TestResult {
         })
         .await?;
         app.terminal_leave(&attach).await;
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// A running task whose person submitted "first" while its only subscription had no room, so
+/// the prompt is held at its submit, and then typed "more" behind it without sending it.
+async fn a_draft_behind_a_held_prompt(
+    app: &Arc<App>,
+    data: &Path,
+    probe: &ScriptedUsage,
+) -> Result<(TaskId, ProjectCaller), Error> {
+    let (id, caller) = running(app, data).await?;
+    wait_for("the first turn's end", Duration::from_secs(30), || async {
+        activity(app, &id).await.is_some_and(Activity::is_idle)
+    })
+    .await?;
+    probe.set("a-only", usage(99.0, 4 * HOUR, 30.0, 100));
+    refresh(app, &caller.user, "a-only").await?;
+    let (ctx, attach) = terminal(app, &caller, &id).await?;
+    app.terminal_input(&ctx, &attach, b"first", false).await?;
+    app.terminal_input(&ctx, &attach, b"\r", false).await?;
+    wait_for("the held prompt", Duration::from_secs(60), || async {
+        matches!(
+            app.deps.store.open_pause(&id).await,
+            Ok(Some(pause)) if pause.kind == yulius_app::model::PauseKind::Prompt
+        )
+    })
+    .await?;
+    app.terminal_input(&ctx, &attach, b"more", false).await?;
+    app.terminal_leave(&attach).await;
+    Ok((id, caller))
+}
+
+/// The subscription has room again and the held prompt goes on: the agent reads "first", without
+/// the "more" typed behind it.
+async fn the_held_prompt_goes_on(
+    app: &Arc<App>,
+    caller: &ProjectCaller,
+    id: &TaskId,
+    probe: &ScriptedUsage,
+) -> TestResult {
+    probe.set("a-only", usage(0.0, 5 * HOUR, 30.0, 100));
+    refresh(app, &caller.user, "a-only").await?;
+    let _ = app.resume_round().await;
+    let went_on = wait_for(
+        "the held prompt going on",
+        Duration::from_secs(20),
+        // The terminal's echo of "more" stands before the answer, on its line.
+        || async { screen(app, id).contains("moreECHO: first") },
+    )
+    .await;
+    let pause = app
+        .deps
+        .store
+        .open_pause(id)
+        .await
+        .map(|p| p.map(|p| p.kind));
+    let attempts = app.deps.store.attempts(id).await.map(|a| a.len());
+    went_on.map_err(|err| {
+        format!(
+            "{err}: pause {pause:?}, attempts {attempts:?}, screen:\n{}",
+            screen(app, id)
+        )
+        .into()
+    })
+}
+
+/// The draft "more" still keeps a message out of `id`, and its mark is in the run folder.
+async fn the_draft_behind_it_still_holds(
+    app: &Arc<App>,
+    data: &Path,
+    caller: &ProjectCaller,
+    id: &TaskId,
+) -> TestResult {
+    let Err(refused) = send(app, caller, id).await else {
+        wait_for("what the agent read", Duration::from_secs(30), || async {
+            screen(app, id).contains("ECHO: more")
+        })
+        .await?;
+        return Err(format!(
+            "the message was typed onto the draft behind the held prompt:\n{}",
+            screen(app, id)
+        )
+        .into());
+    };
+    assert!(
+        matches!(&refused, AppError::Conflict(why) if why.contains("prompt box")),
+        "{refused:?}"
+    );
+    let run_dir = app.deps.store.live_attempt(id).await?.ok_or("run")?.run_dir;
+    assert!(
+        Path::new(&run_dir).join("person-typed").exists(),
+        "the draft's mark left the run folder with the held prompt"
+    );
+    // Whatever reaches the agent shows within a second; nothing did.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let shown = screen(app, id);
+    assert!(!shown.contains("ECHO: more"), "{shown}");
+    assert!(audited(data, id)?.is_empty());
+    Ok(())
+}
+
+/// SPEC-480 AC9 (DRF-009; review round 2): what a person types behind a prompt that is held at
+/// its submit is a draft of its own. When the held prompt goes on, the box is empty as of its
+/// submit, not as of now: the draft still holds a message, and its mark stays in the run
+/// folder.
+#[test]
+fn a_draft_behind_a_held_prompt_keeps_its_mark_when_the_prompt_goes_on() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let (app, _) = start(&data, &fake, fake_agent(), 0, probe.clone()).await?;
+        let (id, caller) = a_draft_behind_a_held_prompt(&app, &data, &probe).await?;
+        the_held_prompt_goes_on(&app, &caller, &id, &probe).await?;
+        the_draft_behind_it_still_holds(&app, &data, &caller, &id).await?;
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-480 AC9 (DRF-009; review round 2): the same across a restart of the server while the
+/// prompt is held. The restarted server knows the draft from its mark alone and does not know
+/// that the prompt its hook client asks about again was submitted before the draft: it used
+/// to read that prompt as a new submit, which emptied the box, and typed behind the draft.
+/// A draft known from its mark alone stays one until a prompt follows a key this server saw.
+#[test]
+fn a_draft_behind_a_prompt_held_across_a_restart_still_keeps_the_message_out() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let first = runtime()?;
+    let (port, id, caller) = first.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let (app, port) = start(&data, &fake, fake_agent(), 0, probe.clone()).await?;
+        let (id, caller) = a_draft_behind_a_held_prompt(&app, &data, &probe).await?;
+        Ok::<_, Error>((port, id, caller))
+    })?;
+    first.shutdown_timeout(Duration::from_secs(5));
+
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let (app, _) = start(&data, &fake, fake_agent(), port, probe.clone()).await?;
+        app.reconcile().await?;
+        wait_for("the reattached screen", Duration::from_secs(30), || async {
+            screen(&app, &id).contains("more")
+        })
+        .await?;
+        the_held_prompt_goes_on(&app, &caller, &id, &probe).await?;
+        the_draft_behind_it_still_holds(&app, &data, &caller, &id).await?;
         stop(&app, &id).await
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
