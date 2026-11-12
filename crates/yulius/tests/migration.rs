@@ -33,6 +33,8 @@ struct FakeMoveHelper {
     unwritable: AtomicBool,
     /// A write takes a while, as on a slow disk: another ask has time to come.
     slow: AtomicBool,
+    /// How often the request file was looked at.
+    looks: AtomicUsize,
     helper: Mutex<Option<MoveHelperStatus>>,
     status: Mutex<Option<MoveStatus>>,
     arrived: Mutex<Option<MoveChecklist>>,
@@ -58,6 +60,7 @@ impl MoveHelper for FakeMoveHelper {
     }
 
     fn pending(&self) -> Option<MoveRequest> {
+        self.looks.fetch_add(1, Ordering::SeqCst);
         self.pending.lock().ok()?.clone()
     }
 
@@ -883,8 +886,21 @@ async fn a_taken_request_is_removed_with_nobody_reading() -> TestResult {
         i.ask(moving_after_plan(&i).await?).await?.status,
         StatusCode::ACCEPTED
     );
-    let asked = i.helper.pending().ok_or("no request waits")?;
+    let asked = i.helper.written().pop().ok_or("nothing was written")?;
     assert_eq!(asked.action, MoveAction::Move);
+    // Looked at, with nobody asking, and left alone while the helper has not taken it. (Three
+    // looks: one may be the last of the plan's request.)
+    let looks = i.helper.looks.load(Ordering::SeqCst);
+    until("the request was looked at", || {
+        i.helper.looks.load(Ordering::SeqCst) >= looks + 3
+    })
+    .await?;
+    assert_eq!(i.helper.written().len(), 2, "written again");
+    assert_eq!(
+        i.helper.cleared.load(Ordering::SeqCst),
+        1,
+        "the plan's only"
+    );
     i.helper.takes(i.now())?;
     until("the taken request is removed", || {
         i.helper.pending().is_none()
