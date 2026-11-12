@@ -239,7 +239,29 @@ impl App {
         };
         let held = runtime.attention_lock.lock().await;
         let flagged = runtime.secret_wait_at.load(Ordering::SeqCst);
-        if flagged == 0 || self.secret_waits_for(task).await? {
+        if flagged == 0 {
+            return Ok(());
+        }
+        let waiting = self.waiting_secret_links(task).await?;
+        if let Some(first) = waiting.first() {
+            // Another request still waits (SRA-002): the flag stays and points at one that
+            // does, not at the page of the request just answered (SPEC-472 ATN-011).
+            let store = &self.deps.store;
+            let shown = store.task_attention(&task.id).await?;
+            let shown = shown.and_then(|(reason, _)| reason.link);
+            if !shown.is_some_and(|link| waiting.contains(&link))
+                && store
+                    .replace_attention(
+                        &task.id,
+                        Timestamp(flagged),
+                        Some(&secret_reason(first)),
+                        self.now(),
+                    )
+                    .await?
+            {
+                drop(held);
+                self.publish_task(&task.id).await;
+            }
             return Ok(());
         }
         // Only the flag it raised (SRA-003); a Stop that settled the task meanwhile stays.
@@ -259,48 +281,51 @@ impl App {
         self.publish_task(&task.id).await;
         // The agent asked again while this looked (its request is written before it flags, which
         // waited for the lock and found the task flagged): it shows here, and flags the task anew.
-        if self.secret_waits_for(task).await? {
-            // Which request it is was not read here: the project's Secrets page lists it.
-            let slug = self.deps.store.sandbox(&task.sandbox_id).await?;
-            let link = self.agent_secrets_link(&slug.map(|s| s.slug).unwrap_or_default());
-            self.raise_secret_flag(&task.id, &secret_reason(&link))
+        if let Some(link) = self.waiting_secret_links(task).await?.first() {
+            self.raise_secret_flag(&task.id, &secret_reason(link))
                 .await?;
         }
         Ok(())
     }
 
-    /// Whether a `.env`, host or copy request (SPEC-440) of `task`'s agent still waits for a
-    /// person: the task is among its askers (`#N`, `#N in <slug>` for a secret of every sandbox).
-    async fn secret_waits_for(&self, task: &TaskRecord) -> AppResult<bool> {
+    /// Where a person answers each `.env`, host or copy request (SPEC-440) of `task`'s agent
+    /// that still waits: the Secrets page at the tab of its secret (a copy's request shows on
+    /// the production secret). The task is among the request's askers (`#N`, `#N in <slug>` for
+    /// a secret of every sandbox). Empty when nothing waits; each page once.
+    async fn waiting_secret_links(&self, task: &TaskRecord) -> AppResult<Vec<String>> {
         let store = &self.deps.store;
         let records = store.vault_agent_in(&task.sandbox_id).await?;
         let me = SecretUser::task_asker(task.number);
+        let slug = store.sandbox(&task.sandbox_id).await?.map(|s| s.slug);
+        let slug = slug.unwrap_or_default();
         // A secret of every sandbox names its askers with their sandbox.
-        let everywhere = if records.iter().any(|r| r.sandbox_id.is_none()) {
-            let slug = store.sandbox(&task.sandbox_id).await?.map(|s| s.slug);
-            super::requests::requester(None, false, &me, Some(&slug.unwrap_or_default()))
-        } else {
-            String::new()
-        };
+        let everywhere = super::requests::requester(None, false, &me, Some(&slug));
+        let mut links = Vec::new();
         // A copy is asked for the task's own project: its askers carry no sandbox.
-        if store
-            .vault_copy_requests(&task.sandbox_id)
-            .await?
-            .iter()
-            .any(|c| super::requests::among_askers(Some(&c.requested_by), &me))
-        {
-            return Ok(true);
+        for copy in store.vault_copy_requests(&task.sandbox_id).await? {
+            if !super::requests::among_askers(Some(&copy.requested_by), &me) {
+                continue;
+            }
+            links.push(match store.vault_get(&copy.secret_id).await? {
+                Some(source) => self.agent_secret_link(&slug, &source),
+                None => self.agent_secrets_link(&slug),
+            });
         }
-        Ok(records.iter().any(|record| {
+        for record in &records {
             let asker = if record.sandbox_id.is_some() {
                 &me
             } else {
                 &everywhere
             };
-            (record.env_files == EnvFiles::Asked
+            if (record.env_files == EnvFiles::Asked
                 && super::requests::among_askers(record.env_requested_by.as_deref(), asker))
                 || (!record.requested_hosts.is_empty()
                     && super::requests::among_askers(record.requested_by.as_deref(), asker))
-        }))
+            {
+                links.push(self.agent_secret_link(&slug, record));
+            }
+        }
+        links.dedup();
+        Ok(links)
     }
 }

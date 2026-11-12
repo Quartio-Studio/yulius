@@ -459,7 +459,10 @@ impl App {
     /// that is no secret request's to end, even over one already set (SPEC-213 SRA-003). Under
     /// the task's attention lock, from the task as it is now, so that a secret request's answer
     /// ending its flag at the same moment cannot swallow this one. The flag and its `reason`
-    /// are one write (SPEC-472): a task already flagged keeps both.
+    /// are one write (SPEC-472): a task already flagged keeps both, with one exception. A flag
+    /// that was a secret request's is this matter's from now on (the request's answer no
+    /// longer ends it), so it says this matter's reason, or none: the request's would send the
+    /// person to a Secrets page with nothing left to answer (ATN-011).
     pub(crate) async fn flag_needs_attention(
         &self,
         task_id: &TaskId,
@@ -467,13 +470,27 @@ impl App {
     ) -> AppResult<()> {
         let runtime = self.runtime(task_id);
         let _held = runtime.attention_lock.lock().await;
-        runtime.secret_wait_at.store(0, Ordering::SeqCst);
-        if self
-            .deps
-            .store
-            .flag_attention(task_id, None, reason, self.now())
-            .await?
-        {
+        let secret_flag = runtime.secret_wait_at.swap(0, Ordering::SeqCst);
+        let store = &self.deps.store;
+        let now = self.now();
+        let changed = if store.flag_attention(task_id, None, reason, now).await? {
+            true
+        } else if secret_flag != 0 {
+            // The flag stands since the request raised it: no work of the session answers it,
+            // as before (the time a notice would be answered by is not kept for it either).
+            let taken_over = reason.map(|r| r.clone().answered_by_work(false));
+            store
+                .replace_attention(
+                    task_id,
+                    yulius_domain::time::Timestamp(secret_flag),
+                    taken_over.as_ref(),
+                    now,
+                )
+                .await?
+        } else {
+            false
+        };
+        if changed {
             self.publish_task(task_id).await;
         }
         Ok(())

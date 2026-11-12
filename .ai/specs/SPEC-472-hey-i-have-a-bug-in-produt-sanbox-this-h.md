@@ -119,7 +119,8 @@ after a restart of Yulius. Reply shows that the terminal took the keyboard.
 - ATN-002: a reason speaks only for the flag it was written with: the task reads
   `needs_attention` and has not changed state since. Once the task works again, settles, ends, or
   is flagged anew by a path that gives no reason, the old reason is not shown. A flag raised on
-  a task that is already flagged changes neither the flag (as before) nor its reason.
+  a task that is already flagged changes neither the flag (as before) nor its reason, unless the
+  flag changes owner (ATN-011).
 - ATN-003: the task's API view carries the reason as `attention` (`{kind, problem, action,
   link}` or null) wherever a task summary is sent: the task lists, a task's detail and the
   `task.updated` event.
@@ -139,7 +140,9 @@ after a restart of Yulius. Reply shows that the terminal took the keyboard.
 
 - ATN-005: a flag raised by a Claude Code notice has kind `terminal` and Claude Code's own words
   as its problem. Every problem and to-do is one line of at most 400 characters (a longer one
-  is cut and ends in `…`), control characters and runs of whitespace as one space.
+  is cut and ends in `…`), control characters and runs of whitespace as one space, and without
+  the invisible format characters that reorder or hide text (bidirectional marks, embeddings,
+  overrides and isolates, zero-width spaces): the words come from Claude Code and from agents.
 - ATN-006: the notices stay as they are, for the viewers connected when the flag is raised.
 - ATN-007: the task view's bar shows a `yulius` reason as a request is shown (SPEC-327): "Needs
   you", Problem, To do, an Open link when the reason has one, and Reply for the owner. A
@@ -149,7 +152,8 @@ after a restart of Yulius. Reply shows that the terminal took the keyboard.
   its terminal below.": it no longer claims a question. A `needs_you` request, and a browser
   request the page has, keep their place before the reason.
 - ATN-008: the task row's second line says a `yulius` reason's to-do (its problem when it has
-  none) instead of "Approve or answer in the terminal".
+  none) instead of "Approve or answer in the terminal"; for a flag without a reason it says the
+  task's `needs_you` request when it has one (a goal pause), else "Look at its terminal".
 - ATN-009: Reply that gives the terminal the keyboard says so where the person looks: the
   terminal's notice reads "The terminal has the keyboard: answer there." A terminal that refuses
   input says why instead (read-only), as it does for typing. Phones keep the quick input.
@@ -159,6 +163,14 @@ after a restart of Yulius. Reply shows that the terminal took the keyboard.
   flag was raised, and a run that is watched again takes that time back. Every other flag stays
   through the agent's work, as before: one that work does not answer, one of Yulius's own, and
   one another matter raised after the notice's flag was replaced.
+- ATN-011: a reason follows the owner of its flag (review round 1). A secret request's flag
+  ends with the request's answer; once another matter flags the task, that flag is the other
+  matter's (the answer no longer ends it, SPEC-213 SRA-003), and it says the other matter's
+  reason from then on, or none when that matter gives none: never the secret's, which would
+  send the person to a Secrets page with nothing left to answer. The flag itself, its time and
+  what ends it stay as they were (the session's work does not answer it). A flag that waits for
+  several secret requests points at one that still waits: after an answer that leaves another
+  request open, its link is that request's tab of the Secrets page.
 
 ## Plan
 
@@ -204,6 +216,14 @@ after a restart of Yulius. Reply shows that the terminal took the keyboard.
   notice's flag is not; a flag another matter raised after the notice's was replaced is not.
 - `crates/yulius/tests/browser.rs`: the browser request's test also reads the task's `attention`
   (red before the fix).
+- Review round 1 (ATN-011, each red before its fix): `secrets_env.rs`, a Claude Code question
+  on a task its secret request flagged shows the question, before and after the secret's
+  answer, and so does a worker's prompt across a dismissed request; `secrets.rs`, a task that
+  asked for a project's secret and one of every sandbox points at the second's tab once the
+  first is answered, and reads no flag after both; `yulius-store`, a reason is replaced only on
+  the flag it was read from, keeps that flag's time, and the same reason again changes nothing;
+  `yulius-app`, format characters are dropped from a reason; e2e, the row of a flag with a
+  request says the request.
 - `crates/yulius-app`: a reason is one bounded line and its view carries the page; whether work
   answers a flag is kept with the reason and is no part of the view; a goal never set says in
   its terminal what it said before and keeps what is wrong apart from what to do, also behind an
@@ -226,10 +246,15 @@ after a restart of Yulius. Reply shows that the terminal took the keyboard.
   or activity already stamps `state_at` (six statements in the store). The reason carries the
   time of its flag and is read only while `state_at` is that time, so no writer has to know of
   it, and a future one cannot forget to clear it.
-- One reason per flag, the first: a second matter on a flagged task does not change the flag
-  today, and the first matter still stands when the second is answered. Taking the latest would
-  leave "its question is in the terminal" behind once that question is answered, which is this
-  defect again.
+- One reason per flag, its owner's: the matter whose end ends the flag. A second matter on a
+  flagged task does not change the flag today, and the first matter still stands when the
+  second is answered, so the first reason stays; taking the latest would leave "its question is
+  in the terminal" behind once that question is answered, which is this defect again. A secret
+  request's flag is the one flag that changes owner (SPEC-213: any other matter takes it over,
+  and the secret's answer then leaves it), so there the reason changes with it (ATN-011, review
+  round 1): the replacement keeps the flag's time and marks that work does not answer it, as
+  the server's memory has it. While both matters are open the bar shows the one that holds the
+  flag; the secret's request is still on the Secrets page and in the agent's printed link.
 - Reply keeps focusing the terminal for every flag, never a text field (SPEC-156 RPL-006): a
   Claude Code menu may have opened since the reason was written, and typed text would pick its
   options unseen. The click's visible result is the terminal's own notice.

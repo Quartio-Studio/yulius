@@ -2770,7 +2770,10 @@ moment and shows for six seconds. So the statement that raises the flag
 `yulius`), the problem, what to do, the page where to do it, and the flag's time. It is read
 only while the task is running, reads `needs_attention` and has not changed state since that
 time (`task_attention`), so no other statement has to clear it; a task that is already flagged
-keeps its flag and its reason. The task's view carries it as `attention`, and the task view's
+keeps its flag and its reason. One flag changes owner, and its reason follows: a secret
+request's flag that another matter takes over (the request's answer then leaves it) says that
+matter's reason, and one that waits for several requests points at one still open
+(`replace_attention`: the same flag and time, another reason). The task's view carries it as `attention`, and the task view's
 bar shows it: a reason of Yulius's own as a request is shown (Problem, To do, Open), Claude
 Code's question as "Its question is in the terminal below" with Claude Code's words, and a flag
 without a reason as "Look at its terminal below". Reply gives the terminal the keyboard and the

@@ -44,7 +44,13 @@ flagged after the person answered and the agent went on, until its turn ended.
   `problem` (what is wrong, one line), `action` (what the person does), `link` (a page of this
   Yulius where they do it) and `at`, the time the flag was raised.
 - The flag and its reason are one statement (`TaskStore::flag_attention`). A task that is already
-  flagged keeps its flag and its reason: one flag, one reason, the first.
+  flagged keeps its flag and its reason: one flag, one reason, its owner's (the matter whose end
+  ends the flag), which is the first.
+- One flag changes owner, and its reason with it. A secret request's flag ends with the
+  request's answer until another matter flags the task; from then on it is that matter's and
+  the answer leaves it (SPEC-213). It then says that matter's reason, or none
+  (`TaskStore::replace_attention`: the same flag, its time kept, only what it says changed). A
+  flag that waits for several secret requests points at one that still waits.
 - A reason speaks only for the flag it was written with. It is read while the task is running,
   reads `needs_attention` and its state time (`state_at`) is the reason's `at`
   (`TaskStore::task_attention`). Every statement that changes a task's status or activity stamps
@@ -86,6 +92,11 @@ flagged after the person answered and the agent went on, until its turn ended.
   options unseen (SPEC-156 RPL-006). Rejected.
 - **A focus ring on the terminal instead of a notice.** It would change every terminal of the
   product (shells, the Superagent) for one button. Rejected.
+- **The first reason always, also on a secret request's flag that another matter took over**
+  (the first version of this change). After the secret was answered the flag stayed, as it
+  must, and still said "Answer it on the Secrets page", with a link to a page with nothing left
+  to answer (review round 1). Rejected: "the first matter is still open" does not hold for the
+  one flag whose first matter is answered apart from it.
 
 ## Consequences
 
@@ -99,7 +110,11 @@ flagged after the person answered and the agent went on, until its turn ended.
 - Schema version 53 adds `tasks.attention`. A flag raised before the update has no reason and
   reads the neutral sentence until it ends.
 - A second matter on a flagged task is not shown: a Claude Code menu that opens while the gate's
-  reason shows is seen in the terminal, where Reply puts the keyboard.
+  reason shows is seen in the terminal, where Reply puts the keyboard. On a secret request's
+  flag it is the second matter that shows; the request stays on the Secrets page.
+- A reason's words come from Claude Code and from agents and are shown as Yulius's own: they are
+  cut to one line of 400 characters, and control and invisible format characters (bidirectional
+  overrides, zero-width spaces) are taken out.
 - The reason of a flag is not refreshed while the flag stands: the gate's reasons are those of the
   Stop that raised it.
 - The bound is the state's time in milliseconds. A reason of an earlier flag would show for a

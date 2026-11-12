@@ -272,7 +272,10 @@ export function activityLine(task, info = statusInfo(task)) {
       // nothing of why (SPEC-472).
       const why = task.attention;
       if (why && why.kind === 'yulius' && (why.action || why.problem)) return why.action || why.problem;
-      return why && why.kind === 'terminal' ? 'Approve or answer in the terminal' : 'Look at its terminal';
+      if (why && why.kind === 'terminal') return 'Approve or answer in the terminal';
+      // A flag whose request says it (a goal pause): the request, as the row's label does.
+      if (task.needs_you && task.needs_you.action) return task.needs_you.action.replaceAll('`', '');
+      return 'Look at its terminal';
     }
     if (task.activity === 'waiting') {
       if (steps.total && steps.done >= steps.total) return 'All steps done — review it';

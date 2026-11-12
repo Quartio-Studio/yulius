@@ -434,6 +434,37 @@ impl TaskStore for SqliteStore {
         .await
     }
 
+    async fn replace_attention(
+        &self,
+        id: &TaskId,
+        flagged: Timestamp,
+        reason: Option<&AttentionRecord>,
+        at: Timestamp,
+    ) -> AppResult<bool> {
+        let id = id.as_str().to_owned();
+        let reason = reason
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(AppError::internal)?;
+        self.call(move |c| {
+            let n = c
+                .execute(
+                    // The state and its time stay: only what the flag says changes, and only
+                    // while the task still reads the flag raised at `flagged`.
+                    "UPDATE tasks SET updated_at = ?4, \
+                     attention = CASE WHEN ?3 IS NULL THEN NULL \
+                       ELSE json_set(?3, '$.at', state_at) END \
+                     WHERE id = ?1 AND status = 'running' AND activity = 'needs_attention' \
+                     AND state_at = ?2 AND attention IS NOT CASE WHEN ?3 IS NULL THEN NULL \
+                       ELSE json_set(?3, '$.at', state_at) END",
+                    params![id, flagged.0, reason, at.0],
+                )
+                .map_err(db)?;
+            Ok(n == 1)
+        })
+        .await
+    }
+
     async fn task_attention(&self, id: &TaskId) -> AppResult<Option<(AttentionRecord, Timestamp)>> {
         let id = id.as_str().to_owned();
         let row: Option<(String, i64)> = self

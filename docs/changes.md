@@ -28,8 +28,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   Code's question raised, but only by a time the server kept in memory, so after an instance
   update (which freezes agents mid-turn) such a task stayed "Needs your action" over a working
   session until its turn ended. The reason now says that work answers the flag, and a run that
-  is watched again takes the flag's time back. A flag raised before this update has no reason
-  until it ends. Left as they are: a worker's permission prompt still ends only at the turn's
+  is watched again takes the flag's time back. A reason follows the owner of its flag: a
+  secret request's flag that Claude Code's question or the gate takes over says that matter,
+  not "Answer it on the Secrets page" after the secret was answered, and a flag that waits for
+  two secret requests opens the tab of the one still waiting. A flag raised before this update
+  has no reason until it ends. Left as they are: a worker's permission prompt still ends only at the turn's
   end or a typed message (nothing says when its dialog was answered; its bar now says what was
   asked), and a second ask on a flagged task (#1200).
 - Moving from Settings → Instance: three notes of the review that approved it, answered after the

@@ -5,7 +5,9 @@
 //! (`tasks.attention`) and read only while the task still reads that flag, so whoever opens the
 //! task later knows what to do. The notice in its terminal reaches only the viewers connected
 //! when the flag is raised. The reason also says whether the session's own work answers the flag
-//! (STA-003), so a restart of Yulius still knows it.
+//! (STA-003), so a restart of Yulius still knows it. A flag keeps its first reason, unless the
+//! flag changes owner: a secret request's flag that another matter takes over says that
+//! matter's reason, and one that waits for a second request points at the request still open.
 
 use std::sync::atomic::Ordering;
 
@@ -115,11 +117,37 @@ impl AttentionRecord {
     }
 }
 
+/// Whether `c` draws nothing and changes how the line around it reads: the bidirectional marks,
+/// embeddings, overrides and isolates (which reorder what follows), zero-width spaces and the
+/// other invisible format characters. The zero-width joiner and non-joiner stay: they shape
+/// letters and emoji and neither hide nor reorder text.
+fn hidden_format(c: char) -> bool {
+    matches!(
+        c,
+        '\u{ad}'
+            | '\u{61c}'
+            | '\u{180e}'
+            | '\u{200b}'
+            | '\u{200e}'
+            | '\u{200f}'
+            | '\u{202a}'..='\u{202e}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{206f}'
+            | '\u{feff}'
+            | '\u{fff9}'..='\u{fffb}'
+            | '\u{e0001}'
+            | '\u{e0020}'..='\u{e007f}'
+    )
+}
+
 /// `text` as one line of at most [`MAX_PROBLEM_CHARS`] characters (cut ones end in `…`): control
-/// characters and runs of whitespace become one space. `None` when nothing is left.
+/// characters and runs of whitespace become one space, and invisible format characters
+/// ([`hidden_format`]) are dropped: the words come from Claude Code and from agents, and are
+/// shown to a person as Yulius's own. `None` when nothing is left.
 fn one_line(text: &str) -> Option<String> {
     let spaced: String = text
         .chars()
+        .filter(|c| !hidden_format(*c))
         .map(|c| if c.is_control() { ' ' } else { c })
         .collect();
     let line = spaced.split_whitespace().collect::<Vec<_>>().join(" ");

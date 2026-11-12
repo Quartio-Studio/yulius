@@ -513,6 +513,111 @@ async fn a_flag_from_a_state_the_task_left_is_not_raised() -> R {
     Ok(())
 }
 
+/// SPEC-472 ATN-011: a flag that changes owner gets another reason and stays the same flag: its
+/// time and the task's state do not move. Only the flag raised at the time named is changed;
+/// the same reason again changes nothing; no reason clears it.
+#[tokio::test]
+async fn a_flags_reason_is_replaced_only_on_the_flag_it_was_read_from() -> R {
+    use yulius_app::attention::AttentionRecord;
+    use yulius_app::model::TaskTimes;
+    use yulius_domain::task::Activity;
+    let store = SqliteStore::open_in_memory()?;
+    let (sid, uid) = seed(&store).await?;
+    let t = store.insert_task(&task("t1", &sid, &uid)?).await?;
+    let secret = AttentionRecord::yulius("A secret waits.", "Answer it.")
+        .on_page("https://yulius.test/s/app/secrets?section=agents");
+    let question = AttentionRecord::terminal(Some("Pick one"));
+    let replace = |flagged: i64, reason: Option<AttentionRecord>, at: i64| {
+        let (store, id) = (&store, &t.id);
+        async move {
+            store
+                .replace_attention(id, Timestamp(flagged), reason.as_ref(), Timestamp(at))
+                .await
+        }
+    };
+    // No flag to speak for: a queued task, then a working one.
+    assert!(!replace(10, Some(question.clone()), 15).await?);
+    store
+        .transition_task(
+            &t.id,
+            None,
+            TaskStatus::Running,
+            Some(Activity::Working),
+            Timestamp(20),
+        )
+        .await?;
+    assert!(!replace(20, Some(question.clone()), 25).await?);
+    assert_eq!(store.task_attention(&t.id).await?, None);
+
+    assert!(
+        store
+            .flag_attention(&t.id, None, Some(&secret), Timestamp(30))
+            .await?
+    );
+    // Another flag's time: nothing.
+    assert!(!replace(29, Some(question.clone()), 40).await?);
+    assert_eq!(
+        store.task_attention(&t.id).await?,
+        Some((secret.clone(), Timestamp(30)))
+    );
+    // This flag's: the reason changes, the flag does not.
+    assert!(replace(30, Some(question.clone()), 40).await?);
+    assert_eq!(
+        store.task_attention(&t.id).await?,
+        Some((question.clone(), Timestamp(30))),
+        "the same flag, raised when it was"
+    );
+    let now = store.task(&t.id).await?.ok_or("task")?;
+    assert_eq!(now.activity, Some(Activity::NeedsAttention));
+    assert_eq!(now.updated_at, Timestamp(40), "the task changed");
+    assert_eq!(
+        store.task_times(&t.id).await?,
+        Some(TaskTimes {
+            state_at: Timestamp(30),
+            working_since: None,
+        })
+    );
+    // The reason it has: no change, nothing to announce.
+    assert!(!replace(30, Some(question.clone()), 50).await?);
+    assert_eq!(
+        store.task(&t.id).await?.ok_or("task")?.updated_at,
+        Timestamp(40)
+    );
+    // No reason: the flag says none, once.
+    assert!(replace(30, None, 60).await?);
+    assert_eq!(store.task_attention(&t.id).await?, None);
+    assert!(!replace(30, None, 70).await?);
+    // And one again, over none.
+    assert!(replace(30, Some(secret.clone()), 80).await?);
+    assert_eq!(
+        store.task_attention(&t.id).await?,
+        Some((secret.clone(), Timestamp(30)))
+    );
+
+    // A task that is not running keeps what it has.
+    store
+        .transition_task(
+            &t.id,
+            None,
+            TaskStatus::Stopping,
+            Some(Activity::NeedsAttention),
+            Timestamp(30),
+        )
+        .await?;
+    assert!(!replace(30, Some(question), 90).await?);
+    assert!(
+        !store
+            .replace_attention(
+                &TaskId::parse("missing")?,
+                Timestamp(30),
+                None,
+                Timestamp(90)
+            )
+            .await?
+    );
+    Ok(())
+}
+
 /// SPEC-315 FWS-001: publishing an idle task ends or starts its working stretch only while the
 /// task is still in the state that was decided on; a turn that started in between keeps its
 /// stretch (issue #895).

@@ -354,6 +354,17 @@ pub trait TaskStore: Send + Sync {
         &self,
         id: &TaskId,
     ) -> AppResult<Option<(crate::attention::AttentionRecord, Timestamp)>>;
+    /// Gives the flag a running task reads since `flagged` another `reason` (or none), at `at`:
+    /// the flag stays as it is, with its time, and says what it now waits for (SPEC-472
+    /// ATN-011). Whether anything changed: not for a task that left that flag, and not when the
+    /// reason is the one it has.
+    async fn replace_attention(
+        &self,
+        id: &TaskId,
+        flagged: Timestamp,
+        reason: Option<&crate::attention::AttentionRecord>,
+        at: Timestamp,
+    ) -> AppResult<bool>;
     /// Since when `task` is in its current state and working (SPEC-087 TIM-001), if it exists.
     async fn task_times(&self, task: &TaskId) -> AppResult<Option<TaskTimes>>;
     /// Records the start of `task`'s working stretch, or its end with `None` (SPEC-087
