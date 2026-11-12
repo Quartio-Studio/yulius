@@ -3115,10 +3115,15 @@ streams and what the last one installed; it names a stream before its first entr
 that dies costs the receipts and never the copy's truth. The frozen pass carries the digests of
 every path the old host holds, and the new host removes the rest. Both hosts then count the
 copy's inventory (`inventory.rs`: entries and bytes per top-level folder and a fingerprint over
-every entry's metadata, as the import installs it and in the old host's ids), and the new
+every entry's metadata, as the import installs it and in the old host's ids; the import's own
+limits mark is left out of every pass and of both counts, `walk::left_out`), and the new
 instance is started only when they are equal. Only the move's identity, the cutover's progress
 and the receipts are stored (`/var/lib/yulius-migrate/state.json`, `copy/`); every step reads the
-facts and acts if needed, so the same command continues a move. The copy carries a mark
+facts and acts if needed, so the same command continues a move. A run that goes on from a
+recorded start asks the new instance first and never ends well with both running: whatever
+unit of the old instance (the server's, its sessions unit) runs unfrozen beside a new instance
+that has taken over is frozen again, to stay, or the run fails saying so (SPEC-467). The copy
+carries a mark
 (`move-pending.json`): the first start that finds it queues the tasks whose runs were lost with the
 old host (`yulius-app::host_move`).
 

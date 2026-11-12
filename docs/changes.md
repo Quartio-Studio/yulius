@@ -21,6 +21,22 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   directory; after a restart of the old host, or when its clock was set back, the receipts are
   dropped and everything is sent into the staged copy again. The operations guide §7 describes
   it.
+- The instance move's last review findings are fixed (SPEC-467, task #450; the command is
+  SPEC-460's). An instance that systemd does not report frozen as a whole right after the freeze
+  is no longer left frozen behind "is not running any more": it is thawed (the sessions unit of
+  SPEC-458 with the server's) and the line says what systemd said. A run that goes on from a
+  recorded start never ends well with both instances running: whatever unit of the old instance
+  runs unfrozen beside a new instance that reports the build is frozen again, to stay, and the
+  server's unit disabled (a `FAIL` line with the reason and the commands when it cannot be;
+  nothing is thawed there, a slow freeze is left on its way), and a new host that cannot be
+  reached or does not answer is told from a new instance that does not run ("run the command
+  again when the new host answers", not `--abort`, and no second request for the key). A finish
+  that was done but not recorded is found done by the key it deleted, instead of "Run the command
+  again" on every run. `yulius instance export` leaves a `.yulius-limits-adapt` out and neither
+  host counts it, so a move from a host that still holds that mark proves its copy. The
+  operations guide §7 says which run ignores Ctrl-C, and the decisions index lists 0297 in its
+  place and 0219 once. Two things the review found that were there before are issues #1178 and
+  #1179.
 - A subscription's email is typed in place, under its name (SPEC-463, task #448, ADR-0300).
   Production's subscriptions read "email unknown" (Claude gave Yulius no email for their
   `claude setup-token` sign-ins, as ADR-0185 feared), so the address went into the name. On the Subscriptions page the

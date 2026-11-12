@@ -30,6 +30,19 @@ pub const LEFT_OUT: [&str; 6] = [
     "claude-code",
 ];
 
+/// The import's own mark at the top (SPEC-459 HSL-005). Every import writes a new one, so the
+/// old host's never travels and is never counted, whatever sits at its name (SPEC-467 LFT-005).
+/// It is not in [`LEFT_OUT`], which also says what may be in a target before an import whatever
+/// its kind: the mark may be there only as a file.
+const IMPORT_MARK: &str = yulius_app::limits::ADAPT_MARK;
+
+/// Whether a copy leaves the top-level `name` out: the export does not send it, and neither
+/// host counts it ([`super::inventory`]).
+#[must_use]
+pub fn left_out(name: &[u8]) -> bool {
+    name == IMPORT_MARK.as_bytes() || LEFT_OUT.iter().any(|l| name == l.as_bytes())
+}
+
 /// The archive path of the data directory itself.
 pub const ROOT: &[u8] = b"data";
 
@@ -76,7 +89,8 @@ pub fn gone(e: &io::Error) -> bool {
     .any(|errno| e.raw_os_error() == Some(errno.raw_os_error()))
 }
 
-/// Walks `root`, calling `visit` with each entry and its path on disk, in archive order.
+/// Walks `root`, calling `visit` with each entry and its path on disk, in archive order, without
+/// the top-level names a copy leaves out ([`left_out`]).
 ///
 /// # Errors
 /// A directory or file that cannot be read, or `visit`'s error.
@@ -87,10 +101,11 @@ pub fn walk(
     walk_top(root, &copied, visit)
 }
 
-/// Whether a copy carries the top-level name `name` ([`LEFT_OUT`]).
+/// Whether a copy carries the top-level name `name`: every name but those it leaves out
+/// ([`left_out`]).
 #[must_use]
 pub fn copied(name: &[u8]) -> bool {
-    !LEFT_OUT.iter().any(|l| name == l.as_bytes())
+    !left_out(name)
 }
 
 /// [`walk`] over the top-level names `keep` accepts (and everything below them).

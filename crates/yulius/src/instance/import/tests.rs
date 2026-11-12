@@ -154,6 +154,11 @@ fn a_damaged_copy_fails() -> TestResult {
 
 /// An archive of `m` and the data directory entry only.
 fn crafted(m: &Manifest) -> io::Result<Vec<u8>> {
+    crafted_with(m, &[])
+}
+
+/// An archive of `m`, the data directory entry and `more` entries without content.
+fn crafted_with(m: &Manifest, more: &[Entry]) -> io::Result<Vec<u8>> {
     let content = m.to_bytes().map_err(io::Error::other)?;
     let mut out = Vec::new();
     let mut w = Writer::new(&mut out);
@@ -178,6 +183,9 @@ fn crafted(m: &Manifest) -> io::Result<Vec<u8>> {
         xattrs: Vec::new(),
     };
     w.entry(&root, None, |_| {})?;
+    for e in more {
+        w.entry(e, None, |_| {})?;
+    }
     w.finish()?;
     Ok(out)
 }
@@ -427,18 +435,48 @@ fn an_import_that_did_not_finish_leaves_no_limits_mark() -> TestResult {
     Ok(())
 }
 
+/// An export leaves the mark out (SPEC-467 LFT-005); an archive of an older build, or one made
+/// by hand, may still bring its name.
 #[test]
 fn a_link_the_copy_brings_at_the_limits_mark_is_replaced_not_followed() -> TestResult {
+    use std::os::unix::ffi::OsStrExt as _;
+    const MARK: &str = yulius_app::limits::ADAPT_MARK;
     let host = tempfile::tempdir()?;
     let target = host.path().join("yulius");
     let elsewhere = host.path().join("planted");
-    let bytes = exported_with(&target, &|src| {
-        std::os::unix::fs::symlink(&elsewhere, src.join(yulius_app::limits::ADAPT_MARK))
-    })?;
+    let link = Entry {
+        path: format!("data/{MARK}").into_bytes(),
+        kind: Kind::Symlink {
+            target: elsewhere.as_os_str().as_bytes().to_vec(),
+        },
+        mode: 0o777,
+        uid: ids().uid.0,
+        gid: ids().gid.0,
+        mtime: 0,
+        xattrs: Vec::new(),
+    };
+    let mut m = manifest_for(&target);
+    // The manifest has one length whatever it says, so the archive's is known from a first one.
+    m.total_bytes = crafted_with(&m, std::slice::from_ref(&link))?.len() as u64;
+    m.entries = 2;
+    let bytes = crafted_with(&m, std::slice::from_ref(&link))?;
     run(&bytes, &target).map_err(|f| format!("{f:?}"))?;
-    let mark = fs::symlink_metadata(target.join(yulius_app::limits::ADAPT_MARK))?;
+    let mark = fs::symlink_metadata(target.join(MARK))?;
     assert!(mark.is_file(), "the mark is a file of its own");
     assert!(!elsewhere.exists());
+
+    // And the export itself no longer brings one.
+    let bytes = exported_with(&target, &|src| {
+        std::os::unix::fs::symlink(&elsewhere, src.join(MARK))
+    })?;
+    let mut r = Reader::new(bytes.as_slice());
+    let mut paths = Vec::new();
+    while let Item::Entry(e) = r.next_item()? {
+        io::copy(&mut r.data_reader(), &mut io::sink())?;
+        paths.push(String::from_utf8_lossy(&e.path).into_owned());
+    }
+    assert!(paths.contains(&"data/yulius.db".to_owned()), "{paths:?}");
+    assert!(!paths.iter().any(|p| p.contains(MARK)), "{paths:?}");
     Ok(())
 }
 

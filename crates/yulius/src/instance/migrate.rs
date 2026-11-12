@@ -292,14 +292,28 @@ pub trait World {
 struct Old {
     /// The server's unit is active.
     active: bool,
+    /// The server's unit has stopped (`inactive` or `failed`): it is neither active nor on its
+    /// way up or down (SPEC-467 LFT-002).
+    stopped: bool,
+    /// Its sessions unit runs and is not frozen.
+    sessions_run: bool,
     /// Something of it is frozen: it is held, by this move, an earlier run or an export.
     any_frozen: bool,
     /// Nothing of it runs unfrozen: what the new instance's start waits for.
     all_frozen: bool,
 }
 
+impl Old {
+    /// Nothing of it runs, as far as systemd says: the server's unit has stopped and its
+    /// sessions unit, where it runs, is frozen. (What a unit stopped by hand left running is
+    /// not looked at here: issue #1178.)
+    fn down(self) -> bool {
+        self.stopped && !self.sessions_run
+    }
+}
+
 /// What the cutover says when the old instance is not frozen as a whole right after its
-/// freeze.
+/// freeze: what systemd said, not more (SPEC-467 LFT-001).
 fn not_frozen_after_freeze(unit: &str, old: Option<Old>) -> String {
     match old {
         // Stopped since the plan: found before the copy, not after it.
@@ -307,9 +321,13 @@ fn not_frozen_after_freeze(unit: &str, old: Option<Old>) -> String {
             "{unit} is not running any more: start it (`systemctl start {unit}`), so the move \
              can freeze everything it runs"
         ),
-        _ => format!(
-            "{unit} is not known to be frozen as a whole (systemd does not say, or one of its \
-             units is not frozen): nothing is copied; run the command again"
+        Some(_) => format!(
+            "{unit} runs and is not frozen as a whole (a unit of it was thawed or started from \
+             outside right after the freeze): nothing is copied. Run the command again"
+        ),
+        None => format!(
+            "systemd does not say whether {unit} is frozen as a whole (`systemctl show` failed \
+             right after the freeze): nothing is copied. Run the command again when it answers"
         ),
     }
 }
@@ -526,7 +544,7 @@ impl<'a> Move<'a> {
             // A run that ended while the new instance was starting: its state decides, and
             // nothing is planned or copied again.
             Cutover::Starting => {
-                self.key()?;
+                self.key_again()?;
                 self.resume_start(&profile)?;
             }
             Cutover::No | Cutover::RolledBack => {
@@ -691,12 +709,27 @@ impl<'a> Move<'a> {
     }
 
     fn key(&mut self) -> Result<(), Stop> {
-        const ITEM: &str = "one-time key";
-        if self.remote.reachable().is_ok() {
-            let seen = self.host_key_note();
-            self.ok(ITEM, format!("signs in to {}{seen}", self.target()));
-            return Ok(());
+        match self.remote.reachable() {
+            Ok(()) => {
+                self.key_signs_in();
+                Ok(())
+            }
+            Err(_) => self.add_key(),
         }
+    }
+
+    fn key_signs_in(&mut self) {
+        let seen = self.host_key_note();
+        self.ok(
+            "one-time key",
+            format!("signs in to {}{seen}", self.target()),
+        );
+    }
+
+    /// Makes the one-time key when there is none and adds it to the new host through the
+    /// person's own sign-in; without one, the line to add is shown and the run ends.
+    fn add_key(&mut self) -> Result<(), Stop> {
+        const ITEM: &str = "one-time key";
         let public = self.remote.key().map_err(|why| self.fail(ITEM, why))?;
         self.world.show(&format!(
             "Signing in to {} once to add the move's key (a password or a second factor may be \
@@ -731,6 +764,32 @@ impl<'a> Move<'a> {
                 );
                 Err(Stop::Ended)
             }
+        }
+    }
+
+    /// The one-time key in a run that goes on from a recorded start. The run that ordered the
+    /// start had added it, so a new host that does not answer is not a key to add again: it is
+    /// waited for, and nothing is decided or touched meanwhile. A key that is missing here or
+    /// refused there is made and added as in a plan. One answer decides which it is.
+    fn key_again(&mut self) -> Result<(), Stop> {
+        match self.remote.reachable() {
+            Ok(()) => {
+                self.key_signs_in();
+                Ok(())
+            }
+            Err(why) if why.contains(remote::KEY_REFUSED) || why.contains(remote::NO_KEY) => {
+                self.add_key()
+            }
+            Err(why) => Err(self.fail(
+                "new host",
+                format!(
+                    "cannot be reached ({why}), so nobody knows whether the new instance runs. \
+                     Nothing was started, stopped, frozen or thawed: run the command again \
+                     when the new host answers (it decides from the new instance's state); \
+                     `yulius instance migrate --abort` only once the new instance is known to \
+                     be stopped"
+                ),
+            )),
         }
     }
 
@@ -1347,6 +1406,8 @@ impl<'a> Move<'a> {
         let frozen = freezer == "frozen";
         (code == 0).then_some(Old {
             active: active == "active",
+            stopped: matches!(active.as_str(), "inactive" | "failed"),
+            sessions_run: sessions == Some(false),
             any_frozen: frozen || sessions == Some(true),
             all_frozen: frozen && sessions != Some(false),
         })
@@ -1462,20 +1523,6 @@ impl<'a> Move<'a> {
         }
     }
 
-    /// Ends a freeze the move does not go on with: thaws what it froze, unless a signal already
-    /// took its end.
-    fn give_back(&mut self, held: Freeze) {
-        if !self.world.claim() {
-            // A signal took it first: it thaws and exits, nothing here may go on.
-            loop {
-                std::thread::park();
-            }
-        }
-        if let Err(why) = held.release() {
-            self.fail("old instance", why);
-        }
-    }
-
     /// The move takes the freeze's end: no signal thaws from here, and no guard does when this
     /// process dies or loses its terminal, so the old instance never thaws beside a new one.
     fn claim(&mut self, held: Freeze) {
@@ -1522,13 +1569,38 @@ impl<'a> Move<'a> {
             ));
         }
         let mut held = self.freeze()?;
-        let frozen = self.old_unit();
-        if !frozen.is_some_and(|old| old.all_frozen) {
-            // What the freeze took all the same (the sessions unit of a server stopped since
-            // the plan) is given back.
-            self.give_back(held);
-            let why = not_frozen_after_freeze(&unit, frozen);
-            return Err(self.fail("old instance", why));
+        let state = self.old_unit();
+        if !state.is_some_and(|old| old.all_frozen) {
+            // Found before the copy, not after it. The move takes the freeze's end first, so
+            // what is said and thawed here is the only answer to it.
+            let covered: Vec<String> = held.covered().iter().rev().cloned().collect();
+            self.claim(held);
+            let why = not_frozen_after_freeze(&unit, state);
+            self.fail("old instance", why);
+            match state {
+                // A unit of it runs unfrozen, as systemd says: thawed by what systemd says.
+                Some(old) if old.active => self.thaw(),
+                // The server's unit does not run, as the line says, or systemd does not say
+                // what runs. What the freeze covered is thawed as the freeze knew it, in the
+                // order a thaw takes it and without another question. A server's unit that
+                // does not run is left out: systemd thaws none (stopped, or with a job
+                // pending), nothing of it is frozen, and only a failed thaw is said then.
+                _ => {
+                    let down = state.is_some();
+                    let units: Vec<String> = covered
+                        .into_iter()
+                        .filter(|name| !(down && *name == unit))
+                        .collect();
+                    match freeze::thaw_each(&mut *self.world.freezer(), &units) {
+                        Ok(()) if down || units.is_empty() => {}
+                        Ok(()) => self.changed("old instance", "thawed: it runs as before"),
+                        Err(why) => {
+                            self.fail("old instance", why);
+                        }
+                    }
+                }
+            }
+            return Err(Stop::Failed);
         }
         self.changed(
             "old instance",
@@ -1714,43 +1786,163 @@ impl<'a> Move<'a> {
     /// A run that ended after it ordered the start: the new instance's state decides.
     fn resume_start(&mut self, p: &Profile) -> Result<(), Stop> {
         self.phase("Cutover");
-        // The start was ordered by an earlier run: nothing here may thaw, and a unit that is
-        // not frozen any more is a person's to look at before anything goes on.
-        if self.old_frozen() {
+        // The start was ordered by an earlier run: nothing here may thaw, and nothing is started
+        // beside an old instance that is not frozen as a whole.
+        let state = self.old_unit();
+        if state.is_some_and(|old| old.all_frozen) {
             return self.start(p);
         }
-        // Not frozen any more (this host was restarted, so its disabled unit does not run; or
-        // someone thawed it): nothing is started on that. The new instance is only asked.
+        // Not frozen as a whole any more (this host was restarted, so its disabled unit does
+        // not run; or someone thawed a unit of it): nothing is started on that. The new
+        // instance is only asked.
         let unit = self.opts.service.clone();
+        let not_frozen = if state.is_some() {
+            "is not frozen as a whole"
+        } else {
+            "is not known to be frozen"
+        };
         let asked = self.remote.call(&Request::Health {
             build: self.world.build(),
             health: self.health_address(p),
         });
         match asked {
             Ok(reply) if reply.started => {
-                let units = self.old_units();
-                self.manual(
-                    "old instance",
-                    format!(
-                        "{unit} is not frozen any more, and the new instance runs. Make sure \
-                         nothing of the old one runs here: `systemctl stop {units}; systemctl \
-                         kill --kill-whom=all {units}; systemctl disable {unit}`"
-                    ),
-                );
-                self.state.cutover = Cutover::Moved;
-                self.save_state()
+                let mut old = state;
+                if !old.is_some_and(Old::down) {
+                    // Something of it runs beside the new instance, which has taken over; or
+                    // a unit of it is on its way up or down, or systemd does not say, and "it
+                    // does not run" would be a guess. Frozen here and now, to stay.
+                    self.freeze_beside_new(old);
+                    old = self.old_unit();
+                }
+                if old.is_some_and(Old::down) {
+                    // The server's unit has stopped, which systemd does not freeze, and
+                    // nothing of its sessions runs unfrozen (any more).
+                    let units = self.old_units();
+                    self.manual(
+                        "old instance",
+                        format!(
+                            "{unit} does not run here any more, and the new instance runs. Make \
+                             sure nothing of the old one runs here: `systemctl stop {units}; \
+                             systemctl kill --kill-whom=all --signal=SIGKILL {units}; systemctl \
+                             disable {unit}`"
+                        ),
+                    );
+                    self.state.cutover = Cutover::Moved;
+                    return self.save_state();
+                }
+                // Disabled and checked as after any start.
+                self.moved()
             }
-            _ => {
+            Ok(_) => {
                 self.fail(
                     "old instance",
                     format!(
-                        "{unit} is not frozen although the new instance's start was ordered, \
+                        "{unit} {not_frozen} although the new instance's start was ordered, \
                          and the new instance does not say that it runs. Nothing was started \
                          or stopped: `yulius instance migrate --abort` goes back"
                     ),
                 );
                 Err(Stop::Failed)
             }
+            // Silence is not "does not run": the abort would bring the old instance back
+            // beside a new one that may run.
+            Err(why) => {
+                self.fail(
+                    "new instance",
+                    format!(
+                        "the new host does not answer ({why}), so nobody knows whether the new \
+                         instance runs, and {unit} {not_frozen} here. Nothing was started or \
+                         stopped: run the command again when the new host answers (it decides \
+                         from the new instance's state); `yulius instance migrate --abort` only \
+                         once the new instance is known to be stopped"
+                    ),
+                );
+                Err(Stop::Failed)
+            }
+        }
+    }
+
+    /// Freezes what runs of an old instance beside a new one that has taken over (a recorded
+    /// start, a unit of it thawed or started since), to stay: the start was ordered, so nothing
+    /// here thaws, also not when a freeze fails ([`freeze::freeze_to_stay`], not the export's
+    /// freeze, which undoes itself). Every unit that was frozen is named, and every one that
+    /// could not be; the caller looks again and says whether the instance is held. `before` is
+    /// what systemd said of the instance before.
+    fn freeze_beside_new(&mut self, before: Option<Old>) {
+        let unit = self.opts.service.clone();
+        // Whether systemd had said that this unit of it ran unfrozen (a unit that is sent a
+        // freeze was not frozen): the server's unit when it was active, its sessions unit when
+        // it ran. A unit on its way up or down, or an unanswered question, is not that.
+        let ran = |name: &String| {
+            before.is_some_and(|old| {
+                if *name == unit {
+                    old.active
+                } else {
+                    old.sessions_run
+                }
+            })
+        };
+        let did = freeze::freeze_to_stay(&mut *self.world.freezer(), &unit);
+        let are = |names: &[String]| {
+            if names.len() == 1 {
+                "it is"
+            } else {
+                "they are"
+            }
+        };
+        let (known, unknown): (Vec<String>, Vec<String>) = did.frozen.into_iter().partition(ran);
+        if !known.is_empty() {
+            self.changed(
+                "old instance",
+                format!(
+                    "{} ran here beside the new instance (thawed or started since the start \
+                     was ordered): {} frozen again. What the old instance's agents did \
+                     meanwhile is on this host only",
+                    known.join(" and "),
+                    are(&known)
+                ),
+            );
+        }
+        if !unknown.is_empty() {
+            self.changed(
+                "old instance",
+                format!(
+                    "{} may have run here beside the new instance (systemd did not say that \
+                     {} frozen, or it was on its way up or down): {} frozen now",
+                    unknown.join(" and "),
+                    if unknown.len() == 1 {
+                        "it was"
+                    } else {
+                        "they were"
+                    },
+                    are(&unknown)
+                ),
+            );
+        }
+        if !did.failed.is_empty() {
+            let what: Vec<String> = did
+                .failed
+                .iter()
+                .map(|(name, _)| format!("{name} {}", if ran(name) { "runs" } else { "may run" }))
+                .collect();
+            let why: Vec<&str> = did.failed.iter().map(|(_, why)| why.as_str()).collect();
+            let units = self.old_units();
+            // The freeze `moved` asks for may fail again: systemd freezes only a unit that
+            // runs, not one on its way up or down or with a process stuck in the kernel.
+            // Stopping it (so it is not restarted) and killing what is left, with SIGKILL as
+            // the new host's own stop does, ends the old instance in every state.
+            self.fail(
+                "old instance",
+                format!(
+                    "{} beside the new instance and could not be frozen: {}. If a freeze keeps \
+                     failing (systemd freezes only a unit that runs), stop it for good instead: \
+                     `systemctl stop {units}; systemctl kill --kill-whom=all --signal=SIGKILL \
+                     {units}`",
+                    what.join(" and "),
+                    why.join("; ")
+                ),
+            );
         }
     }
 
@@ -1760,17 +1952,26 @@ impl<'a> Move<'a> {
             return Ok(());
         };
         let host = profile::host_of(&new).unwrap_or_default();
-        let address = self
+        // Asked first: over a key that is gone (an earlier run's finish removed it there and
+        // deleted it here) nothing is tried, `ssh` could only complain about it.
+        let key_gone = self
             .remote
-            .call(&Request::Facts {
-                data_dir: self.opts.data_dir.clone(),
-                service: self.opts.service.clone(),
-                ports: Vec::new(),
-            })
-            .ok()
-            .and_then(|r| r.facts)
-            .and_then(|f| f.address)
-            .unwrap_or_default();
+            .reachable()
+            .is_err_and(|why| why.contains(remote::KEY_REFUSED) || why.contains(remote::NO_KEY));
+        let address = if key_gone {
+            String::new()
+        } else {
+            self.remote
+                .call(&Request::Facts {
+                    data_dir: self.opts.data_dir.clone(),
+                    service: self.opts.service.clone(),
+                    ports: Vec::new(),
+                })
+                .ok()
+                .and_then(|r| r.facts)
+                .and_then(|f| f.address)
+                .unwrap_or_default()
+        };
         let leads = self.world.addresses(&host);
         let direct = !address.is_empty() && !leads.contains(&address);
         let url = format!("{new}/healthz");
@@ -1811,13 +2012,9 @@ impl<'a> Move<'a> {
                 ),
             ),
         }
-        // Skipped only when the key was removed there (an earlier run's finish): any other
-        // failure to reach the new host is said by the step itself.
-        let refused = self
-            .remote
-            .reachable()
-            .is_err_and(|why| why.contains("Permission denied") || why.contains("no one-time key"));
-        if !refused {
+        // Skipped only when the key is gone: any other failure to reach the new host is said
+        // by the step itself.
+        if !key_gone {
             self.call(
                 "tasks",
                 &Request::Tasks {
@@ -1900,9 +2097,17 @@ impl<'a> Move<'a> {
         self.phase("Finish");
         let new = self.state.new_url.clone().unwrap_or_default();
         let moved_url = p.public_url.as_deref().is_some_and(|old| old != new);
+        // Asked before any step: over a key that does not sign in nothing is tried.
+        let key = self.remote.reachable().err();
+        // Deleted here, which only a finish does, once the new host's finish answered: that
+        // run's record did not survive. Nothing is sent over a key that is gone, and nothing
+        // is waited for.
+        let deleted_before = key
+            .as_deref()
+            .is_some_and(|why| why.contains(remote::NO_KEY));
         // Asked while the key still signs in: the new instance knows its App, and whether the
         // callback was registered meanwhile (SPEC-466 MVC-022).
-        let github = moved_url
+        let github = (moved_url && key.is_none())
             .then(|| {
                 self.remote.call(&Request::Callback {
                     data_dir: self.opts.data_dir.clone(),
@@ -1917,43 +2122,61 @@ impl<'a> Move<'a> {
             key: self.state.key_comment(),
             firewall: p.firewall == Carried::Yes,
         };
-        match self.remote.call(&finish) {
-            Ok(reply) => {
-                for line in reply.lines {
-                    self.push(shown(line));
+        if deleted_before {
+            self.manual(
+                "one-time key",
+                format!(
+                    "is gone from this host: an earlier run deleted it once the finish on the \
+                     new host was done, and only its record was not kept. Look at the new \
+                     host's firewall once (`ufw status`); if the key was removed here by hand \
+                     instead, also remove its line ({}) from root's authorized_keys there, and \
+                     {}",
+                    self.state.key_comment(),
+                    target::STATE_DIR
+                ),
+            );
+        } else {
+            match self.remote.call(&finish) {
+                Ok(reply) => {
+                    for line in reply.lines {
+                        self.push(shown(line));
+                    }
                 }
-            }
-            // The key no longer signs in and the new instance answers: an earlier run's finish
-            // was done there and only its answer was lost.
-            Err(_)
-                if self
-                    .remote
-                    .reachable()
-                    .is_err_and(|why| why.contains("Permission denied"))
-                    && self.state.new_url.clone().is_some_and(|url| {
-                        self.world.healthz(&format!("{url}/healthz"), None).is_ok()
-                    }) =>
-            {
-                self.manual(
-                    "one-time key",
-                    "no longer signs in to the new host and the new instance answers: the \
-                     finish there was done. Look at its firewall once (`ufw status`)",
-                );
-            }
-            Err(why) => {
-                // Not done there: the key stays on both hosts, and the same command tries again.
-                self.fail(
-                    "one-time key",
-                    format!(
-                        "the new host did not answer ({why}): its key, the flow's files and the \
-                         firewall there are still to do. Run the command again"
-                    ),
-                );
-                return;
+                // The key no longer signs in and the new instance answers: an earlier run's
+                // finish was done there and only its answer was lost.
+                Err(_)
+                    if self
+                        .remote
+                        .reachable()
+                        .is_err_and(|why| why.contains(remote::KEY_REFUSED))
+                        && self.state.new_url.clone().is_some_and(|url| {
+                            self.world.healthz(&format!("{url}/healthz"), None).is_ok()
+                        }) =>
+                {
+                    self.manual(
+                        "one-time key",
+                        "no longer signs in to the new host and the new instance answers: the \
+                         finish there was done. Look at its firewall once (`ufw status`)",
+                    );
+                }
+                Err(why) => {
+                    // Not done there: the key stays on both hosts, and the same command tries
+                    // again.
+                    self.fail(
+                        "one-time key",
+                        format!(
+                            "the new host did not answer ({why}): its key, the flow's files and \
+                             the firewall there are still to do. Run the command again"
+                        ),
+                    );
+                    return;
+                }
             }
         }
         self.remote.forget();
-        self.changed("one-time key (old host)", "deleted");
+        if !deleted_before {
+            self.changed("one-time key (old host)", "deleted");
+        }
         // Without the key nothing more can be done from here: what failed above is a person's.
         self.state.finished = true;
         let _ = self.save_state();
@@ -2222,8 +2445,9 @@ impl World for RealWorld {
                     freeze::Signal::LeaveToMain => {
                         let _ = writeln!(
                             err,
-                            "\nyulius instance migrate: signal {signal} ignored: the new \
-                             instance is being started, the move ends by itself"
+                            "\nyulius instance migrate: signal {signal} ignored: the move \
+                             has taken its end (the new instance is being started, or the \
+                             old one thawed) and ends by itself"
                         );
                     }
                     freeze::Signal::Exit(why) => {

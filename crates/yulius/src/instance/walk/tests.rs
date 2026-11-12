@@ -316,3 +316,34 @@ fn a_live_walk_stays_in_the_directories_it_opened() -> TestResult {
     assert_eq!(skipped, Skipped::default());
     Ok(())
 }
+
+/// SPEC-467 LFT-005: every import writes its own limits mark, so the old host's never travels,
+/// whatever sits at its name. Only at the top: the name means nothing below it.
+#[test]
+fn the_imports_limits_mark_is_left_out_at_the_top_only() -> TestResult {
+    const MARK: &str = yulius_app::limits::ADAPT_MARK;
+    let top = format!("data/{MARK}");
+    for make in [
+        (|at| fs::write(at, b"")) as fn(&Path) -> io::Result<()>,
+        |at| symlink("/etc/passwd", at),
+        |at| fs::create_dir_all(at.join("below")),
+    ] {
+        let dir = tree()?;
+        make(&dir.path().join(MARK))?;
+        fs::write(dir.path().join(".bashrc"), b"# another dotfile travels\n")?;
+        fs::write(dir.path().join("sandboxes/sb").join(MARK), b"")?;
+        let (seen, _) = listing(dir.path())?;
+        let paths: Vec<String> = seen
+            .iter()
+            .map(|e| String::from_utf8_lossy(&e.path).into_owned())
+            .collect();
+        assert!(!paths.iter().any(|p| p.starts_with(&top)), "{paths:?}");
+        assert!(paths.contains(&"data/.bashrc".to_owned()), "{paths:?}");
+        assert!(
+            paths.contains(&format!("data/sandboxes/sb/{MARK}")),
+            "{paths:?}"
+        );
+        assert!(left_out(MARK.as_bytes()) && !left_out(b".bashrc"));
+    }
+    Ok(())
+}
