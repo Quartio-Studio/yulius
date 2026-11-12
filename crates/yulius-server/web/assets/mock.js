@@ -3921,7 +3921,8 @@ route('DELETE', `/api/admin/accounts/${ID}`, ({ db, p }) => {
 // (SPEC-473); an account that must sign in again gets the provider's 502. A test scripts what
 // Claude answers per account in `db.usageAnswers[id]`: `{ fail: sentence }` (502, the sentence
 // kept as the usage note unless `note: false`), `{ unread: true }` (no usage reading: the account
-// as it is), or `{ usage, status }` (what the reading and the answers leave stored). A request
+// as it is, `usage_read: false`), or `{ usage, status, at }` (what the reading and the answers
+// leave stored, read at `at`: now when left out). A request
 // waits for `db.usageGate` (a promise) when a test set one; `usageInFlight` and
 // `usageMostInFlight` count the requests under way.
 route('POST', `/api/admin/accounts/${ID}/usage`, async ({ db, p }) => {
@@ -3941,9 +3942,9 @@ route('POST', `/api/admin/accounts/${ID}/usage`, async ({ db, p }) => {
     fail(502, 'upstream', answer.fail);
   }
   account.last_error = null;
-  if (answer.unread) return account;
-  Object.assign(account, { status: answer.status || account.status, usage: { ...(answer.usage || account.usage), observed_at: new Date().toISOString() } });
-  return account;
+  if (answer.unread) return { ...account, usage_read: false };
+  Object.assign(account, { status: answer.status || account.status, usage: { ...(answer.usage || account.usage), observed_at: answer.at || new Date().toISOString() } });
+  return { ...account, usage_read: true };
 });
 route('POST', `/api/admin/accounts/${ID}/relogin`, ({ db, p }) => {
   adminOnly(db);
