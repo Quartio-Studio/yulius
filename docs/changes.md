@@ -6,6 +6,27 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-12
 
+- A move to another subscription at a turn's end no longer loses what waits in Claude Code's
+  queue (SPEC-479, task #462, ADR-0310, #1194). A message typed into a working session (a
+  person's through their Superagent, a pull request's news) or a prompt its person entered
+  meanwhile waits in a queue inside Claude Code's process until the turn ends; when the pool
+  moved the session at that end, the process ended with it and the sender had been told
+  "sent". The move now waits while such a prompt waits, as it already waits for background
+  work: the session answers it where it was entered (the gate blocks there, where it blocks)
+  and the next turn's end moves it. On a subscription at its limit that turn is refused and
+  continued past the limit on the next one, like any turn a limit cuts. A turn held for
+  capacity is released in place instead of moved while a prompt waits. The count is the one
+  of SPEC-471; new in it is what a turn's end left: an entry its closing record found still
+  waiting when that end had handed nothing on (Claude Code leaves some of its own
+  notifications in the queue for good). It keeps no move, so a session with such an entry
+  stays only until a turn's end hands nothing on. A prompt behind a notification, a slash
+  command or a `!` line is not left: Claude Code hands those on alone and the prompt one
+  end later (the review found this with the real 2.1.322; the first rule lost that prompt).
+  In this instance's sessions with queue records no hand-over ever took a left-over entry. The restart on a newer Claude Code still counts every entry. The limits of
+  SPEC-471 stay (a prompt entered in the moment after the turn's end decided, a record
+  written later than two seconds); a person's own switch or stop and a turn a limit cuts
+  carry nothing over. The tests' fake agent can play an entry that is never taken out
+  (`/stuck`), one that is handed on alone (`/alone`) and a limit that cuts a handed-on turn.
 - A message Yulius types into a session no longer lands on a person's unsent draft (SPEC-480,
   task #463, ADR-0309, issue #1199). Yulius held a message back only while someone had typed in
   the last minute; an older draft got the message pasted behind it and was sent with it, as one
@@ -76,7 +97,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   the model API before the design (turns with tool calls included: a waiting prompt is taken
   into the running turn at the next tool result). The tests' fake agent can now queue prompts
   in Claude Code's order (`--queue-prompts`). Not in this change: a subscription switch at a
-  turn's end still loses a queued prompt (#1194).
+  turn's end still loses a queued prompt (#1194; fixed by SPEC-479, above).
 
 - A task that reads "Needs your action" says why, and Reply shows where the answer goes
   (SPEC-472, task #455, ADR-0306, #1221). The bar over a flagged task's terminal read "The agent

@@ -702,6 +702,31 @@ impl App {
             Ok(d) => d,
             Err(_) => return Resume::Waiting(None),
         };
+        // A turn held at its Stop is not moved over a prompt that waits in Claude Code's queue,
+        // which would go with the process: the hold is released in place, the Stop is asked
+        // again and decides as any turn's end does (SPEC-479 SWQ-003). The lines written so
+        // far are read first, as at a turn's end.
+        if matches!(decision, Decision::Switch { .. })
+            && has_process
+            && pause.kind == PauseKind::Turn
+            && self.prompt_waits_in_held_turn(&task.id).await
+        {
+            crate::race::reached(
+                crate::race::Point::HeldTurnProbed,
+                std::path::Path::new(task.id.as_str()),
+            );
+            // The pause may have ended while the lines were read (its person typed into the
+            // held turn): only the pause that was read is released.
+            if !self.pause_open(pause).await {
+                return Resume::Gone;
+            }
+            tracing::info!(
+                task = %task.id,
+                "the held turn is not moved to another subscription: a prompt waits in Claude Code's queue"
+            );
+            self.release_in_place(&task, pause).await;
+            return Resume::Resumed;
+        }
         match decision {
             // Still no capacity, but nobody is held any more: the CLI gave the hook up.
             Decision::Wait { .. } if self.hold_given_up(pause) => {
@@ -783,6 +808,15 @@ impl App {
                 Resume::Resumed
             }
         }
+    }
+
+    /// Whether a move of the task's session, whose turn is held at its Stop, would lose a
+    /// prompt ([`Self::prompt_waits_for_turns_end`]), asked once the lines written so far
+    /// were read.
+    async fn prompt_waits_in_held_turn(&self, task_id: &TaskId) -> bool {
+        let prompts_before = self.prompts_passed(task_id);
+        self.await_transcript_read(task_id).await;
+        self.prompt_waits_for_turns_end(task_id, prompts_before)
     }
 
     /// Whether `pause` is still the task's open pause.
