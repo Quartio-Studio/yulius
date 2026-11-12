@@ -99,9 +99,14 @@ pub struct AccountView {
     pub usage: AccountUsageView,
     /// Last error (no secrets).
     pub last_error: Option<String>,
-    /// Email of the Claude account behind it, read at sign-in; `null` while unknown (SPEC-244).
+    /// Email of the Claude account behind it: the one an administrator typed (SPEC-463), else
+    /// the one read at sign-in; `null` while unknown (SPEC-244).
     #[serde(default)]
     pub email: Option<String>,
+    /// Whether an administrator typed `email`; `false` for one Claude gave, and while unknown
+    /// (SPEC-463 EML-006).
+    #[serde(default)]
+    pub email_typed: bool,
     /// Live tasks using it, except Done ones (SPEC-057).
     pub in_use_by: u32,
     /// Tokens Yulius observed on this account in the last 24 hours (ROT-009).
@@ -160,13 +165,19 @@ pub struct AccountLoginCancelled {
     pub status: String,
 }
 
-/// `PATCH /api/admin/accounts/{id}`: only the label. The pool has no priorities or switches
-/// (F 2026-10-10); any other field is refused (422).
+/// `PATCH /api/admin/accounts/{id}`: the label, the email, or both; a request with neither is
+/// refused. The pool has no priorities or switches (F 2026-10-10); any other field is refused
+/// (422).
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UpdateAccount {
-    /// Label.
-    pub label: String,
+    /// The new name (trimmed, 1 to 80 printable characters).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// The email an administrator types for the subscription (trimmed, an address); an empty
+    /// string removes it (SPEC-463 EML-003).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
 }
 
 /// One account in [`CapacityView`]. Everyone sees label, status and usage; `id`, `email` and

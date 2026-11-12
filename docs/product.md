@@ -253,7 +253,8 @@ watching, steering and unblocking.
   instead of trying on (SPEC-464). Its Capacity card says what
   is left, how fast it burns, the tokens it used and what they would cost at Claude API list
   prices, with a 7-day chart for each. Administrators rename each subscription in place ("work
-  Max", "personal") and see the email of its Claude account wherever it is named. Connecting one
+  Max", "personal") and see the email of its Claude account wherever it is named; when Claude
+  does not share it, they type it in place under the name (SPEC-463). Connecting one
   is the first step on a fresh instance: until a Claude account is usable, Home, the composer and
   the onboarding gate show Connect Claude, and every start a person asks for is refused at once
   with a link to Subscriptions; tasks started by a chain, a rule or an automation wait and say why

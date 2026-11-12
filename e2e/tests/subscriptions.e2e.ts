@@ -1,6 +1,6 @@
 import { type Browser, type Screen, test } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, failOnPageErrors, mock } from './support.ts';
+import { axeViolations, failOnPageErrors, firstShown, mock } from './support.ts';
 
 failOnPageErrors();
 
@@ -455,6 +455,23 @@ test('a finished Claude sign-in closes its dialog by itself and says the subscri
   // The new subscription's card reads as signed in: no "Sign in again" on it.
   await expect(browser.locator('main .card:has-text("Claude #9")')).toBeVisible();
   await expect(browser.locator('main .card:has-text("Claude #9") button:has-text("Sign in again")')).toHaveCount(0);
+});
+
+test('a sign-in of a subscription whose email was typed does not say Claude confirmed it (SPEC-463 EML-006)', async ({ app, browser, screen }) => {
+  await app.open(mock('/admin/accounts', '&ambient=0'));
+  await firstShown(browser.locator('main .account-card').first());
+  // Claude #3 needs a new sign-in, and an administrator types its email first.
+  await screen.getByRole('button', 'Change the email of Claude #3').click();
+  await screen.getByRole('textbox', 'Email of Claude #3').fill('agent@example.com');
+  await screen.getByRole('textbox', 'Email of Claude #3').press('Enter');
+  await expect(screen.getByText('Email of Claude #3 is now agent@example.com.')).toBeVisible();
+  await browser.locator('main .card:has-text("Claude #3") button:has-text("Sign in again")').click();
+  const dialog = screen.getByRole('dialog', 'Sign in · Claude #3');
+  await enterCode(browser, 'code-from-claude');
+  await expect(dialog).toBeHidden();
+  // The toast names an email only when Claude gave it; the typed one stays on the card.
+  await expect(browser.locator('.toast-ok .toast-msg:has-text("Claude #3 is connected")')).toHaveText('Claude #3 is connected. Tasks can use it now.');
+  await expect(browser.locator('main .account-card:has-text("Claude #3") .account-sub')).toHaveText('agent@example.com');
 });
 
 test('a failed Claude sign-in says why and Try again signs in in the same dialog (SPEC-243 LGN-004, LGN-005)', async ({ app, browser, screen }) => {

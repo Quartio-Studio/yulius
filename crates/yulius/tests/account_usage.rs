@@ -124,6 +124,7 @@ async fn account(h: &support::Harness, id: &str, credential: &[u8]) -> TestResul
             updated_at: Timestamp(1),
             email: None,
             email_checked_at: None,
+            email_typed: false,
         })
         .await?;
     Ok(())

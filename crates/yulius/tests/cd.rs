@@ -2903,6 +2903,7 @@ async fn an_agent_run_binds_the_agent_cli_of_its_join() -> TestResult {
             updated_at: yulius_domain::time::Timestamp(1),
             email: None,
             email_checked_at: None,
+            email_typed: false,
         })
         .await?;
     let created = call(
