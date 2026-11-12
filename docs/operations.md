@@ -653,13 +653,21 @@ profile of `/etc/apparmor.d` as a boot does (`apparmor_parser -r /etc/apparmor.d
 300 s; edits of those files that were waiting for a boot or a `systemctl reload apparmor`
 become live with it) and proves bwrap then. AppArmor applies neither of two profiles that name
 one program (the kernel's log may say "conflicting profile attachments"), so where bwrap does
-not start and no kernel limit explains it, setup takes Yulius's profile away, whichever run
-wrote it, and proves once more. If bwrap starts, the person's profile is adopted and
-`/etc/apparmor.d/yulius-bwrap` stays removed; the line says so, and later runs and checks are
-ok. If not, Yulius's file and profile are put back as they were before the run (none where
+not start and no kernel limit explains it, setup takes Yulius's profile out of AppArmor,
+whichever run wrote it, and proves once more. If bwrap starts, the person's profile is adopted
+and `/etc/apparmor.d/yulius-bwrap` is removed; the line says so, and later runs and checks are
+ok. If not, Yulius's profile is loaded again and its file is as before the run (none where
 there was none), the profiles that load loaded stay loaded as after a boot, and the line says
-how to disable the second profile. Beside a kernel limit Yulius's profile stays, to work once
-the limit is lifted: run the setup again then. A profile for many programs (`/usr/bin/bw*`,
+how to disable the second profile. The same proof decides where a person's profile in a plain
+spelling was added to a host that Yulius had set up before (the old host's hand-written rule
+copied to a new one, say): the next setup adopts it and removes Yulius's own. A dry run and a
+check name the steps up to the proof ("would load …"); what the proofs then decide only the
+run says. During that last proof Yulius's profile is out of AppArmor: a sandbox that starts
+in that moment fails as bwrap does without a rule. A person's profile that only AppArmor holds
+(loaded by hand from a file outside `/etc/apparmor.d`) is adopted like any other and is gone
+after a boot: the check fails then, and the next setup writes Yulius's profile again. Beside
+a kernel limit Yulius's profile stays, to work once the limit is lifted: run the setup again
+then. A profile for many programs (`/usr/bin/bw*`,
 `/usr/bin/*`) is no such second profile: AppArmor prefers the one that names the path.
 **After a release upgrade from 24.04 to 26.04**, run
 `sudo yulius host setup` once: the upgrade installs the shipped profile next to Yulius's, and
