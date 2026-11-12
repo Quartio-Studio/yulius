@@ -1029,6 +1029,16 @@ mod moves {
         Ok(s)
     }
 
+    /// Waits until the server's clock reads a later millisecond: what is typed next is typed
+    /// after what was typed before, to the millisecond the server keeps.
+    async fn a_later_millisecond(app: &App) -> TestResult {
+        let before = app.now().0;
+        wait_for("a later millisecond", Duration::from_secs(5), || async {
+            app.now().0 > before
+        })
+        .await
+    }
+
     /// Waits until the session's terminal printed `text`, reading `watch` into `shown`.
     async fn until_printed(
         watch: &mut tokio::sync::broadcast::Receiver<HubFrame>,
@@ -1064,7 +1074,7 @@ mod moves {
             // While the turn runs its person enters the next prompt, then types on.
             for keys in [b"two".as_slice(), b"\r", b"and a third thing"] {
                 s.app.terminal_input(&ctx, &attach, keys, false).await?;
-                tokio::time::sleep(Duration::from_millis(5)).await;
+                a_later_millisecond(&s.app).await?;
             }
             assert!(s.app.has_draft(&s.id));
             // The turn ends and the queued prompt is submitted and answered.
@@ -1096,7 +1106,7 @@ mod moves {
             let mut watch = s.app.runtime(&s.id).hub.subscribe().rx;
             let answer = told(&s.app, &s.sandbox, &s.user, &s.id).await?;
             assert_eq!(answer["delivered"], "sent", "{answer}");
-            tokio::time::sleep(Duration::from_millis(5)).await;
+            a_later_millisecond(&s.app).await?;
             s.app.record_input(&s.id, &s.user, b"my own next prompt");
             std::fs::write(&may_end, "")?;
             let mut shown = String::new();
