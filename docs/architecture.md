@@ -334,9 +334,10 @@ as its service user ([SPEC-421](../.ai/specs/SPEC-421-claude-should-autoupdate-w
   entered while a turn runs, Claude Code's own notifications) lives in the process's memory and
   a resumed session does not get it back; the transcript watcher reads it from the
   `queue-operation` records (`Observation::Queue`, counted per run in
-  `yulius_domain::agent_cli::Queue`, a hand-over counted until its turn's prompt record), and a
-  turn's end asks it after it read the turn's lines, and stays for a second after a prompt
-  went on, whose record is written a moment later
+  `yulius_domain::agent_cli::Queue`, a hand-over counted until its turn shows, a reattached
+  run not known until it was read again), and a turn's end asks it after it read the turn's
+  lines, stays for two seconds after a prompt went on, whose record is written a moment
+  later, and logs the fact that keeps a session that is due (`kept_by`)
   ([SPEC-471](../.ai/specs/SPEC-471-claude-code-moves-a-prompt-that-waits-in.md)); an idle one that is restarted is idle again from its launch on, with what its goal left
   (`IdleRest` in `supervisor.rs`), and the notification center remembers what a task read
   through a switch ([SPEC-468](../.ai/specs/SPEC-468-claude-code-moves-the-last-review-s-left.md)).

@@ -811,12 +811,18 @@ SPEC-461), with no root step and no sign-in again:
   back: while something waits there the session is not restarted, at a turn's end the gate
   blocks as at a clean one, and it moves at a later turn's end. Yulius knows the queue from the
   records Claude Code writes about it into the session's transcript; Claude Code's own
-  notifications of finished background work wait there too and count. For a second after a
-  prompt went on the session stays as well, because that record is written a moment later. A
-  session that keeps its version for longer than expected (the Claude Code card lists it) has
-  an entry Claude Code holds back, or one Yulius counted wrongly: it moves at its next start,
-  so stop and continue moves it at once. It tries once per version, one restart of a task at a
-  time. A goal session
+  notifications of finished background work wait there too and count. For two seconds after a
+  prompt went on the session stays as well, because that record is written a moment later
+  (about a tenth of a second). A session that keeps its version for longer than expected (the
+  Claude Code card lists it) holds an entry Claude Code never takes out, which it does with
+  some notifications of work a sub-agent started, or one Yulius counted wrongly: it moves at
+  its next start, so stop and continue moves it at once. The server's log says at each turn's
+  end what keeps a session that is due ("the session is not restarted on the newer Claude
+  Code at this turn's end", with `why`). Two things can still lose a prompt: one entered in
+  the moment between a turn's end deciding to restart and the task reading "Continuing"
+  (a message sent through Yulius is refused from then on), and a host so loaded that Claude
+  Code takes longer than those two seconds to write where a prompt went. It tries once per
+  version, one restart of a task at a time. A goal session
   moves at a turn it works on after, while its goal is set and not yet achieved; an idle one,
   and a goal task that is Done, keep their version until their next start. A prompt-mode session
   in which a person set a goal of their own (`/goal …` in its terminal) keeps its version while

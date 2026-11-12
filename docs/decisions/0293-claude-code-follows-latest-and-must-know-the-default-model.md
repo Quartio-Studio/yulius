@@ -48,11 +48,13 @@ knows as plain text (2.1.322 holds `claude-fable-5-2` 26 times, 2.1.311 not once
   entered while a turn runs (a person's, or a message Yulius typed) and Claude Code's own
   notifications are kept in the process's memory alone, and a resumed session does not get them
   back. Yulius reads the queue from the `queue-operation` records Claude Code writes into the
-  transcript (`enqueue`, `dequeue`, `remove`, `popAll`, `popOne`), counted per run; an entry
-  that was handed on counts until the prompt record of its turn was read; and for a second
-  after a prompt from the prompt box went on, or when one goes on while the turn's end looks,
-  the session stays as well, since that record is written a moment after the prompt's hook.
-  Such a session moves at a later turn's end (SPEC-471). An idle session
+  transcript (`enqueue`, `dequeue`, `remove`, `popAll`, `popOne`), counted per run and not
+  known, which counts as holding, until a run reattached after a restart of the server was
+  read again; an entry that was handed on counts until its turn shows (its prompt record, or
+  the model's first line written after the hand-over); and for two seconds after a prompt
+  from the prompt box went on, or when one goes on while the turn's end looks, the session
+  stays as well, since that record is written a moment after the prompt's hook. Such a
+  session moves at a later turn's end, and the server's log names what kept it (SPEC-471). An idle session
   that is restarted reads as it did before, so nobody is notified again. A version a session could
   not continue on gets no further moves: the restart could not start, or the restarted session
   ended by itself or stayed silent for two minutes before it started. A restart refused before it
@@ -86,9 +88,11 @@ knows as plain text (2.1.322 holds `claude-fable-5-2` 26 times, 2.1.311 not once
 
 ## Consequences
 
-- A notification Claude Code keeps in its queue across turn ends, an operation Yulius does not
-  know, or a session cleared in its terminal with entries waiting keeps a session's version
-  until its next start: a wrong count errs toward staying (SPEC-471).
+- Claude Code leaves some of its own notifications in its queue for good (those of work a
+  sub-agent started; about 2 in 100 of this instance's sessions held one): such a session
+  never moves at a turn's end and gets the newer version at its next start. So does one with
+  an operation Yulius does not know, or one cleared in its terminal with entries waiting: a
+  count that is too high errs toward staying (SPEC-471).
 - Sandboxes get each Claude Code release within an hour of its publication, and running tasks at
   the end of their next turn. A release that breaks sessions reaches them sooner than under
   `stable`. Choosing Stable then keeps later releases away but does not move `current` back; Off

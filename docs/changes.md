@@ -14,10 +14,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   message's sender had been told "sent". Yulius now reads the queue from the records Claude
   Code writes about it into the transcript, per run, and leaves a session with a non-empty
   queue where it is, at a turn's end the gate blocks as at a clean one; it moves at a later
-  turn's end. A queue that was just handed on counts until its turn shows, and for a second
-  after a prompt went on the session stays too, since Claude Code writes that record a moment
-  after the prompt's hook. Claude Code's own notifications of finished background work wait in
-  the same queue and count. Checked with the real Claude Code 2.1.322 against a local stub of
+  turn's end. A queue that was just handed on counts until its turn shows, and for two
+  seconds after a prompt went on the session stays too, since Claude Code writes that record
+  a moment after the prompt's hook. Claude Code's own notifications of finished background
+  work wait in the same queue and count; it leaves some of them there for good, and such a
+  session gets the newer version at its next start (the server's log says what keeps a
+  session). Two limits stay: a prompt entered in the moment after a turn's end decided to
+  restart, and a write of Claude Code's slower than those two seconds. Checked with the real Claude Code 2.1.322 against a local stub of
   the model API before the design (turns with tool calls included: a waiting prompt is taken
   into the running turn at the next tool result). The tests' fake agent can now queue prompts
   in Claude Code's order (`--queue-prompts`). Not in this change: a subscription switch at a
