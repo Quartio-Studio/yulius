@@ -74,8 +74,11 @@ reason) or `FAIL`, then a summary; it exits 1 when an item failed. In order:
    AppArmor restricts user namespaces (Ubuntu 24.04 and later), it writes and loads
    `/etc/apparmor.d/yulius-bwrap`; on Ubuntu 26.04 it first disables the package's
    `bwrap-userns-restrict` with a link in `/etc/apparmor.d/disable/` (the file itself is never
-   edited). A step that fails is undone and the line says so. A rule a person wrote for
-   `/usr/bin/bwrap` is left as it is and named. See [Sandbox isolation](#sandbox-isolation).
+   edited). With its profile it loads the directory's other profiles as a boot does, and proves
+   then; where bwrap starts only without Yulius's profile, a person's profile lets it in: that
+   one is adopted and Yulius's removed. A step that fails is undone and the line says so. A
+   rule a person wrote for `/usr/bin/bwrap` is left as it is and named.
+   See [Sandbox isolation](#sandbox-isolation).
 9. **yulius.service**: written from §3 and enabled when missing (`--public-url` is needed then).
    Otherwise, a drop-in `yulius.service.d/10-yulius-sandboxes.conf` adds `Delegate=yes`,
    `DelegateSubgroup=server` and `KillMode=process` if they are missing. The restart that applies
@@ -643,7 +646,22 @@ it is adopted ("not written by Yulius, left as it is"); when it does not, the it
 prints the two commands that disable it (for a file AppArmor's parser refuses: the parser's
 words, and the file is to be corrected first, since the parser cannot unload it either). To move from such a rule to Yulius's, disable it
 (`sudo ln -s /etc/apparmor.d/bwrap /etc/apparmor.d/disable/ && sudo apparmor_parser -R /etc/apparmor.d/bwrap`)
-and run the setup again. **After a release upgrade from 24.04 to 26.04**, run
+and run the setup again. Yulius knows such a profile by its text only in the plain spellings
+(`profile bwrap /usr/bin/bwrap …`). One in any other spelling (an alternation, a pattern, an
+`alias`, a variable) it finds by what it does: with its own profile, setup loads every other
+profile of `/etc/apparmor.d` as a boot does (`apparmor_parser -r /etc/apparmor.d`, at most
+300 s; edits of those files that were waiting for a boot or a `systemctl reload apparmor`
+become live with it) and proves bwrap then. AppArmor applies neither of two profiles that name
+one program (the kernel's log may say "conflicting profile attachments"), so where bwrap does
+not start and no kernel limit explains it, setup takes Yulius's profile away, whichever run
+wrote it, and proves once more. If bwrap starts, the person's profile is adopted and
+`/etc/apparmor.d/yulius-bwrap` stays removed; the line says so, and later runs and checks are
+ok. If not, Yulius's file and profile are put back as they were before the run (none where
+there was none), the profiles that load loaded stay loaded as after a boot, and the line says
+how to disable the second profile. Beside a kernel limit Yulius's profile stays, to work once
+the limit is lifted: run the setup again then. A profile for many programs (`/usr/bin/bw*`,
+`/usr/bin/*`) is no such second profile: AppArmor prefers the one that names the path.
+**After a release upgrade from 24.04 to 26.04**, run
 `sudo yulius host setup` once: the upgrade installs the shipped profile next to Yulius's, and
 sandboxes fail until it is disabled. A host whose AppArmor cannot load the profile is reported
 as unsupported.
@@ -1492,12 +1510,14 @@ use the next section.
 
 ### Move the instance to another host
 
-`yulius instance migrate` (SPEC-460, ADR-0297) moves the whole instance with one command. Run it as
-root on the old host over SSH (not from a Yulius terminal: it freezes the service):
+`yulius instance migrate` (SPEC-460, ADR-0297; the warm copy: SPEC-465, ADR-0303) moves the whole
+instance with one command. Run it as root on the old host over SSH (not from a Yulius terminal: it
+freezes the service):
 
 ```sh
 sudo yulius instance migrate root@new-host            # shows the plan, asks once, then moves
 sudo yulius instance migrate root@new-host --yes      # without the question
+sudo yulius instance migrate root@new-host --max-downtime 5   # never freeze for longer than about 5 minutes
 sudo yulius instance migrate root@new-host --data-disk /dev/nvme0n1 --data-disk /dev/nvme1n1
 sudo yulius instance migrate root@new-host --public-url https://yulius.example.com
 sudo yulius instance migrate --status                 # the recorded move and its checklist
@@ -1526,7 +1546,13 @@ and nothing is frozen). Everything a person has to do is asked for here:
 - Disk space where the data directory goes. When it is too small the blank disks of the new host
   are listed: name one with `--data-disk`, or two for a mirror. Only disks without a partition
   table, filesystem, holder or mount are taken.
-- The link's rate and the time frozen it implies (this version freezes for the whole copy).
+- The link's rate, how long the copy will take at it, and a first estimate of the freeze. The
+  instance runs during the copy; it is frozen only for the last changes, the proof and the start.
+  For the estimate the plan reads a sample of the data directory twice (two seconds at most the
+  first time) and takes how many entries a second the second reading looks at: the freeze counts
+  every entry four times at about that rate. The passes measure it again, and the line
+  `downtime` after the copy is the one that counts (**Copy**, below). With a staged copy of an
+  earlier run on the new host the plan says so: only what changed since is sent.
 - The new public URL: `--public-url`, else the old URL, else for an address-made URL
   (`1-2-3-4.sslip.io`) the same form for the new address. A name that does not lead to the new
   host yet is named: change its DNS record when the checklist says the new instance runs.
@@ -1562,18 +1588,67 @@ and drop-ins for the new host name, validated and started, so its certificate is
 cutover; ufw's rules (enabled at the very end); and `host setup` up to the sandbox base. Limits pinned in the unit travel unchanged and
 are named; the new instance re-sizes those that no longer fit (SPEC-459).
 
+**Copy** (the old instance still runs). The data directory is copied into a staged copy on the
+new host in passes, compressed with `zstd` when both hosts have it. The first pass sends
+everything; every later pass sends only what the new host does not hold as it is now. The
+instance stays usable; the copy reads the whole data directory once, so its disk is busier than
+usual.
+
+- What changed is never judged by size and time. For every entry the new host has taken in and
+  synced, the old host keeps a receipt in `/var/lib/yulius-migrate/copy`: a digest of the entry's
+  name, kind, size, owner, mode, time and attributes, of its inode number and of its inode's
+  change time, which no program can set. An entry is left out only while its receipt matches. An
+  entry that changed within two seconds of a pass, or while it was read, earns no receipt and is
+  sent again; so is every file on another filesystem mounted inside the data directory. A file
+  that changed is sent whole.
+- A pass removes nothing on the new host: what no longer exists goes during the freeze.
+- After every pass that sent only changes, the line `downtime` gives the estimated freeze: the
+  entries are counted four times (twice on each host), what changes meanwhile is sent, the new
+  host syncs, and the start is allowed half a minute. Without `--max-downtime` the move copies
+  again while the changes alone would take more than a minute to send, at most five times, and
+  then freezes. With `--max-downtime <minutes>` it freezes only when the estimate is at most
+  that; after five passes above it the move ends with exit 1, nothing was frozen, and the staged
+  copy stays: run the command again at a quieter time or with a higher bound; it sends only
+  what changed since.
+- A pass that was cut (a broken link, Ctrl-C, a killed command) costs only what the new host had
+  not yet taken in: run the same command again. A link that goes silent ends the pass after
+  about two minutes (`Timeout, server … not responding`). Ctrl-C during the copy ends the
+  command at once; nothing is frozen yet. The new host's data directory holds the staged copy's marker
+  (`.yulius-import-incomplete`); when the copy there was removed, or is not the one the old host
+  knows, the copy starts from the beginning. When the receiving side died in the middle of a
+  pass (the new host was restarted), everything is sent into the staged copy again.
+- The receipts hold only in the boot they were written in and while the old host's clock is not
+  set back. After a restart of the old host (after a crash a file may be newer than its change
+  time says), or when its clock was set back by a second and a half or more, the move says so
+  and sends everything into the staged copy again; when that happens just before the freeze,
+  nothing is copied frozen, the old instance is thawed and the same command copies again while
+  it runs. The clock's own pace (NTP) does not count, only a step.
+- The copy reads as root while the sandboxes run. It never follows a link, and it stays in the
+  directories it opened: a directory that is renamed or replaced by a link while a pass walks
+  it is left out of that pass and sent by the next.
+- The line `downtime` names what every pass sends again, when that takes a second or more:
+  entries that change all the time, files on another filesystem, and a file that took the
+  place of a directory (the new host removes a directory only during the freeze). They are
+  sent during the freeze too, in full.
+- Do not update Yulius on the old host during the copy. An instance that reports another build
+  before the freeze than in the plan is not frozen; run the command again with the build it runs
+  (the staged copy is kept).
+
 **Cutover.** The old unit is frozen, and with it its sessions unit `yulius-sandboxes.service`
 where the host has one ([Where sessions live](#where-sessions-live)); every thaw below is of
-both. The data directory is streamed into the new host's import
-(compressed with `zstd` when both have it), and both hosts count the copy: entries and bytes for
-each top-level folder and a fingerprint over every entry's name, kind, size, owner, mode, time and
-restorable attributes. Only when they are equal is the copy marked and the new instance started
+both. One last pass sends what changed since the passes before, with the list of every path the
+old host holds; the new host installs it and removes what is no longer there. Then both hosts
+count the whole copy: entries and bytes for each top-level folder
+and a fingerprint over every entry's name, kind, size, owner, mode, time and restorable
+attributes. Only when they are equal is the copy marked and the new instance started
 (`host setup`'s remaining items, `systemctl enable` and `start`, then it must report the old
 host's build). Until that start any failure, Ctrl-C or SIGTERM thaws the old instance, which runs
-on as before, and the copy on the new host stays marked unfinished (the next run removes it and
-copies again); an instance that systemd does not report frozen as a whole right after the
-freeze is thawed too, before anything is copied, and the line says what systemd said (the
-server's unit does not run, a unit of it runs unfrozen, or no answer). Once the start is ordered nothing thaws the old instance by itself, not a signal
+on as before; the staged copy stays, and the next run sends what changed since (a copy whose
+count differs is dropped, and the next run copies everything again); an instance that systemd
+does not report frozen as a whole right after the freeze is thawed too, before anything is
+copied frozen, and the line says what systemd said (the server's unit does not run, a unit of
+it runs unfrozen, or no answer). Once the start is ordered nothing thaws the old instance by
+itself, not a signal
 and not a lost terminal. If the new instance does not come up, it is stopped and disabled, and
 only then is the old one thawed; the copy there was started and must be removed (`rm -rf` the
 data directory on the new host) before the next run. If the new host stops answering at that
@@ -1608,7 +1683,8 @@ there first with `systemctl disable --now yulius.service; systemctl stop
 yulius-sandboxes.service`, since its sessions live in their own unit; the abort refuses while the new URL
 still answers and otherwise asks you to confirm that it is stopped, `--yes` answers for you), puts
 the old proxy configuration back, thaws and enables the old unit and removes the key and the
-state. The copy on the new host, with `master.key` and every secret, stays there until you remove it.
+state, the receipts of a staged copy included. The copy on the new host, staged or started, with
+`master.key` and every secret, stays there until you remove it.
 It never leaves both running. Work done on the new host after the move is not copied back.
 Laptops whose `yulius remote` had already followed the move point at the stopped instance: their
 commands say where the sign-in came from, and `yulius remote login <old URL>` signs in there

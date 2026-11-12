@@ -88,6 +88,23 @@ pub struct FakeAgentOptions {
     /// With `goal_api_errors`: the goal is cleared while the first retry is armed
     /// (`--goal-cleared-on-retry`).
     pub goal_cleared_on_retry: bool,
+    /// With `goal_api_errors`: only a new session meets them. A session Yulius resumes works, as
+    /// when the API answers again by then.
+    pub api_recovers_on_resume: bool,
+    /// A session Yulius resumes starts with the line Claude Code writes itself when it resumes
+    /// with nothing to answer, "No response requested." (`--no-response-line`).
+    pub no_response_line: bool,
+    /// The session whose goal was paused is woken once this file exists, as Claude Code wakes an
+    /// idle session when background work ends, and its turn works (`--paused-wake-file`).
+    pub paused_wake_file: Option<PathBuf>,
+    /// With `paused_wake_file`: the API refuses the woken turn again (`--paused-wake-dies`).
+    pub paused_wake_dies: bool,
+    /// With `paused_wake_file`: the session goes on with no prompt anyone sees, a hidden
+    /// continuation with no prompt hook (`--paused-wake-hidden`).
+    pub paused_wake_hidden: bool,
+    /// With `goal_api_errors`: the notice that pauses the goal is written only once this file
+    /// exists (`--pause-hold-file`).
+    pub pause_hold_file: Option<PathBuf>,
     /// Delay the goal turn by this many milliseconds (`--goal-delay-ms`).
     pub goal_delay_ms: Option<u64>,
     /// The idle session compacts itself this many milliseconds after the goal turn, like Claude
@@ -194,6 +211,7 @@ impl HarnessPort for FakeAgentHarness {
             }
             yulius_app::ports::harness::SessionMode::New { .. } => None,
         };
+        let resumed_session = resumed.is_some();
         let session = plan
             .session_id
             .clone()
@@ -298,8 +316,33 @@ impl HarnessPort for FakeAgentHarness {
         if self.options.goal_continue_dies {
             argv.push("--goal-continue-dies".into());
         }
-        if let Some(n) = self.options.goal_api_errors {
+        let api_errors = self
+            .options
+            .goal_api_errors
+            .filter(|_| !(self.options.api_recovers_on_resume && resumed_session));
+        if let Some(n) = api_errors {
             argv.extend(["--goal-api-errors".into(), n.to_string()]);
+        }
+        if self.options.no_response_line && resumed_session {
+            argv.push("--no-response-line".into());
+        }
+        if let Some(file) = &self.options.paused_wake_file {
+            argv.extend([
+                "--paused-wake-file".into(),
+                file.to_string_lossy().into_owned(),
+            ]);
+        }
+        if self.options.paused_wake_dies {
+            argv.push("--paused-wake-dies".into());
+        }
+        if self.options.paused_wake_hidden {
+            argv.push("--paused-wake-hidden".into());
+        }
+        if let Some(file) = &self.options.pause_hold_file {
+            argv.extend([
+                "--pause-hold-file".into(),
+                file.to_string_lossy().into_owned(),
+            ]);
         }
         if let Some(ms) = self.options.goal_retry_ms {
             argv.extend(["--goal-retry-ms".into(), ms.to_string()]);

@@ -343,8 +343,9 @@ enum InstanceAction {
         user: Option<String>,
     },
     /// Move the whole instance to another host with one command: check and set up the new
-    /// host, carry every setting and key, copy and prove the data, start the new instance,
-    /// redirect the old URL. Run it on the old host; run it again to continue.
+    /// host, carry every setting and key, copy the data while this instance runs, freeze it
+    /// only to send what changed, prove the copy, start the new instance, redirect the old
+    /// URL. Run it on the old host; run it again to continue.
     Migrate {
         /// The new host, as ssh takes it: `root@new-host`.
         target: Option<String>,
@@ -360,6 +361,10 @@ enum InstanceAction {
         /// Do not ask before moving.
         #[arg(long)]
         yes: bool,
+        /// The longest freeze to begin, in minutes: while the estimate is above it the move
+        /// copies again, and after five such passes it stops without freezing.
+        #[arg(long = "max-downtime", value_name = "MINUTES", value_parser = clap::value_parser!(u64).range(1..))]
+        max_downtime: Option<u64>,
         /// Print the recorded move and its checklist.
         #[arg(long, conflicts_with_all = ["abort", "target"])]
         status: bool,
@@ -863,6 +868,7 @@ fn main() -> ExitCode {
                     public_url,
                     data_disk,
                     yes,
+                    max_downtime,
                     status,
                     abort,
                     data_dir,
@@ -881,6 +887,7 @@ fn main() -> ExitCode {
                 service,
                 update_service,
                 state_dir,
+                max_downtime,
             },
             if status {
                 yulius::instance::migrate::Action::Status

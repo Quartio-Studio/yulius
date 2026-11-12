@@ -219,8 +219,9 @@ pub struct TaskRuntime {
     /// `turn_duration` record, STA-001): they wake the session by themselves, so the idle task
     /// is not done. Counted with the shells.
     pub(crate) background_agents: AtomicU32,
-    /// When (ms) a notice that asks a person to act flagged the task `needs_attention` (0 = no
-    /// such flag): the agent's work after it shows the person answered (STA-003).
+    /// When (ms) a notice that asks a person to act, or a goal Claude Code stopped retrying
+    /// (SPEC-469), flagged the task `needs_attention` (0 = no such flag): the agent's work after
+    /// it shows the person answered, or the session went on (STA-003).
     pub(crate) notice_attention_ms: AtomicI64,
     /// The state time (ms) of the `needs_attention` flag an agent's secret request raised (0 =
     /// none): a person's answer ends only that flag, while the task still reads it (SPEC-213).
@@ -241,6 +242,10 @@ pub struct TaskRuntime {
     /// Claude Code armed a goal retry after the turn an error ended (SPEC-333 AER-001): the turn
     /// that closes stays Working until the retry's prompt, or a person's, starts the next one.
     pub(crate) goal_retry_armed: AtomicBool,
+    /// Yulius asked a person to send a message for a goal Claude Code stopped retrying, and the
+    /// session's agent has not worked since: its next work ends that request (SPEC-469 GPW-001).
+    /// It outlives the run: a session Yulius restarts answers it too.
+    pub(crate) goal_pause_asked: AtomicBool,
     /// When Yulius last answered a Stop hook of this run, whatever it decided (ms, 0 = never).
     /// A turn that began later and closes had no Stop Yulius answered: its hook failed open
     /// (SPEC-290 GDW-001).
@@ -445,6 +450,7 @@ impl TaskRuntime {
             turn_record_ms: AtomicI64::new(0),
             resumed_turn: AtomicBool::new(false),
             goal_retry_armed: AtomicBool::new(false),
+            goal_pause_asked: AtomicBool::new(false),
             launches: Mutex::new(std::collections::BTreeMap::new()),
             ended_stretch: Mutex::new(None),
             goal_open: AtomicBool::new(false),
@@ -4196,6 +4202,9 @@ impl App {
         let Some(worktree) = task.worktree_path.clone().map(PathBuf::from) else {
             return;
         };
+        // A request for a goal pause that is still open (made before this server started) is
+        // answered by this run's work, like one made while it is watched (SPEC-469 GPW-004).
+        self.watch_goal_pause_request(&task_id).await;
         let mut session_id = attempt.provider_session_id.clone();
         let mut watch = None;
         let mut last_drift_check = Timestamp(0);
@@ -4521,6 +4530,8 @@ impl App {
                 // A sub-agent's turn end (no time) leaves the session at its limit.
                 if at.is_some() {
                     runtime.at_limit.store(false, Ordering::SeqCst);
+                    // The session answered: a goal pause before it asks nobody any more.
+                    self.goal_pause_overtaken(task_id).await;
                 }
                 // With hooks the Stop hook is the boundary that switches or pauses; the
                 // transcript decides only for a run without them.
@@ -4555,6 +4566,8 @@ impl App {
                     self.cut_turn_continued(task_id, at).await;
                 }
                 runtime.at_limit.store(false, Ordering::SeqCst);
+                // The agent works: a goal pause before it asks nobody any more (SPEC-469).
+                self.goal_pause_overtaken(task_id).await;
                 self.agent_worked(task_id, at).await;
             }
             Observation::GoalRetry { armed, notice } => {

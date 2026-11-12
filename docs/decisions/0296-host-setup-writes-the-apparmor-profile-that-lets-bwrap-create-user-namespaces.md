@@ -43,6 +43,11 @@ other in load order, which a boot does not fix.
 - **A profile a person wrote is theirs.** Another enabled file that attaches to `/usr/bin/bwrap`
   is adopted when bwrap works with it, and never changed, disabled or joined by Yulius's profile.
   When bwrap does not work with it, the item fails and prints the commands that disable it.
+  The item reads only the plain spellings of such a profile. One in any other spelling is found
+  by what it does: Yulius's profile is proven with every profile of the directory loaded as a
+  boot loads them; where bwrap does not start, it is proven once more without Yulius's
+  profile, and a person's profile that lets it in is adopted in place of Yulius's, whichever
+  run wrote that (SPEC-456 BNS-012).
 - **Checks report and never fix.** `yulius host check` (the update helper's re-check, Settings →
   Instance) runs the same proof and reports what setup would do. `yulius doctor --contained`
   starts bwrap with ids mapped by `newuidmap`, as a sandbox does, and fails when that does not
@@ -64,6 +69,11 @@ other in load order, which a boot does not fix.
   needs once is not worth it. Rejected.
 - **Deciding from files only.** Cannot tell a working hand-written rule from a broken one, nor a
   profile that is written from one that is loaded. Rejected in favour of the proof.
+- **Reading every spelling AppArmor takes for a profile's path**, or asking `apparmor_parser`'s
+  debug dumps for it. A reader after the parser's grammar went through three reviews, each of
+  which found one more corner, and what a pattern weighs beside an exact path only the kernel
+  says; the dumps do not tell a profile's attachment from a child's, and before AppArmor 5.0 not
+  a profile named by its path from a rule. Rejected for the proof beside the whole directory.
 
 ## Consequences
 
@@ -80,3 +90,11 @@ other in load order, which a boot does not fix.
   so AppArmor's unit keeps loading cleanly.
 - The proof needs the host's `mount` and `/usr/sbin/runuser` (util-linux, on every supported
   host).
+- Whenever setup loads Yulius's profile it loads every profile of `/etc/apparmor.d` again
+  (`apparmor_parser -r /etc/apparmor.d`, what `systemctl reload apparmor` loads): edits of
+  other profiles that were waiting for a boot or a reload become live then, and a profile
+  that was written and never loaded is loaded. The load may take up to 300 s; one that does
+  not end fails the item, which undoes its steps.
+- Where a person's profile lets bwrap in, setup removes `/etc/apparmor.d/yulius-bwrap`, also
+  one an earlier run wrote and that worked until the person's profile came: the proof decides,
+  and Yulius never disables a person's profile itself.

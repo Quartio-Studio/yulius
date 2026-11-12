@@ -630,6 +630,21 @@ all; a later move past the limit ends that request. It is asked and audited once
 audit entry written at or after Claude Code recorded the limit says the limit was asked about, so
 a restart that reads the same pause again only puts the task back under Needs you.
 
+That request says the task does not go on by itself, so it ends when the session does go on
+([SPEC-469](../.ai/specs/SPEC-469-even-if-it-woke-up-it-still-has-needs-yo.md),
+[decision 0304](decisions/0304-a-request-yulius-opens-for-a-goal-pause-ends-when-the-agent-works-again.md),
+#1183): at the agent's first work after the pause (`AgentWork`, or the session's own answer),
+whatever woke it: Claude Code's wake-up, a prompt Yulius typed, a session Yulius restarted, or no
+prompt anyone sees. A prompt alone ends nothing, since the API may refuse it again. Only the
+request Yulius opened ends this way (`end_task_needs_you_asking`, by its action in one statement);
+a request the agent made stays. The pause's flag is answered by work like a notice's
+(`notice_attention_ms`); a run that starts while the request is open takes the flag's time back
+from the task's state, which a restart of Yulius forgot. That time stands only while the task
+still reads the flag it belongs to (`standing_notice_ms`): a status change replaces a flag
+without a word, and one raised later is not answered by work. The replay after a restart folds when
+the agent first worked after the last pause (`TranscriptFacts::worked_since_goal_pause`): the
+request ends, and the task the pause flagged follows its session.
+
 ```mermaid
 stateDiagram-v2
     [*] --> Working
@@ -641,6 +656,8 @@ stateDiagram-v2
     Working --> NeedsYou: that pause, when the move past the limit is refused
     Retrying --> Waiting: /goal clear (no check-in comes)
     NeedsYou --> Working: a person sends a message
+    NeedsYou --> Working: the agent works again (the request ends by itself)
+    NeedsYou --> NeedsYou: a woken turn the API refuses again (the request stays)
     note right of Retrying: reads Working; the turn record does not settle it
 ```
 
@@ -2100,7 +2117,8 @@ sandbox's Docker engine, production runs their production holder's (ADR-0208; th
 `<data>/cd/<sandbox>/runs`, which that engine binds), and both reach any Internet host over TCP
 (SSH included) through their holder's network. A run has no lane and no retry: a deploy is not assumed repeatable, so one left by a
 restart is recorded as an error. `needs_you` (table column `tasks.needs_you`) puts a task in Needs
-you until a person writes to it; its request (what happened, the problem, what to do or decide) is
+you until a person writes to it (a request Yulius opened itself also ends when what it describes
+does, [ADR-0304](decisions/0304-a-request-yulius-opens-for-a-goal-pause-ends-when-the-agent-works-again.md)); its request (what happened, the problem, what to do or decide) is
 stored as JSON there ([ADR-0221](decisions/0221-a-needs-you-request-reads-what-happened-problem-to-do.md)). `POST …/cd/{env}/deploy` answers only once the run is recorded,
 after the checks and production's promotion (seconds to a minute), so the CD page opens the Deploy
 dialog as soon as the person confirms, saying what is being checked and promoted with the time so
@@ -3174,14 +3192,27 @@ line. The new host's steps (`target.rs`) are Rust code over `host_setup::Host`, 
 same build, which the flow copies first (`yulius instance migrate-target`). The old host's profile
 (`profile.rs`: the unit and its drop-ins, key files, apt sources and the manual package list,
 software outside apt, the update helper, Caddy, ufw) is read live and fitted to the new host by
-pure rewrites (release codename, public URL, host name). The copy is the export's own stream into
-the import; both hosts then count the copy's inventory (`inventory.rs`: entries and bytes per
-top-level folder and a fingerprint over every entry's metadata, as the import installs it and in
-the old host's ids; the import's own limits mark is left out of the export and of both counts,
-`walk::left_out`), and the new instance is started only when they are equal. Only the move's
-identity and the cutover's progress are stored (`/var/lib/yulius-migrate/state.json`); every step
-reads the facts and acts if needed, so the same command continues a move. A run that goes on from
-a recorded start asks the new instance first and never ends well with both running: whatever
+pure rewrites (release codename, public URL, host name). The copy is the export's own stream,
+sent in passes into a staged copy (`warm.rs`; SPEC-465, ADR-0303): passes while the old instance
+runs, then one exact pass while it is frozen. The old host keeps a receipt for every path the new
+host took in and synced (`receipts.rs`: a digest of the entry's archive headers, its inode number
+and its inode's change time) and leaves an entry out only while its receipt matches; an entry
+earns one only when it last changed two seconds before its pass, which begins by syncing the
+filesystem. Receipts are believed only in the boot they were earned in and while the clock was
+not set back; otherwise they are dropped and the staged copy is filled again. A walk while the
+instance runs holds every directory it is in open and names its entries through it
+(`walk.rs`), so nothing a sandbox does to its own files leads the walk, which runs as root,
+outside the data directory. The new host's marker (`.yulius-import-incomplete`) holds the stage id, the count of
+streams and what the last one installed; it names a stream before its first entry, so a receive
+that dies costs the receipts and never the copy's truth. The frozen pass carries the digests of
+every path the old host holds, and the new host removes the rest. Both hosts then count the
+copy's inventory (`inventory.rs`: entries and bytes per top-level folder and a fingerprint over
+every entry's metadata, as the import installs it and in the old host's ids; the import's own
+limits mark is left out of every pass and of both counts, `walk::left_out`), and the new
+instance is started only when they are equal. Only the move's identity, the cutover's progress
+and the receipts are stored (`/var/lib/yulius-migrate/state.json`, `copy/`); every step reads the
+facts and acts if needed, so the same command continues a move. A run that goes on from a
+recorded start asks the new instance first and never ends well with both running: whatever
 unit of the old instance (the server's, its sessions unit) runs unfrozen beside a new instance
 that has taken over is frozen again, to stay, or the run fails saying so (SPEC-467). The copy
 carries a mark
@@ -3226,8 +3257,16 @@ sequenceDiagram
   G->>Y: registered or missing
   M->>O: Plan: what a person must do (the App's link and values), then "Proceed?"
   M->>T: Prepare: data disk, apt sources, packages, software, host items, unit, proxy
+  loop warm passes, the old instance runs
+    M->>T: marker of the staged copy (stage id, streams, last stream)
+    M->>M: receipts follow the marker, sync the data directory
+    M->>T: a pass: every entry without a matching receipt
+    T->>M: marker: entries installed and synced
+    M->>O: downtime: the estimated freeze (copy again while above --max-downtime)
+  end
   M->>D: systemctl freeze yulius.service
-  M->>T: the export's stream into the import
+  M->>T: the frozen pass: what changed, and every path the old host holds
+  T->>T: install, remove what is not among those paths
   T->>M: inventory of the copy
   alt inventories differ or a step fails
     M->>D: systemctl thaw (the old instance runs on)

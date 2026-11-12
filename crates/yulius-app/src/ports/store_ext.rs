@@ -660,6 +660,14 @@ pub trait NeedsYouStore: Send + Sync {
         request: Option<&crate::needs_you::NeedsYouRecord>,
         at: Timestamp,
     ) -> AppResult<bool>;
+    /// Ends the request at `at` only while it still asks `action`, in one step: a request made
+    /// meanwhile stays. `true` when it ended one.
+    async fn end_task_needs_you_asking(
+        &self,
+        task: &TaskId,
+        action: &str,
+        at: Timestamp,
+    ) -> AppResult<bool>;
     /// Tasks of a sandbox with an open request.
     async fn needs_you_tasks(&self, sandbox: &SandboxId) -> AppResult<Vec<TaskId>>;
 }
