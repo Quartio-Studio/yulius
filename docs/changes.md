@@ -4,6 +4,34 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-12
+
+- A superadmin moves the instance to another host from Settings → Instance (SPEC-470, task #447,
+  ADR-0305; slice D of the move). The card **Move to another host** takes the new host, its SSH
+  port, a public URL and data disks and shows the plan of `yulius instance migrate`: first the line
+  of the move's one-time key to add on the new host, then the checklist, with what a person has to
+  do repeated first. **Run migration…** names the host that root will give the instance's data to
+  and needs its name typed; it is the plan that was shown (the same values, at most an hour old).
+  The card then shows the phases and the checklist as it grows, the copy that runs while Yulius
+  keeps working included (SPEC-465); while the instance is frozen for the last changes it says so
+  and keeps trying; on the new instance it shows the finished checklist, and when the old address
+  redirects it links there. **Abort…** says what it does and stops a run in flight. Root runs the
+  command through a request file and a path unit, as it installs updates: `yulius migrate-helper`
+  (units `yulius-migrate.path` and `yulius-migrate.service` in `deploy/systemd`) takes the request
+  only from the data directory's owner, with the exact fields, fresh and once, never while an
+  update runs, checks every value again and never answers an abort's question for a person. It runs
+  the command with the new `--no-sign-in`: such a move never signs in as root does (root's keys,
+  its ssh configuration, a password), so it reaches only a host where a person added the move's
+  key. Root installs it on purpose, since it lets the service user ask for a move; the operations
+  guide says what that allows and how to pin the hosts. A move carries the helper's units and
+  enables them on the new host as they were on the old one. Updates and moves refuse each other,
+  and every plan, move and abort is audited. Real moves asked from the page between two hosts
+  found, and this change fixes, a defect of the command: `yulius instance migrate --abort` after a
+  plan that ended with the key to add failed on the new host and left the key there (the abort now
+  brings the build that removes it). They also showed that six quick requests leave a path unit
+  failed under systemd's default start limit, so the helper's unit sets none (the update helper's
+  units have that limit: #1201).
+
 ## 2026-11-11
 
 - The restart of a running task on a newer Claude Code keeps a goal a person set and a draft in

@@ -60,6 +60,10 @@ pub struct Options {
     pub state_dir: PathBuf,
     /// The longest freeze the move may begin, in minutes: above it, it copies again.
     pub max_downtime: Option<u64>,
+    /// Never sign in to the new host as root does (its own keys, its agent, its ssh
+    /// configuration, a password): only the move's one-time key reaches it, and its line is
+    /// shown for a person to add there. How the move helper runs the command (SPEC-470).
+    pub no_sign_in: bool,
 }
 
 /// What to do.
@@ -141,6 +145,13 @@ pub struct Status {
     pub lines: Vec<HostLine>,
     /// Seconds since the epoch.
     pub updated_at: u64,
+    /// The one-time key's public line, while a person has to add it to root's
+    /// `authorized_keys` on the new host (SPEC-470 MVB-010).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public_key: Option<String>,
+    /// The new public URL, once the plan decided it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new_url: Option<String>,
 }
 
 impl State {
@@ -393,6 +404,8 @@ pub struct Move<'a> {
     ran: Option<String>,
     phase: &'static str,
     lines: Vec<HostLine>,
+    /// The one-time key's public line, while a person has to add it (SPEC-470 MVB-010).
+    key_line: Option<String>,
 }
 
 impl<'a> Move<'a> {
@@ -414,6 +427,7 @@ impl<'a> Move<'a> {
             ran: None,
             phase: "Plan",
             lines: Vec::new(),
+            key_line: None,
         }
     }
 
@@ -425,6 +439,8 @@ impl<'a> Move<'a> {
             phase: self.phase.to_owned(),
             lines: self.lines.clone(),
             updated_at: now_secs(),
+            public_key: self.key_line.clone(),
+            new_url: self.state.new_url.clone(),
         };
         if let Ok(json) = serde_json::to_vec(&status) {
             let _ = write_atomic(&self.opts.state_dir.join("status.json"), &json, 0o644);
@@ -733,6 +749,31 @@ impl<'a> Move<'a> {
     fn add_key(&mut self) -> Result<(), Stop> {
         const ITEM: &str = "one-time key";
         let public = self.remote.key().map_err(|why| self.fail(ITEM, why))?;
+        if self.opts.no_sign_in {
+            // Asked without a person at this host (SPEC-470): one look with the key itself,
+            // which also records the new host's key for the person to compare, and never
+            // root's own sign-in, which would reach every host that trusts root here.
+            return match self.remote.reachable() {
+                Ok(()) => {
+                    self.key_signs_in();
+                    Ok(())
+                }
+                Err(_) => {
+                    let seen = self.host_key_note();
+                    self.key_line = Some(public.clone());
+                    self.manual(
+                        ITEM,
+                        format!(
+                            "is not on the new host yet{seen}. This run never signs in as root \
+                             does (root's keys, its ssh configuration, a password): add this \
+                             line to root's ~/.ssh/authorized_keys on the new host, then ask \
+                             again: {public}"
+                        ),
+                    );
+                    Err(Stop::Ended)
+                }
+            };
+        }
         self.world.show(&format!(
             "Signing in to {} once to add the move's key (a password or a second factor may be \
              asked):",
@@ -756,6 +797,8 @@ impl<'a> Move<'a> {
             }
             Err(why) => {
                 let seen = self.host_key_note();
+                // For readers of the status (Settings → Instance shows it with a copy button).
+                self.key_line = Some(public.clone());
                 self.manual(
                     ITEM,
                     format!(
@@ -1144,6 +1187,24 @@ impl<'a> Move<'a> {
                 "none on the old host: the new one offers no Update now either",
             );
         }
+        // The helper of Settings → Instance's "Move to another host" (SPEC-470 MVB-008).
+        self.ok(
+            "move helper",
+            match p.move_helper {
+                Some(true) => {
+                    "its units are carried, and its path unit is enabled on the new host as it \
+                     is here"
+                }
+                Some(false) => {
+                    "its units are carried; its path unit is not enabled here, so it is not \
+                     enabled on the new host"
+                }
+                None => {
+                    "none on the old host: the new one offers no move from Settings → Instance \
+                     either"
+                }
+            },
+        );
         let host = self
             .state
             .new_url
@@ -2025,6 +2086,19 @@ impl<'a> Move<'a> {
                 },
             )?;
         }
+        if !key_gone
+            && p.move_helper == Some(true)
+            && let Some(unit) = yulius_sandbox::units::migrate_path_unit(&self.opts.service)
+        {
+            // What fails here is a line: the new instance has taken over.
+            let _ = self.call(
+                "move helper",
+                &Request::Enable {
+                    name: "move helper".into(),
+                    unit,
+                },
+            );
+        }
         self.redirect(p, &new);
         Ok(())
     }
@@ -2120,9 +2194,13 @@ impl<'a> Move<'a> {
             .and_then(Result::ok)
             .map(|reply| reply.lines)
             .filter(|lines| !lines.is_empty());
+        // What this host says after the new host's Finish is known now, so the whole checklist
+        // can travel with that step, while the key still signs in (SPEC-470 MVB-011).
+        let mut then = self.after_finish(&new, moved_url, github);
         let finish = Request::Finish {
             key: self.state.key_comment(),
             firewall: p.firewall == Carried::Yes,
+            arrived: true,
         };
         if deleted_before {
             self.manual(
@@ -2138,6 +2216,7 @@ impl<'a> Move<'a> {
                 ),
             );
         } else {
+            self.carry_checklist(p, &new, &then);
             match self.remote.call(&finish) {
                 Ok(reply) => {
                     for line in reply.lines {
@@ -2176,18 +2255,42 @@ impl<'a> Move<'a> {
             }
         }
         self.remote.forget();
+        // The key's line first (an earlier run that deleted it has said so), the rest once the
+        // move is recorded as finished.
+        let rest = then.split_off(1);
         if !deleted_before {
-            self.changed("one-time key (old host)", "deleted");
+            then.into_iter().for_each(|line| self.push(line));
         }
         // Without the key nothing more can be done from here: what failed above is a person's.
         self.state.finished = true;
         let _ = self.save_state();
         // The copy there is the instance: what this host knew of it while it was staged goes.
         self.stage.forget();
+        rest.into_iter().for_each(|line| self.push(line));
+    }
+
+    /// What this host says once the new host's Finish is done: its key deleted, then what is
+    /// left for people. Known before that step, so it can travel with it.
+    fn after_finish(
+        &self,
+        new: &str,
+        moved_url: bool,
+        github: Option<Vec<HostLine>>,
+    ) -> Vec<HostLine> {
+        let line = |name: &str, outcome, detail: String| HostLine {
+            name: name.to_owned(),
+            outcome,
+            detail,
+        };
+        let mut then = vec![line(
+            "one-time key (old host)",
+            HostOutcome::Changed,
+            "deleted".into(),
+        )];
         if moved_url {
             match github {
-                Some(lines) => lines.into_iter().for_each(|line| self.push(shown(line))),
-                None => self.manual("GitHub App", github_note(&new)),
+                Some(lines) => then.extend(lines.into_iter().map(shown)),
+                None => then.push(line("GitHub App", HostOutcome::Manual, github_note(new))),
             }
             // The old URL's redirect leads `yulius remote` to the new one (SPEC-466 MVC-030).
             let cli = if self.state.redirected {
@@ -2197,24 +2300,50 @@ impl<'a> Move<'a> {
             } else {
                 format!("`yulius remote login {new}` keeps the token")
             };
-            self.manual(
+            then.push(line(
                 "remote clients",
+                HostOutcome::Manual,
                 format!(
                     "laptops point at the old URL: {cli}; in Claude Code `claude mcp remove \
                      yulius`, then `claude mcp add --transport http yulius {new}/mcp --header \
                      \"Authorization: Bearer <token>\"`"
                 ),
-            );
+            ));
         }
-        self.manual(
+        then.push(line(
             "old host",
+            HostOutcome::Manual,
             format!(
                 "it keeps a frozen copy with master.key and every secret. `sudo yulius instance \
                  migrate --abort` here goes back, once the new instance is stopped on the new \
                  host. When the new instance has proven itself, wipe {} or retire the disk",
                 self.opts.data_dir.display()
             ),
-        );
+        ));
+        then
+    }
+
+    /// Brings the new host the checklist so far and the lines that follow its Finish, which
+    /// leaves the whole for the new instance's page (SPEC-470 MVB-011). A new host that does
+    /// not take it is said by the Finish that follows.
+    fn carry_checklist(&mut self, p: &Profile, new: &str, then: &[HostLine]) {
+        let carried = target::Carried {
+            checklist: yulius_contracts::migrate::MoveChecklist {
+                version: yulius_contracts::migrate::VERSION,
+                id: self.state.id.clone(),
+                target: self.state.target.clone(),
+                from: p.public_url.clone(),
+                to: Some(new.to_owned()).filter(|url| !url.is_empty()),
+                lines: self.lines.clone(),
+                finished_at: now_secs(),
+            },
+            then: then.to_vec(),
+        };
+        if let Ok(reply) = self.remote.call(&Request::Carry(carried)) {
+            for line in reply.lines {
+                self.push(shown(line));
+            }
+        }
     }
 
     /// `--abort`: back to the old host, never with both instances running.
@@ -2332,6 +2461,19 @@ impl<'a> Move<'a> {
         }
         let copied = self.state.copied || self.stage.id().is_some();
         if reachable {
+            // The step that removes the key there is run by this build. A plan that ended with
+            // the key to add never brought it (a person added the key and aborts): it goes
+            // there for this step, which removes it again with the flow's other files.
+            let there = Request::Facts {
+                data_dir: self.opts.data_dir.clone(),
+                service: unit.clone(),
+                ports: Vec::new(),
+            };
+            if self.remote.try_call(&there).is_none() {
+                let exe = self.world.exe();
+                // A copy that fails is said by the step that then cannot run.
+                let _ = self.remote.put_build(&exe);
+            }
             if copied {
                 // A stream the new host is still taking in is closed before its files go.
                 let _ = self.remote.call(&Request::Stage {
@@ -2343,6 +2485,8 @@ impl<'a> Move<'a> {
                 &Request::Finish {
                     key: self.state.key_comment(),
                     firewall: false,
+                    // Going back: no checklist of a finished move stays on the new host.
+                    arrived: false,
                 },
             );
         }
@@ -2374,6 +2518,23 @@ impl<'a> Move<'a> {
         self.world.show(&format!("\n{summary}"));
         self.save_status();
         u8::from(!done)
+    }
+}
+
+/// The connection of a run to the recorded host with the move's key. A run that is nobody's
+/// sign-in (`--no-sign-in`, the move helper's) gets one that offers that key alone and reads
+/// nothing of root's.
+fn connection(opts: &Options, state: &State) -> remote::Ssh {
+    let ssh = remote::Ssh::new(
+        &state.target,
+        state.port,
+        &opts.state_dir,
+        &state.key_comment(),
+    );
+    if opts.no_sign_in {
+        ssh.without_sign_in()
+    } else {
+        ssh
     }
 }
 
@@ -2703,12 +2864,7 @@ pub fn main(opts: &Options, action: Action) -> ExitCode {
     // The copy walks the data directory while the instance runs, with every directory it is in
     // held open.
     target::raise_open_files();
-    let mut ssh = remote::Ssh::new(
-        &state.target,
-        state.port,
-        &opts.state_dir,
-        &state.key_comment(),
-    );
+    let mut ssh = connection(opts, &state);
     let mut host = host_setup::system::RealHost { quiet: false };
     let mut world = RealWorld {
         signal: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(freeze::LEAVE)),

@@ -415,3 +415,58 @@ fn a_carried_file_that_names_the_old_host_is_named_for_a_person() -> Result<(), 
     assert_eq!(paths(&p.stale), ["/etc/yulius/env"]);
     Ok(())
 }
+
+/// SPEC-470 MVB-008: the move helper's units travel when the old host has them, and whether its
+/// path unit is enabled there is kept for the new host.
+#[test]
+fn the_move_helpers_units_travel_with_their_state() -> Result<(), String> {
+    let mut host = old_host();
+    let p = read(&mut host)?;
+    assert_eq!(p.move_helper, None);
+    assert!(!paths(&p.files).iter().any(|f| f.contains("migrate")));
+
+    host.says(
+        &["systemctl", "show", "yulius-migrate.service"],
+        "LoadState=loaded\nFragmentPath=/etc/systemd/system/yulius-migrate.service\n\
+         DropInPaths=/etc/systemd/system/yulius-migrate.service.d/10-targets.conf \
+         /usr/lib/systemd/system/service.d/10-timeout-abort.conf\n",
+    );
+    host.says(
+        &["systemctl", "show", "yulius-migrate.path"],
+        "LoadState=loaded\nFragmentPath=/etc/systemd/system/yulius-migrate.path\nDropInPaths=\n",
+    );
+    host.says(
+        &["systemctl", "is-enabled", "yulius-migrate.path"],
+        "enabled\n",
+    );
+    let p = read(&mut host)?;
+    assert_eq!(p.move_helper, Some(true));
+    let carried: Vec<&str> = paths(&p.files)
+        .into_iter()
+        .filter(|f| f.contains("migrate"))
+        .collect();
+    // An operator's files only: not what the distribution ships for every service.
+    assert_eq!(
+        carried,
+        [
+            "/etc/systemd/system/yulius-migrate.path",
+            "/etc/systemd/system/yulius-migrate.service",
+            "/etc/systemd/system/yulius-migrate.service.d/10-targets.conf",
+        ]
+    );
+
+    // Installed and switched off: carried, and off on the new host too.
+    for state in ["disabled\n", "static\n", ""] {
+        host.says(&["systemctl", "is-enabled", "yulius-migrate.path"], state);
+        assert_eq!(read(&mut host)?.move_helper, Some(false), "{state:?}");
+    }
+
+    // The helper belongs to the server's unit, as its sessions unit does.
+    let mut other = old_host();
+    other.says(
+        &["systemctl", "show", "yulius-migrate.service"],
+        "LoadState=not-found\n",
+    );
+    assert_eq!(read(&mut other)?.move_helper, None);
+    Ok(())
+}

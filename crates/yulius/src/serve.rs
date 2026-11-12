@@ -151,6 +151,14 @@ pub struct ServeArgs {
         default_value = "/var/lib/yulius-update"
     )]
     pub update_state_dir: PathBuf,
+    /// The move helper's state directory (`yulius migrate-helper`, SPEC-470): where a move asked
+    /// from Settings → Instance reports, and where a move to this host left its checklist.
+    #[arg(
+        long,
+        env = "YULIUS_MIGRATE_STATE",
+        default_value = "/var/lib/yulius-migrate"
+    )]
+    pub migrate_state_dir: PathBuf,
     /// Minutes between automatic checks of `main` (0: only "Check now").
     #[arg(long, env = "YULIUS_UPDATE_CHECK_MINUTES", default_value_t = 60)]
     pub update_check_minutes: u64,
@@ -505,6 +513,14 @@ pub fn build_app(args: &ServeArgs) -> Result<Arc<App>, String> {
     app.set_intake(intake_services(args));
     app.set_vidoc(vidoc_services(args));
     app.set_updates(update_services(args)?);
+    // The move helper is named after the unit this server runs in (SPEC-470 MVB-007).
+    let move_unit = crate::restart_safety::this_service()
+        .and_then(|service| yulius_sandbox::units::migrate_path_unit(&service));
+    app.set_move_helper(Arc::new(crate::wiring::migrate_files::FileMoveHelper::new(
+        &args.data_dir,
+        args.migrate_state_dir.clone(),
+        move_unit,
+    )));
     if let Some(shell) = &args.shell {
         app.set_shell_program(shell.clone());
     }

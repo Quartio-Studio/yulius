@@ -14,6 +14,8 @@ fn tree() -> Result<tempfile::TempDir, Box<dyn std::error::Error>> {
         "system/base-1",
         "runtime/sandboxes",
         "update",
+        // The move helper's request (SPEC-470): asked of this host's root, never of another's.
+        "migrate",
         "runs/a",
         // Claude Code built for this host's platform (SPEC-421): the new host installs its own.
         "claude-code/versions/2.1.311/bin",
@@ -27,6 +29,7 @@ fn tree() -> Result<tempfile::TempDir, Box<dyn std::error::Error>> {
     fs::set_permissions(root.join("master.key"), fs::Permissions::from_mode(0o600))?;
     fs::write(root.join("system/base-1/bin"), b"x")?;
     fs::write(root.join("update/request.json"), b"{}")?;
+    fs::write(root.join("migrate/request.json"), b"{}")?;
     fs::write(root.join("sandboxes/sb/repo/a"), b"aaaa")?;
     fs::hard_link(
         root.join("sandboxes/sb/repo/a"),
@@ -315,6 +318,13 @@ fn a_live_walk_stays_in_the_directories_it_opened() -> TestResult {
     );
     assert_eq!(skipped, Skipped::default());
     Ok(())
+}
+
+/// SPEC-470 MVB-020: the directory the move helper's request lives in is one a copy leaves
+/// out, so what was asked of this host's root never arrives on another host as asked there.
+#[test]
+fn the_move_helpers_request_never_travels() {
+    assert!(left_out(yulius_contracts::migrate::REQUEST_DIR.as_bytes()));
 }
 
 /// SPEC-467 LFT-005: every import writes its own limits mark, so the old host's never travels,
