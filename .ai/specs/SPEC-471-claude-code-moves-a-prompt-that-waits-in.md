@@ -96,7 +96,7 @@ Where things are in Yulius:
 - [x] The fake agent queues prompts as Claude Code does (CCQ-005)
 - [x] A turn's end leaves a session with a waiting prompt where it is: the gate's block and the clean Stop (CCQ-002)
 - [x] A hand-over counts until its turn shows, and a prompt that just went on is waited for (CCQ-003, CCQ-004)
-- [ ] SPEC-461, SPEC-468, ADR-0293, the guides and the changes log say so (CCQ-006)
+- [x] SPEC-461, SPEC-468, ADR-0293, the guides and the changes log say so (CCQ-006)
 - [ ] Mutation checks, gate and the whole e2e suite green, evidence recorded
 - [ ] Independent review answered
 

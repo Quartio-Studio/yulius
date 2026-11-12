@@ -329,9 +329,15 @@ as its service user ([SPEC-421](../.ai/specs/SPEC-421-claude-should-autoupdate-w
   is restarted on the newer one through the subscription switch (reason `claude_code`), at the
   Stop hook of a turn it works on after, or once an idle prompt-mode session's turn has settled.
   A session stays while a goal its person set in it is open, while a draft may sit in its
-  prompt box (typed since its last prompt, by a person or by Yulius; a prompt that waits in
-  Claude Code's queue is not known, issue #1204) and while another restart of its task is under
-  way; an idle one that is restarted is idle again from its launch on, with what its goal left
+  prompt box (typed since its last prompt, by a person or by Yulius), while something waits in
+  Claude Code's queue and while another restart of its task is under way. The queue (a prompt
+  entered while a turn runs, Claude Code's own notifications) lives in the process's memory and
+  a resumed session does not get it back; the transcript watcher reads it from the
+  `queue-operation` records (`Observation::Queue`, counted per run in
+  `yulius_domain::agent_cli::Queue`, a hand-over counted until its turn's prompt record), and a
+  turn's end asks it after it read the turn's lines, and stays for a second after a prompt
+  went on, whose record is written a moment later
+  ([SPEC-471](../.ai/specs/SPEC-471-claude-code-moves-a-prompt-that-waits-in.md)); an idle one that is restarted is idle again from its launch on, with what its goal left
   (`IdleRest` in `supervisor.rs`), and the notification center remembers what a task read
   through a switch ([SPEC-468](../.ai/specs/SPEC-468-claude-code-moves-the-last-review-s-left.md)).
   A restart whose session does not reach its SessionStart hook (the launch fails, the process
