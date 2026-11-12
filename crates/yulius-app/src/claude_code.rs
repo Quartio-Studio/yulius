@@ -326,11 +326,10 @@ impl App {
     #[must_use]
     pub fn has_draft(&self, task_id: &TaskId) -> bool {
         let runtime = self.runtime(task_id);
-        let typed = runtime
-            .typed_at_ms
-            .load(Ordering::SeqCst)
-            .max(runtime.message_typed_ms.load(Ordering::SeqCst));
-        is_draft(typed, runtime.box_emptied_ms.load(Ordering::SeqCst))
+        is_draft(
+            runtime.last_typed_ms(),
+            runtime.box_emptied_ms.load(Ordering::SeqCst),
+        )
     }
 
     /// What a turn's end knows about restarting the task's session, which runs `runs`, on

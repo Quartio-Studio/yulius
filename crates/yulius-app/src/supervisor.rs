@@ -402,6 +402,15 @@ impl TaskRuntime {
         }
     }
 
+    /// When something was last typed into the session's prompt box (ms, 0 = never): a person's
+    /// keystroke, or a message Yulius typed for Claude Code to submit (SPEC-468 CCF-010,
+    /// CCF-011).
+    pub(crate) fn last_typed_ms(&self) -> i64 {
+        self.typed_at_ms
+            .load(Ordering::SeqCst)
+            .max(self.message_typed_ms.load(Ordering::SeqCst))
+    }
+
     /// A run starts at `now_ms`: its prompt box is empty, and no prompt of it is held (one held
     /// in the run before went with that run's hook client; SPEC-468 CCF-010).
     pub(crate) fn prompt_box_starts_empty(&self, now_ms: i64) {

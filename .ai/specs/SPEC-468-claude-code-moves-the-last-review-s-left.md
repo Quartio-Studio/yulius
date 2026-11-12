@@ -309,11 +309,12 @@ The question of direction: the restart waits only while a person typed in the la
   lies between the time the box was last known empty and the hook, and something was typed
   after it, the box counts as emptied at the Enter (`box_emptied_at`). An Enter Yulius does
   not see (a terminal that sends another sequence for it) leaves the first rule in force.
-  Limits, each needing a restart to be due at that very turn's end: of two prompts entered
-  during one turn, the second counts as submitted with the first (Claude Code hands every
-  queued prompt on at one fold; what it does with several at a turn's end is not in the
-  transcripts, none of which has two waiting); and an Enter that answers a dialog, typed
-  after a new draft and before the queued prompt is handed on, reads as that draft's Enter.
+  Limits, each needing a restart to be due at that very turn's end: of two prompts that wait
+  at once (two a person entered, or one of theirs and a message of Yulius), the later counts
+  as submitted with the earlier (Claude Code hands every queued prompt on at one fold; what
+  it does with several at a turn's end is not in the transcripts, none of which has two
+  waiting); and an Enter that answers a dialog, typed after a new draft and before the queued
+  prompt is handed on, reads as that draft's Enter.
   Rejected: counting Enters against submits, which would be exact for prompts and keep every
   session in which a person answered a dialog or ran a command at its version for good.
 - **A prompt Yulius holds is still in the box** (found in the author's reading of round 2's

@@ -14,16 +14,18 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   agent's goal and Yulius's own reading); so does a session with a draft in its prompt box
   (typed since its last prompt was sent), not only one typed into in the last minute, and one in
   which a message Yulius typed (through a Superagent, a pull request's news) still waits in
-  Claude Code's queue, which a restart used to lose after its sender was told "sent". An idle
-  session that is restarted reads "Continuing" and then as before, with no "Working" in between
-  and no second "Your turn" notification. Two turn ends that decide at once make one restart,
-  and the breaker watches it. While running tasks are no longer moved to a version, the card and
-  a task's info promise it only at the task's next start, and the card says when the binary in
-  use could not be read for its models. The model a transcript names is cut as its Claude Code
-  version is. The gate's block case of the move has its test. Older code, reported: after a
-  move to another subscription Yulius no longer knows a goal a person set in a prompt-mode
-  session until Claude Code records its next verdict (#1182), and a subscription switch at a
-  turn's end still loses a message that waits in Claude Code's queue (#1194).
+  Claude Code's queue, which a restart used to lose after its sender was told "sent". What a
+  person types after a prompt they entered while the agent worked, and a prompt Yulius holds for
+  their choice, count as a draft as well. An idle session that is restarted reads "Continuing"
+  and then as before, with no "Working" in between and no second "Your turn" notification. Two
+  turn ends that decide at once make one restart, and the breaker watches it. While running
+  tasks are no longer moved to a version, the card and a task's info promise it only at the
+  task's next start, and the card says when the binary in use could not be read for its models.
+  The model a transcript names is cut as its Claude Code version is. The gate's block case of
+  the move has its test. Older code, reported: after a move to another subscription Yulius no
+  longer knows a goal a person set in a prompt-mode session until Claude Code records its next
+  verdict (#1182), and a subscription switch at a turn's end still loses a message that waits in
+  Claude Code's queue (#1194).
 - A task whose session works again after a goal pause leaves Needs you by itself (SPEC-469, task
   #453, fixes #1183, ADR-0304). When Claude Code stops retrying a goal ("Goal paused · the request
   was rate limited", "Goal paused after 3 automatic retries"), Yulius asks a person to send the

@@ -247,14 +247,10 @@ impl App {
         let from_box = crate::finish::from_prompt_box(input.prompt.as_deref());
         let sent_again = runtime.prompt_held.load(Ordering::SeqCst);
         if from_box && !sent_again {
-            let typed = runtime
-                .typed_at_ms
-                .load(Ordering::SeqCst)
-                .max(runtime.message_typed_ms.load(Ordering::SeqCst));
             let emptied = yulius_domain::agent_cli::box_emptied_at(
                 sent,
                 runtime.entered_ms.load(Ordering::SeqCst),
-                typed,
+                runtime.last_typed_ms(),
                 runtime.box_emptied_ms.load(Ordering::SeqCst),
             );
             runtime.submit_emptied_ms.store(emptied, Ordering::SeqCst);
