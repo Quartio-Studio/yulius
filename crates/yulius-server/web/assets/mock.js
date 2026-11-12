@@ -3907,8 +3907,14 @@ route('DELETE', `/api/admin/accounts/${ID}`, ({ db, p }) => {
   }
   return json(204);
 });
-// Refreshes the provider's usage windows; an account that must sign in again gets the provider's 502.
-route('POST', `/api/admin/accounts/${ID}/usage`, ({ db, p }) => {
+// Reads the provider's usage windows again and asks about the limits stored for the account
+// (SPEC-473); an account that must sign in again gets the provider's 502. A test scripts what
+// Claude answers per account in `db.usageAnswers[id]`: `{ fail: sentence }` (502, the sentence
+// kept as the usage note unless `note: false`), `{ unread: true }` (no usage reading: the account
+// as it is), or `{ usage, status }` (what the reading and the answers leave stored). A request
+// waits for `db.usageGate` (a promise) when a test set one; `usageInFlight` and
+// `usageMostInFlight` count the requests under way.
+route('POST', `/api/admin/accounts/${ID}/usage`, async ({ db, p }) => {
   adminOnly(db);
   const account = db.accounts.find((a) => a.id === p[0]);
   if (!account) fail(404, 'not_found', 'not found');
@@ -3916,8 +3922,17 @@ route('POST', `/api/admin/accounts/${ID}/usage`, ({ db, p }) => {
   // its sign-in error stays.
   if (db.unsignedAccounts.has(account.id)) fail(409, 'conflict', 'the account is not signed in yet');
   if (account.status === 'relogin' || account.status === 'pending_login') fail(502, 'upstream', account.last_error || 'the provider refused the usage request; sign in again');
-  account.usage = { ...account.usage, observed_at: new Date().toISOString() };
+  db.usageInFlight = (db.usageInFlight || 0) + 1;
+  db.usageMostInFlight = Math.max(db.usageMostInFlight || 0, db.usageInFlight);
+  try { await db.usageGate; } finally { db.usageInFlight -= 1; }
+  const answer = (db.usageAnswers || {})[account.id] || {};
+  if (answer.fail) {
+    if (answer.note !== false) account.last_error = `usage: ${answer.fail}`;
+    fail(502, 'upstream', answer.fail);
+  }
   account.last_error = null;
+  if (answer.unread) return account;
+  Object.assign(account, { status: answer.status || account.status, usage: { ...(answer.usage || account.usage), observed_at: new Date().toISOString() } });
   return account;
 });
 route('POST', `/api/admin/accounts/${ID}/relogin`, ({ db, p }) => {
