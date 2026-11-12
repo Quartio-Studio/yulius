@@ -631,7 +631,7 @@ fn yulius_earlier_profile_gives_way_to_a_rule_it_reads() {
     assert_eq!(proofs(&fake), 2, "{:#?}", fake.log);
 
     // AppArmor does not let Yulius's profile go: nothing is proven without it, and the line
-    // says what AppArmor holds before it names theirs.
+    // says what AppArmor answered before it names theirs.
     let mut fake = set_up(noble());
     fake.file(HAND_WRITTEN, &confined);
     fake.reboot();
@@ -721,6 +721,48 @@ fn yulius_earlier_profile_gives_way_to_a_rule_it_reads() {
     assert_eq!(item(&lines), (HostOutcome::Failed, failed.as_str()));
     assert!(state(&fake) == before, "{:#?}", fake.log);
     assert_eq!(proofs(&fake), 2, "{:#?}", fake.log);
+}
+
+/// BNS-006: a file of Yulius's that declares no profile (a person emptied it) is nothing to
+/// take out of AppArmor: the parser would say "done" for it whatever AppArmor holds. The line
+/// is the one of a person's profile alone, with or without a link on Yulius's file.
+#[test]
+fn a_file_of_yulius_without_a_profile_is_not_unloaded() {
+    let confined = HAND_WRITTEN_TEXT.replace(" flags=(unconfined)", "");
+    for linked in [false, true] {
+        let mut fake = set_up(noble());
+        fake.file(HAND_WRITTEN, &confined);
+        fake.reboot();
+        // The profile an earlier text of the file declared is still held.
+        fake.file(PROFILE_FILE, "# switched off by hand\n");
+        if linked {
+            fake.links.insert(
+                PathBuf::from("/etc/apparmor.d/disable/yulius-bwrap"),
+                PathBuf::from(PROFILE_FILE),
+            );
+        }
+        let before = state(&fake);
+        let lines = run(&mut fake, Mode::Setup);
+        assert_eq!(
+            item(&lines),
+            (
+                HostOutcome::Failed,
+                format!(
+                    "loaded /etc/apparmor.d/bwrap again, but bwrap cannot start a user \
+                     namespace as yulius with /etc/apparmor.d/bwrap (bwrap: setting up uid map: \
+                     Permission denied); {THEIRS}"
+                )
+                .as_str()
+            ),
+            "linked: {linked}"
+        );
+        assert!(state(&fake) == before, "{:#?}", fake.log);
+        assert!(
+            !fake.ran("/usr/sbin/apparmor_parser -R /etc/apparmor.d/yulius-bwrap"),
+            "{:#?}",
+            fake.log
+        );
+    }
 }
 
 /// BNS-006: a person disabled Yulius's profile by its link and did not unload it. AppArmor
@@ -838,8 +880,34 @@ fn two_profiles_on_disk_are_named() {
         "{detail}"
     );
 
-    // A text of Yulius's file that is not this version's may hold no profile at all: the line
-    // stays with what it can tell.
+    // An earlier version of Yulius's file declares the profile too: both are named.
+    let mut fake = set_up(noble());
+    fake.file(HAND_WRITTEN, HAND_WRITTEN_TEXT);
+    fake.file(
+        PROFILE_FILE,
+        &PROFILE.replace("# Written by", "# Once written by"),
+    );
+    let lines = run(&mut fake, Mode::Check);
+    assert_eq!(item(&lines), (HostOutcome::Ok, both));
+
+    // Where AppArmor does not restrict user namespaces, two profiles keep nothing from
+    // starting: no boot changes that, and the line does not say so.
+    let mut fake = set_up(debian());
+    fake.file(HAND_WRITTEN, HAND_WRITTEN_TEXT);
+    fake.file(PROFILE_FILE, PROFILE);
+    fake.reboot();
+    let lines = run(&mut fake, Mode::Check);
+    assert_eq!(
+        item(&lines),
+        (
+            HostOutcome::Ok,
+            "bwrap starts a user namespace as yulius: allowed by /etc/apparmor.d/bwrap (not \
+             written by Yulius, left as it is)"
+        )
+    );
+
+    // A text of Yulius's file that declares no profile is no second profile: the line stays
+    // with what it can tell.
     let theirs = "bwrap starts a user namespace as yulius: allowed by /etc/apparmor.d/bwrap (not \
                   written by Yulius, left as it is)";
     let mut fake = set_up(noble());

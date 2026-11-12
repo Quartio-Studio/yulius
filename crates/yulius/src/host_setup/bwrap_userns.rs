@@ -77,6 +77,9 @@ struct Facts {
     /// It is there and disabled by its link, which alone does not unload it.
     shipped_off: bool,
     ours: Ours,
+    /// Ours declares a profile for bwrap, in this version's text or another. A file a person
+    /// emptied declares none: there is nothing of it to take out of AppArmor.
+    ours_attaches: bool,
     /// A link in `disable/` keeps ours from loading (a person's).
     ours_disabled: bool,
     /// Other enabled files with a profile for bwrap (a person's), by name.
@@ -321,8 +324,13 @@ impl Facts {
     fn rule(&self, proven: bool) -> String {
         if !self.enabled {
             "AppArmor is not active here".to_owned()
-        } else if !self.foreign.is_empty() && self.ours == Ours::Current && !self.ours_disabled {
-            // Which of the two AppArmor holds, the files do not say; a boot loads both.
+        } else if !self.foreign.is_empty()
+            && self.restricted
+            && self.ours_attaches
+            && !self.ours_disabled
+        {
+            // Which of the two AppArmor holds, the files do not say; a boot loads both, and
+            // where user namespaces need a rule, bwrap then has none.
             format!(
                 "a profile for bwrap is in {} (not written by Yulius, left as it is) and in \
                  Yulius's {PROFILE_FILE}; AppArmor applies neither once it holds both: after a \
@@ -421,8 +429,9 @@ impl Run<'_> {
             // A limit keeps bwrap out whatever the profile says: theirs is not to blame.
             Proof::Fails(why) if !facts.foreign.is_empty() && self.limits().is_empty() => {
                 // Yulius's profile from an earlier run weighs as much as theirs: AppArmor
-                // applies neither (BNS-006).
-                if earlier.is_some() {
+                // applies neither (BNS-006). A file that declares no profile is nothing to
+                // take out: the parser says "done" for it whatever AppArmor holds.
+                if facts.ours_attaches {
                     return self.without_ours(&plan, &facts, earlier.as_deref(), &done, &why);
                 }
                 let files = facts.foreign_files();
@@ -456,7 +465,9 @@ impl Run<'_> {
 
     /// Proves once more with Yulius's profile out of AppArmor. Where bwrap starts now, a
     /// person's profile lets it in and is adopted: Yulius's file goes too, whichever run wrote
-    /// it. Where not, Yulius's is back as it was before this run (BNS-012, BNS-006).
+    /// it. Where not, Yulius's is back as it was before this run (BNS-012, BNS-006). A file
+    /// that a person's link disables is neither removed nor loaded again: its profile only
+    /// leaves AppArmor.
     fn without_ours(
         &mut self,
         plan: &Plan,
@@ -586,11 +597,13 @@ impl Run<'_> {
             host.stat(Path::new(&format!("{DIR}/disable/{name}")))
                 .is_some()
         };
-        let ours = match host.read(Path::new(PROFILE_FILE)) {
+        let ours_text = host.read(Path::new(PROFILE_FILE));
+        let ours = match ours_text.as_deref() {
             None => Ours::Missing,
             Some(text) if text == PROFILE => Ours::Current,
             Some(_) => Ours::Stale,
         };
+        let ours_attaches = ours_text.as_deref().is_some_and(attaches_bwrap);
         let foreign = host
             .list(Path::new(DIR))
             .into_iter()
@@ -608,6 +621,7 @@ impl Run<'_> {
             shipped: shipped && !disabled(SHIPPED),
             shipped_off: shipped && disabled(SHIPPED),
             ours,
+            ours_attaches,
             ours_disabled: disabled(PROFILE_NAME),
             foreign,
         }
@@ -940,6 +954,7 @@ mod tests {
             shipped: false,
             shipped_off: false,
             ours: Ours::Missing,
+            ours_attaches: false,
             ours_disabled: false,
             foreign: Vec::new(),
         }
