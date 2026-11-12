@@ -95,18 +95,20 @@ watching, steering and unblocking.
 - **Move the instance to another host with one command** (SPEC-460): `sudo yulius instance migrate
   root@new-host` on the old host checks and sets up the new one (a data disk, the old host's
   packages and apt sources, software outside apt, the unit with its settings and key files, the
-  update helper, Caddy, ufw), copies the data while the old instance is frozen, proves the copy
-  (entries, bytes and a fingerprint per folder, equal on both hosts), starts the new instance,
-  redirects the old URL and removes its own key. People are asked only in the plan, before
-  anything changes (the SSH sign-in, a DNS record, the GitHub App's callback). Any failure before
-  the new instance runs thaws the old one; `--abort` goes back. Tasks that were live come back by
-  themselves on the new host. A superadmin can also move from **Settings → Instance → Move to
-  another host** (SPEC-470): the plan with everything a person has to do (and the key line to
-  add on the new host), "Run migration" behind the host typed by hand, the checklist as it
-  grows, and an abort that says what it does; root runs the same command through a request
-  file, as it installs updates, once root has enabled that helper. While the instance is frozen
-  the page says so and keeps trying, and the new instance's page shows the finished checklist.
-  Still to come: a warm copy so the freeze sends only the changes.
+  update helper, Caddy, ufw), copies the data while the old instance still runs (SPEC-465: in
+  passes into a staged copy, resumable after a broken link), freezes it only to send what changed
+  since, proves the copy (entries, bytes and a fingerprint per folder, equal on both hosts),
+  starts the new instance, redirects the old URL and removes its own key. The estimated freeze is
+  shown before it begins and `--max-downtime <minutes>` bounds it. People are asked only in the
+  plan, before anything changes (the SSH sign-in, a DNS record, the GitHub App's callback). Any
+  failure before the new instance runs thaws the old one; `--abort` goes back. Tasks that were
+  live come back by themselves on the new host. A superadmin can also move from **Settings →
+  Instance → Move to another host** (SPEC-470): the plan with everything a person has to do (and
+  the key line to add on the new host), "Run migration" behind the host typed by hand, the
+  checklist as it grows, and an abort that says what it does; root runs the same command through
+  a request file, as it installs updates, once root has enabled that helper. While the instance
+  is frozen the page says so and keeps trying, and the new instance's page shows the finished
+  checklist.
 - **The instance knows whether GitHub accepts its address** (SPEC-466): after a move to another
   URL GitHub sign-in needs the new callback URL in the GitHub App, which only a person can add.
   Yulius asks GitHub whether it is there, and Settings → Instance (card Address) gives the one link

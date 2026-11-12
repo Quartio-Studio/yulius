@@ -597,7 +597,10 @@ fn the_staged_build_is_installed_at_the_units_path() {
 
 #[test]
 fn the_data_directory_is_made_ready_for_a_copy() {
-    let request = Request::DataDir { setup: setup() };
+    let request = Request::DataDir {
+        setup: setup(),
+        stage: None,
+    };
     // Not there yet.
     let mut host = new_host();
     assert_eq!(only(&step(&mut host, &request)).0, HostOutcome::Ok);
@@ -621,14 +624,35 @@ fn the_data_directory_is_made_ready_for_a_copy() {
     host.file("/var/lib/yulius/.yulius-import-incomplete", "");
     let reply = step(&mut host, &request);
     assert_eq!(only(&reply).0, HostOutcome::Changed);
+    // The marker goes last: a removal that is cut leaves an unfinished copy, not a directory
+    // that is neither empty nor marked.
     assert_eq!(
         host.runs("rm"),
         [
-            "rm -rf --one-file-system -- /var/lib/yulius/.yulius-import-incomplete",
             "rm -rf --one-file-system -- /var/lib/yulius/sandboxes",
             "rm -rf --one-file-system -- /var/lib/yulius/yulius.db",
+            "rm -rf --one-file-system -- /var/lib/yulius/.yulius-import-incomplete",
         ]
     );
+    // Cut in the middle: still an unfinished copy, which the next run removes.
+    let mut host = new_host();
+    host.dir("/var/lib/yulius/sandboxes");
+    host.file("/var/lib/yulius/yulius.db", "half");
+    host.file("/var/lib/yulius/.yulius-import-incomplete", "");
+    host.fails(
+        &[
+            "rm",
+            "-rf",
+            "--one-file-system",
+            "--",
+            "/var/lib/yulius/yulius.db",
+        ],
+        "Input/output error",
+    );
+    assert_eq!(only(&step(&mut host, &request)).0, HostOutcome::Failed);
+    assert!(host.is_file(std::path::Path::new(
+        "/var/lib/yulius/.yulius-import-incomplete"
+    )));
 
     // The base this host built before the copy is its own: it stays, also when an unfinished
     // copy beside it is removed.
@@ -762,10 +786,10 @@ fn inventory_of(entries: u64) -> Inventory {
 
 fn inventory_request() -> Request {
     Request::Inventory {
-        manifest: Manifest {
+        manifest: Box::new(Manifest {
             data_dir: "/var/lib/yulius".into(),
             ..Manifest::default()
-        },
+        }),
         old: inventory_of(6_388_083),
         release: Release::parse("ID=ubuntu\nVERSION_ID=\"24.04\"\nVERSION_CODENAME=noble\n"),
     }
@@ -1481,14 +1505,129 @@ fn a_start_still_in_flight_finds_the_stop_and_starts_nothing() {
     assert!(host.text(STOPPED).is_none());
 }
 
+/// The marker of a staged copy called `stage` after `acked` streams.
+fn staged_marker(stage: &str, acked: u64) -> String {
+    format!(r#"{{"version":1,"stage":"{stage}","acked":{acked},"last":null}}"#)
+}
+
 #[test]
-fn an_installed_copy_is_marked_unproven_once() -> Result<(), Box<dyn std::error::Error>> {
-    let dir = tempfile::tempdir()?;
-    mark_unproven(dir.path())?;
-    assert!(dir.path().join(".yulius-import-incomplete").is_file());
-    // Already there: something else is wrong, and it says so.
-    assert!(mark_unproven(dir.path()).is_err());
-    Ok(())
+fn this_move_s_staged_copy_stays_and_any_other_unfinished_copy_goes() {
+    let staged = |stage: &str| {
+        let mut host = new_host();
+        host.dir("/var/lib/yulius/sandboxes");
+        host.file("/var/lib/yulius/yulius.db", "staged");
+        host.file(
+            "/var/lib/yulius/.yulius-import-incomplete",
+            &staged_marker(stage, 3),
+        );
+        host
+    };
+    let mine = Request::DataDir {
+        setup: setup(),
+        stage: Some("s1".into()),
+    };
+    let mut host = staged("s1");
+    let reply = step(&mut host, &mine);
+    assert_eq!(
+        only(&reply),
+        (
+            HostOutcome::Ok,
+            "/var/lib/yulius holds this move's staged copy (3 passes acknowledged)"
+        )
+    );
+    assert!(host.runs("rm").is_empty());
+
+    // Another move's stage, a stage this host knows nothing of, a plain import's marker.
+    for (found, asked) in [("s2", Some("s1")), ("s1", None)] {
+        let mut host = staged(found);
+        let request = Request::DataDir {
+            setup: setup(),
+            stage: asked.map(str::to_owned),
+        };
+        let reply = step(&mut host, &request);
+        assert_eq!(only(&reply).0, HostOutcome::Changed, "{found} {asked:?}");
+        assert!(host.text("/var/lib/yulius/yulius.db").is_none());
+    }
+    let mut host = staged("s1");
+    host.file("/var/lib/yulius/.yulius-import-incomplete", "");
+    assert_eq!(only(&step(&mut host, &mine)).0, HostOutcome::Changed);
+}
+
+#[test]
+fn the_staged_copy_s_marker_is_read_once_no_stream_is_being_received() {
+    let trace = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let mut host = new_host();
+    host.file(
+        "/var/lib/yulius/.yulius-import-incomplete",
+        &staged_marker("s1", 2),
+    );
+    let noted = std::rc::Rc::clone(&trace);
+    let request = Request::Stage {
+        data_dir: "/var/lib/yulius".into(),
+    };
+    let ask = |host: &mut FakeHost| {
+        let mut env = Env {
+            address: None,
+            ssh_port: None,
+            peer: None,
+            hold: &mut |hold| {
+                noted.borrow_mut().push(format!("hold {hold:?}"));
+                Box::new(Noted(hold, std::rc::Rc::clone(&noted)))
+            },
+            health: &mut |_| None,
+            sleep: &mut |_| {},
+            count: &mut |_, old| Ok(old.clone()),
+            setup: &mut |_, _, _| Vec::new(),
+        };
+        handle(host, &mut env, &request)
+    };
+    let reply = ask(&mut host);
+    assert!(reply.lines.is_empty());
+    assert_eq!(
+        reply.stage.as_ref().map(|m| (m.stage.as_str(), m.acked)),
+        Some(("s1", 2))
+    );
+    // It waited for a receive in flight before it looked.
+    assert_eq!(*trace.borrow(), ["hold Received", "drop Received"]);
+
+    // No staged copy: a plain import's marker, or nothing.
+    host.file("/var/lib/yulius/.yulius-import-incomplete", "");
+    assert_eq!(ask(&mut host).stage, None);
+    host.files.remove(std::path::Path::new(
+        "/var/lib/yulius/.yulius-import-incomplete",
+    ));
+    assert_eq!(ask(&mut host).stage, None);
+}
+
+#[test]
+fn a_proven_copy_is_no_staged_copy_any_more() {
+    let mut host = new_host();
+    host.file(
+        "/var/lib/yulius/.yulius-import-incomplete",
+        &staged_marker("s1", 4),
+    );
+    host.file("/var/lib/yulius/..yulius-import-incomplete.tmp", "{");
+    let mark = Request::Mark {
+        setup: setup(),
+        from: None,
+        to: "https://new.example".into(),
+    };
+    assert_eq!(only(&step(&mut host, &mark)).0, HostOutcome::Changed);
+    assert!(
+        host.text("/var/lib/yulius/.yulius-import-incomplete")
+            .is_none()
+    );
+    assert!(
+        host.text("/var/lib/yulius/..yulius-import-incomplete.tmp")
+            .is_none()
+    );
+    let asked = step(
+        &mut host,
+        &Request::Stage {
+            data_dir: "/var/lib/yulius".into(),
+        },
+    );
+    assert_eq!(asked.stage, None);
 }
 
 /// What a hold's guard notes when it is taken and when it is dropped.
@@ -1582,8 +1721,68 @@ fn holds_exclude_as_the_protocol_needs() -> Result<(), Box<dyn std::error::Error
     drop(flight);
     heard.recv_timeout(Duration::from_secs(10))?;
     waiter.join().map_err(|_| "the waiter panicked")?;
+    // A stream being received holds the staged copy's marker. A second stream waits for the
+    // first, only so long.
+    let stream = receiving(dir.path(), long)?;
+    assert!(!stream.told_to_stop());
+    // (Tried on a thread of its own: a second stream that never gave up would hang the test.)
+    let (tried, gave_up) = mpsc::channel();
+    let path = dir.path().to_path_buf();
+    std::thread::spawn(move || {
+        let _ = tried.send(receiving(&path, Duration::from_millis(300)).is_err());
+    });
+    assert_eq!(
+        gave_up.recv_timeout(Duration::from_secs(10)),
+        Ok(true),
+        "a second stream did not give up"
+    );
+    // A Start in flight is another matter.
+    drop(hold_in(dir.path(), Hold::Landed, long));
+    drop(hold_in(dir.path(), Hold::Flight, long));
+    // A look at the marker means that the old host went on: the receive, which may wait on a
+    // link that is gone, is told to close its stream, and the look waits until it has.
+    let (looked, heard) = mpsc::channel();
+    let path = dir.path().to_path_buf();
+    let looker = std::thread::spawn(move || {
+        drop(hold_in(&path, Hold::Received, long));
+        let _ = looked.send(());
+    });
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !stream.told_to_stop() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(stream.told_to_stop(), "the receive was not told to stop");
+    assert!(
+        heard.try_recv().is_err(),
+        "it looked while the stream was still open"
+    );
+    drop(stream);
+    heard.recv_timeout(Duration::from_secs(10))?;
+    looker.join().map_err(|_| "the looker panicked")?;
+    // The word is taken back once it was heard, and one nobody took back (the look was cut)
+    // stops no later stream.
+    let next = receiving(dir.path(), long)?;
+    assert!(!next.told_to_stop());
+    drop(next);
+    std::fs::write(dir.path().join("receive.stop"), b"")?;
+    let later = receiving(dir.path(), long)?;
+    assert!(!later.told_to_stop());
+    // A receive that does not end is waited for only so long, and stays told.
+    let started = std::time::Instant::now();
+    drop(hold_in(
+        dir.path(),
+        Hold::Received,
+        Duration::from_millis(400),
+    ));
+    assert!(
+        started.elapsed() >= Duration::from_millis(400),
+        "it did not wait for the receive"
+    );
+    assert!(later.told_to_stop());
+    drop(later);
     // Nothing in flight: at once. No such directory: nothing held, nothing waited for.
     let started = std::time::Instant::now();
+    drop(hold_in(dir.path(), Hold::Received, long));
     drop(hold_in(dir.path(), Hold::Landed, long));
     drop(hold_in(&dir.path().join("gone"), Hold::Switch, long));
     drop(hold_in(&dir.path().join("gone"), Hold::Landed, long));
@@ -1778,4 +1977,126 @@ fn the_finish_leaves_the_staged_checklist_for_the_new_instance() -> Result<(), S
         "{said:?}"
     );
     Ok(())
+}
+
+// The stream a receive reads (SPEC-465 WCP-011).
+
+#[test]
+fn a_watched_stream_passes_its_bytes_and_its_end() -> Result<(), Box<dyn std::error::Error>> {
+    use std::io::Read as _;
+    let bytes: Vec<u8> = (0..3_000_000u32).map(|i| (i % 251) as u8).collect();
+    let mut watched = Watched::new(
+        std::io::Cursor::new(bytes.clone()),
+        Duration::from_millis(10),
+        || false,
+    );
+    let mut back = Vec::new();
+    watched.read_to_end(&mut back)?;
+    assert!(back == bytes, "the bytes changed on the way");
+    // Its end stays its end.
+    assert_eq!(watched.read(&mut [0u8; 8])?, 0);
+    Ok(())
+}
+
+#[test]
+fn a_watched_stream_whose_sender_is_gone_ends_when_told_to()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::io::{Read as _, Write as _};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let (reader, mut writer) = std::io::pipe()?;
+    writer.write_all(b"hello")?;
+    let stop = Arc::new(AtomicBool::new(false));
+    let told = Arc::clone(&stop);
+    let mut watched = Watched::new(reader, Duration::from_millis(10), move || {
+        told.load(Ordering::SeqCst)
+    });
+    let mut five = [0u8; 5];
+    watched.read_exact(&mut five)?;
+    assert_eq!(&five, b"hello");
+    // Nothing more comes and nobody closes the link: the read would wait for ever. (Read on a
+    // thread of its own, so a stream that did not hear the word fails the test, not hangs it.)
+    stop.store(true, Ordering::SeqCst);
+    let (read, ended) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = read.send(watched.read(&mut [0u8; 8]));
+    });
+    let err = ended
+        .recv_timeout(Duration::from_secs(10))
+        .map_err(|_| "it went on waiting for the sender")?
+        .err()
+        .ok_or("it went on reading")?;
+    assert!(
+        err.to_string()
+            .contains("went on without the rest of this stream"),
+        "{err}"
+    );
+    drop(writer);
+
+    // Not told to stop, a sender that is only slow is waited for: here it sends after the
+    // receive has asked three times whether to go on.
+    let (reader, mut writer) = std::io::pipe()?;
+    let mut asked = 0;
+    let mut watched = Watched::new(reader, Duration::from_millis(10), move || {
+        asked += 1;
+        if asked == 3 {
+            let _ = writer.write_all(b"late");
+        }
+        false
+    });
+    let mut four = [0u8; 4];
+    watched.read_exact(&mut four)?;
+    assert_eq!(&four, b"late");
+    Ok(())
+}
+
+#[test]
+fn a_watched_stream_passes_a_read_error() {
+    use std::io::Read as _;
+    struct Broken;
+    impl std::io::Read for Broken {
+        fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::other("the disk is on fire"))
+        }
+    }
+    let mut watched = Watched::new(Broken, Duration::from_millis(10), || false);
+    let err = watched.read(&mut [0u8; 8]).err().map(|e| e.to_string());
+    assert_eq!(err.as_deref(), Some("the disk is on fire"));
+}
+
+#[test]
+fn a_pass_s_line_counts_what_was_installed_apart_from_what_waits() {
+    use crate::instance::import::{Landed, Landing, Mark};
+    let landing = |entries: u64, deferred: Vec<u64>, live: bool| Landing {
+        manifest: Manifest::default(),
+        report: Default::default(),
+        mark: Mark {
+            version: 1,
+            stage: "s1".into(),
+            acked: 2,
+            last: Some(Landed {
+                entries,
+                deferred,
+                live,
+                complete: true,
+                ..Landed::default()
+            }),
+        },
+        removed: 0,
+    };
+    assert_eq!(
+        landed(&landing(5, Vec::new(), true)),
+        "pass 2: 5 entries installed and synced"
+    );
+    // What a warm pass took in and could not install is not among the installed.
+    assert_eq!(
+        landed(&landing(5, vec![1, 3], true)),
+        "pass 2: 3 of 5 entries installed and synced; 2 wait for the freeze (a directory is in \
+         their way)"
+    );
+    assert_eq!(
+        landed(&landing(4, Vec::new(), false)),
+        "4 changed entries installed, 0 removed that the old host no longer holds; checksum \
+         and length as announced"
+    );
 }

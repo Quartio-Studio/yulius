@@ -7,6 +7,7 @@ pub mod github;
 pub mod profile;
 pub mod remote;
 pub mod target;
+pub mod warm;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -18,10 +19,10 @@ use yulius_contracts::update::{HostLine, HostOutcome};
 
 use self::profile::{Carried, Profile, TextFile};
 use self::remote::Remote;
-use self::target::{Expect, Facts, Instance, Reply, Request, Setup, SourceFile};
+use self::target::{Facts, Instance, Reply, Request, Setup, SourceFile};
+use super::REFUSED;
 use super::freeze::{self, Freeze};
-use super::inventory::{Counter, IdSpace};
-use super::{Progress, REFUSED, export};
+use super::receipts::Stage;
 use crate::host_setup::{self, Cmd, Host, Mode};
 use crate::wiring::update_files::write_atomic;
 
@@ -31,6 +32,8 @@ const LINK_TEST: u64 = 64 << 20;
 const HTTPS_WAIT: Duration = Duration::from_secs(300);
 /// How long the new instance has to say what it did with the tasks.
 const TASKS_WAIT: u64 = 180;
+/// How long the plan may read the data directory to measure how fast a pass looks at entries.
+const SAMPLE: Duration = Duration::from_secs(2);
 /// The old proxy's configuration before the redirect, in the state directory.
 const PROXY_BACKUP: &str = "Caddyfile.before";
 
@@ -55,6 +58,8 @@ pub struct Options {
     pub update_service: String,
     /// The flow's own directory.
     pub state_dir: PathBuf,
+    /// The longest freeze the move may begin, in minutes: above it, it copies again.
+    pub max_downtime: Option<u64>,
 }
 
 /// What to do.
@@ -104,6 +109,10 @@ pub struct State {
     /// The instance the move is of, for `--abort` without options.
     #[serde(default)]
     pub instance: Option<Recorded>,
+    /// A copy was begun on the new host: its data directory may hold the instance's files and
+    /// secrets, whatever this host still knows of them (SPEC-465 WCP-015).
+    #[serde(default)]
+    pub copied: bool,
 }
 
 /// The instance a move is of.
@@ -126,7 +135,7 @@ pub struct Status {
     pub id: String,
     /// The new host.
     pub target: String,
-    /// `Plan`, `Prepare`, `Cutover`, `Finish`, `Abort`, or `done`.
+    /// `Plan`, `Prepare`, `Copy`, `Cutover`, `Finish`, `Abort`, or `done`.
     pub phase: String,
     /// The checklist so far.
     pub lines: Vec<HostLine>,
@@ -258,6 +267,21 @@ pub trait World {
     fn healthz(&mut self, url: &str, address: Option<&str>) -> Result<(), String>;
     /// Waits.
     fn sleep(&mut self, d: Duration);
+    /// The wall clock: seconds and nanoseconds since the epoch.
+    fn now(&mut self) -> (i64, i64);
+    /// Syncs the filesystem that holds `dir` ([`super::export::sync`]).
+    ///
+    /// # Errors
+    /// Why not.
+    fn sync(&mut self, dir: &Path) -> Result<(), String>;
+    /// Where and when this host is, for the receipts ([`super::receipts::Era::here`]).
+    fn era(&mut self) -> super::receipts::Era;
+    /// How many entries of `dir` a second a pass looks at once they are cached
+    /// ([`warm::sampled`]); `None` when it cannot be measured.
+    fn walk_rate(&mut self, dir: &Path) -> Option<f64>;
+    /// The commit the instance listening at the loopback `address` reports; `None` while it
+    /// does not answer.
+    fn running(&mut self, address: &str) -> Option<String>;
     /// This build's binary.
     fn exe(&self) -> PathBuf;
     /// This build's commit.
@@ -368,6 +392,10 @@ pub struct Move<'a> {
     remote: &'a mut dyn Remote,
     world: &'a mut dyn World,
     state: State,
+    /// What the new host holds of the staged copy (SPEC-465).
+    stage: Stage,
+    /// The build the old instance reported when the plan looked.
+    ran: Option<String>,
     phase: &'static str,
     lines: Vec<HostLine>,
     /// The one-time key's public line, while a person has to add it (SPEC-470 MVB-010).
@@ -389,6 +417,8 @@ impl<'a> Move<'a> {
             remote,
             world,
             state,
+            stage: Stage::open(&opts.state_dir.join("copy")),
+            ran: None,
             phase: "Plan",
             lines: Vec::new(),
             key_line: None,
@@ -536,6 +566,7 @@ impl<'a> Move<'a> {
                 }
                 self.confirm()?;
                 self.prepare(&profile, &facts)?;
+                self.warm(&profile, &facts)?;
                 self.cutover(&profile, &facts)?;
             }
         }
@@ -872,21 +903,27 @@ impl<'a> Move<'a> {
                 ),
             );
         }
+        // What an earlier run staged there is found before the plan speaks of room and time.
+        self.agree()?;
+        // The staged copy keeps its marker under names that no entry of the copy may have.
+        for name in super::import::MARKERS {
+            if std::fs::symlink_metadata(opts.data_dir.join(name)).is_ok() {
+                self.fail(
+                    "old host",
+                    format!(
+                        "{data} holds {name}, the mark of a copy that was never finished. \
+                         Remove that file when this instance is whole, then run the command again"
+                    ),
+                );
+            }
+        }
+        self.ran = self.world.running(&self.health_address(p));
         self.space(p, &facts);
         match self.remote.measure(LINK_TEST) {
             Ok(took) => {
                 let rate = (LINK_TEST as f64 / took.as_secs_f64().max(0.001)) as u64;
                 self.ok("link", format!("{}/s to the new host", bytes(rate)));
-                let secs = p.used_bytes / rate.max(1) + 180;
-                self.ok(
-                    "downtime",
-                    format!(
-                        "about {} min frozen: up to {} at that rate, then the start; the old \
-                         instance answers nothing meanwhile",
-                        secs.div_ceil(60),
-                        bytes(p.used_bytes)
-                    ),
-                );
+                self.plan_downtime(p, rate);
             }
             Err(why) => {
                 self.fail("link", why);
@@ -973,6 +1010,17 @@ impl<'a> Move<'a> {
                 );
             }
             return;
+        }
+        if self.stage.id().is_some() {
+            // Its room was found when the copy began; what is free now is for what changed.
+            return self.ok(
+                ITEM,
+                format!(
+                    "the staged copy is there already; {} more is free where the data \
+                     directory goes",
+                    bytes(facts.free_bytes)
+                ),
+            );
         }
         let inodes = facts.free_inodes == 0 || facts.free_inodes >= p.used_inodes;
         if facts.free_bytes >= p.used_bytes && inodes {
@@ -1256,6 +1304,7 @@ impl<'a> Move<'a> {
             "data directory",
             &Request::DataDir {
                 setup: setup.clone(),
+                stage: self.stage.id().map(str::to_owned),
             },
         )?;
         self.call("yulius build", &Request::Binary { setup })?;
@@ -1313,85 +1362,60 @@ impl<'a> Move<'a> {
             "data directory",
             &Request::DataDir {
                 setup: self.setup(p),
+                stage: self.stage.id().map(str::to_owned),
             },
         )?;
         Ok(())
     }
 
-    /// The frozen copy and its proof; `Err` says why the old instance is to be thawed. The copy
-    /// stays marked unfinished on the new host until [`Request::Mark`].
+    /// The frozen pass and the proof of the whole copy; `Err` says why the old instance is to
+    /// be thawed. The copy stays marked unfinished on the new host until [`Request::Mark`].
     fn copy(&mut self, p: &Profile, facts: &Facts, held: &mut Freeze) -> Result<(), Stop> {
-        let opts = self.opts;
-        let manifest = export::manifest_of(&opts.data_dir, &opts.service)
-            .map_err(|why| self.fail("copy", why))?;
-        let mut counter = Counter::new(IdSpace::of(&manifest));
-        let plan = export::plan_observed(&opts.data_dir, &mut |e| counter.add(e))
-            .map_err(|e| self.fail("copy", format!("planning failed: {e}")))?;
-        let old = counter.finish();
-        let zstd = facts.zstd
-            && self
-                .local
-                .run(&Cmd::new(&["zstd", "--version"]))
-                .is_ok_and(|out| out.ok());
-        self.call(
-            "copy",
-            &Request::Expect(Expect {
-                data_dir: opts.data_dir.clone(),
-                zstd,
-            }),
-        )?;
-        self.world.show(&format!(
-            "Copying {} ({} entries){}.",
-            bytes(plan.total),
-            plan.entries,
-            if zstd { ", compressed with zstd" } else { "" }
-        ));
-        let mut progress = Progress::new("Sent", plan.total);
-        let sent = self.remote.send_copy(zstd, &mut |out| {
-            export::send(
-                &opts.data_dir,
-                &plan,
-                &manifest,
-                out,
-                &mut |done| progress.tick(done),
-                &mut || held.helper_idle().map_err(std::io::Error::other),
-            )
-            .map(|_| ())
-        });
-        progress.end();
-        let reply = sent.map_err(|why| self.fail("copy", why))?;
-        let stop = failed(&reply.lines);
+        const ITEM: &str = "copy proven";
+        let (old, manifest) = self.frozen_pass(facts, held)?;
+        let request = Request::Inventory {
+            manifest: Box::new(manifest),
+            old: old.clone(),
+            release: p.release.clone(),
+        };
+        let reply = match self.remote.call(&request) {
+            Ok(reply) => reply,
+            // Not counted is not disproven: the staged copy stays for the next run.
+            Err(why) => return Err(self.fail(ITEM, format!("the new host: {why}"))),
+        };
+        let mut differs = failed(&reply.lines);
         for line in reply.lines {
-            self.push(shown(line));
+            self.push_once(shown(line));
         }
-        if stop {
+        // The new host's word is not the proof: its count is compared here.
+        match reply.inventory.as_ref() {
+            Some(new) if *new == old => {}
+            Some(new) if !differs => {
+                differs = true;
+                self.fail(
+                    ITEM,
+                    super::inventory::difference(&old, new)
+                        .unwrap_or_else(|| "the new host's count is not this host's".into()),
+                );
+            }
+            None if !differs => {
+                differs = true;
+                self.fail(ITEM, "the new host sent no count of the copy");
+            }
+            _ => {}
+        }
+        if differs {
+            // Whatever made it differ, nothing more is built on that copy or on what this
+            // host believed of it.
+            self.stage.forget();
+            self.changed(
+                "copy",
+                "the staged copy on the new host is not this host's data and is dropped: the \
+                 next run copies everything again",
+            );
             return Err(Stop::Failed);
         }
-        let mut manifest = manifest;
-        manifest.total_bytes = plan.total;
-        manifest.entries = plan.entries;
-        let proven = self
-            .call(
-                "copy proven",
-                &Request::Inventory {
-                    manifest,
-                    old: old.clone(),
-                    release: p.release.clone(),
-                },
-            )
-            .and_then(|reply| {
-                // The new host's word is not the proof: its count is compared here.
-                match reply.inventory.as_ref() {
-                    Some(new) if *new == old => Ok(reply),
-                    Some(new) => Err(self.fail(
-                        "copy proven",
-                        super::inventory::difference(&old, new)
-                            .unwrap_or_else(|| "the new host's count is not this host's".into()),
-                    )),
-                    None => Err(self.fail("copy proven", "the new host sent no count of the copy")),
-                }
-            });
-        proven.map(|_| ())
+        Ok(())
     }
 
     /// What systemd says of the old instance; `None` when it does not say.
@@ -1561,6 +1585,21 @@ impl<'a> Move<'a> {
     fn cutover(&mut self, p: &Profile, facts: &Facts) -> Result<(), Stop> {
         self.phase("Cutover");
         let unit = self.opts.service.clone();
+        // The copy took a while. An instance that was updated meanwhile holds data the build
+        // staged on the new host may not read.
+        let runs = self.world.running(&self.health_address(p));
+        if let (Some(ran), Some(runs)) = (&self.ran, &runs)
+            && ran != runs
+        {
+            return Err(self.fail(
+                "old instance",
+                format!(
+                    "{unit} reported build {ran} when the copy began and reports build {runs} \
+                     now (an update during the copy). Nothing is frozen; the staged copy \
+                     stays: run the command again with the build the instance runs"
+                ),
+            ));
+        }
         let mut held = self.freeze()?;
         let state = self.old_unit();
         if !state.is_some_and(|old| old.all_frozen) {
@@ -1735,6 +1774,8 @@ impl<'a> Move<'a> {
             );
         }
         self.state.cutover = Cutover::Moved;
+        // The copy there is an instance now: nothing more is sent into it.
+        self.stage.forget();
         self.save_state()
     }
 
@@ -2191,6 +2232,8 @@ impl<'a> Move<'a> {
         // Without the key nothing more can be done from here: what failed above is a person's.
         self.state.finished = true;
         let _ = self.save_state();
+        // The copy there is the instance: what this host knew of it while it was staged goes.
+        self.stage.forget();
         rest.into_iter().for_each(|line| self.push(line));
     }
 
@@ -2384,6 +2427,7 @@ impl<'a> Move<'a> {
             // Not back yet: the key stays, so the same abort can go on through it.
             return self.end_abort(false);
         }
+        let copied = self.state.copied || self.stage.id().is_some();
         if reachable {
             // The step that removes the key there is run by this build. A plan that ended with
             // the key to add never brought it (a person added the key and aborts): it goes
@@ -2398,6 +2442,12 @@ impl<'a> Move<'a> {
                 // A copy that fails is said by the step that then cannot run.
                 let _ = self.remote.put_build(&exe);
             }
+            if copied {
+                // A stream the new host is still taking in is closed before its files go.
+                let _ = self.remote.call(&Request::Stage {
+                    data_dir: self.opts.data_dir.clone(),
+                });
+            }
             let _ = self.call(
                 "one-time key",
                 &Request::Finish {
@@ -2406,7 +2456,7 @@ impl<'a> Move<'a> {
                 },
             );
         }
-        if started {
+        if started || copied {
             self.manual(
                 "new host",
                 format!(
@@ -2427,6 +2477,7 @@ impl<'a> Move<'a> {
             for name in ["state.json", PROXY_BACKUP] {
                 let _ = std::fs::remove_file(self.opts.state_dir.join(name));
             }
+            self.stage.forget();
             self.phase = "aborted";
         }
         let summary = host_setup::summary(&self.lines, Mode::Setup);
@@ -2608,6 +2659,32 @@ impl World for RealWorld {
         std::thread::sleep(d);
     }
 
+    fn now(&mut self) -> (i64, i64) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        (
+            i64::try_from(now.as_secs()).unwrap_or(i64::MAX),
+            i64::from(now.subsec_nanos()),
+        )
+    }
+
+    fn sync(&mut self, dir: &Path) -> Result<(), String> {
+        super::export::sync(dir).map_err(|e| e.to_string())
+    }
+
+    fn era(&mut self) -> super::receipts::Era {
+        super::receipts::Era::here()
+    }
+
+    fn walk_rate(&mut self, dir: &Path) -> Option<f64> {
+        warm::sampled(dir, SAMPLE).map(|(_, per_sec)| per_sec)
+    }
+
+    fn running(&mut self, address: &str) -> Option<String> {
+        target::reported_commit(address)
+    }
+
     fn exe(&self) -> PathBuf {
         std::env::current_exe().unwrap_or_default()
     }
@@ -2733,6 +2810,9 @@ pub fn main(opts: &Options, action: Action) -> ExitCode {
         return refused(&why);
     }
     let opts = &opts;
+    // The copy walks the data directory while the instance runs, with every directory it is in
+    // held open.
+    target::raise_open_files();
     let mut ssh = remote::Ssh::new(
         &state.target,
         state.port,
