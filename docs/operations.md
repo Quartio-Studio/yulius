@@ -1772,9 +1772,13 @@ itself, not a signal
 and not a lost terminal. If the new instance does not come up, it is stopped and disabled, and
 only then is the old one thawed; the copy there was started and must be removed (`rm -rf` the
 data directory on the new host) before the next run. If the new host stops answering at that
-point, the old instance stays frozen: run the command again when it answers. Once the new
+point, the old instance stays frozen: run the command again when it answers (`--abort` only once
+the new instance is known to be stopped: it thaws the old one). Once the new
 instance reports the build it has taken over: the old unit stays frozen and is disabled, and
 whatever fails after that (the helper, the Docker smoke) is a line to act on, never a rollback.
+That includes the old unit itself: when it cannot be frozen or disabled, the move stands, the
+run goes on to its finish and ends with exit 1, and the move is not finished until the old
+instance is held ([The old instance held](#the-old-instance-held), below).
 
 **After.** The flow waits for `https://<new host>/healthz`, reads what the new instance did with
 the tasks that were live (its first start puts them back in the queue, whoever owns them; tasks a
@@ -1830,11 +1834,14 @@ stands: whatever unit of the old instance runs (thawed or started by hand) is fr
 stay, the server's unit is disabled, and the checklist names the units that ran beside the new
 instance (what their agents did meanwhile is on the old host only). If a unit cannot be frozen,
 that is a `FAIL` line with the reason, the two commands to run and, for a freeze that keeps
-failing, the commands that stop the old instance for good (`systemctl stop` and `systemctl kill
---kill-who=all --signal=SIGKILL` of both units); nothing is thawed then either, and a freeze
+failing, the commands that stop for good the units that could not be frozen (`systemctl stop`
+and `systemctl kill --kill-who=all --signal=SIGKILL` of them; a unit that is frozen is never
+named there, see [The old instance held](#the-old-instance-held)); nothing is thawed then
+either, and a freeze
 that did not complete within a minute is left on its way. A server's unit that has stopped
 (`inactive` or `failed`) is not frozen by systemd: its sessions unit is frozen where it still
-runs, and both are named for you to make sure nothing of the old instance is left. A server's
+runs, and the server's unit is named for you to make sure nothing of it is left (the frozen
+sessions unit is held as it is and is not named). A server's
 unit that systemd reports on its way up or down is not taken for stopped (a sessions unit that
 is being stopped counts as ended once no process of it is left, see below). A unit that was frozen is named also when the other could not
 be. When the new instance answers
@@ -1862,10 +1869,61 @@ takes the older spelling: the lines of a move name the one that runs on every re
 
 The run kills nothing itself and records nothing: run the command the line names (what the old
 instance holds stays on its disk), then the same `yulius instance migrate` command again. It
-asks again each time and goes on to the finish once nothing is left. A stopped unit without a
+asks again each time and goes on to the finish once nothing is left. (That is a run that goes
+on from a recorded start. When the look after a start or a later run finds the same, the move
+is already recorded and its finish is done or goes on; the line and the command are the same,
+and the move is not finished until nothing is left: below.) A stopped unit without a
 cgroup (the old host was restarted, or the stop left nothing), with an empty one, or whose
 processes the kernel holds frozen gets the "make sure" line and the run goes on, as before.
 When systemd does not answer the question, the run fails saying so and asks again next time.
+Such a unit must be disabled too: when `systemctl is-enabled` does not say so, the run adds a
+`FAIL` line with `systemctl disable yulius.service` and ends with exit 1 (below).
+
+#### The old instance held
+
+Once the new instance has taken over, the move is finished only while the old one is held, and
+no record says that it is: every run of the same command asks systemd again, also long after
+the finish (SPEC-481, ADR-0311). Held means all of this:
+
+- no unit of it runs unfrozen: the server's unit and its sessions unit are frozen, or the
+  server's unit has stopped (`inactive` or `failed`) and its sessions unit does not run
+  unfrozen;
+- no unit of it that does not run left processes that run (the question above);
+- `systemctl is-enabled yulius.service` says `disabled` (or `static`, for a unit of your own
+  without an `[Install]` section, which nothing enables), so a restart of the old host does not
+  start it beside the new instance.
+
+Held: the run says `ok` for the old instance and `finished`, with exit 0. Not held, or systemd
+does not answer: a `FAIL` line under **Cutover** says what was found and what to run, the run
+ends with exit 1 and says nothing of "finished", and `--status` shows that line until a run
+finds the instance held:
+
+```sh
+sudo systemctl freeze yulius.service yulius-sandboxes.service   # the units the line names
+sudo systemctl disable yulius.service
+sudo yulius instance migrate root@new-host                      # looks again
+```
+
+For a unit that runs unfrozen the line also names the way out of a freeze that keeps failing:
+`systemctl stop` and the kill above of the units that are not frozen, then the disable. A
+frozen unit is never named there, and do not stop or kill one yourself: systemd 259 refuses to
+stop a frozen unit, and after a kill of its processes the unit stays frozen on its way to a
+restart, where no thaw, no start and no `--abort` reaches it until the host restarts. For a
+stopped unit that left processes the line names the kill; for a stopped unit that is still
+enabled, the disable alone. When systemd does not say what the units do, the line names no command: nothing
+is known to be wrong, so run the same command again when it answers.
+
+A run that finds the move recorded as moved only looks: it freezes, thaws, stops and disables
+nothing of the old instance (it cannot ask the new one once its key is gone, and you may have
+gone back by hand). For the same reason its line says that the new instance has taken over,
+not that it runs, and names the other way: `sudo yulius instance migrate --abort`, once the
+new instance is stopped. The steps after the cutover and the finish (the tasks, the old
+URL's redirect, the key, the firewall on the new host) do not wait for the old instance: a run
+that finds the move not yet finished does them whether or not it is held, and ends with exit 1
+when it is not. So after a run that ended with `FAIL … must be frozen and disabled now`, the
+same command says the same and ends with exit 1 until the old instance is held; and a move that
+was finished long ago fails the same way when its old unit was thawed, started or enabled
+since.
 
 Not part of a move: packages installed inside sandboxes keep their files; on another release the
 checklist names those sandboxes. The sandbox base is built for the new host while preparing, so
