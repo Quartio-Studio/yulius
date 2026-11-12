@@ -116,9 +116,10 @@ whatever woke it. "Send the task a message…" is shown only while nothing goes 
   `<task-notification>` prompt and its hook, a tool call, `WOKEN`; the turn ends once
   `--turn-hold-file` exists). With `--paused-wake-dies` the woken turn gets the API error again
   and closes with no work and no notice (`WAKE DIED`). With `--paused-wake-hidden` the session
-  goes on with a hidden `isMeta` prompt and no prompt hook. `--no-response-line` starts a session
+  goes on with a hidden `isMeta` prompt and no prompt hook. `--pause-hold-file PATH` holds the
+  notice that pauses the goal until PATH exists. `--no-response-line` starts a session
   with the line Claude Code writes itself when it resumes with nothing to answer ("No response
-  requested.", the `<synthetic>` model). CLI tests cover the four.
+  requested.", the `<synthetic>` model). CLI tests cover the five.
 - Integration tests in `crates/yulius/tests/task_done.rs`, each from spent retries (Needs you,
   with the request):
   - Claude Code wakes the session and it works: the request is gone and the task reads Working
@@ -139,11 +140,16 @@ whatever woke it. "Send the task a message…" is shown only while nothing goes 
     the task reads Working, then settles when the turn ends.
   - Yulius restarts while the session is paused, then the session goes on with no visible
     prompt: the request ends and the task reads Working.
+  - Another matter flagged the task before the pause: the session's work ends the request and
+    the task still reads Needs you, live and after a restart of Yulius.
+  - The pause's flag was replaced by a status change and another matter flagged the task later:
+    the session's work ends the request and leaves that flag.
 - Unit tests:
   - `finish`: the transcript's fold says when the agent first worked after the last goal pause
     (a prompt alone, a sub-agent's answer, work without a time and work before the pause do not
-    count; the session's answer ends the pause's last word). `goal_retry`: a flag raised since
-    the request was asked is the pause's, one raised before is not.
+    count; the session's answer ends the pause's last word); a remembered flag stands only while
+    the task reads it. `goal_retry`: a flag raised since the request was asked is the pause's,
+    one raised before is not.
   - `yulius-store`: a request ends by its action only while it is the open one, its wait is
     measured as answered, and a row that is not JSON is left alone.
   - `yulius-harness`: Claude Code's own "No response requested." is neither work nor an answer.
@@ -162,6 +168,11 @@ whatever woke it. "Send the task a message…" is shown only while nothing goes 
   open takes the time from the task's state, when the task reads Needs you since the request was
   asked (the request is recorded first, the flag raised next). A task flagged before the pause
   keeps that flag, live and after a restart.
+- The time of a flag that work answers stands only while the task reads that flag: Needs you,
+  since no later than that time. A status change replaces a flag without a word (a pause for
+  capacity, a held turn that ended), and a flag raised afterwards was lifted by the agent's next
+  line (review round 1). This holds for a notice's flag as for the pause's: one rule
+  (`standing_notice_ms`), asked by the live watcher and by the replay.
 - A session that worked and was paused again while Yulius was down keeps the first pause's
   request (its words, its age); the live watcher ends it and asks anew. The task reads Needs you
   either way. Asking anew in the replay needs the time of each pause, which the fold does not
@@ -185,12 +196,16 @@ whatever woke it. "Send the task a message…" is shown only while nothing goes 
   ("… with the resumed session's answer"),
   `a_session_woken_while_yulius_was_down_no_longer_needs_you` ("… at the start"). Issue #1183.
 - **Fix.** `a82866c4` (the fix, with the unprompted-continuation test), `9a7ff38d` (the store
-  failure test), `d3812b8a` (the resumed session's own line, and a pause after the work) and
+  failure test), `d3812b8a` (the resumed session's own line, and a pause after the work),
   `41ad8cb1` (the pause's flag after a restart; its test `422e7c83` failed first with "timed out
-  waiting for Working"). The ten integration tests pass, with SPEC-333's six beside them:
+  waiting for Working") and `43e941cb` (a flag's remembered time stands only while the task
+  reads it; its test in `d5cb558b` failed first with "left: Working, right: NeedsAttention"). The
+  thirteen integration tests pass, with SPEC-333's six beside them:
   `cargo nextest run -p yulius -E 'binary_id(yulius::main) & (test(/no_longer_needs_you/) |
   test(/still_needs_you/) | test(/the_agents_own_request_stays/) |
-  test(/a_request_the_store_could_not_end/) | test(/a_session_paused_again/) | test(/goal_retries/)
+  test(/a_request_the_store_could_not_end/) | test(/a_session_paused_again/) |
+  test(/a_task_flagged_before_the_goal_pause/) | test(/a_flag_raised_after_the_goal_pause/) |
+  test(/goal_retries/)
   | test(/goal_check_retries/) | test(/claude_code_retries/) | test(/a_restart_while_claude_code/)
   | test(/a_goal_cleared_while/))'`.
   - The first version of the last test expected a restarted session that is refused again to
@@ -199,7 +214,7 @@ whatever woke it. "Send the task a message…" is shown only while nothing goes 
     test now says that (`a_session_paused_again_after_it_worked_asks_again`); a refusal with no
     work at all is `a_woken_turn_the_api_refuses_again_still_needs_you`.
 - **Mutation checks** (each on a clean tree, restored from `HEAD` afterwards; the integration
-  tests that existed then, seven to ten, run each time; the three about the replay and the
+  tests that existed then, seven to thirteen, run each time; the three about the replay and the
   restart were run again on the final code). Every mutation fails a test:
 
   | Removed | Failing test |
@@ -211,19 +226,24 @@ whatever woke it. "Send the task a message…" is shown only while nothing goes 
   | The replay ends the request | `…woken_while_yulius_was_down…` |
   | The replay lets the task follow its session | `…woken_while_yulius_was_down…` ("timed out waiting for Working") |
   | A restart takes the pause's flag time back | `…goes_on_unprompted_after_a_restart…`, `…woken_while_yulius_was_down…` ("timed out waiting for Working") |
+  | A stale flag time still answers | `a_flag_raised_after_the_goal_pause_is_not_lifted…` |
+  | A task flagged before the pause gets the pause's flag time | `a_task_flagged_before_the_goal_pause…through_the_agents_work` |
+  | A restart takes any flag's time for the pause's | `a_task_flagged_before_the_goal_pause…after_a_restart` |
   | Only the pause's request is ended (any request instead) | `the_agents_own_request_stays…` |
   | A failed write is tried again | `a_request_the_store_could_not_end…` |
 - **Unit tests.** `finish::tests::a_replay_says_when_the_agent_first_worked_after_the_last_goal_pause`,
+  `finish::tests::a_remembered_flag_stands_only_while_the_task_reads_it`,
   `goal_retry::tests::a_flag_raised_since_the_request_was_asked_is_the_pauses`,
   `needs_you::tests::a_request_ends_by_its_action_only_while_it_is_the_open_one` (`yulius-store`),
-  `claude::tests` in `yulius-harness` (the resumed session's line), and the fake agent's four CLI
+  `claude::tests` in `yulius-harness` (the resumed session's line), and the fake agent's five CLI
   tests: passed.
-- **Gate.** `scripts/dev ci` at `bd32e834` exited 0: repository checks, `cargo check`, `fmt`,
-  `clippy` for Linux and macOS, 3704 tests run, 3704 passed, 16 skipped, doctests, `cargo deny`,
+- **Gate.** `scripts/dev ci` at `e0829a53` exited 0: repository checks, `cargo check`, `fmt`,
+  `clippy` for Linux and macOS, 3713 tests run, 3713 passed, 16 skipped, doctests, `cargo deny`,
   `cargo shear`, `cargo doc`. The commit after it changes this spec only. `dev` is merged in
-  twice: `0203de67` without a conflict, `f43cac4c` with one in the fake agent (both sides had
-  added a `resumed` record; this branch's flag became `--no-response-line`). Earlier runs at
-  `0203de67` (3696 passed), `d3812b8a` and `c5aad212` (3698 passed) exited 0 too.
+  three times: `0203de67` and `d4a55ba1` without a conflict, `f43cac4c` with one in the fake
+  agent (both sides had added a `resumed` record; this branch's flag became
+  `--no-response-line`). Earlier runs at `0203de67` (3696 passed), `d3812b8a` and `c5aad212`
+  (3698 passed) and `bd32e834` (3704 passed) exited 0 too.
 - **Security scan.** `scripts/dev security` exited 0 as disabled: Vidoc is turned off in Yulius
   for this project, so nothing was scanned. That is not a pass.
 - **End-to-end suite.** Not run: the change touches no web asset.
@@ -233,8 +253,25 @@ whatever woke it. "Send the task a message…" is shown only while nothing goes 
     goes on with no visible prompt ended its request but kept reading Needs you. Reproduced
     (`422e7c83`) and fixed (`41ad8cb1`). The second (a pause, work and a second pause read in one
     replay) is the limit recorded under Decisions: pre-existing, left as it is.
-  - The review of the delivered head follows; its verdict is the review summary recorded with
-    the merge, and a round that asks for changes is listed here with its fixes.
+  - Round 1, resumed on `cc88e7e5`: approve, with five minors and three nits, all in this
+    change's own code and all answered before the merge:
+    - The audit row was asserted before it is written (about 1 in 100 runs): now waited for,
+      with its actor (`d5cb558b`).
+    - Two waits after a session restart could be met by the paused run's screen, which the task
+      shows until the new run attaches: they look at the resumed run's own screen (`d5cb558b`).
+    - Nothing pinned "a task flagged before the pause keeps that flag": two tests, live and
+      after a restart, each failing without its guard (`d5cb558b`, the last two mutations).
+    - The time of the pause's flag could go stale when a status change replaced the flag, and
+      later work then lifted another matter's flag: reproduced and fixed (`43e941cb`).
+    - The decisions index still stated the rule the replay had dropped: reworded (`e0829a53`).
+    - Nits: SPEC-333 AER-002 points here; the test of the agent's own request checks that
+      nothing was audited as ended; ADR-0304 records that a flag Yulius raised itself after the
+      pause cannot be told from the pause's after a restart, and the reviewer's note on a woken
+      turn that works and then dies with no notice.
+    - The reviewer ran one command beyond its brief, a trial merge (`git merge-tree
+      --write-tree`): it left one unreferenced tree object and changed no ref or file.
+  - Round 2 reviews the delivered head; its verdict is the review summary recorded with the
+    merge, and a round that asks for changes is listed here with its fixes.
 - **Not tested.**
   - A real Claude Code session: the fake agent replays the recorded shapes.
   - The continuation with no visible prompt has no recorded example after a goal pause. Its
