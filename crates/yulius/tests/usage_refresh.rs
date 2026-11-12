@@ -29,7 +29,8 @@ use yulius_domain::usage::{
 /// The cheapest model, which the probe reads the 5-hour and weekly windows with.
 const CHEAPEST: &str = "claude-haiku-4-5-20251001";
 const DEFAULT: &str = "claude-fable-5-2";
-const CREDENTIAL: &str = "sk-ant-oat01-test";
+/// The stored sign-in: a made-up word, shaped like no provider's credential.
+const CREDENTIAL: &str = "stored-sign-in-of-the-test";
 const DAY_MS: i64 = 24 * 3_600_000;
 
 /// What the stand-in was asked, in order: `usage` for the usage endpoint, else the model of a

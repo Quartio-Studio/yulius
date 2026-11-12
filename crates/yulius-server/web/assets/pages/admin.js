@@ -553,14 +553,15 @@ export function mountAccountsPage(ctx, route) {
       // both survive a redraw of the list; an answer draws only what the card says about its
       // usage, so a name or an email being typed stays (SPEC-463, SPEC-473).
       const refreshing = signedIn(account) ? { busy: () => reads.has(account.id), run: () => refreshOne(account) } : null;
-      const usageHost = h('div', { dataset: { account: account.id } }, accountUsage(account, { rename, setEmail, showEmail: true, refresh: refreshing, note: () => notes.get(account.id) || null }), tokenTotals(account));
       // A reading that may be out of date, or none yet: the page reads it by itself, once per
-      // visit, however often the list is drawn (RFR-015).
+      // visit, however often the list is drawn (RFR-015). Asked for before the card is drawn,
+      // so the card says "Reading…" from its first look.
       const { stale } = limitsNow(account);
       if (signedIn(account) && (stale || !(account.usage && account.usage.observed_at)) && !readByItself.has(account.id)) {
         readByItself.add(account.id);
         read(account.id, false).then((outcome) => { if (!gone && outcome.fresh) loadCapacity(); });
       }
+      const usageHost = h('div', { dataset: { account: account.id } }, accountUsage(account, { rename, setEmail, showEmail: true, refresh: refreshing, note: () => notes.get(account.id) || null }), tokenTotals(account));
       const broken = ['relogin', 'error', 'pending_login'].includes(account.status);
       return h('div', { class: 'card card-pad stack' },
         usageHost,

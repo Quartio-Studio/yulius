@@ -351,6 +351,33 @@ test('a refresh for which Claude gives no usage reading says so on the card (SPE
   expect((await cardSays(browser, 'main .account-card', 'mkarp@example.com')).age).toBe('Usage read 2 min ago');
 });
 
+// The same for a subscription that was never read: no reading before, none after.
+test('a refresh of a subscription that was never read and still gets no reading says so (SPEC-473)', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio', '&ambient=0'));
+  await browser.evaluate(() => {
+    const db = (window as unknown as Usage).__yuliusMock;
+    const four = db.accounts.find((a) => a.id === 'acc_x1')!;
+    four.usage = { primary: null, secondary: null, observed_at: null };
+    db.usageAnswers = { acc_x1: { unread: true } };
+    const w = window as unknown as Usage;
+    w.__yuliusMock.usageGate = new Promise<void>((resolve) => { w.__openUsageGate = resolve; });
+    location.hash = '#/admin/accounts';
+  });
+  await firstShown(browser.locator('main .account-card').first());
+  // The card says that the page is reading it from its first look (the reading is held here);
+  // then that reading is over, and said nothing.
+  expect(await browser.evaluate(() => [...document.querySelectorAll('main .card')].find((el) => el.textContent!.includes('pawel@example.com'))!.querySelector('.account-refresh')!.textContent)).toBe('Reading… usage of Claude #4');
+  await openUsageGate(browser);
+  await expect(refreshOf(screen, 'Claude #4')).toBeVisible();
+  expect((await usageRequests(browser)).acc_x1).toBe(1);
+  const note = browser.locator('main .account-card:has-text("pawel@example.com") .account-note');
+  await expect(note).toHaveCount(0);
+  await refreshOf(screen, 'Claude #4').click();
+  await expect(note).toHaveText('Claude gave no new usage reading: it shares this subscription’s usage only with its running tasks.');
+  await expect(browser.locator('.toast-ok')).toHaveCount(0);
+  expect((await cardSays(browser, 'main .account-card', 'pawel@example.com')).age).toBe('Usage not read yet');
+});
+
 test('Refresh all reads every signed-in subscription, three at a time, and says how it went (SPEC-473)', async ({ app, browser, screen }) => {
   await openSubscriptions(app, browser);
   const capacityBefore = await browser.evaluate(() => {
