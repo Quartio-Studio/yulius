@@ -395,8 +395,14 @@ fn a_persons_draft_keeps_the_message_out_however_old() -> TestResult {
             )
             .into());
         };
+        let why = format!(
+            "a person typed into task #{}'s terminal and sent no prompt since, so their text may \
+             still be in its prompt box and nothing is typed behind it: tell the person to send \
+             it, or to clear it and send any prompt, then try again",
+            app.deps.store.task(&id).await?.ok_or("task")?.number
+        );
         assert!(
-            matches!(&refused, AppError::Conflict(why) if why.contains("prompt box")),
+            matches!(&refused, AppError::Conflict(said) if *said == why),
             "{refused:?}"
         );
         // Eleven minutes after their last key it is refused all the same, and its sender is
@@ -491,8 +497,14 @@ fn a_message_of_yulius_waits_for_a_persons_draft_and_tells_them() -> TestResult 
             })
         );
         said.extend(notices(&mut watch));
-        assert_eq!(said.len(), 1, "{said:?}");
-        assert!(said[0].contains("Yulius holds a message"), "{said:?}");
+        assert_eq!(
+            said,
+            [
+                "Yulius holds a message for this session: text typed here was not sent and may \
+              still be in the prompt box. Send it, or clear it and send any prompt, and Yulius \
+              types its message."
+            ]
+        );
         // Whatever reaches the agent shows within a second; nothing did.
         tokio::time::sleep(Duration::from_secs(1)).await;
         let shown = screen(&app, &id);

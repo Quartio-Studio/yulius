@@ -104,11 +104,16 @@ pub(crate) enum Sender {
 
 /// What the task says when a message of Yulius's own waits for a person's possible draft
 /// (SPEC-480 DRF-006).
-const DRAFT_HOLDS_PROBLEM: &str = "Yulius has a message for this session and does not type it:     someone typed in the terminal and sent no prompt since, so their text may still be in the     prompt box.";
+const DRAFT_HOLDS_PROBLEM: &str = "Yulius has a message for this session and does not type it: \
+    someone typed in the terminal and sent no prompt since, so their text may still be in the \
+    prompt box.";
 /// What the person does about [`DRAFT_HOLDS_PROBLEM`].
-const DRAFT_HOLDS_ACTION: &str = "Send what you typed in the terminal, or clear it and send any     prompt. Yulius types its message after the next prompt sent from there.";
+const DRAFT_HOLDS_ACTION: &str = "Send what you typed in the terminal, or clear it and send \
+    any prompt. Yulius types its message after the next prompt sent from there.";
 /// The same, as one line in the session's terminal.
-const DRAFT_HOLDS_NOTICE: &str = "Yulius holds a message for this session: text typed here was     not sent and may still be in the prompt box. Send it, or clear it and send any prompt, and     Yulius types its message.";
+const DRAFT_HOLDS_NOTICE: &str = "Yulius holds a message for this session: text typed here was \
+    not sent and may still be in the prompt box. Send it, or clear it and send any prompt, and \
+    Yulius types its message.";
 
 /// Clears a run's "a message is being typed" mark when the typing ends, even if the call is
 /// dropped half-way.
