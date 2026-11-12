@@ -98,15 +98,22 @@ session runs and why. Fable is used again by itself once a subscription can run 
   you, no `task.goal_retries_spent`, no `task.limit_without_end`, unless the fallback is refused
   with no end too (then SPEC-464 UCL-010 holds for both models: one retry, then a person).
 - FBK-009 (the task view). `TaskDetail` gains `fallback_model`: the model the task's live run
-  was launched with when it is not the task's own, else `null`. The task view shows it beside
-  the model ("Opus 5.5 while Fable 5.2 is used up").
+  was launched with when it is not the task's own, else absent. The task's details show it
+  beside the model ("Fable 5.2 (default) · High effort · runs on Opus 5.5 while Fable 5.2 is
+  used up") and are read again when the session starts again (a fallback on the same
+  subscription changes nothing else the page listens to). "Run #N on…" judges each
+  subscription for the model the pool would place the task with, as the server does: with
+  Fable used up everywhere, a subscription with room for Opus 5.5 can be chosen.
 - FBK-010 (the capacity view). `GET /api/capacity` counts as `available` the subscriptions a
   task of the default model can be placed on now, with its own model or the fallback; an
   account's `available` says the same; `resumes_at` is the earliest time either model can run.
   It gains `fallback_model`: the fallback while such a task would be placed with it, else
   `null`. The Capacity panel then says "Fable 5.2 is used up on every subscription: tasks run
-  on Opus 5.5 until it can run again", and the Status line for "every subscription is at a
-  usage limit" says the same instead of "tasks continue when a window resets".
+  on Opus 5.5 until it can run again" and its "Available now" tile says for which model it
+  counts. The Status line for "every subscription is at a usage limit" says the same sentence
+  instead of "tasks continue when a window resets", worked out in the page from the
+  subscriptions' windows (`placingModel`, the server's rule; `models.js` names the fallback
+  and a test keeps it equal to the server's).
 - FBK-011 (the Superagent). A Superagent or Global Superagent is placed by the same rule
   (`pool_account` for the default model): started, restarted or moved at a limit while no
   subscription can run Fable, it runs Opus 5.5, on the same subscription when that is the one
@@ -124,7 +131,7 @@ launch; the price shown for a run, which already follows the model that answered
 - [x] The pool policy places a Fable run with Opus 5.5's family when no subscription can run Fable (FBK-001 to FBK-004, FBK-007)
 - [x] A run records the model it was launched with: migration 0054 and the attempt record (FBK-005)
 - [x] A task's launch takes the placed model, says so, and a limit binds the run's model (FBK-005, FBK-006, FBK-008)
-- [ ] The task view and the capacity view say that sessions run on the fallback (FBK-009, FBK-010)
+- [x] The task view and the capacity view say that sessions run on the fallback (FBK-009, FBK-010)
 - [ ] The Superagent falls back by the same rule (FBK-011)
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated

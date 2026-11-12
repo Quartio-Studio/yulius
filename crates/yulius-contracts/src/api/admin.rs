@@ -252,7 +252,8 @@ pub struct CapacityView {
     pub subscriptions: u32,
     /// Healthy subscriptions whose weekly usage is not known yet.
     pub unknown_usage: u32,
-    /// Subscriptions below the threshold right now.
+    /// Subscriptions a task of the default model can be placed on right now: below the
+    /// threshold in every window that binds the model it would run (`fallback_model`).
     pub available: u32,
     /// Points left in the pool's weekly windows before it pauses; `null` when unknown.
     pub weekly_left: Option<f64>,
@@ -286,6 +287,11 @@ pub struct CapacityView {
     pub paused_tasks: u32,
     /// While every subscription is exhausted: the earliest known time one has capacity again.
     pub resumes_at: Option<String>,
+    /// The model a task of the default model is placed with now when that is not the default:
+    /// its fallback, while no subscription can run the default model (SPEC-482). `available`
+    /// then counts the subscriptions that can run the fallback.
+    #[serde(default)]
+    pub fallback_model: Option<String>,
     /// The subscriptions.
     pub accounts: Vec<CapacityAccount>,
     /// The pool's tokens and their estimated API cost over the last 7 days.

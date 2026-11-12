@@ -259,6 +259,19 @@ fn a_limit_on_the_fallback_binds_the_fallback_model() -> TestResult {
         let pause = app.deps.store.open_pause(&id).await?.ok_or("pause")?;
         assert_eq!(pause.kind, PauseKind::Limit);
         assert_eq!(run_accounts(&app, &id).await.len(), 2);
+        // Neither model runs: nothing is available, and the pool says when one can again.
+        let ctx = AuthContext {
+            user: app.deps.store.user(&user).await?.ok_or("user")?,
+            csrf_token: None,
+            session_hash: None,
+            token: None,
+        };
+        let capacity = app.capacity_view(&ctx).await?;
+        assert_eq!((capacity.available, &capacity.fallback_model), (0, &None));
+        assert!(
+            capacity.resumes_at.is_some(),
+            "the earliest of the two resets"
+        );
         needs_nobody(&app, &id).await?;
         stop(&app, &id).await?;
         Ok::<_, Box<dyn std::error::Error>>(())
@@ -294,6 +307,23 @@ fn a_task_starts_on_the_fallback_and_its_next_launch_runs_fable_again() -> TestR
             launched(&app, &id).await?,
             [(asked_for(OPUS), Some(OPUS.to_owned()))]
         );
+        // AC-7: the task's detail names the model its run is on, and the capacity view counts
+        // the subscriptions that take a default task on the fallback and names it.
+        let ctx = AuthContext {
+            user: app.deps.store.user(&user).await?.ok_or("user")?,
+            csrf_token: None,
+            session_hash: None,
+            token: None,
+        };
+        let detail = app.task_detail(&ctx, id.as_str()).await?;
+        assert_eq!(detail.model, FABLE);
+        assert!(detail.model_default);
+        assert_eq!(detail.fallback_model.as_deref(), Some(OPUS));
+        let capacity = app.capacity_view(&ctx).await?;
+        assert_eq!(capacity.fallback_model.as_deref(), Some(OPUS));
+        assert_eq!(capacity.available, 2);
+        assert!(capacity.accounts.iter().all(|account| account.available));
+        assert_eq!(capacity.resumes_at, None);
         let older = Some("claude-fable-5-1");
         let chosen = task_of_model(&app, &sandbox, &user, "Fable 5.1", older).await?;
         ready(&app, &chosen).await?;
@@ -325,14 +355,19 @@ fn a_task_starts_on_the_fallback_and_its_next_launch_runs_fable_again() -> TestR
         .await?;
         let _ = app.resume_round().await;
         assert_eq!(run_accounts(&app, &id).await.len(), 1, "the run stays");
+        // New tasks would run Fable there: the pool is no longer in fallback, this run still is.
+        let capacity = app.capacity_view(&ctx).await?;
+        assert_eq!(capacity.fallback_model, None);
+        assert_eq!(capacity.available, 1);
+        let detail = app.task_detail(&ctx, id.as_str()).await?;
+        assert_eq!(detail.fallback_model.as_deref(), Some(OPUS));
 
         stop(&app, &id).await?;
-        let ctx = AuthContext {
-            user: app.deps.store.user(&user).await?.ok_or("user")?,
-            csrf_token: None,
-            session_hash: None,
-            token: None,
-        };
+        assert_eq!(
+            app.task_detail(&ctx, id.as_str()).await?.fallback_model,
+            None,
+            "no run, no model it runs on"
+        );
         app.continue_task(&ctx, id.as_str(), &ContinueTask { account_id: None })
             .await?;
         live_run(&app, &id, 2).await?;
@@ -355,6 +390,10 @@ fn a_task_starts_on_the_fallback_and_its_next_launch_runs_fable_again() -> TestR
         assert!(
             !said.iter().any(|notice| notice == FELL_BACK),
             "said only at the launch that fell back: {said:?}"
+        );
+        assert_eq!(
+            app.task_detail(&ctx, id.as_str()).await?.fallback_model,
+            None
         );
         stop(&app, &id).await?;
         Ok::<_, Box<dyn std::error::Error>>(())

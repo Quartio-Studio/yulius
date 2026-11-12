@@ -875,15 +875,28 @@ impl App {
             .map(token_run)
             .collect();
         let pool = yulius_domain::capacity::pool_tokens(&token_runs, now, 7);
+        // For a task of the default model: its own weekly window binds too (SPEC-464), and
+        // while no subscription can run it, the task is placed with its fallback (SPEC-482).
+        let default_task = RotationInput {
+            current: None,
+            task_provider: yulius_domain::harness::Provider::Anthropic,
+            family: default_family(),
+            fallback: fallback_of(None).map(|fallback| model_family(Some(fallback))),
+            running: None,
+            accounts: views,
+            now,
+            threshold,
+        };
+        let placing = rotation::placing_family(&default_task);
+        let views = &default_task.accounts;
         let mut accounts = Vec::with_capacity(records.len());
         let mut members = Vec::new();
         let mut five_hour_left: Option<f64> = None;
         let mut available = 0_u32;
         for record in &records {
             let usage = account_usage(record);
-            // For a task of the default model: its own weekly window binds too (SPEC-464).
             let is_available = views.iter().any(|v| {
-                v.id == record.id && rotation::assess(v, now, threshold, default_family()).is_some()
+                v.id == record.id && rotation::assess(v, now, threshold, placing).is_some()
             });
             if is_available {
                 available += 1;
@@ -949,18 +962,7 @@ impl App {
         )
         .unwrap_or(u32::MAX);
         let resumes_at = (available == 0)
-            .then(|| {
-                rotation::available_again(&RotationInput {
-                    current: None,
-                    task_provider: yulius_domain::harness::Provider::Anthropic,
-                    family: default_family(),
-                    fallback: None,
-                    running: None,
-                    accounts: views.clone(),
-                    now,
-                    threshold,
-                })
-            })
+            .then(|| rotation::available_again(&default_task))
             .flatten();
         Ok(CapacityView {
             threshold,
@@ -981,6 +983,9 @@ impl App {
             recommendation: forecast.recommendation(),
             paused_tasks,
             resumes_at: resumes_at.map(rfc3339),
+            fallback_model: fallback_of(None)
+                .filter(|_| placing != default_task.family)
+                .map(str::to_owned),
             accounts,
             tokens: pool_view(&pool),
         })
