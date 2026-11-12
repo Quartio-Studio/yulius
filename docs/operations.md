@@ -1814,7 +1814,8 @@ named there, see [The old instance held](#the-old-instance-held)); nothing is th
 either, and a freeze
 that did not complete within a minute is left on its way. A server's unit that has stopped
 (`inactive` or `failed`) is not frozen by systemd: its sessions unit is frozen where it still
-runs, and both are named for you to make sure nothing of the old instance is left. A server's
+runs, and the server's unit is named for you to make sure nothing of it is left (the frozen
+sessions unit is held as it is and is not named). A server's
 unit that systemd reports on its way up or down is not taken for stopped (a sessions unit that
 is being stopped counts as ended once no process of it is left, see below). A unit that was frozen is named also when the other could not
 be. When the new instance answers
@@ -1883,7 +1884,7 @@ frozen unit is never named there, and do not stop or kill one yourself: systemd 
 stop a frozen unit, and after a kill of its processes the unit stays frozen on its way to a
 restart, where no thaw, no start and no `--abort` reaches it until the host restarts. For a
 stopped unit that left processes the line names the kill; for a stopped unit that is still
-enabled, the disable alone. When systemd does not answer, the line names no command: nothing
+enabled, the disable alone. When systemd does not say what the units do, the line names no command: nothing
 is known to be wrong, so run the same command again when it answers.
 
 A run that finds the move recorded as moved only looks: it freezes, thaws, stops and disables

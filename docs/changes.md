@@ -7,26 +7,25 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 ## 2026-11-12
 
 - `yulius instance migrate` no longer calls a move finished while its old instance is not held
-  (SPEC-481, task #461, issue #1179, ADR-0311). A run whose new instance had taken over while
-  the old unit could not be frozen or disabled printed `FAIL … must be frozen and disabled now`
-  and ended with exit 1 once; the same command again said "finished" with exit 0 without a look
-  at the old unit, and `--status` showed that. Every run of a move that is recorded as moved
-  now asks systemd again, also long after the finish: no unit of the old instance runs
-  unfrozen, no unit of it that does not run left processes, and `systemctl is-enabled` says
-  `disabled` (or `static`, a unit without `[Install]`). While that does not hold, the run repeats the failed line (what it
-  found, the commands, "The move is not finished until then") under **Cutover**, ends with exit
-  1, and `--status` shows it; once it holds, the run says `ok` for the old instance and
-  "finished". A later run only looks and changes nothing of the old instance; the steps after
-  the cutover and the finish are done either way, for they are the new instance's. The look
-  after a start is the same one, so a unit that was stopped while the new instance started is
-  asked what it left instead of being told to freeze. A resumed start that finds the old unit
-  stopped with nothing left also asks whether it is disabled, and the line for a new host that
-  stopped answering names `--abort` with its condition (only once the new instance is known to
-  be stopped). The commands a line names for a freeze that keeps failing (`systemctl stop`,
-  `systemctl kill`) now name only the units that are not frozen, also in the resumed start's
-  line: on systemd 259 a frozen unit whose processes are killed stays frozen on its way to a
-  restart, out of reach of a thaw, a start and `--abort` until its host restarts (measured on
-  the server's own unit).
+  (SPEC-481, task #461, issue #1179, ADR-0311). A run whose new instance had taken over while the
+  old unit could not be frozen or disabled printed `FAIL … must be frozen and disabled now` and
+  ended with exit 1 once; the same command again said "finished" with exit 0 without a look at the
+  old unit, and `--status` showed that. Every run of a move that is recorded as moved now asks
+  systemd again, also long after the finish: no unit of the old instance runs unfrozen, no unit of
+  it that does not run left processes, and `systemctl is-enabled` says `disabled` (or `static`, a
+  unit without `[Install]`). While that does not hold, the run repeats the failed line (what it
+  found, the commands, "The move is not finished until then") under **Cutover**, ends with exit 1,
+  and `--status` shows it; once it holds, the run says `ok` for the old instance and "finished". A
+  later run only looks and changes nothing of the old instance; the steps after the cutover and the
+  finish are done either way, for they are the new instance's. The look after a start is the same
+  one, so a unit that was stopped while the new instance started is asked what it left instead of
+  being told to freeze. A resumed start that finds the old unit stopped with nothing left also asks
+  whether it is disabled, and the line for a new host that stopped answering names `--abort` with
+  its condition (only once the new instance is known to be stopped). The commands a line names for
+  a freeze that keeps failing (`systemctl stop`, `systemctl kill`) now name only the units that are
+  not frozen, also in the resumed start's lines: on systemd 259 a frozen unit whose processes are
+  killed stays frozen on its way to a restart, out of reach of a thaw, a start and `--abort` until
+  its host restarts (measured on the server's own unit).
 - A message Yulius types into a session no longer lands on a person's unsent draft (SPEC-480,
   task #463, ADR-0309, issue #1199). Yulius held a message back only while someone had typed in
   the last minute; an older draft got the message pasted behind it and was sent with it, as one

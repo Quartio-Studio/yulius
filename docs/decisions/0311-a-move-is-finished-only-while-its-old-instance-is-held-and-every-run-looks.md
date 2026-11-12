@@ -44,7 +44,8 @@ healthy").
   and, going on from a recorded start, freezes what runs beside a new instance that just said
   that it runs (SPEC-467). A run that finds the move recorded as moved changes nothing of the
   old instance; its line says that the new instance has taken over, not that it runs, names
-  the abort as the way back, and names no command at all when systemd did not answer.
+  the abort as the way back, and names no command at all when systemd did not say what the
+  units do.
 - **The steps after the cutover never wait for the old instance.** The tasks, the redirect, the
   key and the firewall on the new host are done by the run that started the new instance and
   by a later run that finds the move not yet finished, whatever the look finds.
