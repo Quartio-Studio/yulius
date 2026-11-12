@@ -103,6 +103,7 @@ Where things are in Yulius:
 - [x] Mutation checks, gate and the whole e2e suite green, evidence recorded
 - [x] Independent review answered
 - [x] The last look's two notes answered: a figure of the spec and a log line that claimed too much
+- [x] The gate and the e2e suite at the merged tree recorded
 
 ## Acceptance criteria
 
@@ -464,6 +465,13 @@ Where things are in Yulius:
   `dequeue` came within 9 ms, not 8 (Decisions); a turn's end that runs out of its time
   before the session's version is known no longer says in the log that a newer Claude Code
   waits for it (`log_out_of_time`; the log's lines have no test, here as before).
+- **After the merges.** The same reviewer looked at that second pull request's head
+  0bbed504: "APPROVE for head `0bbed5047`. No findings, own code or pre-existing." Pull
+  request #1228 merged it as 940acba0 on a green Yulius CI run. At that tree (0bbed504, the
+  tree of 940acba0, every change of this task with `dev` up to 292a5410): `scripts/dev ci`
+  exit 0, nextest 4003 passed / 16 skipped, `cargo deny` ok (advisories, bans, licenses,
+  sources); the whole e2e suite (`npx e2e run`) exit 0, 83 files passed, 1 skipped; 995 tests
+  passed, 1 skipped. After these runs comes this paragraph alone, in a third pull request.
 - **Not tested here.** A restart Yulius makes of a real, signed-in Claude Code session (no
   subscription can be signed in for a test): the fake agent stands in, in the order the real
   tool was seen to have. Claude Code 2.1.292 and 2.1.311 were not run; their transcripts in
