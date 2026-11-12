@@ -45,9 +45,11 @@ D of [0297](0297-one-root-command-moves-an-instance-and-drives-the-new-host-over
 - **The view is computed from files, never stored.** The request, the helper's report and the
   command's `status.json` are read on every request; a request the helper took, or an old one,
   is removed, and no copy of the data directory takes the request along (`migrate/` is left
-  out, as `update/` is). Whose the checklist is, is told by its time: written before the
-  helper's last run started, it is an earlier run's. Nothing about a move is in the database,
-  so nothing about it is copied as if the new host were moving.
+  out, as `update/` is). Whose the checklist is, is told by the id in it: the helper passes
+  the request's id to the command (`--request-id`), which writes it into `status.json`; a
+  checklist with another id, or with none (a run started on the host), is not what the
+  helper's last run found. Nothing about a move is in the database, so nothing about it is
+  copied as if the new host were moving.
 - **The checklist travels with the Finish step.** The old host brings the lines so far and the
   lines it will add after the step; the new host's Finish adds its own and leaves the whole as
   `arrived.json` in the flow's directory there, root's and readable, where its server reads it.
@@ -73,7 +75,10 @@ D of [0297](0297-one-root-command-moves-an-instance-and-drives-the-new-host-over
   independent review; the first version did this.
 - **The helper removing the command's checklist before a run**, so that an earlier one is
   never read as this run's: a run the command then refuses (another move is recorded) would
-  have wiped the recorded move's checklist. The server compares times instead.
+  have wiped the recorded move's checklist.
+- **Telling a run's checklist from an earlier one by its time**: the status is stamped in
+  whole seconds, and a rule that a refused run (exit 2) wrote none was wrong, since the command
+  also refuses after a line that says why. Both found by the review; the id is exact.
 - **Requiring a root-written list of targets always**: the superadmin could not name the host
   on the page, which is what was asked; the list stays an option of the unit.
 - **Installing the units with `host setup`**: every instance would let its service user ask

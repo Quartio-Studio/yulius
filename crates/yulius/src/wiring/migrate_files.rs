@@ -152,6 +152,7 @@ impl MoveHelper for FileMoveHelper {
             updated_at: status.updated_at,
             public_key: status.public_key,
             new_url: status.new_url,
+            request: status.request,
         })
     }
 
@@ -306,6 +307,7 @@ mod tests {
             updated_at: 1_794_000_000,
             public_key: Some("ssh-ed25519 AAAA yulius-migrate-ab12cd34".into()),
             new_url: Some("https://new.example".into()),
+            request: Some("0123abcd-plan".into()),
         };
         let path = state.join(STATUS_FILE);
         std::fs::write(&path, serde_json::to_vec(&status)?)?;
@@ -319,6 +321,7 @@ mod tests {
                 updated_at: 1_794_000_000,
                 public_key: Some("ssh-ed25519 AAAA yulius-migrate-ab12cd34".into()),
                 new_url: Some("https://new.example".into()),
+                request: Some("0123abcd-plan".into()),
             })
         );
         // A status of the command before these fields: read, with nothing to add.
