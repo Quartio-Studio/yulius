@@ -175,8 +175,10 @@ function seed(params) {
     // The Claude Code sandboxes run (SPEC-461): `claude=incident` (runs get the host's 2.1.311,
     // which does not know the default model; a check installs 2.1.322), `claude=ahead` (the
     // newest release was refused for it too), `claude=gap` (2.1.400 lacks another offered
-    // model), `claude=failed` (the last check failed), `claude=unmanaged` (sandboxes are not
-    // isolated). `version` is what new runs get, `previous` what studio's #12 and #10 still run.
+    // model, and running tasks are no longer moved to it), `claude=failed` (the last check
+    // failed), `claude=unread` (the binary could not be read for its models), `claude=unmanaged`
+    // (sandboxes are not isolated). `version` is what new runs get, `previous` what studio's #12
+    // and #10 still run.
     claude: { ...claudeState(params.get('claude') || 'ok'), channelFails: params.get('claude_channel_fail') === '1' },
     // Leftovers on the disk (SPEC-215): `leftovers=none` scans to an empty list.
     leftovers: { none: params.get('leftovers') === 'none', items: null, scannedAt: null, job: null },
@@ -660,6 +662,7 @@ function detail(db, task) {
     ...(task.effort && task.effort !== 'default' ? { effort: task.effort } : { effort: 'high' }),
     ...(cli ? { cli_version: cli } : {}),
     ...(cli && live && cli !== db.claude.version ? { cli_moves_to: db.claude.version } : {}),
+    cli_moves_stopped: Boolean(cli && live && cli !== db.claude.version && db.claude.movesStopped),
   };
 }
 
@@ -4495,13 +4498,14 @@ function claudeState(mode) {
   if (mode === 'ahead') return { ...base, version: '2.1.311', previous: '2.1.292', source: 'host', result: 'refused', unknown: [CLAUDE_DEFAULT_MODEL], refused: [{ version: '2.1.322', missing: [CLAUDE_DEFAULT_MODEL] }] };
   if (mode === 'gap') return { ...base, version: '2.1.400', previous: '2.1.322', latest: '2.1.400', unknown: ['claude-haiku-4-5'], result: 'up_to_date', movesStopped: 'Running tasks are no longer moved to 2.1.400: the session of task #9 ended as it restarted on it. Sessions that start or continue still get it; choose Off to run the host’s Claude Code instead.' };
   if (mode === 'failed') return { ...base, result: 'failed', error: 'registry.npmjs.org is unreachable' };
+  if (mode === 'unread') return { ...base, result: 'up_to_date', unread: true };
   return base;
 }
 
 function claudeView(db) {
   const c = db.claude;
   if (c.mode === 'unmanaged') {
-    return { managed: false, unmanaged: 'sandboxes are not isolated on this server, so they run the host’s Claude Code as it is and Yulius keeps nothing current: run Yulius contained (YULIUS_CONTAINED=true in yulius.service) with the isolation prerequisites, which `sudo yulius host setup` installs', channel: 'latest', channel_source: 'config', config_channel: 'latest', channel_set_by: null, channel_set_at: null, version: null, source: null, host_version: null, latest: null, stable: null, checked_at: null, checking: false, result: null, result_text: null, default_model: CLAUDE_DEFAULT_MODEL, models_read: false, unknown_models: [], problem: null, fix: null, refused: [], behind: [], moves_stopped: null };
+    return { managed: false, unmanaged: 'sandboxes are not isolated on this server, so they run the host’s Claude Code as it is and Yulius keeps nothing current: run Yulius contained (YULIUS_CONTAINED=true in yulius.service) with the isolation prerequisites, which `sudo yulius host setup` installs', channel: 'latest', channel_source: 'config', config_channel: 'latest', channel_set_by: null, channel_set_at: null, version: null, source: null, host_version: null, latest: null, stable: null, checked_at: null, checking: false, result: null, result_text: null, default_model: CLAUDE_DEFAULT_MODEL, models_read: false, models_unread: null, unknown_models: [], problem: null, fix: null, refused: [], behind: [], moves_stopped: null };
   }
   const lacksDefault = c.unknown.includes(CLAUDE_DEFAULT_MODEL);
   const gap = (version, missing) => `${version} does not know ${missing.map((m) => (m === CLAUDE_DEFAULT_MODEL ? `${m} (Yulius's default model)` : m)).join(', ')}`;
@@ -4520,7 +4524,8 @@ function claudeView(db) {
     version: off ? c.host : c.version, source: off ? 'host' : c.source, host_version: c.host,
     latest: c.latest, stable: c.stable, checked_at: c.checkedAt ? new Date(c.checkedAt).toISOString() : null,
     checking: c.checking, result: off ? null : c.result, result_text: off ? null : resultText,
-    default_model: CLAUDE_DEFAULT_MODEL, models_read: true, unknown_models: c.unknown,
+    default_model: CLAUDE_DEFAULT_MODEL, models_read: !c.unread, unknown_models: c.unknown,
+    models_unread: c.unread ? `The binary of Claude Code ${c.version} could not be read for the models it knows, so whether it knows ${CLAUDE_DEFAULT_MODEL}, Yulius's default model, is not known. It is read again whenever this page is opened; \`yulius doctor --contained\` names the install.` : null,
     problem: lacksDefault ? `Claude Code ${c.version} does not know ${CLAUDE_DEFAULT_MODEL}, Yulius's default model: tasks still ask for it by id, but what a session picks by itself (its model picker, a model alias, its subagents) is an older model.` : null,
     fix: !lacksDefault ? null
       : newestRefused ? `No Claude Code release knows it yet (${newestRefused}, the newest, does not): the default model is ahead of Claude Code, so choose a model it knows for tasks until a release does.`

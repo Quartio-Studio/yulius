@@ -618,6 +618,9 @@ fn a_task_whose_yulius_mcp_went_silent_is_reconnected_then_continues() -> TestRe
             async move { shown.contains(&format!("ECHO: {RECONNECT_TEXT}")) }
         })
         .await?;
+        // A command Claude Code runs itself submits no prompt: nothing of it waits in the
+        // session, so it is no draft (SPEC-468 CCF-011).
+        assert!(!app.has_draft(&cut), "a typed command is no draft");
         // Within the gap, nothing more.
         app.note_mcp_contact(&heard, &ping);
         assert!(app.watch_mcp(&bounds).await.is_empty());
@@ -637,6 +640,11 @@ fn a_task_whose_yulius_mcp_went_silent_is_reconnected_then_continues() -> TestRe
             async move { shown.contains(&format!("ECHO: {CONTINUE_TEXT}")) }
         })
         .await?;
+        // A message is one until its submit, which this session, without hooks, never reports.
+        assert!(
+            app.has_draft(&cut),
+            "a typed message counts until its submit"
+        );
         assert!(
             !screen(&app, &heard).contains(RECONNECT_TEXT),
             "{}",

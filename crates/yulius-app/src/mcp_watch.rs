@@ -20,6 +20,7 @@ use yulius_domain::time::Timestamp;
 
 use crate::context::App;
 use crate::error::AppError;
+use crate::task_message::Typed;
 
 /// A task's MCP silent this long (ms) was dropped by Claude Code: its bridge pings every minute.
 pub const SILENT_AFTER_MS: i64 = 3 * 60 * 1000;
@@ -280,14 +281,15 @@ impl App {
                 continue;
             };
             let (action, next) = decide(&facts, current, bounds);
+            // The reconnect is a command Claude Code runs itself; the other is a prompt.
             let text = match action {
                 WatchAction::None => None,
-                WatchAction::Reconnect => Some(RECONNECT_TEXT),
-                WatchAction::Continue => Some(CONTINUE_TEXT),
+                WatchAction::Reconnect => Some((RECONNECT_TEXT, Typed::Command)),
+                WatchAction::Continue => Some((CONTINUE_TEXT, Typed::Prompt)),
             };
-            if let Some(text) = text {
+            if let Some((text, what)) = text {
                 let paste = format!("\x1b[200~{text}\x1b[201~");
-                match self.type_into_session(&task, paste.as_bytes()).await {
+                match self.type_into_session(&task, paste.as_bytes(), what).await {
                     Ok(()) => {
                         tracing::info!(task = %task.id, "typed {text:?}: its Yulius MCP was silent");
                         typed.push((task.id.clone(), action));
