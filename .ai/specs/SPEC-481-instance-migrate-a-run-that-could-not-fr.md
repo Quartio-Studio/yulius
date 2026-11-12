@@ -1,11 +1,11 @@
 ---
 yulius-task: fedcfccc-a17b-4ef0-b435-c6fa39b5e17e
-status: in-progress
+status: done
 ---
 
 # SPEC-481: A move is not finished while its old instance is not held (issue #1179)
 
-Status: in-progress
+Status: done
 Date: 2026-11-12
 Owner: Yulius task #461, issue #1179
 Scope authorization: the request of task #461 (from task #458, which works through open issues):
@@ -78,7 +78,7 @@ line until it holds.
 - [x] A stopped unit that is not disabled fails, the abort line names its condition, and the finish's refused-key case is pinned
 - [x] The guide, the change log and ADR-0311 say what a later run does and what finished means
 - [x] The same runs on a real host: an Ubuntu guest with the build before and after the fix
-- [ ] Every gate run and the independent review's findings answered
+- [x] Every gate run and the independent review's findings answered
 
 After the pull request is open and after its merge, not Plan items (`delivery_merge` needs every
 step done first): its description says `Fixes #1179`, and issue #1179 is closed with a comment
@@ -220,8 +220,10 @@ that names the pull request.
 ## Evidence
 
 Runs of 2026-11-12. Logs and scripts are kept in the task's ignored `target/evidence/` while it
-runs; what they showed is quoted here. The code's last state is `2bbf653e`; the independent
-review comes after this commit and is recorded below once it has been answered.
+runs; what they showed is quoted here. The code's last state is `2f7c4882`, the documents'
+`d5d364fd`; this section is committed after them. The independent review's first round, at
+`742779e7`, is recorded below with its answers; its confirming look at this commit comes after
+this commit.
 
 - **The defect, by test.** At `df0600a4` (the tests and the fake systemd's `is-enabled` alone)
   `cargo nextest run -p yulius --no-fail-fast -E 'test(/instance::/)'`: 338 run, 331 passed, 7
@@ -235,38 +237,49 @@ review comes after this commit and is recorded below once it has been answered.
   condition) and `a_unit_stopped_while_the_new_instance_started_is_asked_what_it_left` (a
   freeze named for a stopped unit). The eighth new test,
   `a_refused_key_with_a_silent_url_is_not_a_finish_found_done`, passes before and after, as it
-  must (HLD-007). At `f4c95011` (the fix, with the unit tests of `freeze::disabled`): 339 run,
+  must (HLD-007). At `f4c95011` (the fix, with the unit test of `freeze::disabled`): 339 run,
   339 passed. The phase: at `2397655e` (assertions alone) 3 failed on `left: "done", right:
-  "Cutover"`; at `4cbac2e2`: 339 passed. After the merge of `dev`, at `2bbf653e`: 339 passed.
-- **Mutations** (`target/evidence/mutants.py` at `4cbac2e2`, each applied alone and undone): 27
-  of 27 fail a test, none failed to compile. The look removed from the finished branch; from
-  the moved branch; the finish skipped when the look failed; the disabled question dropped;
-  the leftover question dropped; "enabled" taken for disabled; `masked` not taken; no word
-  taken for disabled; an unanswered systemd taken for held; a stopped unit with nothing left
-  not held; the later look disables; the later look freezes; `moved()` sends no disable; a
-  stopped unit not asked whether it is disabled; the way out of a failing freeze never named;
-  named for a frozen unit; named after a start too; a failed later look said under the plan; a
-  run that was not held reads done (three places); "has stopped" said of a frozen unit;
-  "recorded as done" said of a recorded move; the abort named without its condition; a refused
-  key with a silent URL found done; a stopped unit said as frozen. The first run had 23
-  mutants and one survivor (the way out named after a start too), which
-  `7135c48f` pins.
+  "Cutover"`; at `4cbac2e2`: 339 passed. The review's findings the same way: at `a7ec97de`
+  (tests alone) 340 run, 331 passed, 9 failed (the unit test of `freeze::disabled`, the new
+  `a_unit_without_an_install_section_is_held_once_its_link_is_gone`,
+  `a_recorded_start_freezes_whatever_unit_runs_beside_the_new_instance` and six of the tests
+  above); at `2f7c4882`: 340 run, 340 passed.
+- **Mutations** (`target/evidence/mutants.py` at `2f7c4882`, each applied alone and undone): 41
+  of 41 fail a test (one of them written wrongly at first, so that it did not compile; run
+  again alone once corrected). They are the 27 of the round before the review (27 of 27 then;
+  the first run of all had 23 and one survivor, pinned by `7135c48f`), reworded where the code
+  changed, and those the review's findings add: `is-enabled` asked of another unit, in the look
+  and in the resumed start; the last line of the answer read; `static` not taken; an
+  unanswered later look that names the commands; a later run that says "runs"; one that names
+  no way back; the run after a start naming the way back; a frozen unit that is not disabled
+  told "runs" in a later run; the way out naming a frozen server, leaving out the sessions
+  unit, or lacking the disable; the resumed start's way out naming every unit; the look said
+  under the plan. The reviewer's own 18 mutants: 14 killed at `742779e7`, 4 survived there, and
+  each of the 4 is among the 41.
 - **What systemd answers** (a QEMU guest from the Ubuntu cloud image: Ubuntu 26.04.1, systemd
-  259.5; `target/evidence/guest/probe-is-enabled-259.log`, `probe-masked-and-freeze-259.log`).
-  `systemctl is-enabled`, word and exit code: never enabled `disabled` 1; enabled `enabled` 0,
-  frozen or not; after `disable` `disabled` 1 (also of a frozen unit; `disable` again exits 0);
-  enabled with `--runtime` `enabled-runtime` 0, and `systemctl disable` then exits 0 and
-  leaves it `enabled-runtime`; a unit without `[Install]` `static` 0 (`disable` exits 0); no
-  such unit `not-found` 4; a vendor unit masked `masked` 1 (`disable` exits 0 and it is
-  `enabled` again after `unmask`), masked with `--runtime` `masked-runtime` 1; `mask` of a unit
-  whose file is in `/etc/systemd/system` fails ("already exists"). With the wants directory
-  immutable (`chattr +i`) `systemctl disable` fails ("Access denied", exit 1) and the unit
-  stays `enabled`. `yulius.service` as `host setup` leaves it: `enabled`, its file in
-  `/etc/systemd/system`. `systemctl freeze yulius.service yulius-sandboxes.service` with the
-  server's unit stopped: "Unit is not active", exit 1, and the sessions unit is frozen.
-- **The real command on the guest** (`target/evidence/guest/scenario.sh`, logs
-  `scenario-before-df0600a4b.log` and `scenario-fix-2bbf653e8.log`; the same at `9cb8bd5d`
-  before the phase was fixed). `yulius host setup --public-url http://vm.test --no-smoke`
+  259.5; `target/evidence/guest/probe-is-enabled-259.log`, `probe-masked-and-freeze-259.log`,
+  `probe-kill-frozen-259.log`). `systemctl is-enabled`, word and exit code: never enabled
+  `disabled` 1; enabled `enabled` 0, frozen or not; after `disable` `disabled` 1 (also of a
+  frozen unit; `disable` again exits 0); enabled with `--runtime` `enabled-runtime` 0, and
+  `systemctl disable` then exits 0 and leaves it `enabled-runtime`; a unit without `[Install]`
+  `static` 0 (`disable` exits 0), `enabled` once a link made by hand wants it, and `static`
+  again after `disable`, which removes that link; no such unit `not-found` 4; a vendor unit
+  masked `masked` 1 (`disable` exits 0 and it is `enabled` again after `unmask`), masked with
+  `--runtime` `masked-runtime` 1; `mask` of a unit whose file is in `/etc/systemd/system`
+  fails ("already exists"). With the wants directory immutable (`chattr +i`) `systemctl
+  disable` fails ("Access denied", exit 1) and the unit stays `enabled`. `yulius.service` as
+  `host setup` leaves it: `enabled`, its file in `/etc/systemd/system`. `systemctl freeze
+  yulius.service yulius-sandboxes.service` with the server's unit stopped: "Unit is not
+  active", exit 1, and the sessions unit is frozen. The real `yulius.service` frozen
+  (`Restart=on-failure`, `KillMode=process`): `systemctl stop` "Cannot perform operation on
+  frozen unit", exit 1; `systemctl kill --kill-who=all --signal=SIGKILL` exit 0, then
+  `ActiveState=activating`, `SubState=auto-restart`, `FreezerState=frozen`, `ControlGroup=`;
+  `systemctl thaw` "Unit is not active", exit 1; `systemctl start` and `systemctl enable
+  --now` "Cannot perform operation on frozen unit", exit 1. A restart of the guest cleared it.
+- **The real command on the guest** (`target/evidence/guest/scenario.sh`; logs
+  `scenario-before-df0600a4b.log` for A to F with the build of before, and
+  `scenario-fix-d5d364fdf.log` for A to H with this change; A to F also at `9cb8bd5d` and
+  `2bbf653e`, before the review). `yulius host setup --public-url http://vm.test --no-smoke`
   (exit 0: the real `yulius.service` and `yulius-sandboxes.service`). The new host is the
   guest itself, reached by the command over ssh to `root@127.0.0.1`: one guest stands in for
   two, so everything the look asks is real (systemd, the cgroup files, `yulius instance
@@ -278,43 +291,94 @@ review comes after this commit and is recorded below once it has been answered.
     Access denied", `FAIL old instance yulius.service must be frozen and disabled now …`,
     **exit 1**, state `Moved`, `finished`; run 2, nothing changed (`is-enabled=enabled`): `ok
     move finished: the instance runs on …`, **exit 0**, and `--status` shows that alone. This
-    change (`2bbf653e`): run 1 the same up to the line, which reads
+    change (`d5d364fd`): run 1 the same up to the line, which reads
 
     ```
     FAIL     old instance           yulius.service is frozen, but `systemctl is-enabled yulius.service` says `enabled`. It must be frozen and disabled now that the new instance runs: `systemctl freeze yulius.service yulius-sandboxes.service; systemctl disable yulius.service`, then run the command again. The move is not finished until then
     ```
 
     **exit 1**, state `Moved`, `finished`, `--status`: "Move t461 to root@127.0.0.1: Cutover"
-    with that line. Run 2: the same line alone, **exit 1**, `--status` the same. Then
-    `systemctl disable yulius.service` with the directory free again (exit 0). Run 3: `ok old
-    instance yulius.service is frozen and disabled: it does not run beside the new one`, `ok
-    move finished: …`, **exit 0**, `--status`: "done".
+    with that line. Run 2: under `Cutover`, alone,
+
+    ```
+    FAIL     old instance           yulius.service is frozen, but `systemctl is-enabled yulius.service` says `enabled`. It must be frozen and disabled now that the new instance has taken over: `systemctl freeze yulius.service yulius-sandboxes.service; systemctl disable yulius.service`, then run the command again. The move is not finished until then. To go back to this host instead: `yulius instance migrate --abort`, once the new instance is stopped
+    ```
+
+    **exit 1**, `--status` "Cutover" with that line. Then `systemctl disable yulius.service`
+    with the directory free again (exit 0). Run 3: `ok old instance yulius.service is frozen
+    and disabled: it does not run beside the new one`, `ok move finished: …`, **exit 0**,
+    `--status`: "done".
   - **B to F with the build of before**: exit 0 and "finished" in every run, with both units
     thawed (B), with the server's unit stopped and a process of it left, "populated 1 frozen
     0" (C), with the stopped unit enabled (D), with the sessions unit thawed beside the stopped
     server (E), and for a move not yet finished whose units were thawed (F: the finish is done
     and the run ends with exit 0).
   - **B to F with this change**: B, thawed: `FAIL … yulius.service is not frozen as a whole.
-    It must be frozen and disabled now … If a freeze keeps failing …, stop it for good
-    instead: … The move is not finished until then`, exit 1; after `systemctl freeze` of both:
-    `ok`, "finished", exit 0. C, stopped with a process left: `FAIL … does not run any more,
-    but processes of it still run here beside the new instance … End them: `systemctl kill
+    It must be frozen and disabled now that the new instance has taken over: … If a freeze
+    keeps failing …, stop it for good instead: `systemctl stop yulius.service
+    yulius-sandboxes.service; systemctl kill --kill-who=all --signal=SIGKILL yulius.service
+    yulius-sandboxes.service; systemctl disable yulius.service`. The move is not finished until
+    then. To go back to this host instead: …`, exit 1; after `systemctl freeze` of both: `ok`,
+    "finished", exit 0. C, stopped with a process left: `FAIL … does not run any more, but
+    processes of it still run here beside the new instance … End them: `systemctl kill
     --kill-who=all --signal=SIGKILL yulius.service` …`, exit 1; after that command: `ok old
     instance yulius.service does not run here, nothing of it is left running, and it is
     disabled`, "finished", exit 0. D, enabled: `FAIL … does not run here any more, but
-    `systemctl is-enabled yulius.service` says `enabled`: it may start again with this
-    host …`, exit 1; after `disable`: exit 0. E, the sessions unit thawed: the line of B, exit
-    1; after its freeze: exit 0. F, moved and not finished, thawed: the line of B, then the
+    `systemctl is-enabled yulius.service` says `enabled`: it may start again with this host
+    …`, exit 1; after `disable`: exit 0. E, the sessions unit thawed: the line of B, exit 1;
+    after its freeze: exit 0. F, moved and not finished, thawed: the line of B, then the
     finish's lines, exit 1, state `finished`; again: the line alone, exit 1; after the freeze:
     exit 0.
-- **Gates at `2bbf653e`.** `scripts/dev ci`, 20:26 to 20:34 UTC: exit 0; "4057 tests run: 4057
-  passed, 16 skipped". `yulius security-scan`: exit 0, "Security scan disabled: Vidoc is
-  turned off in Yulius, for this project or the whole instance; nothing was scanned." A
-  disabled scan is not a passed one.
+  - **G, a unit without `[Install]`** (the section removed from the real unit's file,
+    `is-enabled=static`): `ok old instance …`, "finished", exit 0. With a link made by hand in
+    `multi-user.target.wants` (`enabled`): the line of A's run 2, exit 1. After `systemctl
+    disable` (exit 0, `static` again): exit 0.
+  - **H, the way out taken**: the sessions unit thawed beside the frozen server: the line
+    names `systemctl stop yulius-sandboxes.service; systemctl kill --kill-who=all
+    --signal=SIGKILL yulius-sandboxes.service; systemctl disable yulius.service`, exit 1. Those
+    three commands (exit 0 each), then the run: `ok`, "finished", exit 0. The frozen server's
+    unit was not touched: `systemctl thaw yulius.service` exit 0, `active`, `running`.
+- **Gates.** `scripts/dev ci` at `d5d364fd`, 21:22 to 21:27 UTC: exit 0; "4058 tests run: 4058
+  passed, 16 skipped". Before the review, at `2bbf653e`, 20:26 to 20:34 UTC: exit 0; "4057
+  tests run: 4057 passed, 16 skipped". `yulius security-scan`: exit 0, "Security scan
+  disabled: Vidoc is turned off in Yulius, for this project or the whole instance; nothing was
+  scanned." A disabled scan is not a passed one.
+- **Independent review** (a fresh session given the diff range `3393b2ad..742779e7`, this spec
+  and `om-code-review`; its own copy of the tree for builds, and the guest). Its words:
+  "**approve.** There is no blocker and no major in the change's own code. There are 5 minor
+  and 9 nit own-code findings to fix in this pull request, one pre-existing nit, and 2
+  pre-existing findings with evidence." And: "Two limits on that verdict: I did not run
+  `scripts/dev ci` (as instructed; your run at 2bbf653e8 is verified from its log), and the
+  security scan is disabled, which is not a pass." It ran the 339 instance tests, `cargo fmt
+  --check`, `cargo clippy -p yulius --all-targets`, `scripts/check_repository.py`, 18 mutants
+  of its own (4 survived) and probes on the guest. Its findings, answered in `a7ec97de` (tests
+  first), `2f7c4882` and `d5d364fd`:
+  - minor 1, the fake systemd answered `is-enabled` for any unit: it answers by name now
+    (`static` for the sessions unit, `not-found` for any other but the server's), and the two
+    wrong-unit mutants are killed;
+  - minor 2, `static`: taken as disabled (Decisions; flow test and guest G);
+  - minor 3, `masked` cannot be reached through the command: out of the guide and the change
+    log, the reason corrected (Decisions);
+  - minor 4, an unanswered systemd in a later run: the line names no command (Decisions);
+  - minor 5, "now that the new instance runs" in a later run: "has taken over", and the abort
+    as the way back (Decisions);
+  - nit 6, the way out without the disable: added;
+  - nits 7 and 8, two sentences of the guide: reworded;
+  - nit 9, a sentence of this spec about #1232: corrected;
+  - nit 10, the comment and `linked`'s exit code in the unit test: corrected;
+  - nit 11, the first line of the answer: a two-line case;
+  - nit 12, the held look's heading: `Cutover` for both;
+  - nit 13, two short lines in the architecture document: joined;
+  - nit 14, no ADR-0310: Decisions (`record_number`);
+  - 15, pre-existing, the weak reason in two test comments and SPEC-467: replaced;
+  - P1, pre-existing, the way out naming frozen units: measured with the real unit and fixed in
+    both lines (HLD-009, Decisions, guest H);
+  - P2, pre-existing, a symlinked unit file and the cutover's disable: not this change;
+    written in a comment on issue #1179.
 - **Not tested.** A move between two real hosts (the guest stands in for its own new host, so
   the steps on the new host after the cutover ran against the same machine); the real command
   on systemd 255 and 249 (this build runs on the 26.04 guest alone; what those versions answer
-  to `is-enabled` was not measured); a `masked` old unit through the real command (the unit
-  `host setup` writes cannot be masked; the word was measured with a vendor unit); the page
-  of an old host that reads the phase `Cutover` (`yulius-app::migration` is unchanged and
-  reads any phase but `done` and `aborted` as not finished).
+  to `is-enabled` was not measured); the page of an old host that reads the phase `Cutover`
+  (`yulius-app::migration` is unchanged and reads any phase but `done` and `aborted` as not
+  finished); the review's P2 with the real command (the reviewer measured systemd with a
+  stand-in unit and read the move's side from the code).
