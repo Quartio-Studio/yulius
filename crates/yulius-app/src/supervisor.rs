@@ -161,6 +161,11 @@ pub struct TaskRuntime {
     /// launch, or the last prompt submitted from it. What was typed after that may still sit
     /// there, or in Claude Code's queue (SPEC-468 CCF-010, CCF-011).
     pub(crate) box_emptied_ms: AtomicI64,
+    /// When the prompt whose hook is being answered emptied the prompt box (ms): worked out at
+    /// its first request and taken into [`Self::box_emptied_ms`] when the prompt goes on, so a
+    /// prompt that is held and then blocked, which Claude Code puts back into the box, empties
+    /// nothing (SPEC-468 CCF-010).
+    pub(crate) submit_emptied_ms: AtomicI64,
     /// The run's last prompt hook was answered with a hold: the next one is that prompt sent
     /// again by the hook client, not another submit. A hold the CLI gave up leaves this set
     /// until the run's next prompt is answered, which then counts as no submit: the session
@@ -426,6 +431,7 @@ impl TaskRuntime {
             message_typed_ms: AtomicI64::new(0),
             entered_ms: AtomicI64::new(0),
             box_emptied_ms: AtomicI64::new(0),
+            submit_emptied_ms: AtomicI64::new(0),
             prompt_held: AtomicBool::new(false),
             typed_by: Mutex::new(None),
             personal_mcp_of: Mutex::new(None),

@@ -237,24 +237,16 @@ impl App {
             return self.answer_event(ctx, event, input, sent).await;
         }
         // A prompt submitted from the session's prompt box empties it: what was typed before
-        // it is no draft any more (SPEC-468 CCF-010). Once per submit: a prompt that is held
-        // (an update, a pause, no subscription with room) is sent again every few seconds,
-        // stamped anew, until it goes on, and what a person types meanwhile is a draft.
-        // A prompt that waited in Claude Code's queue is submitted long after its Enter: what
-        // was typed after that Enter is still in the box, which then counts as emptied at the
-        // Enter (`box_emptied_at`). And a prompt Yulius blocks (its scope check held it,
-        // TSK-013) never reaches the agent: Claude Code puts its text back into the box, so
-        // that submit emptied nothing.
+        // it is no draft any more (SPEC-468 CCF-010). Once per submit, as of its first request:
+        // a prompt that is held (an update, a pause, no subscription with room) is sent again
+        // every few seconds, stamped anew, until it goes on, and what a person types meanwhile
+        // is a draft. A prompt that waited in Claude Code's queue is submitted long after its
+        // Enter: what was typed after that Enter is still in the box, which then counts as
+        // emptied at the Enter (`box_emptied_at`).
         let runtime = self.runtime(&ctx.task.id);
+        let from_box = crate::finish::from_prompt_box(input.prompt.as_deref());
         let sent_again = runtime.prompt_held.load(Ordering::SeqCst);
-        let from_box = !sent_again && crate::finish::from_prompt_box(input.prompt.as_deref());
-        let reply = self.answer_event(ctx, event, input, sent).await;
-        let blocked = matches!(
-            &reply,
-            Ok(HookReply::Output(output))
-                if output.decision.as_deref() == Some(yulius_contracts::hooks::DECISION_BLOCK)
-        );
-        if from_box && !blocked {
+        if from_box && !sent_again {
             let typed = runtime
                 .typed_at_ms
                 .load(Ordering::SeqCst)
@@ -265,9 +257,22 @@ impl App {
                 typed,
                 runtime.box_emptied_ms.load(Ordering::SeqCst),
             );
+            runtime.submit_emptied_ms.store(emptied, Ordering::SeqCst);
+        }
+        let reply = self.answer_event(ctx, event, input, sent).await;
+        let held = matches!(reply, Ok(HookReply::Hold { .. }));
+        // The box is taken as emptied once the prompt goes on, not while it is held: a prompt
+        // Yulius blocks in the end (its scope check held it, TSK-013) never reaches the agent,
+        // and Claude Code puts its text back into the box, so that submit emptied nothing.
+        let blocked = matches!(
+            &reply,
+            Ok(HookReply::Output(output))
+                if output.decision.as_deref() == Some(yulius_contracts::hooks::DECISION_BLOCK)
+        );
+        if from_box && !held && !blocked {
+            let emptied = runtime.submit_emptied_ms.load(Ordering::SeqCst);
             runtime.box_emptied_ms.fetch_max(emptied, Ordering::SeqCst);
         }
-        let held = matches!(reply, Ok(HookReply::Hold { .. }));
         runtime.prompt_held.store(held, Ordering::SeqCst);
         reply
     }

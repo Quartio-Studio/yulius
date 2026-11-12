@@ -797,6 +797,13 @@ mod moves {
     async fn on_the_test_clock(
         limited: bool,
     ) -> Result<(crate::support::Harness, TaskId), Box<dyn std::error::Error>> {
+        on_the_test_clock_limited_for(limited.then_some(60 * MINUTE)).await
+    }
+
+    /// [`on_the_test_clock`] whose subscription is at a usage limit that resets in `limited_ms`.
+    async fn on_the_test_clock_limited_for(
+        limited_ms: Option<i64>,
+    ) -> Result<(crate::support::Harness, TaskId), Box<dyn std::error::Error>> {
         use crate::support::{harness, seed_github_user, seed_sandbox, seed_task};
         use yulius_app::model::{AccountRecord, AccountStatus, AttemptRecord};
         use yulius_domain::harness::{Harness, Provider};
@@ -806,9 +813,9 @@ mod moves {
         seed_github_user(&h, "u-alice", "alice").await?;
         seed_sandbox(&h, "s1", "fixture", "u-alice").await?;
         let now = h.app.now();
-        let usage = limited.then(|| {
+        let usage = limited_ms.map(|resets_in| {
             serde_json::json!({"primary": null, "secondary": null, "limit_reached": true,
-                "limit_resets_at": now.0 + 60 * MINUTE, "observed_at": now.0})
+                "limit_resets_at": now.0 + resets_in, "observed_at": now.0})
             .to_string()
         });
         let account = AccountId::parse("acc-1")?;
@@ -898,11 +905,25 @@ mod moves {
         Ok(hook_answered(h, prompt).await?.0)
     }
 
-    /// A Jev that reads every typed prompt as new scope, so Yulius holds each (TSK-013).
-    struct HoldsEveryPrompt;
+    /// A Jev that reads a typed prompt as new scope, so Yulius holds it (TSK-013), once it
+    /// read `passes` prompts as context.
+    struct HoldsPrompts {
+        passes: std::sync::atomic::AtomicUsize,
+    }
+
+    /// Installs [`HoldsPrompts`] as the scope check of `h`.
+    fn scope_check_holds_after(h: &crate::support::Harness, passes: usize) {
+        let jev = Arc::new(HoldsPrompts {
+            passes: std::sync::atomic::AtomicUsize::new(passes),
+        }) as Arc<dyn yulius_app::ports::intake::ChoiceEvaluator>;
+        assert!(
+            h.app
+                .set_intake(yulius_app::intake::IntakeServices::new(Some(jev), None))
+        );
+    }
 
     #[async_trait]
-    impl yulius_app::ports::intake::ChoiceEvaluator for HoldsEveryPrompt {
+    impl yulius_app::ports::intake::ChoiceEvaluator for HoldsPrompts {
         async fn evaluate(
             &self,
             _state: &str,
@@ -910,9 +931,16 @@ mod moves {
             _deadline: Duration,
         ) -> Result<yulius_domain::intake::ChoiceAnswer, yulius_app::ports::intake::JevFailure>
         {
-            let odds = |key: &str| if key == "new_scope" { 0.97 } else { 0.01 };
+            let passed = self
+                .passes
+                .try_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                    left.checked_sub(1)
+                })
+                .is_ok();
+            let choice = if passed { "context" } else { "new_scope" };
+            let odds = |key: &str| if key == choice { 0.97 } else { 0.01 };
             Ok(yulius_domain::intake::ChoiceAnswer {
-                choice: "new_scope".to_owned(),
+                choice: choice.to_owned(),
                 confidence: 0.97,
                 probabilities: question
                     .options
@@ -934,11 +962,7 @@ mod moves {
         use axum::http::StatusCode;
         let (h, task) = on_the_test_clock(false).await?;
         let alice = UserId::parse("u-alice")?;
-        let jev = Arc::new(HoldsEveryPrompt) as Arc<dyn yulius_app::ports::intake::ChoiceEvaluator>;
-        assert!(
-            h.app
-                .set_intake(yulius_app::intake::IntakeServices::new(Some(jev), None))
-        );
+        scope_check_holds_after(&h, 0);
 
         // A turn runs (a prompt of three words or fewer is not checked).
         assert_eq!(hook(&h, Some("first")).await?, StatusCode::OK);
@@ -965,6 +989,41 @@ mod moves {
         assert!(
             !probed.load(Ordering::SeqCst) && !h.app.claude_move_cooling(&task),
             "a session with a held prompt in its box is not looked at, and no restart is tried"
+        );
+        Ok(())
+    }
+
+    /// SPEC-468 CCF-010: a prompt that waits for a subscription with room and is then held by
+    /// the scope check (which let it through before the wait and reads it again after) was
+    /// never taken by the agent: Claude Code puts it back into the prompt box. Its first
+    /// request used to empty the box at once, so the text was forgotten.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_prompt_held_for_room_and_then_by_the_scope_check_is_still_in_the_box() -> TestResult
+    {
+        use axum::http::StatusCode;
+        let (h, task) = on_the_test_clock_limited_for(Some(30_000)).await?;
+        let alice = UserId::parse("u-alice")?;
+        scope_check_holds_after(&h, 1);
+
+        // Its person types a prompt and enters it: no subscription has room, so it waits.
+        let prompt = "Also add a dark mode to the whole settings page";
+        h.app.record_input(&task, &alice, prompt.as_bytes());
+        h.clock.0.fetch_add(1_000, Ordering::SeqCst);
+        h.app.record_input(&task, &alice, b"\r");
+        h.clock.0.fetch_add(100, Ordering::SeqCst);
+        assert_eq!(hook(&h, Some(prompt)).await?, StatusCode::ACCEPTED);
+        h.clock.0.fetch_add(10_000, Ordering::SeqCst);
+        assert_eq!(hook(&h, Some(prompt)).await?, StatusCode::ACCEPTED);
+        // The limit resets half a minute later. The prompt goes on to the scope check, which
+        // holds it for its person's choice.
+        h.clock.0.fetch_add(25_000, Ordering::SeqCst);
+        let _ = h.app.resume_round().await;
+        let (status, answer) = hook_answered(&h, Some(prompt)).await?;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(answer["decision"], "block", "{answer}");
+        assert!(
+            h.app.has_draft(&task),
+            "the prompt is back in the prompt box"
         );
         Ok(())
     }
