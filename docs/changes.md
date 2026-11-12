@@ -31,7 +31,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   is watched again takes the flag's time back. A reason follows the owner of its flag: a
   secret request's flag that Claude Code's question or the gate takes over says that matter,
   not "Answer it on the Secrets page" after the secret was answered, and a flag that waits for
-  two secret requests opens the tab of the one still waiting. A flag raised before this update
+  two secret requests opens the tab of the one still waiting. Whose flag it is is kept with
+  the reason, so after an update a secret request's answer still ends its flag (it stayed
+  until the turn's end before), and a question that took the flag over is answered by the
+  agent's work. A flag raised before this update
   has no reason until it ends. Left as they are: a worker's permission prompt still ends only at the turn's
   end or a typed message (nothing says when its dialog was answered; its bar now says what was
   asked), and a second ask on a flagged task (#1200).

@@ -5029,7 +5029,6 @@ fn agent_token(data: &Path) -> Result<String, BoxError> {
 #[test]
 fn a_question_that_took_a_secret_requests_flag_over_is_answered_by_the_agents_work() -> TestResult {
     use yulius_app::auth::AuthContext;
-    use yulius_app::ports::store::UserStore as _;
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
     let (_dir, data) = data_dir()?;
     let rt = runtime()?;

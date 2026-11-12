@@ -167,10 +167,20 @@ after a restart of Yulius. Reply shows that the terminal took the keyboard.
   ends with the request's answer; once another matter flags the task, that flag is the other
   matter's (the answer no longer ends it, SPEC-213 SRA-003), and it says the other matter's
   reason from then on, or none when that matter gives none: never the secret's, which would
-  send the person to a Secrets page with nothing left to answer. The flag itself, its time and
-  what ends it stay as they were (the session's work does not answer it). A flag that waits for
-  several secret requests points at one that still waits: after an answer that leaves another
-  request open, its link is that request's tab of the Secrets page.
+  send the person to a Secrets page with nothing left to answer. The flag itself and its time
+  stay as they were. A flag that waits for several secret requests points at one that still
+  waits: after an answer that leaves another request open, its link is that request's tab of
+  the Secrets page. Two more things hold (review round 2):
+  - Whose flag it is survives a restart of Yulius. The reason kept with a secret request's flag
+    says that the request's answer ends it; a server that started after the flag was raised
+    reads that, so the answer still ends the flag (and its reason), and another matter still
+    takes the flag over.
+  - A Claude Code question that takes the flag over is the session's own to answer, as on an
+    unflagged task: the agent's work after it ends the flag (the task reads Working), so the
+    bar never keeps "its question is in the terminal" over an answered question. The secret
+    request then waits on the Secrets page without a flag, as it does once a turn's end or a
+    typed prompt ended its flag. A matter that work does not answer (a worker's prompt, a flag
+    of Yulius's own) keeps the flag until the turn's end or a typed prompt, as before.
 
 ## Plan
 
@@ -223,7 +233,14 @@ after a restart of Yulius. Reply shows that the terminal took the keyboard.
   first is answered, and reads no flag after both; `yulius-store`, a reason is replaced only on
   the flag it was read from, keeps that flag's time, and the same reason again changes nothing;
   `yulius-app`, format characters are dropped from a reason; e2e, the row of a flag with a
-  request says the request.
+  request says the request. The store test came with the statement it tests.
+- Review round 2 (each red before its fix): `secrets_env.rs`, on a second server on the same
+  database a secret request's answer ends its flag and reason, and a worker's prompt there
+  takes the flag over and outlives the answer; `task_done.rs`, a real run of the fake agent
+  asks for a secret's hosts with its own token, Claude Code's notice takes the flag over, and
+  the agent's next work makes the task Working with no reason, after which the request's
+  answer changes nothing; `yulius-app`, the rule that keeps a notice's time, and `answer_ends`
+  kept with the reason and out of the view.
 - `crates/yulius-app`: a reason is one bounded line and its view carries the page; whether work
   answers a flag is kept with the reason and is no part of the view; a goal never set says in
   its terminal what it said before and keeps what is wrong apart from what to do, also behind an
@@ -252,9 +269,22 @@ after a restart of Yulius. Reply shows that the terminal took the keyboard.
   in the terminal" behind once that question is answered, which is this defect again. A secret
   request's flag is the one flag that changes owner (SPEC-213: any other matter takes it over,
   and the secret's answer then leaves it), so there the reason changes with it (ATN-011, review
-  round 1): the replacement keeps the flag's time and marks that work does not answer it, as
-  the server's memory has it. While both matters are open the bar shows the one that holds the
-  flag; the secret's request is still on the Secrets page and in the agent's printed link.
+  round 1): the replacement keeps the flag's time. While both matters are open the bar shows
+  the one that holds the flag; the secret's request is still on the Secrets page and in the
+  agent's printed link.
+- The reason is the record of whose flag it is (`answer_ends`, review round 2), beside the
+  server's memory of it (`secret_wait_at`, SPEC-213). SPEC-213 left that memory to a restart
+  because a stale flag then said nothing specific and a column was not worth a migration; this
+  change adds the column and a specific reason ("Answer it on the Secrets page"), which must
+  end with the answer after an update too. The memory stays as the fast path; when it holds
+  nothing, the flag's reason is asked, under the same lock. A reason is read only while the
+  task reads its flag, and a matter that takes the flag over writes its own, so the reason
+  cannot name an owner the flag no longer has.
+- A question that takes a secret request's flag over is answered by work (review round 2)
+  rather than kept until the turn's end: the time a notice's flag is answered by is kept for
+  it, and its reason says so for a restart. The alternative, the flag going back to the secret
+  request once the question is answered, would flag a working task again for a request that
+  already had its flag taken; a request without a flag is the state a turn's end leaves too.
 - Reply keeps focusing the terminal for every flag, never a text field (SPEC-156 RPL-006): a
   Claude Code menu may have opened since the reason was written, and typed text would pick its
   options unseen. The click's visible result is the terminal's own notice.

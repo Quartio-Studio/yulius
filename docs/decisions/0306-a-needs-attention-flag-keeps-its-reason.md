@@ -50,7 +50,13 @@ flagged after the person answered and the agent went on, until its turn ended.
   request's answer until another matter flags the task; from then on it is that matter's and
   the answer leaves it (SPEC-213). It then says that matter's reason, or none
   (`TaskStore::replace_attention`: the same flag, its time kept, only what it says changed). A
-  flag that waits for several secret requests points at one that still waits.
+  flag that waits for several secret requests points at one that still waits. A Claude Code
+  question that takes the flag over is answered by the agent's work, as on an unflagged task.
+- Whose flag it is is kept with the reason too (`answer_ends`: a secret request's flag, which
+  the request's answer ends). The server's memory of it (SPEC-213) is the fast path; a server
+  that started after the flag was raised asks the reason. SPEC-213 left this to a restart
+  when a stale flag said nothing specific; with a reason that says "Answer it on the Secrets
+  page" the answer must end it after an update too.
 - A reason speaks only for the flag it was written with. It is read while the task is running,
   reads `needs_attention` and its state time (`state_at`) is the reason's `at`
   (`TaskStore::task_attention`). Every statement that changes a task's status or activity stamps

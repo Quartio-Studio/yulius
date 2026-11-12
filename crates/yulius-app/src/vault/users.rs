@@ -38,6 +38,7 @@ fn secret_reason(link: &str) -> AttentionRecord {
         "Answer it on the Secrets page.",
     )
     .on_page(link)
+    .ended_by_its_answer()
 }
 
 impl SecretUser<'_> {
@@ -196,16 +197,44 @@ impl App {
                 return Ok(());
             }
         }
-        // The task kept changing: flagged all the same, not as the request's (it ends at the
-        // turn's end, as before SPEC-213).
-        runtime.secret_wait_at.store(0, Ordering::SeqCst);
-        if store
-            .flag_attention(task_id, None, Some(reason), self.now())
-            .await?
-        {
+        // The task kept changing: flagged from whatever it reads now. The statement says
+        // whether it raised the flag, so the flag is the request's all the same (its reason
+        // says so, and an answer must end what says "answer it on the Secrets page").
+        let now = self.now();
+        let raised = store
+            .flag_attention(task_id, None, Some(reason), now)
+            .await?;
+        runtime
+            .secret_wait_at
+            .store(if raised { now.0 } else { 0 }, Ordering::SeqCst);
+        if raised {
             self.publish_task(task_id).await;
         }
         Ok(())
+    }
+
+    /// When the flag `task_id` reads was raised, if it is a secret request's and still that
+    /// request's to end; 0 otherwise. From this server's memory, or, for a flag raised before
+    /// the server started (an update while the request waits), from the flag's own reason: a
+    /// reason is read only while the task reads the flag it was written with, and another
+    /// matter that takes the flag over writes its own (SPEC-472 ATN-011). Call it under the
+    /// task's attention lock.
+    pub(crate) async fn secret_flag_at(
+        &self,
+        runtime: &crate::supervisor::TaskRuntime,
+        task_id: &TaskId,
+    ) -> AppResult<i64> {
+        let kept = runtime.secret_wait_at.load(Ordering::SeqCst);
+        if kept != 0 {
+            return Ok(kept);
+        }
+        Ok(match self.deps.store.task_attention(task_id).await? {
+            Some((reason, flagged)) if reason.answer_ends => {
+                runtime.secret_wait_at.store(flagged.0, Ordering::SeqCst);
+                flagged.0
+            }
+            _ => 0,
+        })
     }
 
     /// A person answered a request for a secret of `sandbox` (`None`: of every sandbox), or
@@ -234,11 +263,12 @@ impl App {
 
     /// Ends `task`'s flag if its own secret request raised it, still stands, and nothing waits.
     async fn settle_secret_wait(&self, task: &TaskRecord) -> AppResult<()> {
-        let Some(runtime) = self.existing_runtime(&task.id) else {
-            return Ok(());
-        };
+        // A server that started after the flag was raised has no runtime for the task until
+        // its run is watched again, and the answer may come first: the flag's reason says
+        // whose it is.
+        let runtime = self.runtime(&task.id);
         let held = runtime.attention_lock.lock().await;
-        let flagged = runtime.secret_wait_at.load(Ordering::SeqCst);
+        let flagged = self.secret_flag_at(&runtime, &task.id).await?;
         if flagged == 0 {
             return Ok(());
         }
@@ -300,13 +330,18 @@ impl App {
         let slug = slug.unwrap_or_default();
         // A secret of every sandbox names its askers with their sandbox.
         let everywhere = super::requests::requester(None, false, &me, Some(&slug));
-        let mut links = Vec::new();
+        let mut links: Vec<String> = Vec::new();
+        let mut add = |link: String| {
+            if !links.contains(&link) {
+                links.push(link);
+            }
+        };
         // A copy is asked for the task's own project: its askers carry no sandbox.
         for copy in store.vault_copy_requests(&task.sandbox_id).await? {
             if !super::requests::among_askers(Some(&copy.requested_by), &me) {
                 continue;
             }
-            links.push(match store.vault_get(&copy.secret_id).await? {
+            add(match store.vault_get(&copy.secret_id).await? {
                 Some(source) => self.agent_secret_link(&slug, &source),
                 None => self.agent_secrets_link(&slug),
             });
@@ -322,10 +357,9 @@ impl App {
                 || (!record.requested_hosts.is_empty()
                     && super::requests::among_askers(record.requested_by.as_deref(), asker))
             {
-                links.push(self.agent_secret_link(&slug, record));
+                add(self.agent_secret_link(&slug, record));
             }
         }
-        links.dedup();
         Ok(links)
     }
 }

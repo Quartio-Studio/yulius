@@ -2773,7 +2773,9 @@ time (`task_attention`), so no other statement has to clear it; a task that is a
 keeps its flag and its reason. One flag changes owner, and its reason follows: a secret
 request's flag that another matter takes over (the request's answer then leaves it) says that
 matter's reason, and one that waits for several requests points at one still open
-(`replace_attention`: the same flag and time, another reason). The task's view carries it as `attention`, and the task view's
+(`replace_attention`: the same flag and time, another reason). The reason also records that a
+flag is a secret request's (`answer_ends`), so the request's answer ends it after a restart of
+Yulius as before one. The task's view carries it as `attention`, and the task view's
 bar shows it: a reason of Yulius's own as a request is shown (Problem, To do, Open), Claude
 Code's question as "Its question is in the terminal below" with Claude Code's words, and a flag
 without a reason as "Look at its terminal below". Reply gives the terminal the keyboard and the
@@ -2784,7 +2786,8 @@ question, which the person answers in the terminal with no prompt to the agent; 
 prompt). The time of such a flag is kept in the server's memory, and an instance update freezes
 every agent mid-turn: a run that is watched again takes the time back from the flag
 (`watch_answerable_flag`), so the task reads Working once the person answered and the agent goes
-on, after a restart as before one.
+on, after a restart as before one. The same holds for a question that took a secret request's
+flag over.
 
 Needs you means a person has to act. An idle agent that stopped reads "Your turn" under Needs you only
 while its work is visibly unfinished: plan steps open, or a goal that Claude Code last recorded as set,

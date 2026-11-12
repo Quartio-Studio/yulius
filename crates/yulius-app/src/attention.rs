@@ -64,6 +64,23 @@ pub struct AttentionRecord {
     /// of Yulius still knows (ATN-010); no part of the API view.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub work_answers: bool,
+    /// The flag is a secret request's: the request's answer ends it (SPEC-213), until another
+    /// matter takes the flag over. Kept with the flag, as the one record of whose it is that a
+    /// restart of Yulius still has (ATN-011); no part of the API view.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub answer_ends: bool,
+}
+
+/// What flagging a task did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Flagged {
+    /// The task reads the flag from now on, with the reason given.
+    Raised,
+    /// The task read a secret request's flag: it is this matter's from now on, with its reason
+    /// (ATN-011).
+    TakenOver,
+    /// The task was flagged already (or is not running): its flag and its reason stand.
+    Stands,
 }
 
 impl AttentionRecord {
@@ -76,6 +93,7 @@ impl AttentionRecord {
             action: None,
             link: None,
             work_answers: false,
+            answer_ends: false,
         }
     }
 
@@ -88,6 +106,7 @@ impl AttentionRecord {
             action: one_line(action),
             link: None,
             work_answers: false,
+            answer_ends: false,
         }
     }
 
@@ -102,6 +121,13 @@ impl AttentionRecord {
     #[must_use]
     pub fn answered_by_work(mut self, answered: bool) -> Self {
         self.work_answers = answered;
+        self
+    }
+
+    /// The same reason, for a secret request's flag: the request's answer ends it.
+    #[must_use]
+    pub fn ended_by_its_answer(mut self) -> Self {
+        self.answer_ends = true;
         self
     }
 
@@ -172,7 +198,7 @@ impl App {
         &self,
         task: &TaskId,
         reason: AttentionRecord,
-    ) -> AppResult<()> {
+    ) -> AppResult<Flagged> {
         self.flag_needs_attention(task, Some(&reason)).await
     }
 
@@ -274,6 +300,15 @@ mod tests {
         assert_eq!(serde_json::from_str::<AttentionRecord>(&text)?, answered);
         assert_eq!(answered.view(), plain.view(), "the view says nothing of it");
         assert!(!answered.answered_by_work(false).work_answers);
+
+        // Whose flag it is (a secret request's) is kept the same way.
+        let secret = AttentionRecord::yulius("A secret waits.", "Answer it.");
+        assert!(!secret.answer_ends);
+        let owned = secret.clone().ended_by_its_answer();
+        let text = serde_json::to_string(&owned)?;
+        assert!(text.ends_with(r#""answer_ends":true}"#), "{text}");
+        assert_eq!(serde_json::from_str::<AttentionRecord>(&text)?, owned);
+        assert_eq!(owned.view(), secret.view());
         Ok(())
     }
 
