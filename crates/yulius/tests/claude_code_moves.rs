@@ -453,7 +453,7 @@ mod moves {
     use crate::first_message::{
         data_dir, hooked, new_task, runtime, screen, start_with, stop, wait_for,
     };
-    use crate::pool_supervision::{HOUR, ScriptedUsage, refresh, seed, usage};
+    use crate::pool_supervision::{HOUR, ScriptedUsage, add_account, refresh, seed, usage};
     use crate::support::agents::FakeAgentOptions;
 
     use std::os::unix::fs::OpenOptionsExt as _;
@@ -3000,6 +3000,120 @@ mod moves {
             assert!(s.app.claude_move_cooling(&s.id));
             stop(&s.app, &s.id).await
         })?;
+        rt.shutdown_timeout(Duration::from_secs(5));
+        Ok(())
+    }
+
+    // --- SPEC-479 (#1194): a move to another subscription at a turn's end, and what waits in
+    // Claude Code's queue then. The fake agent is in Claude Code's order (`--queue-prompts`).
+
+    /// The subscription each run of the task is on, oldest first.
+    async fn subscriptions(s: &Server) -> Vec<Option<String>> {
+        let runs = s.app.deps.store.attempts(&s.id).await.unwrap_or_default();
+        runs.iter()
+            .map(|run| run.account_id.as_ref().map(|id| id.as_str().to_owned()))
+            .collect()
+    }
+
+    /// SPEC-479 SWQ-001 (AC1, AC2): a turn runs on a subscription that reaches its limit, with
+    /// another one free. A prompt entered while the turn runs waits in Claude Code's queue.
+    /// The turn's end does not move the session: the prompt is answered in the same run, once,
+    /// and that turn's end moves the session to the other subscription. The move used to come
+    /// at the first end, and the prompt went with the old process.
+    async fn a_waiting_prompt_keeps_the_session_on_its_subscription(
+        data: &Path,
+        who: Entered,
+    ) -> TestResult {
+        let version = data.join("claude-version");
+        let may_end = data.join("turn-may-end");
+        // Runs get the version the session runs: no restart for a newer Claude Code is due.
+        let s = server(
+            data,
+            &version,
+            queueing(&may_end),
+            TaskMode::Prompt,
+            "2.1.311",
+        )
+        .await?;
+        add_account(&s.app, "b-second").await?;
+        let mut watch = s.app.runtime(&s.id).hub.subscribe().rx;
+        s.app.send_input(&s.id, b"one\r").await?;
+        says(&s, "TURN HELD").await?;
+        // While the turn runs its subscription reaches its limit: the turn's end moves it.
+        s.probe.set("a-first", usage(100.0, 4 * HOUR, 30.0, 100));
+        refresh(&s.app, &s.user, "a-first").await?;
+        let answered = match who {
+            Entered::Person => {
+                s.app.send_input(&s.id, b"two\r").await?;
+                "ECHO: two"
+            }
+            Entered::Yulius => {
+                let answer = told(&s.app, &s.sandbox, &s.user, &s.id).await?;
+                assert_eq!(answer["delivered"], "sent", "{answer}");
+                "ECHO: Message from admin (through their Superagent):"
+            }
+        };
+        waits_in_the_queue(&s).await?;
+        assert_eq!(runs(&s).await, 1, "no move in the middle of a turn");
+        std::fs::write(&may_end, "")?;
+        let mut shown = String::new();
+        wait_for(
+            "the waiting prompt's answer, or the move",
+            Duration::from_secs(90),
+            || {
+                shown.push_str(&printed(&mut watch));
+                let (answered, s) = (shown.contains(answered), &s);
+                async move { answered || runs(s).await > 1 }
+            },
+        )
+        .await?;
+        assert_eq!(
+            runs(&s).await,
+            1,
+            "the session moved with a prompt in its queue, which went with its process: {shown}"
+        );
+        // Nothing waits any more: the end of the turn that answered it moves the session.
+        run_live(&s, 2).await?;
+        assert_eq!(
+            subscriptions(&s).await,
+            [Some("a-first".to_owned()), Some("b-second".to_owned())]
+        );
+        ready(&s.app, &s.id).await?;
+        shown.push_str(&printed(&mut watch));
+        assert_eq!(
+            shown.matches(answered).count(),
+            1,
+            "answered once, by the session it was entered into: {shown}"
+        );
+        assert!(
+            !s.app.claude_queue_holds(&s.id),
+            "a new run starts with none"
+        );
+        stop(&s.app, &s.id).await
+    }
+
+    /// SPEC-479 AC1: a message Yulius typed while the turn ran, whose sender was told "sent".
+    #[test]
+    fn a_waiting_message_yulius_typed_is_answered_before_the_subscription_changes() -> TestResult {
+        let (_dir, data) = data_dir()?;
+        let rt = runtime()?;
+        rt.block_on(a_waiting_prompt_keeps_the_session_on_its_subscription(
+            &data,
+            Entered::Yulius,
+        ))?;
+        rt.shutdown_timeout(Duration::from_secs(5));
+        Ok(())
+    }
+
+    /// SPEC-479 AC2: the prompt a person entered while the turn ran.
+    #[test]
+    fn a_persons_waiting_prompt_is_answered_before_the_subscription_changes() -> TestResult {
+        let (_dir, data) = data_dir()?;
+        let rt = runtime()?;
+        rt.block_on(a_waiting_prompt_keeps_the_session_on_its_subscription(
+            &data,
+            Entered::Person,
+        ))?;
         rt.shutdown_timeout(Duration::from_secs(5));
         Ok(())
     }
