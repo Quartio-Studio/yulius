@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use yulius_domain::harness::Provider;
-use yulius_domain::usage::AccountUsage;
+use yulius_domain::usage::{AccountUsage, ModelAnswer};
 
 use crate::model::Secret;
 
@@ -93,6 +93,23 @@ pub trait UsageProbe: Send + Sync {
         provider: Provider,
         credential: &Secret,
     ) -> Result<AccountUsage, UsageFailure>;
+
+    /// What the provider answers one request of one output token with `model` on the account
+    /// behind `credential`, asked to learn whether a usage limit stored for that model still
+    /// holds (SPEC-473): the model ran, or the limit that refused it with its reset. A failure
+    /// says nothing about the limit: [`UsageFailureKind::Rejected`] is a refused sign-in, the
+    /// rest is temporary.
+    async fn model_answer(
+        &self,
+        provider: Provider,
+        credential: &Secret,
+        model: &str,
+    ) -> Result<ModelAnswer, UsageFailure> {
+        let _ = (provider, credential, model);
+        Err(UsageFailure::new(
+            "the provider cannot be asked about a model in this build",
+        ))
+    }
 
     /// The email of the account behind `credential` (Claude: `account.email` of
     /// `/api/oauth/profile`). `Ok(None)`: the provider answered without a usable address. A
