@@ -339,46 +339,62 @@ pub fn decide(input: &RotationInput, trigger: Trigger) -> (Decision, DecisionRea
     }
 }
 
-/// [`decide`] for a task the pool keeps off `left_out`: the subscription that refused it at a
-/// limit nothing says the end of, again right after its retry (SPEC-464 UCL-010). While a reset
-/// is known to wait for, `left_out` counts as out of the task's model with no known reset,
-/// whatever a reading said since: the task waits for that reset and is not started on
-/// `left_out` at every reading. With no reset known, nothing would ever take the task on, so
-/// `left_out` is a candidate like any other.
+/// [`decide`] for a task the pool keeps off `left_out`: each subscription that refused it at a
+/// limit nothing says the end of, again right after its retry, with the family of the model it
+/// refused (SPEC-464 UCL-010, SPEC-482 FBK-007). While a reset is known to wait for, each one
+/// counts as out of that model with no known reset, whatever a reading said since: the task
+/// waits for that reset and is not started there again at every reading. With no reset known,
+/// nothing would ever take the task on, so they are candidates like any other.
 ///
-/// Leaving out is about the task's own model (SPEC-482 FBK-007). A pool that places the task
-/// with its fallback anyway leaves nothing out: the fallback is another model than the one
-/// `left_out` refused. And a placement with the fallback that only leaving out makes is not
-/// taken: the launch asks the policy without it and would place the task's own model.
+/// A subscription is left out for the model it refused, not as a whole: the other model's
+/// window on it still says when that one can run. A placement with the fallback that only
+/// leaving out makes is not taken: the launch asks the policy without it and would place the
+/// task's own model, so the task is tried with that where a reading shows it.
 #[must_use]
 pub fn decide_leaving_out(
     input: &RotationInput,
     trigger: Trigger,
-    left_out: &AccountId,
+    left_out: &[(AccountId, ModelFamily)],
 ) -> (Decision, DecisionReason) {
-    if placing_family(input) != input.family {
-        return decide(input, trigger);
-    }
     let mut without = input.clone();
-    for account in &mut without.accounts {
-        if &account.id == left_out {
-            // The model's own window, full with no reset; the subscription's limit for a model
-            // that has no window.
-            let refused = ReportedLimit {
-                scope: LimitScope::Model(None),
-                window_minutes: None,
-                resets_at: None,
-            };
-            account.usage.record_limit(refused, input.family, input.now);
+    for (id, family) in left_out {
+        for account in &mut without.accounts {
+            if &account.id == id {
+                // The model's own window, full with no reset; the subscription's limit for a
+                // model that has no window.
+                let refused = ReportedLimit {
+                    scope: LimitScope::Model(None),
+                    window_minutes: None,
+                    resets_at: None,
+                };
+                account.usage.record_limit(refused, *family, input.now);
+            }
         }
     }
     match decide(&without, trigger.clone()) {
         (Decision::Wait { until: None }, _) => decide(input, trigger),
-        (Decision::Switch { .. }, _) if placing_family(&without) != input.family => {
+        (Decision::Switch { .. }, _) if placing_family(&without) != placing_family(input) => {
             decide(input, trigger)
         }
         decided => decided,
     }
+}
+
+/// Whether a restart that would keep its run on `account` asks for that subscription (a
+/// restart for a newer Claude Code, a fresh session after a full context, a hand-over): yes
+/// while it can take the run placed now, as a person's choice of it would be accepted. No when
+/// it cannot and the pool can place the run elsewhere: a run on the fallback sits on a
+/// subscription that cannot run the task's own model, which its next launch runs again once
+/// another subscription can (SPEC-482 FBK-004). When no account can take the run, the restart
+/// still asks for it and is refused as before, so the session stays.
+#[must_use]
+pub fn keeps_account(input: &RotationInput, account: &AccountId) -> bool {
+    let asked = Trigger::Manual {
+        account: Some(account.clone()),
+    };
+    let refused = DecisionReason::ManualRefused(Refusal::Exhausted);
+    decide(input, asked).1 != refused
+        || !matches!(decide(input, Trigger::Start).0, Decision::Switch { .. })
 }
 
 fn find<'a>(input: &'a RotationInput, id: &AccountId) -> Option<&'a AccountView> {
@@ -800,6 +816,7 @@ mod tests {
             switched_to(&decide(&known, Trigger::Start).0),
             Some("refusing")
         );
+        let refusing = [(refusing, ModelFamily::Any)];
         let (decision, _) = decide_leaving_out(&known, Trigger::Start, &refusing);
         assert_eq!(
             decision,
@@ -809,7 +826,7 @@ mod tests {
         );
         // A paused task that still has its process there is not released in place either.
         let mut held = known.clone();
-        held.current = Some(refusing.clone());
+        held.current = Some(refusing[0].0.clone());
         let (decision, _) = decide_leaving_out(&held, Trigger::Proactive, &refusing);
         assert!(
             matches!(decision, Decision::Wait { until: Some(_) }),
@@ -1286,12 +1303,12 @@ mod tests {
         Ok(())
     }
 
-    /// SPEC-482 FBK-007: a subscription is left out (SPEC-464 UCL-010) for the task's own model.
-    /// The fallback's reset is one to wait for; a pool in fallback leaves nothing out; and a
-    /// fallback that only leaving out would make is not taken (the launch would not agree).
+    /// SPEC-482 FBK-007: a subscription is left out (SPEC-464 UCL-010) for the model it refused.
+    /// The other model's reset on it is one to wait for, and a fallback that only leaving out
+    /// would make is not taken (the launch would not agree).
     #[test]
     fn a_subscription_left_out_and_the_fallback() -> Result<(), IdError> {
-        let refusing = id("refusing")?;
+        let fable = [(id("refusing")?, ModelFamily::Fable)];
         // Its reading shows Fable again, and Opus is used up on it for 30 more hours: the task
         // waits for Opus, and is not started on it at every reading.
         let mut alone = fable_task(
@@ -1303,20 +1320,19 @@ mod tests {
             switched_to(&decide(&alone, Trigger::Start).0),
             Some("refusing")
         );
+        let wait = |hours: i64| Decision::Wait {
+            until: Some(NOW.plus_millis(hours * HOUR)),
+        };
         assert_eq!(
-            decide_leaving_out(&alone, Trigger::Start, &refusing).0,
-            Decision::Wait {
-                until: Some(NOW.plus_millis(30 * HOUR))
-            }
+            decide_leaving_out(&alone, Trigger::Start, &fable).0,
+            wait(30)
         );
         // The same for a session still held there.
         let mut held = alone.clone();
-        held.current = Some(refusing.clone());
+        held.current = Some(id("refusing")?);
         assert_eq!(
-            decide_leaving_out(&held, Trigger::Proactive, &refusing).0,
-            Decision::Wait {
-                until: Some(NOW.plus_millis(30 * HOUR))
-            }
+            decide_leaving_out(&held, Trigger::Proactive, &fable).0,
+            wait(30)
         );
         // Another subscription could run the fallback now, but only leaving out says the task
         // needs it: the launch would place Fable, so the task is tried where the reading shows
@@ -1330,7 +1346,7 @@ mod tests {
         )?;
         assert_eq!(placing_family(&known), ModelFamily::Fable);
         assert_eq!(
-            switched_to(&decide_leaving_out(&known, Trigger::Start, &refusing).0),
+            switched_to(&decide_leaving_out(&known, Trigger::Start, &fable).0),
             Some("refusing")
         );
         // A third subscription that runs Fable takes the task, as before.
@@ -1339,17 +1355,113 @@ mod tests {
             .accounts
             .push(account("third", usage(20.0, 20.0, Some(100)))?);
         assert_eq!(
-            switched_to(&decide_leaving_out(&third, Trigger::Start, &refusing).0),
+            switched_to(&decide_leaving_out(&third, Trigger::Start, &fable).0),
             Some("third")
         );
-        // The pool is in fallback anyway: the subscription is a candidate for the other model.
+        // The pool is in fallback anyway: out of Fable, the subscription still runs the other
+        // model.
         let mut all_out = known.clone();
         all_out.accounts[0].usage = fable_out(0.0, None);
         all_out.accounts[1].in_use = 1;
         assert_eq!(
-            switched_to(&decide_leaving_out(&all_out, Trigger::Start, &refusing).0),
+            switched_to(&decide_leaving_out(&all_out, Trigger::Start, &fable).0),
             Some("refusing")
         );
+        Ok(())
+    }
+
+    /// SPEC-482 FBK-007 (review round 1): the fallback itself is refused with no end while
+    /// Fable's reset is known. A reading ends the fallback's limit, so the pool, in fallback,
+    /// would start the session there again at every reading until Fable resets. Left out for
+    /// the model it refused, the subscription is waited for until Fable's reset instead.
+    #[test]
+    fn a_subscription_that_refused_the_fallback_is_left_out_for_it() -> Result<(), IdError> {
+        let refusing = id("refusing")?;
+        let opus = [(refusing.clone(), ModelFamily::Opus)];
+        // Fable is out for 40 hours; the reading shows room for Opus again.
+        let mut held = fable_task(
+            Some("refusing"),
+            vec![account("refusing", fable_out(10.0, Some(40)))?],
+        )?;
+        held.running = Some(ModelFamily::Opus);
+        assert_eq!(
+            decide(&held, Trigger::Proactive),
+            (Decision::Stay, DecisionReason::CurrentUsable),
+            "what a reading alone says"
+        );
+        let wait = |hours: i64| Decision::Wait {
+            until: Some(NOW.plus_millis(hours * HOUR)),
+        };
+        for trigger in [Trigger::Proactive, Trigger::Start] {
+            assert_eq!(
+                decide_leaving_out(&held, trigger.clone(), &opus).0,
+                wait(40),
+                "{trigger:?}"
+            );
+        }
+        // Refused for both models with no end, and another subscription says when each of its
+        // own runs again: the task waits for the first of those, off the one that refused it.
+        let both = [
+            (refusing.clone(), ModelFamily::Fable),
+            (refusing, ModelFamily::Opus),
+        ];
+        let mut later = fable_out(10.0, Some(40));
+        later.weekly_opus = Some(window(100.0, Some(30)));
+        let mut two = fable_task(
+            Some("refusing"),
+            vec![
+                account("refusing", usage(0.0, 10.0, Some(100)))?,
+                account("later", later)?,
+            ],
+        )?;
+        two.running = Some(ModelFamily::Opus);
+        for trigger in [Trigger::Proactive, Trigger::Start] {
+            assert_eq!(
+                decide_leaving_out(&two, trigger.clone(), &both).0,
+                wait(30),
+                "{trigger:?}"
+            );
+        }
+        // Left out for Opus alone, the reading's Fable would be tried there at every reading.
+        assert_eq!(
+            switched_to(&decide_leaving_out(&two, Trigger::Start, &both[1..]).0),
+            Some("refusing")
+        );
+        Ok(())
+    }
+
+    /// SPEC-482 FBK-004 (review round 1): a restart that keeps its subscription asks for it only
+    /// while it can take the run placed now. A run on the fallback sits where Fable is used up:
+    /// once another subscription runs Fable, the pool places the restart, on Fable.
+    #[test]
+    fn a_restart_keeps_its_subscription_only_while_it_can_take_the_run() -> Result<(), IdError> {
+        let a = id("a")?;
+        let all_out = fable_task(
+            None,
+            vec![
+                account("a", fable_out(10.0, Some(40)))?,
+                account("b", fable_out(20.0, Some(90)))?,
+            ],
+        )?;
+        assert!(keeps_account(&all_out, &a), "the fallback runs there");
+        let mut back = all_out.clone();
+        back.accounts[1].usage = usage(20.0, 20.0, Some(100));
+        assert!(
+            !keeps_account(&back, &a),
+            "Fable runs on b: the pool places"
+        );
+        assert!(keeps_account(&back, &id("b")?));
+        // Nothing can take the run: asked for as before (and refused, so the session stays).
+        let mut none = all_out.clone();
+        for account in &mut none.accounts {
+            account.usage.weekly_opus = Some(window(100.0, Some(30)));
+        }
+        assert!(keeps_account(&none, &a));
+        // Not a matter of capacity: the request says why it is refused.
+        let mut broken = back.clone();
+        broken.accounts[0].healthy = false;
+        assert!(keeps_account(&broken, &a));
+        assert!(keeps_account(&back, &id("gone")?));
         Ok(())
     }
 

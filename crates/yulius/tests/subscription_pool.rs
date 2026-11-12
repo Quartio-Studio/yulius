@@ -95,6 +95,18 @@ async fn running_task_in(
     account: &AccountId,
     run_dir: &str,
 ) -> Result<TaskId, Box<dyn std::error::Error>> {
+    running_task_of(h, mode, account, run_dir, None).await
+}
+
+/// [`running_task_in`] whose run was launched with `model` (`None`: a run recorded before the
+/// launch model was, read as the task's own).
+async fn running_task_of(
+    h: &Harness,
+    mode: TaskMode,
+    account: &AccountId,
+    run_dir: &str,
+    model: Option<&str>,
+) -> Result<TaskId, Box<dyn std::error::Error>> {
     let created = now(h);
     let task = h
         .store
@@ -137,7 +149,7 @@ async fn running_task_in(
             account_id: Some(account.clone()),
             provider_session_id: Some("session-1".into()),
             launch_kind: LaunchKind::New,
-            model: None,
+            model: model.map(str::to_owned),
             state: AttemptState::Live,
             run_dir: run_dir.into(),
             token_hash: h.app.deps.crypto.sha256_hex(TOKEN.as_bytes()),
@@ -616,6 +628,49 @@ async fn the_capacity_view_reports_burn_forecast_and_recommendation() -> TestRes
     )
     .await?;
     assert_eq!(anonymous.status, 401);
+    Ok(())
+}
+
+/// SPEC-482 FBK-004 (AC-4, review round 1): at its turn boundary a run stays while its
+/// subscription can run the model the run was launched with. One on the fallback is on a
+/// subscription that is out of Fable; once another subscription runs Fable again it is not
+/// restarted for that. A run of the task's own model there (or one recorded before the launch
+/// model was) cannot stay and moves, as before.
+#[tokio::test]
+async fn a_run_on_the_fallback_stays_at_its_turn_boundary_once_fable_runs_again() -> TestResult {
+    for (launched, stays) in [(Some("claude-opus-5-5"), true), (None, false)] {
+        let h = harness()?;
+        seed(&h).await?;
+        let t0 = now(&h);
+        let out_of_fable = json!({
+            "primary": {"used_percent": 10.0, "window_minutes": 300, "resets_at": t0.plus_millis(2 * HOUR).0},
+            "secondary": {"used_percent": 20.0, "window_minutes": 10080, "resets_at": t0.plus_millis(100 * HOUR).0},
+            "weekly_fable": {"used_percent": 100.0, "window_minutes": 10080, "resets_at": t0.plus_millis(40 * HOUR).0},
+        });
+        let out = add_account(&h, "acc-out", Some(out_of_fable.to_string())).await?;
+        let room = usage(
+            10.0,
+            t0.plus_millis(2 * HOUR),
+            20.0,
+            t0.plus_millis(100 * HOUR),
+        );
+        add_account(&h, "acc-room", Some(room)).await?;
+        let task = running_task_of(&h, TaskMode::Goal, &out, "/nonexistent/run", launched).await?;
+
+        let (code, retry_after, body) =
+            hook(&h.internal, "Stop", json!({"session_id": "s"})).await?;
+        if stays {
+            assert_eq!(code, 200, "the run on the fallback stays: {body}");
+            assert_eq!(status(&h, &task).await?, TaskStatus::Running);
+            assert!(h.store.switches(&task).await?.is_empty());
+        } else {
+            assert_eq!(
+                code, 202,
+                "a Fable run there is held while it moves: {body}"
+            );
+            assert_eq!(retry_after.as_deref(), Some("10"));
+        }
+    }
     Ok(())
 }
 

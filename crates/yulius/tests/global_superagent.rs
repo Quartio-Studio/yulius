@@ -178,6 +178,43 @@ async fn a_person_gets_one_global_superagent_in_its_own_folder_without_built_in_
 }
 
 /// The bearer of `user`'s Global Superagent.
+/// SPEC-482 FBK-011: with Fable used up on every subscription a Global Superagent starts on
+/// Opus 5.5, and its record keeps the model (a limit it reports binds that model).
+#[tokio::test]
+async fn a_global_superagent_starts_on_the_fallback_while_fable_is_used_up() -> TestResult {
+    let f = fixture().await?;
+    let now = f.h.clock.0.load(std::sync::atomic::Ordering::SeqCst);
+    let out_of_fable = serde_json::json!({"weekly_fable":
+        {"used_percent": 100.0, "window_minutes": 10080, "resets_at": now + 40 * 3_600_000}});
+    f.h.app
+        .deps
+        .store
+        .set_account_state(
+            &yulius_domain::ids::AccountId::parse("acc-1")?,
+            yulius_app::model::AccountStatus::Limited,
+            Some(&out_of_fable.to_string()),
+            None,
+            yulius_domain::time::Timestamp(now),
+        )
+        .await?;
+    let served = serve(f.h.router.clone()).await?;
+    let id = global_id(&f, &f.alice).await?;
+    let mut socket = attach(served.addr, &id, &f.alice).await?;
+    let mut screen = String::new();
+    read_until(&mut socket, &mut screen, "ready").await?;
+    let args = printed(&screen, "cockpit-args")?;
+    assert!(
+        args.starts_with(
+            "[--setting-sources  --strict-mcp-config --tools  --model claude-opus-5-5 --effort high"
+        ),
+        "{args}"
+    );
+    let record = std::fs::read_to_string(f.data.join("shells").join(&id).join("shell.json"))?;
+    assert!(record.contains("\"model\":\"claude-opus-5-5\""), "{record}");
+    f.h.app.end_all_shells().await;
+    Ok(())
+}
+
 fn global_token(f: &Fixture, user: &str) -> Result<String, Box<dyn std::error::Error>> {
     Ok(f.h
         .app

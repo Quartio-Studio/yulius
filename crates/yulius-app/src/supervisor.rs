@@ -1198,7 +1198,8 @@ impl App {
             return None;
         }
         let input = self.rotation_input(task, None).await.ok()?;
-        match rotation::decide(&input, Trigger::Start).0 {
+        // As the resume loop decides: off what refused the task with no end (SPEC-464 UCL-010).
+        match self.decide_for_waiting(&task.id, &input, Trigger::Start).0 {
             Decision::Wait { until } => until,
             Decision::Switch { .. } | Decision::Stay => None,
         }
@@ -3608,6 +3609,15 @@ impl App {
             .status
             .apply(TaskEvent::SwitchStarted)
             .map_err(|_| AppError::Conflict(format!("task is {}", task.status.as_str())))?;
+        // A restart that only keeps its subscription lets the pool place the run when that
+        // subscription cannot take it and another can (SPEC-482 FBK-004).
+        let account = match account {
+            Some(kept) if keeps_subscription(reason) => {
+                let input = self.rotation_input(&task, None).await?;
+                rotation::keeps_account(&input, &kept).then_some(kept)
+            }
+            other => other,
+        };
         // The new session must be able to start before the running one ends (ROT-014): a
         // refusal leaves the task as it is.
         let fallback = match self.preflight_start(&task, account.as_ref()).await {
@@ -4879,6 +4889,15 @@ impl App {
         let Ok(input) = self.rotation_input(&task, current.clone()).await else {
             return;
         };
+        // Remembered for the model this run was launched with: a task of a Fable model may be
+        // refused its fallback on the same subscription too (SPEC-482 FBK-007).
+        if blind
+            && limit
+            && let Some(account) = &current
+            && let Ok(mut met) = self.runtime(task_id).blind_limits.lock()
+        {
+            met.met(account, input.running.unwrap_or(input.family));
+        }
         let (decision, reason) = rotation::decide(&input, trigger);
         self.runtime(task_id)
             .proactive_switch
@@ -4909,7 +4928,7 @@ impl App {
                         .blind_limits
                         .lock()
                         .map_or(crate::moves::BlindWait::Pause, |mut blind| {
-                            blind.nowhere_to_go(current.as_ref(), until, task.status)
+                            blind.nowhere_to_go(until, task.status)
                         });
                     if next == crate::moves::BlindWait::AskAPerson {
                         self.limit_without_end(&task).await;
@@ -5034,6 +5053,13 @@ fn refused_choice(label: Option<&str>, reason: &rotation::DecisionReason) -> Str
         }
         _ => "No other subscription can take the task right now.".into(),
     }
+}
+
+/// Whether a switch for `reason` restarts the session where it is and asks for its subscription
+/// only to keep it: a newer Claude Code, a fresh session after a full context, a hand-over. A
+/// person's choice and the pool's own decisions name the subscription they mean.
+fn keeps_subscription(reason: &str) -> bool {
+    matches!(reason, "context_full" | "handover") || reason == crate::claude_code::MOVE_REASON
 }
 
 /// Whether a switch for `reason` interrupts the turn before ending the run: a person's switch

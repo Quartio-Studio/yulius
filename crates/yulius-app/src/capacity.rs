@@ -731,17 +731,29 @@ impl App {
             Trigger::Start
         };
         let input = self.rotation_input(task, current).await?;
-        // A subscription that refused the task again at a limit nothing says the end of is not
-        // tried again while a reset is known to wait for, whatever a reading said since
-        // (SPEC-464 UCL-010).
-        let left_out = self
-            .existing_runtime(&task.id)
-            .and_then(|rt| rt.blind_limits.lock().ok()?.refused_by().cloned());
-        let (decision, reason) = match left_out {
-            Some(account) => rotation::decide_leaving_out(&input, trigger, &account),
-            None => rotation::decide(&input, trigger),
-        };
+        let (decision, reason) = self.decide_for_waiting(&task.id, &input, trigger);
         Ok((decision, format!("{reason:?}"), has_process))
+    }
+
+    /// The pool's decision for a task that waits. What refused it again at a limit nothing says
+    /// the end of is not tried again while a reset is known to wait for, whatever a reading
+    /// said since (SPEC-464 UCL-010): each subscription, for the model it refused (SPEC-482
+    /// FBK-007).
+    pub(crate) fn decide_for_waiting(
+        &self,
+        task: &TaskId,
+        input: &RotationInput,
+        trigger: Trigger,
+    ) -> (Decision, rotation::DecisionReason) {
+        let left_out = self
+            .existing_runtime(task)
+            .and_then(|rt| Some(rt.blind_limits.lock().ok()?.left_out().to_vec()))
+            .unwrap_or_default();
+        if left_out.is_empty() {
+            rotation::decide(input, trigger)
+        } else {
+            rotation::decide_leaving_out(input, trigger, &left_out)
+        }
     }
 
     async fn would_resume(&self, pause: &PauseRecord) -> bool {
