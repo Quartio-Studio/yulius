@@ -8,6 +8,7 @@ import { enc } from './api.js';
 import { h, openModal, confirmDialog, openMenu, toast, errorToast, field, invalid, badge, setChildren, icon, iconButton, placeholder, bar } from './dom.js';
 import { taskActions, taskInfo, allows, isLive, otherOwner } from './status.js';
 import { relLong, whenLabel, localInputValue, fromLocalInput, dateTime } from './format.js';
+import { limitInEffect, limitsNow, modelWindow, usedUp } from './usage.js';
 import { BRAND } from './brand.js';
 import { createMarkdownEditor } from './mdeditor.js';
 import { openAttachment } from './filedrop.js';
@@ -172,25 +173,6 @@ export function continueTask(ctx, task) {
   return taskPost(ctx, task, 'continue', () => ctx.api.post(`/api/tasks/${enc(task.id)}/continue`, {}), `Continuing #${task.number}…`);
 }
 
-/** The weekly window of a model's own on a subscription's usage (its cap, or its allowance of usage credits), or null. */
-function modelWindow(usage, model) {
-  const name = String(model || '').toLowerCase();
-  if (name.includes('opus')) return usage.weekly_opus || null;
-  if (name.includes('sonnet')) return usage.weekly_sonnet || null;
-  if (name.includes('fable')) return usage.weekly_fable || null;
-  return null;
-}
-
-/** Whether a usage window is used up now: at 100% and not past its reset. */
-function usedUp(w) {
-  return Boolean(w) && Number(w.used_percent) >= 100 && !(w.resets_at && Date.parse(w.resets_at) <= Date.now());
-}
-
-/** Whether a limit Claude reported for the whole subscription is in effect now. */
-function limitInEffect(usage) {
-  return Boolean(usage.limit_reached) && !(usage.limit_resets_at && Date.parse(usage.limit_resets_at) <= Date.now());
-}
-
 /**
  * Why a subscription cannot take a task a person moves (SPEC-447 MOV-002), or null. What binds
  * the task's model decides, as on the server: a limit Claude reported for the whole subscription
@@ -203,9 +185,10 @@ export function cannotTake(account, task) {
   const usage = account.usage || {};
   const known = Boolean(task && task.model);
   const own = known ? modelWindow(usage, task.model) : null;
-  if (limitInEffect(usage) || [usage.primary, usage.secondary, own].some(usedUp)) return 'At its usage limit';
-  // Limited with nothing that binds this task: the default model's own window is the one used up.
-  return account.status === 'limited' && !known ? 'At its usage limit' : null;
+  if (limitInEffect(usage) || [usage.primary, usage.secondary, own].some((w) => usedUp(w))) return 'At its usage limit';
+  // Limited now with nothing that binds this task: the default model's own window is the one
+  // used up. What the windows say now decides, not the status stored at the last reading (SPEC-473).
+  return limitsNow(account).limited && !known ? 'At its usage limit' : null;
 }
 
 /** "5 h 40% · week 12%", or that the use is not known yet. */

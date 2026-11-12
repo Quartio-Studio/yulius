@@ -3,6 +3,7 @@
 
 import { DRAG_TAB_HINT, h, icon, iconButton, openMenu, setChildren, statusMark, popoverFocus, keepFocus, loadError, coalesce, pollPaused, prChip, skeleton, bar, skeletonOf } from './dom.js';
 import { relLong, bytes, duration, dateTime, resetLabel, compact, accountEmail, plausibleEmail } from './format.js';
+import { limitsNow } from './usage.js';
 import { sparkline, usd } from './charts.js';
 import { taskTime } from './tasktime.js';
 import { taskInfo, taskActions, activityLine, allows, otherOwner } from './status.js';
@@ -445,9 +446,11 @@ export function renderStatus(data) {
   let health = { tone: 'ok', icon: 'check', text: 'Everything is running normally' };
   if (data.contained === false) health = { tone: 'warn', icon: 'shield', text: 'Not isolated: agent sessions run without an OS sandbox' };
   if (hot) health = { tone: 'warn', icon: 'warn', text: 'The machine is under heavy load' };
+  // What each subscription's windows say now, not the status its last reading stored (SPEC-473).
+  const stateNow = new Map(accounts.map((a) => [a, limitsNow(a).state]));
   // Every subscription at a limit: tasks wait for the first window reset (ROT-010). A limit may
   // be the default model's alone (SPEC-464), so the line does not say that nothing runs.
-  if (accounts.length && accounts.every((a) => a.status === 'limited')) health = { tone: 'warn', icon: 'clock', text: 'Every subscription is at a usage limit: tasks continue when a window resets' };
+  if (accounts.length && accounts.every((a) => stateNow.get(a) === 'limited')) health = { tone: 'warn', icon: 'clock', text: 'Every subscription is at a usage limit: tasks continue when a window resets' };
   if (troubled.length) health = { tone: 'warn', icon: 'warn', text: `${troubled.length} ${troubled.length === 1 ? 'subscription needs' : 'subscriptions need'} attention` };
 
   const facts = [
@@ -465,8 +468,8 @@ export function renderStatus(data) {
       ? h('span', { class: 'status-count live', title: `${s.live_sessions} live sessions` }, h('span', { class: 'live-dot' }), `${s.live_sessions} running`)
       : h('span', { class: 'status-count' }, Number.isFinite(s.live_sessions) ? 'idle' : '—')));
 
-  const ready = accounts.filter((a) => a.status === 'ok').length;
-  const limited = accounts.filter((a) => a.status === 'limited').length;
+  const ready = accounts.filter((a) => stateNow.get(a) === 'ok').length;
+  const limited = accounts.filter((a) => stateNow.get(a) === 'limited').length;
   const accountSummary = [`${ready} ready`, limited ? `${limited} at the limit` : null, troubled.length ? `${troubled.length} need attention` : null].filter(Boolean);
 
   return [
@@ -685,7 +688,9 @@ function editableEmail(account, setEmail) {
 export function accountUsage(account, { foldable = false, open = false, rename = null, setEmail = null, showEmail = false } = {}) {
   const usage = account.usage || {};
   const provider = account.provider === 'anthropic' ? 'Claude' : account.provider;
-  const state = ACCOUNT_STATES[account.status] || { icon: 'warn', tone: 'muted', label: account.status || 'Unknown' };
+  // The state the windows give now, not the status stored at the last reading (SPEC-473 RFR-008).
+  const now = limitsNow(account);
+  const state = ACCOUNT_STATES[now.state] || { icon: 'warn', tone: 'muted', label: now.state || 'Unknown' };
   // Usage not read yet: a shimmering bar where the reset time will be (SPEC-092).
   const reading = () => [h('span', { class: 'skeleton-line', 'aria-hidden': 'true' }), h('span', { class: 'sr-only' }, 'Reading usage…')];
   const usageRow = (w, fallback) => {
