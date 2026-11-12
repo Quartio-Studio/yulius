@@ -313,12 +313,19 @@ fn a_reattached_run_knows_what_waits_in_its_queue() -> TestResult {
     let second = runtime()?;
     second.block_on(async {
         let app = build_with(&data, &fake, Arc::new(ScriptedUsage::default()), agent)?;
-        assert!(!app.queue_holds(&id), "nothing is known before the lines");
+        assert_eq!(
+            app.queue_waiting(&id),
+            0,
+            "nothing is read before the lines"
+        );
         app.reconcile().await?;
+        // The count, not "holds": a reattached run reads as holding something from the moment
+        // it is attached, before a line of it was read again.
         wait_for("the replayed queue", Duration::from_secs(30), || async {
-            app.queue_holds(&id)
+            app.queue_waiting(&id) == 1
         })
         .await?;
+        assert!(app.queue_holds(&id));
         assert_eq!(app.deps.store.attempts(&id).await?.len(), 1);
         stop(&app, &id).await
     })?;
