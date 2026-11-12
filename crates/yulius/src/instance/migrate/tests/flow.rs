@@ -2578,6 +2578,8 @@ fn a_firewall_that_cannot_be_enabled_fails_the_run_but_the_move_is_finished() ->
     );
     assert_eq!(s.run()?, 1);
     assert_eq!(outcome(&s.status()?, "firewall"), Some(HostOutcome::Failed));
+    // The old instance is held: a failed line of the new host leaves the move done.
+    assert_eq!(s.status()?.phase, "done");
     // The key is gone on both hosts: the same command has nothing more to do.
     let state = State::load(&s.opts.state_dir).ok_or("no state")?;
     assert!(state.finished && !s.remote.key);
@@ -3100,6 +3102,9 @@ fn a_move_whose_old_unit_was_not_held_is_not_finished_until_it_is() -> TestResul
     let state = State::load(&s.opts.state_dir).ok_or("no state")?;
     assert_eq!((state.cutover, state.finished), (Cutover::Moved, true));
     assert!(!s.remote.key);
+    // Its finish ran, and the move is not finished: what `--status` and the page read stands
+    // at the cutover, as after every later run.
+    assert_eq!(s.status()?.phase, "Cutover");
     // The same command, twice: the line again, and nothing is touched.
     for _ in 0..2 {
         looks_and_fails(&mut s, found)?;
@@ -3355,6 +3360,7 @@ fn a_moved_move_is_finished_there_and_not_called_finished_while_the_old_unit_run
     let state = State::load(&s.opts.state_dir).ok_or("no state")?;
     assert!(state.finished && !s.remote.key);
     assert!(s.remote.host.ran("ufw --force enable"));
+    assert_eq!(s.status()?.phase, "Cutover");
     looks_and_fails(&mut s, found)?;
     s.world.systemd.lock().map_err(|e| e.to_string())?.frozen = true;
     looks_and_finishes(&mut s, HELD_FROZEN)?;
@@ -3455,6 +3461,7 @@ fn a_recorded_start_with_a_stopped_server_that_is_not_disabled_fails_until_it_is
     // The new instance has taken over: recorded, and finished there.
     let state = State::load(&s.opts.state_dir).ok_or("no state")?;
     assert_eq!((state.cutover, state.finished), (Cutover::Moved, true));
+    assert_eq!(s.status()?.phase, "Cutover");
     looks_and_fails(&mut s, found)?;
     s.world.systemd.lock().map_err(|e| e.to_string())?.disabled = true;
     looks_and_finishes(&mut s, HELD_DOWN)?;
