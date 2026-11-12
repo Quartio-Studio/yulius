@@ -248,8 +248,9 @@ watching, steering and unblocking.
   5-hour and weekly usage read, and nobody is asked to send "continue"; its card shows the
   allowance as "Fable this week", and a task of another model can still be run on it. When
   Claude does not say when such a limit ends and no other subscription can take the task,
-  Yulius tries it once more after the next usage reading and then asks a person instead of
-  trying on (SPEC-464). Its Capacity card says what
+  Yulius tries it once more after the provider's next usage reading. Refused again, the task
+  waits for another subscription's reset when one is known, and otherwise asks a person
+  instead of trying on (SPEC-464). Its Capacity card says what
   is left, how fast it burns, the tokens it used and what they would cost at Claude API list
   prices, with a 7-day chart for each. Administrators rename each subscription in place ("work
   Max", "personal") and see the email of its Claude account wherever it is named. Connecting one

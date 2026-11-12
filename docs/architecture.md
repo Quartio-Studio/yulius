@@ -477,7 +477,8 @@ The weekly allowance of usage credits (`seven_day_overage_included`, a bucket pe
 runs on one) is the limit of the model the task is launched with, the default model when it
 names none. So is Claude Code's refusal "You're out of usage credits"
 (`apiError: "model_requires_usage_credits"`), which Claude Code 2.1.311 writes without a window
-or a reset.
+or a reset. A record that carries only the text is the model's when the text names the model or
+a way to another one ("/model to switch models"), else the subscription's.
 
 A model's limit fills that family's own weekly window in the stored usage (`weekly_opus`,
 `weekly_sonnet`, `weekly_fable`), at 100 % until the reset Claude named. The pool's policy counts
@@ -485,7 +486,9 @@ that window only for tasks of that family, so other models still run on the subs
 subscription is usable for the model again the moment the window resets. A reset is believed only
 as far as a window lasts, a week and a day ahead (`LIMIT_RESET_MAX_MS`): the limit record comes
 from the session's transcript, which is the agent's own file. Without a believable reset the
-window is full with no reset time.
+window is full with no reset time. A family that has no window of its own (Haiku, an unknown
+name) gets the subscription's limit instead (`limit_reached`), which the provider's next reading
+replaces.
 
 Such a window ends at its reset, at a new sign-in of the subscription (it was the previous
 sign-in's) or with a provider's reading: one that carries the window replaces it (the usage
@@ -500,9 +503,14 @@ recorded while a reading is under way is kept.
 
 A model's limit nothing says the end of, with no subscription the task can go to, makes the task
 wait, and the provider's reading that ends it lets the pool try the task once
-(`BLIND_LIMIT_RETRIES`). Refused the same way again with no answer in between, the task is not
-paused again: its session stays at the refusal and Yulius asks a person
-(`task.limit_without_end`), so no session is restarted at every reading with nobody told.
+(`BLIND_LIMIT_RETRIES`). Refused the same way again before the model answered (`BlindLimits`),
+the task is not started on that subscription by itself again, so no session is restarted at
+every reading with nobody told. What follows depends on what is known. When another subscription
+says when it resets, the task waits for that reset and the pool leaves the refusing subscription
+out for it, whatever its readings say meanwhile (`rotation::decide_leaving_out`). When nothing
+says when the task can go on, its session stays at the refusal and Yulius asks a person
+(`task.limit_without_end`); that request ends when the task goes on past the limit. The count is
+the task's and in memory: an answer from the model clears it, and so does a restart of Yulius.
 
 ```mermaid
 flowchart TD
@@ -515,7 +523,9 @@ flowchart TD
     M --> P
     A2 --> B{"Nowhere to go, and refused<br/>again after one retry?"}
     B -->|no| P
-    B -->|yes| N["The session stays at the refusal:<br/>Yulius asks a person"]
+    B -->|yes| W{"Does another subscription<br/>say when it resets?"}
+    W -->|yes| L["The task waits for that reset;<br/>the pool leaves this subscription out for it"]
+    W -->|no| N["The session stays at the refusal:<br/>Yulius asks a person"]
     U["Usage reading"] -->|"a provider's: replaces the windows it carries,<br/>keeps other per-model windows until their reset.<br/>A session's: the 5-hour and weekly windows only"| M
 ```
 

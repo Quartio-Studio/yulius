@@ -29,9 +29,12 @@ wrong:
 ## Decision
 
 - **The refusal is a usage limit.** The harness reads `model_requires_usage_credits` as
-  `LimitReached`, with or without `rate_limit_info`, and a record that has only the words the same
-  way. The limit path (ADR-0027, ADR-0058) then does what it does for every limit: the task moves
-  past the cut turn or waits and resumes at the reset.
+  `LimitReached`, with or without `rate_limit_info`. A record that has only the words is read
+  too: the model's when the text names the model or a way to another one ("Fable 5 requires
+  usage credits", "/model to switch models"), else the subscription's, since Claude Code uses
+  the same words for a subscription whose window and credits are both used up ("You're out of
+  usage credits · resets 3pm"). The limit path (ADR-0027, ADR-0058) then does what it does for
+  every limit: the task moves past the cut turn or waits and resumes at the reset.
 - **A limit says what it binds** (`LimitScope`): the subscription (`five_hour`, `seven_day`, an
   unknown kind) or the models of one family. A per-model cap names its family (`seven_day_opus`,
   `seven_day_sonnet`). The allowance of usage credits (`seven_day_overage_included`, a bucket
@@ -65,15 +68,21 @@ wrong:
   not written over.
 - **A subscription reads `limited` while the default model cannot run on it**: a limit Claude
   reported is in effect, or a window that binds that model is at 100 %. The capacity view counts
-  subscriptions for that model, and "Run #N on…" judges each subscription by the windows that
-  bind the task's own model, as the server does.
-- **One blind retry, then a person.** A model's limit nothing says the end of, with no
+  subscriptions for that model. "Run #N on…" judges each subscription by what binds the task's
+  own model, as the server does: the API's usage says whether a limit of the whole subscription
+  is in effect (`limit_reached`, `limit_resets_at`), and the menu reads the task's model itself
+  when its caller does not have it yet.
+- **One blind retry, then no more by itself.** A model's limit nothing says the end of, with no
   subscription the task can go to, makes the task wait; a provider's reading ends such a limit
-  and the pool tries the task once (`BLIND_LIMIT_RETRIES`). Refused the same way again with no
-  answer from the agent in between, the task is not paused again: its session stays at the
-  refusal, and Yulius asks a person in the terminal and under Needs you
-  (`task.limit_without_end`). Further readings start nothing; the request ends when the task
-  goes on past the limit.
+  and the pool tries the task once (`BLIND_LIMIT_RETRIES`). Refused the same way again before
+  the model answered, the task is not started on that subscription by itself again. When another
+  subscription says when it resets, the task waits for that reset, and the pool leaves the
+  refusing subscription out for this task whatever its readings say
+  (`rotation::decide_leaving_out`). When nothing says when the task can go on, its session stays
+  at the refusal, and Yulius asks a person in the terminal and under Needs you
+  (`task.limit_without_end`); further readings start nothing, and the request ends when the task
+  goes on past the limit. The bound is for a model's limit: a limit of the subscription ends by
+  what a reading shows of its windows.
 - **A goal pause at a limit is the limit's.** A pause notice that follows a usage limit or a
   refused subscription in the same turn opens no Needs you and writes no
   `task.goal_retries_spent` while Yulius takes the task on, live (`goal_retry_observed`, by the
@@ -87,6 +96,8 @@ wrong:
   of that: the runtime keeps when Claude Code recorded the limit, and an entry written at or
   after it says the limit was asked about. Reading the same pause again (a restart replays it)
   then only puts the task back under Needs you; a refusal after a later prompt is a new limit.
+  When Yulius asks a person about the limit itself (a limit nothing says the end of), the pause
+  written there adds nothing and is not asked about, read before or after (`Asked`).
 
 ## Alternatives
 
@@ -115,6 +126,13 @@ wrong:
 - **An assumed reset for a limit nothing says the end of** (an hour ahead, kept across
   readings). It bounds the retries too, but shows a made-up time as "Resets at" on the card and
   in the pause, and still never tells anyone. Rejected for the retry count.
+- **Ask a person whenever the retry is refused**, also when another subscription says when it
+  resets. The task would sit at its refusal past that reset until someone moved it, where the
+  pool can take it on by itself. Rejected: it waits for the known reset.
+- **Keep the pause and let the pool decide as for any paused task** (round 2's first version of
+  that case). Each reading of the refusing subscription ended its limit, so the session was
+  started there and refused again, every few minutes until the other one's reset. Rejected for
+  leaving the subscription out for that task.
 - **Tell "used up" from "switched off" by Claude's `overageDisabledReason`.** Claude Code 2.1.311
   records carry none, and a refusal whose body alone says credits are required names no window.
   Left to the probe of task #451, which reads the model's state itself.
@@ -137,9 +155,14 @@ wrong:
   a subscription whose sessions reported usage in the last 90 s, so on a busy subscription that
   can take a while.
 - A subscription on which a model can never run (credits switched off) and that says no reset
-  gets one refused request from that model's task after each provider reading: the task moves
-  on, or with nowhere to go is tried once more and then asks a person. The count of blind
-  retries is in memory: a restart of Yulius allows one more.
+  gets one refused request from each task of that model placed on it after a provider reading:
+  the task moves on, or with nowhere to go is tried once more and then waits for a known reset
+  elsewhere or asks a person. What a task remembers of such limits is in memory: a restart of
+  Yulius allows one more retry.
+- The reset's bound leaves this: a record forged in a session's transcript with a reset up to
+  eight days ahead keeps that model off the subscription until then, across readings, and moves
+  the task that "hit" it to the next subscription. A new sign-in of the subscription ends it;
+  task #451's refresh will re-read the model's state.
 - A refusal Claude Code writes no goal notice for (a queued check-in while the goal is paused
   already) has no held pause: a move refused there leaves the task reading Working at its
   refusal, the earlier request still open, as every limit without a goal notice did before.

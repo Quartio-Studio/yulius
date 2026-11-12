@@ -20,8 +20,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   task of another model go there. The goal pause that follows a usage limit opens no Needs you,
   unless the move past the limit is refused and the session stays there. When Claude names no
   reset (or one further ahead than a window lasts, which is not believed), the limit ends with
-  the next usage reading; a task with nowhere else to go is tried once more and then asks a
-  person instead of being restarted at every reading. A limit a person lifts early (bought
+  the provider's next reading; a task with nowhere else to go is tried once more, and refused
+  again it waits for another subscription's reset when one is known, or asks a person, instead
+  of being restarted at every reading. The API's `usage` gains `limit_reached` and
+  `limit_resets_at` (a limit of the whole subscription). A limit a person lifts early (bought
   credits) stays until its reset or a new sign-in for now; the Subscriptions page's manual
   refresh is task #451.
 - A session that works on after a restart shows the Claude Code it runs with the first record

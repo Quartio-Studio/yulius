@@ -1064,9 +1064,11 @@ Vidoc off, it also says `Vidoc scans are switched off for the instance`.
    run on it. A usage reading does not end that limit, so one lifted early (credits bought)
    holds until its reset or until the subscription is signed in again. When Claude names no
    reset (an older Claude Code, or credits switched off), the card shows no reset time, the
-   next usage reading of the subscription ends the limit, and a task with nowhere else to go is
-   tried once more; refused again, it is under Needs you until a person runs it elsewhere or
-   sends it a message (audit `task.limit_without_end`; SPEC-464).
+   provider's next reading of the subscription ends the limit (a session's own reading does
+   not), and a task with nowhere else to go is tried once more. Refused again, it waits for
+   another subscription's reset when one is known, off the subscription that refused it;
+   otherwise it is under Needs you until a person runs it elsewhere or sends it a message
+   (audit `task.limit_without_end`; SPEC-464).
    Do this before importing: until a Claude account is usable, Yulius refuses every agent start a
    person asks for, Start onboarding included (SPEC-246, ADR-0190).
 6. Import or create projects (sandboxes). Product and Studio are detected and get the `product` and
