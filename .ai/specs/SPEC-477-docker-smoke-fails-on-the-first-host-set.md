@@ -270,8 +270,11 @@ from `dev` `0dd7a58a5` ("before") and from this branch at `8b5a87815`, the fix's
 - `scripts/dev check`: passed. `scripts/dev security`: "Security scan disabled: Vidoc is turned
   off in Yulius, for this project or the whole instance; nothing was scanned." (exit 0; disabled,
   not passed).
-- `scripts/dev ci` at `7fb0900bc` (the code as delivered): passed, exit 0; its test stage ran
-  4031 tests, 4031 passed, 16 skipped.
+- `scripts/dev ci` at `2bda0078b` (the code as delivered): passed, exit 0; its test stage ran
+  4031 tests, 4031 passed, 16 skipped. It passed the same way at `7fb0900bc` and, run by the
+  reviewer, at `047c76c5e`.
+- At `2bda0078b`, with the skip in `Manager::adopt` switched off in the working tree, the test
+  fails with `left: "mode:engine:"` as before, and no stand-in front is left running.
 - Two earlier runs did not pass. At `26117a086` the tests passed (4031 of 4031) and the
   documentation step refused a link from `Manager::adopt`'s public documentation to the private
   `smoke_runs` (`rustdoc::private-intra-doc-links`); `7fb0900bc` names it without a link. At
@@ -287,6 +290,34 @@ from `dev` `0dd7a58a5` ("before") and from this branch at `8b5a87815`, the fix's
   iterations, and it passed in both later full runs. That another listener took the port is read
   from the test and its output, not proven by a probe. No issue tracks it; it is recorded in a
   comment on issue #1160 (this task opens no issue).
+
+**Review**
+
+An independent review in a fresh session (read-only, skill `om-code-review`) of `origin/dev...HEAD`
+at `047c76c5e`: approve, no blocker and no major, one minor and three nits, all own. It ran the
+gate itself, ran the test 200 times, and ran four variants of the rule in a scratch copy (the
+skip removed, the name alone, only the main holder, only the production holder): each fails the
+test. Its summary, as written: "The cause named in SPEC-477 is the real one and the fix is at
+the only code that takes over another manager's holder; the regression test fails without it
+with the engine's answer where the refusal is expected, and four mutants of the rule are all
+caught. What remains is wording: the records state the Settings → Instance restart case more
+broadly than the code supports, and three small inaccuracies in the ADR, the Evidence and the
+test's cleanup."
+
+All four are answered in `2bda0078b`:
+
+- Minor, the Settings → Instance case stated too broadly: right. The stopping server ends that
+  smoke (`kill_on_drop`). Checking it showed a second overstatement the review had not named:
+  `yulius instance migrate` waits for the new instance before its smoke. Both are now under
+  "What it does not break" in Context, and the ADR, its index line and the change log name the
+  case that was reproduced instead (a restart beside a hand-run smoke).
+- Nit, "the rule the leftovers scan uses": the records now say the name rule is shared and the
+  process check is the manager's own, and Decisions lists how the three checks differ.
+- Nit, "in the first during phase 2": corrected from the log; all three scans fell in the
+  Docker-off phase.
+- Nit, a failed setup step could leave the test's refusing front running: the test now starts no
+  front before its last fallible setup step and asserts only after the fronts are ended.
+- Its suggestion to also require `--docker-smoke` in the command line is not taken (Decisions).
 
 **Not tested here.** Hosts other than Ubuntu 24.04 (the issue also saw 26.04 and Debian 13; the
 changed code has nothing of the host in it). That `yulius instance migrate`'s smoke and the
