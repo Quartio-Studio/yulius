@@ -1051,6 +1051,68 @@ async fn a_running_but_idle_subscription_is_read_again_when_its_reading_is_old()
     Ok(())
 }
 
+/// SPEC-473 RFR-006: Claude Code's status line carries a window "only while the API reports it
+/// and its resets_at has not passed", so a session's reading may hold one window only, and it
+/// still says the usage was seen just now. Such a subscription was never asked about by the
+/// round while its sessions ran ("two subscriptions with live runs had no 5-hour reading at
+/// all"). The round reads a subscription whose stored usage lacks the 5-hour or the weekly
+/// window, or holds one past its reset, however fresh it is; one that has both is left alone,
+/// and the round's own pace still bounds the requests.
+#[tokio::test]
+async fn the_round_reads_a_window_the_sessions_do_not_report() -> TestResult {
+    let ahead = |h: &Harness| now(h).plus_millis(3 * HOUR).0;
+    let window = |percent: f64, minutes: u32, resets_at: Option<i64>| json!({"used_percent": percent, "window_minutes": minutes, "resets_at": resets_at});
+    type Stored =
+        fn(&Harness, &dyn Fn(f64, u32, Option<i64>) -> serde_json::Value, i64) -> serde_json::Value;
+    let cases: [(&str, Stored, usize); 5] = [
+        (
+            "no 5-hour window",
+            |_, w, ahead| json!({"secondary": w(40.0, 10_080, Some(ahead))}),
+            1,
+        ),
+        (
+            "no weekly window",
+            |_, w, ahead| json!({"primary": w(40.0, 300, Some(ahead))}),
+            1,
+        ),
+        (
+            "a 5-hour window past its reset",
+            |h, w, ahead| json!({"primary": w(100.0, 300, Some(now(h).0 - 1)), "secondary": w(40.0, 10_080, Some(ahead))}),
+            1,
+        ),
+        (
+            "a weekly window past its reset",
+            |h, w, ahead| json!({"primary": w(40.0, 300, Some(ahead)), "secondary": w(100.0, 10_080, Some(now(h).0))}),
+            1,
+        ),
+        (
+            "both windows, one with no reset known",
+            |_, w, ahead| json!({"primary": w(40.0, 300, None), "secondary": w(40.0, 10_080, Some(ahead))}),
+            0,
+        ),
+    ];
+    for (what, stored, read) in cases {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let h = harness_with(HarnessOptions {
+            usage: Some(Arc::new(CountingProbe(Arc::clone(&calls)))),
+            ..HarnessOptions::default()
+        })?;
+        seed(&h).await?;
+        advance(&h, 10 * HOUR);
+        // Seen a second ago, as a working session keeps it.
+        let mut usage = stored(&h, &window, ahead(&h));
+        usage["observed_at"] = json!(now(&h).0 - 1_000);
+        add_account(&h, "acc-busy", Some(usage.to_string())).await?;
+        let mut not_before = std::collections::HashMap::new();
+        h.app.refresh_usage_round(&mut not_before).await;
+        assert_eq!(calls.load(Ordering::SeqCst), read, "{what}");
+        // What it read lacks the weekly window too: only the round's pace holds it back now.
+        h.app.refresh_usage_round(&mut not_before).await;
+        assert_eq!(calls.load(Ordering::SeqCst), read, "{what}: paced");
+    }
+    Ok(())
+}
+
 /// Answers every request with the 5-hour window at 55 % and the weekly Opus cap at 30 %.
 struct OpusCapProbe;
 
