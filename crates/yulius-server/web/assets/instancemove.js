@@ -139,11 +139,21 @@ function attentionBlocks(lines, keyShown = false) {
   ];
 }
 
+/**
+ * Where each phase of a move stands when the command says `phase`: `done`, `current` or `next`.
+ * A move that is `done` has every phase behind it; a phase that is not a move's own (an
+ * abort's) leaves none in progress.
+ */
+export function phaseStates(phase) {
+  const index = phase === 'done' ? PHASES.length : PHASES.findIndex(([name]) => name === phase);
+  return PHASES.map((_, i) => (index < 0 ? 'next' : i < index ? 'done' : i === index ? 'current' : 'next'));
+}
+
 /** The phases of a running move, as the update's stepper shows its own. */
 function stepper(phase) {
-  const index = Math.max(0, PHASES.findIndex(([name]) => name === phase));
+  const states = phaseStates(phase);
   return h('ol', { class: 'update-steps move-phases', 'aria-label': 'Phases of the move' }, PHASES.map(([, title, text], i) => {
-    const status = i < index ? 'done' : i === index ? 'current' : 'next';
+    const status = states[i];
     return h('li', { class: ['update-step', `update-step-${status}`], 'aria-current': status === 'current' ? 'step' : null },
       h('span', { class: 'update-step-mark', 'aria-hidden': 'true' }, status === 'done' ? icon('check', { size: 12 }) : status === 'current' ? h('span', { class: 'spinner' }) : String(i + 1)),
       h('div', { class: 'update-step-body' },

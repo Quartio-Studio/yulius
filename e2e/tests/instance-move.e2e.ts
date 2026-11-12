@@ -430,6 +430,26 @@ test('a plan with a failed line offers no move, and a failed preparation says so
   expect(await axeViolations(browser)).toEqual([]);
 });
 
+// MVB-033: the stepper says where a move is for every phase the command names: all of it done
+// once the move is, and no step in progress for a phase that is not a move's (an abort).
+test('the phases of a move are told for every phase the command names', async ({ app, browser }) => {
+  await app.open(mock('/admin/instance', QUICK));
+  const told = await browser.evaluate(async () => {
+    const { phaseStates } = await import('/assets/instancemove.js' as string) as { phaseStates(phase: string): string[] };
+    return ['Plan', 'Prepare', 'Copy', 'Cutover', 'Finish', 'done', 'Abort', 'aborted'].map((phase) => `${phase}: ${phaseStates(phase).join(' ')}`);
+  });
+  expect(told).toEqual([
+    'Plan: current next next next next',
+    'Prepare: done current next next next',
+    'Copy: done done current next next',
+    'Cutover: done done done current next',
+    'Finish: done done done done current',
+    'done: done done done done done',
+    'Abort: next next next next next',
+    'aborted: next next next next next',
+  ]);
+});
+
 // MVB-030, MVB-033: what is typed is checked where it was typed; a helper that does not answer,
 // refuses, or is not there is said with what to do.
 test('a field outside the rules is said in place, and a helper that is silent, refuses or is missing is said', async ({ app, browser, screen }) => {

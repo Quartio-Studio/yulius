@@ -12,7 +12,7 @@ pub struct MoveStatus {
     pub id: String,
     /// The new host.
     pub target: String,
-    /// `Plan`, `Prepare`, `Cutover`, `Finish`, `Abort`, `done` or `aborted`.
+    /// `Plan`, `Prepare`, `Copy`, `Cutover`, `Finish`, `Abort`, `done` or `aborted`.
     pub phase: String,
     /// The checklist so far.
     pub lines: Vec<HostLine>,
