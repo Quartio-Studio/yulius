@@ -440,10 +440,15 @@ export function mountAccountsPage(ctx, route) {
     const live = card && card.querySelector('.account-card');
     if (live) live.dispatchEvent(new CustomEvent('yulius:usage-changed'));
   };
+  /** A card on the page offers Refresh: a signed-in subscription is shown (not while the list loads, nor when it could not be read). */
+  const anyToRead = () => Boolean(host.querySelector('.account-refresh'));
   const paintRefreshAll = () => {
-    const none = ![...shown.values()].some(signedIn);
-    refreshAllButton.lastElementChild.textContent = readingAll ? 'Reading…' : 'Refresh all';
-    for (const [name, value] of [['aria-busy', readingAll ? 'true' : null], ['aria-disabled', readingAll || none ? 'true' : null], ['title', none && !readingAll ? 'No subscription is signed in' : null]]) {
+    const none = !anyToRead();
+    // What it does stays in its name while it runs ("Reading… all subscriptions").
+    setChildren(refreshAllButton.lastElementChild, readingAll ? ['Reading…', h('span', { class: 'sr-only' }, ' all subscriptions')] : 'Refresh all');
+    // Why it is off is said only over cards that are shown with none signed in.
+    const why = none && !readingAll && host.querySelector('.account-card') ? 'No subscription is signed in' : null;
+    for (const [name, value] of [['aria-busy', readingAll ? 'true' : null], ['aria-disabled', readingAll || none ? 'true' : null], ['title', why]]) {
       if (value === null) refreshAllButton.removeAttribute(name);
       else refreshAllButton.setAttribute(name, value);
     }
@@ -452,16 +457,16 @@ export function mountAccountsPage(ctx, route) {
     while (reading < READ_AT_ONCE && queued.length) {
       const { id, done } = queued.shift();
       reading += 1;
-      const before = (shown.get(id) || {}).usage;
       ctx.api.post(`/api/admin/accounts/${enc(id)}/usage`).then((fresh) => ({ fresh }), (error) => ({ error })).then((outcome) => {
         reading -= 1;
         const asked = reads.get(id).asked;
         reads.delete(id);
         if (!gone) {
           const account = shown.get(id);
-          // Only a reading moves the time the usage was read: the same time says that Claude
-          // gave none (a sign-in that may not read usage is not a failure).
-          const unread = Boolean(outcome.fresh) && ((outcome.fresh.usage || {}).observed_at || null) === ((before || {}).observed_at || null);
+          // The answer says whether Claude gave a usage reading (a sign-in that may not read
+          // its usage is not a failure). Not told by the reading's time: the server writes it
+          // to the second, and two readings may share one.
+          const unread = Boolean(outcome.fresh) && outcome.fresh.usage_read === false;
           if (outcome.fresh && account) Object.assign(account, { status: outcome.fresh.status, usage: outcome.fresh.usage, last_error: outcome.fresh.last_error });
           // What a person asked for is said on the card for the visit; the page's own reading
           // of an old card says nothing.
@@ -505,7 +510,7 @@ export function mountAccountsPage(ctx, route) {
   };
   async function refreshAll() {
     const accounts = [...shown.values()].filter(signedIn);
-    if (readingAll || accounts.length === 0) return;
+    if (readingAll || accounts.length === 0 || !anyToRead()) return;
     readingAll = true;
     paintRefreshAll();
     const outcomes = await Promise.all(accounts.map((account) => read(account.id, true)));
@@ -513,11 +518,16 @@ export function mountAccountsPage(ctx, route) {
     if (gone) return;
     paintRefreshAll();
     const failed = outcomes.filter((outcome) => outcome.error).length;
+    const readAgain = outcomes.filter((outcome) => outcome.fresh && !outcome.unread).length;
     const all = accounts.length;
+    const subscriptions = all === 1 ? 'subscription' : 'subscriptions';
     if (failed) {
-      toast(`${failed} of ${all} ${all === 1 ? 'subscription' : 'subscriptions'} could not be read: each card says why.`, { kind: 'error', timeout: 8000 });
+      toast(`${failed} of ${all} ${subscriptions} could not be read: each card says why.`, { kind: 'error', timeout: 8000 });
       refresh();
-    } else toast(`Usage read again for ${all} ${all === 1 ? 'subscription' : 'subscriptions'}.`, { kind: 'ok' });
+    } else if (readAgain === all) toast(`Usage read again for ${all} ${subscriptions}.`, { kind: 'ok' });
+    // Those Claude gave no reading for are not counted as read again; their cards say so.
+    else if (readAgain === 0) toast('Claude gave no new usage reading: each card says so.');
+    else toast(`Usage read again for ${readAgain} of ${all} ${subscriptions}: Claude gave no new reading for the rest.`);
     loadCapacity();
   }
 
@@ -526,14 +536,15 @@ export function mountAccountsPage(ctx, route) {
   // the first one when that read failed.
   const firstCapacity = loadCapacity();
   let rendered = false;
-  const reload = loader(host, 'the subscriptions', () => ctx.api.get('/api/admin/accounts'), (list) => {
+  // Refresh all follows what the list shows: painted once each read of the list is on the page.
+  paintRefreshAll();
+  const reload = loader(host, 'the subscriptions', () => ctx.api.get('/api/admin/accounts').finally(() => setTimeout(paintRefreshAll, 0)), (list) => {
     if (rendered) loadCapacity();
     else firstCapacity.then((shown) => { if (!shown) loadCapacity(); });
     rendered = true;
     const accounts = (Array.isArray(list) ? list : []).sort((a, b) => (a.label || '').localeCompare(b.label || ''));
     shown.clear();
     for (const account of accounts) shown.set(account.id, account);
-    paintRefreshAll();
     if (accounts.length === 0) return emptyState({ iconName: 'user', title: 'No subscriptions yet', text: 'Add a Claude subscription for the agents; you finish Claude’s own sign-in in a terminal here.', action: createButton('Add subscription', () => add()) });
     return h('div', { class: 'grid-2' }, accounts.map((account) => {
       // The name is edited in place (SPEC-244 SUB-001); the server trims and validates it.
@@ -614,6 +625,8 @@ export function mountAccountsPage(ctx, route) {
   const off = ctx.store.on('account', refresh);
   const destroy = () => {
     gone = true;
+    // The readings that wait are dropped with the page; those under way end unheard.
+    queued.length = 0;
     off();
   };
   // Settings → "Add subscription" lands here with ?add=1: open the dialog right away.
