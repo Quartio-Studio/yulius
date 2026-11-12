@@ -871,6 +871,122 @@ fn a_scheduled_prompt_gets_its_hook_at_the_hand_over_and_a_meta_record() -> Test
     Ok(())
 }
 
+/// SPEC-479 SWQ-005: a waiting line that begins with `/stuck ` stands for an entry Claude Code
+/// never takes out of its queue (some of its own notifications): it gets its `enqueue` record
+/// and no prompt hook, the turn's end hands on what else waits and not it, and it is never
+/// answered. A turn at whose end only such an entry waits closes like one with an empty queue.
+#[test]
+fn a_stuck_entry_is_recorded_and_never_handed_on() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let (dir, path) = (dir.path(), dir.path().join("s-q.jsonl"));
+    let mut child = held_agent(dir, &["--queue-prompts"])?;
+    let mut stdin = child.stdin.take().ok_or("no stdin")?;
+    stdin.write_all(b"first\n")?;
+    until("the first prompt's hook", || hooks_logged(dir).len() == 1)?;
+    stdin.write_all(b"/stuck a notification\n")?;
+    until("the stuck entry's record", || shapes(&path).len() == 2)?;
+    stdin.write_all(b"second\n")?;
+    until("the waiting prompt's record", || shapes(&path).len() == 3)?;
+    std::fs::write(dir.join("hold"), "")?;
+    until("the handed-on turn's end", || shapes(&path).len() == 11)?;
+    // A turn of its own, at whose end nothing but the stuck entry waits.
+    stdin.write_all(b"third\n")?;
+    until("the third turn's end", || shapes(&path).len() == 15)?;
+    stdin.write_all(b"/exit\n")?;
+    drop(stdin);
+    let output = child.wait_with_output()?;
+    let text = stdout(&output);
+    assert_eq!(
+        hooks_logged(dir),
+        [
+            "UserPromptSubmit first",
+            "UserPromptSubmit second",
+            "Stop",
+            "Stop",
+            "UserPromptSubmit third",
+            "Stop",
+            "SessionEnd"
+        ],
+        "nobody entered the stuck entry: no prompt hook"
+    );
+    assert_eq!(
+        shapes(&path),
+        [
+            "user - first",
+            "enqueue a notification",
+            "enqueue second",
+            "assistant",
+            // One hand-over, of the prompt: the stuck entry stays.
+            "dequeue -",
+            "stop_hook_summary",
+            "turn_duration",
+            "user queued second",
+            "assistant",
+            "stop_hook_summary",
+            "turn_duration",
+            "user - third",
+            "assistant",
+            "stop_hook_summary",
+            "turn_duration",
+        ]
+    );
+    assert!(text.contains("QUEUED: a notification"), "{text}");
+    assert!(text.contains("ECHO: second"), "{text}");
+    assert!(!text.contains("ECHO: a notification"), "{text}");
+    assert!(!text.contains("ECHO: /stuck"), "{text}");
+    Ok(())
+}
+
+/// SPEC-479 SWQ-005: with `--queue-prompts`, `--limit-after N` cuts the handed-on turn that
+/// would be the Nth: its prompt records are written, then the usage-limit record; it is not
+/// answered and runs no Stop hook, as a turn a limit cuts in Claude Code.
+#[test]
+fn a_handed_on_turn_can_be_cut_by_the_limit() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let (dir, path) = (dir.path(), dir.path().join("s-q.jsonl"));
+    let mut child = held_agent(dir, &["--queue-prompts", "--limit-after", "2"])?;
+    let mut stdin = child.stdin.take().ok_or("no stdin")?;
+    stdin.write_all(b"first\n")?;
+    until("the first prompt's hook", || hooks_logged(dir).len() == 1)?;
+    stdin.write_all(b"second\n")?;
+    until("the waiting prompt's record", || shapes(&path).len() == 2)?;
+    std::fs::write(dir.join("hold"), "")?;
+    until("the limit's record", || shapes(&path).len() == 8)?;
+    stdin.write_all(b"/exit\n")?;
+    drop(stdin);
+    let output = child.wait_with_output()?;
+    let text = stdout(&output);
+    assert_eq!(
+        hooks_logged(dir),
+        [
+            "UserPromptSubmit first",
+            "UserPromptSubmit second",
+            "Stop",
+            "SessionEnd"
+        ],
+        "the first turn's Stop alone: a turn the limit cuts runs none"
+    );
+    assert_eq!(
+        shapes(&path),
+        [
+            "user - first",
+            "enqueue second",
+            "assistant",
+            "dequeue -",
+            "stop_hook_summary",
+            "turn_duration",
+            "user queued second",
+            "assistant",
+        ]
+    );
+    let records = read_jsonl(&path)?;
+    assert_eq!(records[7]["apiError"], "usage_limit_reached");
+    assert!(text.contains("ECHO: first"), "{text}");
+    assert!(text.contains("LIMIT REACHED"), "{text}");
+    assert!(!text.contains("ECHO: second"), "{text}");
+    Ok(())
+}
+
 /// SPEC-471 CCQ-005: without the option the agent is as before: a line entered while a turn
 /// runs is read after that turn, gets its prompt hook then, and leaves no queue record.
 #[test]

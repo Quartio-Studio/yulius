@@ -182,7 +182,14 @@
 //! by 60 s, so a test says when each happens. The agent says when it waits: `TURN HELD` (for
 //! `--turn-hold-file`, at each turn that finds the file missing), `QUEUE HELD` and `QUEUED
 //! TURN HELD`. A command line (`/exit`, `/work …`) entered during such a turn is queued like
-//! any other text and echoed, and `--limit-after` is not applied to such turns. A waiting line
+//! any other text and echoed. `--limit-after N` is not applied to the turn of a line entered
+//! at rest; it cuts a handed-on turn that would be the Nth or a later one: its prompt records
+//! are written, then `LIMIT REACHED` and the limit's record, with no answer and no Stop hook
+//! (a turn a usage limit cuts in Claude Code runs none), and what was entered meanwhile stays
+//! unanswered. A waiting line that begins with `/stuck ` stands for an entry Claude Code never
+//! takes out of its queue, as it does with some of its own notifications (SPEC-479): its
+//! `enqueue` record with the rest of the line, no prompt hook, `QUEUED: <rest>`; no turn's end
+//! hands it on and it is never answered. A waiting line
 //! that begins with `/scheduled ` stands for a prompt Claude Code scheduled for itself, in
 //! the order seen with 2.1.322: when it fires, a `scheduled_task_fire` record and the
 //! `enqueue` of the rest of the line, with no prompt hook (nobody pressed Enter); at the
@@ -280,9 +287,16 @@ const MAX_STOP_BLOCKS: u32 = 16;
 /// How a waiting line begins that stands for a prompt Claude Code scheduled for itself.
 const SCHEDULED: &str = "/scheduled ";
 
-/// What a waiting line says: itself, or the prompt a `/scheduled` line stands for.
+/// How a waiting line begins that stands for an entry Claude Code never takes out of its
+/// queue (some of its own notifications).
+const STUCK: &str = "/stuck ";
+
+/// What a waiting line says: itself, or the prompt a `/scheduled` line stands for, or the
+/// entry a `/stuck` line stands for.
 fn said(line: &str) -> &str {
-    line.strip_prefix(SCHEDULED).unwrap_or(line)
+    line.strip_prefix(SCHEDULED)
+        .or_else(|| line.strip_prefix(STUCK))
+        .unwrap_or(line)
 }
 /// How long a paused session waits for `--paused-wake-file`: a test may restart its server in
 /// between, and a leaked fixture still ends.
@@ -1567,8 +1581,11 @@ impl Waiting<'_> {
     /// then waits, with its `enqueue` record.
     fn take_entered(&mut self) -> io::Result<()> {
         while let Some(line) = self.entered.meanwhile() {
-            // What Claude Code scheduled for itself was typed by nobody: no prompt hook.
-            let typed = !line.starts_with(SCHEDULED);
+            // What Claude Code scheduled for itself, and a notification of its own, were
+            // typed by nobody: no prompt hook.
+            let stuck = line.starts_with(STUCK);
+            let scheduled = line.starts_with(SCHEDULED);
+            let typed = !scheduled && !stuck;
             if let Some(reason) = self.hooks.filter(|_| typed).and_then(|h| h.prompt(&line)) {
                 say(&format!("PROMPT BLOCKED: {reason}"))?;
                 continue;
@@ -1581,7 +1598,7 @@ impl Waiting<'_> {
                         wait_for_file(file, MAX_WORK_MS);
                     }
                     if let Ok(t) = transcript.lock() {
-                        if !typed {
+                        if scheduled {
                             let _ = t.scheduled_fire();
                         }
                         let _ = t.queue_operation("enqueue", Some(&text));
@@ -1595,7 +1612,10 @@ impl Waiting<'_> {
                 }
             }
             say(&format!("QUEUED: {}", said(&line)))?;
-            self.lines.push(line);
+            // A stuck entry has its record and nothing more: no turn's end hands it on.
+            if !stuck {
+                self.lines.push(line);
+            }
         }
         Ok(())
     }
@@ -1730,10 +1750,42 @@ fn queued_echo(
             let _ = hooks.and_then(|h| h.prompt(prompt));
         }
         write(&mut |t| turn.iter().try_for_each(|one| t.queued_prompt(one)))?;
+        // The limit cuts the handed-on turn (`--limit-after`): its prompts are recorded and
+        // not answered, and a turn the limit cuts runs no Stop hook.
+        if options
+            .limit_after
+            .is_some_and(|limit| state.turns + 1 >= limit)
+        {
+            state.turns += 1;
+            return limit_reached(options, transcript, state);
+        }
         if !scheduled.is_empty() {
             write(&mut |t| t.tool_use())?;
         }
     }
+}
+
+/// A usage limit stops the agent (`--limit-after`): `LIMIT REACHED` and the limit's record, or
+/// the refusal `--access-lost` or `--credits-out` stands for.
+fn limit_reached(
+    options: &Options,
+    transcript: Option<&Arc<Mutex<Transcript>>>,
+    state: &mut EchoState,
+) -> io::Result<()> {
+    state.limited = true;
+    say("LIMIT REACHED")?;
+    if let Some(transcript) = transcript
+        && let Ok(mut t) = transcript.lock()
+    {
+        if options.access_lost {
+            t.access_lost()?;
+        } else if options.credits_out {
+            t.credits_out(options.credits_reset_s)?;
+        } else {
+            t.limit()?;
+        }
+    }
+    Ok(())
 }
 
 /// Starts a background shell shaped like Claude Code's Bash tool (`run_in_background`) and wakes
@@ -2752,19 +2804,7 @@ fn echo_message(
         .limit_after
         .is_some_and(|limit| state.turns >= limit)
     {
-        state.limited = true;
-        say("LIMIT REACHED")?;
-        if let Some(transcript) = transcript
-            && let Ok(mut t) = transcript.lock()
-        {
-            if options.access_lost {
-                t.access_lost()?;
-            } else if options.credits_out {
-                t.credits_out(options.credits_reset_s)?;
-            } else {
-                t.limit()?;
-            }
-        }
+        limit_reached(options, transcript, state)?;
         if let (Some(ms), Some(transcript)) = (options.limit_continues_ms, transcript) {
             continue_after_limit(
                 ms,

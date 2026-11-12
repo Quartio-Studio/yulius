@@ -70,8 +70,8 @@ handed-on prompt whose turn meets the limit is not lost either.
 ## Plan
 
 - [x] Spec SPEC-479 written and validated, the defect reproduced with real processes
-- [ ] The queue knows what a turn's end left behind (domain, watcher, replay)
-- [ ] A pending move stays at a turn's end while a prompt waits: the regression tests pass
+- [x] The queue knows what a turn's end left behind (domain, watcher, replay)
+- [x] A pending move stays at a turn's end while a prompt waits: the regression tests pass
 - [ ] An entry a turn's end left behind does not keep the move (fake agent `/stuck`)
 - [ ] A turn held for capacity is released in place, not moved, while a prompt waits
 - [ ] A handed-on turn the limit cuts moves past the limit with its prompt (fake agent)
