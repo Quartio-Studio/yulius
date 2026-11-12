@@ -347,11 +347,12 @@ impl App {
     /// to a turn not seen yet, as the run's lines read so far say (SPEC-471 CCQ-001, CCQ-003):
     /// a prompt entered while a turn runs, a message Yulius typed meanwhile, a notification of
     /// Claude Code's own. The process holds it in memory alone, and a resumed session does not
-    /// get it back. Public for tests.
+    /// get it back. A run reattached after a restart of the server counts as holding
+    /// something until its lines were read again: nothing is known before. Public for tests.
     #[must_use]
     pub fn queue_holds(&self, task_id: &TaskId) -> bool {
         self.existing_runtime(task_id)
-            .is_some_and(|runtime| runtime.queue().holds())
+            .is_some_and(|runtime| runtime.queue_may_hold())
     }
 
     /// How many entries wait in Claude Code's queue of the task's session, as read so far

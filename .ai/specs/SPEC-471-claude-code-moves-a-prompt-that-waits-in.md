@@ -85,7 +85,7 @@ Where things are in Yulius:
 
 | ID | Requirement |
 | --- | --- |
-| CCQ-001 | **Yulius knows what waits in Claude Code's queue.** The watcher reads the `queue-operation` records of the run at hand: `enqueue` adds an entry, `dequeue` hands one on to a turn of its own, `remove`, `popAll` and `popOne` take one out without one. The count never goes below zero and an operation Yulius does not know changes nothing. A run starts with an empty queue: a resumed session's earlier lines are not read as the run's, and what the run before left waiting went with its process. A run reattached after a restart of the server knows the same from its own lines. |
+| CCQ-001 | **Yulius knows what waits in Claude Code's queue.** The watcher reads the `queue-operation` records of the run at hand: `enqueue` adds an entry, `dequeue` hands one on to a turn of its own, `remove`, `popAll` and `popOne` take one out without one. The count never goes below zero and an operation Yulius does not know changes nothing. A run starts with an empty queue: a resumed session's earlier lines are not read as the run's, and what the run before left waiting went with its process. A run reattached after a restart of the server knows the same from its own lines; until they were read again its queue is not known, which counts as holding something. |
 | CCQ-002 | **A session with something in its queue is not restarted for a newer Claude Code**, at a Stop the gate blocks or a goal session works on, and idle after a clean Stop. Every entry counts: a person's prompt, a message Yulius typed, Claude Code's own notification. The session moves at a later turn's end, once the queue is empty, or at its next start. A prompt taken into the running turn at a tool result is no longer waiting. The queue is asked once the turn's end read the turn's lines. |
 | CCQ-003 | **A hand-over is not rest.** From a `dequeue` until the prompt record of the turn it starts was read, the session counts as holding that entry: between the two its queue reads empty while the turn that took the prompt is not known yet. |
 | CCQ-004 | **A prompt that just went on keeps the session.** Claude Code writes where a prompt went (a turn of its own, or its queue) once the prompt's hook returned, and the record reaches the file a moment later. A turn's end less than `claude_code_queue_record_ms` (1 s by default) after a prompt from the prompt box went on leaves the session where it is, and so does one during whose look at the session such a prompt goes on: the record may not be in the lines read. The session moves at a later turn's end. Claude Code's own wake-ups come through no prompt box and change nothing here. |
@@ -111,7 +111,8 @@ Where things are in Yulius:
   in order, two `enqueue` and one `dequeue` leave one entry; a `dequeue` with nothing counted
   leaves none. A run that resumed a session whose earlier run left an `enqueue` behind starts
   with an empty queue. A run whose lines are read again after a restart of the server knows
-  the entry that waits.
+  the entry that waits; where it is attached again, before a line was read, its queue reads as
+  holding something, and once the lines were read (nothing waits) as empty.
 - AC2 (CCQ-002, the gate's block, a person's prompt). In the real order: a prompt-mode session
   on 2.1.311 runs a turn the gate will block while runs get 2.1.322. Its person enters a second
   prompt while the turn runs: the prompt hook comes at once and the prompt waits. The turn
@@ -172,8 +173,8 @@ Where things are in Yulius:
 - `tools/fake-agent/tests`: AC8.
 - Mutations, each reverted (Evidence lists them): the queue not asked; a `dequeue` or a
   `remove` not counted; a hand-over not kept; the time after a prompt not asked; a prompt
-  during the look not asked; a new run keeping the old count; a replay not applied; the count
-  going below zero.
+  during the look not asked; a new run keeping the old count; a replay not applied; a
+  reattached run read as known at once, or never; the count going below zero.
 - Checked against real artifacts: the installed Claude Code 2.1.322 against a local stub of
   the model API before the design (Context), and the watcher's code replayed over those runs'
   transcripts and over this instance's real sessions after it (Evidence).
@@ -247,11 +248,17 @@ Where things are in Yulius:
   its test possible.
 - **Not in this change: #1199** (a message typed onto a person's draft older than a minute).
   It is about when Yulius types, not about what a restart loses.
+- **Not known counts as holding.** After a restart of the server a reattached run's lines are
+  read again from their start, 16 MiB a second; this instance has transcripts of 38 MB. A
+  turn's end in those seconds would have read an empty queue, so until the replay was applied
+  the queue counts as not known and the session stays (found by the review's reading, before
+  its first report). A run whose transcript cannot be read at all stays until its next start.
 - **Limits.** A prompt entered after the turn's end decided to restart and before the task
   reads as switching is typed into a process that ends (some milliseconds; a message's sender
   is refused once the task reads switching). When a prompt went on is kept in memory: after a
-  restart of the server CCQ-004 knows no earlier prompt. A run reattached then knows its queue
-  once its lines were read again, a moment after the server started.
+  restart of the server CCQ-004 knows no earlier prompt. A session its person resumes or
+  clears inside its terminal changes the transcript the watcher reads: what the other file's
+  earlier processes left counted stays counted, which keeps the session until its next start.
 - **ADR-0293 is amended in place**, as SPEC-468 did: the rule refines that decision.
 
 ## Evidence
@@ -260,12 +267,15 @@ Where things are in Yulius:
   its own home and config directory, `ANTHROPIC_BASE_URL` at a local stub of the Messages API
   that streams text or answers with a `tool_use`, hooks that log their time and the queue
   records the transcript holds at that moment, a tail that logs when each record reaches the
-  file; no account, nothing leaves the host). Ten scenarios, each run once or twice:
+  file; no account, nothing leaves the host). Twelve scenarios, each run once or twice:
   `one-queued`, `two-queued`, `tool-queued` (a prompt entered while a tool runs),
   `tool-two-queued`, `tool-late-queued` (after the last tool result), `stop-block-tool-queued`
   (the Stop blocked once), `pop-up` (Up arrow), `pop-esc` (Escape), `held-stop-kill-resume`
   (the Stop held, SIGTERM, `claude --resume`), `slow-hook-queued` (a prompt hook that answers
-  after 6 s: its `enqueue` is made 2 ms after the hook returned, not before). Context states
+  after 6 s: its `enqueue` is made 2 ms after the hook returned, not before), `pop-up-two`
+  (one Up arrow with two prompts waiting: two `popAll` records) and `tool-two-at-once` (two
+  prompts taken in at one tool result: two `remove` records), so every way out of the queue
+  writes one record per entry. Context states
   what they showed. Over all runs the hook of a prompt entered while a turn ran began 5 to
   15 ms after its Enter (11 prompts), and a queue record reached the file 67 to 108 ms after
   its own time (21 records). The scripts are not in the repository (they drive
@@ -289,6 +299,13 @@ Where things are in Yulius:
     (in 12 sessions) and 4 with both. Files are read whole here, with no reset at a restart,
     so the 47 include what a restarted process left behind. 14 files end with the queue
     holding something.
+  - hand-overs in the same files: 3,662 (a batch of `dequeue` records counted once). The
+    prompt record that ends a hand-over came with no turn's end in between 3,615 times (an
+    idle session woken by a notification), after one turn's end 41 times (the order of a
+    prompt that waited: `dequeue`, the ended turn's `turn_duration`, the prompt), after two
+    once; 5 files end before it. A hand-over from an earlier turn was still counted at 2 of
+    4,185 turn ends, in 2 sessions: a hand-over that starts no prompt record is that rare,
+    and ends with the next prompt;
   - by the Claude Code version that wrote them: 2.1.292 (360 sessions), 2.1.311 (32) and
     2.1.322 (18) write the same records with the same fields (`operation`, `sessionId`,
     `timestamp`, the text, and for `remove` its `reason` and ids). Only 2.1.322 was run.

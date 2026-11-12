@@ -329,6 +329,9 @@ pub struct TaskRuntime {
     /// How many prompts from the prompt box went on in this run: a turn's end that looks at
     /// the session sees by it that one went on meanwhile (SPEC-471 CCQ-004).
     pub(crate) prompts_passed: AtomicU64,
+    /// The run was reattached after a restart of the server and its lines were not read again
+    /// yet: what waits in Claude Code's queue is not known (SPEC-471 CCQ-001).
+    pub(crate) queue_unread: AtomicBool,
     /// Polls of the transcript watcher so far: the Stop hook waits for one more before it decides
     /// a switch, so the lines written before the Stop are read (SPEC-079 BGW-004).
     pub(crate) watch_polls: AtomicU64,
@@ -437,12 +440,19 @@ impl TaskRuntime {
         self.box_emptied_ms.store(now_ms, Ordering::SeqCst);
         self.prompt_held.store(false, Ordering::SeqCst);
         self.with_queue(|queue| *queue = yulius_domain::agent_cli::Queue::default());
+        self.queue_unread.store(false, Ordering::SeqCst);
         self.prompt_passed_ms.store(0, Ordering::SeqCst);
     }
 
     /// What the run's lines said so far about Claude Code's queue.
     pub(crate) fn queue(&self) -> yulius_domain::agent_cli::Queue {
         self.queue.lock().map(|queue| *queue).unwrap_or_default()
+    }
+
+    /// Whether Claude Code's queue may hold something a restart would lose: its records say
+    /// so, or they were not read yet ([`Self::queue_unread`]).
+    pub(crate) fn queue_may_hold(&self) -> bool {
+        self.queue_unread.load(Ordering::SeqCst) || self.queue().holds()
     }
 
     /// Changes what is known of the queue.
@@ -527,6 +537,7 @@ impl TaskRuntime {
             queue: Mutex::default(),
             prompt_passed_ms: AtomicI64::new(0),
             prompts_passed: AtomicU64::new(0),
+            queue_unread: AtomicBool::new(false),
             watch_polls: AtomicU64::new(0),
             replay_transcript: AtomicBool::new(false),
             session_end: Mutex::new(None),
@@ -3987,8 +3998,10 @@ impl App {
                 .ok()
                 .and_then(|b| b.try_into().ok());
             // The run's transcript so far is history: its watcher catches up on it (TSK-014).
+            // Until it did, what waits in Claude Code's queue is not known (SPEC-471 CCQ-001).
             let runtime = self.runtime(&attempt.task_id);
             runtime.replay_transcript.store(true, Ordering::SeqCst);
+            runtime.queue_unread.store(true, Ordering::SeqCst);
             // Before the run is attached, so no message is typed meanwhile (SPEC-230): when it
             // was spawned, and whether its session started (a SessionStart this server did not
             // see left its marker).
@@ -4007,9 +4020,9 @@ impl App {
                 None => false,
             };
             if !reattached {
-                self.runtime(&attempt.task_id)
-                    .replay_transcript
-                    .store(false, Ordering::SeqCst);
+                let runtime = self.runtime(&attempt.task_id);
+                runtime.replay_transcript.store(false, Ordering::SeqCst);
+                runtime.queue_unread.store(false, Ordering::SeqCst);
             }
             if reattached {
                 tracing::info!(task = %attempt.task_id, "reattached live run");
@@ -4904,6 +4917,13 @@ mod tests {
         runtime.prompt_box_starts_empty(7_000);
         assert_eq!(runtime.queue(), yulius_domain::agent_cli::Queue::default());
         assert_eq!(runtime.prompt_passed_ms.load(Ordering::SeqCst), 0);
+        assert!(!runtime.queue_may_hold());
+        // A run reattached after a restart of the server: not known until its lines were read,
+        // which counts as holding; the next launch starts a process whose queue is empty.
+        runtime.queue_unread.store(true, Ordering::SeqCst);
+        assert!(runtime.queue_may_hold(), "not known counts as holding");
+        runtime.prompt_box_starts_empty(8_000);
+        assert!(!runtime.queue_may_hold());
     }
 
     /// Review of SPEC-332 (round 3): a person's switch and a hand-over may come mid-turn, so they

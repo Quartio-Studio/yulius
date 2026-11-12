@@ -251,7 +251,9 @@ impl App {
         }
         let reply = self.answer_event(ctx, event, input, sent).await;
         // A prompt that is held stays held through an answer that fails: the hook client, once
-        // it holds, asks again after one (and fails open only at a first request).
+        // it holds, asks again after a 5xx or a lost connection (it fails open at a first
+        // request). At a 4xx it ends its hold and the prompt goes on; that is read as held
+        // here too, which errs toward a draft, as after a hold the CLI gave up.
         let held = matches!(reply, Ok(HookReply::Hold { .. })) || (sent_again && reply.is_err());
         // The box is taken as emptied once the prompt goes on, not while it is held: a prompt
         // Yulius blocks in the end (its scope check held it, TSK-013) never reaches the agent,

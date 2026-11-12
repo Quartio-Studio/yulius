@@ -982,8 +982,10 @@ impl App {
         runtime
             .background_agents
             .store(facts.background_agents, Ordering::SeqCst);
-        // What waits in Claude Code's queue is what the run's lines say (SPEC-471 CCQ-001).
+        // What waits in Claude Code's queue is what the run's lines say (SPEC-471 CCQ-001):
+        // known from here on.
         runtime.with_queue(|queue| *queue = facts.queue);
+        runtime.queue_unread.store(false, Ordering::SeqCst);
         // The agent worked after Claude Code's last goal pause while nobody watched: the request
         // made for that pause is answered (SPEC-469 GPW-004).
         if facts.worked_since_goal_pause.is_some() {

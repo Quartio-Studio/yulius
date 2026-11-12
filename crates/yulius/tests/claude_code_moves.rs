@@ -326,6 +326,61 @@ fn a_reattached_run_knows_what_waits_in_its_queue() -> TestResult {
     Ok(())
 }
 
+/// SPEC-471 CCQ-001 (AC1): a run that is reattached after a restart of the server has written
+/// lines this server has not read: until they are read again, what waits in Claude Code's
+/// queue is not known, which counts as holding something (a turn's end then leaves the session
+/// where it is). Here nothing waits: once the lines were read, the queue reads empty.
+#[test]
+fn a_reattached_runs_queue_is_not_known_until_its_lines_were_read() -> TestResult {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use yulius_app::race::{self, Point};
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let agent = FakeAgentOptions {
+        transcript: true,
+        ..FakeAgentOptions::default()
+    };
+    let first = runtime()?;
+    let id = first.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let app = build_with(&data, &fake, probe, agent.clone())?;
+        let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
+        let id = new_task(&app, &sandbox, &user, "Queue").await?;
+        ready(&app, &id).await?;
+        app.send_input(&id, b"one\r").await?;
+        wait_for("the turn", Duration::from_secs(30), || async {
+            screen(&app, &id).contains("ECHO: one")
+        })
+        .await?;
+        assert!(!app.queue_holds(&id), "a run this server started is known");
+        Ok::<_, BoxError>(id)
+    })?;
+    first.shutdown_timeout(Duration::from_secs(5));
+
+    let second = runtime()?;
+    second.block_on(async {
+        let app = build_with(&data, &fake, Arc::new(ScriptedUsage::default()), agent)?;
+        // Asked where the run is attached again, before anything of its transcript is read.
+        let unknown = Arc::new(AtomicBool::new(false));
+        let (asked, seen, task) = (Arc::clone(&app), Arc::clone(&unknown), id.clone());
+        race::on(Point::RunAttached, Path::new(id.as_str()), move || {
+            seen.store(asked.queue_holds(&task), Ordering::SeqCst);
+        });
+        app.reconcile().await?;
+        assert!(
+            unknown.load(Ordering::SeqCst),
+            "a reattached run's queue is not known before its lines were read"
+        );
+        wait_for("the run's lines", Duration::from_secs(30), || async {
+            !app.queue_holds(&id)
+        })
+        .await?;
+        stop(&app, &id).await
+    })?;
+    second.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// SPEC-471 CCQ-001 (AC1): a run that ends with a prompt in Claude Code's queue leaves its
 /// `enqueue` record behind. The run that resumes the session does not read it as its own and
 /// starts with an empty queue: Claude Code does not take the queue over.
@@ -1166,12 +1221,13 @@ mod moves {
     }
 
     /// SPEC-468 CCF-010 (the last look's minor): a prompt that waits for room has not gone on
-    /// when one of its requests is answered with an error, since the hook client, once it
-    /// holds, asks again after a failing answer. The box counts as emptied at the prompt's
-    /// first request all the same: what its person typed while it waited is still a draft when
-    /// it goes on. An error used to end the hold, so the next request counted as a new submit,
-    /// at its own, later time. Here the store fails for one request: a second connection takes
-    /// a table away.
+    /// when one of its requests is answered with a 5xx or loses its connection, since the hook
+    /// client, once it holds, asks again after those (at a 4xx it ends its hold and the prompt
+    /// goes on, which Yulius reads as held too: toward a draft). The box counts as emptied at
+    /// the prompt's first request all the same: what its person typed while it waited is still
+    /// a draft when it goes on. An error used to end the hold, so the next request counted as
+    /// a new submit, at its own, later time. Here the store fails for one request: a second
+    /// connection takes a table away.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_failed_answer_inside_a_hold_keeps_the_hold() -> TestResult {
         use axum::http::StatusCode;
